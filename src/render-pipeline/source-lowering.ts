@@ -6,14 +6,10 @@ import { canonicalEditableContent, type EditableContentType } from "../studio/ed
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
 import type { EntityContent, MotionEasing } from "../studio/model";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
-import {
-  type CanonicalEditOperation,
-  type CanonicalEditProgram,
-  type CreateEntityOperation,
-  EDIT_OPERATION_VERSION,
-} from "../studio/operations";
+import { type CreateEntityOperation, EDIT_OPERATION_VERSION } from "../studio/operations";
 import { insertedProgramDuration } from "../studio/program-composition";
 import { samplePropertyKnowledge, samplePropertyValue } from "../studio/property-sampling";
+import type { SceneEdit, SceneEditOperation } from "../studio/scene-edit-contract";
 import { scaleTransformViolation, sceneBoundaryViolation } from "../studio/source-lowering-invariants";
 import { type ProgramRenderRequest, renderRequestPrograms, type SingleProgramRenderRequest } from "./contracts";
 import {
@@ -169,7 +165,7 @@ const CURSOR_PATTERN = /^\s*#\s*poietra:cursor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const SCENE_BOUNDARY_PATTERN = /^\s*#\s*poietra:scene-boundary\s+(.+)\s*$/;
 const EPSILON = 0.0005;
 
-function loweredProgramDuration(program: CanonicalEditProgram) {
+function loweredProgramDuration(program: SceneEdit) {
   const waitEnd = Math.max(
     program.anchor.resolvedSeconds,
     ...program.operations.flatMap((operation) =>
@@ -769,7 +765,7 @@ function entityConstructor(operation: CreateEntityOperation) {
   throw new ProgramLoweringError("operation-unsupported", `CreateEntity type ${type} has no safe Manim lowering.`);
 }
 
-function referencedBaseEntityIds(operations: readonly CanonicalEditOperation[]) {
+function referencedBaseEntityIds(operations: readonly SceneEditOperation[]) {
   const created = new Set(
     operations.flatMap((operation) => {
       if (operation.kind === "CreateEntity") return [operation.entity.id];
@@ -794,7 +790,7 @@ function referencedBaseEntityIds(operations: readonly CanonicalEditOperation[]) 
   return [...new Set(referenced.filter((entityId) => !created.has(entityId)))];
 }
 
-function operationTime(operation: CanonicalEditOperation) {
+function operationTime(operation: SceneEditOperation) {
   return operation.kind === "InsertSceneBoundary" ? operation.at : operation.interval.start;
 }
 
@@ -841,13 +837,13 @@ function contentReplacementExpression(variable: string, target: NonNullable<Retu
 }
 
 type LoweredAnimationOperation = Extract<
-  CanonicalEditOperation,
+  SceneEditOperation,
   {
     kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent";
   }
 >;
 
-function animationOperation(operation: CanonicalEditOperation): operation is LoweredAnimationOperation {
+function animationOperation(operation: SceneEditOperation): operation is LoweredAnimationOperation {
   return (
     operation.kind === "ChangePresence" ||
     operation.kind === "CreateMotion" ||
@@ -861,7 +857,7 @@ function animationEasing(operation: LoweredAnimationOperation): MotionEasing {
   return operation.kind === "CreateMotion" || operation.kind === "AnimateProperty" ? operation.easing : "smooth";
 }
 
-function scaleChange(operation: Extract<CanonicalEditOperation, { kind: "AnimateProperty" }>) {
+function scaleChange(operation: Extract<SceneEditOperation, { kind: "AnimateProperty" }>) {
   if (
     operation.key !== "scale" ||
     typeof operation.from !== "number" ||
@@ -897,7 +893,7 @@ function scaleChange(operation: Extract<CanonicalEditOperation, { kind: "Animate
 
 function resizeExpression(
   variable: string,
-  operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+  operation: Extract<SceneEditOperation, { kind: "ResizeEntity" }>,
   frame: Readonly<{ height: number; width: number }>,
   viewport: Readonly<{ height: number; width: number }>,
   cameraCenter: Readonly<{ x: number; y: number }>,
@@ -924,7 +920,7 @@ function resizeExpression(
 
 function resizeMarkerEntry(
   variable: string,
-  operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+  operation: Extract<SceneEditOperation, { kind: "ResizeEntity" }>,
   viewport: Readonly<{ height: number; width: number }>,
 ) {
   return {
@@ -936,7 +932,7 @@ function resizeMarkerEntry(
   } as const;
 }
 
-function assertLoweringSupported(operation: CanonicalEditOperation, options: ProgramSourceLoweringOptions) {
+function assertLoweringSupported(operation: SceneEditOperation, options: ProgramSourceLoweringOptions) {
   if (operation.kind === "CreateEntity") {
     if (
       operation.entity.lifetime.end !== null &&
@@ -997,7 +993,7 @@ function resolveScaleChangesAndTransforms(
   sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
   anchorLine: number,
   sourceAnchor: number,
-  operations: readonly CanonicalEditOperation[],
+  operations: readonly SceneEditOperation[],
   sourceBindings: ReadonlyMap<string, string>,
   generatedEntityIds: ReadonlySet<string> | undefined,
   entityScaleStates: Map<string, SourceScaleState> | undefined,
@@ -1007,7 +1003,7 @@ function resolveScaleChangesAndTransforms(
     (
       operation,
     ): operation is Extract<
-      CanonicalEditOperation,
+      SceneEditOperation,
       {
         kind: "AnimateProperty";
       }
@@ -1017,7 +1013,7 @@ function resolveScaleChangesAndTransforms(
     (
       operation,
     ): operation is Extract<
-      CanonicalEditOperation,
+      SceneEditOperation,
       {
         kind: "TransformContent";
       }
@@ -1132,7 +1128,7 @@ function resolveScaleChangesAndTransforms(
 }
 
 function persistentRemovalVariables(
-  operations: readonly CanonicalEditOperation[],
+  operations: readonly SceneEditOperation[],
   variableByEntity: ReadonlyMap<string, string>,
   initialAliases: ReadonlyMap<string, ReadonlySet<string>>,
 ) {
@@ -1238,13 +1234,13 @@ function assertContentReplacementSafety(
   sceneName: string,
   sceneBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
   anchorLine: number,
-  operations: readonly CanonicalEditOperation[],
+  operations: readonly SceneEditOperation[],
   sourceBindings: ReadonlyMap<string, string>,
   options: ProgramSourceLoweringOptions,
   frame: Readonly<{ height: number; width: number }>,
 ) {
   const contentEdits = operations.filter(
-    (operation): operation is Extract<CanonicalEditOperation, { kind: "SetProperty" }> =>
+    (operation): operation is Extract<SceneEditOperation, { kind: "SetProperty" }> =>
       operation.kind === "SetProperty" && operation.key === "content",
   );
   if (contentEdits.length === 0) return;
@@ -1308,8 +1304,8 @@ function assertContentReplacementSafety(
   }
 }
 
-function operationBuckets(operations: readonly CanonicalEditOperation[]) {
-  const buckets: Array<{ operations: CanonicalEditOperation[]; time: number }> = [];
+function operationBuckets(operations: readonly SceneEditOperation[]) {
+  const buckets: Array<{ operations: SceneEditOperation[]; time: number }> = [];
   for (const operation of operations) {
     const time = operationTime(operation);
     const current = buckets.at(-1);
@@ -1629,7 +1625,7 @@ export function lowerCanonicalProgramSource(
     }
 
     const instantPresenceChanges = bucket.filter(
-      (operation): operation is Extract<CanonicalEditOperation, { kind: "ChangePresence" }> =>
+      (operation): operation is Extract<SceneEditOperation, { kind: "ChangePresence" }> =>
         operation.kind === "ChangePresence" && operation.interval.end - operation.interval.start <= EPSILON,
     );
     for (const operation of instantPresenceChanges) {
@@ -1892,7 +1888,7 @@ function applySceneDurationProjection(
   }
 
   return entries.flatMap((entry) => {
-    const operations = entry.program.operations.flatMap((operation): readonly CanonicalEditOperation[] => {
+    const operations = entry.program.operations.flatMap((operation): readonly SceneEditOperation[] => {
       if (operation.kind === "TrimSceneDuration") return [];
       if (
         operation.kind !== "InsertTimelineEvent" ||
@@ -1953,7 +1949,7 @@ function finiteCreatedLifetimeEntries(
       }
       const transactionId = `${entry.program.transactionId}/lifetime-end-${index}`;
       const removeId = `${transactionId}/operation/remove`;
-      const program: CanonicalEditProgram = {
+      const program: SceneEdit = {
         anchor: {
           capturedPlayhead: sourceEnd,
           evidence: ["finite Studio-owned lifetime", `source-anchor:${sourceEnd.toFixed(3)}`],

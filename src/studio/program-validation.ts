@@ -1,29 +1,26 @@
-import type { MotionEasing, RuntimeSceneState } from "./model";
 import { exactEntityScaleAt } from "./magic-edit-capabilities";
-import {
-  channelKey,
-  type CanonicalEditOperation,
-  type CanonicalEditProgram,
-  type DependencyEdge,
-  type ProgramValidationIssue,
-} from "./operations";
+import type { MotionEasing, RuntimeSceneState } from "./model";
 import {
   operationAccess,
   operationExecutionCapabilities,
   programExecutionCapabilities,
   validateOperation,
 } from "./operation-registry";
+import { channelKey, type DependencyEdge, type SceneEditValidationIssue } from "./operations";
+import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 import { scaleTransformViolation, sceneBoundaryViolation } from "./source-lowering-invariants";
 
 const EPSILON = 0.001;
 
-export type ProgramValidationResult = Readonly<{
-  issues: readonly ProgramValidationIssue[];
+export type SceneEditValidationResult = Readonly<{
+  issues: readonly SceneEditValidationIssue[];
   kind: "invalid" | "valid";
-  program: CanonicalEditProgram;
+  program: SceneEdit;
 }>;
 
-function intervalsOverlap(left: CanonicalEditOperation["interval"], right: CanonicalEditOperation["interval"]) {
+export type ProgramValidationResult = SceneEditValidationResult;
+
+function intervalsOverlap(left: SceneEditOperation["interval"], right: SceneEditOperation["interval"]) {
   return left.start < right.end - EPSILON && right.start < left.end - EPSILON;
 }
 
@@ -63,7 +60,7 @@ function topologicalOrder(operationIds: readonly string[], edges: readonly Depen
   return order.length === operationIds.length ? order : null;
 }
 
-function producedEntityIds(program: CanonicalEditProgram) {
+function producedEntityIds(program: SceneEdit) {
   return new Set(
     program.operations.flatMap((operation) => {
       if (operation.kind === "CreateEntity") return [operation.entity.id];
@@ -73,14 +70,14 @@ function producedEntityIds(program: CanonicalEditProgram) {
   );
 }
 
-function referencedEntityIds(operation: CanonicalEditOperation) {
+function referencedEntityIds(operation: SceneEditOperation) {
   const access = operationAccess(operation);
   return [...new Set([...access.reads, ...access.writes].map((entry) => entry.entityId))].filter(
     (id) => id !== "camera",
   );
 }
 
-function sourceAnimationEasing(operation: CanonicalEditOperation): MotionEasing | null {
+function sourceAnimationEasing(operation: SceneEditOperation): MotionEasing | null {
   if (operation.kind === "CreateMotion") return operation.easing;
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return operation.easing;
   if (operation.kind === "ChangePresence" || operation.kind === "ResizeEntity" || operation.kind === "TransformContent")
@@ -88,11 +85,8 @@ function sourceAnimationEasing(operation: CanonicalEditOperation): MotionEasing 
   return null;
 }
 
-export function validateAndScheduleProgram(
-  input: CanonicalEditProgram,
-  scene: RuntimeSceneState,
-): ProgramValidationResult {
-  const issues: ProgramValidationIssue[] = [];
+export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeSceneState): SceneEditValidationResult {
+  const issues: SceneEditValidationIssue[] = [];
   if (input.intentCount < 1 || input.intentCount > 16) {
     issues.push({
       code: "operation-count",
@@ -434,7 +428,7 @@ export function validateAndScheduleProgram(
       severity: "error",
     });
   }
-  const scheduledProgram: CanonicalEditProgram = {
+  const scheduledProgram: SceneEdit = {
     ...input,
     schedule: {
       edges: normalizedEdges,
@@ -460,7 +454,7 @@ export function validateAndScheduleProgram(
       severity: execution.lowering === "unsupported" ? "error" : "warning",
     });
   }
-  const program: CanonicalEditProgram = {
+  const program: SceneEdit = {
     ...scheduledProgram,
     loweringStatus: execution.lowering,
   };

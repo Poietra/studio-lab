@@ -1,7 +1,8 @@
 import type { StudioTimelineProjectionV1 } from "../engine/scene-authoring";
 import type { Interval, RuntimeSceneState } from "./model";
-import { type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
+import { isSceneDurationOperation } from "./operations";
 import { workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline } from "./program-composition";
+import type { SceneEdit } from "./scene-edit-contract";
 import {
   isSceneDurationProgramBatch,
   workingTimeToSourceTime as workingTimeToSourceTimeFromProjection,
@@ -23,7 +24,7 @@ function sourceInterval(interval: Interval, workingTimeToSourceTime: (time: numb
  */
 export function projectRuntimeSceneToSourceTimeline(
   scene: RuntimeSceneState,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   timelineProjection: StudioTimelineProjectionV1 | null = null,
 ): RuntimeSceneState {
   if (programs.length === 0) return scene;

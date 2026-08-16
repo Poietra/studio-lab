@@ -8,7 +8,6 @@ import {
 } from "../src/render-pipeline/source-lowering";
 import type { RuntimeSceneState } from "../src/studio/model";
 import {
-  type CanonicalEditProgram,
   isExactStudioMathTexContentProgramBatch,
   isSceneDurationOperation,
   isStaticRootTransformOperation,
@@ -18,6 +17,7 @@ import {
   isExactStudioMotionProgramBatch,
   studioCreationMathTexParts,
 } from "../src/studio/scene-authoring-wire";
+import type { SceneEdit } from "../src/studio/scene-edit-contract";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "../src/studio/timeline-projection";
 import { HttpError } from "./http/json";
 import { importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
@@ -33,7 +33,7 @@ export type ManimRenderRequestLoweringInput = Readonly<{
 export type SnapshotProgramAuthorizer = (
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
-    programs: readonly CanonicalEditProgram[];
+    programs: readonly SceneEdit[];
     projectId: string;
     request: ProgramRenderRequest;
     runtimeSceneState: RuntimeSceneState;
@@ -45,7 +45,7 @@ export type ManimRenderRequestLoweringResult = Readonly<{
   renderRequest: ProgramRenderRequest;
 }>;
 
-function isStudioCreationProgramBatch(programs: readonly CanonicalEditProgram[]) {
+function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
   const operations = programs.flatMap((program) => program.operations);
   const createdEntityIds = new Set(
     operations.flatMap((operation) => (operation.kind === "CreateEntity" ? [operation.entity.id] : [])),
@@ -167,7 +167,7 @@ export async function lowerManimRenderRequest({
   const containsSceneDurationOperation = sourceOrderedPrograms.some((program) =>
     program.operations.some(isSceneDurationOperation),
   );
-  let validatedPrograms: readonly CanonicalEditProgram[];
+  let validatedPrograms: readonly SceneEdit[];
   let timelineTransforms: readonly StudioTimelineEditTransformV1[] | null = null;
   if (isSceneDurationProgramBatch(sourceOrderedPrograms)) {
     try {

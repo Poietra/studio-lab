@@ -1,10 +1,10 @@
 import { validateEditProgram } from "../ai/edit-program-validation";
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { programRecord } from "./evaluator";
+import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE, magicEditCapabilities } from "./magic-edit-capabilities";
 import type { ProgramRecord, ProjectedEntity, ProposedState } from "./model";
 import type { OperationOrigin } from "./operations";
-import type { ProgramValidationResult } from "./program-validation";
-import { magicEditCapabilities, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
+import type { SceneEditValidationResult } from "./program-validation";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
 export type DraftValidationResult =
@@ -118,7 +118,7 @@ export function validateSuggestionDraft(
   };
 }
 
-export function validatedProgramRecord(validation: ProgramValidationResult):
+export function validatedProgramRecord(validation: SceneEditValidationResult):
   | Readonly<{
       kind: "invalid";
       message: string;

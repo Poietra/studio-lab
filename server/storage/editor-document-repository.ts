@@ -12,8 +12,7 @@ import {
 import { canonicalJsonV1 } from "../../src/engine/fast-manim-snapshot-digest";
 import { sha256V1Schema } from "../../src/engine/primitives";
 import { manimProjectIdSchema, manimSourcePathSchema } from "../../src/render-pipeline/contracts";
-import type { CanonicalEditProgram } from "../../src/studio/operations";
-import { sceneEditSchema as canonicalEditProgramSchemaV1 } from "../../src/studio/scene-edit-contract";
+import { sceneEditSchema as canonicalEditProgramSchemaV1, type SceneEdit } from "../../src/studio/scene-edit-contract";
 import { manimTenantIdSchema } from "../manim-request-principal";
 
 export const MAX_EDITOR_PROGRAM_BYTES_V1 = 256 * 1024;
@@ -198,7 +197,7 @@ export type EditorDocumentV1 = Readonly<{
 }>;
 
 export type EditorDocumentProjectionV1 = Readonly<{
-  programs: readonly CanonicalEditProgram[];
+  programs: readonly SceneEdit[];
   revision: bigint;
 }>;
 
@@ -291,7 +290,7 @@ export function createEditorDocumentKeyV1(sourcePathValue: string, sceneIdValue:
 }
 
 export function canonicalEditorProgramV1(value: unknown) {
-  const program = canonicalEditProgramSchemaV1.parse(value) as CanonicalEditProgram;
+  const program = canonicalEditProgramSchemaV1.parse(value) as SceneEdit;
   const canonicalJson = canonicalJsonV1(program);
   const byteSize = Buffer.byteLength(canonicalJson, "utf8");
   if (byteSize > MAX_EDITOR_PROGRAM_BYTES_V1) {

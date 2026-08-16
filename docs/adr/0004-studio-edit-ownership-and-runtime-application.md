@@ -52,6 +52,9 @@ framework around the existing code.
 | Authoring | The product activity of creating and editing a video. It is an umbrella term, not a state owner or a sufficiently precise core module name. |
 | Studio | The editor application context: use-case orchestration, interaction state, and read-model presentation. It does not decide Scene mutation semantics. |
 | Scene | The renderer-neutral animation model represented by Scene IR. `Scene` does not mean the React workspace, an Editor Document, or Python source text. |
+| Motion Program | A future whole-video authoring or executable structure. It may organize many edits and control flow; one committed `SceneEdit` is not a Motion Program. |
+| Scene IR | A validated, renderer-neutral materialization of scene entities, animation channels, assets, and timing. It is runtime input, not edit history or an executable Program. |
+| Render Packet | The renderer-facing result of sampling Scene IR at one time and viewport. It contains ordered draw data for one frame and owns neither authoring intent nor persistent Scene state. |
 | Edit | One structurally normalized, non-empty envelope admitted to an `EditorDocument` commit. The domain name is `SceneEdit`; the name does not assert that the edit is semantically applicable to an arbitrary Scene. |
 | Program | Reserved for an actual executable program, such as Python source, or a future whole-video `MotionProgram`. It does not name one edit. |
 | Operation | One ordered semantic operation inside a `SceneEdit`. It is not independently persisted or applied. |

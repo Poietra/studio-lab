@@ -1,4 +1,5 @@
-import { type CanonicalEditOperation, type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
+import { isSceneDurationOperation } from "./operations";
+import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 
 const ANCHOR_EPSILON = 0.0005;
 
@@ -7,7 +8,7 @@ type IdMaps = Readonly<{
   operations: ReadonlyMap<string, string>;
 }>;
 
-export function insertedProgramDuration(program: CanonicalEditProgram) {
+export function insertedProgramDuration(program: SceneEdit) {
   const insertedAnimations = program.operations.filter(
     (operation) =>
       operation.kind === "ChangePresence" ||
@@ -51,7 +52,7 @@ export function shiftIntervalForInsertion(
   return interval.end > at ? { ...interval, end: interval.end + duration } : interval;
 }
 
-function sourceInsertions(programs: readonly CanonicalEditProgram[]) {
+function sourceInsertions(programs: readonly SceneEdit[]) {
   const sceneDurationOperation = programs.flatMap((program) => program.operations).find(isSceneDurationOperation);
   if (sceneDurationOperation) {
     throw new TypeError(`${sceneDurationOperation.kind} requires the Rust timeline projection.`);
@@ -80,7 +81,7 @@ function sourceInsertions(programs: readonly CanonicalEditProgram[]) {
 }
 
 /** Maps an original source timestamp to the working timeline after applied insertions. */
-export function sourceTimeToWorkingTime(programs: readonly CanonicalEditProgram[], sourceTime: number) {
+export function sourceTimeToWorkingTime(programs: readonly SceneEdit[], sourceTime: number) {
   return (
     sourceTime +
     sourceInsertions(programs).reduce(
@@ -96,7 +97,7 @@ export function sourceTimeToWorkingTime(programs: readonly CanonicalEditProgram[
  * inserted block resolve to that block's source anchor so a new edit appends to
  * the same safe insertion point instead of receiving the offset twice.
  */
-export function workingTimeToSourceTime(programs: readonly CanonicalEditProgram[], workingTime: number) {
+export function workingTimeToSourceTime(programs: readonly SceneEdit[], workingTime: number) {
   let offset = 0;
   for (const insertion of sourceInsertions(programs)) {
     const insertionStart = insertion.sourceAnchor + offset;
@@ -114,7 +115,7 @@ export function workingTimeToSourceTime(programs: readonly CanonicalEditProgram[
  * inserted at that source anchor, which is the only truthful append position.
  */
 export function latestSafeSourceAnchor(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   sourceAnchors: readonly number[],
   workingTime: number,
 ) {
@@ -130,7 +131,7 @@ export function latestSafeSourceAnchor(
   } as const;
 }
 
-function shiftedInterval(interval: CanonicalEditOperation["interval"], offset: number) {
+function shiftedInterval(interval: SceneEditOperation["interval"], offset: number) {
   return { end: interval.end + offset, start: interval.start + offset };
 }
 
@@ -142,7 +143,7 @@ function remapOperationId(id: string, maps: IdMaps) {
   return maps.operations.get(id) ?? id;
 }
 
-function remapOperation(operation: CanonicalEditOperation, offset: number, maps: IdMaps): CanonicalEditOperation {
+function remapOperation(operation: SceneEditOperation, offset: number, maps: IdMaps): SceneEditOperation {
   const base = {
     dependsOn: operation.dependsOn.map((id) => remapOperationId(id, maps)),
     id: remapOperationId(operation.id, maps),
@@ -202,7 +203,7 @@ function remapOperation(operation: CanonicalEditOperation, offset: number, maps:
   }
 }
 
-export function rebaseProgramTime(program: CanonicalEditProgram, offset: number): CanonicalEditProgram {
+export function rebaseProgramTime(program: SceneEdit, offset: number): SceneEdit {
   if (!Number.isFinite(offset) || offset < 0)
     throw new Error("A Program timeline offset must be finite and non-negative.");
   const sceneDurationOperation = program.operations.find(isSceneDurationOperation);

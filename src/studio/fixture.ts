@@ -6,14 +6,14 @@ import {
   type StaticSemanticState,
   type WorkingState,
 } from "./model";
-import type { CanonicalEditProgram } from "./operations";
+import type { SceneEdit } from "./scene-edit-contract";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 import { projectStudioWorkspace } from "./workspace-projection";
 
 const duration = 12;
 
 export function persistentRemoveProjectionFixture(
-  program: CanonicalEditProgram,
+  program: SceneEdit,
   timeOffset = 0,
 ): StudioPersistentRemoveProjectionV1 {
   return {
@@ -42,11 +42,7 @@ export function persistentRemoveProjectionFixture(
   };
 }
 
-export function projectPersistentRemoveFixture(
-  program: CanonicalEditProgram,
-  scene = STUDIO_FIXTURE_SCENE,
-  draft = false,
-) {
+export function projectPersistentRemoveFixture(program: SceneEdit, scene = STUDIO_FIXTURE_SCENE, draft = false) {
   const record = { program, validation: { issues: [], status: "valid" as const } };
   return projectStudioWorkspace({
     activeScene: {

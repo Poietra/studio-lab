@@ -12,15 +12,9 @@ import type {
   ProjectedEntity,
   RuntimeSceneState,
 } from "./model";
-import {
-  type CanonicalEditOperation,
-  type CanonicalEditProgram,
-  EDIT_OPERATION_VERSION,
-  type OperationOrigin,
-  operationId,
-  provisionalEntityId,
-} from "./operations";
-import { type ProgramValidationResult, validateAndScheduleProgram } from "./program-validation";
+import { EDIT_OPERATION_VERSION, type OperationOrigin, operationId, provisionalEntityId } from "./operations";
+import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
+import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 import { resolveTimeAnchorOnce } from "./time";
 import type { SceneDurationTrimAvailability } from "./timeline-projection";
 
@@ -43,7 +37,7 @@ export function defaultEntityDimensions(type: InsertEntityType): EntityDimension
 
 type AuthoringProgramResult = Readonly<{
   entityIds: readonly string[];
-  validation: ProgramValidationResult;
+  validation: SceneEditValidationResult;
 }>;
 
 export type InspectorEntityEdits = Readonly<{
@@ -57,7 +51,7 @@ function provenance(origin: OperationOrigin, evidence: readonly string[]) {
 }
 
 function authoringProgram(
-  operations: readonly CanonicalEditOperation[],
+  operations: readonly SceneEditOperation[],
   input: Readonly<{
     capturedPlayhead: number;
     origin: OperationOrigin;
@@ -66,7 +60,7 @@ function authoringProgram(
     scene: RuntimeSceneState;
     transactionId: string;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const resolution = resolveTimeAnchorOnce(
     {
       kind: "playhead",
@@ -80,7 +74,7 @@ function authoringProgram(
   if (resolution.kind === "invalid") {
     throw new Error(resolution.message);
   }
-  const program: CanonicalEditProgram = {
+  const program: SceneEdit = {
     anchor: resolution.anchor,
     intentCount: 1,
     loweringStatus: "supported",
@@ -118,7 +112,7 @@ export function createStudioEntitiesProgram(
   }
   const origin = input.origin ?? "studio-default";
   const entityIds: string[] = [];
-  const operations = input.entities.flatMap((entity, index): readonly CanonicalEditOperation[] => {
+  const operations = input.entities.flatMap((entity, index): readonly SceneEditOperation[] => {
     const entityId = provisionalEntityId(input.transactionId, `insert-${index}`);
     const createId = operationId(input.transactionId, `create-${index}`);
     const positionId = operationId(input.transactionId, `position-${index}`);
@@ -185,7 +179,7 @@ export function createInspectorEntityEditProgram(
     scene: RuntimeSceneState;
     transactionId: string;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const entity = input.scene.objectGraph.entities[input.entityId];
   if (!entity) throw new Error(`Object ${input.entityId} is no longer available.`);
   if (
@@ -213,7 +207,7 @@ export function createInspectorEntityEditProgram(
   }
 
   const interval = { end: input.capturedPlayhead, start: input.capturedPlayhead };
-  const operations: CanonicalEditOperation[] = [];
+  const operations: SceneEditOperation[] = [];
   if (input.edits.dimensions && input.from.dimensions && shape) {
     operations.push({
       dependsOn: [],
@@ -272,7 +266,7 @@ export function createRemoveEntitiesProgram(
     scene: RuntimeSceneState;
     transactionId: string;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const entityIds = [...new Set(input.entityIds)];
   if (entityIds.length === 0) throw new Error("Select an object to delete.");
   const end = appearanceEnd(input.scene, input.capturedPlayhead);
@@ -280,7 +274,7 @@ export function createRemoveEntitiesProgram(
     throw new Error("Move the playhead at least 0.1 seconds before the Scene end to delete an object.");
   }
   const operations = entityIds.map(
-    (entityId, index): CanonicalEditOperation => ({
+    (entityId, index): SceneEditOperation => ({
       dependsOn: [],
       effect: "remove",
       entityId,
@@ -309,7 +303,7 @@ export function createImportedEntityLifetimeProgram(
     targetEnd: number;
     transactionId: string;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const entity = input.scene.objectGraph.entities[input.entityId];
   if (!entity) throw new Error(`Object ${input.entityId} is no longer available.`);
   const original = entity.lifetime.find(
@@ -342,7 +336,7 @@ export function createImportedEntityLifetimeProgram(
   if (!restoringOriginal && Math.abs(input.sourceAnchor - input.targetEnd) >= 0.001) {
     throw new Error("The imported lifetime end must snap to its safe source anchor.");
   }
-  const operation: CanonicalEditOperation = restoringOriginal
+  const operation: SceneEditOperation = restoringOriginal
     ? {
         dependsOn: [],
         eventKind: "wait",
@@ -387,12 +381,12 @@ function shiftInterval(interval: Interval, delta: number): Interval {
 }
 
 function shiftStudioCreationOperation(
-  operation: CanonicalEditOperation,
+  operation: SceneEditOperation,
   delta: number,
   entityId: string,
   target: Interval,
   sceneDuration: number,
-): CanonicalEditOperation {
+): SceneEditOperation {
   const interval = shiftInterval(operation.interval, delta);
   if (operation.kind === "CreateEntity") {
     return {
@@ -427,7 +421,7 @@ function shiftStudioCreationOperation(
   return { ...operation, interval };
 }
 
-function operationTargetsEntity(operation: CanonicalEditOperation, entityId: string) {
+function operationTargetsEntity(operation: SceneEditOperation, entityId: string) {
   if (operation.kind === "CreateEntity") return operation.entity.id === entityId;
   if (operation.kind === "SetProperty" || operation.kind === "AnimateProperty" || operation.kind === "ChangePresence")
     return operation.entityId === entityId;
@@ -450,7 +444,7 @@ export function replaceStudioEntityLifetimeProgram(
     sourceAnchors: readonly number[];
     target: Interval;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const created = input.owner.program.operations.filter((operation) => operation.kind === "CreateEntity");
   const create = created.find((operation) => operation.entity.id === input.entityId);
   if (!create) throw new Error("The Studio creation Program no longer owns this object.");
@@ -536,7 +530,7 @@ export function createSceneDurationProgram(
     transactionId: string;
     trimAvailability?: SceneDurationTrimAvailability;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const change = input.targetDuration - input.scene.duration;
   if (!Number.isFinite(input.targetDuration) || input.targetDuration < 0.1) {
     throw new Error("The new Scene duration must be a finite value of at least 0.1 seconds.");
@@ -561,7 +555,7 @@ export function createSceneDurationProgram(
     if (availability.anchor === null || availability.waitOperationIds.length === 0) {
       throw new Error("No Studio-added trailing Scene duration wait is available to shorten.");
     }
-    const operation: CanonicalEditOperation = {
+    const operation: SceneEditOperation = {
       dependsOn: [],
       id: operationId(input.transactionId, "trim-scene-duration"),
       interval: { end: availability.anchor, start: availability.anchor },
@@ -574,7 +568,7 @@ export function createSceneDurationProgram(
       targetDuration: input.targetDuration,
       waitOperationIds: availability.waitOperationIds,
     };
-    const program: CanonicalEditProgram = {
+    const program: SceneEdit = {
       anchor: {
         capturedPlayhead: input.capturedPlayhead,
         evidence: [`source-anchor:${availability.anchor.toFixed(3)}`, "Studio duration wait suffix"],
@@ -597,7 +591,7 @@ export function createSceneDurationProgram(
   if (!Number.isFinite(input.sourceAnchor) || input.sourceAnchor < 0 || input.sourceAnchor > input.scene.duration) {
     throw new Error("A safe source anchor is required to extend the Scene duration.");
   }
-  const operation: CanonicalEditOperation = {
+  const operation: SceneEditOperation = {
     dependsOn: [],
     eventKind: "wait",
     id: operationId(input.transactionId, "extend-scene-duration"),
@@ -607,7 +601,7 @@ export function createSceneDurationProgram(
     purpose: "scene-duration",
     provenance: provenance("studio-default", ["Scene duration control", `${extension.toFixed(3)} second wait`]),
   };
-  const program: CanonicalEditProgram = {
+  const program: SceneEdit = {
     anchor: {
       capturedPlayhead: input.capturedPlayhead,
       evidence: [`source-anchor:${input.sourceAnchor.toFixed(3)}`],

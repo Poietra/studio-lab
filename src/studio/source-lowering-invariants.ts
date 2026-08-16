@@ -1,8 +1,8 @@
-import type { CanonicalEditOperation } from "./operations";
+import type { SceneEditOperation } from "./scene-edit-contract";
 
 const EPSILON = 0.001;
 
-function operationEntityIds(operation: CanonicalEditOperation) {
+function operationEntityIds(operation: SceneEditOperation) {
   if (operation.kind === "TransformContent") {
     return [operation.sourceEntityId, operation.targetEntityId];
   }
@@ -12,12 +12,12 @@ function operationEntityIds(operation: CanonicalEditOperation) {
   return [];
 }
 
-export function scaleTransformViolation(operations: readonly CanonicalEditOperation[]) {
+export function scaleTransformViolation(operations: readonly SceneEditOperation[]) {
   const transforms = operations.filter(
     (
       operation,
     ): operation is Extract<
-      CanonicalEditOperation,
+      SceneEditOperation,
       {
         kind: "TransformContent";
       }
@@ -45,8 +45,8 @@ export function scaleTransformViolation(operations: readonly CanonicalEditOperat
 }
 
 function isTransitionInternalOperation(
-  operation: CanonicalEditOperation,
-  boundary: Extract<CanonicalEditOperation, { kind: "InsertSceneBoundary" }>,
+  operation: SceneEditOperation,
+  boundary: Extract<SceneEditOperation, { kind: "InsertSceneBoundary" }>,
   overlayEntityIds: ReadonlySet<string>,
 ) {
   if (operation.id === boundary.id) return true;
@@ -62,12 +62,12 @@ function isTransitionInternalOperation(
   );
 }
 
-export function sceneBoundaryViolation(operations: readonly CanonicalEditOperation[]) {
+export function sceneBoundaryViolation(operations: readonly SceneEditOperation[]) {
   const boundaries = operations.filter(
     (
       operation,
     ): operation is Extract<
-      CanonicalEditOperation,
+      SceneEditOperation,
       {
         kind: "InsertSceneBoundary";
       }

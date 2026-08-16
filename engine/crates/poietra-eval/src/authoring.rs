@@ -249,7 +249,7 @@ pub struct StudioMotionProjection {
     pub projected_duration: f64,
 }
 
-/// One Studio-owned entity created by an admitted creation Program.
+/// One Studio-owned entity created by an admitted creation edit.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioProjectedCreationEntity {
@@ -489,14 +489,14 @@ pub enum StudioAuthoringOrigin {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
-pub enum StudioProgramExecution {
+pub enum SceneEditExecution {
     Parallel,
     Sequence,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
-pub enum StudioProgramScheduleMode {
+pub enum SceneEditScheduleMode {
     DependencyDag,
     Parallel,
     Sequence,
@@ -509,7 +509,7 @@ pub enum StudioProgramScheduleMode {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum StudioProgramAnchorSource {
+pub enum SceneEditAnchorSource {
     Absolute { seconds: Option<f64> },
     Playhead { reference_seconds: Option<f64> },
     Unsupported,
@@ -571,17 +571,17 @@ impl StudioMotionOperation {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioMotionProgram {
+pub struct StudioMotionEditInput {
     pub anchor_captured_playhead: f64,
     pub anchor_resolved_seconds: f64,
-    pub anchor_source: StudioProgramAnchorSource,
+    pub anchor_source: SceneEditAnchorSource,
     pub intent_count: usize,
     pub lowering_supported: bool,
     pub operations: Vec<StudioMotionOperation>,
     pub origin: StudioAuthoringOrigin,
-    pub requested_execution: StudioProgramExecution,
+    pub requested_execution: SceneEditExecution,
     pub schedule_edge_count: usize,
-    pub schedule_mode: StudioProgramScheduleMode,
+    pub schedule_mode: SceneEditScheduleMode,
     pub schedule_order: Vec<String>,
     pub transaction_id: String,
 }
@@ -617,7 +617,7 @@ pub struct ApplyStudioMotionEditCommand {
     pub expected_base_revision: String,
     pub frame: StudioAuthoringSize,
     pub next_revision: String,
-    pub programs: Vec<StudioMotionProgram>,
+    pub programs: Vec<StudioMotionEditInput>,
     pub source_runtime_bindings: Vec<StudioMotionSourceBinding>,
     pub studio_entities: Vec<StudioMotionEntityIdentity>,
     pub viewport: StudioAuthoringSize,
@@ -633,11 +633,11 @@ pub struct ApplyStudioMotionEditCommand {
 )]
 pub enum StudioMotionProjectionBatch {
     Standalone {
-        programs: Vec<StudioMotionProgram>,
+        programs: Vec<StudioMotionEditInput>,
         studio_entities: Vec<StudioMotionProjectionEntityIdentity>,
     },
     StaticRoot {
-        programs: Vec<StaticRootTransformProgram>,
+        programs: Vec<StaticRootTransformEditInput>,
         studio_entities: Vec<StaticRootMotionProjectionEntityIdentity>,
     },
 }
@@ -729,17 +729,17 @@ impl StudioMathTexTransformOperation {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioMathTexTransformProgram {
+pub struct StudioMathTexTransformEditInput {
     pub anchor_captured_playhead: f64,
     pub anchor_resolved_seconds: f64,
-    pub anchor_source: StudioProgramAnchorSource,
+    pub anchor_source: SceneEditAnchorSource,
     pub intent_count: usize,
     pub lowering_supported: bool,
     pub operations: Vec<StudioMathTexTransformOperation>,
     pub origin: StudioAuthoringOrigin,
-    pub requested_execution: StudioProgramExecution,
+    pub requested_execution: SceneEditExecution,
     pub schedule_edge_count: usize,
-    pub schedule_mode: StudioProgramScheduleMode,
+    pub schedule_mode: SceneEditScheduleMode,
     pub schedule_order: Vec<String>,
     pub transaction_id: String,
 }
@@ -780,7 +780,7 @@ pub struct ApplyStudioMathTexTransformEditCommand {
     pub frame: StudioAuthoringSize,
     pub math_tex_outlines: Vec<StudioMathTexTransformOutline>,
     pub next_revision: String,
-    pub programs: Vec<StudioMathTexTransformProgram>,
+    pub programs: Vec<StudioMathTexTransformEditInput>,
     pub source_runtime_bindings: Vec<StudioMathTexTransformSourceBinding>,
     pub studio_entities: Vec<StudioMathTexTransformEntityIdentity>,
     pub viewport: StudioAuthoringSize,
@@ -834,9 +834,9 @@ pub struct StudioBoundEntityEditCandidate {
     pub studio_entity_id: String,
 }
 
-pub type StudioBoundEntityExecution = StudioProgramExecution;
-pub type StudioBoundEntityScheduleMode = StudioProgramScheduleMode;
-pub type StudioBoundEntityAnchorSource = StudioProgramAnchorSource;
+pub type StudioBoundEntityExecution = SceneEditExecution;
+pub type StudioBoundEntityScheduleMode = SceneEditScheduleMode;
+pub type StudioBoundEntityAnchorSource = SceneEditAnchorSource;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(
@@ -947,7 +947,7 @@ impl StudioBoundEntityOperation {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioBoundEntityProgram {
+pub struct StudioBoundEntityEditInput {
     pub anchor_captured_playhead: f64,
     pub anchor_resolved_seconds: f64,
     pub anchor_source: StudioBoundEntityAnchorSource,
@@ -970,7 +970,7 @@ pub struct ApplyStudioBoundEntityEditCommand {
     pub expected_base_revision: String,
     pub frame: StudioAuthoringSize,
     pub next_revision: String,
-    pub programs: Vec<StudioBoundEntityProgram>,
+    pub programs: Vec<StudioBoundEntityEditInput>,
     pub viewport: StudioAuthoringSize,
 }
 
@@ -1095,17 +1095,17 @@ pub struct StaticRootTransformOperation {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StaticRootTransformProgram {
+pub struct StaticRootTransformEditInput {
     pub anchor_captured_playhead: f64,
     pub anchor_resolved_seconds: f64,
-    pub anchor_source: StudioProgramAnchorSource,
+    pub anchor_source: SceneEditAnchorSource,
     pub intent_count: usize,
     pub lowering_supported: bool,
     pub operations: Vec<StaticRootTransformOperation>,
     pub origin: StaticRootTransformOrigin,
-    pub requested_execution: StudioProgramExecution,
+    pub requested_execution: SceneEditExecution,
     pub schedule_edge_count: usize,
-    pub schedule_mode: StudioProgramScheduleMode,
+    pub schedule_mode: SceneEditScheduleMode,
     pub schedule_order: Vec<String>,
     pub transaction_id: String,
 }
@@ -1147,7 +1147,7 @@ pub struct ApplyStaticRootTransformEditCommand {
     pub frame: StaticRootTransformSize,
     pub math_tex_outlines: Vec<StudioCreationMathTexOutline>,
     pub next_revision: String,
-    pub programs: Vec<StaticRootTransformProgram>,
+    pub programs: Vec<StaticRootTransformEditInput>,
     pub source_runtime_bindings: Vec<StaticRootTransformSourceBinding>,
     pub studio_entities: Vec<StaticRootTransformStudioEntity>,
     pub viewport: StaticRootTransformSize,
@@ -1227,17 +1227,17 @@ impl StudioTimelineOperation {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioTimelineProgram {
+pub struct StudioTimelineEditInput {
     pub anchor_captured_playhead: f64,
     pub anchor_resolved_seconds: f64,
-    pub anchor_source: StudioProgramAnchorSource,
+    pub anchor_source: SceneEditAnchorSource,
     pub intent_count: usize,
     pub lowering_supported: bool,
     pub operations: Vec<StudioTimelineOperation>,
     pub origin: StudioAuthoringOrigin,
-    pub requested_execution: StudioProgramExecution,
+    pub requested_execution: SceneEditExecution,
     pub schedule_edge_count: usize,
-    pub schedule_mode: StudioProgramScheduleMode,
+    pub schedule_mode: SceneEditScheduleMode,
     pub schedule_order: Vec<String>,
     pub transaction_id: String,
 }
@@ -1247,13 +1247,13 @@ pub struct StudioTimelineProgram {
 pub struct ApplyStudioTimelineEditCommand {
     pub expected_base_revision: String,
     pub next_revision: String,
-    pub programs: Vec<StudioTimelineProgram>,
+    pub programs: Vec<StudioTimelineEditInput>,
 }
 
-/// One input Program projected into the working timeline.
+/// One input edit projected into the working timeline.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StudioTimelineProgramProjection {
+pub struct StudioTimelineEditProjection {
     pub operation_id: String,
     pub transaction_id: String,
     pub working_anchor: f64,
@@ -1268,7 +1268,7 @@ pub struct StudioTimelineWaitReduction {
     pub removed_duration: f64,
 }
 
-/// One ordered time-axis transform produced by a normalized timeline Program.
+/// One ordered time-axis transform produced by a normalized timeline edit.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(
     tag = "kind",
@@ -1287,11 +1287,11 @@ pub enum StudioTimelineEditTransform {
     },
 }
 
-/// Pure projection of normalized timeline Programs from source time into working time.
+/// Pure projection of normalized timeline edits from source time into working time.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioTimelineProjection {
-    pub program_projections: Vec<StudioTimelineProgramProjection>,
+    pub program_projections: Vec<StudioTimelineEditProjection>,
     pub projected_duration: f64,
     pub transforms: Vec<StudioTimelineEditTransform>,
 }
@@ -1370,17 +1370,17 @@ pub struct StudioCreationOperation {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioCreationProgram {
+pub struct StudioCreationEditInput {
     pub anchor_captured_playhead: f64,
     pub anchor_resolved_seconds: f64,
-    pub anchor_source: StudioProgramAnchorSource,
+    pub anchor_source: SceneEditAnchorSource,
     pub intent_count: usize,
     pub lowering_supported: bool,
     pub operations: Vec<StudioCreationOperation>,
     pub origin: StudioAuthoringOrigin,
-    pub requested_execution: StudioProgramExecution,
+    pub requested_execution: SceneEditExecution,
     pub schedule_edge_count: usize,
-    pub schedule_mode: StudioProgramScheduleMode,
+    pub schedule_mode: SceneEditScheduleMode,
     pub schedule_order: Vec<String>,
     pub transaction_id: String,
 }
@@ -1400,7 +1400,7 @@ pub struct ApplyStudioCreationEditCommand {
     pub frame: StudioAuthoringSize,
     pub math_tex_outlines: Vec<StudioCreationMathTexOutline>,
     pub next_revision: String,
-    pub programs: Vec<StudioCreationProgram>,
+    pub programs: Vec<StudioCreationEditInput>,
     pub viewport: StudioAuthoringSize,
 }
 
@@ -2032,23 +2032,23 @@ fn studio_vector_to_scene_vector(
 }
 
 #[derive(Clone, Copy)]
-struct StudioProgramOperationFacts<'a> {
+struct SceneEditOperationFacts<'a> {
     depends_on: &'a [String],
     id: &'a str,
 }
 
-fn studio_program_source_seconds(
-    source: &StudioProgramAnchorSource,
+fn scene_edit_source_seconds(
+    source: &SceneEditAnchorSource,
     captured_playhead: f64,
 ) -> Option<f64> {
     if !captured_playhead.is_finite() || captured_playhead < 0.0 {
         return None;
     }
     match source {
-        StudioProgramAnchorSource::Absolute {
+        SceneEditAnchorSource::Absolute {
             seconds: Some(seconds),
         } if seconds.is_finite() && *seconds >= 0.0 => Some(*seconds),
-        StudioProgramAnchorSource::Playhead {
+        SceneEditAnchorSource::Playhead {
             reference_seconds: Some(reference_seconds),
         } if reference_seconds.is_finite()
             && *reference_seconds >= 0.0
@@ -2056,23 +2056,23 @@ fn studio_program_source_seconds(
         {
             Some(*reference_seconds)
         }
-        StudioProgramAnchorSource::Absolute { seconds: None }
-        | StudioProgramAnchorSource::Playhead {
+        SceneEditAnchorSource::Absolute { seconds: None }
+        | SceneEditAnchorSource::Playhead {
             reference_seconds: None,
         }
-        | StudioProgramAnchorSource::Unsupported
-        | StudioProgramAnchorSource::Absolute { .. }
-        | StudioProgramAnchorSource::Playhead { .. } => None,
+        | SceneEditAnchorSource::Unsupported
+        | SceneEditAnchorSource::Absolute { .. }
+        | SceneEditAnchorSource::Playhead { .. } => None,
     }
 }
 
-fn studio_program_anchor_is_closed(
-    source: &StudioProgramAnchorSource,
+fn scene_edit_anchor_is_closed(
+    source: &SceneEditAnchorSource,
     captured_playhead: f64,
     resolved_seconds: f64,
     scene_duration: f64,
 ) -> bool {
-    studio_program_source_seconds(source, captured_playhead).is_some_and(|source_seconds| {
+    scene_edit_source_seconds(source, captured_playhead).is_some_and(|source_seconds| {
         resolved_seconds.is_finite()
             && resolved_seconds >= 0.0
             && resolved_seconds <= scene_duration + TIMELINE_ANCHOR_EPSILON
@@ -2080,11 +2080,11 @@ fn studio_program_anchor_is_closed(
     })
 }
 
-fn studio_program_structure_is_closed(
-    operations: &[StudioProgramOperationFacts<'_>],
-    requested_execution: StudioProgramExecution,
+fn scene_edit_structure_is_closed(
+    operations: &[SceneEditOperationFacts<'_>],
+    requested_execution: SceneEditExecution,
     schedule_edge_count: usize,
-    schedule_mode: StudioProgramScheduleMode,
+    schedule_mode: SceneEditScheduleMode,
     schedule_order: &[String],
     derived_edges: &[(&str, &str)],
 ) -> bool {
@@ -2120,7 +2120,7 @@ fn studio_program_structure_is_closed(
             explicit_edges.insert((dependency.as_str(), operation.id));
         }
     }
-    if requested_execution == StudioProgramExecution::Sequence {
+    if requested_execution == SceneEditExecution::Sequence {
         for pair in operations.windows(2) {
             explicit_edges.insert((pair[0].id, pair[1].id));
         }
@@ -2135,11 +2135,9 @@ fn studio_program_structure_is_closed(
     }
     let expected_edge_count = explicit_edges.len() + semantic_edges.len();
     let expected_mode = match requested_execution {
-        StudioProgramExecution::Sequence => StudioProgramScheduleMode::Sequence,
-        StudioProgramExecution::Parallel if expected_edge_count == 0 => {
-            StudioProgramScheduleMode::Parallel
-        }
-        StudioProgramExecution::Parallel => StudioProgramScheduleMode::DependencyDag,
+        SceneEditExecution::Sequence => SceneEditScheduleMode::Sequence,
+        SceneEditExecution::Parallel if expected_edge_count == 0 => SceneEditScheduleMode::Parallel,
+        SceneEditExecution::Parallel => SceneEditScheduleMode::DependencyDag,
     };
     if schedule_edge_count != expected_edge_count || schedule_mode != expected_mode {
         return false;
@@ -2154,11 +2152,11 @@ fn studio_program_structure_is_closed(
         })
 }
 
-fn studio_motion_program_is_closed(program: &StudioMotionProgram) -> bool {
+fn studio_motion_edit_input_is_closed(program: &StudioMotionEditInput) -> bool {
     let operations = program
         .operations
         .iter()
-        .map(|operation| StudioProgramOperationFacts {
+        .map(|operation| SceneEditOperationFacts {
             depends_on: operation.depends_on(),
             id: operation.id(),
         })
@@ -2168,7 +2166,7 @@ fn studio_motion_program_is_closed(program: &StudioMotionProgram) -> bool {
             matches!(operation, StudioMotionOperation::CreateMotion { .. })
                 && operation.origin() == program.origin
         })
-        && studio_program_structure_is_closed(
+        && scene_edit_structure_is_closed(
             &operations,
             program.requested_execution,
             program.schedule_edge_count,
@@ -2178,11 +2176,13 @@ fn studio_motion_program_is_closed(program: &StudioMotionProgram) -> bool {
         )
 }
 
-fn studio_math_tex_transform_program_is_closed(program: &StudioMathTexTransformProgram) -> bool {
+fn studio_math_tex_transform_edit_input_is_closed(
+    program: &StudioMathTexTransformEditInput,
+) -> bool {
     let operations = program
         .operations
         .iter()
-        .map(|operation| StudioProgramOperationFacts {
+        .map(|operation| SceneEditOperationFacts {
             depends_on: operation.depends_on(),
             id: operation.id(),
         })
@@ -2194,7 +2194,7 @@ fn studio_math_tex_transform_program_is_closed(program: &StudioMathTexTransformP
         .collect::<Vec<_>>();
     program.intent_count == program.operations.len()
         && (1..=3).contains(&program.operations.len())
-        && program.requested_execution == StudioProgramExecution::Sequence
+        && program.requested_execution == SceneEditExecution::Sequence
         && program
             .operations
             .iter()
@@ -2205,7 +2205,7 @@ fn studio_math_tex_transform_program_is_closed(program: &StudioMathTexTransformP
                 .iter()
                 .map(|operation| operation.id().to_owned())
                 .collect::<Vec<_>>()
-        && studio_program_structure_is_closed(
+        && scene_edit_structure_is_closed(
             &operations,
             program.requested_execution,
             program.schedule_edge_count,
@@ -2237,9 +2237,9 @@ fn studio_math_tex_transform_identity_is_closed(
     clippy::too_many_lines,
     reason = "one small closed planner keeps projection and mutation admission identical"
 )]
-fn plan_studio_math_tex_transform_programs(
+fn plan_studio_math_tex_transform_edits(
     base_duration: f64,
-    programs: &[StudioMathTexTransformProgram],
+    programs: &[StudioMathTexTransformEditInput],
     existing_entity_ids: &BTreeSet<&str>,
 ) -> Result<StudioMathTexTransformPlan, ApplyStudioMathTexTransformEditError> {
     let operation_count = programs
@@ -2300,13 +2300,13 @@ fn plan_studio_math_tex_transform_programs(
         let program = &programs[program_index];
         if !program.lowering_supported
             || program.transaction_id.is_empty()
-            || !studio_program_anchor_is_closed(
+            || !scene_edit_anchor_is_closed(
                 &program.anchor_source,
                 program.anchor_captured_playhead,
                 program.anchor_resolved_seconds,
                 base_duration,
             )
-            || !studio_math_tex_transform_program_is_closed(program)
+            || !studio_math_tex_transform_edit_input_is_closed(program)
             || !studio_timeline_semantic_values_match(
                 program
                     .operations
@@ -2541,19 +2541,18 @@ fn studio_math_tex_transform_projection_from_plan(
 ///
 /// # Errors
 ///
-/// Returns `Unsupported` when the Programs, logical source, target identities, or lifetime do not
+/// Returns `Unsupported` when the edits, logical source, target identities, or lifetime do not
 /// satisfy the same semantic planner used by Scene mutation.
-pub fn project_studio_math_tex_transform_programs(
+pub fn project_studio_math_tex_transform_edits(
     base_duration: f64,
-    programs: &[StudioMathTexTransformProgram],
+    programs: &[StudioMathTexTransformEditInput],
     studio_entities: &[StudioMathTexTransformProjectionEntityIdentity],
 ) -> Result<StudioMathTexTransformProjection, ApplyStudioMathTexTransformEditError> {
     let existing_entity_ids = studio_entities
         .iter()
         .map(|entity| entity.object_graph_key.as_str())
         .collect::<BTreeSet<_>>();
-    let plan =
-        plan_studio_math_tex_transform_programs(base_duration, programs, &existing_entity_ids)?;
+    let plan = plan_studio_math_tex_transform_edits(base_duration, programs, &existing_entity_ids)?;
     let mut matching_sources = studio_entities
         .iter()
         .filter(|entity| entity.object_graph_key == plan.initial_source_entity_id);
@@ -2593,7 +2592,7 @@ pub fn project_studio_math_tex_transform_programs(
 }
 
 fn closed_studio_motion_operations(
-    program: &StudioMotionProgram,
+    program: &StudioMotionEditInput,
     scene_duration: f64,
 ) -> Option<Vec<&StudioMotionOperation>> {
     let mut operations = program
@@ -2608,13 +2607,13 @@ fn closed_studio_motion_operations(
         .collect::<Option<Vec<_>>>()?;
     if !program.lowering_supported
         || program.transaction_id.is_empty()
-        || !studio_program_anchor_is_closed(
+        || !scene_edit_anchor_is_closed(
             &program.anchor_source,
             program.anchor_captured_playhead,
             program.anchor_resolved_seconds,
             scene_duration,
         )
-        || !studio_motion_program_is_closed(program)
+        || !studio_motion_edit_input_is_closed(program)
         || operations.iter().any(|operation| {
             !operation.interval().start.is_finite() || !operation.interval().end.is_finite()
         })
@@ -2622,7 +2621,7 @@ fn closed_studio_motion_operations(
         return None;
     }
 
-    if program.requested_execution == StudioProgramExecution::Parallel {
+    if program.requested_execution == SceneEditExecution::Parallel {
         operations.sort_by(|left, right| left.interval().start.total_cmp(&right.interval().start));
     }
     let first = *operations.first()?;
@@ -2631,21 +2630,21 @@ fn closed_studio_motion_operations(
     }
 
     match program.requested_execution {
-        StudioProgramExecution::Sequence => {
+        SceneEditExecution::Sequence => {
             if operations.windows(2).any(|pair| {
                 pair[1].interval().start < pair[0].interval().end - TIMELINE_ANCHOR_EPSILON
             }) {
                 return None;
             }
         }
-        StudioProgramExecution::Parallel => {
+        SceneEditExecution::Parallel => {
             let StudioMotionOperation::CreateMotion {
                 easing, interval, ..
             } = first
             else {
                 return None;
             };
-            if program.schedule_mode != StudioProgramScheduleMode::Parallel {
+            if program.schedule_mode != SceneEditScheduleMode::Parallel {
                 return None;
             }
             let mut bucket_start = interval.start;
@@ -2685,9 +2684,9 @@ fn closed_studio_motion_operations(
     clippy::too_many_lines,
     reason = "one bounded motion scheduler keeps full apply and snapshot-free projection on the same admission path"
 )]
-fn plan_studio_motion_programs(
+fn plan_studio_motion_edits(
     base_duration: f64,
-    programs: &[StudioMotionProgram],
+    programs: &[StudioMotionEditInput],
 ) -> Result<StudioMotionPlan, ProjectStudioMotionEditError> {
     if !base_duration.is_finite() || base_duration <= 0.0 || programs.is_empty() {
         return Err(ProjectStudioMotionEditError::Unsupported);
@@ -2745,7 +2744,7 @@ fn plan_studio_motion_programs(
             {
                 return Err(ProjectStudioMotionEditError::Unsupported);
             }
-            if program.requested_execution == StudioProgramExecution::Parallel {
+            if program.requested_execution == SceneEditExecution::Parallel {
                 if parallel_bucket_start.is_none_or(|bucket_start| {
                     (interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
                 }) {
@@ -2770,7 +2769,7 @@ fn plan_studio_motion_programs(
                     start: interval.start + resolved_offset,
                 },
                 operation_id: operation.id().to_owned(),
-                parallel: program.requested_execution == StudioProgramExecution::Parallel,
+                parallel: program.requested_execution == SceneEditExecution::Parallel,
                 target_entity_ids: target_entity_ids.clone(),
                 transaction_id: program.transaction_id.clone(),
             });
@@ -2974,7 +2973,7 @@ impl StudioBoundEntityEdit {
 
     fn projection(
         &self,
-        program: &StudioBoundEntityProgram,
+        program: &StudioBoundEntityEditInput,
         candidate: &StudioBoundEntityEditCandidate,
         operation: &StudioBoundEntityOperation,
     ) -> StudioBoundEntityProjection {
@@ -3004,7 +3003,7 @@ impl StudioBoundEntityEdit {
     }
 }
 
-fn studio_bound_entity_program_is_closed(program: &StudioBoundEntityProgram) -> bool {
+fn studio_bound_entity_edit_input_is_closed(program: &StudioBoundEntityEditInput) -> bool {
     let Some(operation) = program.operations.first() else {
         return false;
     };
@@ -3040,7 +3039,7 @@ fn twelve_significant_digits(value: f64) -> Option<f64> {
 }
 
 fn resolve_studio_bound_entity_edit(
-    program: &StudioBoundEntityProgram,
+    program: &StudioBoundEntityEditInput,
     candidate: &StudioBoundEntityEditCandidate,
 ) -> Option<StudioBoundEntityEdit> {
     let operation = program.operations.first()?;
@@ -3052,7 +3051,7 @@ fn resolve_studio_bound_entity_edit(
         || program.requested_execution != StudioBoundEntityExecution::Parallel
         || program.schedule_mode != StudioBoundEntityScheduleMode::Parallel
         || program.schedule_edge_count != 0
-        || !studio_bound_entity_program_is_closed(program)
+        || !studio_bound_entity_edit_input_is_closed(program)
         || !close_transform_baseline_value(
             program.anchor_captured_playhead,
             candidate.source_anchor,
@@ -3141,11 +3140,11 @@ fn resolve_studio_bound_entity_edit(
     }
 }
 
-fn studio_creation_program_is_closed(program: &StudioCreationProgram) -> bool {
+fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bool {
     let operations = program
         .operations
         .iter()
-        .map(|operation| StudioProgramOperationFacts {
+        .map(|operation| SceneEditOperationFacts {
             depends_on: &operation.depends_on,
             id: &operation.id,
         })
@@ -3182,7 +3181,7 @@ fn studio_creation_program_is_closed(program: &StudioCreationProgram) -> bool {
             .operations
             .iter()
             .all(|operation| operation.origin == program.origin)
-        && studio_program_structure_is_closed(
+        && scene_edit_structure_is_closed(
             &operations,
             program.requested_execution,
             program.schedule_edge_count,
@@ -3193,7 +3192,7 @@ fn studio_creation_program_is_closed(program: &StudioCreationProgram) -> bool {
 }
 
 fn closed_studio_creation_motion_operations(
-    program: &StudioCreationProgram,
+    program: &StudioCreationEditInput,
     scene_duration: f64,
 ) -> Option<Vec<&StudioCreationOperation>> {
     let mut operations = program
@@ -3206,7 +3205,7 @@ fn closed_studio_creation_motion_operations(
                 .find(|operation| operation.id == *operation_id)
         })
         .collect::<Option<Vec<_>>>()?;
-    if !studio_creation_program_is_closed(program)
+    if !studio_creation_edit_input_is_closed(program)
         || operations.iter().any(|operation| {
             operation.entity_id.is_some()
                 || !matches!(
@@ -3223,7 +3222,7 @@ fn closed_studio_creation_motion_operations(
         return None;
     }
 
-    if program.requested_execution == StudioProgramExecution::Parallel {
+    if program.requested_execution == SceneEditExecution::Parallel {
         operations.sort_by(|left, right| left.interval.start.total_cmp(&right.interval.start));
     }
     let first = *operations.first()?;
@@ -3232,7 +3231,7 @@ fn closed_studio_creation_motion_operations(
     }
 
     match program.requested_execution {
-        StudioProgramExecution::Sequence => {
+        SceneEditExecution::Sequence => {
             if operations
                 .windows(2)
                 .any(|pair| pair[1].interval.start < pair[0].interval.end - TIMELINE_ANCHOR_EPSILON)
@@ -3240,11 +3239,11 @@ fn closed_studio_creation_motion_operations(
                 return None;
             }
         }
-        StudioProgramExecution::Parallel => {
+        SceneEditExecution::Parallel => {
             let StudioCreationOperationKind::CreateMotion { easing, .. } = &first.kind else {
                 return None;
             };
-            if program.schedule_mode != StudioProgramScheduleMode::Parallel {
+            if program.schedule_mode != SceneEditScheduleMode::Parallel {
                 return None;
             }
             let mut bucket_start = first.interval.start;
@@ -3279,17 +3278,17 @@ fn closed_studio_creation_motion_operations(
     Some(operations)
 }
 
-fn static_root_transform_program_is_closed(program: &StaticRootTransformProgram) -> bool {
+fn static_root_transform_edit_input_is_closed(program: &StaticRootTransformEditInput) -> bool {
     let operations = program
         .operations
         .iter()
-        .map(|operation| StudioProgramOperationFacts {
+        .map(|operation| SceneEditOperationFacts {
             depends_on: &operation.depends_on,
             id: &operation.id,
         })
         .collect::<Vec<_>>();
     (1..=16).contains(&program.intent_count)
-        && studio_program_structure_is_closed(
+        && scene_edit_structure_is_closed(
             &operations,
             program.requested_execution,
             program.schedule_edge_count,
@@ -3299,7 +3298,9 @@ fn static_root_transform_program_is_closed(program: &StaticRootTransformProgram)
         )
 }
 
-fn static_root_motion_program(program: &StaticRootTransformProgram) -> Option<StudioMotionProgram> {
+fn static_root_motion_edit_input(
+    program: &StaticRootTransformEditInput,
+) -> Option<StudioMotionEditInput> {
     let operations = program
         .operations
         .iter()
@@ -3328,7 +3329,7 @@ fn static_root_motion_program(program: &StaticRootTransformProgram) -> Option<St
             })
         })
         .collect::<Option<Vec<_>>>()?;
-    Some(StudioMotionProgram {
+    Some(StudioMotionEditInput {
         anchor_captured_playhead: program.anchor_captured_playhead,
         anchor_resolved_seconds: program.anchor_resolved_seconds,
         anchor_source: program.anchor_source.clone(),
@@ -3356,12 +3357,12 @@ fn one_projection_lifetime(lifetimes: &[IntervalV1]) -> Option<IntervalV1> {
         .cloned()
 }
 
-fn project_standalone_motion_programs(
+fn project_standalone_motion_edits(
     base_duration: f64,
-    programs: &[StudioMotionProgram],
+    programs: &[StudioMotionEditInput],
     studio_entities: &[StudioMotionProjectionEntityIdentity],
 ) -> Result<StudioMotionProjection, ProjectStudioMotionEditError> {
-    let plan = plan_studio_motion_programs(base_duration, programs)?;
+    let plan = plan_studio_motion_edits(base_duration, programs)?;
     let target_ids = plan
         .motions
         .iter()
@@ -3403,9 +3404,9 @@ fn project_standalone_motion_programs(
     clippy::too_many_lines,
     reason = "exact zero and normalized scale are closed Studio authority facts; the bounded family admission stays atomic"
 )]
-fn project_static_root_motion_programs(
+fn project_static_root_motion_edits(
     base_duration: f64,
-    programs: &[StaticRootTransformProgram],
+    programs: &[StaticRootTransformEditInput],
     studio_entities: &[StaticRootMotionProjectionEntityIdentity],
 ) -> Result<StudioMotionProjection, ProjectStudioMotionEditError> {
     let operation_count = programs
@@ -3420,13 +3421,13 @@ fn project_static_root_motion_programs(
         || programs.iter().any(|program| {
             !program.lowering_supported
                 || program.transaction_id.is_empty()
-                || !studio_program_anchor_is_closed(
+                || !scene_edit_anchor_is_closed(
                     &program.anchor_source,
                     program.anchor_captured_playhead,
                     program.anchor_resolved_seconds,
                     base_duration,
                 )
-                || !static_root_transform_program_is_closed(program)
+                || !static_root_transform_edit_input_is_closed(program)
                 || program
                     .operations
                     .iter()
@@ -3464,7 +3465,7 @@ fn project_static_root_motion_programs(
             }
             reached_motion = true;
             motion_programs.push(
-                static_root_motion_program(program)
+                static_root_motion_edit_input(program)
                     .ok_or(ProjectStudioMotionEditError::Unsupported)?,
             );
         } else {
@@ -3590,7 +3591,7 @@ fn project_static_root_motion_programs(
         return Err(ProjectStudioMotionEditError::Unsupported);
     }
 
-    let plan = plan_studio_motion_programs(base_duration, &motion_programs)?;
+    let plan = plan_studio_motion_edits(base_duration, &motion_programs)?;
     if plan
         .motions
         .iter()
@@ -3692,11 +3693,11 @@ pub fn project_studio_motion_edit(
         StudioMotionProjectionBatch::Standalone {
             programs,
             studio_entities,
-        } => project_standalone_motion_programs(command.base_duration, programs, studio_entities),
+        } => project_standalone_motion_edits(command.base_duration, programs, studio_entities),
         StudioMotionProjectionBatch::StaticRoot {
             programs,
             studio_entities,
-        } => project_static_root_motion_programs(command.base_duration, programs, studio_entities),
+        } => project_static_root_motion_edits(command.base_duration, programs, studio_entities),
     }
 }
 
@@ -3727,7 +3728,7 @@ struct StudioCreationTimelinePlan {
     ranks: Vec<usize>,
 }
 
-fn studio_creation_insertion_duration(program: &StudioCreationProgram) -> f64 {
+fn studio_creation_insertion_duration(program: &StudioCreationEditInput) -> f64 {
     let creates_entity = program
         .operations
         .iter()
@@ -3752,7 +3753,7 @@ fn studio_creation_insertion_duration(program: &StudioCreationProgram) -> f64 {
 
 fn plan_studio_creation_timeline(
     base_duration: f64,
-    programs: &[StudioCreationProgram],
+    programs: &[StudioCreationEditInput],
 ) -> Result<StudioCreationTimelinePlan, ProjectStudioCreationEditError> {
     if !base_duration.is_finite()
         || base_duration <= 0.0
@@ -3760,13 +3761,13 @@ fn plan_studio_creation_timeline(
         || programs.iter().any(|program| {
             !program.lowering_supported
                 || program.transaction_id.is_empty()
-                || !studio_program_anchor_is_closed(
+                || !scene_edit_anchor_is_closed(
                     &program.anchor_source,
                     program.anchor_captured_playhead,
                     program.anchor_resolved_seconds,
                     base_duration,
                 )
-                || !studio_creation_program_is_closed(program)
+                || !studio_creation_edit_input_is_closed(program)
         })
     {
         return Err(ProjectStudioCreationEditError::Unsupported);
@@ -3934,9 +3935,9 @@ fn studio_creation_motion_is_compatible(
     clippy::too_many_lines,
     reason = "one creation planner owns complete batch admission, ordering, and logical state"
 )]
-fn plan_studio_creation_programs(
+fn plan_studio_creation_edits(
     base_duration: f64,
-    programs: &[StudioCreationProgram],
+    programs: &[StudioCreationEditInput],
 ) -> Result<StudioCreationPlan, ProjectStudioCreationEditError> {
     let timeline = plan_studio_creation_timeline(base_duration, programs)?;
     let create_programs = timeline
@@ -4285,7 +4286,7 @@ fn plan_studio_creation_programs(
                 {
                     return Err(ProjectStudioCreationEditError::Unsupported);
                 }
-                if program.requested_execution == StudioProgramExecution::Parallel
+                if program.requested_execution == SceneEditExecution::Parallel
                     && parallel_bucket_start.is_none_or(|bucket_start| {
                         (operation.interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
                     })
@@ -4301,7 +4302,7 @@ fn plan_studio_creation_programs(
                         .ok_or(ProjectStudioCreationEditError::Unsupported)?;
                     if state.creation_program_rank >= timeline.ranks[program_index]
                         || !operation_targets.insert(entity_id.as_str())
-                        || (program.requested_execution == StudioProgramExecution::Parallel
+                        || (program.requested_execution == SceneEditExecution::Parallel
                             && !parallel_targets.insert(entity_id.clone()))
                     {
                         return Err(ProjectStudioCreationEditError::Unsupported);
@@ -4317,7 +4318,7 @@ fn plan_studio_creation_programs(
                         start: operation.interval.start + timeline.offsets[program_index],
                     },
                     operation_id: operation.id.clone(),
-                    parallel: program.requested_execution == StudioProgramExecution::Parallel,
+                    parallel: program.requested_execution == SceneEditExecution::Parallel,
                     target_entity_ids: target_entity_ids.clone(),
                     transaction_id: program.transaction_id.clone(),
                 });
@@ -4620,11 +4621,11 @@ fn record_planned_studio_creation_instant(
 /// # Errors
 ///
 /// Returns `Unsupported` when the complete normalized batch is outside the closed creation subset.
-pub fn project_studio_creation_programs(
+pub fn project_studio_creation_edits(
     base_duration: f64,
-    programs: &[StudioCreationProgram],
+    programs: &[StudioCreationEditInput],
 ) -> Result<StudioCreationProjection, ProjectStudioCreationEditError> {
-    Ok(plan_studio_creation_programs(base_duration, programs)?.projection())
+    Ok(plan_studio_creation_edits(base_duration, programs)?.projection())
 }
 
 fn static_transform_geometry_matches(
@@ -4939,19 +4940,19 @@ fn studio_timeline_intervals_overlap(left: &IntervalV1, right: &IntervalV1) -> b
         && !studio_timeline_semantic_values_match(left.end, right.start)
 }
 
-fn studio_timeline_program_is_closed(program: &StudioTimelineProgram) -> bool {
+fn studio_timeline_edit_input_is_closed(program: &StudioTimelineEditInput) -> bool {
     let operations = program
         .operations
         .iter()
-        .map(|operation| StudioProgramOperationFacts {
+        .map(|operation| SceneEditOperationFacts {
             depends_on: operation.depends_on(),
             id: operation.id(),
         })
         .collect::<Vec<_>>();
     program.intent_count == 1
         && program.operations.len() == 1
-        && program.requested_execution == StudioProgramExecution::Sequence
-        && studio_program_structure_is_closed(
+        && program.requested_execution == SceneEditExecution::Sequence
+        && scene_edit_structure_is_closed(
             &operations,
             program.requested_execution,
             program.schedule_edge_count,
@@ -5008,23 +5009,22 @@ fn plan_wait_suffix_removal(
     Ok(removals)
 }
 
-fn validate_studio_timeline_programs(
+fn validate_studio_timeline_edits(
     base_duration: f64,
-    programs: &[StudioTimelineProgram],
+    programs: &[StudioTimelineEditInput],
 ) -> Result<(), ApplyStudioTimelineEditError> {
     if !base_duration.is_finite() || base_duration <= 0.0 || programs.is_empty() {
         return Err(ApplyStudioTimelineEditError::Unsupported);
     }
     let mut unique_operation_ids = BTreeSet::new();
     for program in programs {
-        let StudioProgramAnchorSource::Absolute { seconds: Some(_) } = &program.anchor_source
-        else {
+        let SceneEditAnchorSource::Absolute { seconds: Some(_) } = &program.anchor_source else {
             return Err(ApplyStudioTimelineEditError::Unsupported);
         };
         let Some(operation) = program.operations.first() else {
             return Err(ApplyStudioTimelineEditError::Unsupported);
         };
-        if !studio_program_anchor_is_closed(
+        if !scene_edit_anchor_is_closed(
             &program.anchor_source,
             program.anchor_captured_playhead,
             program.anchor_resolved_seconds,
@@ -5032,7 +5032,7 @@ fn validate_studio_timeline_programs(
         ) || program.transaction_id.is_empty()
             || !program.lowering_supported
             || program.origin != StudioAuthoringOrigin::StudioDefault
-            || !studio_timeline_program_is_closed(program)
+            || !studio_timeline_edit_input_is_closed(program)
             || operation.origin() != StudioAuthoringOrigin::StudioDefault
             || operation.id().is_empty()
             || !unique_operation_ids.insert(operation.id())
@@ -5043,12 +5043,12 @@ fn validate_studio_timeline_programs(
     Ok(())
 }
 
-fn ordered_studio_timeline_programs(programs: &[StudioTimelineProgram]) -> Vec<(f64, usize)> {
+fn ordered_studio_timeline_edits(programs: &[StudioTimelineEditInput]) -> Vec<(f64, usize)> {
     let mut ordered = programs
         .iter()
         .enumerate()
         .map(|(index, program)| {
-            let StudioProgramAnchorSource::Absolute {
+            let SceneEditAnchorSource::Absolute {
                 seconds: Some(source_seconds),
             } = &program.anchor_source
             else {
@@ -5230,11 +5230,11 @@ impl StudioTimelinePlanningState {
         })
     }
 
-    fn project_program(
+    fn project_edit(
         &mut self,
-        program: &StudioTimelineProgram,
+        program: &StudioTimelineEditInput,
         source_seconds: f64,
-    ) -> Result<StudioTimelineProgramProjection, ApplyStudioTimelineEditError> {
+    ) -> Result<StudioTimelineEditProjection, ApplyStudioTimelineEditError> {
         let working_anchor = source_seconds + self.resolved_offset;
         if !working_anchor.is_finite() || self.resolved_offset < -TIMELINE_ANCHOR_EPSILON {
             return Err(ApplyStudioTimelineEditError::Unsupported);
@@ -5274,7 +5274,7 @@ impl StudioTimelinePlanningState {
                 return Err(ApplyStudioTimelineEditError::Unsupported);
             }
         };
-        Ok(StudioTimelineProgramProjection {
+        Ok(StudioTimelineEditProjection {
             operation_id: operation.id().to_owned(),
             transaction_id: program.transaction_id.clone(),
             working_anchor,
@@ -5282,10 +5282,7 @@ impl StudioTimelinePlanningState {
         })
     }
 
-    fn finish(
-        self,
-        program_projections: Vec<StudioTimelineProgramProjection>,
-    ) -> StudioTimelinePlan {
+    fn finish(self, program_projections: Vec<StudioTimelineEditProjection>) -> StudioTimelinePlan {
         StudioTimelinePlan {
             edits: self.edits,
             operation_ids: self.operation_ids,
@@ -5298,17 +5295,17 @@ impl StudioTimelinePlanningState {
     }
 }
 
-fn plan_studio_timeline_programs(
+fn plan_studio_timeline_edits(
     base_duration: f64,
-    programs: &[StudioTimelineProgram],
+    programs: &[StudioTimelineEditInput],
 ) -> Result<StudioTimelinePlan, ApplyStudioTimelineEditError> {
-    validate_studio_timeline_programs(base_duration, programs)?;
-    let ordered_programs = ordered_studio_timeline_programs(programs);
+    validate_studio_timeline_edits(base_duration, programs)?;
+    let ordered_programs = ordered_studio_timeline_edits(programs);
     let mut program_projections = vec![None; programs.len()];
     let mut state = StudioTimelinePlanningState::new(base_duration, programs.len());
     for (source_seconds, program_index) in ordered_programs {
         program_projections[program_index] =
-            Some(state.project_program(&programs[program_index], source_seconds)?);
+            Some(state.project_edit(&programs[program_index], source_seconds)?);
     }
     let program_projections = program_projections
         .into_iter()
@@ -5317,16 +5314,16 @@ fn plan_studio_timeline_programs(
     Ok(state.finish(program_projections))
 }
 
-/// Projects normalized timeline Programs without reading or mutating an Engine session.
+/// Projects normalized timeline edits without reading or mutating an Engine session.
 ///
 /// # Errors
 ///
 /// Returns the same closed-contract admission error used by timeline mutation.
-pub fn project_studio_timeline_programs(
+pub fn project_studio_timeline_edits(
     base_duration: f64,
-    programs: &[StudioTimelineProgram],
+    programs: &[StudioTimelineEditInput],
 ) -> Result<StudioTimelineProjection, ApplyStudioTimelineEditError> {
-    Ok(plan_studio_timeline_programs(base_duration, programs)?.projection)
+    Ok(plan_studio_timeline_edits(base_duration, programs)?.projection)
 }
 
 fn trim_inserted_waits(
@@ -6143,16 +6140,16 @@ fn append_created_entity(
 }
 
 impl EngineSessionV1 {
-    /// Authorizes normalized Studio duration Programs and applies them atomically.
+    /// Authorizes normalized Studio duration edits and applies them atomically.
     ///
     /// Source anchors are ordered stably and rebased through earlier waits and trims before the
-    /// existing Scene timeline primitive is invoked. The caller must send every Program and map
+    /// existing Scene timeline primitive is invoked. The caller must send every edit and map
     /// every non-timeline operation to `Unsupported`; this method owns admission of the complete
     /// edit.
     ///
     /// # Errors
     ///
-    /// Returns `Unsupported` when the normalized Programs do not describe the closed static
+    /// Returns `Unsupported` when the normalized edits do not describe the closed static
     /// imported-Scene duration subset, or the timeline primitive error when mutation fails.
     pub fn apply_studio_timeline_edit(
         &mut self,
@@ -6171,7 +6168,7 @@ impl EngineSessionV1 {
         {
             return Err(ApplyStudioTimelineEditError::Unsupported);
         }
-        let plan = plan_studio_timeline_programs(scene.duration, &programs)?;
+        let plan = plan_studio_timeline_edits(scene.duration, &programs)?;
 
         self.edit_scene_timeline(EditSceneTimelineCommand {
             edits: plan.edits,
@@ -6367,11 +6364,11 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
-    /// Authorizes complete normalized Studio creation Programs and applies one atomic batch.
+    /// Authorizes complete normalized Studio creation edits and applies one atomic batch.
     ///
     /// # Errors
     ///
-    /// Returns `Unsupported` when the normalized Programs do not describe the supported
+    /// Returns `Unsupported` when the normalized edits do not describe the supported
     /// create/position/fade, motion, instant transform, and persistent-remove subset. Every failure
     /// preserves the installed session.
     #[allow(
@@ -6404,7 +6401,7 @@ impl EngineSessionV1 {
         {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
-        let plan = plan_studio_creation_programs(self.scene().duration, &programs)
+        let plan = plan_studio_creation_edits(self.scene().duration, &programs)
             .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
         for state in &plan.entities {
             if state.kind == StudioAuthoringEntityKind::MathTex
@@ -6556,7 +6553,7 @@ impl EngineSessionV1 {
 
     /// Authorizes one complete normalized Studio edit of one verified bound Scene root.
     ///
-    /// Integration supplies every normalized Program and every candidate it has independently
+    /// Integration supplies every normalized edit and every candidate it has independently
     /// verified. This method owns closed-subset admission, unique target binding, viewport
     /// conversion, phase-specific mutation selection, and provenance construction.
     ///
@@ -6801,11 +6798,8 @@ impl EngineSessionV1 {
             .iter()
             .map(|entity| entity.id.as_str())
             .collect::<BTreeSet<_>>();
-        let plan = plan_studio_math_tex_transform_programs(
-            scene.duration,
-            &programs,
-            &existing_entity_ids,
-        )?;
+        let plan =
+            plan_studio_math_tex_transform_edits(scene.duration, &programs, &existing_entity_ids)?;
         if math_tex_outlines.len() != plan.planned.len() {
             return Err(ApplyStudioMathTexTransformEditError::Unsupported);
         }
@@ -7031,9 +7025,9 @@ impl EngineSessionV1 {
             || program.transaction_id.is_empty()
             || program.intent_count != 1
             || program.operations.len() != 1
-            || program.requested_execution != StudioProgramExecution::Parallel
-            || !static_root_transform_program_is_closed(program)
-            || !studio_program_anchor_is_closed(
+            || program.requested_execution != SceneEditExecution::Parallel
+            || !static_root_transform_edit_input_is_closed(program)
+            || !scene_edit_anchor_is_closed(
                 &program.anchor_source,
                 program.anchor_captured_playhead,
                 program.anchor_resolved_seconds,
@@ -7154,9 +7148,9 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
-    /// Authorizes complete normalized Studio motion Programs and applies them atomically.
+    /// Authorizes complete normalized Studio motion edits and applies them atomically.
     ///
-    /// The caller sends every Program and operation. This method owns closed-subset admission,
+    /// The caller sends every edit and operation. This method owns closed-subset admission,
     /// Studio-to-runtime identity resolution, viewport conversion, and provenance construction.
     ///
     /// # Errors
@@ -7195,7 +7189,7 @@ impl EngineSessionV1 {
             return Err(ApplyStudioMotionEditError::Unsupported);
         }
 
-        let plan = plan_studio_motion_programs(scene.duration, &programs)
+        let plan = plan_studio_motion_edits(scene.duration, &programs)
             .map_err(|_| ApplyStudioMotionEditError::Unsupported)?;
         let mut planned_motions = Vec::with_capacity(plan.motions.len());
         let mut parallel_runtime_targets: Vec<(String, f64, String)> = Vec::new();
@@ -7461,15 +7455,15 @@ impl EngineSessionV1 {
             || program.intent_count != 2
             || program.operations.len() != 2
             || program.origin != StudioAuthoringOrigin::RemoteModel
-            || program.requested_execution != StudioProgramExecution::Sequence
-            || program.schedule_mode != StudioProgramScheduleMode::Sequence
-            || !studio_program_anchor_is_closed(
+            || program.requested_execution != SceneEditExecution::Sequence
+            || program.schedule_mode != SceneEditScheduleMode::Sequence
+            || !scene_edit_anchor_is_closed(
                 &program.anchor_source,
                 program.anchor_captured_playhead,
                 program.anchor_resolved_seconds,
                 scene.duration,
             )
-            || !static_root_transform_program_is_closed(program)
+            || !static_root_transform_edit_input_is_closed(program)
             || program
                 .operations
                 .iter()
@@ -7732,7 +7726,7 @@ impl EngineSessionV1 {
 
     /// Applies the closed imported-root static edit subset.
     ///
-    /// The caller serializes every Program operation, including unsupported ones. This method is
+    /// The caller serializes every edit operation, including unsupported ones. This method is
     /// therefore the sole authority for operation admission, identity resolution, geometry
     /// baseline verification, and atomic mutation.
     ///
@@ -7804,13 +7798,13 @@ impl EngineSessionV1 {
             || programs.iter().any(|program| {
                 !program.lowering_supported
                     || program.transaction_id.is_empty()
-                    || !studio_program_anchor_is_closed(
+                    || !scene_edit_anchor_is_closed(
                         &program.anchor_source,
                         program.anchor_captured_playhead,
                         program.anchor_resolved_seconds,
                         scene.duration,
                     )
-                    || !static_root_transform_program_is_closed(program)
+                    || !static_root_transform_edit_input_is_closed(program)
                     || program
                         .operations
                         .iter()
@@ -7871,7 +7865,7 @@ impl EngineSessionV1 {
                 }
                 reached_motion_suffix = true;
                 motion_programs.push(
-                    static_root_motion_program(program)
+                    static_root_motion_edit_input(program)
                         .ok_or(ApplyStaticRootTransformEditError::Unsupported)?,
                 );
             } else {
@@ -8284,7 +8278,7 @@ impl EngineSessionV1 {
             None
         } else {
             Some(
-                plan_studio_motion_programs(scene.duration, &motion_programs)
+                plan_studio_motion_edits(scene.duration, &motion_programs)
                     .map_err(|_| ApplyStaticRootTransformEditError::Unsupported)?,
             )
         };
@@ -8953,11 +8947,11 @@ mod tests {
         }
     }
 
-    fn math_tex_transform_program(
+    fn math_tex_transform_edit_input(
         transaction_id: &str,
         anchor: f64,
         operations: Vec<StudioMathTexTransformOperation>,
-    ) -> StudioMathTexTransformProgram {
+    ) -> StudioMathTexTransformEditInput {
         let operation_ids = operations
             .iter()
             .map(|operation| operation.id().to_owned())
@@ -8967,19 +8961,19 @@ mod tests {
             .map(|operation| operation.depends_on().len())
             .sum::<usize>()
             + operations.len().saturating_sub(1);
-        StudioMathTexTransformProgram {
+        StudioMathTexTransformEditInput {
             anchor_captured_playhead: anchor,
             anchor_resolved_seconds: anchor,
-            anchor_source: StudioProgramAnchorSource::Playhead {
+            anchor_source: SceneEditAnchorSource::Playhead {
                 reference_seconds: Some(anchor),
             },
             intent_count: operations.len(),
             lowering_supported: true,
             operations,
             origin: StudioAuthoringOrigin::RemoteModel,
-            requested_execution: StudioProgramExecution::Sequence,
+            requested_execution: SceneEditExecution::Sequence,
             schedule_edge_count,
-            schedule_mode: StudioProgramScheduleMode::Sequence,
+            schedule_mode: SceneEditScheduleMode::Sequence,
             schedule_order: operation_ids,
             transaction_id: transaction_id.to_owned(),
         }
@@ -9017,7 +9011,7 @@ mod tests {
                 },
             ],
             next_revision: NEXT_REVISION.to_owned(),
-            programs: vec![math_tex_transform_program(
+            programs: vec![math_tex_transform_edit_input(
                 "math-tex-transform",
                 0.25,
                 vec![
@@ -9083,10 +9077,10 @@ mod tests {
                 tex_parts: content.tex_parts.clone(),
             }],
             next_revision: NEXT_REVISION.to_owned(),
-            programs: vec![StaticRootTransformProgram {
+            programs: vec![StaticRootTransformEditInput {
                 anchor_captured_playhead: 0.0,
                 anchor_resolved_seconds: 0.0,
-                anchor_source: StudioProgramAnchorSource::Playhead {
+                anchor_source: SceneEditAnchorSource::Playhead {
                     reference_seconds: Some(0.0),
                 },
                 intent_count: 1,
@@ -9103,9 +9097,9 @@ mod tests {
                     origin: StudioAuthoringOrigin::StudioDefault,
                 }],
                 origin: StudioAuthoringOrigin::StudioDefault,
-                requested_execution: StudioProgramExecution::Parallel,
+                requested_execution: SceneEditExecution::Parallel,
                 schedule_edge_count: 0,
-                schedule_mode: StudioProgramScheduleMode::Parallel,
+                schedule_mode: SceneEditScheduleMode::Parallel,
                 schedule_order: vec!["set-formula-content".to_owned()],
                 transaction_id: "set-formula-content".to_owned(),
             }],
@@ -9158,10 +9152,10 @@ mod tests {
             },
             math_tex_outlines: vec![],
             next_revision: NEXT_REVISION.to_owned(),
-            programs: vec![StaticRootTransformProgram {
+            programs: vec![StaticRootTransformEditInput {
                 anchor_captured_playhead: 0.0,
                 anchor_resolved_seconds: 0.0,
-                anchor_source: StudioProgramAnchorSource::Playhead {
+                anchor_source: SceneEditAnchorSource::Playhead {
                     reference_seconds: Some(0.0),
                 },
                 intent_count: 1,
@@ -9180,9 +9174,9 @@ mod tests {
                     origin: StaticRootTransformOrigin::DirectManipulation,
                 }],
                 origin: StaticRootTransformOrigin::DirectManipulation,
-                requested_execution: StudioProgramExecution::Parallel,
+                requested_execution: SceneEditExecution::Parallel,
                 schedule_edge_count: 0,
-                schedule_mode: StudioProgramScheduleMode::Parallel,
+                schedule_mode: SceneEditScheduleMode::Parallel,
                 schedule_order: vec!["move-circle".to_owned()],
                 transaction_id: "move-circle".to_owned(),
             }],
@@ -9215,10 +9209,10 @@ mod tests {
 
     fn animated_scale_then_remove_command() -> ApplyStaticRootTransformEditCommand {
         let mut command = static_root_position_command();
-        command.programs = vec![StaticRootTransformProgram {
+        command.programs = vec![StaticRootTransformEditInput {
             anchor_captured_playhead: 0.5,
             anchor_resolved_seconds: 0.5,
-            anchor_source: StudioProgramAnchorSource::Playhead {
+            anchor_source: SceneEditAnchorSource::Playhead {
                 reference_seconds: Some(0.5),
             },
             intent_count: 2,
@@ -9253,9 +9247,9 @@ mod tests {
                 },
             ],
             origin: StaticRootTransformOrigin::RemoteModel,
-            requested_execution: StudioProgramExecution::Sequence,
+            requested_execution: SceneEditExecution::Sequence,
             schedule_edge_count: 1,
-            schedule_mode: StudioProgramScheduleMode::Sequence,
+            schedule_mode: SceneEditScheduleMode::Sequence,
             schedule_order: vec![
                 "magic-scale-circle".to_owned(),
                 "magic-remove-circle".to_owned(),
@@ -9265,11 +9259,13 @@ mod tests {
         command
     }
 
-    fn static_root_motion_program(target_entity_ids: Vec<String>) -> StaticRootTransformProgram {
-        StaticRootTransformProgram {
+    fn static_root_motion_edit_input(
+        target_entity_ids: Vec<String>,
+    ) -> StaticRootTransformEditInput {
+        StaticRootTransformEditInput {
             anchor_captured_playhead: 0.5,
             anchor_resolved_seconds: 0.5,
-            anchor_source: StudioProgramAnchorSource::Playhead {
+            anchor_source: SceneEditAnchorSource::Playhead {
                 reference_seconds: Some(0.5),
             },
             intent_count: 1,
@@ -9291,23 +9287,23 @@ mod tests {
                 origin: StaticRootTransformOrigin::DirectManipulation,
             }],
             origin: StaticRootTransformOrigin::DirectManipulation,
-            requested_execution: StudioProgramExecution::Sequence,
+            requested_execution: SceneEditExecution::Sequence,
             schedule_edge_count: 0,
-            schedule_mode: StudioProgramScheduleMode::Sequence,
+            schedule_mode: SceneEditScheduleMode::Sequence,
             schedule_order: vec!["move-imported-root".to_owned()],
             transaction_id: "move-imported-root".to_owned(),
         }
     }
 
-    fn static_persistent_remove_program(
+    fn static_persistent_remove_edit_input(
         targets: &[(&str, &str)],
         start: f64,
         end: f64,
-    ) -> StaticRootTransformProgram {
-        StaticRootTransformProgram {
+    ) -> StaticRootTransformEditInput {
+        StaticRootTransformEditInput {
             anchor_captured_playhead: start,
             anchor_resolved_seconds: start,
-            anchor_source: StudioProgramAnchorSource::Playhead {
+            anchor_source: SceneEditAnchorSource::Playhead {
                 reference_seconds: Some(start),
             },
             intent_count: targets.len(),
@@ -9324,9 +9320,9 @@ mod tests {
                 })
                 .collect(),
             origin: StaticRootTransformOrigin::DirectManipulation,
-            requested_execution: StudioProgramExecution::Parallel,
+            requested_execution: SceneEditExecution::Parallel,
             schedule_edge_count: 0,
-            schedule_mode: StudioProgramScheduleMode::Parallel,
+            schedule_mode: SceneEditScheduleMode::Parallel,
             schedule_order: targets
                 .iter()
                 .map(|(operation_id, _)| (*operation_id).to_owned())
@@ -9335,15 +9331,15 @@ mod tests {
         }
     }
 
-    fn studio_persistent_remove_program(
+    fn studio_persistent_remove_edit_input(
         entity_id: &str,
         start: f64,
         end: f64,
-    ) -> StudioCreationProgram {
-        StudioCreationProgram {
+    ) -> StudioCreationEditInput {
+        StudioCreationEditInput {
             anchor_captured_playhead: start,
             anchor_resolved_seconds: start,
-            anchor_source: StudioProgramAnchorSource::Playhead {
+            anchor_source: SceneEditAnchorSource::Playhead {
                 reference_seconds: Some(start),
             },
             intent_count: 1,
@@ -9357,9 +9353,9 @@ mod tests {
                 origin: StudioAuthoringOrigin::DirectManipulation,
             }],
             origin: StudioAuthoringOrigin::DirectManipulation,
-            requested_execution: StudioProgramExecution::Parallel,
+            requested_execution: SceneEditExecution::Parallel,
             schedule_edge_count: 0,
-            schedule_mode: StudioProgramScheduleMode::Parallel,
+            schedule_mode: SceneEditScheduleMode::Parallel,
             schedule_order: vec!["remove-created".to_owned()],
             transaction_id: "remove-created".to_owned(),
         }
@@ -9408,10 +9404,10 @@ mod tests {
                 width: 16.0,
             },
             next_revision: NEXT_REVISION.to_owned(),
-            programs: vec![StudioMotionProgram {
+            programs: vec![StudioMotionEditInput {
                 anchor_captured_playhead: 0.5,
                 anchor_resolved_seconds: 0.5,
-                anchor_source: StudioProgramAnchorSource::Playhead {
+                anchor_source: SceneEditAnchorSource::Playhead {
                     reference_seconds: Some(0.5),
                 },
                 intent_count: 1,
@@ -9430,9 +9426,9 @@ mod tests {
                     target_entity_ids: vec!["source:later".to_owned(), "source:stroke".to_owned()],
                 }],
                 origin: StudioAuthoringOrigin::DirectManipulation,
-                requested_execution: StudioProgramExecution::Sequence,
+                requested_execution: SceneEditExecution::Sequence,
                 schedule_edge_count: 0,
-                schedule_mode: StudioProgramScheduleMode::Sequence,
+                schedule_mode: SceneEditScheduleMode::Sequence,
                 schedule_order: vec!["create-motion".to_owned()],
                 transaction_id: "create-motion".to_owned(),
             }],
@@ -9508,8 +9504,8 @@ mod tests {
         clippy::too_many_arguments,
         reason = "the test builder names each independent normalized motion fact"
     )]
-    fn studio_motion_program(
-        template: &StudioMotionProgram,
+    fn studio_motion_edit_input(
+        template: &StudioMotionEditInput,
         transaction_id: &str,
         anchor: f64,
         end: f64,
@@ -9517,12 +9513,12 @@ mod tests {
         delta: PointV1,
         control_offset: PointV1,
         easing: StudioMotionEasing,
-    ) -> StudioMotionProgram {
+    ) -> StudioMotionEditInput {
         let operation_id = format!("{transaction_id}-motion");
-        StudioMotionProgram {
+        StudioMotionEditInput {
             anchor_captured_playhead: anchor,
             anchor_resolved_seconds: anchor,
-            anchor_source: StudioProgramAnchorSource::Playhead {
+            anchor_source: SceneEditAnchorSource::Playhead {
                 reference_seconds: Some(anchor),
             },
             operations: vec![StudioMotionOperation::CreateMotion {
@@ -9695,7 +9691,7 @@ mod tests {
                 width: 16.0,
             },
             next_revision: NEXT_REVISION.to_owned(),
-            programs: vec![StudioBoundEntityProgram {
+            programs: vec![StudioBoundEntityEditInput {
                 anchor_captured_playhead: source_anchor,
                 anchor_resolved_seconds: source_anchor,
                 anchor_source: StudioBoundEntityAnchorSource::Absolute {
@@ -9929,10 +9925,10 @@ mod tests {
             math_tex_outlines: vec![],
             next_revision: NEXT_REVISION.to_owned(),
             programs: vec![
-                StudioCreationProgram {
+                StudioCreationEditInput {
                     anchor_captured_playhead: 0.5,
                     anchor_resolved_seconds: 0.5,
-                    anchor_source: StudioProgramAnchorSource::Playhead {
+                    anchor_source: SceneEditAnchorSource::Playhead {
                         reference_seconds: Some(0.5),
                     },
                     intent_count: 1,
@@ -9982,9 +9978,9 @@ mod tests {
                         },
                     ],
                     origin: StudioAuthoringOrigin::StudioDefault,
-                    requested_execution: StudioProgramExecution::Parallel,
+                    requested_execution: SceneEditExecution::Parallel,
                     schedule_edge_count: 4,
-                    schedule_mode: StudioProgramScheduleMode::DependencyDag,
+                    schedule_mode: SceneEditScheduleMode::DependencyDag,
                     schedule_order: vec![
                         "create".to_owned(),
                         "position".to_owned(),
@@ -9992,10 +9988,10 @@ mod tests {
                     ],
                     transaction_id: "create".to_owned(),
                 },
-                StudioCreationProgram {
+                StudioCreationEditInput {
                     anchor_captured_playhead: 0.85,
                     anchor_resolved_seconds: 0.85,
-                    anchor_source: StudioProgramAnchorSource::Playhead {
+                    anchor_source: SceneEditAnchorSource::Playhead {
                         reference_seconds: Some(0.85),
                     },
                     intent_count: 1,
@@ -10024,9 +10020,9 @@ mod tests {
                         origin: StudioAuthoringOrigin::DirectManipulation,
                     }],
                     origin: StudioAuthoringOrigin::DirectManipulation,
-                    requested_execution: StudioProgramExecution::Sequence,
+                    requested_execution: SceneEditExecution::Sequence,
                     schedule_edge_count: 0,
-                    schedule_mode: StudioProgramScheduleMode::Sequence,
+                    schedule_mode: SceneEditScheduleMode::Sequence,
                     schedule_order: vec!["resize".to_owned()],
                     transaction_id: "resize".to_owned(),
                 },
@@ -10038,11 +10034,11 @@ mod tests {
         }
     }
 
-    fn studio_created_motion_program(target_entity_ids: Vec<String>) -> StudioCreationProgram {
-        StudioCreationProgram {
+    fn studio_created_motion_edit_input(target_entity_ids: Vec<String>) -> StudioCreationEditInput {
+        StudioCreationEditInput {
             anchor_captured_playhead: 1.0,
             anchor_resolved_seconds: 1.0,
-            anchor_source: StudioProgramAnchorSource::Playhead {
+            anchor_source: SceneEditAnchorSource::Playhead {
                 reference_seconds: Some(1.0),
             },
             intent_count: 1,
@@ -10064,9 +10060,9 @@ mod tests {
                 origin: StudioAuthoringOrigin::DirectManipulation,
             }],
             origin: StudioAuthoringOrigin::DirectManipulation,
-            requested_execution: StudioProgramExecution::Sequence,
+            requested_execution: SceneEditExecution::Sequence,
             schedule_edge_count: 0,
-            schedule_mode: StudioProgramScheduleMode::Sequence,
+            schedule_mode: SceneEditScheduleMode::Sequence,
             schedule_order: vec!["move-created".to_owned()],
             transaction_id: "move-created".to_owned(),
         }
@@ -10110,15 +10106,15 @@ mod tests {
         }
     }
 
-    fn studio_timeline_wait_program(
+    fn studio_timeline_wait_edit_input(
         id: &str,
         source_seconds: f64,
         duration: f64,
-    ) -> StudioTimelineProgram {
-        StudioTimelineProgram {
+    ) -> StudioTimelineEditInput {
+        StudioTimelineEditInput {
             anchor_captured_playhead: source_seconds,
             anchor_resolved_seconds: source_seconds,
-            anchor_source: StudioProgramAnchorSource::Absolute {
+            anchor_source: SceneEditAnchorSource::Absolute {
                 seconds: Some(source_seconds),
             },
             intent_count: 1,
@@ -10135,25 +10131,25 @@ mod tests {
                 purpose: Some(StudioTimelinePurpose::SceneDuration),
             }],
             origin: StudioAuthoringOrigin::StudioDefault,
-            requested_execution: StudioProgramExecution::Sequence,
+            requested_execution: SceneEditExecution::Sequence,
             schedule_edge_count: 0,
-            schedule_mode: StudioProgramScheduleMode::Sequence,
+            schedule_mode: SceneEditScheduleMode::Sequence,
             schedule_order: vec![id.to_owned()],
             transaction_id: id.to_owned(),
         }
     }
 
-    fn studio_timeline_trim_program(
+    fn studio_timeline_trim_edit_input(
         id: &str,
         source_seconds: f64,
         removed_duration: f64,
         target_duration: f64,
         wait_operation_ids: Vec<String>,
-    ) -> StudioTimelineProgram {
-        StudioTimelineProgram {
+    ) -> StudioTimelineEditInput {
+        StudioTimelineEditInput {
             anchor_captured_playhead: source_seconds,
             anchor_resolved_seconds: source_seconds,
-            anchor_source: StudioProgramAnchorSource::Absolute {
+            anchor_source: SceneEditAnchorSource::Absolute {
                 seconds: Some(source_seconds),
             },
             intent_count: 1,
@@ -10171,9 +10167,9 @@ mod tests {
                 wait_operation_ids,
             }],
             origin: StudioAuthoringOrigin::StudioDefault,
-            requested_execution: StudioProgramExecution::Sequence,
+            requested_execution: SceneEditExecution::Sequence,
             schedule_edge_count: 0,
-            schedule_mode: StudioProgramScheduleMode::Sequence,
+            schedule_mode: SceneEditScheduleMode::Sequence,
             schedule_order: vec![id.to_owned()],
             transaction_id: id.to_owned(),
         }
@@ -10185,15 +10181,15 @@ mod tests {
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
             next_revision: NEXT_REVISION.to_owned(),
             programs: vec![
-                studio_timeline_wait_program("wait-1", source_seconds, 1.0),
-                studio_timeline_trim_program(
+                studio_timeline_wait_edit_input("wait-1", source_seconds, 1.0),
+                studio_timeline_trim_edit_input(
                     "trim-1",
                     source_seconds,
                     0.5,
                     bundle.scene.duration + 0.5,
                     vec!["wait-1".to_owned()],
                 ),
-                studio_timeline_wait_program("wait-2", source_seconds, 1.0),
+                studio_timeline_wait_edit_input("wait-2", source_seconds, 1.0),
             ],
         }
     }
@@ -10669,9 +10665,9 @@ mod tests {
         for (mut command, path_start_x, local_center_scale) in
             [(moved, 1.0, 1.0), (resized, 0.0, 2.0)]
         {
-            command
-                .programs
-                .push(static_root_motion_program(vec!["source:circle".to_owned()]));
+            command.programs.push(static_root_motion_edit_input(vec![
+                "source:circle".to_owned(),
+            ]));
             let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
 
             let result = session.apply_static_root_transform_edit(command).unwrap();
@@ -10736,7 +10732,7 @@ mod tests {
     #[test]
     fn static_then_motion_can_target_a_different_imported_root() {
         let mut command = static_root_position_command();
-        command.programs.push(static_root_motion_program(vec![
+        command.programs.push(static_root_motion_edit_input(vec![
             "source:earlier".to_owned(),
         ]));
         let mut earlier = command.studio_entities[0].clone();
@@ -10791,9 +10787,9 @@ mod tests {
         let bundle = static_imported_bundle();
         let valid = || {
             let mut command = static_root_position_command();
-            command
-                .programs
-                .push(static_root_motion_program(vec!["source:circle".to_owned()]));
+            command.programs.push(static_root_motion_edit_input(vec![
+                "source:circle".to_owned(),
+            ]));
             command
         };
 
@@ -10810,7 +10806,7 @@ mod tests {
         let mut later_static = motion_then_static.programs[0].clone();
         later_static.anchor_captured_playhead = 1.75;
         later_static.anchor_resolved_seconds = 1.75;
-        later_static.anchor_source = StudioProgramAnchorSource::Playhead {
+        later_static.anchor_source = SceneEditAnchorSource::Playhead {
             reference_seconds: Some(1.75),
         };
         later_static.operations[0].id = "late-static".to_owned();
@@ -10832,7 +10828,7 @@ mod tests {
 
         let mut remove_then_motion = valid();
         remove_then_motion.programs[0] =
-            static_persistent_remove_program(&[("remove-root", "source:circle")], 0.0, 0.0);
+            static_persistent_remove_edit_input(&[("remove-root", "source:circle")], 0.0, 0.0);
 
         for command in [
             unknown_target,
@@ -10884,9 +10880,9 @@ mod tests {
         };
         command.programs[0].operations.push(scale);
         command.programs[0].intent_count = 2;
-        command.programs[0].requested_execution = StudioProgramExecution::Sequence;
+        command.programs[0].requested_execution = SceneEditExecution::Sequence;
         command.programs[0].schedule_edge_count = 1;
-        command.programs[0].schedule_mode = StudioProgramScheduleMode::Sequence;
+        command.programs[0].schedule_mode = SceneEditScheduleMode::Sequence;
         command.programs[0]
             .schedule_order
             .push("scale-formula".to_owned());
@@ -10965,7 +10961,7 @@ mod tests {
     fn persistently_removes_multiple_imported_roots_with_nonzero_fades() {
         let bundle = static_imported_bundle();
         let mut command = static_root_position_command();
-        command.programs = vec![static_persistent_remove_program(
+        command.programs = vec![static_persistent_remove_edit_input(
             &[
                 ("remove-later", "source:circle"),
                 ("remove-earlier", "source:earlier"),
@@ -11034,7 +11030,7 @@ mod tests {
     #[test]
     fn applies_imported_move_then_persistent_remove_as_one_complete_batch() {
         let mut command = static_root_position_command();
-        command.programs.push(static_persistent_remove_program(
+        command.programs.push(static_persistent_remove_edit_input(
             &[("remove-later", "source:circle")],
             1.0,
             1.5,
@@ -11430,7 +11426,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_open_static_programs_without_mutating_the_session() {
+    fn rejects_open_static_edits_without_mutating_the_session() {
         let bundle = static_imported_bundle();
         let mut unsupported = static_root_position_command();
         unsupported.programs[0].operations[0].kind = StaticRootTransformOperationKind::Unsupported;
@@ -11440,7 +11436,7 @@ mod tests {
         let mut nonzero_transform = static_root_position_command();
         nonzero_transform.programs[0].anchor_captured_playhead = 0.5;
         nonzero_transform.programs[0].anchor_resolved_seconds = 0.5;
-        nonzero_transform.programs[0].anchor_source = StudioProgramAnchorSource::Playhead {
+        nonzero_transform.programs[0].anchor_source = SceneEditAnchorSource::Playhead {
             reference_seconds: Some(0.5),
         };
         nonzero_transform.programs[0].operations[0].interval = IntervalV1 {
@@ -11448,7 +11444,7 @@ mod tests {
             start: 0.5,
         };
         let mut unknown_remove = static_root_position_command();
-        unknown_remove.programs = vec![static_persistent_remove_program(
+        unknown_remove.programs = vec![static_persistent_remove_edit_input(
             &[("remove-missing", "source:missing")],
             1.0,
             1.5,
@@ -11539,7 +11535,7 @@ mod tests {
         entity.dimensions = StudioAuthoringDimensions::default();
 
         let projection =
-            project_studio_creation_programs(bundle.scene.duration, &command.programs).unwrap();
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
         assert_eq!(projection.entities[0].kind, StudioAuthoringEntityKind::Line);
 
         let mut session = EngineSessionV1::new(bundle).unwrap();
@@ -11582,7 +11578,7 @@ mod tests {
         command.programs.truncate(1);
         command
             .programs
-            .push(studio_created_motion_program(vec![entity_id.to_owned()]));
+            .push(studio_created_motion_edit_input(vec![entity_id.to_owned()]));
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_creation_edit(command).unwrap();
@@ -11669,7 +11665,7 @@ mod tests {
         let expected_assets = bundle.assets.clone();
         let mut command = studio_creation_command(&bundle);
         command.programs.truncate(1);
-        command.programs.push(studio_created_motion_program(vec![
+        command.programs.push(studio_created_motion_edit_input(vec![
             "tx:create/entity:circle".to_owned(),
             "later".to_owned(),
         ]));
@@ -11706,10 +11702,10 @@ mod tests {
             relative_factor: Some(1.5),
             to: Some(1.5),
         };
-        let mut motion = studio_created_motion_program(vec![entity_id.to_owned()]);
+        let mut motion = studio_created_motion_edit_input(vec![entity_id.to_owned()]);
         motion.anchor_captured_playhead = 0.75;
         motion.anchor_resolved_seconds = 0.75;
-        motion.anchor_source = StudioProgramAnchorSource::Playhead {
+        motion.anchor_source = SceneEditAnchorSource::Playhead {
             reference_seconds: Some(0.75),
         };
         motion.operations[0].interval = IntervalV1 {
@@ -11719,9 +11715,9 @@ mod tests {
         command.programs.insert(1, motion);
         command
             .programs
-            .push(studio_persistent_remove_program(entity_id, 1.8, 2.0));
+            .push(studio_persistent_remove_edit_input(entity_id, 1.8, 2.0));
         let projection =
-            project_studio_creation_programs(bundle.scene.duration, &command.programs).unwrap();
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_creation_edit(command).unwrap();
@@ -11845,7 +11841,7 @@ mod tests {
         let mut command = studio_creation_command(&bundle);
         command
             .programs
-            .push(studio_persistent_remove_program(entity_id, 1.4, 1.6));
+            .push(studio_persistent_remove_edit_input(entity_id, 1.4, 1.6));
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_creation_edit(command).unwrap();
@@ -11924,10 +11920,10 @@ mod tests {
         let base_duration = bundle.scene.duration;
         let mut command = studio_creation_command(&bundle);
         let second_id = "tx:second/entity:rectangle";
-        command.programs.push(StudioCreationProgram {
+        command.programs.push(StudioCreationEditInput {
             anchor_captured_playhead: 0.5,
             anchor_resolved_seconds: 0.5,
-            anchor_source: StudioProgramAnchorSource::Playhead {
+            anchor_source: SceneEditAnchorSource::Playhead {
                 reference_seconds: Some(0.5),
             },
             intent_count: 1,
@@ -11983,9 +11979,9 @@ mod tests {
                 },
             ],
             origin: StudioAuthoringOrigin::StudioDefault,
-            requested_execution: StudioProgramExecution::Parallel,
+            requested_execution: SceneEditExecution::Parallel,
             schedule_edge_count: 4,
-            schedule_mode: StudioProgramScheduleMode::DependencyDag,
+            schedule_mode: SceneEditScheduleMode::DependencyDag,
             schedule_order: vec![
                 "second-create".to_owned(),
                 "second-position".to_owned(),
@@ -12100,7 +12096,7 @@ mod tests {
     }
 
     #[test]
-    fn normalized_creation_rejects_hidden_and_malformed_programs_atomically() {
+    fn normalized_creation_rejects_hidden_and_malformed_edits_atomically() {
         let bundle = static_imported_bundle();
         let mut unsupported = studio_creation_command(&bundle);
         unsupported.programs[1].operations[0].kind = StudioCreationOperationKind::Unsupported;
@@ -12672,11 +12668,11 @@ mod tests {
         let mut command = studio_timeline_command(&bundle);
         command.programs[1].anchor_captured_playhead = bundle.scene.duration + 1.0;
         let projection =
-            project_studio_timeline_programs(bundle.scene.duration, &command.programs).unwrap();
+            project_studio_timeline_edits(bundle.scene.duration, &command.programs).unwrap();
         assert_eq!(
             projection.program_projections,
             vec![
-                StudioTimelineProgramProjection {
+                StudioTimelineEditProjection {
                     operation_id: "wait-1".to_owned(),
                     transaction_id: "wait-1".to_owned(),
                     working_anchor: 0.5,
@@ -12685,7 +12681,7 @@ mod tests {
                         start: 0.5,
                     },
                 },
-                StudioTimelineProgramProjection {
+                StudioTimelineEditProjection {
                     operation_id: "trim-1".to_owned(),
                     transaction_id: "trim-1".to_owned(),
                     working_anchor: 1.5,
@@ -12694,7 +12690,7 @@ mod tests {
                         start: 1.5,
                     },
                 },
-                StudioTimelineProgramProjection {
+                StudioTimelineEditProjection {
                     operation_id: "wait-2".to_owned(),
                     transaction_id: "wait-2".to_owned(),
                     working_anchor: 1.0,
@@ -12758,7 +12754,7 @@ mod tests {
     }
 
     #[test]
-    fn studio_timeline_authority_normalizes_decimal_trim_offset_before_the_next_program() {
+    fn studio_timeline_authority_normalizes_decimal_trim_offset_before_the_next_edit() {
         let bundle = static_imported_bundle();
         let base_duration = bundle.scene.duration;
         let source_anchor = 0.5;
@@ -12766,20 +12762,19 @@ mod tests {
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
             next_revision: NEXT_REVISION.to_owned(),
             programs: vec![
-                studio_timeline_wait_program("wait-a", source_anchor, 0.3),
-                studio_timeline_wait_program("wait-b", source_anchor, 0.6),
-                studio_timeline_trim_program(
+                studio_timeline_wait_edit_input("wait-a", source_anchor, 0.3),
+                studio_timeline_wait_edit_input("wait-b", source_anchor, 0.6),
+                studio_timeline_trim_edit_input(
                     "trim-all",
                     source_anchor,
                     0.9,
                     base_duration,
                     vec!["wait-b".to_owned(), "wait-a".to_owned()],
                 ),
-                studio_timeline_wait_program("wait-c", source_anchor, 0.2),
+                studio_timeline_wait_edit_input("wait-c", source_anchor, 0.2),
             ],
         };
-        let projection =
-            project_studio_timeline_programs(base_duration, &command.programs).unwrap();
+        let projection = project_studio_timeline_edits(base_duration, &command.programs).unwrap();
         assert!((projection.projected_duration - (base_duration + 0.2)).abs() < 1e-9);
         assert!((projection.program_projections[3].working_anchor - source_anchor).abs() < 1e-9);
         let StudioTimelineEditTransform::Remove {
@@ -12807,8 +12802,8 @@ mod tests {
     fn studio_timeline_projection_rejects_a_trim_outside_the_inserted_wait_suffix() {
         let bundle = static_imported_bundle();
         let separated_waits = vec![
-            studio_timeline_wait_program("wait", 0.5, 1.0),
-            studio_timeline_trim_program(
+            studio_timeline_wait_edit_input("wait", 0.5, 1.0),
+            studio_timeline_trim_edit_input(
                 "trim",
                 0.5004,
                 1.0,
@@ -12817,13 +12812,13 @@ mod tests {
             ),
         ];
         assert!(matches!(
-            project_studio_timeline_programs(bundle.scene.duration, &separated_waits),
+            project_studio_timeline_edits(bundle.scene.duration, &separated_waits),
             Err(ApplyStudioTimelineEditError::InvalidTrim)
         ));
 
         let over_trimmed = vec![
-            studio_timeline_wait_program("wait", 0.5, 1.0),
-            studio_timeline_trim_program(
+            studio_timeline_wait_edit_input("wait", 0.5, 1.0),
+            studio_timeline_trim_edit_input(
                 "trim",
                 0.5,
                 1.0004,
@@ -12832,7 +12827,7 @@ mod tests {
             ),
         ];
         assert!(matches!(
-            project_studio_timeline_programs(bundle.scene.duration, &over_trimmed),
+            project_studio_timeline_edits(bundle.scene.duration, &over_trimmed),
             Err(ApplyStudioTimelineEditError::Unsupported)
         ));
         let command = ApplyStudioTimelineEditCommand {
@@ -12856,7 +12851,7 @@ mod tests {
         cases.push(("resolved anchor", command));
 
         let mut command = studio_timeline_command(&bundle);
-        command.programs[0].anchor_source = StudioProgramAnchorSource::Absolute {
+        command.programs[0].anchor_source = SceneEditAnchorSource::Absolute {
             seconds: Some(-0.5),
         };
         cases.push(("negative source anchor", command));
@@ -13785,7 +13780,7 @@ mod tests {
     }
 
     #[test]
-    fn applies_two_sequenced_motions_in_one_program_with_one_timeline_insertion() {
+    fn applies_two_sequenced_motions_in_one_edit_with_one_timeline_insertion() {
         let bundle = static_imported_bundle();
         let command = two_motion_sequence_command(&bundle);
         let mut session = EngineSessionV1::new(bundle).unwrap();
@@ -13877,9 +13872,9 @@ mod tests {
                 target_entity_ids: vec!["source:stroke".to_owned()],
             });
         program.intent_count = 3;
-        program.requested_execution = StudioProgramExecution::Parallel;
+        program.requested_execution = SceneEditExecution::Parallel;
         program.schedule_edge_count = 0;
-        program.schedule_mode = StudioProgramScheduleMode::Parallel;
+        program.schedule_mode = SceneEditScheduleMode::Parallel;
         program.schedule_order = vec![
             "create-motion-second".to_owned(),
             "create-motion-parallel".to_owned(),
@@ -13936,7 +13931,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_ambiguous_or_invalid_second_motion_in_one_program_atomically() {
+    fn rejects_ambiguous_or_invalid_second_motion_in_one_edit_atomically() {
         let bundle = static_imported_bundle();
         let sequence = two_motion_sequence_command(&bundle);
 
@@ -13955,9 +13950,9 @@ mod tests {
             unreachable!();
         };
         depends_on.clear();
-        program.requested_execution = StudioProgramExecution::Parallel;
+        program.requested_execution = SceneEditExecution::Parallel;
         program.schedule_edge_count = 0;
-        program.schedule_mode = StudioProgramScheduleMode::Parallel;
+        program.schedule_mode = SceneEditScheduleMode::Parallel;
         program.schedule_order.reverse();
 
         let mut invalid_target = sequence.clone();
@@ -13986,9 +13981,9 @@ mod tests {
             end: 1.0,
             start: 0.5,
         };
-        program.requested_execution = StudioProgramExecution::Parallel;
+        program.requested_execution = SceneEditExecution::Parallel;
         program.schedule_edge_count = 0;
-        program.schedule_mode = StudioProgramScheduleMode::Parallel;
+        program.schedule_mode = SceneEditScheduleMode::Parallel;
 
         for command in [
             overlapping_sequence,
@@ -14016,7 +14011,7 @@ mod tests {
         let mut command = studio_motion_edit_command(&bundle);
         let template = command.programs[0].clone();
         command.programs = vec![
-            studio_motion_program(
+            studio_motion_edit_input(
                 &template,
                 "first",
                 0.5,
@@ -14026,7 +14021,7 @@ mod tests {
                 PointV1 { x: 0.0, y: -160.0 },
                 StudioMotionEasing::Smooth,
             ),
-            studio_motion_program(
+            studio_motion_edit_input(
                 &template,
                 "second",
                 0.5,
@@ -14117,7 +14112,7 @@ mod tests {
         let mut command = studio_motion_edit_command(&bundle);
         let template = command.programs[0].clone();
         command.programs = vec![
-            studio_motion_program(
+            studio_motion_edit_input(
                 &template,
                 "later-anchor",
                 1.0,
@@ -14127,7 +14122,7 @@ mod tests {
                 PointV1 { x: 0.0, y: 0.0 },
                 StudioMotionEasing::Linear,
             ),
-            studio_motion_program(
+            studio_motion_edit_input(
                 &template,
                 "earlier-anchor",
                 0.25,
@@ -14186,7 +14181,7 @@ mod tests {
         let mut command = studio_motion_edit_command(&bundle);
         let template = command.programs[0].clone();
         command.programs = vec![
-            studio_motion_program(
+            studio_motion_edit_input(
                 &template,
                 "before-gap",
                 0.25,
@@ -14196,7 +14191,7 @@ mod tests {
                 PointV1 { x: 0.0, y: 0.0 },
                 StudioMotionEasing::Smooth,
             ),
-            studio_motion_program(
+            studio_motion_edit_input(
                 &template,
                 "after-gap",
                 1.25,
@@ -14244,7 +14239,7 @@ mod tests {
         let mut valid = studio_motion_edit_command(&bundle);
         let template = valid.programs[0].clone();
         valid.programs = vec![
-            studio_motion_program(
+            studio_motion_edit_input(
                 &template,
                 "first-valid",
                 0.25,
@@ -14254,7 +14249,7 @@ mod tests {
                 PointV1 { x: 0.0, y: 0.0 },
                 StudioMotionEasing::Smooth,
             ),
-            studio_motion_program(
+            studio_motion_edit_input(
                 &template,
                 "second-valid",
                 1.0,
@@ -14796,7 +14791,7 @@ mod tests {
         let entities = math_tex_transform_projection_entities(duration);
 
         let two_step =
-            project_studio_math_tex_transform_programs(duration, &command.programs, &entities)
+            project_studio_math_tex_transform_edits(duration, &command.programs, &entities)
                 .unwrap();
         assert_eq!(two_step.projected_duration, duration + 1.0);
         assert_eq!(two_step.replacements.len(), 2);
@@ -14809,7 +14804,7 @@ mod tests {
         one_step_program.schedule_edge_count = 0;
         one_step_program.schedule_order.truncate(1);
         let one_step =
-            project_studio_math_tex_transform_programs(duration, &[one_step_program], &entities)
+            project_studio_math_tex_transform_edits(duration, &[one_step_program], &entities)
                 .unwrap();
         assert_eq!(one_step.projected_duration, duration + 0.5);
         assert_eq!(one_step.replacements.len(), 1);
@@ -14834,13 +14829,13 @@ mod tests {
             },
             vec!["transform-b-a".to_owned()],
         ));
-        command.programs = vec![math_tex_transform_program(
+        command.programs = vec![math_tex_transform_edit_input(
             "math-tex-transform",
             0.25,
             operations,
         )];
         let duration = static_imported_math_tex_bundle().scene.duration;
-        let projection = project_studio_math_tex_transform_programs(
+        let projection = project_studio_math_tex_transform_edits(
             duration,
             &command.programs,
             &math_tex_transform_projection_entities(duration),
@@ -14901,11 +14896,11 @@ mod tests {
         clippy::float_cmp,
         reason = "the normalized later-program projection stores exact timeline values"
     )]
-    fn math_tex_transform_projector_rebases_a_later_motion_program() {
+    fn math_tex_transform_projector_rebases_a_later_motion_edit() {
         let command = math_tex_transform_command();
         let programs = vec![
             command.programs[0].clone(),
-            math_tex_transform_program(
+            math_tex_transform_edit_input(
                 "move-restored",
                 1.5,
                 vec![math_tex_transform_motion_operation(
@@ -14921,7 +14916,7 @@ mod tests {
         ];
         let duration = static_imported_math_tex_bundle().scene.duration;
 
-        let projection = project_studio_math_tex_transform_programs(
+        let projection = project_studio_math_tex_transform_edits(
             duration,
             &programs,
             &math_tex_transform_projection_entities(duration),
@@ -14960,11 +14955,14 @@ mod tests {
         };
         depends_on.clear();
         let reverse =
-            math_tex_transform_program("reverse", 0.25, vec![reverse_motion, transform.clone()]);
+            math_tex_transform_edit_input("reverse", 0.25, vec![reverse_motion, transform.clone()]);
 
-        let mut parallel =
-            math_tex_transform_program("parallel", 0.25, vec![transform.clone(), motion.clone()]);
-        parallel.requested_execution = StudioProgramExecution::Parallel;
+        let mut parallel = math_tex_transform_edit_input(
+            "parallel",
+            0.25,
+            vec![transform.clone(), motion.clone()],
+        );
+        parallel.requested_execution = SceneEditExecution::Parallel;
 
         let mut wrong_target = motion.clone();
         let StudioMathTexTransformOperation::CreateMotion {
@@ -14989,19 +14987,19 @@ mod tests {
         for programs in [
             vec![reverse],
             vec![parallel],
-            vec![math_tex_transform_program(
+            vec![math_tex_transform_edit_input(
                 "wrong-target",
                 0.25,
                 vec![transform.clone(), wrong_target],
             )],
-            vec![math_tex_transform_program(
+            vec![math_tex_transform_edit_input(
                 "multiple-motion",
                 0.25,
                 vec![transform.clone(), motion, second_motion],
             )],
         ] {
             assert!(matches!(
-                project_studio_math_tex_transform_programs(duration, &programs, &entities),
+                project_studio_math_tex_transform_edits(duration, &programs, &entities),
                 Err(ApplyStudioMathTexTransformEditError::Unsupported)
             ));
         }
@@ -15063,11 +15061,7 @@ mod tests {
             (invalid_interval, entities.clone()),
         ] {
             assert!(matches!(
-                project_studio_math_tex_transform_programs(
-                    duration,
-                    &programs,
-                    &candidate_entities,
-                ),
+                project_studio_math_tex_transform_edits(duration, &programs, &candidate_entities,),
                 Err(ApplyStudioMathTexTransformEditError::Unsupported)
             ));
         }
@@ -15139,7 +15133,7 @@ mod tests {
     fn math_tex_transform_applies_two_step_replacement_with_one_channel_per_identity() {
         let bundle = static_imported_math_tex_bundle();
         let command = math_tex_transform_command();
-        assert!(studio_math_tex_transform_program_is_closed(
+        assert!(studio_math_tex_transform_edit_input_is_closed(
             &command.programs[0]
         ));
         let SceneGeometryV1::CubicPath { path: source_path } = &bundle
@@ -15349,7 +15343,7 @@ mod tests {
         clippy::float_cmp,
         reason = "the normalized authoring command stores exact timeline values"
     )]
-    fn math_tex_transform_stably_rebases_two_same_anchor_programs() {
+    fn math_tex_transform_stably_rebases_two_same_anchor_edits() {
         let bundle = static_imported_math_tex_bundle();
         let mut command = math_tex_transform_command();
         let first = command.programs[0].operations.remove(0);
@@ -15368,8 +15362,8 @@ mod tests {
             start: 0.25,
         };
         command.programs = vec![
-            math_tex_transform_program("first", 0.25, vec![first]),
-            math_tex_transform_program("second", 0.25, vec![second]),
+            math_tex_transform_edit_input("first", 0.25, vec![first]),
+            math_tex_transform_edit_input("second", 0.25, vec![second]),
         ];
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
@@ -15532,9 +15526,9 @@ mod tests {
     fn static_root_motion_projector_uses_the_preceding_position_and_only_real_insertions() {
         let bundle = static_imported_bundle();
         let mut command = static_root_position_command();
-        command
-            .programs
-            .push(static_root_motion_program(vec!["source:circle".to_owned()]));
+        command.programs.push(static_root_motion_edit_input(vec![
+            "source:circle".to_owned(),
+        ]));
         let projection = project_studio_motion_edit(&ProjectStudioMotionEditCommand {
             base_duration: bundle.scene.duration,
             batch: StudioMotionProjectionBatch::StaticRoot {
@@ -15567,9 +15561,9 @@ mod tests {
         command.programs.truncate(1);
         command
             .programs
-            .push(studio_created_motion_program(vec![entity_id.to_owned()]));
+            .push(studio_created_motion_edit_input(vec![entity_id.to_owned()]));
         let projection =
-            project_studio_creation_programs(bundle.scene.duration, &command.programs).unwrap();
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
 
         assert_eq!(projection.insertions.len(), 2);
         assert_eq!(projection.motions.len(), 1);
