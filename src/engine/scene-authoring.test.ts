@@ -381,6 +381,7 @@ describe("Scene authoring WASM adapter", () => {
         ],
       },
       staticRootProjection: {
+        insertions: [],
         mutations: [
           {
             entityId: "source:circle",
@@ -391,12 +392,14 @@ describe("Scene authoring WASM adapter", () => {
             value: { x: 400, y: 180 },
           },
         ],
+        projectedDuration: bundle.scene.duration,
       },
     } as const;
     const contentResponse = {
       bundle,
       persistentRemoveProjection: { removals: [] },
       staticRootProjection: {
+        insertions: [],
         mutations: [
           {
             content: mathTexContent,
@@ -407,6 +410,7 @@ describe("Scene authoring WASM adapter", () => {
             transactionId: "replace-equation",
           },
         ],
+        projectedDuration: bundle.scene.duration,
       },
     } as const;
     const responses = [transformResponse, contentResponse];

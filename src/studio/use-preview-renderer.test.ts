@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 import { pngSnapshotBundleFixture } from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
+import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
@@ -19,6 +20,7 @@ import type {
   StudioStaticRootMutationV1,
   StudioStaticRootProjectionV1,
 } from "../engine/scene-authoring";
+import { compileApplyStaticRootTransformEdit } from "../engine/scene-authoring";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { importManimScene } from "../render-pipeline/source-import";
 import {
@@ -42,6 +44,7 @@ import {
 import { validateAndScheduleProgram } from "./program-validation";
 import { isPointValue } from "./property-sampling";
 import {
+  canonicalizeSuggestionProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
   createDirectManipulationScaleProgram,
@@ -545,7 +548,7 @@ function recordingStaticRootTransformEditCompiler(
           });
         }
       }
-      staticRootProjection = { mutations };
+      staticRootProjection = { insertions: [], mutations, projectedDuration: bundle.scene.duration };
     }
     return { ...unchangedAuthoringResult(bundle), ...(staticRootProjection ? { staticRootProjection } : {}) };
   };
@@ -1671,6 +1674,7 @@ describe("compileStudioPreviewSceneV1", () => {
             projectedDuration: bundle.scene.duration + 1,
           },
           staticRootProjection: {
+            insertions: [{ at: 0, duration: 1, transactionId: motion.program.transactionId }],
             mutations: [
               {
                 entityId: "source:circle",
@@ -1681,6 +1685,7 @@ describe("compileStudioPreviewSceneV1", () => {
                 value: { x: 384, y: 144 },
               },
             ],
+            projectedDuration: bundle.scene.duration + 1,
           },
         }),
       ),
@@ -1822,6 +1827,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const removeOperation = removal.program.operations[0];
     if (removeOperation?.kind !== "ChangePresence") throw new Error("Expected a persistent remove operation.");
     const staticRootProjection = {
+      insertions: [],
       mutations: [
         {
           entityId: "source:circle",
@@ -1832,6 +1838,7 @@ describe("compileStudioPreviewSceneV1", () => {
           value: { x: 384, y: 144 },
         },
       ],
+      projectedDuration: fixture.snapshot.snapshot.scene.duration,
     };
     const persistentRemoveProjection = {
       removals: [
@@ -1874,6 +1881,98 @@ describe("compileStudioPreviewSceneV1", () => {
       persistentRemoveProjection,
       programAuthority: "static-imported-root",
       staticRootProjection,
+    });
+  });
+
+  it("keeps one Magic Edit scale-then-remove Program atomic through the Rust compiler route", async () => {
+    const fixture = await compilablePreviewInput();
+    const base = exactImportedTimelineWorkingBase(fixture);
+    const entity = base.runtimeSceneState.objectGraph.entities["source:circle"]!;
+    const workingBase: WorkingState = {
+      ...base,
+      runtimeSceneState: {
+        ...base.runtimeSceneState,
+        objectGraph: {
+          ...base.runtimeSceneState.objectGraph,
+          entities: {
+            ...base.runtimeSceneState.objectGraph.entities,
+            "source:circle": {
+              ...entity,
+              geometry: entity.geometry
+                ? {
+                    ...entity.geometry,
+                    position: { kind: "known", value: { x: 280, y: 180 } },
+                  }
+                : undefined,
+            },
+          },
+        },
+      },
+    };
+    const operation: EditSuggestionOperation = {
+      anchor: { kind: "playhead", referenceSeconds: 0.5 },
+      execution: "sequence",
+      kind: "edit-program",
+      operations: [
+        {
+          easing: "smooth",
+          end: 1,
+          factor: 1.5,
+          kind: "scale-objects",
+          start: 0.5,
+          targetObjectIds: ["source:circle"],
+        },
+        {
+          animation: "fade-out",
+          end: 1.4,
+          kind: "delete-objects",
+          start: 1,
+          targetObjectIds: ["source:circle"],
+        },
+      ],
+    };
+    const validation = canonicalizeSuggestionProgram(operation, {
+      capturedPlayhead: 0.5,
+      origin: "remote-model",
+      scene: workingBase.runtimeSceneState,
+      transactionId: "magic-scale-remove",
+    });
+    if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+    const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(
+        commands,
+        compileApplyStaticRootTransformEdit,
+      ),
+      frame: { height: 9, width: 16 },
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...workingBase,
+        appliedPrograms: [programRecord(validation.program, validation)],
+      },
+      workingRevision: "studio-working-v1:magic-scale-remove",
+      workspaceKey: studioPreviewWorkspaceKeyV1(fixture.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.programs).toHaveLength(1);
+    expect(commands[0]?.programs[0]?.operations.map(({ kind }) => kind)).toEqual([
+      "uniform-scale",
+      "persistent-remove",
+    ]);
+    expect(result.scene.programAuthority).toBe("static-imported-root");
+    expect(result.scene.bundle.scene.duration).toBeCloseTo(2.9);
+    expect(result.scene.staticRootProjection).toMatchObject({
+      insertions: [{ at: 0.5, transactionId: "magic-scale-remove" }],
+      mutations: [{ easing: "manim-smooth", kind: "uniform-scale" }],
+      projectedDuration: 2.9,
+    });
+    expect(result.scene.persistentRemoveProjection?.removals[0]).toMatchObject({
+      fadeInterval: { end: 1.4, start: 1 },
+      resultingLifetimeEnd: 1.4,
+      studioEntityId: "source:circle",
     });
   });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import type {
   StudioCreationProjectionV1,
   StudioMathTexTransformProjectionV1,
@@ -23,7 +24,11 @@ import { type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./impor
 import type { Interval } from "./model";
 import type { CanonicalEditProgram } from "./operations";
 import { buildStudioCreationProjectionCommand } from "./scene-authoring-wire";
-import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
+import {
+  canonicalizeSuggestionProgram,
+  createDirectManipulationPositionProgram,
+  createDirectManipulationScaleProgram,
+} from "./suggestion-program";
 import {
   projectStudioWorkspace,
   selectMathTexTransformProjection,
@@ -625,6 +630,7 @@ describe("Studio workspace projection", () => {
     const operation = scale.program.operations[0];
     if (operation?.kind !== "AnimateProperty") throw new Error("Expected a scale operation.");
     const staticRootProjection: StudioStaticRootProjectionV1 = {
+      insertions: [],
       mutations: [
         {
           entityId: entity.id,
@@ -636,6 +642,7 @@ describe("Studio workspace projection", () => {
           transactionId: scale.program.transactionId,
         },
       ],
+      projectedDuration: rebased.runtimeSceneState.duration,
     };
     const project = (projection?: StudioStaticRootProjectionV1) =>
       projectStudioWorkspace({
@@ -695,6 +702,97 @@ describe("Studio workspace projection", () => {
       relation: "removed",
     });
 
+    const magicOperation: EditSuggestionOperation = {
+      anchor: { kind: "playhead", referenceSeconds: 0.5 },
+      execution: "sequence",
+      kind: "edit-program",
+      operations: [
+        {
+          easing: "smooth",
+          end: 1,
+          factor: 1.5,
+          kind: "scale-objects",
+          start: 0.5,
+          targetObjectIds: [entity.id],
+        },
+        {
+          animation: "fade-out",
+          end: 1.4,
+          kind: "delete-objects",
+          start: 1,
+          targetObjectIds: [entity.id],
+        },
+      ],
+    };
+    const magic = canonicalizeSuggestionProgram(magicOperation, {
+      capturedPlayhead: 0.5,
+      origin: "remote-model",
+      scene: rebased.runtimeSceneState,
+      transactionId: "magic-scale-remove",
+    });
+    if (magic.kind !== "valid") throw new Error(JSON.stringify(magic.issues));
+    const [magicScale, magicRemove] = magic.program.operations;
+    if (
+      magicScale?.kind !== "AnimateProperty" ||
+      magicScale.key !== "scale" ||
+      typeof magicScale.from !== "number" ||
+      typeof magicScale.to !== "number" ||
+      magicRemove?.kind !== "ChangePresence"
+    ) {
+      throw new Error("Expected an animated scale followed by persistent remove.");
+    }
+    const magicStaticProjection: StudioStaticRootProjectionV1 = {
+      insertions: [{ at: 0.5, duration: 0.9, transactionId: magic.program.transactionId }],
+      mutations: [
+        {
+          easing: "manim-smooth",
+          entityId: entity.id,
+          from: magicScale.from,
+          interval: magicScale.interval,
+          kind: "uniform-scale",
+          operationId: magicScale.id,
+          to: magicScale.to,
+          transactionId: magic.program.transactionId,
+        },
+      ],
+      projectedDuration: 2.9,
+    };
+    const magicRemoveProjection: StudioPersistentRemoveProjectionV1 = {
+      removals: [
+        {
+          affectedSceneEntityIds: [entity.id],
+          fadeInterval: magicRemove.interval,
+          operationId: magicRemove.id,
+          removedAt: magicRemove.interval.end,
+          resultingLifetimeEnd: magicRemove.interval.end,
+          sceneEntityId: entity.id,
+          studioEntityId: entity.id,
+          transactionId: magic.program.transactionId,
+        },
+      ],
+    };
+    const projectMagicAt = (currentTime: number) =>
+      projectStudioWorkspace({
+        activeScene: rebased,
+        appliedPrograms: [programRecord(magic.program, magic)],
+        currentTime,
+        draftProgram: null,
+        nextScene: null,
+        persistentRemoveProjection: magicRemoveProjection,
+        programAuthority: "static-imported-root",
+        selectedObjectIds: [],
+        staticRootProjection: magicStaticProjection,
+      });
+    expect(projectMagicAt(0.625).projection.canvas.entities[0]?.scale).toBeCloseTo(3.105155574817662);
+    expect(projectMagicAt(0.75).projection.canvas.entities[0]?.scale).toBeCloseTo(3.75);
+    expect(projectMagicAt(1.2).projection.canvas.entities[0]?.opacity).toBeCloseTo(0.5);
+    const removed = projectMagicAt(1.4);
+    expect(removed.projection.canvas.entities[0]).toMatchObject({ opacity: 0, present: false, scale: 4.5 });
+    expect(removed.proposedState.evaluatedScene.duration).toBeCloseTo(2.9);
+    expect(removed.proposedState.evaluatedScene.objectGraph.entities[entity.id]?.lifetime).toEqual([
+      { end: 1.4, start: 0 },
+    ]);
+
     const pureRemoval = projectStudioWorkspace({
       activeScene: rebased,
       appliedPrograms: [removeRecord],
@@ -719,11 +817,13 @@ describe("Studio workspace projection", () => {
     ).toBe(6);
     expect(() =>
       selectStaticRootProjection([scale.program], {
+        ...staticRootProjection,
         mutations: [{ ...staticRootProjection.mutations[0]!, transactionId: "stale-transaction" }],
       }),
     ).toThrow("is not correlated");
     expect(() =>
       project({
+        ...staticRootProjection,
         mutations: [{ ...staticRootProjection.mutations[0]!, entityId: "source:missing" }],
       }),
     ).toThrow("is not in the imported Scene");
@@ -785,6 +885,7 @@ describe("Studio workspace projection", () => {
       throw new Error("Expected one MathTex content operation.");
     }
     const staticRootProjection = {
+      insertions: [],
       mutations: [
         {
           content: studioContent,
@@ -795,20 +896,24 @@ describe("Studio workspace projection", () => {
           transactionId: edit.program.transactionId,
         },
       ],
+      projectedDuration: rebased.runtimeSceneState.duration,
     } satisfies StudioStaticRootProjectionV1;
     const mutation = staticRootProjection.mutations[0];
     expect(() =>
       selectStaticRootProjection([edit.program], {
+        ...staticRootProjection,
         mutations: [{ ...mutation, content: { ...studioContent, texParts: ["wrong"] } }],
       }),
     ).toThrow("is not correlated");
     expect(() =>
       selectStaticRootProjection([edit.program], {
+        ...staticRootProjection,
         mutations: [{ ...mutation, interval: { end: 0.25, start: 0 } }],
       }),
     ).toThrow("is not correlated");
     expect(() =>
       selectStaticRootProjection([edit.program], {
+        ...staticRootProjection,
         mutations: [{ ...mutation, entityId: "source:other" }],
       }),
     ).toThrow("is not correlated");

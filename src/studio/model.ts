@@ -91,7 +91,7 @@ export type PropertyValue = boolean | number | string | Point | EntityDimensions
 
 export type PropertyChannelSample = Readonly<{
   control?: Point;
-  easing?: MotionEasing;
+  easing?: MotionEasing | "manim-smooth";
   from?: PropertyValue;
   interval: Interval;
   kind: "animated" | "exact";
