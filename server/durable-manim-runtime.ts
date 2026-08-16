@@ -411,9 +411,20 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
         }),
       ),
     ]);
+    // Imported workspaces always carry at least one source head, so their
+    // responses never gain the marker and stay byte-identical. Only a
+    // head-less project probes for its Studio-native document.
+    const nativeDocument =
+      heads.length === 0 && this.editorDocuments
+        ? await this.editorDocuments.readNativeDocumentHead(
+            { projectId: project.projectId, tenantId: this.tenantId },
+            signal,
+          )
+        : null;
     return {
       commandAvailable: false,
       frame: this.#frame,
+      ...(nativeDocument ? { nativeDocument: { documentKey: nativeDocument.documentKey } } : {}),
       projectId: project.projectId,
       projectName: project.name,
       renderCapability,

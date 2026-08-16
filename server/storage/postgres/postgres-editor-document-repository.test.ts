@@ -1461,6 +1461,94 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     ).rejects.toMatchObject({ message: "That workspace already exists.", status: 409 });
   });
 
+  it("opens the native document by tenant and project without touching workspace source heads", async () => {
+    const nativeKey = "ab".repeat(32);
+    const texts: string[] = [];
+    const fixture = fakePool((text, values) => {
+      texts.push(text);
+      if (text.includes("FROM public.workspace_projects project")) {
+        expect(text).toContain("FOR SHARE OF project");
+        expect(values).toEqual([TENANT_A, PROJECT]);
+        return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+      }
+      if (text.includes("FROM public.editor_documents document")) {
+        expect(text).toContain("document.origin = 'studio-native'");
+        expect(text).toContain("sealed_at IS NULL");
+        expect(text).toContain("FOR UPDATE OF document");
+        expect(values).toEqual([TENANT_A, PROJECT]);
+        return { rowCount: 1, rows: [documentRow({ documentKey: nativeKey, origin: "studio-native" })] };
+      }
+      if (text.includes("FROM public.editor_document_projections projection")) {
+        return { rowCount: 1, rows: [{ canonical_programs: [], revision: "0" }] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.openNativeDocument({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toMatchObject({
+      created: false,
+      document: {
+        documentKey: nativeKey,
+        origin: "studio-native",
+        revision: 0n,
+        sourceHash: null,
+        sourcePath: null,
+      },
+      kind: "opened",
+      projection: { programs: [], revision: 0n },
+    });
+    expect(texts.some((text) => text.includes("workspace_source_heads"))).toBe(false);
+  });
+
+  it("reports a missing native document or deleted project as not-found", async () => {
+    const missingDocument = fakePool((text) => {
+      if (text.includes("FROM public.workspace_projects project")) {
+        return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+      }
+      if (text.includes("FROM public.editor_documents document")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const withoutDocument = new PostgresEditorDocumentRepositoryV1({ pool: missingDocument.pool });
+    await expect(withoutDocument.openNativeDocument({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toEqual({
+      kind: "not-found",
+    });
+
+    const missingProject = fakePool((text) => {
+      if (text.includes("FROM public.workspace_projects project")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const withoutProject = new PostgresEditorDocumentRepositoryV1({ pool: missingProject.pool });
+    await expect(withoutProject.openNativeDocument({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toEqual({
+      kind: "not-found",
+    });
+  });
+
+  it("probes the native document head without locks and returns null when absent", async () => {
+    const nativeKey = "cd".repeat(32);
+    const fixture = fakePool((text, values) => {
+      expect(text).not.toContain("FOR UPDATE");
+      expect(text).not.toContain("FOR SHARE");
+      expect(text).toContain("document.origin = 'studio-native'");
+      expect(text).toContain("project.deleted_at IS NULL");
+      expect(values).toEqual([TENANT_A, PROJECT]);
+      return {
+        rowCount: 1,
+        rows: [{ document_key: Buffer.from(nativeKey, "hex"), epoch: EPOCH_A, revision: "3" }],
+      };
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+    await expect(repository.readNativeDocumentHead({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toEqual({
+      documentKey: nativeKey,
+      epoch: EPOCH_A,
+      revision: 3n,
+    });
+
+    const empty = new PostgresEditorDocumentRepositoryV1({
+      pool: fakePool(() => ({ rowCount: 0, rows: [] })).pool,
+    });
+    await expect(empty.readNativeDocumentHead({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toBeNull();
+  });
+
   it("rejects a native document row that PostgreSQL returns with a source binding", async () => {
     const fixture = fakePool((text) => {
       if (text.startsWith("INSERT INTO public.workspace_tenants")) return { rowCount: 0, rows: [] };

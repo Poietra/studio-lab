@@ -102,6 +102,27 @@ export const editorDocumentOpenRequestSchemaV1 = z
   })
   .strict();
 
+/**
+ * Opens the project's source-free Studio-native Editor Document. The native
+ * `documentKey` is minted server-side (ADR 0005); the request therefore names
+ * no source path, source hash, or Scene, and no key is derived in the browser.
+ */
+export const editorDocumentNativeOpenRequestSchemaV1 = z
+  .object({
+    origin: z.literal("studio-native"),
+  })
+  .strict();
+
+/**
+ * Additive open-request union: the historical imported shape is unchanged and
+ * the two members are disjoint (imported has no `origin` field; native has
+ * only `origin`).
+ */
+export const editorDocumentOpenRequestUnionSchemaV1 = z.union([
+  editorDocumentOpenRequestSchemaV1,
+  editorDocumentNativeOpenRequestSchemaV1,
+]);
+
 export const editorDocumentCommitRequestSchemaV1 = z
   .object({
     baseRevision: editorRevisionStringSchemaV1,
@@ -167,6 +188,29 @@ export const editorDocumentViewSchemaV1 = z
   })
   .strict();
 
+/**
+ * A Studio-native document view names its origin explicitly and carries no
+ * source binding. The imported view above stays byte-identical (it never
+ * gained an `origin` field), so the two members are wire-disjoint.
+ */
+export const nativeEditorDocumentViewSchemaV1 = z
+  .object({
+    documentKey: editorDocumentKeySchemaV1,
+    epoch: editorUuidSchemaV1,
+    openedAt: editorIsoDateStringSchemaV1,
+    origin: z.literal("studio-native"),
+    projectId: manimProjectIdSchema,
+    revision: editorRevisionStringSchemaV1,
+    sealedAt: editorIsoDateStringSchemaV1.nullable(),
+    sourceHash: z.null(),
+    sourcePath: z.null(),
+    tenantId: editorTenantIdSchemaV1,
+    updatedAt: editorIsoDateStringSchemaV1,
+  })
+  .strict();
+
+export const editorDocumentViewUnionSchemaV1 = z.union([editorDocumentViewSchemaV1, nativeEditorDocumentViewSchemaV1]);
+
 export const editorDocumentProjectionViewSchemaV1 = z
   .object({
     programs: editorDocumentProjectionProgramsViewSchemaV1,
@@ -203,7 +247,7 @@ export const editorEditEventViewSchemaV1 = z
 const editorDocumentOpenedResultViewSchemaV1 = z
   .object({
     created: z.boolean(),
-    document: editorDocumentViewSchemaV1,
+    document: editorDocumentViewUnionSchemaV1,
     kind: z.literal("opened"),
     projection: editorDocumentProjectionViewSchemaV1,
   })
@@ -353,7 +397,7 @@ export const editorDocumentCommitConflictViewSchemaV1 = z
 export const editorDocumentCommitResultViewSchemaV1 = z.discriminatedUnion("kind", [
   z
     .object({
-      document: editorDocumentViewSchemaV1,
+      document: editorDocumentViewUnionSchemaV1,
       event: editorEditEventViewSchemaV1,
       kind: z.literal("committed"),
       replayed: z.boolean(),
@@ -365,13 +409,15 @@ export const editorDocumentCommitResultViewSchemaV1 = z.discriminatedUnion("kind
 
 export const editorDocumentTailResultViewSchemaV1 = z
   .object({
-    document: editorDocumentViewSchemaV1,
+    document: editorDocumentViewUnionSchemaV1,
     events: z.array(editorEditEventViewSchemaV1).max(Number(MAX_EDITOR_HTTP_EVENT_TAIL_LIMIT_V1)),
   })
   .strict()
   .nullable();
 
 export type EditorDocumentOpenRequestV1 = Readonly<z.infer<typeof editorDocumentOpenRequestSchemaV1>>;
+export type EditorDocumentNativeOpenRequestV1 = Readonly<z.infer<typeof editorDocumentNativeOpenRequestSchemaV1>>;
+export type EditorDocumentOpenRequestUnionV1 = EditorDocumentOpenRequestV1 | EditorDocumentNativeOpenRequestV1;
 export type EditorDocumentCommitRequestV1 = Readonly<z.infer<typeof editorDocumentCommitRequestSchemaV1>>;
 export type EditorDocumentSessionQueryV1 = Readonly<z.infer<typeof editorDocumentSessionQuerySchemaV1>>;
 export type EditorDocumentSessionPutRequestV1 = Readonly<{
@@ -383,6 +429,8 @@ export type EditorDocumentSessionPutRequestV1 = Readonly<{
 }>;
 export type EditorDocumentTailQueryV1 = Readonly<z.infer<typeof editorDocumentTailQuerySchemaV1>>;
 export type EditorDocumentViewV1 = Readonly<z.infer<typeof editorDocumentViewSchemaV1>>;
+export type NativeEditorDocumentViewV1 = Readonly<z.infer<typeof nativeEditorDocumentViewSchemaV1>>;
+export type EditorDocumentViewUnionV1 = EditorDocumentViewV1 | NativeEditorDocumentViewV1;
 export type EditorDocumentProjectionViewV1 = Readonly<z.infer<typeof editorDocumentProjectionViewSchemaV1>>;
 export type EditorEditEventViewV1 = Readonly<z.infer<typeof editorEditEventViewSchemaV1>>;
 export type EditorDocumentOpenResultViewV1 = Readonly<z.infer<typeof editorDocumentOpenResultViewSchemaV1>>;
@@ -404,11 +452,13 @@ export type EditorDocumentSerializationInputV1 = Readonly<{
   projectId: string;
   revision: bigint;
   sealedAt: Date | null;
-  sourceHash: string;
-  sourcePath: string;
   tenantId: string;
   updatedAt: Date;
-}>;
+}> &
+  (
+    | Readonly<{ origin?: "imported-manim"; sourceHash: string; sourcePath: string }>
+    | Readonly<{ origin: "studio-native"; sourceHash: null; sourcePath: null }>
+  );
 
 export type EditorEditEventSerializationInputV1 = Readonly<{
   baseRevision: bigint;
@@ -537,18 +587,30 @@ function serializeEditorDateV1(value: Date) {
   return editorIsoDateStringSchemaV1.parse(value.toISOString());
 }
 
-export function serializeEditorDocumentViewV1(input: EditorDocumentSerializationInputV1): EditorDocumentViewV1 {
-  return editorDocumentViewSchemaV1.parse({
+export function serializeEditorDocumentViewV1(input: EditorDocumentSerializationInputV1): EditorDocumentViewUnionV1 {
+  const base = {
     documentKey: input.documentKey,
     epoch: input.epoch,
     openedAt: serializeEditorDateV1(input.openedAt),
     projectId: input.projectId,
     revision: serializeEditorRevisionV1(input.revision),
     sealedAt: input.sealedAt === null ? null : serializeEditorDateV1(input.sealedAt),
-    sourceHash: input.sourceHash,
-    sourcePath: input.sourcePath,
     tenantId: input.tenantId,
     updatedAt: serializeEditorDateV1(input.updatedAt),
+  };
+  if (input.origin === "studio-native") {
+    return nativeEditorDocumentViewSchemaV1.parse({
+      ...base,
+      origin: "studio-native",
+      sourceHash: null,
+      sourcePath: null,
+    });
+  }
+  // The imported view stays byte-identical: it never carries an origin field.
+  return editorDocumentViewSchemaV1.parse({
+    ...base,
+    sourceHash: input.sourceHash,
+    sourcePath: input.sourcePath,
   });
 }
 

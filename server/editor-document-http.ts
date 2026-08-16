@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   editorDocumentCommitRequestSchemaV1,
   editorDocumentKeySchemaV1,
-  editorDocumentOpenRequestSchemaV1,
+  editorDocumentOpenRequestUnionSchemaV1,
   editorDocumentSessionPutRequestSchemaV1,
   parseEditorDocumentSessionQueryV1,
   parseEditorDocumentTailQueryV1,
@@ -29,7 +29,6 @@ import type {
   EditorDocumentRepositoryV1,
   EditorDocumentV1,
   EditorEditEventV1,
-  ImportedEditorDocumentV1,
 } from "./storage/editor-document-repository";
 import { createEditorDocumentKeyV1, MAX_EDITOR_PROGRAM_BYTES_V1 } from "./storage/editor-document-repository";
 
@@ -110,19 +109,6 @@ function requireSameOriginJsonMutationV1(request: IncomingMessage, expectedOrigi
     request.resume();
     throw new HttpError("Editor mutations require a same-origin request.", 403);
   }
-}
-
-/**
- * The v1 editor HTTP contract serves the imported Manim lane; its document
- * views carry a required source binding. Studio-native documents get their own
- * source-free open/restore surface in a later slice and must never leak
- * through these serializers with fabricated source fields.
- */
-function importedDocumentV1(document: EditorDocumentV1): ImportedEditorDocumentV1 {
-  if (document.origin !== "imported-manim") {
-    throw new TypeError("Editor storage returned a document outside the imported Manim contract.");
-  }
-  return document;
 }
 
 function documentIdentityV1(
@@ -239,11 +225,35 @@ async function openDocumentV1(
     return methodNotAllowedV1(response, "POST");
   }
   requireSameOriginJsonMutationV1(request, options.expectedMutationOrigin);
-  const parsed = editorDocumentOpenRequestSchemaV1.safeParse(
+  const parsed = editorDocumentOpenRequestUnionSchemaV1.safeParse(
     await readJsonBody(request, bodyLimitV1(options.maxJsonBodyBytes, MAX_OPEN_BODY_BYTES_V1)),
   );
   if (!parsed.success) throw new HttpError("Editor document open request is invalid.", 400);
   signal?.throwIfAborted();
+  if ("origin" in parsed.data) {
+    // The Studio-native lane opens the project's single native document. Its
+    // server-minted key is returned, never derived, and no source path, hash,
+    // or workspace source head participates in the admission.
+    const result = await repository.openNativeDocument({ projectId, tenantId: principal.tenantId }, signal);
+    if (result.kind === "source-conflict") {
+      throw new TypeError("Editor storage returned a source conflict for a source-free native document.");
+    }
+    if (result.kind === "opened") {
+      documentIdentityV1(result.document, { projectId, tenantId: principal.tenantId });
+      if (
+        result.document.origin !== "studio-native" ||
+        result.document.sourcePath !== null ||
+        result.document.sourceHash !== null ||
+        result.document.sealedAt !== null ||
+        result.created ||
+        result.projection.revision !== result.document.revision
+      ) {
+        throw new TypeError("Editor storage returned an inconsistent native open document.");
+      }
+    }
+    sendJson(response, result.kind === "opened" ? 200 : 404, serializeEditorDocumentOpenResultV1(result));
+    return;
+  }
   const sceneId = fastManimSnapshotSceneIdV1(parsed.data.sourcePath, parsed.data.sceneName);
   const result = await repository.openDocument(
     {
@@ -262,6 +272,7 @@ async function openDocumentV1(
       tenantId: principal.tenantId,
     });
     if (
+      result.document.origin !== "imported-manim" ||
       result.document.sourcePath !== parsed.data.sourcePath ||
       result.document.sourceHash !== parsed.data.sourceHash ||
       result.document.sealedAt !== null ||
@@ -270,9 +281,7 @@ async function openDocumentV1(
       throw new TypeError("Editor storage returned an inconsistent open document.");
     }
   }
-  const view = serializeEditorDocumentOpenResultV1(
-    result.kind === "opened" ? { ...result, document: importedDocumentV1(result.document) } : result,
-  );
+  const view = serializeEditorDocumentOpenResultV1(result);
   sendJson(
     response,
     result.kind === "opened" ? (result.created ? 201 : 200) : result.kind === "not-found" ? 404 : 409,
@@ -333,13 +342,7 @@ async function readTailV1(
       throw new TypeError("Editor storage returned an event tail ahead of its document.");
     }
   }
-  sendJson(
-    response,
-    result === null ? 404 : 200,
-    serializeEditorDocumentTailResultV1(
-      result === null ? null : { ...result, document: importedDocumentV1(result.document) },
-    ),
-  );
+  sendJson(response, result === null ? 404 : 200, serializeEditorDocumentTailResultV1(result));
 }
 
 async function commitEventV1(
@@ -427,9 +430,7 @@ async function commitEventV1(
       }
     }
   }
-  const view = serializeEditorDocumentCommitResultV1(
-    result.kind === "committed" ? { ...result, document: importedDocumentV1(result.document) } : result,
-  );
+  const view = serializeEditorDocumentCommitResultV1(result);
   const status =
     result.kind === "committed"
       ? result.replayed

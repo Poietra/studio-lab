@@ -301,6 +301,12 @@ export type ManimRenderCapability = Readonly<{
 export type ManimWorkspaceView = Readonly<{
   commandAvailable: boolean;
   frame: Readonly<{ height: number; width: number }>;
+  /**
+   * Present only when the project's durable root is a source-free
+   * Studio-native Editor Document. Imported workspaces never carry this
+   * field, so their responses stay byte-identical.
+   */
+  nativeDocument?: Readonly<{ documentKey: string }>;
   projectId: string;
   projectName: string;
   renderCapability: ManimRenderCapability;
@@ -539,6 +545,10 @@ export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z
   .object({
     commandAvailable: z.boolean(),
     frame: z.object({ height: finiteNumber.positive(), width: finiteNumber.positive() }).strict(),
+    nativeDocument: z
+      .object({ documentKey: z.string().regex(/^[0-9a-f]{64}$/u) })
+      .strict()
+      .optional(),
     projectId: manimProjectIdSchema,
     projectName: z.string().min(1).max(120),
     renderCapability: manimRenderCapabilitySchema,
