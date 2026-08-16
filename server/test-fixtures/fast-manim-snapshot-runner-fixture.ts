@@ -31,7 +31,7 @@ import type { FastManimSnapshotPngProviderV1 } from "../fast-manim-snapshot-png-
 import type { ProducerGroupKill, ProducerProcessTimings } from "../fast-manim-snapshot-producer-process";
 import {
   FastManimSnapshotAdmissionController,
-  FastManimSnapshotPublicationStore,
+  FastManimSnapshotPreviewCache,
   FastManimSnapshotRunner,
 } from "../fast-manim-snapshot-runner";
 import type { StructuredLogger } from "../logging/structured-logger";
@@ -114,14 +114,14 @@ export function createRunner(
     enabled?: boolean;
     killProcessGroup?: ProducerGroupKill;
     logger?: StructuredLogger;
+    cacheRetentionMs?: number;
+    maxCachedBytes?: number;
+    maxCachedSnapshots?: number;
     maxConcurrentRuns?: number;
-    maxPublishedBytes?: number;
-    maxPublishedSnapshots?: number;
+    previewCache?: FastManimSnapshotPreviewCache;
     producerEnv?: Readonly<Record<string, string>>;
     producerProcessTimings?: Partial<ProducerProcessTimings>;
     pngProvider?: FastManimSnapshotPngProviderV1;
-    publicationStore?: FastManimSnapshotPublicationStore;
-    publishRetentionMs?: number;
     runtimeDirectoryRemover?: (runtimeDir: string) => Promise<void>;
     snapshotVersion?: FastManimSnapshotProfileVersionV1;
     sourceReadHooks?: ManimSourceReadHooks;
@@ -143,22 +143,22 @@ export function createRunner(
         })
       : undefined);
   return new FastManimSnapshotRunner({
-    // Tests isolate admission and publication state by default; shared-cap
+    // Tests isolate admission and preview-cache state by default; shared-cap
     // and shared-budget tests inject one instance across runners explicitly.
     attestationVerifier: options.attestationVerifier,
     backend,
+    cacheRetentionMs: options.cacheRetentionMs,
     capabilities: options.capabilities,
     deployment: options.deployment ?? "test",
     frame: { height: 8, width: 14.222222222222221 },
     logger: options.logger,
+    maxCachedBytes: options.maxCachedBytes,
+    maxCachedSnapshots: options.maxCachedSnapshots,
     maxConcurrentRuns: options.maxConcurrentRuns,
-    maxPublishedBytes: options.maxPublishedBytes,
-    maxPublishedSnapshots: options.maxPublishedSnapshots,
+    previewCache: options.previewCache ?? new FastManimSnapshotPreviewCache(),
     projectId: "default",
     projectRoot: root,
     pngProvider: options.pngProvider,
-    publicationStore: options.publicationStore ?? new FastManimSnapshotPublicationStore(),
-    publishRetentionMs: options.publishRetentionMs,
     sourceReadHooks: options.sourceReadHooks,
     // Existing runner unit tests exercise one concrete historical profile.
     // Opt in explicitly when a test targets the producer-owned selector.

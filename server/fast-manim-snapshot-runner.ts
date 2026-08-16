@@ -109,7 +109,7 @@ import {
   fastManimSnapshotRuntimeConfigForProfileV1,
   parseFastManimSnapshotProfileSelectionResultV1,
 } from "./fast-manim-snapshot-profile-selection";
-import { type FastManimSnapshotPublicationStore, processPublicationStore } from "./fast-manim-snapshot-publication";
+import { type FastManimSnapshotPreviewCache, processSnapshotCache } from "./fast-manim-snapshot-preview-cache";
 import {
   type FastManimSnapshotSourceProviderV1,
   type FastManimSnapshotSourceReadV1,
@@ -126,21 +126,21 @@ import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimSourceReadHooks } from "./manim-source-store";
 
-// Publication accounting and admission control live in
-// ./fast-manim-snapshot-publication; the subprocess supervision state machine
-// lives in ./fast-manim-snapshot-producer-process. Both are re-exported below
-// so the public surface of this module is unchanged.
+// Preview-cache accounting and admission control live in
+// ./fast-manim-snapshot-preview-cache; the subprocess supervision state
+// machine lives in ./fast-manim-snapshot-producer-process. Both are
+// re-exported below so the public surface of this module is unchanged.
 export {
   FastManimSnapshotAdmissionController,
-  FastManimSnapshotPublicationStore,
-} from "./fast-manim-snapshot-publication";
+  FastManimSnapshotPreviewCache,
+} from "./fast-manim-snapshot-preview-cache";
 
 const DEFAULT_SNAPSHOT_TIMEOUT_MS = 20_000;
 const MAX_SNAPSHOT_TIMEOUT_MS = 300_000;
 const DEFAULT_MAX_CONCURRENT_SNAPSHOT_RUNS = 2;
-const DEFAULT_MAX_PUBLISHED_SNAPSHOTS = 16;
-const DEFAULT_MAX_PUBLISHED_BYTES = 16 * 1024 * 1024;
-const DEFAULT_PUBLISH_RETENTION_MS = 30 * 60_000;
+const DEFAULT_MAX_CACHED_SNAPSHOTS = 16;
+const DEFAULT_MAX_CACHED_BYTES = 16 * 1024 * 1024;
+const DEFAULT_CACHE_RETENTION_MS = 30 * 60_000;
 const SANDBOX_STATUS_SETTLE_GRACE_MS = 100;
 const MAX_SANDBOX_OPERATION_SETTLE_GRACE_MS = 10_000;
 const MAX_SANDBOX_STATUS_TIMEOUT_MS = 2_000;
@@ -158,7 +158,7 @@ function parseServerOwnedFastManimRunView(value: unknown): FastManimSnapshotRunV
     ...parsed,
     // Zod intentionally clones its output. Revalidate that clone and replace
     // it with a deep-frozen server-owned map before any API caller receives a
-    // reference; the publication store retains a separate frozen copy.
+    // reference; the preview cache retains a separate frozen copy.
     sourceRuntimeIdentity: parseServerOwnedSourceRuntimeIdentityMapV1(parsed.sourceRuntimeIdentity),
   };
 }
@@ -326,13 +326,13 @@ export class FastManimSnapshotRunner {
   private readonly frame: Readonly<{ height: number; width: number }>;
   private readonly logger: StructuredLogger;
   private readonly maxConcurrentRuns: number;
-  private readonly maxPublishedBytes: number;
-  private readonly maxPublishedSnapshots: number;
+  private readonly maxCachedBytes: number;
+  private readonly maxCachedSnapshots: number;
   private ownerId: number | null = null;
   private readonly projectId: string;
   private readonly pngProvider: FastManimSnapshotPngProviderV1 | undefined;
-  private readonly publicationStore: FastManimSnapshotPublicationStore;
-  private readonly publishRetentionMs: number;
+  private readonly previewCache: FastManimSnapshotPreviewCache;
+  private readonly cacheRetentionMs: number;
   private readonly sandboxCloseGraceMs: number;
   private readonly snapshotVersion: FastManimSnapshotProfileVersionV1 | undefined;
   private readonly sourceProvider: FastManimSnapshotSourceProviderV1;
@@ -349,13 +349,13 @@ export class FastManimSnapshotRunner {
       frame: Readonly<{ height: number; width: number }>;
       logger?: StructuredLogger;
       maxConcurrentRuns?: number;
-      maxPublishedBytes?: number;
-      maxPublishedSnapshots?: number;
+      maxCachedBytes?: number;
+      maxCachedSnapshots?: number;
       projectId: string;
       projectRoot?: string;
       pngProvider?: FastManimSnapshotPngProviderV1;
-      publicationStore?: FastManimSnapshotPublicationStore;
-      publishRetentionMs?: number;
+      previewCache?: FastManimSnapshotPreviewCache;
+      cacheRetentionMs?: number;
       sandboxCloseGraceMs?: number;
       snapshotVersion?: FastManimSnapshotProfileVersionV1;
       sourceReadHooks?: ManimSourceReadHooks;
@@ -373,17 +373,17 @@ export class FastManimSnapshotRunner {
     if (!Number.isSafeInteger(maxConcurrentRuns) || maxConcurrentRuns <= 0) {
       throw new TypeError("Maximum concurrent snapshot runs must be a positive integer.");
     }
-    const maxPublishedSnapshots = options.maxPublishedSnapshots ?? DEFAULT_MAX_PUBLISHED_SNAPSHOTS;
-    if (!Number.isSafeInteger(maxPublishedSnapshots) || maxPublishedSnapshots <= 0) {
-      throw new TypeError("Maximum published snapshots must be a positive integer.");
+    const maxCachedSnapshots = options.maxCachedSnapshots ?? DEFAULT_MAX_CACHED_SNAPSHOTS;
+    if (!Number.isSafeInteger(maxCachedSnapshots) || maxCachedSnapshots <= 0) {
+      throw new TypeError("Maximum cached snapshots must be a positive integer.");
     }
-    const maxPublishedBytes = options.maxPublishedBytes ?? DEFAULT_MAX_PUBLISHED_BYTES;
-    if (!Number.isSafeInteger(maxPublishedBytes) || maxPublishedBytes <= 0) {
-      throw new TypeError("Maximum published snapshot bytes must be a positive integer.");
+    const maxCachedBytes = options.maxCachedBytes ?? DEFAULT_MAX_CACHED_BYTES;
+    if (!Number.isSafeInteger(maxCachedBytes) || maxCachedBytes <= 0) {
+      throw new TypeError("Maximum cached snapshot bytes must be a positive integer.");
     }
-    const publishRetentionMs = options.publishRetentionMs ?? DEFAULT_PUBLISH_RETENTION_MS;
-    if (!Number.isSafeInteger(publishRetentionMs) || publishRetentionMs <= 0) {
-      throw new TypeError("Published snapshot retention must be a positive integer of milliseconds.");
+    const cacheRetentionMs = options.cacheRetentionMs ?? DEFAULT_CACHE_RETENTION_MS;
+    if (!Number.isSafeInteger(cacheRetentionMs) || cacheRetentionMs <= 0) {
+      throw new TypeError("Cached snapshot retention must be a positive integer of milliseconds.");
     }
     if ((options.projectRoot === undefined) === (options.sourceProvider === undefined)) {
       throw new TypeError("Provide exactly one filesystem project root or durable snapshot source provider.");
@@ -416,8 +416,8 @@ export class FastManimSnapshotRunner {
     this.frame = Object.freeze({ height: options.frame.height, width: options.frame.width });
     this.logger = options.logger ?? nullLogger;
     this.maxConcurrentRuns = maxConcurrentRuns;
-    this.maxPublishedBytes = maxPublishedBytes;
-    this.maxPublishedSnapshots = maxPublishedSnapshots;
+    this.maxCachedBytes = maxCachedBytes;
+    this.maxCachedSnapshots = maxCachedSnapshots;
     const configuredIdentity = parseFastManimSandboxJobIdentityV1({
       projectId: options.projectId,
       requestId: "runner-configuration",
@@ -425,8 +425,8 @@ export class FastManimSnapshotRunner {
     });
     this.projectId = configuredIdentity.projectId;
     this.pngProvider = options.pngProvider;
-    this.publicationStore = options.publicationStore ?? processPublicationStore;
-    this.publishRetentionMs = publishRetentionMs;
+    this.previewCache = options.previewCache ?? processSnapshotCache;
+    this.cacheRetentionMs = cacheRetentionMs;
     this.sandboxCloseGraceMs = sandboxCloseGraceMs;
     this.sourceProvider =
       options.sourceProvider ??
@@ -445,7 +445,7 @@ export class FastManimSnapshotRunner {
   }
 
   get busy() {
-    // Publication lookups revalidate asynchronously, so they hold the runner
+    // Cache lookups revalidate asynchronously, so they hold the runner
     // busy too: unregister/close must never race a held GET.
     return (
       this.activeJobs.size > 0 ||
@@ -788,7 +788,7 @@ export class FastManimSnapshotRunner {
     return parseServerOwnedFastManimRunView(await this.runRequest(requestValue, true, signal));
   }
 
-  /** Verify one sandbox result without assigning process-local publication state. */
+  /** Verify one sandbox result without assigning process-local preview-cache state. */
   async runUnpublished(
     requestValue: FastManimSnapshotRunRequestV1,
     signal?: AbortSignal,
@@ -796,7 +796,7 @@ export class FastManimSnapshotRunner {
     return this.runRequest(requestValue, false, signal) as Promise<FastManimUnpublishedSnapshotRunViewV1>;
   }
 
-  /** Execute a verified Runtime Trace preview without publication or cache state. */
+  /** Execute a verified Runtime Trace preview without preview-cache state. */
   async runRuntimeTrace(
     requestValue: FastManimRuntimeTraceRunRequestV1,
     signal?: AbortSignal,
@@ -968,7 +968,7 @@ export class FastManimSnapshotRunner {
     };
   }
 
-  /** Executes one generic edit preflight without publication or cache state. */
+  /** Executes one generic edit preflight without preview-cache state. */
   async runRuntimeTraceCandidateUnpublished(
     sourceText: string,
     requestValue: FastManimRuntimeTraceCandidateRunRequestV1,
@@ -1252,7 +1252,7 @@ export class FastManimSnapshotRunner {
 
   private async runRequest(
     requestValue: FastManimSnapshotRunRequestV1,
-    publishLocally: boolean,
+    cacheLocally: boolean,
     signal?: AbortSignal,
   ): Promise<FastManimSnapshotRunViewV1 | FastManimUnpublishedSnapshotRunViewV1> {
     const request = fastManimSnapshotRunRequestV1Schema.parse(requestValue);
@@ -1267,7 +1267,7 @@ export class FastManimSnapshotRunner {
       "A Scene snapshot run is already in progress for this source and Scene.",
       "Too many concurrent Scene snapshot runs.",
     );
-    const pending = this.runLocked(request, publishLocally, signal);
+    const pending = this.runLocked(request, cacheLocally, signal);
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
@@ -1280,7 +1280,7 @@ export class FastManimSnapshotRunner {
 
   private async runLocked(
     request: FastManimSnapshotRunRequestV1,
-    publishLocally: boolean,
+    cacheLocally: boolean,
     signal?: AbortSignal,
   ): Promise<FastManimSnapshotRunViewV1 | FastManimUnpublishedSnapshotRunViewV1> {
     const throwIfHalted = () => {
@@ -1564,10 +1564,7 @@ export class FastManimSnapshotRunner {
     }
 
     const encodedBytes = Buffer.byteLength(JSON.stringify({ snapshot: sealed, sourceRuntimeIdentity }), "utf8");
-    if (
-      encodedBytes > this.maxPublishedBytes ||
-      (publishLocally && !this.publicationStore.fitsSingleEntry(encodedBytes))
-    ) {
+    if (encodedBytes > this.maxCachedBytes || (cacheLocally && !this.previewCache.fitsSingleEntry(encodedBytes))) {
       return failed("snapshot-too-large");
     }
 
@@ -1578,32 +1575,36 @@ export class FastManimSnapshotRunner {
       ...(sourceRuntimeIdentity === null ? {} : { sourceRuntimeIdentity }),
       status: "verified",
     } as const satisfies FastManimUnpublishedSnapshotRunViewV1;
-    if (!publishLocally) {
+    if (!cacheLocally) {
       this.logger.info("snapshot.verified", { requestId: request.requestId });
       return verified;
     }
     const key = sceneKey(request.sourcePath, request.sceneName);
-    const { publishedAt, revision } = this.publish(key, expected, sealed, sourceRuntimeIdentity, encodedBytes);
-    this.logger.info("snapshot.published", { requestId: request.requestId, revision });
+    const { cachedAt, cacheSequence } = this.cacheVerified(key, expected, sealed, sourceRuntimeIdentity, encodedBytes);
+    this.logger.info("snapshot.cached", { cacheSequence, requestId: request.requestId });
     return {
       ...verified,
-      publishedAt,
-      revision,
+      // Wire-frozen compatibility fields (ADR 0005, `publication`/`revision`
+      // dispositions): the run view keeps the `publishedAt`/`revision` names,
+      // but locally they carry the preview cache's insertion time and
+      // cache-global sequence, not a durable Publication generation.
+      publishedAt: cachedAt,
+      revision: cacheSequence,
     };
   }
 
   private localOwnerId() {
-    this.ownerId ??= this.publicationStore.registerOwner();
+    this.ownerId ??= this.previewCache.registerOwner();
     return this.ownerId;
   }
 
   private evictExpired(ownerId: number, now: number) {
-    for (const [key, entry] of this.publicationStore.entriesOf(ownerId)) {
-      if (now - entry.publishedAtEpochMs > this.publishRetentionMs) this.publicationStore.delete(ownerId, key);
+    for (const [key, entry] of this.previewCache.entriesOf(ownerId)) {
+      if (now - entry.cachedAtEpochMs > this.cacheRetentionMs) this.previewCache.delete(ownerId, key);
     }
   }
 
-  private publish(
+  private cacheVerified(
     key: string,
     expected: ExpectedFastManimSnapshotCorrelationV1,
     result: VerifiedCompiledFastManimSnapshotResultV1,
@@ -1613,19 +1614,19 @@ export class FastManimSnapshotRunner {
     const now = Date.now();
     const ownerId = this.localOwnerId();
     this.evictExpired(ownerId, now);
-    // Revisions come from the shared store's single monotonic sequence, so
-    // neither eviction, TTL expiry, nor another tenant's publications can
-    // ever make a republished Scene appear older than a cached copy.
-    const revision = this.publicationStore.nextRevision();
-    const publishedAt = new Date(now).toISOString();
-    const evicted = this.publicationStore.publish(
+    // Cache sequences come from the shared cache's single monotonic sequence,
+    // so neither eviction, TTL expiry, nor another tenant's entries can ever
+    // make a freshly recached Scene appear older than a stale cached copy.
+    const cacheSequence = this.previewCache.nextCacheSequence();
+    const cachedAt = new Date(now).toISOString();
+    const evicted = this.previewCache.insert(
       ownerId,
       key,
-      { encodedBytes, expected, publishedAt, publishedAtEpochMs: now, result, revision, sourceRuntimeIdentity },
-      { maxBytes: this.maxPublishedBytes, maxEntries: this.maxPublishedSnapshots },
+      { cachedAt, cachedAtEpochMs: now, cacheSequence, encodedBytes, expected, result, sourceRuntimeIdentity },
+      { maxBytes: this.maxCachedBytes, maxEntries: this.maxCachedSnapshots },
     );
     if (evicted > 0) this.logger.info("snapshot.evicted", { evicted });
-    return { publishedAt, revision };
+    return { cachedAt, cacheSequence };
   }
 
   private async produce(
@@ -1858,7 +1859,7 @@ export class FastManimSnapshotRunner {
     // freshness read, so a concurrent same-key republish can supersede it
     // mid-flight. Every terminal action below is entry-conditional
     // (compare-and-delete, compare-before-return); when the held entry is no
-    // longer current the lookup retries against the fresh publication instead
+    // longer current the lookup retries against the freshly cached entry instead
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const view = await this.lookupCurrentEntry(query);
       if (view !== null) return view;
@@ -1873,16 +1874,16 @@ export class FastManimSnapshotRunner {
     const key = sceneKey(query.sourcePath, query.sceneName);
     const ownerId = this.ownerId;
     if (ownerId === null) throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
-    const entry = this.publicationStore.get(ownerId, key);
+    const entry = this.previewCache.get(ownerId, key);
     if (!entry) throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
     if (query.runtimeConfigHash !== undefined && query.runtimeConfigHash !== entry.expected.runtimeConfigHash) {
       throw new HttpError("No verified Scene snapshot has been published for this runtime profile.", 404);
     }
-    const entryIsCurrent = () => this.publicationStore.peek(ownerId, key) === entry;
+    const entryIsCurrent = () => this.previewCache.peek(ownerId, key) === entry;
     const deleteIfCurrent = () => {
-      if (entryIsCurrent()) this.publicationStore.delete(ownerId, key);
+      if (entryIsCurrent()) this.previewCache.delete(ownerId, key);
     };
-    if (Date.now() - entry.publishedAtEpochMs > this.publishRetentionMs) {
+    if (Date.now() - entry.cachedAtEpochMs > this.cacheRetentionMs) {
       if (!entryIsCurrent()) return null;
       deleteIfCurrent();
       throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
@@ -1926,14 +1927,15 @@ export class FastManimSnapshotRunner {
       // return a stale view once the GET-vs-close boundary has been crossed.
       throwIfClosing();
       // Stale only applies to the entry this lookup actually validated: if a
-      // republish superseded it, the fresh entry must survive and the lookup
-      // retries instead of reporting the dead revision.
+      // recache superseded it, the fresh entry must survive and the lookup
+      // retries instead of reporting the dead cache sequence.
       if (!entryIsCurrent()) return null;
-      this.publicationStore.delete(ownerId, key);
+      this.previewCache.delete(ownerId, key);
       return fastManimSnapshotRunViewV1Schema.parse({
         ...base,
         fallback: FAST_MANIM_SNAPSHOT_FALLBACK_V1,
-        revision: entry.revision,
+        // Wire-frozen `revision` field (ADR 0005): carries the cache sequence.
+        revision: entry.cacheSequence,
         status: "stale",
       });
     };
@@ -1955,12 +1957,14 @@ export class FastManimSnapshotRunner {
       return staleView();
     }
     throwIfClosing();
-    // Never serve a revision that a concurrent republish already superseded.
+    // Never serve an entry that a concurrent recache already superseded.
     if (!entryIsCurrent()) return null;
     return parseServerOwnedFastManimRunView({
       ...base,
-      publishedAt: entry.publishedAt,
-      revision: entry.revision,
+      // Wire-frozen compatibility fields (ADR 0005): `publishedAt`/`revision`
+      // carry the preview cache's insertion time and cache sequence here.
+      publishedAt: entry.cachedAt,
+      revision: entry.cacheSequence,
       snapshot: revalidated,
       ...(sourceRuntimeIdentity === null ? {} : { sourceRuntimeIdentity }),
       status: "verified",
@@ -2001,9 +2005,9 @@ export class FastManimSnapshotRunner {
     this.closing = true;
     for (const job of this.activeJobs) this.abortJob(job);
     this.shutdownController.abort();
-    // Wait for every in-flight run and publication lookup to settle so
-    // nothing publishes or serves after close, then return this runner's
-    // publication accounting to the shared budget.
+    // Wait for every in-flight run and cache lookup to settle so nothing
+    // caches or serves after close, then return this runner's preview-cache
+    // accounting to the shared budget.
     await Promise.allSettled([...this.activeRuns, ...this.activeLookups]);
     try {
       try {
@@ -2032,7 +2036,7 @@ export class FastManimSnapshotRunner {
       // itself become an unbounded memory leak.
       this.activeJobs.clear();
       this.activeStatuses.clear();
-      if (this.ownerId !== null) this.publicationStore.releaseOwner(this.ownerId);
+      if (this.ownerId !== null) this.previewCache.releaseOwner(this.ownerId);
     }
   }
 }

@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 
 import { FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1, ZERO_SHA256 } from "./fast-manim-snapshot-contract";
-import { FastManimSnapshotAdmissionController, FastManimSnapshotPublicationStore } from "./fast-manim-snapshot-runner";
+import { FastManimSnapshotAdmissionController, FastManimSnapshotPreviewCache } from "./fast-manim-snapshot-runner";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { sourceHash } from "./manim-source-store";
 import {
@@ -27,10 +27,10 @@ import {
 const { projectRoot, reapAfterTest, temporaryRoots } = installFastManimSnapshotRunnerFixture();
 
 describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
-  it("verifies an externally published result without allocating local publication state", async () => {
-    const publicationStore = new FastManimSnapshotPublicationStore();
-    const registerOwner = vi.spyOn(publicationStore, "registerOwner");
-    const runner = createRunner(await projectRoot(), producerCommand(), { publicationStore });
+  it("verifies an externally published result without allocating local preview-cache state", async () => {
+    const previewCache = new FastManimSnapshotPreviewCache();
+    const registerOwner = vi.spyOn(previewCache, "registerOwner");
+    const runner = createRunner(await projectRoot(), producerCommand(), { previewCache });
 
     const view = await runner.runUnpublished(runRequest());
 
@@ -143,14 +143,14 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const records: StructuredLogRecord[] = [];
     const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
     const admissionController = new FastManimSnapshotAdmissionController();
-    const publicationStore = new FastManimSnapshotPublicationStore();
+    const previewCache = new FastManimSnapshotPreviewCache();
     let runtimeDir = "";
     let removalCount = 0;
     let rejectionPropertyReads = 0;
     const runner = createRunner(await projectRoot(), producerCommand(), {
       admissionController,
       logger,
-      publicationStore,
+      previewCache,
       runtimeDirectoryRemover: async (path) => {
         runtimeDir = path;
         await rm(path, { force: true, recursive: true });
@@ -177,14 +177,14 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     });
     const expected = { message: "The Scene snapshot runtime directory could not be cleaned up.", status: 500 };
     expect((await runner.run(runRequest())).status).toBe("verified");
-    expect(publicationStore.entriesOf(1).map(([, entry]) => entry.revision)).toEqual([1]);
+    expect(previewCache.entriesOf(1).map(([, entry]) => entry.cacheSequence)).toEqual([1]);
     await expect(runner.run(runRequest({ requestId: "snapshot-request-2" }))).rejects.toMatchObject(expected);
-    // The cleanup-failing run never publishes over the prior verified entry.
-    expect(publicationStore.entriesOf(1).map(([, entry]) => entry.revision)).toEqual([1]);
+    // The cleanup-failing run never caches over the prior verified entry.
+    expect(previewCache.entriesOf(1).map(([, entry]) => entry.cacheSequence)).toEqual([1]);
     await expect(runner.close()).rejects.toMatchObject(expected);
     expect(admissionController.activeCount).toBe(0);
     // close releases the prior entry even though it must also surface cleanup failure.
-    expect(publicationStore.entriesOf(1)).toEqual([]);
+    expect(previewCache.entriesOf(1)).toEqual([]);
     expect(runtimeDir).toContain("poietra-producer-");
     expect(rejectionPropertyReads).toBe(0);
     const serializedLogs = JSON.stringify(records);
@@ -233,12 +233,12 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     },
   );
 
-  it("lets close win when stored-snapshot re-verification rejects", async () => {
-    const store = new FastManimSnapshotPublicationStore();
-    const runner = createRunner(await projectRoot(), producerCommand(), { publicationStore: store });
+  it("lets close win when cached-snapshot re-verification rejects", async () => {
+    const cache = new FastManimSnapshotPreviewCache();
+    const runner = createRunner(await projectRoot(), producerCommand(), { previewCache: cache });
     expect((await runner.run(runRequest())).status).toBe("verified");
-    const entry = store.entriesOf(1)[0]?.[1];
-    if (!entry) throw new Error("Expected the first runner owner to have a publication.");
+    const entry = cache.entriesOf(1)[0]?.[1];
+    if (!entry) throw new Error("Expected the first runner owner to have a cached entry.");
     (entry.result as { snapshotHash: string }).snapshotHash = ZERO_SHA256;
     const lookup = runner.snapshot(exampleQuery);
     lookup.catch(() => undefined);
