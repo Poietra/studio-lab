@@ -27,13 +27,18 @@ const EXPORT_ENCODER_REFUSAL_REASONS = [
   "unsupported-codec",
 ] as const;
 
-const H264_CODEC_LADDER = ["avc1.640028", "avc1.42E01F"] as const;
+const H264_CODEC_LADDER = ["avc1.64002A", "avc1.640028", "avc1.42E01F"] as const;
 
 const ENCODE_FRAME_COUNT = 10;
 const ENCODE_WIDTH_PX = 320;
 const ENCODE_HEIGHT_PX = 240;
-const ENCODE_FRAMES_PER_SECOND = 30;
+const ENCODE_FRAME_RATES = [30, 60] as const;
 const ENCODE_BITRATE = 2_000_000;
+
+const EXPECTED_TIMESTAMPS_BY_FRAME_RATE = {
+  30: [0, 33_333, 66_666, 100_000, 133_333, 166_666, 200_000, 233_333, 266_666, 300_000],
+  60: [0, 16_666, 33_333, 50_000, 66_666, 83_333, 100_000, 116_666, 133_333, 150_000],
+} as const;
 
 type ExportEncoderResultV1 = Readonly<Record<string, unknown>> & Readonly<{ kind: string }>;
 
@@ -51,6 +56,7 @@ type ExportEncodeProofV1 = Readonly<{
     descriptionByteLength?: number;
     descriptionFirstByte?: number | null;
     finish: ExportEncoderResultV1;
+    fractionalTimestampRefusal?: ExportEncoderResultV1;
     pushResponses: readonly ExportEncoderResultV1[];
   }> | null;
   invalidCreateRejection: Readonly<{ message: string; name: string }> | null;
@@ -58,7 +64,10 @@ type ExportEncodeProofV1 = Readonly<{
   probe: ExportEncoderResponseV1;
 }>;
 
-async function proveExportEncode(page: Page): Promise<ExportEncodeProofV1> {
+async function proveExportEncode(
+  page: Page,
+  framesPerSecond: (typeof ENCODE_FRAME_RATES)[number],
+): Promise<ExportEncodeProofV1> {
   await page.goto("/");
   return page.evaluate(
     async ({ bitrate, frameCount, framesPerSecond, heightPx, widthPx }) => {
@@ -99,17 +108,17 @@ async function proveExportEncode(page: Page): Promise<ExportEncodeProofV1> {
     {
       bitrate: ENCODE_BITRATE,
       frameCount: ENCODE_FRAME_COUNT,
-      framesPerSecond: ENCODE_FRAMES_PER_SECOND,
+      framesPerSecond,
       heightPx: ENCODE_HEIGHT_PX,
       widthPx: ENCODE_WIDTH_PX,
     },
   );
 }
 
-test("export encoder probe returns a bounded closed-contract verdict and refuses invalid sessions by name", async ({
-  page,
-}) => {
-  const proof = await proveExportEncode(page);
+test("export encoder probe returns a bounded closed-contract verdict and refuses invalid sessions by name", {
+  tag: "@ci-smoke",
+}, async ({ page }) => {
+  const proof = await proveExportEncode(page, 30);
 
   expect(proof.probe.schema).toBe("poietra.export-encoder-response");
   expect(proof.probe.version).toBe(1);
@@ -129,64 +138,67 @@ test("export encoder probe returns a bounded closed-contract verdict and refuses
   expect(proof.invalidCreateRejection?.message).toMatch(/^invalid-request: /);
 });
 
-test("a proven codec encodes ten gradient frames into keyframe-first chunks with decoderConfig evidence", async ({
-  page,
-}) => {
-  const proof = await proveExportEncode(page);
+for (const framesPerSecond of ENCODE_FRAME_RATES) {
+  test(`a proven codec encodes ${ENCODE_FRAME_COUNT} frames at ${framesPerSecond} fps with ordered integer timestamps`, {
+    tag: "@ci-smoke",
+  }, async ({ page }) => {
+    const proof = await proveExportEncode(page, framesPerSecond);
 
-  test.skip(
-    proof.probe.result.kind !== "supported",
-    `The fail-closed probe refused H.264 encoding here: ${JSON.stringify(proof.probe.result)}`,
-  );
-  expect(proof.encode).not.toBeNull();
-  const encode = proof.encode;
-  if (!encode) throw new Error("unreachable: the supported probe produced no encode proof");
+    test.skip(
+      proof.probe.result.kind !== "supported",
+      `The fail-closed probe refused H.264 encoding here: ${JSON.stringify(proof.probe.result)}`,
+    );
+    expect(proof.encode).not.toBeNull();
+    const encode = proof.encode;
+    if (!encode) throw new Error("unreachable: the supported probe produced no encode proof");
 
-  expect(encode.pushResponses).toHaveLength(ENCODE_FRAME_COUNT);
-  for (const [frameIndex, pushResult] of encode.pushResponses.entries()) {
-    expect(pushResult.kind).toBe("accepted");
-    expect(pushResult.frameIndex).toBe(frameIndex);
-    // Ten frames at 30 fps stay inside one 2-second cadence window, so only
-    // the first frame is cadence-forced.
-    expect(pushResult.keyFrame).toBe(frameIndex === 0);
-  }
+    expect(encode.pushResponses).toHaveLength(ENCODE_FRAME_COUNT);
+    expect(encode.fractionalTimestampRefusal?.kind).toBe("refused");
+    expect(encode.fractionalTimestampRefusal?.reason).toBe("invalid-frame");
+    for (const [frameIndex, pushResult] of encode.pushResponses.entries()) {
+      expect(pushResult.kind).toBe("accepted");
+      expect(pushResult.frameIndex).toBe(frameIndex);
+      expect(pushResult.keyFrame).toBe(frameIndex === 0);
+    }
 
-  expect(encode.finish.kind).toBe("finished");
-  expect(encode.finish.chunkCount).toBe(ENCODE_FRAME_COUNT);
-  expect(encode.finish.keyFrameCount).toBeGreaterThanOrEqual(1);
+    expect(encode.finish.kind).toBe("finished");
+    expect(encode.finish.chunkCount).toBe(ENCODE_FRAME_COUNT);
+    expect(encode.finish.keyFrameCount).toBeGreaterThanOrEqual(1);
 
-  const statuses = encode.chunkStatuses ?? [];
-  const byteLengths = encode.chunkByteLengths ?? [];
-  expect(statuses).toHaveLength(ENCODE_FRAME_COUNT);
-  expect(byteLengths).toHaveLength(ENCODE_FRAME_COUNT);
-  const pushedTimestamps = Array.from(
-    { length: ENCODE_FRAME_COUNT },
-    (_, frameIndex) => (frameIndex * 1_000_000) / ENCODE_FRAMES_PER_SECOND,
-  );
-  let totalBytes = 0;
-  for (const [index, status] of statuses.entries()) {
-    expect(status.kind).toBe("chunk");
-    expect(status.index).toBe(index);
-    expect(status.byteLength).toBe(byteLengths[index]);
-    expect(byteLengths[index]).toBeGreaterThan(0);
-    expect(pushedTimestamps).toContain(status.timestampMicroseconds);
-    totalBytes += byteLengths[index] ?? 0;
-  }
-  expect(statuses[0]?.keyFrame).toBe(true);
-  expect(statuses[0]?.timestampMicroseconds).toBe(0);
-  expect(encode.finish.totalByteLength).toBe(totalBytes);
+    const statuses = encode.chunkStatuses ?? [];
+    const byteLengths = encode.chunkByteLengths ?? [];
+    expect(statuses).toHaveLength(ENCODE_FRAME_COUNT);
+    expect(byteLengths).toHaveLength(ENCODE_FRAME_COUNT);
+    let totalBytes = 0;
+    const outputTimestamps = [];
+    for (const [index, status] of statuses.entries()) {
+      expect(status.kind).toBe("chunk");
+      expect(status.index).toBe(index);
+      expect(status.byteLength).toBe(byteLengths[index]);
+      expect(byteLengths[index]).toBeGreaterThan(0);
+      expect(typeof status.timestampMicroseconds).toBe("number");
+      outputTimestamps.push(status.timestampMicroseconds as number);
+      totalBytes += byteLengths[index] ?? 0;
+    }
+    expect(outputTimestamps).toEqual(EXPECTED_TIMESTAMPS_BY_FRAME_RATE[framesPerSecond]);
+    for (let index = 1; index < outputTimestamps.length; index += 1) {
+      expect(outputTimestamps[index]).toBeGreaterThan(outputTimestamps[index - 1] ?? Number.MAX_SAFE_INTEGER);
+    }
+    expect(statuses[0]?.keyFrame).toBe(true);
+    expect(encode.finish.totalByteLength).toBe(totalBytes);
 
-  // The avcC AVCDecoderConfigurationRecord always starts with version 0x01.
-  expect(encode.descriptionByteLength).toBeGreaterThanOrEqual(8);
-  expect(encode.descriptionFirstByte).toBe(1);
-  const decoderConfig = encode.finish.decoderConfig as Readonly<{
-    colorSpace: Readonly<Record<string, unknown>>;
-    descriptionByteLength: number;
-  }>;
-  expect(decoderConfig.descriptionByteLength).toBe(encode.descriptionByteLength);
-  expect(typeof decoderConfig.colorSpace).toBe("object");
+    // The avcC AVCDecoderConfigurationRecord always starts with version 0x01.
+    expect(encode.descriptionByteLength).toBeGreaterThanOrEqual(8);
+    expect(encode.descriptionFirstByte).toBe(1);
+    const decoderConfig = encode.finish.decoderConfig as Readonly<{
+      colorSpace: Readonly<Record<string, unknown>>;
+      descriptionByteLength: number;
+    }>;
+    expect(decoderConfig.descriptionByteLength).toBe(encode.descriptionByteLength);
+    expect(typeof decoderConfig.colorSpace).toBe("object");
 
-  // A settled session accepts nothing further, by name.
-  expect(encode.closedSessionRefusal?.kind).toBe("refused");
-  expect(encode.closedSessionRefusal?.reason).toBe("session-closed");
-});
+    // A settled session accepts nothing further, by name.
+    expect(encode.closedSessionRefusal?.kind).toBe("refused");
+    expect(encode.closedSessionRefusal?.reason).toBe("session-closed");
+  });
+}

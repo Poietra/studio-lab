@@ -73,6 +73,10 @@ function gradientFrameRgba(widthPx: number, heightPx: number, frameIndex: number
   return rgba;
 }
 
+function frameTimestampMicroseconds(frameIndex: number, framesPerSecond: number): number {
+  return Math.floor((frameIndex * 1_000_000) / framesPerSecond);
+}
+
 async function captureNamedRejection(operation: () => Promise<unknown>): Promise<NamedRejectionV1 | null> {
   try {
     await operation();
@@ -107,23 +111,32 @@ async function proveExportEncode(request: ProveExportEncodeRequestV1) {
 
   const codec = probe.result.codec;
   if (typeof codec !== "string") throw new Error("The supported probe result carried no codec string.");
-  const session = await bindings.PoietraExportEncoderSessionV1.create(
-    encoder.encode(
-      JSON.stringify({
-        bitrate: request.bitrate,
-        codec,
-        framesPerSecond: request.framesPerSecond,
-        heightPx: request.heightPx,
-        schema: "poietra.export-encoder-session-request",
-        version: 1,
-        widthPx: request.widthPx,
-      }),
-    ),
+  const sessionRequest = encoder.encode(
+    JSON.stringify({
+      bitrate: request.bitrate,
+      codec,
+      framesPerSecond: request.framesPerSecond,
+      heightPx: request.heightPx,
+      schema: "poietra.export-encoder-session-request",
+      version: 1,
+      widthPx: request.widthPx,
+    }),
   );
+  const fractionalTimestampSession = await bindings.PoietraExportEncoderSessionV1.create(sessionRequest);
+  let fractionalTimestampRefusal: ExportEncoderResponseV1["result"];
+  try {
+    fractionalTimestampRefusal = decodeResponse(
+      await fractionalTimestampSession.pushFrame(gradientFrameRgba(request.widthPx, request.heightPx, 0), 0.5),
+    ).result;
+  } finally {
+    fractionalTimestampSession.free();
+  }
+
+  const session = await bindings.PoietraExportEncoderSessionV1.create(sessionRequest);
   try {
     const pushResponses = [];
     for (let frameIndex = 0; frameIndex < request.frameCount; frameIndex += 1) {
-      const timestampMicroseconds = (frameIndex * 1_000_000) / request.framesPerSecond;
+      const timestampMicroseconds = frameTimestampMicroseconds(frameIndex, request.framesPerSecond);
       const response = decodeResponse(
         await session.pushFrame(
           gradientFrameRgba(request.widthPx, request.heightPx, frameIndex),
@@ -133,7 +146,7 @@ async function proveExportEncode(request: ProveExportEncodeRequestV1) {
       pushResponses.push(response.result);
       if (response.result.kind !== "accepted") {
         return {
-          encode: { finish: response.result, pushResponses },
+          encode: { finish: response.result, fractionalTimestampRefusal, pushResponses },
           invalidCreateRejection,
           kind: "export-encode-proof" as const,
           probe,
@@ -143,7 +156,7 @@ async function proveExportEncode(request: ProveExportEncodeRequestV1) {
     const finish = decodeResponse(await session.finish());
     if (finish.result.kind !== "finished") {
       return {
-        encode: { finish: finish.result, pushResponses },
+        encode: { finish: finish.result, fractionalTimestampRefusal, pushResponses },
         invalidCreateRejection,
         kind: "export-encode-proof" as const,
         probe,
@@ -167,6 +180,7 @@ async function proveExportEncode(request: ProveExportEncodeRequestV1) {
         descriptionFirstByte: description.byteLength > 0 ? description[0] : null,
         descriptionByteLength: description.byteLength,
         finish: finish.result,
+        fractionalTimestampRefusal,
         pushResponses,
       },
       invalidCreateRejection,

@@ -24,9 +24,11 @@ use crate::export_encoder_protocol::{
     EXPORT_ENCODER_FLUSH_TIMEOUT_MILLISECONDS_V1, EXPORT_ENCODER_WAIT_TIMEOUT_MILLISECONDS_V1,
     ExportEncoderColorSpaceEvidenceV1, ExportEncoderDecoderConfigEvidenceV1,
     ExportEncoderRefusalReasonV1, ExportEncoderResultV1, ExportEncoderSessionConfigV1,
-    H264_CODEC_LADDER_V1, MAX_ENCODE_QUEUE_DEPTH_V1, MAX_ENCODED_CHUNKS_V1,
-    MAX_TOTAL_ENCODED_BYTES_V1, export_encoder_refusal_result, export_encoder_response,
-    key_frame_required_v1, parse_export_encoder_session_request_v1,
+    H264_CODEC_LADDER_V1, MAX_ENCODED_CHUNKS_V1, MAX_TOTAL_ENCODED_BYTES_V1,
+    admit_javascript_safe_microseconds_v1, encoder_queue_has_capacity_v1,
+    export_encoder_refusal_result, export_encoder_response, frame_duration_microseconds_v1,
+    frame_timestamp_microseconds_v1, key_frame_required_v1,
+    parse_export_encoder_session_request_v1,
 };
 
 const EXPORT_ENCODER_REFUSED_ERROR_NAME: &str = "PoietraExportEncoderRefused";
@@ -34,9 +36,7 @@ const TIMEOUT_SENTINEL_V1: &str = "poietra.export-encoder-timeout";
 const MAX_EXACT_JAVASCRIPT_INTEGER_V1: f64 = 9_007_199_254_740_991.0;
 
 const PROBE_FRAME_DIMENSION_PX_V1: u32 = 64;
-const PROBE_FRAME_RGBA_BYTES_V1: usize = 64 * 64 * 4;
 const PROBE_FRAME_COUNT_V1: usize = 2;
-const PROBE_FRAME_DURATION_MICROSECONDS_V1: f64 = 33_333.0;
 const PROBE_BITRATE_V1: u32 = 1_000_000;
 const PROBE_FRAMES_PER_SECOND_V1: u32 = 30;
 
@@ -117,9 +117,9 @@ impl EncoderFailureV1 {
 #[derive(Debug)]
 struct CollectedChunkV1 {
     bytes: Vec<u8>,
-    duration_microseconds: Option<f64>,
+    duration_microseconds: Option<u64>,
     key_frame: bool,
-    timestamp_microseconds: f64,
+    timestamp_microseconds: u64,
 }
 
 #[derive(Debug)]
@@ -271,9 +271,13 @@ fn rgba_video_frame(
     rgba: &mut [u8],
     width_px: u32,
     height_px: u32,
-    timestamp_microseconds: f64,
-    duration_microseconds: f64,
+    timestamp_microseconds: u64,
+    duration_microseconds: u64,
 ) -> Result<web_sys::VideoFrame, EncoderFailureV1> {
+    #[allow(clippy::cast_precision_loss)]
+    let timestamp_microseconds = timestamp_microseconds as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let duration_microseconds = duration_microseconds as f64;
     let init = web_sys::VideoFrameBufferInit::new_with_f64(
         height_px,
         width_px,
@@ -355,6 +359,29 @@ fn collect_decoder_config_evidence(metadata: &JsValue) -> Option<CollectedDecode
     })
 }
 
+fn encoded_chunk_timing(chunk: &EncodedVideoChunk) -> Result<(u64, Option<u64>), EncoderFailureV1> {
+    let timestamp = admit_javascript_safe_microseconds_v1(chunk.timestamp()).ok_or_else(|| {
+        EncoderFailureV1::new(
+            ExportEncoderRefusalReasonV1::EncoderError,
+            "an encoded chunk reported a timestamp outside exact non-negative integer microseconds",
+        )
+    })?;
+    let duration = match chunk.duration() {
+        Some(value) => Some(
+            admit_javascript_safe_microseconds_v1(value)
+                .filter(|duration| *duration > 0)
+                .ok_or_else(|| {
+                    EncoderFailureV1::new(
+                        ExportEncoderRefusalReasonV1::EncoderError,
+                        "an encoded chunk reported a duration outside exact positive integer microseconds",
+                    )
+                })?,
+        ),
+        None => None,
+    };
+    Ok((timestamp, duration))
+}
+
 fn record_encoder_output(shared: &SharedEncoderStateV1, chunk: &JsValue, metadata: &JsValue) {
     if shared.borrow().failure.is_some() {
         return;
@@ -381,6 +408,13 @@ fn record_encoder_output(shared: &SharedEncoderStateV1, chunk: &JsValue, metadat
                     format!("an encoded chunk reported the unknown type {other:?}"),
                 ),
             );
+            return;
+        }
+    };
+    let (timestamp_microseconds, duration_microseconds) = match encoded_chunk_timing(chunk) {
+        Ok(timing) => timing,
+        Err(failure) => {
+            retain_first_encoder_failure(shared, failure);
             return;
         }
     };
@@ -422,14 +456,18 @@ fn record_encoder_output(shared: &SharedEncoderStateV1, chunk: &JsValue, metadat
     }
     let collected = CollectedChunkV1 {
         bytes: destination.to_vec(),
-        duration_microseconds: chunk.duration(),
+        duration_microseconds,
         key_frame,
-        timestamp_microseconds: chunk.timestamp(),
+        timestamp_microseconds,
     };
-    let decoder_config = collect_decoder_config_evidence(metadata);
+    let decoder_config = if shared.borrow().chunks.is_empty() {
+        collect_decoder_config_evidence(metadata)
+    } else {
+        None
+    };
     let mut state = shared.borrow_mut();
     state.total_chunk_bytes += byte_length;
-    if state.decoder_config.is_none() {
+    if state.chunks.is_empty() {
         state.decoder_config = decoder_config;
     }
     state.chunks.push(collected);
@@ -526,7 +564,7 @@ impl EncoderHarnessV1 {
         });
         // Re-check after installing the waiter: a dequeue that fired between
         // the caller's queue-size read and the installation must not stall.
-        if self.encoder.encode_queue_size() <= MAX_ENCODE_QUEUE_DEPTH_V1 {
+        if encoder_queue_has_capacity_v1(self.encoder.encode_queue_size()) {
             wake_dequeue_waiters(&self.shared);
         }
         match await_with_timeout(waiter, EXPORT_ENCODER_WAIT_TIMEOUT_MILLISECONDS_V1).await? {
@@ -538,10 +576,9 @@ impl EncoderHarnessV1 {
         }
     }
 
-    /// Applies dequeue-driven backpressure: awaits while the encoder queue is
-    /// deeper than the declared bound. Frames are never dropped.
-    async fn await_backpressure(&self) -> Result<(), EncoderFailureV1> {
-        while self.encoder.encode_queue_size() > MAX_ENCODE_QUEUE_DEPTH_V1 {
+    /// Waits until one frame can be submitted without exceeding the queue cap.
+    async fn await_enqueue_capacity(&self) -> Result<(), EncoderFailureV1> {
+        while !encoder_queue_has_capacity_v1(self.encoder.encode_queue_size()) {
             if let Some(failure) = read_encoder_failure(&self.shared) {
                 return Err(failure);
             }
@@ -664,41 +701,55 @@ async fn require_config_supported(config: &js_sys::Object) -> Result<(), Encoder
     }
 }
 
-fn solid_probe_frame_rgba(red: u8, green: u8, blue: u8) -> Vec<u8> {
-    let mut rgba = Vec::with_capacity(PROBE_FRAME_RGBA_BYTES_V1);
-    for _ in 0..PROBE_FRAME_RGBA_BYTES_V1 / 4 {
+fn solid_probe_frame_rgba(byte_length: usize, red: u8, green: u8, blue: u8) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(byte_length);
+    for _ in 0..byte_length / 4 {
         rgba.extend_from_slice(&[red, green, blue, 255]);
     }
     rgba
 }
 
-/// Proves one ladder codec with `isConfigSupported` plus a real two-frame
-/// encode: both chunks must arrive, the first must be a key frame, and the
-/// first chunk's metadata must carry `decoderConfig.description`.
-async fn probe_single_codec(codec: &str) -> Result<(), EncoderFailureV1> {
-    let config = build_encoder_config(
-        codec,
-        PROBE_FRAME_DIMENSION_PX_V1,
-        PROBE_FRAME_DIMENSION_PX_V1,
-        PROBE_BITRATE_V1,
-        PROBE_FRAMES_PER_SECOND_V1,
-    )?;
-    require_config_supported(&config).await?;
-    let harness = EncoderHarnessV1::create(&config)?;
-    let probe_frames: [(f64, (u8, u8, u8)); PROBE_FRAME_COUNT_V1] = [
-        (0.0, (255, 0, 0)),
-        (PROBE_FRAME_DURATION_MICROSECONDS_V1, (0, 255, 0)),
-    ];
-    for (timestamp, (red, green, blue)) in probe_frames {
-        let mut rgba = solid_probe_frame_rgba(red, green, blue);
+/// Proves one exact selected configuration with `isConfigSupported` plus a
+/// real two-frame encode. Session admission calls this with the requested
+/// dimensions, frame rate, bitrate, and codec rather than relying on the
+/// smaller ladder-discovery probe.
+async fn prove_encoder_config(
+    config: &ExportEncoderSessionConfigV1,
+    encoder_config: &js_sys::Object,
+) -> Result<(), EncoderFailureV1> {
+    require_config_supported(encoder_config).await?;
+    let harness = EncoderHarnessV1::create(encoder_config)?;
+    let byte_length = config.tight_rgba_byte_length().ok_or_else(|| {
+        EncoderFailureV1::new(
+            ExportEncoderRefusalReasonV1::InvalidRequest,
+            "the probe frame byte length overflowed",
+        )
+    })?;
+    for frame_index in [0_u64, 1] {
+        let timestamp = frame_timestamp_microseconds_v1(frame_index, config.frames_per_second)
+            .ok_or_else(|| {
+                EncoderFailureV1::new(
+                    ExportEncoderRefusalReasonV1::InvalidRequest,
+                    "the probe timestamp is outside the canonical microsecond range",
+                )
+            })?;
+        let duration = frame_duration_microseconds_v1(frame_index, config.frames_per_second)
+            .ok_or_else(|| {
+                EncoderFailureV1::new(
+                    ExportEncoderRefusalReasonV1::InvalidRequest,
+                    "the probe duration is outside the canonical microsecond range",
+                )
+            })?;
+        let (red, green) = if frame_index == 0 { (255, 0) } else { (0, 255) };
+        let mut rgba = solid_probe_frame_rgba(byte_length, red, green, 0);
         let frame = rgba_video_frame(
             &mut rgba,
-            PROBE_FRAME_DIMENSION_PX_V1,
-            PROBE_FRAME_DIMENSION_PX_V1,
+            config.width_px,
+            config.height_px,
             timestamp,
-            PROBE_FRAME_DURATION_MICROSECONDS_V1,
+            duration,
         )?;
-        harness.encode_and_close_frame(&frame, timestamp == 0.0)?;
+        harness.encode_and_close_frame(&frame, frame_index == 0)?;
     }
     harness
         .flush_bounded(EXPORT_ENCODER_WAIT_TIMEOUT_MILLISECONDS_V1)
@@ -725,10 +776,30 @@ async fn probe_single_codec(codec: &str) -> Result<(), EncoderFailureV1> {
     if state.decoder_config.is_none() {
         return Err(EncoderFailureV1::new(
             ExportEncoderRefusalReasonV1::NoDecoderConfig,
-            "the probe chunks carried no decoderConfig.description",
+            "the first probe chunk carried no decoderConfig.description",
         ));
     }
     Ok(())
+}
+
+/// Discovers support for one ladder codec using a bounded 64×64 proof. A
+/// subsequently created session must still prove its exact requested config.
+async fn probe_single_codec(codec: &str) -> Result<(), EncoderFailureV1> {
+    let config = ExportEncoderSessionConfigV1 {
+        bitrate: PROBE_BITRATE_V1,
+        codec: codec.to_owned(),
+        frames_per_second: PROBE_FRAMES_PER_SECOND_V1,
+        height_px: PROBE_FRAME_DIMENSION_PX_V1,
+        width_px: PROBE_FRAME_DIMENSION_PX_V1,
+    };
+    let encoder_config = build_encoder_config(
+        &config.codec,
+        config.width_px,
+        config.height_px,
+        config.bitrate,
+        config.frames_per_second,
+    )?;
+    prove_encoder_config(&config, &encoder_config).await
 }
 
 async fn probe_h264_ladder() -> ExportEncoderResultV1 {
@@ -791,8 +862,8 @@ pub struct PoietraExportEncoderSessionV1 {
     failure: Option<EncoderFailureV1>,
     frame_count: u64,
     harness: EncoderHarnessV1,
-    last_key_frame_timestamp_microseconds: Option<f64>,
-    last_timestamp_microseconds: Option<f64>,
+    last_key_frame_timestamp_microseconds: Option<u64>,
+    last_timestamp_microseconds: Option<u64>,
     state: ExportEncoderSessionStateV1,
 }
 
@@ -809,8 +880,9 @@ impl fmt::Debug for PoietraExportEncoderSessionV1 {
 
 #[wasm_bindgen]
 impl PoietraExportEncoderSessionV1 {
-    /// Validates one bounded session request, requires explicit
-    /// `isConfigSupported` approval, and configures a dedicated encoder.
+    /// Validates one bounded session request, proves that exact selected
+    /// configuration with a real two-frame encode, and then configures a
+    /// fresh dedicated encoder.
     ///
     /// # Errors
     ///
@@ -835,7 +907,7 @@ impl PoietraExportEncoderSessionV1 {
             config.frames_per_second,
         )
         .map_err(|failure| refused_js_error(failure.reason, &failure.message))?;
-        require_config_supported(&encoder_config)
+        prove_encoder_config(&config, &encoder_config)
             .await
             .map_err(|failure| refused_js_error(failure.reason, &failure.message))?;
         let harness = EncoderHarnessV1::create(&encoder_config)
@@ -851,12 +923,14 @@ impl PoietraExportEncoderSessionV1 {
         })
     }
 
-    /// Encodes one tight RGBA frame at the supplied microsecond timestamp.
+    /// Encodes one tight RGBA frame at its canonical integer-microsecond timestamp.
     ///
     /// Applies the 2-second key-frame cadence, closes the `VideoFrame`
-    /// immediately after submission, and awaits dequeue events while the
-    /// encoder queue is deeper than the declared bound. The bounded JSON
-    /// response reports acceptance or one named refusal.
+    /// immediately after submission, and waits for queue capacity before
+    /// enqueueing so depth never exceeds the declared bound. The supplied
+    /// timestamp must equal `floor(frame_index * 1_000_000 / fps)` and round
+    /// trip exactly through a JavaScript number. The bounded JSON response
+    /// reports acceptance or one named refusal.
     #[wasm_bindgen(js_name = pushFrame)]
     pub async fn push_frame(&mut self, mut rgba: Vec<u8>, timestamp_microseconds: f64) -> Vec<u8> {
         if let Some(refusal) = self.reject_unless_encoding() {
@@ -876,27 +950,58 @@ impl PoietraExportEncoderSessionV1 {
                 ),
             ));
         }
-        if !timestamp_microseconds.is_finite()
-            || timestamp_microseconds < 0.0
-            || self
-                .last_timestamp_microseconds
-                .is_some_and(|last| timestamp_microseconds <= last)
+        let Some(expected_timestamp) =
+            frame_timestamp_microseconds_v1(self.frame_count, self.config.frames_per_second)
+        else {
+            return self.fail_session(EncoderFailureV1::new(
+                ExportEncoderRefusalReasonV1::InvalidFrame,
+                "frame timestamp exceeds the canonical JavaScript-safe microsecond range",
+            ));
+        };
+        let Some(timestamp_microseconds) =
+            admit_javascript_safe_microseconds_v1(timestamp_microseconds)
+        else {
+            return self.fail_session(EncoderFailureV1::new(
+                ExportEncoderRefusalReasonV1::InvalidFrame,
+                "frame timestamp must be a non-negative JavaScript-safe integer microsecond",
+            ));
+        };
+        if timestamp_microseconds != expected_timestamp {
+            return self.fail_session(EncoderFailureV1::new(
+                ExportEncoderRefusalReasonV1::InvalidFrame,
+                "frame timestamp must equal floor(frame_index * 1_000_000 / fps)",
+            ));
+        }
+        if self
+            .last_timestamp_microseconds
+            .is_some_and(|last| timestamp_microseconds <= last)
         {
             return self.fail_session(EncoderFailureV1::new(
                 ExportEncoderRefusalReasonV1::InvalidFrame,
-                "frame timestamps must be finite, non-negative and strictly increasing",
+                "canonical frame timestamps must be strictly increasing",
             ));
+        }
+        if let Err(failure) = self.harness.await_enqueue_capacity().await {
+            return self.fail_session(failure);
         }
         let key_frame = key_frame_required_v1(
             self.last_key_frame_timestamp_microseconds,
             timestamp_microseconds,
         );
+        let Some(duration_microseconds) =
+            frame_duration_microseconds_v1(self.frame_count, self.config.frames_per_second)
+        else {
+            return self.fail_session(EncoderFailureV1::new(
+                ExportEncoderRefusalReasonV1::InvalidFrame,
+                "frame duration exceeds the canonical JavaScript-safe microsecond range",
+            ));
+        };
         let frame = match rgba_video_frame(
             &mut rgba,
             self.config.width_px,
             self.config.height_px,
             timestamp_microseconds,
-            self.config.frame_duration_microseconds(),
+            duration_microseconds,
         ) {
             Ok(frame) => frame,
             Err(failure) => return self.fail_session(failure),
@@ -909,9 +1014,6 @@ impl PoietraExportEncoderSessionV1 {
         self.last_timestamp_microseconds = Some(timestamp_microseconds);
         if key_frame {
             self.last_key_frame_timestamp_microseconds = Some(timestamp_microseconds);
-        }
-        if let Err(failure) = self.harness.await_backpressure().await {
-            return self.fail_session(failure);
         }
         export_encoder_response(ExportEncoderResultV1::Accepted {
             frame_index,
@@ -965,7 +1067,7 @@ impl PoietraExportEncoderSessionV1 {
                 match &state.decoder_config {
                     None => Err(EncoderFailureV1::new(
                         ExportEncoderRefusalReasonV1::NoDecoderConfig,
-                        "no chunk metadata carried decoderConfig.description",
+                        "the first chunk metadata carried no decoderConfig.description",
                     )),
                     Some(decoder_config) => {
                         let key_frame_count =
