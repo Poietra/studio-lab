@@ -371,7 +371,8 @@ export type ManimThumbnailStatus = Readonly<{
 
 export type ManimProjectCreateRequest =
   | Readonly<{ kind: "managed"; name: string }>
-  | Readonly<{ kind: "existing"; name: string; root: string }>;
+  | Readonly<{ kind: "existing"; name: string; root: string }>
+  | Readonly<{ kind: "studio-native"; name: string }>;
 
 export type ManimSourceExport = Readonly<{
   fileName: string;
@@ -599,6 +600,12 @@ export const createManimProjectRequestSchema: z.ZodType<ManimProjectCreateReques
       kind: z.literal("existing"),
       name: manimProjectNameSchema,
       root: z.string().trim().min(1).max(4_096),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("studio-native"),
+      name: manimProjectNameSchema,
     })
     .strict(),
 ]);
