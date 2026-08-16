@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import { z } from "zod";
 
@@ -11,13 +11,25 @@ import {
 } from "../../src/collaboration/editor-session-contract";
 import { canonicalJsonV1 } from "../../src/engine/fast-manim-snapshot-digest";
 import { sha256V1Schema } from "../../src/engine/primitives";
-import { manimProjectIdSchema, manimSourcePathSchema } from "../../src/render-pipeline/contracts";
+import {
+  manimProjectIdSchema,
+  manimProjectNameSchema,
+  manimSourcePathSchema,
+} from "../../src/render-pipeline/contracts";
 import { sceneEditSchema as canonicalEditProgramSchemaV1, type SceneEdit } from "../../src/studio/scene-edit-contract";
 import { manimTenantIdSchema } from "../manim-request-principal";
 
 export const MAX_EDITOR_PROGRAM_BYTES_V1 = 256 * 1024;
 export const MAX_EDITOR_EVENT_TAIL_LIMIT_V1 = 256;
 export const MAX_EDITOR_REVISION_V1 = 9_223_372_036_854_775_807n;
+export const NATIVE_EDITOR_DOCUMENT_KEY_BYTES_V1 = 32;
+
+/**
+ * Closed document-origin union per ADR 0005: source binding is an origin
+ * property, not part of every document's identity.
+ */
+export const EDITOR_DOCUMENT_ORIGINS_V1 = Object.freeze(["imported-manim", "studio-native"] as const);
+export type EditorDocumentOriginV1 = (typeof EDITOR_DOCUMENT_ORIGINS_V1)[number];
 
 const editorSceneIdSchemaV1 = z
   .string()
@@ -47,6 +59,14 @@ const editorDocumentOpenInputSchemaV1 = z
     sceneId: editorSceneIdSchemaV1,
     sourceHash: sha256V1Schema,
     sourcePath: manimSourcePathSchema,
+    tenantId: manimTenantIdSchema,
+  })
+  .strict();
+
+const editorDocumentNativeCreateInputSchemaV1 = z
+  .object({
+    name: manimProjectNameSchema,
+    projectId: manimProjectIdSchema,
     tenantId: manimTenantIdSchema,
   })
   .strict();
@@ -183,6 +203,15 @@ export type EditorDocumentTailInputV1 = Readonly<{
   tenantId: string;
 }>;
 
+/**
+ * Origin-conditional source binding. Only the imported compatibility lane
+ * carries a Python source path and exact source digest; a Studio-native
+ * document carries neither and never infers them from a display label.
+ */
+export type EditorDocumentSourceBindingV1 =
+  | Readonly<{ origin: "imported-manim"; sourceHash: string; sourcePath: string }>
+  | Readonly<{ origin: "studio-native"; sourceHash: null; sourcePath: null }>;
+
 export type EditorDocumentV1 = Readonly<{
   documentKey: string;
   epoch: string;
@@ -190,10 +219,24 @@ export type EditorDocumentV1 = Readonly<{
   projectId: string;
   revision: bigint;
   sealedAt: Date | null;
-  sourceHash: string;
-  sourcePath: string;
   tenantId: string;
   updatedAt: Date;
+}> &
+  EditorDocumentSourceBindingV1;
+
+export type ImportedEditorDocumentV1 = Extract<EditorDocumentV1, { origin: "imported-manim" }>;
+
+export type EditorDocumentNativeCreateInputV1 = Readonly<{
+  name: string;
+  projectId: string;
+  tenantId: string;
+}>;
+
+export type EditorDocumentNativeCreateResultV1 = Readonly<{
+  document: EditorDocumentV1;
+  kind: "created";
+  project: Readonly<{ name: string; projectId: string; tenantId: string }>;
+  projection: EditorDocumentProjectionV1;
 }>;
 
 export type EditorDocumentProjectionV1 = Readonly<{
@@ -289,6 +332,24 @@ export function createEditorDocumentKeyV1(sourcePathValue: string, sceneIdValue:
   return digest;
 }
 
+/**
+ * Mints the existing opaque 32-byte `documentKey` for a Studio-native document
+ * with a server-side CSPRNG and returns its lower-hex transport form. Per ADR
+ * 0005 the key is generated once, is never derived from a source path, Scene
+ * name, source digest, or display name, and no second document-ID column
+ * exists beside it. The deterministic source-derived key shape above remains
+ * exclusive to the imported compatibility lane.
+ */
+export function mintNativeEditorDocumentKeyV1(randomBytesV1: (size: number) => Buffer = randomBytes) {
+  const bytes = randomBytesV1(NATIVE_EDITOR_DOCUMENT_KEY_BYTES_V1);
+  if (!Buffer.isBuffer(bytes) || bytes.byteLength !== NATIVE_EDITOR_DOCUMENT_KEY_BYTES_V1) {
+    throw new TypeError(
+      `A native editor document key requires exactly ${NATIVE_EDITOR_DOCUMENT_KEY_BYTES_V1} cryptographically random bytes.`,
+    );
+  }
+  return editorDocumentKeySchemaV1.parse(bytes.toString("hex"));
+}
+
 export function canonicalEditorProgramV1(value: unknown) {
   const program = canonicalEditProgramSchemaV1.parse(value) as SceneEdit;
   const canonicalJson = canonicalJsonV1(program);
@@ -329,6 +390,10 @@ export function parseEditorDocumentOpenInputV1(value: unknown): EditorDocumentOp
   return editorDocumentOpenInputSchemaV1.parse(value);
 }
 
+export function parseEditorDocumentNativeCreateInputV1(value: unknown): EditorDocumentNativeCreateInputV1 {
+  return editorDocumentNativeCreateInputSchemaV1.parse(value);
+}
+
 export function parseEditorDocumentCommitInputV1(value: unknown): EditorDocumentCommitInputV1 {
   const parsed = editorDocumentCommitInputSchemaV1.parse(value);
   const { sessionUpdate, ...base } = parsed;
@@ -360,6 +425,15 @@ export function parseEditorSessionSnapshotPutInputV1(value: unknown): EditorSess
 export interface EditorDocumentRepositoryV1 {
   close(): Promise<void>;
   commitMutation(input: EditorDocumentCommitInputV1, signal?: AbortSignal): Promise<EditorDocumentCommitResultV1>;
+  /**
+   * Atomically creates a Project together with its Studio-native Editor
+   * Document at revision zero and an empty projection, without a
+   * `workspace_source_heads` row or any starter `.py` blob.
+   */
+  createNativeDocument(
+    input: EditorDocumentNativeCreateInputV1,
+    signal?: AbortSignal,
+  ): Promise<EditorDocumentNativeCreateResultV1>;
   openDocument(input: EditorDocumentOpenInputV1, signal?: AbortSignal): Promise<EditorDocumentOpenResultV1>;
   putSessionSnapshot(
     input: EditorSessionSnapshotPutInputV1,

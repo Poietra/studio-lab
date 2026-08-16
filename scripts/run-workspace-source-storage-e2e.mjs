@@ -93,7 +93,10 @@ const STORAGE_SUITES = [
     file: "server/storage/editor-document-storage.real.test.ts",
     id: "editor-document",
     objectStorage: false,
-    title: "serializes edits, replays mutations, rotates source epochs, and isolates tenants",
+    titles: [
+      "serializes edits, replays mutations, rotates source epochs, and isolates tenants",
+      "creates source-free native documents atomically beside the deterministic imported lane",
+    ],
   },
   {
     database: "poietra_immutable_object_generation",

@@ -9,6 +9,7 @@ import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM } from "./collaboration-authorization-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
+import { EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM } from "./editor-document-origin-schema";
 import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 import { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
 import { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
@@ -42,6 +43,7 @@ import collaborationAuthorizationSqlV26 from "./migrations/0026_collaboration_au
 import snapshotPublicationTombstoneRetentionSqlV27 from "./migrations/0027_snapshot_publication_tombstone_retention.sql?raw";
 import accountOrganizationSwitchMutationSqlV28 from "./migrations/0028_account_organization_switch_mutations.sql?raw";
 import runtimeCellAssignmentSqlV29 from "./migrations/0029_runtime_cell_assignments.sql?raw";
+import editorDocumentOriginSqlV30 from "./migrations/0030_editor_document_origins.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -67,6 +69,7 @@ export { ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM } from "./a
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 export { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 export { COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM } from "./collaboration-authorization-schema";
+export { EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM } from "./editor-document-origin-schema";
 export { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 export { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
 export { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
@@ -138,6 +141,7 @@ export const SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE =
   snapshotPublicationTombstoneRetentionSqlV27;
 export const ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE = accountOrganizationSwitchMutationSqlV28;
 export const RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE = runtimeCellAssignmentSqlV29;
+export const EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE = editorDocumentOriginSqlV30;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -442,6 +446,17 @@ const runtimeCellAssignmentMigrationV29: DurableStorageMigration<29> = Object.fr
   version: 29,
 });
 
+const editorDocumentOriginMigrationV30: DurableStorageMigration<30> = Object.freeze({
+  checksum: EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM,
+  checksumMismatch: "The editor document-origin migration checksum is invalid.",
+  installedMismatch: "The installed editor document-origin schema does not match migration v30.",
+  missingPrerequisite: "Editor document-origin migration v30 requires durable storage migrations v1 through v29.",
+  prerequisiteMismatch:
+    "Editor document-origin migration v30 requires exact durable storage migrations v1 through v29.",
+  source: EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE,
+  version: 30,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -472,6 +487,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   snapshotPublicationTombstoneRetentionMigrationV27,
   accountOrganizationSwitchMutationMigrationV28,
   runtimeCellAssignmentMigrationV29,
+  editorDocumentOriginMigrationV30,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -748,6 +764,10 @@ export function applyAccountOrganizationSwitchMutationMigrationV28(pool: Pool, s
 
 export function applyRuntimeCellAssignmentMigrationV29(pool: Pool, source: string) {
   return applyMigration(pool, { ...runtimeCellAssignmentMigrationV29, source }, bundledMigrationsBefore(29));
+}
+
+export function applyEditorDocumentOriginMigrationV30(pool: Pool, source: string) {
+  return applyMigration(pool, { ...editorDocumentOriginMigrationV30, source }, bundledMigrationsBefore(30));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

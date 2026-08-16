@@ -248,7 +248,10 @@ export async function createManimProject(input: ManimProjectCreationInput, signa
     }),
     manimProjectMutationViewSchema,
   );
-  if (!created.project || created.project.kind !== parsed.data.kind) {
+  // A Studio-native project stays a server-owned managed catalog entry; the
+  // native distinction lives on its Editor Document origin, not the catalog.
+  const expectedCatalogKind = parsed.data.kind === "studio-native" ? "managed" : parsed.data.kind;
+  if (!created.project || created.project.kind !== expectedCatalogKind) {
     throw new Error("The server returned a workspace with the wrong ownership kind.");
   }
   return created;

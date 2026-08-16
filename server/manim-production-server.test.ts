@@ -700,6 +700,7 @@ describe("standalone production Manim HTTP adapter", () => {
         documentKey,
         epoch,
         openedAt,
+        origin: "imported-manim",
         projectId: input.projectId,
         revision: 0n,
         sealedAt: null,
@@ -733,6 +734,9 @@ describe("standalone production Manim HTTP adapter", () => {
       close: async () => undefined,
       commitMutation: async () => {
         throw new Error("commitMutation was not expected");
+      },
+      createNativeDocument: async () => {
+        throw new Error("createNativeDocument was not expected");
       },
       openDocument,
       putSessionSnapshot,

@@ -115,6 +115,13 @@ export type ManimApi = ManimApiOperations & ManimApiStorage;
 /** Project-catalog mutations are optional for read/render-only adapters. */
 export interface MutableManimProjectApiOperations extends ManimApiOperations {
   createManagedProject(name: string, signal?: AbortSignal): ManimApiResult<ManimProjectMutationView>;
+  /**
+   * Creates a Project whose durable root is a source-free Studio-native
+   * Editor Document instead of a starter `.py` source head. Only durable
+   * runtimes with editor-document storage provide this lane; adapters without
+   * it reject the `studio-native` project kind.
+   */
+  createNativeStudioProject?(name: string, signal?: AbortSignal): ManimApiResult<ManimProjectMutationView>;
   createProject(name: string, root: string, signal?: AbortSignal): ManimApiResult<ManimProjectMutationView>;
   renameProject(projectId: string, name: string, signal?: AbortSignal): ManimApiResult<ManimProjectMutationView>;
   unregisterProject(projectId: string, signal?: AbortSignal): ManimApiResult<ManimProjectMutationView>;

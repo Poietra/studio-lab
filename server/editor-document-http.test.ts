@@ -97,6 +97,7 @@ function document(revision = 0n): EditorDocumentV1 {
     documentKey: DOCUMENT_KEY,
     epoch: EPOCH,
     openedAt: new Date("2026-08-01T00:00:00.000Z"),
+    origin: "imported-manim",
     projectId: PROJECT,
     revision,
     sealedAt: null,
@@ -151,6 +152,9 @@ function repository(overrides: Partial<EditorDocumentRepositoryV1> = {}): Editor
   return {
     close: async () => undefined,
     commitMutation: async () => ({ document: document(1n), event: event(), kind: "committed", replayed: false }),
+    createNativeDocument: async () => {
+      throw new Error("createNativeDocument is outside the editor HTTP contract.");
+    },
     openDocument: async () => ({ created: true, document: document(), kind: "opened", projection: projection() }),
     putSessionSnapshot: async () => ({ kind: "stored", replayed: false, session: session() }),
     readEventTail: async () => ({ document: document(1n), events: [event()] }),
