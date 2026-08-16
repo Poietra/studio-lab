@@ -8,18 +8,24 @@ import {
   createBillingControlPlaneV1,
   STRIPE_BILLING_WEBHOOK_ROUTE_V1,
 } from "./billing-control-plane";
-import type { ProductionRequestAdmission } from "./manim-production-server";
+import {
+  createOrganizationMembershipProductionAdmissionV1,
+  type ProductionRequestAdmission,
+} from "./manim-production-server";
 
 const ORIGIN = "https://studio.example";
 const COOKIE = "__Host-poietra_session=opaque-session";
 const ORGANIZATION_ID = "tenant-a";
 
-function harness(overrides: Partial<BillingControlPlaneServiceV1> = {}) {
+function harness(
+  overrides: Partial<BillingControlPlaneServiceV1> = {},
+  admissionOverride?: ProductionRequestAdmission,
+) {
   const authenticate = vi.fn<ProductionRequestAdmission["authenticate"]>(async () => ({
     subjectId: "billing-user",
     tenantId: ORGANIZATION_ID,
   }));
-  const admission: ProductionRequestAdmission = {
+  const admission: ProductionRequestAdmission = admissionOverride ?? {
     authenticate,
     ready: async () => true,
   };
@@ -283,5 +289,80 @@ describe("billing control-plane Fetch boundary", () => {
     expect(rejected.startCheckout).not.toHaveBeenCalled();
     expect(rejected.openPortal).not.toHaveBeenCalled();
     expect(rejected.acceptWebhook).not.toHaveBeenCalled();
+  });
+
+  it("rejects conflicting selector values with the production transport response before admission", async () => {
+    const { authenticate, handler, readStatus } = harness();
+    const conflicting = await handler.fetch(
+      new Request(`${ORIGIN}${BILLING_STATUS_ROUTE_V1}`, {
+        headers: authenticatedHeaders({ "x-poietra-organization-id": "tenant-a, tenant-b" }),
+      }),
+    );
+
+    expect(conflicting.status).toBe(400);
+    await expect(conflicting.json()).resolves.toEqual({
+      error: "The organization selector must be a single header value.",
+    });
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(readStatus).not.toHaveBeenCalled();
+  });
+
+  it("leaves every non-conflicting selector decision to organization membership admission", async () => {
+    const identityAuthenticate = vi.fn(async () => ({
+      issuer: "https://identity.example",
+      sessionOrganizationId: ORGANIZATION_ID,
+      subject: "external-user",
+    }));
+    const resolveActiveMembership = vi.fn(async (_identity: unknown, organizationId: string) =>
+      organizationId === ORGANIZATION_ID
+        ? {
+            organizationId,
+            role: "member" as const,
+            userId: "00000000-0000-4000-8000-000000000001",
+            version: 1n,
+          }
+        : null,
+    );
+    const { handler, readStatus } = harness(
+      {},
+      createOrganizationMembershipProductionAdmissionV1({
+        identities: { authenticate: identityAuthenticate, ready: async () => true },
+        memberships: { close: async () => undefined, ready: async () => true, resolveActiveMembership },
+      }),
+    );
+    const statusRequest = (headers: Readonly<Record<string, string>>) =>
+      handler.fetch(new Request(`${ORIGIN}${BILLING_STATUS_ROUTE_V1}`, { headers }));
+
+    const selected = await statusRequest(authenticatedHeaders());
+    expect(selected.status).toBe(200);
+    expect(resolveActiveMembership).toHaveBeenLastCalledWith(
+      { issuer: "https://identity.example", subject: "external-user" },
+      ORGANIZATION_ID,
+      expect.any(AbortSignal),
+    );
+
+    const sessionFallback = await statusRequest({ cookie: COOKIE });
+    expect(sessionFallback.status).toBe(200);
+    expect(resolveActiveMembership).toHaveBeenLastCalledWith(
+      { issuer: "https://identity.example", subject: "external-user" },
+      ORGANIZATION_ID,
+      expect.any(AbortSignal),
+    );
+
+    const unauthorized = await statusRequest(authenticatedHeaders({ "x-poietra-organization-id": "tenant-b" }));
+    expect(unauthorized.status).toBe(403);
+    await expect(unauthorized.json()).resolves.toEqual({ error: "Billing access is not available." });
+    expect(resolveActiveMembership).toHaveBeenLastCalledWith(
+      { issuer: "https://identity.example", subject: "external-user" },
+      "tenant-b",
+      expect.any(AbortSignal),
+    );
+
+    resolveActiveMembership.mockClear();
+    const malformed = await statusRequest(authenticatedHeaders({ "x-poietra-organization-id": "A".repeat(65) }));
+    expect(malformed.status).toBe(403);
+    await expect(malformed.json()).resolves.toEqual({ error: "Billing access is not available." });
+    expect(resolveActiveMembership).not.toHaveBeenCalled();
+    expect(readStatus).toHaveBeenCalledTimes(2);
   });
 });
