@@ -918,3 +918,138 @@ fn bounded_text_uses_javascript_utf16_length() {
             .contains_message("1 to 500")
     );
 }
+
+const SHARED_EXPORT_PROFILE_JSON: &str =
+    include_str!("../../../../fixtures/engine-v1/shared-export-profile.json");
+const SHARED_EXPORT_PROFILE_CANONICAL: &str = concat!(
+    r#"{"codec":"h264-mp4","colorContractVersion":1,"frameRate":30,"#,
+    r#""maxDurationSeconds":900,"maxOutputBytes":134217728,"resolution":"1920x1080","#,
+    r#""schema":"poietra.export-profile","version":1}"#
+);
+const SHARED_EXPORT_PROFILE_HASH: &str =
+    "a6c8e0a9178087ae3ee29acc14a5d5e21fe596b440f1e90d61cdd91b2b87d70c";
+
+fn shared_export_profile() -> ExportProfileV1 {
+    ExportProfileV1 {
+        codec: ExportCodecTierV1::H264Mp4,
+        color_contract_version: ExportColorContractVersionV1,
+        frame_rate: ExportFrameRateV1::Fps30,
+        max_duration_seconds: MAX_EXPORT_DURATION_SECONDS_V1,
+        max_output_bytes: MAX_EXPORT_OUTPUT_BYTES_V1,
+        resolution: ExportResolutionV1::FullHd1920x1080,
+        schema: ExportProfileSchemaV1::ExportProfile,
+        version: ContractVersionV1,
+    }
+}
+
+#[test]
+fn shared_export_profile_fixture_parses_and_matches_the_canonical_hash() {
+    let profile = parse_export_profile_json_v1(SHARED_EXPORT_PROFILE_JSON.as_bytes()).unwrap();
+    assert_eq!(profile, shared_export_profile());
+    validate_export_profile_v1(&profile).unwrap();
+    assert_eq!(profile.resolution.width_px(), 1920);
+    assert_eq!(profile.resolution.height_px(), 1080);
+    assert_f64_bits_eq(profile.frame_rate.frames_per_second(), 30.0);
+    assert_eq!(
+        canonical_export_profile_v1(&profile).unwrap(),
+        SHARED_EXPORT_PROFILE_CANONICAL
+    );
+    assert_eq!(
+        export_profile_hash_v1(&profile).unwrap(),
+        SHARED_EXPORT_PROFILE_HASH
+    );
+    assert_eq!(
+        serde_json::to_string(&profile).unwrap(),
+        SHARED_EXPORT_PROFILE_CANONICAL
+    );
+}
+
+#[test]
+fn export_profile_serde_is_closed_over_every_field() {
+    let base = serde_json::to_value(shared_export_profile()).unwrap();
+
+    let mut unknown = base.clone();
+    unknown["encoderQueueDepth"] = json!(8);
+    assert!(
+        serde_json::from_value::<ExportProfileV1>(unknown)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown field")
+    );
+
+    for (field, value) in [
+        ("codec", json!("av1-webm")),
+        ("colorContractVersion", json!(2)),
+        ("frameRate", json!(24)),
+        ("frameRate", json!(59.94)),
+        ("resolution", json!("640x360")),
+        ("schema", json!("poietra.scene-ir")),
+        ("version", json!(2)),
+        ("maxDurationSeconds", json!(1.5)),
+        ("maxOutputBytes", json!(-1)),
+    ] {
+        let mut open = base.clone();
+        open[field] = value;
+        assert!(
+            serde_json::from_value::<ExportProfileV1>(open).is_err(),
+            "open {field} value was not rejected"
+        );
+    }
+}
+
+#[test]
+fn export_profile_declared_bounds_are_fail_closed_at_the_v1_ceilings() {
+    let mut profile = shared_export_profile();
+    validate_export_profile_v1(&profile).unwrap();
+
+    profile.max_duration_seconds = MAX_EXPORT_DURATION_SECONDS_V1 + 1;
+    assert!(
+        validate_export_profile_v1(&profile)
+            .unwrap_err()
+            .contains_message("between 1 and 900 seconds")
+    );
+    profile.max_duration_seconds = 0;
+    assert!(validate_export_profile_v1(&profile).is_err());
+    profile.max_duration_seconds = 1;
+
+    profile.max_output_bytes = MAX_EXPORT_OUTPUT_BYTES_V1 + 1;
+    assert!(
+        validate_export_profile_v1(&profile)
+            .unwrap_err()
+            .contains_message("between 1 and 134217728 bytes")
+    );
+    profile.max_output_bytes = 0;
+    assert!(validate_export_profile_v1(&profile).is_err());
+    profile.max_output_bytes = 1;
+    validate_export_profile_v1(&profile).unwrap();
+
+    let mut oversized = serde_json::to_value(shared_export_profile()).unwrap();
+    oversized["maxDurationSeconds"] = json!(901);
+    let error = parse_export_profile_json_v1(&serde_json::to_vec(&oversized).unwrap()).unwrap_err();
+    assert!(matches!(error, ContractJsonError::Validation(_)));
+}
+
+/// #693 Question 6 decision: the profile supplies the sampling fps, while the
+/// Scene's own `state_sampling` declaration keeps quantizing each requested
+/// instant and is never overwritten by the profile.
+#[test]
+fn export_stepping_composes_profile_fps_with_the_scene_sampling_grid() {
+    let mut scene = empty_scene();
+    scene.state_sampling = SceneStateSamplingV1 {
+        frame_rate: Some(15.0),
+        retains_terminal_state: true,
+    };
+    let profile = shared_export_profile();
+    let fps = profile.frame_rate.frames_per_second();
+
+    // The profile chooses the requested instants i / fps; the Scene's 15 fps
+    // grid still resolves each request, so the 30 fps step between grid frames
+    // floors onto the preceding Scene frame.
+    assert_f64_bits_eq(scene.state_sample_time(0.0 / fps), 0.0);
+    assert_f64_bits_eq(scene.state_sample_time(1.0 / fps), 0.0);
+    assert_f64_bits_eq(scene.state_sample_time(2.0 / fps), 1.0 / 15.0);
+
+    // The Scene declaration survives export stepping untouched.
+    assert_eq!(scene.state_sampling.frame_rate, Some(15.0));
+    assert!(scene.state_sampling.retains_terminal_state);
+}

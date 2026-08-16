@@ -1,0 +1,10 @@
+{
+  "codec": "h264-mp4",
+  "colorContractVersion": 1,
+  "frameRate": 30,
+  "maxDurationSeconds": 900,
+  "maxOutputBytes": 134217728,
+  "resolution": "1920x1080",
+  "schema": "poietra.export-profile",
+  "version": 1
+}
