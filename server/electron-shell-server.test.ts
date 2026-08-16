@@ -135,6 +135,24 @@ describe("Electron shell HTTP adapter", () => {
     expect(projects.projects).toEqual([{ id: "shell-project", kind: "existing", name: "Shell project" }]);
     expect(JSON.stringify(projects)).not.toContain(projectRoot);
 
+    // #712: the shell serves the neutral tenant aliases through the same API
+    // handler, while non-aliased neutral paths stay on the static-asset lane.
+    const neutralProjects = await shellFetch(shell, "/api/projects");
+    expect(neutralProjects.status).toBe(projectsResponse.status);
+    expect(await neutralProjects.json()).toEqual(projects);
+    const neutralWorkspaceResponse = await shellFetch(shell, "/api/projects/shell-project/workspace");
+    expect(neutralWorkspaceResponse.status).toBe(200);
+    const neutralRender = await shellFetch(shell, "/api/projects/shell-project/renders", {
+      body: "{}",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(neutralRender.status).toBe(405);
+    expect(await neutralRender.json()).toEqual({ error: "Method not allowed." });
+    const neutralRenderRead = await shellFetch(shell, "/api/renders/00000000-0000-4000-8000-000000000001");
+    expect(neutralRenderRead.status).toBe(404);
+    expect(await neutralRenderRead.json()).toEqual({ error: "Shell asset not found." });
+
     const rendererRegistration = await shellFetch(shell, "/api/manim/projects", {
       body: JSON.stringify({ kind: "existing", name: "Bypass", root: projectRoot }),
       headers: { "content-type": "application/json" },

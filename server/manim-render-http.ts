@@ -70,14 +70,49 @@ const PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE =
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
 const BROWSER_PROJECT_IMPORT_ROUTE = "/api/manim/project-imports";
 
+/**
+ * Neutral tenant route aliases (#712, ADR 0005 §"API and compatibility
+ * policy"): the storage-generic tenant surfaces are ALSO mounted under
+ * neutral `/api/` routes. Both route families dispatch through the one
+ * canonical matching layer below, so a neutral request and its legacy
+ * `/api/manim/` twin reach the same handler with identical behavior, and the
+ * legacy family stays byte-identical until a later versioned cutover removes
+ * the aliases.
+ *
+ * Only the generic surfaces are aliased: project catalog CRUD
+ * (`/api/projects`, `/api/projects/:projectId`), per-project workspace read,
+ * thumbnails, digest-addressed Scene snapshot assets, and browser project
+ * imports. Render-session and render-start routes, Python source export,
+ * Runtime Trace runs, and Scene snapshot runs/lookups remain exclusively
+ * under the Manim namespace: they are the frozen legacy execution lane and
+ * retire with it instead of gaining a neutral twin.
+ */
+const NEUTRAL_TENANT_ROUTE_ALIAS =
+  /^\/api\/(?:project-imports|projects(?:\/[a-z][a-z0-9_-]{0,63}(?:\/(?:workspace|thumbnail(?:\/(?:status|generate))?|scene-snapshot-assets\/[0-9a-f]{64}))?)?)$/;
+
+export function isNeutralTenantRouteAlias(pathname: string) {
+  return NEUTRAL_TENANT_ROUTE_ALIAS.test(pathname);
+}
+
+/**
+ * Maps a neutral tenant route alias onto its canonical legacy pathname so a
+ * single route-matching layer recognizes both prefixes. Every other pathname
+ * — including every legacy `/api/manim/*` pathname — is returned unchanged,
+ * which keeps the legacy family byte-identical.
+ */
+export function canonicalManimRoutePathname(pathname: string) {
+  return isNeutralTenantRouteAlias(pathname) ? `/api/manim${pathname.slice("/api".length)}` : pathname;
+}
+
 export function isManimWorkspaceBootstrapRequest(method: string | undefined, pathname: string) {
   if (method !== "GET") return false;
-  if (pathname === "/api/manim/projects" || pathname === "/api/manim/workspace") return true;
-  return PROJECT_ROUTE.exec(pathname)?.[2] === "workspace";
+  const canonical = canonicalManimRoutePathname(pathname);
+  if (canonical === "/api/manim/projects" || canonical === "/api/manim/workspace") return true;
+  return PROJECT_ROUTE.exec(canonical)?.[2] === "workspace";
 }
 
 export function isManimBrowserProjectImportRequest(method: string | undefined, pathname: string) {
-  return method === "POST" && pathname === BROWSER_PROJECT_IMPORT_ROUTE;
+  return method === "POST" && canonicalManimRoutePathname(pathname) === BROWSER_PROJECT_IMPORT_ROUTE;
 }
 const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
 const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS = 120_000;
@@ -124,14 +159,19 @@ function hasNativeErrorName(error: unknown, name: string) {
   }
 }
 
+// Render-session routes have no neutral alias (frozen legacy lane), so
+// canonicalization is a structural no-op for the two render predicates; they
+// still read through the shared layer so every admission predicate agrees on
+// one route-matching authority.
 export function isManimVideoRequest(method: string | undefined, pathname: string) {
-  const match = pathname.match(RENDER_ROUTE);
+  const match = canonicalManimRoutePathname(pathname).match(RENDER_ROUTE);
   return (method === "GET" || method === "HEAD") && match?.[2] === "video";
 }
 
 export function isManimRenderStartRequest(method: string | undefined, pathname: string) {
-  if (method === "POST" && pathname === "/api/manim/renders") return true;
-  return method === "POST" && PROJECT_ROUTE.exec(pathname)?.[2] === "renders";
+  const canonical = canonicalManimRoutePathname(pathname);
+  if (method === "POST" && canonical === "/api/manim/renders") return true;
+  return method === "POST" && PROJECT_ROUTE.exec(canonical)?.[2] === "renders";
 }
 
 /**
@@ -146,16 +186,20 @@ export function isManimRenderStartRequest(method: string | undefined, pathname: 
  * Adding a route here requires extending the per-route dependency mapping in
  * `DurableManimRuntimeV1.tenantCellStorageReady`, which probes exactly the
  * storage dependencies these routes use.
+ *
+ * Storage-lane routes are exactly the aliased generic surfaces, so a neutral
+ * alias classifies identically to its legacy twin via canonicalization.
  */
 export function isTenantCellStorageLaneManimRequest(method: string | undefined, pathname: string) {
-  if (method === "POST" && pathname === "/api/manim/projects") return true;
-  if ((method === "PATCH" || method === "DELETE") && PROJECT_ITEM_ROUTE.test(pathname)) return true;
-  const thumbnail = PROJECT_THUMBNAIL_ROUTE.exec(pathname);
+  const canonical = canonicalManimRoutePathname(pathname);
+  if (method === "POST" && canonical === "/api/manim/projects") return true;
+  if ((method === "PATCH" || method === "DELETE") && PROJECT_ITEM_ROUTE.test(canonical)) return true;
+  const thumbnail = PROJECT_THUMBNAIL_ROUTE.exec(canonical);
   if (thumbnail) {
     if (thumbnail[2] === undefined || thumbnail[2] === "status") return method === "GET";
     return method === "POST";
   }
-  return (method === "GET" || method === "HEAD") && PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE.test(pathname);
+  return (method === "GET" || method === "HEAD") && PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE.test(canonical);
 }
 
 function mediaStreamIdleTimeout(value: number | undefined) {
@@ -223,13 +267,7 @@ function readBoundedJsonBody(request: IncomingMessage, policy: ManimRequestPolic
   return readJsonBody(request, Math.min(routeLimit, policy.maxJsonBodyBytes ?? routeLimit));
 }
 
-function requestRouteTemplate(rawUrl: string | undefined) {
-  let pathname: string;
-  try {
-    pathname = new URL(rawUrl ?? "/", "http://127.0.0.1").pathname;
-  } catch {
-    return "invalid";
-  }
+function manimRouteTemplate(pathname: string) {
   if (
     pathname === "/api/manim/projects" ||
     pathname === "/api/manim/workspace" ||
@@ -246,6 +284,23 @@ function requestRouteTemplate(rawUrl: string | undefined) {
   if (PROJECT_ITEM_ROUTE.test(pathname)) return "/api/manim/projects/:projectId";
   if (RENDER_ROUTE.test(pathname)) return "/api/manim/renders/:renderId/:action?";
   return "unmatched";
+}
+
+function requestRouteTemplate(rawUrl: string | undefined) {
+  let pathname: string;
+  try {
+    pathname = new URL(rawUrl ?? "/", "http://127.0.0.1").pathname;
+  } catch {
+    return "invalid";
+  }
+  const canonical = canonicalManimRoutePathname(pathname);
+  const template = manimRouteTemplate(canonical);
+  if (canonical === pathname) return template;
+  // A neutral alias logs its own route family so alias adoption and legacy
+  // drain stay observable. "workspace" is the only PROJECT_ROUTE action with
+  // a neutral alias, so its shared :action template names it exactly.
+  if (template === "/api/manim/projects/:projectId/:action") return "/api/projects/:projectId/workspace";
+  return template.replace("/api/manim/", "/api/");
 }
 
 function mutableProjectRegistry(manager: ManimApi) {
@@ -657,11 +712,15 @@ async function routeManimRequest(
   policy: ManimRequestPolicy,
 ) {
   const url = new URL(request.url ?? "/", "http://127.0.0.1");
+  // One route-matching layer recognizes both families: a neutral tenant alias
+  // is folded onto its canonical legacy pathname before any route matching,
+  // so both prefixes reach identical handlers (#712).
+  const pathname = canonicalManimRoutePathname(url.pathname);
   const renderSessionVersion = renderSessionContractVersion(request);
   if (request.method === "POST" || request.method === "PATCH" || request.method === "DELETE") {
     requireSameOriginJsonMutation(request, policy.expectedMutationOrigin);
   }
-  if (url.pathname === BROWSER_PROJECT_IMPORT_ROUTE) {
+  if (pathname === BROWSER_PROJECT_IMPORT_ROUTE) {
     if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
     const parsed = browserManimProjectImportRequestV1Schema.safeParse(
       await readBoundedJsonBody(request, policy, MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1),
@@ -671,7 +730,7 @@ async function routeManimRequest(
     sendJson(response, 201, await browserProjectImporter(manager).importBrowserProject(parsed.data, signal));
     return;
   }
-  if (url.pathname === "/api/manim/projects") {
+  if (pathname === "/api/manim/projects") {
     if (request.method === "GET") {
       sendJson(response, 200, await manager.projects(signal));
       return;
@@ -701,11 +760,11 @@ async function routeManimRequest(
     );
     return;
   }
-  if (request.method === "GET" && url.pathname === "/api/manim/workspace") {
+  if (request.method === "GET" && pathname === "/api/manim/workspace") {
     sendJson(response, 200, await manager.workspace(undefined, signal));
     return;
   }
-  if (request.method === "POST" && url.pathname === "/api/manim/renders") {
+  if (request.method === "POST" && pathname === "/api/manim/renders") {
     const parsed = programRenderRequestSchema.safeParse(await readBoundedJsonBody(request, policy, 512 * 1024));
     if (!parsed.success) {
       throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid canonical EditProgram render request.", 400);
@@ -719,7 +778,7 @@ async function routeManimRequest(
     }
     return;
   }
-  const projectItemMatch = url.pathname.match(PROJECT_ITEM_ROUTE);
+  const projectItemMatch = pathname.match(PROJECT_ITEM_ROUTE);
   if (projectItemMatch) {
     const projectId = projectItemMatch[1]!;
     const registry = mutableProjectRegistry(manager);
@@ -737,7 +796,7 @@ async function routeManimRequest(
     }
     throw new HttpError("Method not allowed.", 405);
   }
-  const sceneSnapshotMatch = url.pathname.match(PROJECT_SCENE_SNAPSHOT_ROUTE);
+  const sceneSnapshotMatch = pathname.match(PROJECT_SCENE_SNAPSHOT_ROUTE);
   if (sceneSnapshotMatch) {
     const projectId = sceneSnapshotMatch[1]!;
     if (request.method === "GET") {
@@ -771,7 +830,7 @@ async function routeManimRequest(
     }
     return;
   }
-  const runtimeTraceMatch = url.pathname.match(PROJECT_RUNTIME_TRACE_ROUTE);
+  const runtimeTraceMatch = pathname.match(PROJECT_RUNTIME_TRACE_ROUTE);
   if (runtimeTraceMatch) {
     if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
     if (!manager.runRuntimeTrace) throw new HttpError("Runtime Trace preview is not configured.", 501);
@@ -791,7 +850,7 @@ async function routeManimRequest(
     }
     return;
   }
-  const sceneSnapshotAssetMatch = url.pathname.match(PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE);
+  const sceneSnapshotAssetMatch = pathname.match(PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE);
   if (sceneSnapshotAssetMatch) {
     if (request.method !== "GET" && request.method !== "HEAD") throw new HttpError("Method not allowed.", 405);
     if (!manager.sceneSnapshotAsset) throw new HttpError("Scene snapshot assets are not configured.", 404);
@@ -799,7 +858,7 @@ async function routeManimRequest(
     sendSceneSnapshotAsset(request, response, await manager.sceneSnapshotAsset(projectId!, digest!, signal));
     return;
   }
-  const thumbnailMatch = url.pathname.match(PROJECT_THUMBNAIL_ROUTE);
+  const thumbnailMatch = pathname.match(PROJECT_THUMBNAIL_ROUTE);
   if (thumbnailMatch) {
     const [, projectId, action] = thumbnailMatch;
     if (!action && request.method === "GET") {
@@ -830,7 +889,7 @@ async function routeManimRequest(
     }
     throw new HttpError("Method not allowed.", 405);
   }
-  const projectMatch = url.pathname.match(PROJECT_ROUTE);
+  const projectMatch = pathname.match(PROJECT_ROUTE);
   if (projectMatch) {
     const [, projectId, endpoint] = projectMatch;
     if (request.method === "GET" && endpoint === "workspace") {
@@ -878,7 +937,7 @@ async function routeManimRequest(
     }
     return;
   }
-  const match = url.pathname.match(RENDER_ROUTE);
+  const match = pathname.match(RENDER_ROUTE);
   if (!match) throw new HttpError("Manim endpoint not found.", 404);
   const [, id, action] = match;
   if (request.method === "GET" && !action) {

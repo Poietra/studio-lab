@@ -9,8 +9,19 @@ import { createTrustedLocalManimRequestContext } from "./manim-local-request-con
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { ManimProjectRegistry } from "./manim-project-registry";
 import { type ManimRenderPipelineOptions, parseManimCommand } from "./manim-render-config";
-import { handleManimRequest, type ManimRequestContext } from "./manim-render-http";
+import { handleManimRequest, isNeutralTenantRouteAlias, type ManimRequestContext } from "./manim-render-http";
 import { localManimTenantId } from "./manim-request-principal";
+
+// #712: the dev middleware serves both route families of the tenant API — the
+// legacy `/api/manim/` prefix and the neutral aliases of its generic surfaces.
+function isNeutralTenantRouteAliasUrl(rawUrl: string | undefined) {
+  if (rawUrl === undefined) return false;
+  try {
+    return isNeutralTenantRouteAlias(new URL(rawUrl, "http://127.0.0.1").pathname);
+  } catch {
+    return false;
+  }
+}
 
 export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): Plugin {
   let manager: ManimProjectRegistry | null = null;
@@ -58,7 +69,7 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
     },
     configureServer(server) {
       server.middlewares.use(async (request, response, next) => {
-        if (!request.url?.startsWith("/api/manim/")) {
+        if (!request.url?.startsWith("/api/manim/") && !isNeutralTenantRouteAliasUrl(request.url)) {
           next();
           return;
         }

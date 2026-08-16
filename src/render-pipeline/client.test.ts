@@ -176,7 +176,7 @@ describe("Manim API client contracts", () => {
     vi.stubGlobal("fetch", fetch);
 
     await expect(loadManimProjects()).resolves.toEqual(projects);
-    expect(fetch).toHaveBeenCalledWith("/api/manim/projects", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("/api/projects", { signal: undefined });
   });
 
   it("creates, renames, and unregisters workspaces through opaque project responses", async () => {
@@ -218,25 +218,25 @@ describe("Manim API client contracts", () => {
     await expect(renameManimProject("project-a", " Renamed ")).resolves.toEqual(renamed);
     await expect(unregisterManimProject("project-a")).resolves.toEqual(removed);
 
-    expect(fetch).toHaveBeenNthCalledWith(1, "/api/manim/projects", {
+    expect(fetch).toHaveBeenNthCalledWith(1, "/api/projects", {
       body: JSON.stringify({ kind: "managed", name: "Demo" }),
       headers: { "content-type": "application/json" },
       method: "POST",
       signal: undefined,
     });
-    expect(fetch).toHaveBeenNthCalledWith(2, "/api/manim/projects", {
+    expect(fetch).toHaveBeenNthCalledWith(2, "/api/projects", {
       body: JSON.stringify({ kind: "existing", name: "Demo", root: "/tmp/demo" }),
       headers: { "content-type": "application/json" },
       method: "POST",
       signal: undefined,
     });
-    expect(fetch).toHaveBeenNthCalledWith(3, "/api/manim/projects/project-a", {
+    expect(fetch).toHaveBeenNthCalledWith(3, "/api/projects/project-a", {
       body: JSON.stringify({ name: "Renamed" }),
       headers: { "content-type": "application/json" },
       method: "PATCH",
       signal: undefined,
     });
-    expect(fetch).toHaveBeenNthCalledWith(4, "/api/manim/projects/project-a", {
+    expect(fetch).toHaveBeenNthCalledWith(4, "/api/projects/project-a", {
       headers: { "content-type": "application/json" },
       method: "DELETE",
       signal: undefined,
@@ -265,7 +265,7 @@ describe("Manim API client contracts", () => {
       }),
     ).resolves.toEqual(imported);
 
-    expect(fetch).toHaveBeenCalledWith("/api/manim/project-imports", {
+    expect(fetch).toHaveBeenCalledWith("/api/project-imports", {
       body: JSON.stringify({ imagePngBase64: null, name: "Imported demo", source, sourceName: "scene.py" }),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -462,7 +462,7 @@ describe("Manim API client contracts", () => {
     vi.stubGlobal("fetch", fetch);
 
     await expect(loadManimWorkspace("project-a")).resolves.toEqual(workspace);
-    expect(fetch).toHaveBeenCalledWith("/api/manim/projects/project-a/workspace", { signal: undefined });
+    expect(fetch).toHaveBeenCalledWith("/api/projects/project-a/workspace", { signal: undefined });
   });
 
   it("loads and explicitly generates project-bound thumbnail status", async () => {
@@ -487,8 +487,8 @@ describe("Manim API client contracts", () => {
 
     await expect(loadManimThumbnailStatus("project-a")).resolves.toEqual(status);
     await expect(generateManimThumbnail("project-a")).resolves.toMatchObject({ state: "generating" });
-    expect(fetch).toHaveBeenNthCalledWith(1, "/api/manim/projects/project-a/thumbnail/status", { signal: undefined });
-    expect(fetch).toHaveBeenNthCalledWith(2, "/api/manim/projects/project-a/thumbnail/generate", {
+    expect(fetch).toHaveBeenNthCalledWith(1, "/api/projects/project-a/thumbnail/status", { signal: undefined });
+    expect(fetch).toHaveBeenNthCalledWith(2, "/api/projects/project-a/thumbnail/generate", {
       body: "{}",
       headers: { "content-type": "application/json" },
       method: "POST",

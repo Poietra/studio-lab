@@ -845,6 +845,120 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(thumbnailStatus).toHaveBeenCalledOnce();
   });
 
+  it("admits neutral tenant aliases through the same gates and keeps non-aliased neutral paths 404 (#712)", async () => {
+    const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
+    const renderReadiness = vi.fn(async () => false);
+    const storageReadiness = vi.fn(async () => true);
+    const workspaceReadiness = vi.fn(async () => true);
+    const mutationView = {
+      catalog: { defaultProjectId: "project-a", projects: [{ id: "project-a", kind: "managed" as const, name: "A" }] },
+      project: { id: "project-a", kind: "managed" as const, name: "A" },
+    };
+    const thumbnailStatusView = {
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "empty" as const,
+      projectId: "project-a",
+      sceneName: null,
+      sourceHash: null,
+      sourcePath: null,
+      state: "missing" as const,
+    };
+    const projects = vi.fn(async () => mutationView.catalog);
+    const renameProject = vi.fn(async () => mutationView);
+    const createProject = vi.fn();
+    const createManagedProject = vi.fn(async () => mutationView);
+    const unregisterProject = vi.fn(async () => ({ ...mutationView, project: null }));
+    const importBrowserProject = vi.fn(async () => mutationView);
+    const thumbnailStatus = vi.fn(async () => thumbnailStatusView);
+    const start = vi.fn();
+    const workspace = vi.fn(async () => ({
+      commandAvailable: false,
+      frame: { height: 8, width: 14.222 },
+      projectId: "project-a",
+      projectName: "A",
+      renderCapability: { available: false, kind: "durable-sandbox", unavailableReason: "durable-render-unavailable" },
+      sources: [],
+    }));
+    const baseRuntime = createRuntime(() => false);
+    const runtime: TenantCellRuntimeAdapterV1 = {
+      ...baseRuntime,
+      api: {
+        ...baseRuntime.api,
+        createManagedProject,
+        createProject,
+        importBrowserProject,
+        projects,
+        renameProject,
+        start,
+        thumbnailStatus,
+        unregisterProject,
+        workspace,
+      } as unknown as ManimApi,
+      ready: fullReadiness,
+      renderReady: renderReadiness,
+      tenantCellStorageReady: storageReadiness,
+      workspaceReady: workspaceReadiness,
+    };
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig(),
+      runtime,
+    });
+    servers.push(server);
+    const mutationHeaders = { "content-type": "application/json", origin: "https://studio.example" };
+
+    // Workspace-bootstrap gate: catalog list and per-project workspace read.
+    expect(await send(server, "/api/projects")).toMatchObject({ status: 200 });
+    expect(await send(server, "/api/projects/project-a/workspace")).toMatchObject({ status: 200 });
+    const imported = await send(server, "/api/project-imports", {
+      body: JSON.stringify({
+        imagePngBase64: null,
+        name: "Imported",
+        source: "from manim import *\nclass DemoScene(Scene):\n    def construct(self):\n        self.wait(1)\n",
+        sourceName: "demo.py",
+      }),
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(imported).toMatchObject({ status: 201 });
+    expect(workspaceReadiness).toHaveBeenCalledTimes(3);
+    expect(storageReadiness).not.toHaveBeenCalled();
+
+    // TenantCell storage-lane gate: catalog mutation and thumbnail status.
+    const renamed = await send(server, "/api/projects/project-a", {
+      body: JSON.stringify({ name: "A" }),
+      headers: mutationHeaders,
+      method: "PATCH",
+    });
+    expect(renamed).toMatchObject({ status: 200 });
+    const neutralStatus = await send(server, "/api/projects/project-a/thumbnail/status");
+    expect(neutralStatus).toMatchObject({ status: 200 });
+    expect(storageReadiness).toHaveBeenCalledTimes(2);
+    expect(fullReadiness).not.toHaveBeenCalled();
+    expect(renderReadiness).not.toHaveBeenCalled();
+
+    // Alias parity: both families return identical bytes for one handler.
+    const legacyStatus = await send(server, "/api/manim/projects/project-a/thumbnail/status");
+    expect(legacyStatus.status).toBe(neutralStatus.status);
+    expect(legacyStatus.body).toBe(neutralStatus.body);
+
+    // The frozen render lane has no neutral twin: the transport rejects it
+    // before authentication or any runtime gate.
+    const neutralRender = await send(server, "/api/projects/project-a/renders", {
+      body: "{}",
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(neutralRender).toMatchObject({ status: 404 });
+    expect(JSON.parse(neutralRender.body)).toEqual({ error: "Endpoint not found." });
+    expect(await send(server, "/api/workspace")).toMatchObject({ status: 404 });
+    expect(await send(server, "/api/renders/00000000-0000-4000-8000-000000000001")).toMatchObject({ status: 404 });
+    expect(start).not.toHaveBeenCalled();
+    expect(renderReadiness).not.toHaveBeenCalled();
+  });
+
   it("keeps the full fail-closed attestation for storage-lane routes on adapters without the TenantCell split", async () => {
     let runtimeReady = false;
     const thumbnailStatus = vi.fn(async () => ({

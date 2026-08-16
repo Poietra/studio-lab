@@ -133,10 +133,7 @@ async function readJson<T>(response: Response, schema: z.ZodType<T>): Promise<T>
 }
 
 export async function loadManimProjects(signal?: AbortSignal) {
-  return readJson(
-    await fetchOrganizationScopedManimApiV1("/api/manim/projects", { signal }),
-    manimProjectListViewSchema,
-  );
+  return readJson(await fetchOrganizationScopedManimApiV1("/api/projects", { signal }), manimProjectListViewSchema);
 }
 
 export async function createManimProject(input: ManimProjectCreationInput, signal?: AbortSignal) {
@@ -200,7 +197,7 @@ export async function createManimProject(input: ManimProjectCreationInput, signa
       throw new Error("The selected browser project exceeds the import request byte limit.");
     }
     const imported = await readJson(
-      await fetchOrganizationScopedManimApiV1("/api/manim/project-imports", {
+      await fetchOrganizationScopedManimApiV1("/api/project-imports", {
         body,
         headers: { "content-type": "application/json" },
         method: "POST",
@@ -240,7 +237,7 @@ export async function createManimProject(input: ManimProjectCreationInput, signa
   const parsed = createManimProjectRequestSchema.safeParse(input);
   if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "The workspace registration is invalid.");
   const created = await readJson(
-    await fetchOrganizationScopedManimApiV1("/api/manim/projects", {
+    await fetchOrganizationScopedManimApiV1("/api/projects", {
       body: JSON.stringify(parsed.data),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -264,7 +261,7 @@ export async function renameManimProject(projectId: string, name: string, signal
   const parsed = renameManimProjectRequestSchema.safeParse({ name });
   if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "The workspace name is invalid.");
   return readJson(
-    await fetchOrganizationScopedManimApiV1(`/api/manim/projects/${encodeURIComponent(projectId)}`, {
+    await fetchOrganizationScopedManimApiV1(`/api/projects/${encodeURIComponent(projectId)}`, {
       body: JSON.stringify(parsed.data),
       headers: { "content-type": "application/json" },
       method: "PATCH",
@@ -279,7 +276,7 @@ export async function unregisterManimProject(projectId: string, signal?: AbortSi
     throw new Error("The project ID does not match the API contract.");
   }
   return readJson(
-    await fetchOrganizationScopedManimApiV1(`/api/manim/projects/${encodeURIComponent(projectId)}`, {
+    await fetchOrganizationScopedManimApiV1(`/api/projects/${encodeURIComponent(projectId)}`, {
       headers: { "content-type": "application/json" },
       method: "DELETE",
       signal,
@@ -293,7 +290,7 @@ export async function loadManimThumbnailStatus(projectId: string, signal?: Abort
     throw new Error("The project ID does not match the API contract.");
   }
   const status = await readJson(
-    await fetchOrganizationScopedManimApiV1(`/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail/status`, {
+    await fetchOrganizationScopedManimApiV1(`/api/projects/${encodeURIComponent(projectId)}/thumbnail/status`, {
       signal,
     }),
     manimThumbnailStatusSchema,
@@ -309,7 +306,7 @@ export async function generateManimThumbnail(projectId: string, signal?: AbortSi
     throw new Error("The project ID does not match the API contract.");
   }
   const status = await readJson(
-    await fetchOrganizationScopedManimApiV1(`/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail/generate`, {
+    await fetchOrganizationScopedManimApiV1(`/api/projects/${encodeURIComponent(projectId)}/thumbnail/generate`, {
       body: JSON.stringify(manimThumbnailGenerateRequestSchema.parse({})),
       headers: { "content-type": "application/json" },
       method: "POST",
@@ -329,7 +326,9 @@ export async function loadManimWorkspace(projectIdOrSignal?: string | AbortSigna
   if (projectId && !manimProjectIdSchema.safeParse(projectId).success) {
     throw new Error("The project ID does not match the API contract.");
   }
-  const path = projectId ? `/api/manim/projects/${encodeURIComponent(projectId)}/workspace` : "/api/manim/workspace";
+  // The project-less bootstrap read has no neutral alias yet; only the
+  // per-project workspace read moved to the neutral family (#712).
+  const path = projectId ? `/api/projects/${encodeURIComponent(projectId)}/workspace` : "/api/manim/workspace";
   const workspace = await readJson(
     await fetchOrganizationScopedManimApiV1(path, { signal: requestSignal }),
     manimWorkspaceViewSchema,

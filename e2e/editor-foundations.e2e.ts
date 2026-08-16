@@ -136,14 +136,14 @@ test("retains editor sessions while leaving and reopening workspaces", async ({ 
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await expect(page.locator("[data-studio-canvas]")).toHaveCount(0);
 
-  const workspaceResponse = page.waitForResponse(/\/api\/manim\/projects\/examples\/workspace$/);
+  const workspaceResponse = page.waitForResponse(/\/api\/projects\/examples\/workspace$/);
   await page.getByRole("button", { name: "Open Examples workspace" }).click();
   await workspaceResponse;
   await expect(page.getByLabel("Current workspace")).toHaveText("Examples");
   await expect(page.getByRole("combobox", { name: "Active imported Scene" })).toContainText("relativity.py");
 
   await page.getByRole("button", { name: "Back to workspaces" }).click();
-  const returnResponse = page.waitForResponse(/\/api\/manim\/projects\/studio-lab\/workspace$/);
+  const returnResponse = page.waitForResponse(/\/api\/projects\/studio-lab\/workspace$/);
   await page.getByRole("button", { name: "Open Studio Lab workspace" }).click();
   await returnResponse;
   await expect(page.getByLabel("Current workspace")).toHaveText("Studio Lab");
@@ -159,21 +159,19 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
   let workspaceRequests = 0;
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
-    if (pathname === "/api/manim/projects") projectCatalogRequests += 1;
-    if (/^\/api\/manim\/projects\/[^/]+\/thumbnail$/.test(pathname)) thumbnailRequests += 1;
-    if (/^\/api\/manim\/projects\/[^/]+\/thumbnail\/generate$/.test(pathname)) thumbnailGenerationRequests += 1;
-    if (/^\/api\/manim\/projects\/[^/]+\/thumbnail\/status$/.test(pathname)) thumbnailStatusRequests += 1;
-    if (/^\/api\/manim\/projects\/[^/]+\/workspace$/.test(pathname)) workspaceRequests += 1;
+    if (pathname === "/api/projects") projectCatalogRequests += 1;
+    if (/^\/api\/projects\/[^/]+\/thumbnail$/.test(pathname)) thumbnailRequests += 1;
+    if (/^\/api\/projects\/[^/]+\/thumbnail\/generate$/.test(pathname)) thumbnailGenerationRequests += 1;
+    if (/^\/api\/projects\/[^/]+\/thumbnail\/status$/.test(pathname)) thumbnailStatusRequests += 1;
+    if (/^\/api\/projects\/[^/]+\/workspace$/.test(pathname)) workspaceRequests += 1;
   });
-  await page.route(/\/api\/manim\/projects\/examples\/thumbnail(?:\?.*)?$/, async (route) => {
+  await page.route(/\/api\/projects\/examples\/thumbnail(?:\?.*)?$/, async (route) => {
     await route.abort("failed");
   });
 
-  const catalogResponse = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/api/manim/projects",
-  );
+  const catalogResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/projects");
   const thumbnailResponsePromise = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/api/manim/projects/studio-lab/thumbnail",
+    (response) => new URL(response.url()).pathname === "/api/projects/studio-lab/thumbnail",
   );
   await page.goto("/");
   await catalogResponse;
@@ -257,7 +255,7 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
   await page.getByRole("alertdialog").getByRole("button", { name: "Cancel" }).click();
   expect(workspaceRequests).toBe(0);
 
-  const workspaceResponse = page.waitForResponse(/\/api\/manim\/projects\/studio-lab\/workspace$/);
+  const workspaceResponse = page.waitForResponse(/\/api\/projects\/studio-lab\/workspace$/);
   await studioThumbnail.click();
   await workspaceResponse;
 
@@ -266,7 +264,7 @@ test("waits at the launcher and only imports explicitly selected workspaces", as
   expect(projectCatalogRequests).toBe(1);
 
   await page.getByRole("button", { name: "Back to workspaces" }).click();
-  const examplesResponse = page.waitForResponse(/\/api\/manim\/projects\/examples\/workspace$/);
+  const examplesResponse = page.waitForResponse(/\/api\/projects\/examples\/workspace$/);
   await page.getByRole("button", { name: "Open Examples workspace" }).focus();
   await page.keyboard.press("Enter");
   await examplesResponse;
@@ -291,10 +289,10 @@ test("generates a rendered workspace thumbnail only after an explicit launcher a
     sourcePath: "src/studio/prototype-fixture.py",
     state: generated ? "current" : "missing",
   });
-  await page.route("**/api/manim/projects/studio-lab/thumbnail/status", async (route) => {
+  await page.route("**/api/projects/studio-lab/thumbnail/status", async (route) => {
     await route.fulfill({ body: JSON.stringify(status()), contentType: "application/json", status: 200 });
   });
-  await page.route("**/api/manim/projects/studio-lab/thumbnail/generate", async (route) => {
+  await page.route("**/api/projects/studio-lab/thumbnail/generate", async (route) => {
     generated = true;
     await route.fulfill({ body: JSON.stringify(status()), contentType: "application/json", status: 202 });
   });
@@ -313,7 +311,7 @@ test("generates a rendered workspace thumbnail only after an explicit launcher a
 test("bounds thumbnail status polling and exposes an explicit status retry", async ({ page }) => {
   const sourceHash = "b".repeat(64);
   let statusRequests = 0;
-  await page.route("**/api/manim/projects/studio-lab/thumbnail/status", async (route) => {
+  await page.route("**/api/projects/studio-lab/thumbnail/status", async (route) => {
     statusRequests += 1;
     if (statusRequests === 1) {
       await route.fulfill({
@@ -374,7 +372,7 @@ test("bounds thumbnail status polling and exposes an explicit status retry", asy
 });
 
 test("keeps thumbnail action failures separate from healthy status reads", async ({ page }) => {
-  await page.route("**/api/manim/projects/studio-lab/thumbnail/generate", async (route) => {
+  await page.route("**/api/projects/studio-lab/thumbnail/generate", async (route) => {
     await route.fulfill({
       body: JSON.stringify({ error: "Renderer refused the request." }),
       contentType: "application/json",
@@ -394,7 +392,7 @@ test("allows a pending workspace mutation dialog to be cancelled", async ({ page
   const requestStarted = new Promise<void>((resolve) => {
     resolveRequestStarted = resolve;
   });
-  await page.route("**/api/manim/projects/studio-lab", async (route) => {
+  await page.route("**/api/projects/studio-lab", async (route) => {
     resolveRequestStarted();
     await new Promise<void>((resolve) => {
       releaseRequest = resolve;
@@ -423,7 +421,7 @@ test("submits one browser-selected Python file with optional image.png and keeps
   const source = "from manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
   const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   let importBody: Record<string, unknown> | null = null;
-  await page.route("**/api/manim/project-imports", async (route) => {
+  await page.route("**/api/project-imports", async (route) => {
     importBody = route.request().postDataJSON() as Record<string, unknown>;
     await route.fulfill({
       body: JSON.stringify({ error: "The fixture import was refused." }),
@@ -455,7 +453,7 @@ test("submits one browser-selected Python file with optional image.png and keeps
   await expect(dialog.getByRole("alert")).toHaveCount(0);
   await expect(imagePicker).toHaveAttribute("aria-invalid", "false");
   const importResponse = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/api/manim/project-imports",
+    (response) => new URL(response.url()).pathname === "/api/project-imports",
   );
   await dialog.getByRole("button", { name: "Import workspace" }).click();
   await importResponse;
@@ -496,7 +494,7 @@ test("opens and byte-preserves a browser-imported Python file through export", a
     });
     const importResponsePromise = page.waitForResponse(
       (response) =>
-        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/manim/project-imports",
+        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/project-imports",
     );
     await dialog.getByRole("button", { name: "Import workspace" }).click();
     const importResponse = await importResponsePromise;
@@ -524,8 +522,7 @@ test("creates, persists, renames, and deletes a browser-managed workspace", { ta
     await expect(addDialog.getByRole("alert")).toContainText("Enter a workspace name");
     await addDialog.getByRole("textbox", { name: "Workspace name" }).fill("CRUD Fixture");
     const createResponsePromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/manim/projects",
+      (response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/projects",
     );
     await addDialog.getByRole("button", { name: "Create workspace" }).click();
     const createResponse = await createResponsePromise;
@@ -542,8 +539,7 @@ test("creates, persists, renames, and deletes a browser-managed workspace", { ta
     await renameDialog.getByRole("textbox", { name: "Workspace name" }).fill("Renamed Fixture");
     const renameResponse = page.waitForResponse(
       (response) =>
-        response.request().method() === "PATCH" &&
-        new URL(response.url()).pathname === `/api/manim/projects/${projectId}`,
+        response.request().method() === "PATCH" && new URL(response.url()).pathname === `/api/projects/${projectId}`,
     );
     await renameDialog.getByRole("button", { name: "Save name" }).click();
     await renameResponse;
@@ -559,8 +555,7 @@ test("creates, persists, renames, and deletes a browser-managed workspace", { ta
     await page.getByRole("button", { name: "Delete Renamed Fixture workspace" }).click();
     const deleteResponse = page.waitForResponse(
       (response) =>
-        response.request().method() === "DELETE" &&
-        new URL(response.url()).pathname === `/api/manim/projects/${projectId}`,
+        response.request().method() === "DELETE" && new URL(response.url()).pathname === `/api/projects/${projectId}`,
     );
     await page.getByRole("alertdialog").getByRole("button", { name: "Delete workspace" }).click();
     await deleteResponse;
@@ -603,7 +598,7 @@ class DeleteRaceScene(Scene):
     await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
     await page.getByRole("button", { name: "Back to workspaces" }).click();
 
-    await page.route(`**/api/manim/projects/${projectId}`, async (route) => {
+    await page.route(`**/api/projects/${projectId}`, async (route) => {
       if (route.request().method() !== "DELETE") {
         await route.continue();
         return;
@@ -625,8 +620,7 @@ class DeleteRaceScene(Scene):
     await addDialog.getByRole("textbox", { name: "Workspace name" }).fill("Delete Race Fixture");
     await addDialog.getByRole("textbox", { name: "Existing folder path" }).fill(projectRoot);
     const recreatedResponsePromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/manim/projects",
+      (response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/projects",
     );
     await addDialog.getByRole("button", { name: "Add workspace" }).click();
     const recreated = (await (await recreatedResponsePromise).json()) as { project: { id: string } };
@@ -839,7 +833,7 @@ class LifetimeScene(Scene):
     const workspaceResponse = page.waitForResponse(
       (response) =>
         response.request().method() === "GET" &&
-        new URL(response.url()).pathname === `/api/manim/projects/${projectId}/workspace`,
+        new URL(response.url()).pathname === `/api/projects/${projectId}/workspace`,
     );
     await page.getByRole("button", { name: "Reimport" }).click();
     await workspaceResponse;
