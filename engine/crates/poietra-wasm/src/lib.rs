@@ -14,6 +14,10 @@ mod canvas_assets;
 mod canvas_protocol;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod canvas_telemetry;
+#[cfg(target_arch = "wasm32")]
+mod export_encoder;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod export_encoder_protocol;
 mod protocol;
 
 use wasm_bindgen::prelude::*;
@@ -31,12 +35,18 @@ pub use canvas_telemetry::{
     MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES_V1, MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES_V1,
     POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V4,
 };
+pub use export_encoder_protocol::{
+    MAX_EXPORT_ENCODER_REQUEST_JSON_BYTES_V1, MAX_EXPORT_ENCODER_RESPONSE_JSON_BYTES_V1,
+    POIETRA_EXPORT_ENCODER_ABI_VERSION_V1,
+};
 pub use protocol::{
     EngineWorkerSessionV1, MAX_SAMPLE_REQUEST_JSON_BYTES_V1, MAX_WORKER_RESPONSE_JSON_BYTES_V1,
 };
 
 #[cfg(target_arch = "wasm32")]
 pub use canvas::PoietraCanvasEngineV1;
+#[cfg(target_arch = "wasm32")]
+pub use export_encoder::{PoietraExportEncoderSessionV1, probe_export_encoder_h264_v1};
 
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
 pub const POIETRA_ENGINE_ABI_VERSION: u32 = 27;
@@ -63,6 +73,14 @@ pub fn poietra_canvas_abi_version() -> u32 {
 #[wasm_bindgen(js_name = poietraCanvasTelemetryAbiVersion)]
 pub fn poietra_canvas_telemetry_abi_version() -> u32 {
     POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V4
+}
+
+/// Returns the `WebCodecs` export encoder ABI version, independent of the base
+/// engine ABI so rendering never depends on encoder support.
+#[must_use]
+#[wasm_bindgen(js_name = poietraExportEncoderAbiVersion)]
+pub fn poietra_export_encoder_abi_version() -> u32 {
+    POIETRA_EXPORT_ENCODER_ABI_VERSION_V1
 }
 
 /// Validates one complete Scene IR bundle with the canonical Rust contract.
@@ -126,5 +144,6 @@ mod tests {
         assert_eq!(poietra_engine_abi_version(), 27);
         assert_eq!(poietra_canvas_abi_version(), 5);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
+        assert_eq!(poietra_export_encoder_abi_version(), 1);
     }
 }
