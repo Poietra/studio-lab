@@ -22,8 +22,9 @@ mod arena;
 mod asset;
 mod cache;
 // Crate-private offscreen export path (#718). The public `ExportProfileV1`
-// contract and its adapter wiring land with #721, so nothing is exported yet
-// and non-test builds have no caller.
+// contract and its adapter wiring land with #721; until then only the hidden
+// browser-proof hook below leaves the module, so non-test builds may not
+// reach every item.
 #[cfg_attr(not(test), allow(dead_code))]
 mod export;
 mod gpu;
@@ -60,6 +61,11 @@ pub use prepare::{
 pub use upload::{
     GpuUploadPlanErrorV1, GpuUploadPlanV1, MAX_GPU_UPLOAD_PLAN_BYTES_V1, build_gpu_upload_plan_v1,
 };
+
+// Test-only hook so the browser readback e2e can execute the crate-private
+// async export path (#718); superseded by the #721 public contract.
+#[doc(hidden)]
+pub use export::prove_export_frame_sequence_readback_v1;
 
 /// Preferred name for the shared path/image renderer.
 pub type WgpuPaintRendererV1 = WgpuFillRendererV1;
