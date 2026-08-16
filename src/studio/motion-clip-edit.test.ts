@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
-import { canonicalizeSuggestionProgram } from "./suggestion-program";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
-import { samplePropertyValue } from "./property-sampling";
 import {
   adjustAppliedMotionClipControl,
   appliedMotionClipReadOnlyReason,
   retimeAppliedMotionClip,
 } from "./motion-clip-edit";
+import { samplePropertyValue } from "./property-sampling";
+import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
 function canonical(operation: EditSuggestionOperation) {
   const result = canonicalizeSuggestionProgram(operation, {
@@ -218,5 +218,6 @@ describe("applied motion clip editing", () => {
     };
     expect(samplePropertyValue([{ ...base, easing: "linear" }], 0.25)).toBeCloseTo(25);
     expect(samplePropertyValue([{ ...base, easing: "smooth" }], 0.25)).toBeCloseTo(15.625);
+    expect(samplePropertyValue([{ ...base, easing: "manim-smooth" }], 0.25)).toBeCloseTo(7.010371654);
   });
 });

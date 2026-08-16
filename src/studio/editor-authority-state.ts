@@ -82,8 +82,9 @@ function isStaticRootOrPersistentRemoveProgramBatch(programs: readonly Canonical
     programs.every(
       (program) =>
         program.operations.length > 0 &&
-        (program.operations.every(isStaticRootTransformOperation) ||
-          program.operations.every(isPersistentRemoveOperation)),
+        program.operations.every(
+          (operation) => isStaticRootTransformOperation(operation) || isPersistentRemoveOperation(operation),
+        ),
     )
   );
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import type {
   ProjectStudioCreationCompiler,
   ProjectStudioMathTexTransformCompiler,
@@ -19,7 +20,7 @@ import {
 } from "./editor-authority-state";
 import type { EditorProgramRecord } from "./editor-session-store";
 import type { CanonicalEditProgram } from "./operations";
-import { createDirectManipulationPositionProgram } from "./suggestion-program";
+import { canonicalizeSuggestionProgram, createDirectManipulationPositionProgram } from "./suggestion-program";
 
 const source = `from manim import *
 
@@ -303,6 +304,43 @@ describe("authoritative Editor Program materialization", () => {
     await expect(
       materializeAuthoritativeEditorProgramsV1(targetScene, [], [move.program, missingTarget]),
     ).rejects.toThrow(/invalid for the selected Scene source/i);
+  });
+
+  it("installs one authoritative Magic Edit scale-then-remove Program", async () => {
+    const targetScene = scene();
+    const operation: EditSuggestionOperation = {
+      anchor: { kind: "playhead", referenceSeconds: 1 },
+      execution: "sequence",
+      kind: "edit-program",
+      operations: [
+        {
+          easing: "smooth",
+          end: 2,
+          factor: 1.5,
+          kind: "scale-objects",
+          start: 1,
+          targetObjectIds: [MATH_TEX_SOURCE_ID],
+        },
+        {
+          animation: "fade-out",
+          end: 2.4,
+          kind: "delete-objects",
+          start: 2,
+          targetObjectIds: [MATH_TEX_SOURCE_ID],
+        },
+      ],
+    };
+    const validation = canonicalizeSuggestionProgram(operation, {
+      capturedPlayhead: 1,
+      origin: "remote-model",
+      scene: targetScene.runtimeSceneState,
+      transactionId: "magic-scale-delete",
+    });
+    if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+
+    const materialized = await materializeAuthoritativeEditorProgramsV1(targetScene, [], [validation.program]);
+
+    expect(materialized).toEqual([{ program: validation.program, validation: { issues: [], status: "valid" } }]);
   });
 
   it("compares accepted local state to the exact authoritative projection", () => {

@@ -1,3 +1,4 @@
+import { applyEngineEasingV1 } from "../engine/easing";
 import type { EntityDimensions, Knowledge, Point, PropertyChannelSample, PropertyValue, Unknown } from "./model";
 
 function smooth(value: number) {
@@ -5,7 +6,9 @@ function smooth(value: number) {
 }
 
 function easingProgress(sample: PropertyChannelSample, value: number) {
-  return sample.easing === "linear" ? value : smooth(value);
+  if (sample.easing === "linear") return value;
+  if (sample.easing === "manim-smooth") return applyEngineEasingV1({ kind: "manim-smooth" }, value);
+  return smooth(value);
 }
 
 export function isPointValue(value: unknown): value is Point {

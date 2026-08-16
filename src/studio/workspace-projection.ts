@@ -68,8 +68,9 @@ function isStaticRootWorkspaceProjectionProgramBatch(programs: readonly Canonica
     programs.every(
       (program) =>
         program.operations.length > 0 &&
-        (program.operations.every(isStaticRootTransformOperation) ||
-          program.operations.every(isPersistentRemoveOperation)),
+        program.operations.every(
+          (operation) => isStaticRootTransformOperation(operation) || isPersistentRemoveOperation(operation),
+        ),
     )
   );
 }
@@ -626,7 +627,13 @@ export function selectStaticRootProjection(
 ): StudioStaticRootProjectionV1 | null {
   if (!isStaticRootWorkspaceProjectionProgramBatch(programs)) return null;
   const correlated = correlateStaticRootProjection(programs, projection);
-  return correlated ? { mutations: correlated.map(({ mutation }) => mutation) } : null;
+  return correlated && projection
+    ? {
+        insertions: projection.insertions,
+        mutations: correlated.map(({ mutation }) => mutation),
+        projectedDuration: projection.projectedDuration,
+      }
+    : null;
 }
 
 function appendProjectedSample(
@@ -682,7 +689,7 @@ function appendProjectedMutation(
   } else if (mutation.kind === "uniform-scale") {
     appendProjectedSample(draft.propertyChannels, mutation.entityId, "scale", {
       ...metadata,
-      easing: "smooth",
+      easing: ("easing" in mutation && mutation.easing) || "smooth",
       from: mutation.from,
       interval: mutation.interval,
       kind: "animated",
@@ -968,11 +975,17 @@ function projectStaticRootWorkingState(
   const correlated = correlateStaticRootProjection(programs, projection);
   if (!correlated) throw new TypeError("Only an exact static-root Program batch can use this projection.");
   const draft = cloneProjectionDraft(workingState.runtimeSceneState);
+  for (const insertion of projection.insertions) {
+    insertSceneTime(draft, insertion.at, insertion.duration);
+  }
   for (const insertion of motionProjection?.insertions ?? []) {
     insertSceneTime(draft, insertion.at, insertion.duration);
   }
-  if (motionProjection && !sameProjectionNumber(draft.duration, motionProjection.projectedDuration)) {
-    throw new TypeError("The Rust static-root motion projection returned a stale projected duration.");
+  if (
+    !sameProjectionNumber(draft.duration, projection.projectedDuration) ||
+    (motionProjection && !sameProjectionNumber(draft.duration, motionProjection.projectedDuration))
+  ) {
+    throw new TypeError("The Rust static-root projection returned a stale projected duration.");
   }
   correlated.forEach(({ mutation, operation, program }) => {
     if (!draft.entities[mutation.entityId]) {

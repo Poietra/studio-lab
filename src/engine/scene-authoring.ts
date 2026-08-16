@@ -164,6 +164,7 @@ export type StudioStaticRootMutationV1 =
       transactionId: string;
     }>
   | Readonly<{
+      easing?: "manim-smooth";
       entityId: string;
       from: number;
       interval: Readonly<{ end: number; start: number }>;
@@ -185,7 +186,9 @@ export type StudioStaticRootMutationV1 =
     }>;
 
 export type StudioStaticRootProjectionV1 = Readonly<{
+  insertions: StudioMotionProjectionV1["insertions"];
   mutations: readonly StudioStaticRootMutationV1[];
+  projectedDuration: number;
 }>;
 
 export type StudioMathTexTransformProjectionV1 = Readonly<{
@@ -504,6 +507,7 @@ const studioCreationProjectionV1Schema = z
   .strict();
 const studioStaticRootProjectionV1Schema = z
   .object({
+    insertions: studioMotionProjectionV1Schema.shape.insertions,
     mutations: z.array(
       z.discriminatedUnion("kind", [
         z
@@ -528,6 +532,7 @@ const studioStaticRootProjectionV1Schema = z
           .strict(),
         z
           .object({
+            easing: z.literal("manim-smooth").optional(),
             entityId: z.string().min(1),
             from: finiteNumberSchema,
             interval: studioTimelineProjectionIntervalV1Schema,
@@ -552,6 +557,7 @@ const studioStaticRootProjectionV1Schema = z
           .strict(),
       ]),
     ),
+    projectedDuration: finiteNumberSchema,
   })
   .strict();
 const studioMathTexTransformProjectionV1Schema = z

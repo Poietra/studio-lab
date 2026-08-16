@@ -72,7 +72,7 @@ const propertyValueSchema = z.union([
 const propertyChannelSampleSchema = z
   .object({
     control: pointSchema.optional(),
-    easing: z.enum(["linear", "smooth"]).optional(),
+    easing: z.enum(["linear", "smooth", "manim-smooth"]).optional(),
     from: propertyValueSchema.optional(),
     interval: intervalSchema,
     kind: z.enum(["animated", "exact"]),
