@@ -542,7 +542,7 @@ fn apply_studio_bound_entity_edit_json(
         )?;
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.apply_studio_bound_entity_edit(command.into())?;
-    scene_authoring_response(&result)
+    studio_projection_response(&result)
 }
 
 /// Applies one complete normalized Studio creation edit through the shared core.
@@ -1505,13 +1505,31 @@ mod tests {
                 &serde_json::to_vec(&command).unwrap(),
             )
             .unwrap();
-            let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+            let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+            let bundle =
+                parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                    .unwrap();
             let provenance_id = format!(
                 "studio-bound-endpoint-{phase}-{provenance_kind}:{}",
                 "e".repeat(64)
             );
+            let projection_kind = match provenance_kind {
+                "move" => "position",
+                "opacity" => "opacity",
+                "rotation" => "rotation",
+                "resize" => "uniform-scale",
+                _ => unreachable!(),
+            };
 
             assert_eq!(bundle.scene.provenance.last().unwrap().id, provenance_id);
+            assert_eq!(response["projection"]["kind"], projection_kind);
+            assert_eq!(response["projection"]["operationId"], case);
+            assert_eq!(response["projection"]["studioEntityId"], "source:root");
+            assert_eq!(response["projection"]["transactionId"], "move-root");
+            assert_eq!(
+                response["projection"]["interval"],
+                json!({ "end": anchor, "start": anchor })
+            );
             assert_bound_entity_effect(case, &bundle);
         }
     }

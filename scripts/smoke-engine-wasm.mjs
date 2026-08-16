@@ -9,7 +9,7 @@ const wasmBytes = await readFile("public/engine-wasm/poietra_wasm_bg.wasm");
 const engine = await import("../public/engine-wasm/poietra_wasm.js");
 
 await engine.default({ module_or_path: wasmBytes });
-assert.equal(engine.poietraEngineAbiVersion(), 25);
+assert.equal(engine.poietraEngineAbiVersion(), 26);
 assert.equal(engine.poietraCanvasAbiVersion(), 5);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
 assert.equal(typeof engine.validateSceneIrBundleV1, "function");
@@ -124,10 +124,11 @@ const boundResult = JSON.parse(
     ),
   ),
 );
-const movedRoot = boundResult.scene.entities.find(({ id }) => id === boundRoot.id);
+const movedRoot = boundResult.bundle.scene.entities.find(({ id }) => id === boundRoot.id);
 assert.ok(movedRoot, "bound endpoint response lost its root entity");
 assert.ok(Math.abs(movedRoot.transform.tx - boundScene.camera.view.frameWidth / 16) < 1e-12);
-assert.equal(boundResult.scene.source.revisionHash, "e".repeat(64));
+assert.equal(boundResult.bundle.scene.source.revisionHash, "e".repeat(64));
+assert.equal(boundResult.projection.kind, "position");
 
 const gzipBytes = gzipSync(Buffer.concat([glueBytes, wasmBytes])).byteLength;
 assert.ok(gzipBytes <= 3 * 1024 * 1024, "compressed engine payload exceeds the adoption budget");

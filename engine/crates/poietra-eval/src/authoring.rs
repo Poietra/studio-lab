@@ -973,6 +973,37 @@ pub struct ApplyStudioBoundEntityEditCommand {
     pub viewport: StudioAuthoringSize,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioBoundEntityProjection {
+    pub interval: IntervalV1,
+    #[serde(flatten)]
+    pub mutation: StudioBoundEntityProjectionMutation,
+    pub operation_id: String,
+    pub studio_entity_id: String,
+    pub transaction_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum StudioBoundEntityProjectionMutation {
+    Position { value: PointV1 },
+    Opacity { value: f64 },
+    Rotation { from: f64, to: f64 },
+    UniformScale { from: f64, to: f64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioBoundEntityEditResult {
+    pub bundle: SceneIrBundleV1,
+    pub projection: StudioBoundEntityProjection,
+}
+
 pub type StaticRootTransformOrigin = StudioAuthoringOrigin;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -2911,8 +2942,8 @@ fn resolve_imported_math_tex_transform_source(
 enum StudioBoundEntityEdit {
     Move(PointV1),
     Opacity(f64),
-    Rotation(f64),
-    UniformScale(f64),
+    Rotation { delta: f64, from: f64, to: f64 },
+    UniformScale { factor: f64, from: f64, to: f64 },
 }
 
 impl StudioBoundEntityEdit {
@@ -2920,8 +2951,8 @@ impl StudioBoundEntityEdit {
         match self {
             Self::Move(_) => "move",
             Self::Opacity(_) => "opacity",
-            Self::Rotation(_) => "rotation",
-            Self::UniformScale(_) => "resize",
+            Self::Rotation { .. } => "rotation",
+            Self::UniformScale { .. } => "resize",
         }
     }
 
@@ -2932,11 +2963,42 @@ impl StudioBoundEntityEdit {
                 phase.as_str()
             ),
             Self::Opacity(_) => "Studio construction-time absolute opacity request projected onto static vector paints in one verified source-bound root".to_owned(),
-            Self::Rotation(_) => "Studio construction-time planar rotation request projected onto one verified source-bound root".to_owned(),
-            Self::UniformScale(_) => format!(
+            Self::Rotation { .. } => "Studio construction-time planar rotation request projected onto one verified source-bound root".to_owned(),
+            Self::UniformScale { .. } => format!(
                 "Studio {} uniform resize request projected onto one verified source-bound root",
                 phase.as_str()
             ),
+        }
+    }
+
+    fn projection(
+        &self,
+        program: &StudioBoundEntityProgram,
+        candidate: &StudioBoundEntityEditCandidate,
+        operation: &StudioBoundEntityOperation,
+    ) -> StudioBoundEntityProjection {
+        let mutation = match self {
+            Self::Move(value) => StudioBoundEntityProjectionMutation::Position {
+                value: value.clone(),
+            },
+            Self::Opacity(value) => StudioBoundEntityProjectionMutation::Opacity { value: *value },
+            Self::Rotation { from, to, .. } => StudioBoundEntityProjectionMutation::Rotation {
+                from: *from,
+                to: *to,
+            },
+            Self::UniformScale { from, to, .. } => {
+                StudioBoundEntityProjectionMutation::UniformScale {
+                    from: *from,
+                    to: *to,
+                }
+            }
+        };
+        StudioBoundEntityProjection {
+            interval: operation.interval().clone(),
+            mutation,
+            operation_id: operation.id().to_owned(),
+            studio_entity_id: candidate.studio_entity_id.clone(),
+            transaction_id: program.transaction_id.clone(),
         }
     }
 }
@@ -3036,10 +3098,15 @@ fn resolve_studio_bound_entity_edit(
             && from.is_finite()
             && to.is_finite()
             && relative_delta.is_finite()
+            && close_transform_baseline_value(*from, 0.0)
             && (*to - *from - *relative_delta).abs() < 0.000_001
             && !rotation_is_noop(*relative_delta) =>
         {
-            Some(StudioBoundEntityEdit::Rotation(*relative_delta))
+            Some(StudioBoundEntityEdit::Rotation {
+                delta: *relative_delta,
+                from: *from,
+                to: *to,
+            })
         }
         StudioBoundEntityOperation::UniformScale {
             control_present,
@@ -3055,10 +3122,15 @@ fn resolve_studio_bound_entity_edit(
             && *from > 0.0
             && *to > 0.0
             && *relative_factor > 0.0
+            && close_transform_baseline_value(*from, 1.0)
             && twelve_significant_digits(*relative_factor) != Some(1.0)
             && close_transform_baseline_value(*to / *from, *relative_factor) =>
         {
-            Some(StudioBoundEntityEdit::UniformScale(*relative_factor))
+            Some(StudioBoundEntityEdit::UniformScale {
+                factor: *relative_factor,
+                from: *from,
+                to: *to,
+            })
         }
         StudioBoundEntityOperation::Move { .. }
         | StudioBoundEntityOperation::Opacity { .. }
@@ -6485,7 +6557,7 @@ impl EngineSessionV1 {
     pub fn apply_studio_bound_entity_edit(
         &mut self,
         command: ApplyStudioBoundEntityEditCommand,
-    ) -> Result<SceneIrBundleV1, ApplyStudioBoundEntityEditError> {
+    ) -> Result<StudioBoundEntityEditResult, ApplyStudioBoundEntityEditError> {
         let ApplyStudioBoundEntityEditCommand {
             candidates,
             expected_base_revision,
@@ -6539,6 +6611,7 @@ impl EngineSessionV1 {
         }
         let edit = resolve_studio_bound_entity_edit(program, candidate)
             .ok_or(ApplyStudioBoundEntityEditError::Unsupported)?;
+        let projection = edit.projection(program, candidate, operation);
         let target = scene
             .entities
             .iter()
@@ -6567,7 +6640,7 @@ impl EngineSessionV1 {
             origin: ProvenanceOriginV1::StudioEditProgram,
         };
 
-        match edit {
+        let bundle = match edit {
             StudioBoundEntityEdit::Move(position) => {
                 let target_center = studio_point_to_scene_point(
                     &position,
@@ -6602,7 +6675,7 @@ impl EngineSessionV1 {
                         .map_err(ApplyStudioBoundEntityEditError::mutation_rejected),
                 }
             }
-            StudioBoundEntityEdit::UniformScale(factor) => {
+            StudioBoundEntityEdit::UniformScale { factor, .. } => {
                 let scale = Some(ScaleAboutPivot {
                     pivot: base_center,
                     x_factor: factor,
@@ -6634,7 +6707,10 @@ impl EngineSessionV1 {
                         .map_err(ApplyStudioBoundEntityEditError::mutation_rejected),
                 }
             }
-            StudioBoundEntityEdit::Rotation(angle_radians) => self
+            StudioBoundEntityEdit::Rotation {
+                delta: angle_radians,
+                ..
+            } => self
                 .rotate_scene_entity(RotateSceneEntityCommand {
                     angle_radians,
                     entity_id: target_id,
@@ -6653,7 +6729,8 @@ impl EngineSessionV1 {
                     root_entity_id: target_id,
                 })
                 .map_err(ApplyStudioBoundEntityEditError::mutation_rejected),
-        }
+        }?;
+        Ok(StudioBoundEntityEditResult { bundle, projection })
     }
 
     /// Applies one or two imported `MathTex` replacements and an optional final-target motion.
@@ -9518,12 +9595,12 @@ mod tests {
                     control_present: false,
                     depends_on,
                     entity_id,
-                    from: Some(0.25),
+                    from: Some(0.0),
                     id,
                     interval,
                     origin,
                     relative_delta: Some(0.5),
-                    to: Some(0.75),
+                    to: Some(0.5),
                 },
                 Self::Scale => StudioBoundEntityOperation::UniformScale {
                     control_present: false,
@@ -9553,6 +9630,22 @@ mod tests {
                 Self::Rotation => "rotation",
                 Self::Scale => "resize",
                 Self::Unsupported => "unsupported",
+            }
+        }
+
+        fn projection_mutation(self) -> StudioBoundEntityProjectionMutation {
+            match self {
+                Self::Move => StudioBoundEntityProjectionMutation::Position {
+                    value: PointV1 { x: 400.0, y: 220.0 },
+                },
+                Self::Opacity => StudioBoundEntityProjectionMutation::Opacity { value: 0.25 },
+                Self::Rotation => {
+                    StudioBoundEntityProjectionMutation::Rotation { from: 0.0, to: 0.5 }
+                }
+                Self::Scale => {
+                    StudioBoundEntityProjectionMutation::UniformScale { from: 1.0, to: 1.5 }
+                }
+                Self::Unsupported => unreachable!(),
             }
         }
     }
@@ -10315,6 +10408,7 @@ mod tests {
         for (phase, edit) in cases {
             let bundle = bound_entity_bundle();
             let command = studio_bound_entity_edit_command(&bundle, phase, edit);
+            let anchor = command.programs[0].anchor_resolved_seconds;
             let mut session = EngineSessionV1::new(bundle).unwrap();
 
             let result = session.apply_studio_bound_entity_edit(command).unwrap();
@@ -10324,27 +10418,42 @@ mod tests {
                 phase.as_str(),
                 edit.provenance_kind()
             );
-            assert_eq!(result.scene.source.revision_hash(), NEXT_REVISION);
+            assert_eq!(result.bundle.scene.source.revision_hash(), NEXT_REVISION);
             assert!(
                 result
+                    .bundle
                     .scene
                     .provenance
                     .iter()
                     .any(|record| record.id == provenance_id)
             );
-            assert_bound_entity_effect(&result, phase, edit);
+            assert_eq!(
+                result.projection,
+                StudioBoundEntityProjection {
+                    interval: IntervalV1 {
+                        end: anchor,
+                        start: anchor,
+                    },
+                    mutation: edit.projection_mutation(),
+                    operation_id: "bound-edit".to_owned(),
+                    studio_entity_id: "source:later".to_owned(),
+                    transaction_id: "bound-edit".to_owned(),
+                }
+            );
+            assert_bound_entity_effect(&result.bundle, phase, edit);
             assert_eq!(session.retained_index_stats().build_count, 2);
         }
     }
 
     #[test]
     fn rejects_unsupported_or_ambiguous_bound_entity_edits_atomically() {
-        for case in 0..6 {
+        for case in 0..8 {
             let mut bundle = bound_entity_bundle();
-            let edit = if case == 0 {
-                BoundEntityTestEdit::Unsupported
-            } else {
-                BoundEntityTestEdit::Move
+            let edit = match case {
+                0 => BoundEntityTestEdit::Unsupported,
+                6 => BoundEntityTestEdit::Scale,
+                7 => BoundEntityTestEdit::Rotation,
+                _ => BoundEntityTestEdit::Move,
             };
             let mut command = studio_bound_entity_edit_command(
                 &bundle,
@@ -10396,6 +10505,20 @@ mod tests {
                     .collect::<BTreeSet<_>>();
                 capabilities.insert(SceneCapabilityV1::AffineTransformAnimation);
                 bundle.scene.required_capabilities = capabilities.into_iter().collect();
+            } else if case == 6 {
+                if let StudioBoundEntityOperation::UniformScale { from, to, .. } =
+                    &mut command.programs[0].operations[0]
+                {
+                    *from = Some(2.0);
+                    *to = Some(3.0);
+                }
+            } else if case == 7 {
+                if let StudioBoundEntityOperation::Rotation { from, to, .. } =
+                    &mut command.programs[0].operations[0]
+                {
+                    *from = Some(0.25);
+                    *to = Some(0.75);
+                }
             }
             let expected_scene = bundle.scene.clone();
             let expected_assets = bundle.assets.clone();

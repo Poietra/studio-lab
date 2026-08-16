@@ -73,10 +73,17 @@ export type ApplyStudioBoundEntityEditWireCommandV1 = Readonly<{
   viewport: Readonly<{ height: number; width: number }>;
 }>;
 
+export type StudioBoundEntityProjectionV1 = DeepReadonly<z.infer<typeof studioBoundEntityProjectionV1Schema>>;
+
+export type StudioBoundEntityEditResultV1 = Readonly<{
+  bundle: SceneIrBundleV1;
+  projection: StudioBoundEntityProjectionV1;
+}>;
+
 export type ApplyStudioBoundEntityEditCompiler = (
   snapshot: SceneIrBundleV1,
   command: ApplyStudioBoundEntityEditWireCommandV1,
-) => Promise<SceneIrBundleV1>;
+) => Promise<StudioBoundEntityEditResultV1>;
 type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" | "rectangle";
 type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StaticRootTransformOperation = Readonly<{
@@ -390,6 +397,50 @@ const studioPersistentRemoveProjectionV1Schema = z
   })
   .strict();
 const studioStaticRootPointV1Schema = z.object({ x: finiteNumberSchema, y: finiteNumberSchema }).strict();
+const studioBoundEntityProjectionCommonV1Shape = {
+  interval: studioTimelineProjectionIntervalV1Schema,
+  operationId: z.string().min(1),
+  studioEntityId: z.string().min(1),
+  transactionId: z.string().min(1),
+};
+const studioBoundEntityProjectionV1Schema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      ...studioBoundEntityProjectionCommonV1Shape,
+      kind: z.literal("position"),
+      value: studioStaticRootPointV1Schema,
+    })
+    .strict(),
+  z
+    .object({
+      ...studioBoundEntityProjectionCommonV1Shape,
+      kind: z.literal("opacity"),
+      value: finiteNumberSchema.min(0).max(1),
+    })
+    .strict(),
+  z
+    .object({
+      ...studioBoundEntityProjectionCommonV1Shape,
+      from: finiteNumberSchema,
+      kind: z.literal("rotation"),
+      to: finiteNumberSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...studioBoundEntityProjectionCommonV1Shape,
+      from: finiteNumberSchema.positive(),
+      kind: z.literal("uniform-scale"),
+      to: finiteNumberSchema.positive(),
+    })
+    .strict(),
+]);
+const studioBoundEntityEditResultV1Schema = z
+  .object({
+    bundle: sceneIrBundleV1Schema,
+    projection: studioBoundEntityProjectionV1Schema,
+  })
+  .strict();
 const studioStaticRootDimensionsV1Schema = z
   .object({
     height: finiteNumberSchema.optional(),
@@ -1044,7 +1095,11 @@ export function createApplyStudioBoundEntityEditCompiler(
 ): ApplyStudioBoundEntityEditCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStudioBoundEntityEditV1);
+    const response = bindings.applyStudioBoundEntityEditV1(
+      encoder.encode(JSON.stringify(snapshot)),
+      encoder.encode(JSON.stringify(command)),
+    );
+    return studioBoundEntityEditResultV1Schema.parse(JSON.parse(decoder.decode(response)) as unknown);
   };
 }
 

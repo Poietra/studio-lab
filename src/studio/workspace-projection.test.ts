@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import type {
+  StudioBoundEntityProjectionV1,
   StudioCreationProjectionV1,
   StudioMathTexTransformProjectionV1,
   StudioMotionProjectionV1,
@@ -573,6 +574,115 @@ describe("Studio workspace projection", () => {
     expect(selectStudioWorkspaceProgramAuthority([timelineRecord], [record], "rust-authorized-batch")).toBeNull();
   });
 
+  it("materializes the four source-bound endpoint results only from a correlated Rust projection", () => {
+    const imported = workspaceScene("Static", null);
+    const [entityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
+    if (!entityId) throw new Error("Static fixture has no entity.");
+    const operation = (id: string, mutation: object) =>
+      ({
+        dependsOn: [],
+        entityId,
+        id,
+        interval: { end: 0, start: 0 },
+        provenance: { evidence: [], origin: "direct-manipulation" },
+        ...mutation,
+      }) as unknown as CanonicalEditProgram["operations"][number];
+    const program = (edit: CanonicalEditProgram["operations"][number]): CanonicalEditProgram => ({
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: [],
+        resolvedSeconds: 0,
+        source: { kind: "playhead", referenceSeconds: 0 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [edit],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [edit.id] },
+      transactionId: edit.id,
+      version: 1,
+    });
+    const position = { x: 400, y: 220 };
+    const cases = [
+      {
+        edit: operation("bound-position", { key: "position", kind: "SetProperty", value: position }),
+        expectedSample: { value: position },
+        key: "position",
+        mutation: { kind: "position" as const, value: position },
+      },
+      {
+        edit: operation("bound-opacity", { key: "appearance", kind: "SetProperty", value: 0.25 }),
+        expectedSample: { value: 0.25 },
+        key: "appearance",
+        mutation: { kind: "opacity" as const, value: 0.25 },
+      },
+      {
+        edit: operation("bound-rotation", {
+          easing: "smooth",
+          from: 0,
+          key: "rotation",
+          kind: "AnimateProperty",
+          relativeDelta: 0.5,
+          to: 0.5,
+        }),
+        expectedSample: { from: 0, value: 0.5 },
+        key: "rotation",
+        mutation: { from: 0, kind: "rotation" as const, to: 0.5 },
+      },
+      {
+        edit: operation("bound-scale", {
+          easing: "smooth",
+          from: 1,
+          key: "scale",
+          kind: "AnimateProperty",
+          relativeFactor: 1.5,
+          to: 1.5,
+        }),
+        expectedSample: { from: 1, value: 1.5 },
+        key: "scale",
+        mutation: { from: 1, kind: "uniform-scale" as const, to: 1.5 },
+      },
+    ];
+
+    for (const { edit, expectedSample, key, mutation } of cases) {
+      const sourceProgram = program(edit);
+      const projection: StudioBoundEntityProjectionV1 = {
+        ...mutation,
+        interval: edit.interval,
+        operationId: edit.id,
+        studioEntityId: entityId,
+        transactionId: sourceProgram.transactionId,
+      };
+      const projected = projectStudioWorkspace({
+        activeScene: imported,
+        appliedPrograms: [programRecord(sourceProgram, { issues: [], kind: "valid" })],
+        boundEntityProjection: projection,
+        currentTime: 0,
+        draftProgram: null,
+        nextScene: null,
+        programAuthority: "source-bound-endpoint",
+        selectedObjectIds: [],
+      });
+      expect(
+        projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/${key}`]?.samples.at(-1),
+      ).toMatchObject(expectedSample);
+    }
+
+    const firstProgram = program(cases[0]!.edit);
+    expect(() =>
+      projectStudioWorkspace({
+        activeScene: imported,
+        appliedPrograms: [programRecord(firstProgram, { issues: [], kind: "valid" })],
+        currentTime: 0,
+        draftProgram: null,
+        nextScene: null,
+        programAuthority: "source-bound-endpoint",
+        selectedObjectIds: [],
+      }),
+    ).toThrow("A Rust bound-entity projection is required");
+  });
+
   it("requires and mechanically composes Rust's static-root and persistent-remove projections", () => {
     const imported = workspaceScene("Static", null);
     const base = projectStudioWorkspace({
@@ -804,17 +914,6 @@ describe("Studio workspace projection", () => {
       selectedObjectIds: [],
     });
     expect(pureRemoval.projection.canvas.entities[0]).toMatchObject({ opacity: 0, present: false, scale: 3 });
-    expect(
-      projectStudioWorkspace({
-        activeScene: rebased,
-        appliedPrograms: [record],
-        currentTime: rebased.runtimeSceneState.duration,
-        draftProgram: null,
-        nextScene: null,
-        programAuthority: "source-bound-endpoint",
-        selectedObjectIds: [],
-      }).projection.canvas.entities[0]?.scale,
-    ).toBe(6);
     expect(() =>
       selectStaticRootProjection([scale.program], {
         ...staticRootProjection,

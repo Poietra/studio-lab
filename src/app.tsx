@@ -155,6 +155,7 @@ import { WorkspaceLauncher } from "./studio/workspace-launcher";
 import {
   isTransitionOverlay,
   projectStudioWorkspace,
+  selectBoundEntityProjection,
   selectCreationProjection,
   selectMathTexTransformProjection,
   selectMotionProjection,
@@ -931,6 +932,20 @@ export function App({
       previewRenderer?.programAuthority ?? null,
     );
   }
+  function boundEntityProjectionForRecords(records: readonly ProgramRecord[]) {
+    const authority = workspaceProgramAuthorityForRecords(records);
+    if (authority === undefined) return undefined;
+    if (authority !== "source-bound-endpoint") return null;
+    if (!previewRenderer?.boundEntityProjection) return undefined;
+    try {
+      return selectBoundEntityProjection(
+        records.map((record) => record.program),
+        previewRenderer.boundEntityProjection,
+      );
+    } catch {
+      return undefined;
+    }
+  }
   function staticRootProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
     const authority = workspaceProgramAuthorityForRecords(records);
@@ -944,6 +959,7 @@ export function App({
     }
   }
   const workspaceTimelineProjection = timelineProjectionForRecords(previewProgramRecords);
+  const workspaceBoundEntityProjection = boundEntityProjectionForRecords(previewProgramRecords);
   const workspaceCreationProjection = creationProjectionForRecords(previewProgramRecords);
   const workspaceMathTexTransformProjection = mathTexTransformProjectionForRecords(previewProgramRecords);
   const workspaceMotionProjection = motionProjectionForRecords(previewProgramRecords);
@@ -953,6 +969,7 @@ export function App({
   const workspaceProjection =
     editorDocumentPresentationReady &&
     projectedActiveScene &&
+    workspaceBoundEntityProjection !== undefined &&
     workspaceCreationProjection !== undefined &&
     workspaceTimelineProjection !== undefined &&
     workspaceMathTexTransformProjection !== undefined &&
@@ -963,6 +980,7 @@ export function App({
       ? projectStudioWorkspace({
           activeScene: projectedActiveScene,
           appliedPrograms: previewAppliedPrograms,
+          boundEntityProjection: workspaceBoundEntityProjection,
           creationProjection: workspaceCreationProjection,
           currentTime,
           draftProgram: editingAppliedProgram ? null : draftProgram,
@@ -1213,6 +1231,7 @@ export function App({
   }
 
   const draftBaseTimelineProjection = timelineProjectionForRecords(draftPrecedingPrograms);
+  const draftBaseBoundEntityProjection = boundEntityProjectionForRecords(draftPrecedingPrograms);
   const draftBaseCreationProjection = creationProjectionForRecords(draftPrecedingPrograms);
   const draftBaseMathTexTransformProjection = mathTexTransformProjectionForRecords(draftPrecedingPrograms);
   const draftBaseMotionProjection = motionProjectionForRecords(draftPrecedingPrograms);
@@ -1222,6 +1241,7 @@ export function App({
   const draftBaseProjection =
     editorDocumentPresentationReady && projectedActiveScene && draftProgram
       ? draftBaseTimelineProjection === undefined ||
+        draftBaseBoundEntityProjection === undefined ||
         draftBaseCreationProjection === undefined ||
         draftBaseMathTexTransformProjection === undefined ||
         draftBaseMotionProjection === undefined ||
@@ -1232,6 +1252,7 @@ export function App({
         : projectStudioWorkspace({
             activeScene: projectedActiveScene,
             appliedPrograms: draftPrecedingPrograms,
+            boundEntityProjection: draftBaseBoundEntityProjection,
             creationProjection: draftBaseCreationProjection,
             currentTime,
             draftProgram: null,
@@ -1280,7 +1301,13 @@ export function App({
       : null);
   const sourceProjectedVisibleEntities = presentedRuntimeTraceAuthorities.reduce<readonly ProjectedEntity[]>(
     (entities, authority) =>
-      projectStudioPreviewRuntimeTraceEntityPresence(entities, authority, runtimeTraceInteractionGeometry, currentTime),
+      projectStudioPreviewRuntimeTraceEntityPresence(
+        entities,
+        authority,
+        runtimeTraceInteractionGeometry,
+        currentTime,
+        workspaceBoundEntityProjection ?? null,
+      ),
     workspaceProjection?.visibleEntities ?? [],
   );
   const sourceProjectedVisibleEntityIds = new Set(sourceProjectedVisibleEntities.map(({ id }) => id));
@@ -1296,7 +1323,13 @@ export function App({
   ];
   const editableEntities = presentedRuntimeTraceAuthorities.reduce<readonly ProjectedEntity[]>(
     (entities, authority) =>
-      projectStudioPreviewRuntimeTraceEntityPresence(entities, authority, runtimeTraceInteractionGeometry, currentTime),
+      projectStudioPreviewRuntimeTraceEntityPresence(
+        entities,
+        authority,
+        runtimeTraceInteractionGeometry,
+        currentTime,
+        workspaceBoundEntityProjection ?? null,
+      ),
     workspaceProjection?.editableEntities ?? [],
   );
   const selectedSet = new Set(selectedObjectIds);
@@ -1704,6 +1737,7 @@ export function App({
     const precedingRecords = appliedPrograms.slice(0, index);
     const precedingPrograms = precedingRecords.map((candidate) => candidate.program);
     const precedingTimelineProjection = timelineProjectionForRecords(precedingRecords);
+    const precedingBoundEntityProjection = boundEntityProjectionForRecords(precedingRecords);
     const precedingCreationProjection = creationProjectionForRecords(precedingRecords);
     const precedingMathTexTransformProjection = mathTexTransformProjectionForRecords(precedingRecords);
     const precedingMotionProjection = motionProjectionForRecords(precedingRecords);
@@ -1712,6 +1746,7 @@ export function App({
     const precedingStaticRootProjection = staticRootProjectionForRecords(precedingRecords);
     if (
       precedingTimelineProjection === undefined ||
+      precedingBoundEntityProjection === undefined ||
       precedingCreationProjection === undefined ||
       precedingMathTexTransformProjection === undefined ||
       precedingMotionProjection === undefined ||
@@ -1726,6 +1761,7 @@ export function App({
     const baseProjection = projectStudioWorkspace({
       activeScene: projectedActiveScene,
       appliedPrograms: precedingRecords,
+      boundEntityProjection: precedingBoundEntityProjection,
       creationProjection: precedingCreationProjection,
       currentTime: workingFocus,
       draftProgram: null,
@@ -2036,6 +2072,7 @@ export function App({
     const sourceSceneBefore = (index: number) => {
       const preceding = appliedPrograms.slice(0, index);
       const timelineProjection = timelineProjectionForRecords(preceding);
+      const boundEntityProjection = boundEntityProjectionForRecords(preceding);
       const creationProjection = creationProjectionForRecords(preceding);
       const mathTexTransformProjection = mathTexTransformProjectionForRecords(preceding);
       const motionProjection = motionProjectionForRecords(preceding);
@@ -2044,6 +2081,7 @@ export function App({
       const staticRootProjection = staticRootProjectionForRecords(preceding);
       if (
         timelineProjection === undefined ||
+        boundEntityProjection === undefined ||
         creationProjection === undefined ||
         mathTexTransformProjection === undefined ||
         motionProjection === undefined ||
@@ -2056,6 +2094,7 @@ export function App({
       const state = projectStudioWorkspace({
         activeScene: projectedActiveScene,
         appliedPrograms: preceding,
+        boundEntityProjection,
         creationProjection,
         currentTime,
         draftProgram: null,
@@ -2837,18 +2876,18 @@ export function App({
           })
         : { sourceTime: capturedSourceAnchor };
     if (!anchor) return false;
-    // A replaced draft leaves the staged program set, so the multiplicative
-    // `from` must come from the draft-free baseline: sampling the projection
-    // that still contains the replaced scale would fold that scale into the
-    // relative factor and commit a smaller resize than the gesture showed.
-    const replacementBaselineScene = gestureContext.replacesDraft
-      ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, gestureContext.sourcePrograms)
-      : null;
+    const runtimeTraceEditCandidate = runtimeTraceEditCandidateAt(entityId, anchor.sourceTime);
+    // Runtime Trace candidates define relative resize against a normalized
+    // scale of one. Python's absolute scale and a replaced transient draft are
+    // not valid authoring baselines for this closed endpoint contract.
+    const replacementBaselineScene =
+      !runtimeTraceEditCandidate && gestureContext.replacesDraft
+        ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, gestureContext.sourcePrograms)
+        : null;
     const scaleBasisScene = replacementBaselineScene ?? sourceScene;
-    const sampledScale = samplePropertyValue(
-      scaleBasisScene.propertyChannels[`${entityId}/scale`]?.samples ?? [],
-      anchor.sourceTime,
-    );
+    const sampledScale = runtimeTraceEditCandidate
+      ? 1
+      : samplePropertyValue(scaleBasisScene.propertyChannels[`${entityId}/scale`]?.samples ?? [], anchor.sourceTime);
     const baselineEntityScale = replacementBaselineScene?.objectGraph.entities[entityId]?.geometry?.scale;
     const executionScale =
       typeof sampledScale === "number"
@@ -2861,10 +2900,7 @@ export function App({
       setDraftError("The resize must be at least 0.1 seconds and fit within the current Scene duration.");
       return false;
     }
-    const validationScene = projectStudioPreviewRuntimeTraceValidationScene(
-      sourceScene,
-      runtimeTraceEditCandidateAt(entityId, anchor.sourceTime),
-    );
+    const validationScene = projectStudioPreviewRuntimeTraceValidationScene(sourceScene, runtimeTraceEditCandidate);
     try {
       const validation = createDirectManipulationScaleProgram({
         capturedPlayhead: anchor.sourceTime,

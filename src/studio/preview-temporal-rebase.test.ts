@@ -370,6 +370,24 @@ describe("Runtime Trace endpoint candidate integration", () => {
       0,
     );
     expect(projected[0]).toMatchObject({ position: candidate.baseCenter, present: true, scale: 1 });
+    const scaleProjection = {
+      from: 1,
+      interval: { end: 5, start: 5 },
+      kind: "uniform-scale",
+      operationId: "scale",
+      studioEntityId: candidate.studioEntityId,
+      to: 2,
+      transactionId: "scale",
+    } as const;
+    const scaleAt = (sampleTime: number) =>
+      projectStudioPreviewRuntimeTraceEntityPresence(
+        projected,
+        candidate,
+        new Map([[candidate.runtimeEntityId, {}]]),
+        sampleTime,
+        scaleProjection,
+      )[0]?.scale;
+    expect([scaleAt(4.9), scaleAt(5)]).toEqual([1, 2]);
     expect(studioPreviewRuntimeTraceEditTargetIsPresent(validationScene, candidate.studioEntityId, 0, candidate)).toBe(
       true,
     );
@@ -383,9 +401,17 @@ describe("source-bound endpoint compilation", () => {
     const verifiedCandidates = studioPreviewRuntimeTraceEditCandidates(snapshot, 0, []);
     expect(verifiedCandidates.map(({ targetSourceName }) => targetSourceName)).toEqual(["square", "circle"]);
     const commands: ApplyStudioBoundEntityEditWireCommandV1[] = [];
+    const projection = {
+      interval: { end: 0, start: 0 },
+      kind: "position",
+      operationId: record.program.operations[0]!.id,
+      studioEntityId: candidate.studioEntityId,
+      transactionId: record.program.transactionId,
+      value: { x: 384, y: 144 },
+    } as const;
     const compiler: ApplyStudioBoundEntityEditCompiler = async (bundle, command) => {
       commands.push(command);
-      return bundle;
+      return { bundle, projection };
     };
     const nextRevision = "b".repeat(64);
     const result = await compileStudioPreviewRuntimeTraceEdit({
@@ -396,6 +422,7 @@ describe("source-bound endpoint compilation", () => {
       workingState,
     });
     expect(result.kind).toBe("rebased");
+    if (result.kind === "rebased") expect(result.result.projection).toEqual(projection);
     expect(commands).toHaveLength(1);
     expect(commands[0]?.candidates).toEqual(
       verifiedCandidates.map((verifiedCandidate) => ({
@@ -449,8 +476,21 @@ describe("source-bound endpoint compilation", () => {
     });
     expect(compiled.kind).toBe("compiled");
     if (compiled.kind === "compiled") {
+      expect(compiled.scene.boundEntityProjection).toEqual(projection);
       expect(compiled.scene.programAuthority).toBe("source-bound-endpoint");
     }
+    const mismatched = await compileStudioPreviewSceneV1({
+      applyStudioBoundEntityEditCompiler: async (bundle) => ({
+        bundle,
+        projection: { ...projection, value: { ...projection.value, x: projection.value.x + 1 } },
+      }),
+      frame: FRAME,
+      snapshot,
+      workingState,
+      workingRevision: "generic-v3-mismatched-projection",
+      workspaceKey: "generic-preview/scenes/staticsquare.py/StaticSquare",
+    });
+    expect(mismatched).toMatchObject({ kind: "unsupported" });
   });
 
   it("reports a core rejection without synthesizing a fallback Scene", async () => {

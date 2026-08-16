@@ -2,6 +2,8 @@ import {
   type ApplyStudioBoundEntityEditCompiler,
   type ApplyStudioBoundEntityEditWireCommandV1,
   compileApplyStudioBoundEntityEdit,
+  type StudioBoundEntityEditResultV1,
+  type StudioBoundEntityProjectionV1,
 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type { Point, ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
@@ -17,7 +19,7 @@ export type StudioPreviewTemporalRebaseIssue = Readonly<{
 
 export type StudioPreviewTemporalRebaseResult =
   | Readonly<{ issue: StudioPreviewTemporalRebaseIssue; kind: "unsupported" }>
-  | Readonly<{ kind: "rebased"; scene: SceneIrV1 }>;
+  | Readonly<{ kind: "rebased"; result: StudioBoundEntityEditResultV1 }>;
 
 /**
  * Source-bound Runtime Trace evidence for one bounded endpoint edit. Studio may
@@ -305,7 +307,8 @@ export function projectStudioPreviewRuntimeTraceEntityPresence(
   entities: readonly ProjectedEntity[],
   authority: StudioPreviewRuntimeTraceEditCandidate | null,
   interactionGeometry: ReadonlyMap<string, unknown> | null,
-  _sampleTime: number,
+  sampleTime: number,
+  authorizedProjection: StudioBoundEntityProjectionV1 | null = null,
 ) {
   if (!authority || !interactionGeometry?.has(authority.runtimeEntityId)) {
     return entities;
@@ -313,6 +316,12 @@ export function projectStudioPreviewRuntimeTraceEntityPresence(
   const projection = authority.entityProjection;
   const target = entities.find(({ id }) => id === authority.studioEntityId);
   if (!target || !studioRuntimeTraceEditTargetMatches(target, authority)) return entities;
+  const mutation =
+    authorizedProjection?.studioEntityId === target.id && sampleTime >= authorizedProjection.interval.start - 0.0005
+      ? authorizedProjection
+      : null;
+  const position = mutation?.kind === "position" ? mutation.value : projection.baseCenter;
+  const scale = mutation?.kind === "uniform-scale" ? mutation.to : 1;
   // One is a normalized basis for the candidate's relative scale factor, not
   // a claim about the absolute scale computed by Python source.
   return entities.map((entity) =>
@@ -321,12 +330,12 @@ export function projectStudioPreviewRuntimeTraceEntityPresence(
           ...entity,
           geometry: {
             ...entity.geometry,
-            position: { kind: "known" as const, value: projection.baseCenter },
-            ...(authority.capabilities.uniformScale ? { scale: { kind: "known" as const, value: 1 } } : {}),
+            position: { kind: "known" as const, value: position },
+            ...(authority.capabilities.uniformScale ? { scale: { kind: "known" as const, value: scale } } : {}),
           },
-          position: projection.baseCenter,
+          position,
           present: true,
-          ...(authority.capabilities.uniformScale ? { scale: 1 } : {}),
+          ...(authority.capabilities.uniformScale ? { scale } : {}),
         }
       : entity,
   );
@@ -560,7 +569,7 @@ export async function compileStudioPreviewRuntimeTraceEdit(
         viewport: STUDIO_VIEWPORT,
       },
     );
-    return { kind: "rebased", scene: rebased.scene };
+    return { kind: "rebased", result: rebased };
   } catch (error) {
     return unsupported(
       "target-edit-unsupported",
