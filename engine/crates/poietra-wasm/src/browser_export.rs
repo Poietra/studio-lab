@@ -25,6 +25,7 @@ use crate::export_encoder::{EncoderFailureV1, PoietraExportEncoderSessionV1};
 use crate::export_encoder_protocol::{
     ExportEncoderRefusalReasonV1, ExportEncoderSessionConfigV1, H264_CODEC_LADDER_V1,
     frame_duration_microseconds_v1, frame_timestamp_microseconds_v1,
+    verify_export_chunk_timestamp_v1,
 };
 
 const BROWSER_EXPORT_REFUSED_ERROR_NAME: &str = "PoietraBrowserMp4ExportRefused";
@@ -226,7 +227,11 @@ pub async fn export_scene_mp4_v1(
         &assets,
         |request: ExportFrameRequestV1| {
             let packet_id = format!("packet:browser-export-{}", request.frame_index);
-            evaluator.sample_render_packet(SampleEngineSessionOptionsV1 {
+            // Export sampling fits the camera window to the closed ladder
+            // viewport (sub-pixel widening on the 854x480 rung, exactly like
+            // the legacy accepted Manim profile); the packet aspect gate
+            // itself stays strict for every consumer.
+            evaluator.sample_export_render_packet(SampleEngineSessionOptionsV1 {
                 evidence: &[],
                 packet_id: &packet_id,
                 sample_time: request.requested_time,
@@ -303,9 +308,21 @@ pub async fn export_scene_mp4_v1(
         sink,
     )
     .map_err(mux_error)?;
+    let mut previous_timestamp_microseconds = None;
     for (index, chunk) in encoded_output.chunks.iter().enumerate() {
         let frame_index =
             u64::try_from(index).map_err(|_| refused("mux-failed", "sample index overflowed"))?;
+        // The proven AVC configuration's *output* timestamps are asserted —
+        // strictly monotonic and exactly on the canonical grid — rather than
+        // trusted to echo the submitted frames (PR #730 review requirement).
+        verify_export_chunk_timestamp_v1(
+            frame_index,
+            chunk.timestamp_microseconds,
+            previous_timestamp_microseconds,
+            fps,
+        )
+        .map_err(|violation| refused(violation.refusal_wire_name(), violation))?;
+        previous_timestamp_microseconds = Some(chunk.timestamp_microseconds);
         let duration = chunk.duration_microseconds.unwrap_or_else(|| {
             frame_duration_microseconds_v1(frame_index, fps).unwrap_or_default()
         });

@@ -37,6 +37,10 @@ pub const MAX_EXPORT_DURATION_SECONDS_V1: u32 = 900;
 /// `sandbox/manim-render-gated-oci/render-entrypoint.py`, the byte limit the
 /// existing MP4 acceptance profile enforces.
 pub const MAX_EXPORT_OUTPUT_BYTES_V1: u64 = 134_217_728;
+/// Relative tolerance under which a packet camera aspect and viewport pixel
+/// aspect count as matching. Shared with consumers (such as export camera
+/// fitting) so their notion of "already matching" is exactly the validator's.
+pub const RENDER_ASPECT_RELATIVE_TOLERANCE_V1: f64 = 0.000_001;
 const JAVASCRIPT_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 const MAX_PATH_MORPH_KEYFRAMES_V1: usize = 900;
 
@@ -1492,13 +1496,14 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
         && packet.viewport.width_px > 0
     {
         let camera_aspect = camera_width / camera_height;
-        let expected_width_px = camera_aspect * f64::from(packet.viewport.height_px);
-        // Integer raster dimensions cannot always encode the camera aspect
-        // exactly. In particular, the closed 854x480 export rung is the
-        // even-width rounding of a 16:9 frame (853.333… px). Accept at most
-        // that one-pixel horizontal quantization; larger mismatches still
-        // fail before rendering.
-        if (expected_width_px - f64::from(packet.viewport.width_px)).abs() > 1.0 {
+        let viewport_aspect =
+            f64::from(packet.viewport.width_px) / f64::from(packet.viewport.height_px);
+        // The packet keeps square pixels: a viewport whose integer grid cannot
+        // encode the camera aspect (notably the 854x480 export rung against a
+        // 16:9 camera) is admitted by fitting the sampled camera window, never
+        // by loosening this gate — see
+        // `EngineSessionV1::sample_export_render_packet`.
+        if (camera_aspect / viewport_aspect - 1.0).abs() > RENDER_ASPECT_RELATIVE_TOLERANCE_V1 {
             validator.issue("$.camera", "camera and viewport aspect ratios must match");
         }
     }

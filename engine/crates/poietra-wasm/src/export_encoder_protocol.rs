@@ -171,6 +171,103 @@ pub(crate) fn frame_duration_microseconds_v1(frame_index: u64, fps: u32) -> Opti
     frame_timestamp_microseconds_v1(frame_index.checked_add(1)?, fps)?.checked_sub(timestamp)
 }
 
+/// One encoder-output chunk timestamp broke the canonical export timeline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExportChunkTimelineViolationV1 {
+    /// Output timestamps must be strictly increasing in arrival order.
+    NonMonotonic {
+        chunk_index: u64,
+        previous_microseconds: u64,
+        timestamp_microseconds: u64,
+    },
+    /// The timestamp left the canonical `floor(i * 1_000_000 / fps)` grid.
+    OffGrid {
+        chunk_index: u64,
+        expected_microseconds: Option<u64>,
+        timestamp_microseconds: u64,
+    },
+}
+
+impl ExportChunkTimelineViolationV1 {
+    /// Stable refusal wire name for the named `PoietraBrowserMp4ExportRefused`
+    /// rejection carrying this violation.
+    pub(crate) const fn refusal_wire_name(self) -> &'static str {
+        match self {
+            Self::NonMonotonic { .. } => "non-monotonic-chunk-timestamps",
+            Self::OffGrid { .. } => "chunk-timestamp-mismatch",
+        }
+    }
+}
+
+impl std::fmt::Display for ExportChunkTimelineViolationV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonMonotonic {
+                chunk_index,
+                previous_microseconds,
+                timestamp_microseconds,
+            } => write!(
+                formatter,
+                "the proven AVC configuration emitted chunk {chunk_index} at \
+                 {timestamp_microseconds} us after {previous_microseconds} us"
+            ),
+            Self::OffGrid {
+                chunk_index,
+                expected_microseconds: Some(expected),
+                timestamp_microseconds,
+            } => write!(
+                formatter,
+                "chunk {chunk_index} reported {timestamp_microseconds} us instead of the \
+                 canonical {expected} us"
+            ),
+            Self::OffGrid {
+                chunk_index,
+                expected_microseconds: None,
+                timestamp_microseconds,
+            } => write!(
+                formatter,
+                "chunk {chunk_index} at {timestamp_microseconds} us has no representable \
+                 canonical grid instant"
+            ),
+        }
+    }
+}
+
+/// Verifies one encoder-output chunk timestamp against the canonical export
+/// timeline: strictly increasing in output order AND exactly on the
+/// `floor(chunk_index * 1_000_000 / fps)` grid.
+///
+/// The encoder is real browser hardware or software outside this crate's
+/// control, so its *output* is asserted rather than trusted to echo the
+/// submitted frame timestamps (#722; explicit review requirement of PR #730).
+/// Any reordering — B-frames slipping into a proven configuration — or
+/// timestamp rewrite fails the whole export closed under a named reason.
+pub(crate) fn verify_export_chunk_timestamp_v1(
+    chunk_index: u64,
+    timestamp_microseconds: u64,
+    previous_timestamp_microseconds: Option<u64>,
+    fps: u32,
+) -> Result<(), ExportChunkTimelineViolationV1> {
+    if let Some(previous_microseconds) = previous_timestamp_microseconds {
+        if timestamp_microseconds <= previous_microseconds {
+            return Err(ExportChunkTimelineViolationV1::NonMonotonic {
+                chunk_index,
+                previous_microseconds,
+                timestamp_microseconds,
+            });
+        }
+    }
+    let expected_microseconds = frame_timestamp_microseconds_v1(chunk_index, fps);
+    if expected_microseconds != Some(timestamp_microseconds) {
+        return Err(ExportChunkTimelineViolationV1::OffGrid {
+            chunk_index,
+            expected_microseconds,
+            timestamp_microseconds,
+        });
+    }
+    Ok(())
+}
+
 /// Admits only non-negative integer microseconds that round-trip through a
 /// JavaScript `number`; `WebIDL` must never silently truncate encoder timing.
 pub(crate) fn admit_javascript_safe_microseconds_v1(value: f64) -> Option<u64> {
@@ -528,6 +625,62 @@ mod tests {
                 MAX_JAVASCRIPT_SAFE_INTEGER_MICROSECONDS_NUMBER_V1
             ),
             Some(MAX_JAVASCRIPT_SAFE_INTEGER_MICROSECONDS_V1)
+        );
+    }
+
+    #[test]
+    fn chunk_timestamp_verification_accepts_the_exact_output_grid() {
+        for fps in [30_u32, 60] {
+            let mut previous = None;
+            for chunk_index in 0..10_u64 {
+                let timestamp = frame_timestamp_microseconds_v1(chunk_index, fps).unwrap();
+                verify_export_chunk_timestamp_v1(chunk_index, timestamp, previous, fps)
+                    .expect("canonical encoder output must verify");
+                previous = Some(timestamp);
+            }
+        }
+    }
+
+    #[test]
+    fn chunk_timestamp_verification_names_non_monotonic_output() {
+        let violation = verify_export_chunk_timestamp_v1(1, 33_333, Some(33_333), 30)
+            .expect_err("an equal timestamp must violate strict monotonicity");
+        assert_eq!(
+            violation,
+            ExportChunkTimelineViolationV1::NonMonotonic {
+                chunk_index: 1,
+                previous_microseconds: 33_333,
+                timestamp_microseconds: 33_333,
+            }
+        );
+        assert_eq!(
+            violation.refusal_wire_name(),
+            "non-monotonic-chunk-timestamps"
+        );
+        assert!(violation.to_string().contains("chunk 1"));
+        assert!(
+            verify_export_chunk_timestamp_v1(2, 33_332, Some(33_333), 30).is_err(),
+            "a decreasing timestamp must violate strict monotonicity"
+        );
+    }
+
+    #[test]
+    fn chunk_timestamp_verification_names_off_grid_output() {
+        let violation = verify_export_chunk_timestamp_v1(1, 33_334, Some(0), 30)
+            .expect_err("a rewritten timestamp must leave the canonical grid");
+        assert_eq!(
+            violation,
+            ExportChunkTimelineViolationV1::OffGrid {
+                chunk_index: 1,
+                expected_microseconds: Some(33_333),
+                timestamp_microseconds: 33_334,
+            }
+        );
+        assert_eq!(violation.refusal_wire_name(), "chunk-timestamp-mismatch");
+        assert!(violation.to_string().contains("33333"));
+        assert!(
+            verify_export_chunk_timestamp_v1(0, 1, None, 30).is_err(),
+            "the first chunk must sit exactly at the grid origin"
         );
     }
 

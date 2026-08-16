@@ -67,12 +67,15 @@ impl<'de> Deserialize<'de> for ExportColorContractVersionV1 {
 
 /// Closed 16:9 output ladder aligned to the 8 × (128/9) scene-unit frame.
 ///
-/// Every rung maps the same camera frame to an integer pixel grid, so choosing
-/// a resolution never changes what is visible — only how densely it is
-/// rasterized. 854×480 preserves the legacy accepted server render profile
-/// (854 px is the even-width rounding of 480 × 16/9); 1280×720 and 1920×1080
-/// are the exact 16:9 rungs above it. Arbitrary integer dimensions are
-/// rejected by construction: the wire value is one of these three literals.
+/// 1280×720 and 1920×1080 are exact 16:9 pixel grids: they rasterize the same
+/// camera frame at different densities and never change what is visible.
+/// 854×480 preserves the legacy accepted server render profile — 854 px is
+/// the even-width rounding of 480 × 16/9 — so its pixel aspect deviates from
+/// 16:9 by less than one pixel column; export sampling resolves that
+/// deviation exactly as the legacy Manim profile did, by widening the camera
+/// window sub-pixel about its center (never cropping). Arbitrary integer
+/// dimensions are rejected by construction: the wire value is one of these
+/// three literals.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ExportResolutionV1 {
     #[serde(rename = "854x480")]
