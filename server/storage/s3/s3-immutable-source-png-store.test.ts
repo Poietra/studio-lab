@@ -171,9 +171,10 @@ describe("ImmutableS3SourceBlobStoreV1", () => {
           throw new Error(`Unexpected ${command.constructor.name}.`);
       }
     });
+    // The new locator-token dependency spelling must interoperate with legacy generation-named receipts.
     const store = new ImmutableS3SourceBlobStoreV1(
       { transport },
-      { createObjectGeneration: generationFactory([receipt.objectGeneration]) },
+      { createObjectLocatorToken: generationFactory([receipt.objectGeneration]) },
     );
 
     await expect(store.putSource(TENANT, SOURCE)).resolves.toEqual(receipt);
@@ -392,9 +393,10 @@ describe("ImmutableS3ProjectPngStoreV1", () => {
           throw new Error(`Unexpected ${command.constructor.name}.`);
       }
     });
+    // The new locator-token dependency spelling must interoperate with legacy generation-named receipts.
     const store = new ImmutableS3ProjectPngStoreV1(
       { transport },
-      { createObjectGeneration: generationFactory([receipt.objectGeneration]) },
+      { createObjectLocatorToken: generationFactory([receipt.objectGeneration]) },
     );
 
     await expect(store.put(TENANT, PROJECT, PNG_BYTES)).resolves.toEqual(receipt);

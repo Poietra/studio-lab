@@ -216,8 +216,8 @@ jobs:
 
   storage-e2e:
     name: Durable storage E2E
-    needs: changes
-    if: needs.changes.outputs.storage == 'true'
+    needs: [changes, engine-wasm]
+    if: always() && needs.changes.outputs.storage == 'true' && needs.engine-wasm.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -232,6 +232,11 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Download browser WASM bindings
+        uses: actions/download-artifact@v6
+        with:
+          name: poietra-engine-wasm
+          path: public/engine-wasm/
       - name: Run durable storage E2E
         run: pnpm test:storage:e2e
 

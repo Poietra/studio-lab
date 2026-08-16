@@ -26,7 +26,7 @@ import {
   type PrivateImmutableS3BucketTransportLeaseV1,
 } from "./s3-private-immutable-bucket-transport";
 
-const MAX_GENERATION_ATTEMPTS_V1 = 3;
+const MAX_LOCATOR_TOKEN_ATTEMPTS_V1 = 3;
 const MAX_LIST_RESULTS_V1 = 256;
 
 function isNamedError(error: unknown, name: string) {
@@ -174,11 +174,11 @@ export class S3ImmutableRenderArtifactStoreV1 implements ImmutableRenderArtifact
 
     const operation = this.#transport.operation(signal);
     const attemptedKeys = new Set<string>();
-    for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS_V1; attempt += 1) {
+    for (let attempt = 0; attempt < MAX_LOCATOR_TOKEN_ATTEMPTS_V1; attempt += 1) {
       operation.signal.throwIfAborted();
       const locator = createImmutableRenderArtifactLocatorV1(tenantId, identity);
       if (attemptedKeys.has(locator.objectKey)) {
-        throw new Error("The immutable object generation allocator reused a render artifact key.");
+        throw new Error("The immutable object locator token allocator reused a render artifact key.");
       }
       attemptedKeys.add(locator.objectKey);
       const result = await operation.putObject({

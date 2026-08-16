@@ -5,7 +5,7 @@ import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 import { manimProjectIdSchema } from "../../../src/render-pipeline/contracts";
 import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
-import { immutableObjectGenerationV1 } from "../immutable-object-contract";
+import { immutableObjectLocatorTokenV1 } from "../immutable-object-contract";
 import {
   assertRenderArtifactPublishedV1,
   boundedRenderArtifactIntegerV1,
@@ -224,11 +224,11 @@ function storedLocatorV1(objectKey: unknown, versionId: unknown, objectGeneratio
       versionId,
     };
   }
-  const generation = immutableObjectGenerationV1(objectGeneration);
+  const objectLocatorToken = immutableObjectLocatorTokenV1(objectGeneration);
   return {
-    advisoryIdentity: `generation:${generation}`,
+    advisoryIdentity: `generation:${objectLocatorToken}`,
     kind: "immutable",
-    objectGeneration: generation,
+    objectGeneration: objectLocatorToken,
     objectKey,
     versionId: null,
   };

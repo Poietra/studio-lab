@@ -5,6 +5,7 @@ import { loadPoietraWasmModule } from "./poietra-wasm-module";
 import { sceneIrV1Schema } from "./scene-ir";
 
 export * from "./asset-manifest";
+export * from "./export-profile";
 export * from "./primitives";
 export * from "./render-packet";
 export * from "./scene-ir";

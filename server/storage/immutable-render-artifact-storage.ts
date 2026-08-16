@@ -1,5 +1,5 @@
 import { manimTenantIdSchema } from "../manim-request-principal";
-import { immutableObjectGenerationV1, parseImmutableObjectLocatorV1 } from "./immutable-object-contract";
+import { immutableObjectLocatorTokenV1, parseImmutableObjectLocatorV1 } from "./immutable-object-contract";
 import {
   createImmutableRenderArtifactLocatorV1,
   type ImmutableRenderArtifactReceiptV1,
@@ -26,6 +26,7 @@ const IDENTITY_FIELDS = [
   "sourceDigest",
 ] as const;
 
+// Provider metadata keys keep the legacy `object-generation` spelling of the locator token (ADR 0005 compatibility).
 const METADATA_FIELDS = {
   artifactDigest: "artifact-digest",
   kind: "artifact-kind",
@@ -121,7 +122,7 @@ export function immutableRenderArtifactMetadataV1(
   return {
     [METADATA_FIELDS.artifactDigest]: value.artifactDigest,
     [METADATA_FIELDS.kind]: value.kind,
-    [METADATA_FIELDS.objectGeneration]: immutableObjectGenerationV1(value.objectGeneration),
+    [METADATA_FIELDS.objectGeneration]: immutableObjectLocatorTokenV1(value.objectGeneration),
     [METADATA_FIELDS.profileDigest]: value.profileDigest,
     [METADATA_FIELDS.requestDigest]: value.requestDigest,
     [METADATA_FIELDS.runtimeDigest]: value.runtimeDigest,

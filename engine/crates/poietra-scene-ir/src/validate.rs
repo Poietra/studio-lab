@@ -2,6 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
+use crate::export_profile::ExportProfileV1;
 use crate::model::{
     AffineTransformV1, AnimationChannelV1, AssetManifestReferenceV1, AssetManifestV1,
     AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1, ImageLocalRectV1, IntervalV1,
@@ -22,6 +23,20 @@ pub const MAX_KEYFRAMES_V1: usize = 100_000;
 pub const MAX_DRAWS_V1: usize = 100_000;
 pub const MAX_VIEWPORT_PIXELS_V1: u64 = 33_554_432;
 pub const MAX_VALIDATION_ISSUES_V1: usize = 128;
+/// Ceiling for an export profile's declared duration bound, in seconds.
+///
+/// Matches the 900-second (15-minute) ceiling of the historically accepted
+/// server render profile — `MAX_VIDEO_DURATION_SECONDS = 15 * 60` in
+/// `sandbox/manim-render-gated-oci/render-entrypoint.py` — so a client export
+/// never declares more duration than publication acceptance has ever admitted.
+pub const MAX_EXPORT_DURATION_SECONDS_V1: u32 = 900;
+/// Ceiling for an export profile's declared output-size bound, in bytes
+/// (128 MiB).
+///
+/// Matches `MAX_ARTIFACT_BYTES = 128 * 1024 * 1024` in
+/// `sandbox/manim-render-gated-oci/render-entrypoint.py`, the byte limit the
+/// existing MP4 acceptance profile enforces.
+pub const MAX_EXPORT_OUTPUT_BYTES_V1: u64 = 134_217_728;
 const JAVASCRIPT_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 const MAX_PATH_MORPH_KEYFRAMES_V1: usize = 900;
 
@@ -687,6 +702,33 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
         });
     }
     capabilities.into_iter().collect()
+}
+
+/// Validates an export profile's declared bounds.
+///
+/// Every other profile field is a closed literal or enum that serde already
+/// rejects at the wire, so only the declared numeric bounds carry range rules.
+///
+/// # Errors
+///
+/// Returns all detected v1 contract violations.
+pub fn validate_export_profile_v1(profile: &ExportProfileV1) -> Result<(), ValidationErrors> {
+    let mut validator = Validator::default();
+    if profile.max_duration_seconds == 0
+        || profile.max_duration_seconds > MAX_EXPORT_DURATION_SECONDS_V1
+    {
+        validator.issue(
+            "$.maxDurationSeconds",
+            format!("must be between 1 and {MAX_EXPORT_DURATION_SECONDS_V1} seconds"),
+        );
+    }
+    if profile.max_output_bytes == 0 || profile.max_output_bytes > MAX_EXPORT_OUTPUT_BYTES_V1 {
+        validator.issue(
+            "$.maxOutputBytes",
+            format!("must be between 1 and {MAX_EXPORT_OUTPUT_BYTES_V1} bytes"),
+        );
+    }
+    validator.finish()
 }
 
 /// Validates asset metadata, ordering, uniqueness, and aggregate resource limits.
