@@ -4,7 +4,9 @@ import { editProgramSuggestionSchema, editSuggestionLeafOperationSchema } from "
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import type { ProgramRecord } from "../studio/model";
-import { canonicalOperationSchema, programExecutionCapabilities } from "../studio/operation-registry";
+import { programExecutionCapabilities } from "../studio/operation-registry";
+import type { SceneEdit, SceneEditDraft } from "../studio/scene-edit-contract";
+import { sceneEditDraftSchema, sceneEditSchema } from "../studio/scene-edit-contract";
 import type { StudioTool } from "../studio/studio-toolbar";
 import type { InteractionMode } from "../studio/studio-viewport";
 import { deepStrictWireSchemaV1 } from "./deep-strict-wire-schema";
@@ -17,7 +19,25 @@ export type AppliedProgramMetadata = Readonly<{
   selection: readonly string[];
 }>;
 
-export type EditorProgramRecord = ProgramRecord &
+export type AcceptedProgramRecord = Readonly<{
+  program: SceneEdit;
+  validation: Readonly<{
+    issues: ProgramRecord["validation"]["issues"];
+    status: "valid";
+  }>;
+}>;
+
+export type DraftProgramRecord = Readonly<{
+  program: SceneEditDraft;
+  validation: ProgramRecord["validation"];
+}>;
+
+export type EditorProgramRecord = AcceptedProgramRecord &
+  Readonly<{
+    editorMetadata?: AppliedProgramMetadata;
+  }>;
+
+export type DraftEditorProgramRecord = DraftProgramRecord &
   Readonly<{
     editorMetadata?: AppliedProgramMetadata;
   }>;
@@ -44,7 +64,7 @@ export type RedoProgramEntry =
   | Readonly<{
       edit: AppliedProgramEdit | null;
       kind: "draft";
-      value: EditorProgramRecord;
+      value: DraftEditorProgramRecord;
     }>
   | Readonly<{
       kind: "mutation";
@@ -59,7 +79,7 @@ export type EditorSessionSnapshotV1 = Readonly<{
   appliedPrograms: readonly EditorProgramRecord[];
   currentTime: number;
   draftOperation: EditSuggestionOperation | null;
-  draftProgram: ProgramRecord | null;
+  draftProgram: DraftEditorProgramRecord | null;
   editingAppliedProgram: AppliedProgramEdit | null;
   insertTool: StudioTool;
   interactionMode: InteractionMode;
@@ -72,67 +92,6 @@ export type EditorSessionSnapshotV1 = Readonly<{
 
 const finiteNumber = z.number().finite();
 const boundedId = z.string().min(1).max(512);
-const evidenceSchema = z.array(z.string().max(500)).max(64);
-const timeAnchorSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("absolute"), seconds: finiteNumber }).strict(),
-  z.object({ kind: z.literal("playhead"), referenceSeconds: finiteNumber }).strict(),
-  z
-    .object({
-      kind: z.literal("playhead-offset"),
-      offsetSeconds: finiteNumber,
-      referenceSeconds: finiteNumber,
-    })
-    .strict(),
-  z
-    .object({
-      boundary: z.enum(["play-end", "play-start", "scene-end", "scene-start"]),
-      eventId: boundedId,
-      kind: z.literal("structural"),
-      offsetSeconds: finiteNumber.optional(),
-    })
-    .strict(),
-]);
-const programSchema = z
-  .object({
-    anchor: z
-      .object({
-        capturedPlayhead: finiteNumber,
-        evidence: evidenceSchema,
-        resolvedSeconds: finiteNumber.nonnegative(),
-        source: timeAnchorSchema,
-      })
-      .strict(),
-    intentCount: z.number().int().min(0).max(16),
-    loweringStatus: z.enum(["illustrative", "supported", "unsupported"]),
-    operations: z.array(canonicalOperationSchema).max(64),
-    provenance: z
-      .object({
-        evidence: evidenceSchema,
-        origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
-      })
-      .strict(),
-    requestedExecution: z.enum(["parallel", "sequence"]),
-    schedule: z
-      .object({
-        edges: z
-          .array(
-            z
-              .object({
-                from: boundedId,
-                reason: z.enum(["explicit", "identity", "lifetime", "read-after-write", "write-conflict"]),
-                to: boundedId,
-              })
-              .strict(),
-          )
-          .max(256),
-        mode: z.enum(["dependency-dag", "parallel", "sequence"]),
-        order: z.array(boundedId).max(64),
-      })
-      .strict(),
-    transactionId: z.string().min(1).max(160),
-    version: z.literal(1),
-  })
-  .strict();
 const validationIssueSchema = z
   .object({
     code: z.enum([
@@ -154,13 +113,24 @@ const validationIssueSchema = z
     severity: z.enum(["error", "warning"]),
   })
   .strict();
-const programRecordSchema = z
+const draftProgramRecordSchema = z
   .object({
-    program: programSchema,
+    program: sceneEditDraftSchema,
     validation: z
       .object({
         issues: z.array(validationIssueSchema).max(256),
         status: z.enum(["invalid", "valid"]),
+      })
+      .strict(),
+  })
+  .strict();
+const acceptedProgramRecordSchema = z
+  .object({
+    program: sceneEditSchema,
+    validation: z
+      .object({
+        issues: z.array(validationIssueSchema).max(256),
+        status: z.literal("valid"),
       })
       .strict(),
   })
@@ -173,7 +143,12 @@ const appliedProgramMetadataSchema = z
     selection: selectionSchema,
   })
   .strict();
-const editorProgramRecordSchema = programRecordSchema
+const acceptedEditorProgramRecordSchema = acceptedProgramRecordSchema
+  .safeExtend({
+    editorMetadata: appliedProgramMetadataSchema.optional(),
+  })
+  .strict();
+const draftEditorProgramRecordSchema = draftProgramRecordSchema
   .safeExtend({
     editorMetadata: appliedProgramMetadataSchema.optional(),
   })
@@ -184,22 +159,22 @@ const appliedProgramMutationSchema = z.discriminatedUnion("kind", [
     .object({
       index: mutationIndexSchema,
       kind: z.literal("append"),
-      value: editorProgramRecordSchema,
+      value: acceptedEditorProgramRecordSchema,
     })
     .strict(),
   z
     .object({
       index: mutationIndexSchema,
       kind: z.literal("replace"),
-      previous: editorProgramRecordSchema,
-      value: editorProgramRecordSchema,
+      previous: acceptedEditorProgramRecordSchema,
+      value: acceptedEditorProgramRecordSchema,
     })
     .strict(),
 ]);
 const appliedProgramEditSchema = z
   .object({
     index: mutationIndexSchema,
-    original: editorProgramRecordSchema,
+    original: acceptedEditorProgramRecordSchema,
   })
   .strict();
 const redoProgramEntrySchema = z.discriminatedUnion("kind", [
@@ -207,7 +182,7 @@ const redoProgramEntrySchema = z.discriminatedUnion("kind", [
     .object({
       edit: appliedProgramEditSchema.nullable(),
       kind: z.literal("draft"),
-      value: editorProgramRecordSchema,
+      value: draftEditorProgramRecordSchema,
     })
     .strict(),
   z
@@ -224,10 +199,10 @@ function canonicalJsonByteSizeV1(value: unknown) {
 
 const editorSessionSnapshotBaseSchemaV1 = z
   .object({
-    appliedPrograms: z.array(editorProgramRecordSchema).max(32),
+    appliedPrograms: z.array(acceptedEditorProgramRecordSchema).max(32),
     currentTime: finiteNumber.nonnegative().max(86_400),
     draftOperation: editSuggestionOperationSchema.nullable(),
-    draftProgram: editorProgramRecordSchema.nullable(),
+    draftProgram: draftEditorProgramRecordSchema.nullable(),
     editingAppliedProgram: appliedProgramEditSchema.nullable(),
     insertTool: z.enum(["select", "Text", "MathTex", "Rectangle", "Circle", "Line", "Arrow"]),
     interactionMode: z.enum(["animate", "position"]),
@@ -272,13 +247,6 @@ const editorSessionSnapshotBaseSchemaV1 = z
         });
       }
       transactionIds.add(transactionId);
-      if (record.validation.status !== "valid" || programExecutionCapabilities(record.program).apply !== "supported") {
-        context.addIssue({
-          code: "custom",
-          message: "Only valid, truthfully applicable Programs may be restored as applied.",
-          path: ["appliedPrograms", index],
-        });
-      }
     });
     const edit = snapshot.editingAppliedProgram;
     if (edit) {
@@ -306,7 +274,16 @@ const editorSessionSnapshotBaseSchemaV1 = z
 export const editorSessionSnapshotSchemaV1 = deepStrictWireSchemaV1(editorSessionSnapshotBaseSchemaV1);
 
 export function parseEditorSessionSnapshotV1(value: unknown): EditorSessionSnapshotV1 {
-  return editorSessionSnapshotSchemaV1.parse(value);
+  const snapshot = editorSessionSnapshotSchemaV1.parse(value);
+  const blockedIndex = snapshot.appliedPrograms.findIndex(
+    (record) => programExecutionCapabilities(record.program).apply !== "supported",
+  );
+  if (blockedIndex >= 0) {
+    throw new TypeError(
+      `Only valid, truthfully applicable Programs may be restored as applied (appliedPrograms[${blockedIndex}]).`,
+    );
+  }
+  return snapshot;
 }
 
 export function canonicalEditorSessionSnapshotJsonV1(value: unknown) {

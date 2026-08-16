@@ -21,7 +21,8 @@ import {
   undoEditorProgram,
 } from "./use-editor-controller";
 
-function record(transactionId: string, resolvedSeconds = 5): ProgramRecord {
+function record(transactionId: string, resolvedSeconds = 5) {
+  const operationId = `${transactionId}/set-appearance`;
   return {
     program: {
       anchor: {
@@ -30,20 +31,31 @@ function record(transactionId: string, resolvedSeconds = 5): ProgramRecord {
         resolvedSeconds,
         source: { kind: "absolute", seconds: resolvedSeconds },
       },
-      intentCount: 0,
+      intentCount: 1,
       loweringStatus: "supported",
-      operations: [],
+      operations: [
+        {
+          dependsOn: [],
+          entityId: "equation",
+          id: operationId,
+          interval: { end: resolvedSeconds, start: resolvedSeconds },
+          key: "appearance",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "fixture" },
+          value: 0.5,
+        },
+      ],
       provenance: { evidence: [], origin: "studio-default" },
       requestedExecution: "sequence",
-      schedule: { edges: [], mode: "sequence", order: [] },
+      schedule: { edges: [], mode: "sequence", order: [operationId] },
       transactionId,
       version: 1,
     },
     validation: { issues: [], status: "valid" },
-  };
+  } as const satisfies ProgramRecord;
 }
 
-function timelineRecord(transactionId: string, resolvedSeconds = 5): ProgramRecord {
+function timelineRecord(transactionId: string, resolvedSeconds = 5) {
   const base = record(transactionId, resolvedSeconds);
   const operationId = `${transactionId}/wait`;
   return {
@@ -65,7 +77,7 @@ function timelineRecord(transactionId: string, resolvedSeconds = 5): ProgramReco
       ],
       schedule: { edges: [], mode: "sequence", order: [operationId] },
     },
-  };
+  } as const satisfies ProgramRecord;
 }
 
 const motionOperation: EditSuggestionOperation = {

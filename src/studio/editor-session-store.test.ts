@@ -70,7 +70,41 @@ function identity(
   return { projectId, sceneId, sourceHash };
 }
 
-function record(transactionId: string): ProgramRecord {
+function record(transactionId: string) {
+  const operationId = `${transactionId}/set-appearance`;
+  return {
+    program: {
+      anchor: {
+        capturedPlayhead: 2,
+        evidence: ["captured-playhead:2.000"],
+        resolvedSeconds: 2,
+        source: { kind: "absolute", seconds: 2 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          entityId: "equation",
+          id: operationId,
+          interval: { end: 2, start: 2 },
+          key: "appearance",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "fixture" },
+          value: 0.5,
+        },
+      ],
+      provenance: { evidence: [], origin: "studio-default" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operationId] },
+      transactionId,
+      version: 1,
+    },
+    validation: { issues: [], status: "valid" },
+  } as const satisfies ProgramRecord;
+}
+
+function draftRecord(transactionId: string) {
   return {
     program: {
       anchor: {
@@ -88,8 +122,18 @@ function record(transactionId: string): ProgramRecord {
       transactionId,
       version: 1,
     },
-    validation: { issues: [], status: "valid" },
-  };
+    validation: {
+      issues: [
+        {
+          code: "operation-count",
+          field: "operations",
+          message: "The draft has no operations yet.",
+          severity: "error",
+        },
+      ],
+      status: "invalid",
+    },
+  } as const;
 }
 
 const motionOperation: EditSuggestionOperation = {
@@ -105,7 +149,7 @@ const motionOperation: EditSuggestionOperation = {
 
 function snapshot(): EditorSessionSnapshot {
   const applied = record("applied");
-  const draft = record("draft");
+  const draft = draftRecord("draft");
   return snapshotEditorSession({
     ...createInitialEditorState(),
     appliedPrograms: [applied],
@@ -119,16 +163,7 @@ function snapshot(): EditorSessionSnapshot {
     instruction: "move the selected object",
     interactionMode: "position",
     motionDuration: 2.5,
-    redoPrograms: [
-      {
-        kind: "mutation",
-        mutation: {
-          index: 1,
-          kind: "append",
-          value: editorProgramRecord(record("redo"), null, ["equation"]),
-        },
-      },
-    ],
+    redoPrograms: [{ edit: null, kind: "draft", value: draftRecord("redo") }],
     selectedObjectIds: ["equation"],
     verifiedSourceDurationBasis: { duration: 1, sessionKey: "session-a" },
   });
@@ -215,6 +250,12 @@ describe("durable editor session storage", () => {
         draftError: null,
         insertValue: "",
         instruction: "",
+      },
+    });
+    expect(restored).toMatchObject({
+      kind: "restored",
+      snapshot: {
+        draftProgram: { program: { intentCount: 0, operations: [] }, validation: { status: "invalid" } },
       },
     });
   });

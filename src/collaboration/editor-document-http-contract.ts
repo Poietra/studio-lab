@@ -1,13 +1,13 @@
 import { z } from "zod";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import { sha256V1Schema } from "../engine/primitives";
-import { canonicalEditProgramSchemaV1 } from "../render-pipeline/contracts";
 import {
   manimProjectIdSchema,
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../render-pipeline/manim-identity-contract";
 import type { CanonicalEditProgram } from "../studio/operations";
+import { sceneEditSchema as canonicalEditProgramSchemaV1 } from "../studio/scene-edit-contract";
 import { deepStrictWireSchemaV1 } from "./deep-strict-wire-schema";
 import {
   type EditorEditMutationV1,
@@ -268,7 +268,18 @@ export const editorDocumentSessionViewSchemaV1 = z
   })
   .strict()
   .superRefine((session, context) => {
-    if (editorSessionSnapshotByteSizeV1(session.snapshot) !== session.snapshotByteSize) {
+    let snapshotByteSize: number;
+    try {
+      snapshotByteSize = editorSessionSnapshotByteSizeV1(session.snapshot);
+    } catch {
+      context.addIssue({
+        code: "custom",
+        message: "Editor session snapshot is not restorable as applied state.",
+        path: ["snapshot"],
+      });
+      return;
+    }
+    if (snapshotByteSize !== session.snapshotByteSize) {
       context.addIssue({
         code: "custom",
         message: "Editor session snapshot byte evidence is inconsistent.",

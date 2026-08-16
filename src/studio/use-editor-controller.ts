@@ -2,12 +2,13 @@ import { type SetStateAction, useCallback, useEffect, useReducer, useRef } from 
 
 import type { PendingClarification } from "../ai/clarification";
 import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggestions";
-import { type EditorSessionSnapshotV1, editorSessionSnapshotSchemaV1 } from "../collaboration/editor-session-contract";
+import { type EditorSessionSnapshotV1, parseEditorSessionSnapshotV1 } from "../collaboration/editor-session-contract";
 import { editorProgramsMatchAuthorityV1 } from "./editor-authority-state";
 import {
   type AppliedProgramEdit,
   type AppliedProgramMutation,
   browserEditorSessionStorageAdapter,
+  type DraftEditorProgramRecord,
   durableEditorSessionSnapshotV1,
   EDITOR_SESSION_STALE_SOURCE_MESSAGE,
   type EditorProgramRecord,
@@ -23,6 +24,7 @@ import type { ProgramRecord } from "./model";
 import { programExecutionCapabilities } from "./operation-registry";
 import { isSceneDurationOperation } from "./operations";
 import { sourceTimeToWorkingTime } from "./program-composition";
+import { sceneEditSchema } from "./scene-edit-contract";
 import type { StudioTool } from "./studio-toolbar";
 import type { InteractionMode } from "./studio-viewport";
 import { appendAppliedProgram, replaceAppliedProgram } from "./transactions";
@@ -85,6 +87,21 @@ export function editorProgramRecord(
   operation: EditSuggestionOperation | null,
   selection: readonly string[],
 ): EditorProgramRecord {
+  if (record.validation.status !== "valid") {
+    throw new TypeError("Only a valid Scene Edit can become an applied editor record.");
+  }
+  return {
+    editorMetadata: { operation, selection },
+    program: sceneEditSchema.parse(record.program),
+    validation: { issues: record.validation.issues, status: "valid" },
+  };
+}
+
+export function draftEditorProgramRecord(
+  record: ProgramRecord,
+  operation: EditSuggestionOperation | null,
+  selection: readonly string[],
+): DraftEditorProgramRecord {
   return { ...record, editorMetadata: { operation, selection } };
 }
 
@@ -181,11 +198,15 @@ export function installCloudEditorSessionSnapshotV1(
   authoritativePrograms: readonly EditorProgramRecord[],
   snapshotValue: unknown,
 ): CloudEditorSessionInstallResultV1 {
-  const parsed = editorSessionSnapshotSchemaV1.safeParse(snapshotValue);
-  if (!parsed.success) return { kind: "invalid-snapshot" };
+  let parsed: EditorSessionSnapshotV1;
+  try {
+    parsed = parseEditorSessionSnapshotV1(snapshotValue);
+  } catch {
+    return { kind: "invalid-snapshot" };
+  }
   if (
     !editorProgramsMatchAuthorityV1(
-      parsed.data.appliedPrograms,
+      parsed.appliedPrograms,
       authoritativePrograms.map((record) => record.program),
     )
   ) {
@@ -193,11 +214,11 @@ export function installCloudEditorSessionSnapshotV1(
   }
   const appliedPrograms = authoritativePrograms.map((record, index) => {
     const { editorMetadata: _ignoredMetadata, ...authoritativeRecord } = record;
-    const editorMetadata = parsed.data.appliedPrograms[index]?.editorMetadata;
+    const editorMetadata = parsed.appliedPrograms[index]?.editorMetadata;
     return editorMetadata === undefined ? authoritativeRecord : { ...authoritativeRecord, editorMetadata };
   });
   const snapshot: EditorSessionSnapshot = {
-    ...parsed.data,
+    ...parsed,
     appliedPrograms,
     durationError: null,
     draftError: null,
@@ -268,7 +289,7 @@ export function stageEditorDraft(state: EditorControllerState, input: StageDraft
 }
 
 function editorDraftPreflightError(state: EditorControllerState, input: StageDraftInput) {
-  let programs = state.appliedPrograms;
+  let programs: readonly ProgramRecord[] = state.appliedPrograms;
   const preserved = input.preserveAppliedProgram;
   if (preserved && !programs.some((candidate) => candidate.program.transactionId === preserved.program.transactionId)) {
     const blocker = applyBlocker(preserved);
@@ -280,7 +301,7 @@ function editorDraftPreflightError(state: EditorControllerState, input: StageDra
     if (appended.kind === "rejected") return appended.reason;
     programs = appended.programs;
   }
-  const candidate = editorProgramRecord(
+  const candidate = draftEditorProgramRecord(
     input.record,
     input.operation,
     input.selectedObjectIds ?? state.selectedObjectIds,
@@ -392,7 +413,7 @@ export function undoEditorProgram(state: EditorControllerState): EditorControlle
     const redoEntry: RedoProgramEntry = {
       edit: state.editingAppliedProgram,
       kind: "draft",
-      value: editorProgramRecord(state.draftProgram, state.draftOperation, state.selectedObjectIds),
+      value: draftEditorProgramRecord(state.draftProgram, state.draftOperation, state.selectedObjectIds),
     };
     return {
       ...discardEditorDraft(state),
@@ -498,7 +519,10 @@ export function editEditorAppliedProgram(
   index: number,
   input: AppliedProgramEditInput = {},
 ): EditorControllerState {
-  const editorRecord = record as EditorProgramRecord;
+  const editorRecord = state.appliedPrograms[index];
+  if (!editorRecord || editorRecord.program.transactionId !== record.program.transactionId) {
+    return { ...state, draftError: "The selected Program no longer matches the applied edit history." };
+  }
   const transactionId = editorRecord.program.transactionId;
   const activeEdit =
     state.editingAppliedProgram?.original.program.transactionId === transactionId ? state.editingAppliedProgram : null;
@@ -749,7 +773,11 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
 
   const editAppliedProgram = useCallback(
     (record: ProgramRecord, index: number, input?: AppliedProgramEditInput) => {
-      const metadata = (record as EditorProgramRecord).editorMetadata;
+      const appliedRecord = state.appliedPrograms[index];
+      const metadata =
+        appliedRecord?.program.transactionId === record.program.transactionId
+          ? appliedRecord.editorMetadata
+          : undefined;
       const editingTransactionId = state.editingAppliedProgram?.original.program.transactionId;
       if ((!state.draftProgram || editingTransactionId === record.program.transactionId) && metadata?.operation) {
         requestController.current.cancel();

@@ -131,6 +131,7 @@ import {
   type AppliedProgramEdit,
   applyEditorDraft as applyEditorDraftTransition,
   createInitialEditorState,
+  draftEditorProgramRecord,
   type EditorControllerState,
   type EditorProgramRecord,
   type EditorSessionIdentity,
@@ -772,7 +773,7 @@ export function App({
       ? replaceAppliedProgram(
           appliedPrograms,
           editingAppliedProgram.original.program.transactionId,
-          editorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
+          draftEditorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
         )
       : null;
   const previewAppliedPrograms =
@@ -1803,7 +1804,11 @@ export function App({
   }
 
   function editAppliedProgram(record: ProgramRecord, index: number) {
-    const editorRecord = record as EditorProgramRecord;
+    const editorRecord = appliedPrograms[index];
+    if (!editorRecord || editorRecord.program.transactionId !== record.program.transactionId) {
+      setDraftError("The selected Program no longer matches the applied edit history.");
+      return;
+    }
     const operation = editorRecord.editorMetadata?.operation;
     if (!operation) {
       setDraftError("This Program is read-only because editable Studio authoring metadata is unavailable.");

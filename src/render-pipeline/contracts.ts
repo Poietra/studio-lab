@@ -2,10 +2,11 @@ import { z } from "zod";
 
 import { enginePointV1Schema } from "../engine/primitives";
 import type { RuntimeSceneState, StaticSemanticState } from "../studio/model";
-import { canonicalOperationSchema } from "../studio/operation-registry";
-import type { CanonicalEditProgram } from "../studio/operations";
+import { type SceneEdit, sceneEditSchema } from "../studio/scene-edit-contract";
 import { runtimeSceneStateSchema, staticSemanticStateSchema } from "../studio/state-schema";
 import { manimProjectIdSchema, manimSceneNameSchema, manimSourcePathSchema } from "./manim-identity-contract";
+
+export { sceneEditSchema as canonicalEditProgramSchemaV1 } from "../studio/scene-edit-contract";
 
 export {
   isManimSourcePath,
@@ -18,53 +19,6 @@ export {
 
 const finiteNumber = z.number().finite();
 export const manimProjectNameSchema = z.string().trim().min(1).max(120);
-const resolvedAnchorSchema = z.object({
-  capturedPlayhead: finiteNumber,
-  evidence: z.array(z.string().max(500)).max(32),
-  resolvedSeconds: finiteNumber.nonnegative(),
-  source: z.discriminatedUnion("kind", [
-    z.object({ kind: z.literal("absolute"), seconds: finiteNumber }),
-    z.object({ kind: z.literal("playhead"), referenceSeconds: finiteNumber }),
-    z.object({
-      kind: z.literal("playhead-offset"),
-      offsetSeconds: finiteNumber,
-      referenceSeconds: finiteNumber,
-    }),
-    z.object({
-      boundary: z.enum(["play-end", "play-start", "scene-end", "scene-start"]),
-      eventId: z.string(),
-      kind: z.literal("structural"),
-      offsetSeconds: finiteNumber.optional(),
-    }),
-  ]),
-});
-
-export const canonicalEditProgramSchemaV1 = z.object({
-  anchor: resolvedAnchorSchema,
-  intentCount: z.number().int().min(1).max(16),
-  loweringStatus: z.enum(["illustrative", "supported", "unsupported"]),
-  operations: z.array(canonicalOperationSchema).min(1).max(64),
-  provenance: z.object({
-    evidence: z.array(z.string().max(500)).max(64),
-    origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
-  }),
-  requestedExecution: z.enum(["parallel", "sequence"]),
-  schedule: z.object({
-    edges: z
-      .array(
-        z.object({
-          from: z.string(),
-          reason: z.enum(["explicit", "identity", "lifetime", "read-after-write", "write-conflict"]),
-          to: z.string(),
-        }),
-      )
-      .max(256),
-    mode: z.enum(["dependency-dag", "parallel", "sequence"]),
-    order: z.array(z.string()).min(1).max(64),
-  }),
-  transactionId: z.string().min(1).max(160),
-  version: z.literal(1),
-});
 
 const programRenderRequestBaseSchema = z.object({
   cameraCenter: enginePointV1Schema.optional(),
@@ -129,8 +83,8 @@ function validateSourceBindings(
 
 export const programRenderRequestSchema = programRenderRequestBaseSchema
   .extend({
-    program: canonicalEditProgramSchemaV1,
-    programs: z.array(canonicalEditProgramSchemaV1).min(1).max(32).optional(),
+    program: sceneEditSchema,
+    programs: z.array(sceneEditSchema).min(1).max(32).optional(),
   })
   .strict()
   .superRefine((request, context) => {
@@ -178,18 +132,18 @@ type ProgramRenderRequestBase = Omit<z.infer<typeof programRenderRequestBaseSche
 
 export type ProgramRenderRequest = ProgramRenderRequestBase &
   Readonly<{
-    program: CanonicalEditProgram;
-    programs?: readonly CanonicalEditProgram[];
+    program: SceneEdit;
+    programs?: readonly SceneEdit[];
   }>;
 
 export type BatchProgramRenderRequest = ProgramRenderRequest &
   Readonly<{
-    programs: readonly CanonicalEditProgram[];
+    programs: readonly SceneEdit[];
   }>;
 
 export type SingleProgramRenderRequest = ProgramRenderRequest & Readonly<{ programs?: undefined }>;
 
-export function renderRequestPrograms(request: ProgramRenderRequest): readonly CanonicalEditProgram[] {
+export function renderRequestPrograms(request: ProgramRenderRequest): readonly SceneEdit[] {
   return request.programs ?? [request.program];
 }
 
@@ -202,8 +156,8 @@ function contentHash(value: unknown, seed: number) {
   return (hash >>> 0).toString(36);
 }
 
-export function renderProgramBatchId(programs: readonly CanonicalEditProgram[]) {
-  const canonicalPrograms = programs.map((program) => canonicalEditProgramSchemaV1.parse(program));
+export function renderProgramBatchId(programs: readonly SceneEdit[]) {
+  const canonicalPrograms = programs.map((program) => sceneEditSchema.parse(program));
   return `batch-${canonicalPrograms.length}-${contentHash(canonicalPrograms, 2_166_136_261)}-${contentHash(canonicalPrograms, 2_654_435_761)}`;
 }
 

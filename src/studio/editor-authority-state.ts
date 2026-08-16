@@ -262,7 +262,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
       return Object.freeze({
         ...(exactLocal?.editorMetadata ? { editorMetadata: exactLocal.editorMetadata } : undefined),
         program: authoritativeProgram,
-        validation: materialized.validation,
+        validation: { issues: materialized.validation.issues, status: "valid" as const },
       });
     }),
   );

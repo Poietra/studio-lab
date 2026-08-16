@@ -8,9 +8,12 @@ import {
 } from "../collaboration/editor-session-contract";
 
 export type {
+  AcceptedProgramRecord,
   AppliedProgramEdit,
   AppliedProgramMetadata,
   AppliedProgramMutation,
+  DraftEditorProgramRecord,
+  DraftProgramRecord,
   EditorProgramRecord,
   RedoProgramEntry,
 } from "../collaboration/editor-session-contract";
@@ -173,14 +176,18 @@ function sameScene(left: StoredIdentity, right: StoredIdentity) {
 function parseLocalEditorSessionSnapshot(value: unknown): EditorSessionSnapshot | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const { durationError, draftError, insertValue, instruction, ...durableValue } = value as Record<string, unknown>;
-  const durable = editorSessionSnapshotSchemaV1.safeParse(durableValue);
   const transient = transientEditorSessionSnapshotSchema.safeParse({
     durationError,
     draftError,
     insertValue,
     instruction,
   });
-  return durable.success && transient.success ? { ...durable.data, ...transient.data } : null;
+  if (!transient.success) return null;
+  try {
+    return { ...parseEditorSessionSnapshotV1(durableValue), ...transient.data };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -227,7 +234,18 @@ function migrateStoredEnvelope(value: unknown) {
   if (!value || typeof value !== "object" || !("version" in value)) return null;
   if (value.version !== EDITOR_SESSION_STORAGE_VERSION) return null;
   const parsed = storedEnvelopeSchema.safeParse(value);
-  return parsed.success ? parsed.data : null;
+  if (!parsed.success) return null;
+  try {
+    return {
+      ...parsed.data,
+      entries: parsed.data.entries.map((entry) => ({
+        ...entry,
+        snapshot: parseEditorSessionSnapshotV1(entry.snapshot),
+      })),
+    };
+  } catch {
+    return null;
+  }
 }
 
 export class EditorSessionStore {
