@@ -2052,7 +2052,7 @@ mod tests {
                 "control": { "x": 880.0, "y": 290.0 },
                 "controlOffset": { "x": 0.0, "y": -160.0 },
                 "delta": { "x": 160.0, "y": 0.0 },
-                "easing": "smooth",
+                "easing": "manim-smooth",
                 "from": { "x": 800.0, "y": 450.0 },
                 "interval": { "end": 1.75, "start": 1.5 },
                 "operationId": "move-restored",

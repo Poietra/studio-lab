@@ -39,11 +39,11 @@ pub use authoring::{
     StudioMotionProjectionInsertion, StudioMotionSourceBinding, StudioPersistentRemoveProjection,
     StudioPersistentRemoveProjectionEntry, StudioProgramAnchorSource, StudioProgramExecution,
     StudioProgramScheduleMode, StudioProjectedCreationEntity, StudioProjectedMotion,
-    StudioTimelineEditTransform, StudioTimelineEventKind, StudioTimelineOperation,
-    StudioTimelineProgram, StudioTimelineProgramProjection, StudioTimelineProjection,
-    StudioTimelinePurpose, StudioTimelineWaitReduction, project_studio_creation_programs,
-    project_studio_math_tex_transform_programs, project_studio_motion_edit,
-    project_studio_timeline_programs,
+    StudioProjectionEasing, StudioTimelineEditTransform, StudioTimelineEventKind,
+    StudioTimelineOperation, StudioTimelineProgram, StudioTimelineProgramProjection,
+    StudioTimelineProjection, StudioTimelinePurpose, StudioTimelineWaitReduction,
+    project_studio_creation_programs, project_studio_math_tex_transform_programs,
+    project_studio_motion_edit, project_studio_timeline_programs,
 };
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,

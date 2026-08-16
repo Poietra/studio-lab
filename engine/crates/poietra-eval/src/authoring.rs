@@ -151,6 +151,7 @@ pub enum StudioStaticRootMutation {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StudioProjectionEasing {
+    Linear,
     ManimSmooth,
 }
 
@@ -198,7 +199,7 @@ pub struct StudioProjectedMotion {
     pub control: PointV1,
     pub control_offset: PointV1,
     pub delta: PointV1,
-    pub easing: StudioMotionEasing,
+    pub easing: StudioProjectionEasing,
     pub from: PointV1,
     pub interval: IntervalV1,
     pub operation_id: String,
@@ -2515,7 +2516,7 @@ fn studio_math_tex_transform_projection_from_plan(
                 control,
                 control_offset: motion.control_offset.clone(),
                 delta: motion.delta.clone(),
-                easing: motion.easing,
+                easing: projected_motion_easing(motion.easing),
                 from: from.clone(),
                 interval: motion.interval.clone(),
                 operation_id: motion.operation_id.clone(),
@@ -2847,7 +2848,7 @@ fn project_studio_motion_plan(
                 control,
                 control_offset: motion.control_offset.clone(),
                 delta: motion.delta.clone(),
-                easing: motion.easing,
+                easing: projected_motion_easing(motion.easing),
                 from,
                 interval: motion.interval.clone(),
                 operation_id: motion.operation_id.clone(),
@@ -5757,6 +5758,20 @@ fn motion_easing(easing: StudioMotionEasing) -> EasingV1 {
     }
 }
 
+fn projected_motion_easing(easing: StudioMotionEasing) -> StudioProjectionEasing {
+    match easing {
+        StudioMotionEasing::Linear => StudioProjectionEasing::Linear,
+        StudioMotionEasing::Smooth => StudioProjectionEasing::ManimSmooth,
+    }
+}
+
+fn authored_motion_easing(easing: StudioProjectionEasing) -> StudioMotionEasing {
+    match easing {
+        StudioProjectionEasing::Linear => StudioMotionEasing::Linear,
+        StudioProjectionEasing::ManimSmooth => StudioMotionEasing::Smooth,
+    }
+}
+
 fn math_tex_fade_out_keyframes(interval: &IntervalV1) -> Vec<KeyframeV1<f64>> {
     vec![
         KeyframeV1 {
@@ -6509,7 +6524,7 @@ impl EngineSessionV1 {
                     viewport,
                 ),
                 delta: studio_vector_to_scene_vector(&motion.delta, frame, viewport),
-                easing: motion.easing,
+                easing: authored_motion_easing(motion.easing),
                 interval: motion.interval.clone(),
                 target_entity_ids: vec![motion.target_entity_id.clone()],
             })
@@ -14841,7 +14856,7 @@ mod tests {
                 control: PointV1 { x: 880.0, y: 290.0 },
                 control_offset: PointV1 { x: 0.0, y: -160.0 },
                 delta: PointV1 { x: 160.0, y: 0.0 },
-                easing: StudioMotionEasing::Smooth,
+                easing: StudioProjectionEasing::ManimSmooth,
                 from: PointV1 { x: 800.0, y: 450.0 },
                 interval: IntervalV1 {
                     end: 1.75,
@@ -15498,6 +15513,17 @@ mod tests {
         assert_eq!(projection.motions.len(), 2);
         assert_eq!(projection.motions[0].from, PointV1 { x: 320.0, y: 180.0 });
         assert_eq!(projection.motions[0].to, PointV1 { x: 560.0, y: 100.0 });
+        assert_eq!(
+            projection
+                .motions
+                .iter()
+                .map(|motion| motion.easing)
+                .collect::<Vec<_>>(),
+            vec![
+                StudioProjectionEasing::ManimSmooth,
+                StudioProjectionEasing::Linear,
+            ]
+        );
         assert_eq!(projection.motions[1].from, projection.motions[0].to);
         assert_eq!(projection.motions[1].to, PointV1 { x: 560.0, y: -20.0 });
     }
