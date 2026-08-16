@@ -10,6 +10,10 @@ use crate::protocol::{
 /// Canvas acknowledgements are deliberately much smaller than `RenderPacket` responses.
 pub const MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1: usize = 16 * 1024;
 
+/// Engine thumbnail ABI version, independent of the base canvas ABI so
+/// normal rendering never depends on thumbnail support (#695).
+pub const POIETRA_THUMBNAIL_ABI_VERSION_V1: u32 = 1;
+
 const MAX_CANVAS_ERROR_MESSAGE_UTF16_UNITS_V1: usize = 2_048;
 
 #[derive(Clone, Copy, Debug, Serialize)]

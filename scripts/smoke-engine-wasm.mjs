@@ -12,6 +12,7 @@ await engine.default({ module_or_path: wasmBytes });
 assert.equal(engine.poietraEngineAbiVersion(), 27);
 assert.equal(engine.poietraCanvasAbiVersion(), 5);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
+assert.equal(engine.poietraThumbnailAbiVersion(), 1);
 assert.equal(typeof engine.validateSceneIrBundleV1, "function");
 assert.equal(typeof engine.applyStaticRootTransformEditV1, "function");
 assert.equal(typeof engine.applyStudioBoundEntityEditV1, "function");
@@ -26,6 +27,7 @@ assert.equal(typeof engine.PoietraCanvasEngineV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.create, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.adapterEvidence, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.replaceSnapshot, "function");
+assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.generateThumbnail, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.render, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.renderWithTelemetry, "function");
 

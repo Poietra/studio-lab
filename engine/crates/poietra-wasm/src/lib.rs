@@ -34,7 +34,9 @@ pub use authoring::{
     project_studio_timeline_v1,
 };
 
-pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
+pub use canvas_protocol::{
+    MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1, POIETRA_THUMBNAIL_ABI_VERSION_V1,
+};
 pub use canvas_telemetry::{
     MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES_V1, MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES_V1,
     POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V4,
@@ -85,6 +87,14 @@ pub fn poietra_canvas_telemetry_abi_version() -> u32 {
 #[wasm_bindgen(js_name = poietraExportEncoderAbiVersion)]
 pub fn poietra_export_encoder_abi_version() -> u32 {
     POIETRA_EXPORT_ENCODER_ABI_VERSION_V1
+}
+
+/// Returns the engine thumbnail ABI version, independent of the base canvas
+/// ABI so normal rendering never depends on thumbnail support (#695).
+#[must_use]
+#[wasm_bindgen(js_name = poietraThumbnailAbiVersion)]
+pub fn poietra_thumbnail_abi_version() -> u32 {
+    POIETRA_THUMBNAIL_ABI_VERSION_V1
 }
 
 /// Validates one complete Scene IR bundle with the canonical Rust contract.
@@ -149,5 +159,6 @@ mod tests {
         assert_eq!(poietra_canvas_abi_version(), 5);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
         assert_eq!(poietra_export_encoder_abi_version(), 1);
+        assert_eq!(poietra_thumbnail_abi_version(), 1);
     }
 }

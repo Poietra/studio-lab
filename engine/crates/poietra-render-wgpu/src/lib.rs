@@ -30,6 +30,9 @@ mod export;
 mod gpu;
 mod image_gpu;
 mod prepare;
+// Engine-owned thumbnail producer over the async offscreen export core
+// (#695): representative frame rule, 854x480 render, fail-closed PNG encode.
+mod thumbnail;
 mod upload;
 
 pub use arena::{GpuBufferArenaErrorV1, MAX_GPU_BUFFER_ARENA_BYTES_V1};
@@ -57,6 +60,12 @@ pub use prepare::{
     tessellate_validated_frame_v1, tessellate_validated_frame_with_assets_v1,
     tessellate_validated_frame_with_cache_and_assets_v1, tessellate_validated_frame_with_cache_v1,
     validate_frame_packet_v1,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use thumbnail::render_thumbnail_png_blocking_v1;
+pub use thumbnail::{
+    MAX_THUMBNAIL_PNG_BYTES_V1, RenderThumbnailErrorV1, THUMBNAIL_HEIGHT_PX_V1,
+    THUMBNAIL_WIDTH_PX_V1, render_thumbnail_png_v1, representative_thumbnail_time_v1,
 };
 pub use upload::{
     GpuUploadPlanErrorV1, GpuUploadPlanV1, MAX_GPU_UPLOAD_PLAN_BYTES_V1, build_gpu_upload_plan_v1,

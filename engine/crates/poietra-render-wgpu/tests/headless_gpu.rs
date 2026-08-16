@@ -10,9 +10,11 @@ use std::time::Duration;
 
 use poietra_eval::{EngineSessionV1, SampleEngineSessionOptionsV1};
 use poietra_render_wgpu::{
-    DecodedPngAssetResolverV1, ImageTextureCacheLimitsV1, PreparedFrameV1, RenderFrameErrorV1,
-    WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1, decode_verified_png_v1,
-    prepare_frame_v1, prepare_frame_with_assets_v1,
+    DecodedPngAssetResolverV1, DecodedPngAssetV1, ImageTextureCacheLimitsV1,
+    MAX_THUMBNAIL_PNG_BYTES_V1, PreparedFrameV1, RenderFrameErrorV1, THUMBNAIL_HEIGHT_PX_V1,
+    THUMBNAIL_WIDTH_PX_V1, WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1,
+    decode_verified_png_v1, prepare_frame_v1, prepare_frame_with_assets_v1,
+    render_thumbnail_png_blocking_v1, representative_thumbnail_time_v1,
 };
 use poietra_scene_ir::{
     AffineTransformV1, CubicSubpathV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1,
@@ -4194,5 +4196,127 @@ fn retains_image_textures_and_sampler_bindings_with_bounded_lru() {
             .lock()
             .expect("device-loss evidence mutex must not be poisoned")
             .is_none()
+    );
+}
+
+/// End-to-end proof of the #695 engine thumbnail producer: the shared Scene
+/// fixture renders its representative final frame through the async offscreen
+/// export core, encodes to the durable 854x480 PNG contract, and the decoded
+/// pixels show the final composed state that Manim `-s` used to capture.
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn renders_the_representative_scene_thumbnail_png_with_fallback_adapter() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    let fixture: serde_json::Value = serde_json::from_slice(
+        &fs::read(repository_root().join("fixtures/engine-v1/shared-circle-opacity.json"))
+            .expect("the shared fixture must be readable"),
+    )
+    .expect("the shared fixture envelope must deserialize");
+    let bundle: SceneIrBundleV1 = serde_json::from_value(serde_json::json!({
+        "assets": fixture["assets"],
+        "scene": fixture["scene"],
+    }))
+    .expect("the shared fixture must contain a valid Scene bundle");
+    let evaluator = EngineSessionV1::new(bundle).expect("the shared fixture must validate");
+
+    // The fixture samples continuously, so the representative instant is the
+    // greatest f64 strictly below the half-open two-second duration.
+    let representative = representative_thumbnail_time_v1(evaluator.scene());
+    assert_eq!(
+        representative.to_bits(),
+        evaluator.scene().duration.to_bits() - 1
+    );
+    assert!(representative < evaluator.scene().duration);
+
+    let no_png_assets = |_sha256: &str| Option::<Arc<DecodedPngAssetV1>>::None;
+    let png_bytes = render_thumbnail_png_blocking_v1(
+        &device,
+        &queue,
+        evaluator.scene(),
+        &no_png_assets,
+        |sample_time, viewport| {
+            evaluator
+                .sample_render_packet(SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "thumbnail:proof",
+                    sample_time,
+                    viewport,
+                })
+                .map_err(|error| error.to_string())
+        },
+    )
+    .expect("the shared fixture thumbnail must render");
+
+    assert!(!png_bytes.is_empty());
+    assert!(
+        png_bytes.len() <= MAX_THUMBNAIL_PNG_BYTES_V1,
+        "the encoded thumbnail must respect MAX_RENDER_THUMBNAIL_BYTES_V1"
+    );
+
+    let decoder = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice()));
+    let mut reader = decoder.read_info().expect("the thumbnail PNG must parse");
+    assert!(
+        reader.info().animation_control.is_none(),
+        "the thumbnail must be a single-frame PNG"
+    );
+    let output_size = reader
+        .output_buffer_size()
+        .expect("the thumbnail output size must be bounded");
+    let mut rgba = vec![0; output_size];
+    let output = reader
+        .next_frame(&mut rgba)
+        .expect("the thumbnail frame must decode");
+    reader
+        .finish()
+        .expect("the thumbnail PNG must contain exactly one complete frame");
+    assert_eq!(
+        (output.width, output.height),
+        (THUMBNAIL_WIDTH_PX_V1, THUMBNAIL_HEIGHT_PX_V1)
+    );
+    assert_eq!(output.color_type, png::ColorType::Rgba);
+    assert_eq!(output.bit_depth, png::BitDepth::Eight);
+    assert_eq!(rgba.len(), output.buffer_size());
+
+    // The animated red circle finishes fully opaque; anything but ~255 here
+    // would mean the producer sampled t=0 (invisible) or the midpoint (~188).
+    assert_pixel_close(
+        pixel(&rgba, output.width, 374, 240),
+        [255, 0, 0, 255],
+        [2, 0, 0, 0],
+    );
+    // The static opaque blue circle and the half-opacity green stroke keep
+    // their known linear-light values at the final instant.
+    assert_pixel_close(
+        pixel(&rgba, output.width, 480, 240),
+        [0, 0, 255, 255],
+        [0, 0, 1, 0],
+    );
+    assert_pixel_close(
+        pixel(&rgba, output.width, 267, 133),
+        [0, 188, 0, 255],
+        [0, 2, 0, 0],
+    );
+    assert_eq!(pixel(&rgba, output.width, 0, 0), [0, 0, 0, 255]);
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "the device must remain available through the thumbnail readback"
     );
 }

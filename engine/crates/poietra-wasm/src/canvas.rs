@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex};
 use poietra_render_wgpu::{
     MAX_ENCODED_PNG_BYTES_V1, PreparedFrameV1, PreparedGeometryCacheFrameStatsV1,
     PreparedGeometryCacheV1, WgpuPaintRendererV1, WgpuRenderTargetV1,
-    prepare_frame_with_cache_and_assets_v1, tessellate_validated_frame_with_cache_and_assets_v1,
-    validate_frame_packet_v1,
+    prepare_frame_with_cache_and_assets_v1, render_thumbnail_png_v1,
+    tessellate_validated_frame_with_cache_and_assets_v1, validate_frame_packet_v1,
 };
 use poietra_scene_ir::{
     MAX_ASSETS_V1, MAX_ENCODED_ASSET_BYTES_V1, RenderDrawV1, ViewportV1,
@@ -37,6 +37,7 @@ use crate::protocol::EngineWorkerSessionV1;
 
 const SNAPSHOT_REJECTED_ERROR_NAME: &str = "PoietraCanvasSnapshotRejected";
 const RENDERER_UNAVAILABLE_ERROR_NAME: &str = "PoietraCanvasRendererUnavailable";
+const THUMBNAIL_FAILED_ERROR_NAME: &str = "PoietraThumbnailFailed";
 const MAX_EXACT_JAVASCRIPT_INTEGER_V1: f64 = 9_007_199_254_740_991.0;
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -611,6 +612,43 @@ impl PoietraCanvasEngineV1 {
         self.prepared_geometry_cache.clear();
         self.renderer.clear_image_texture_cache();
         Ok(())
+    }
+
+    /// Renders the installed Scene's representative final frame — the #695
+    /// replacement for Manim `-s` — to the durable 854x480 PNG thumbnail
+    /// contract, offscreen, without touching the presented canvas surface.
+    ///
+    /// The returned bytes already satisfy the publication shape the server
+    /// verifies (PNG signature, exact dimensions, the 4 MiB
+    /// `MAX_RENDER_THUMBNAIL_BYTES_V1` bound).
+    ///
+    /// # Errors
+    ///
+    /// Rejects with a named JavaScript `PoietraThumbnailFailed` error when
+    /// the engine is in a terminal GPU failure state or when sampling,
+    /// offscreen rendering, readback, PNG encoding, or publication-shape
+    /// validation fails; no partial bytes are ever returned.
+    #[wasm_bindgen(js_name = generateThumbnail)]
+    pub async fn generate_thumbnail(&mut self) -> Result<Vec<u8>, JsValue> {
+        if let Some(failure) = self.current_terminal_failure() {
+            return Err(named_js_error(
+                THUMBNAIL_FAILED_ERROR_NAME,
+                &failure.message,
+            ));
+        }
+        render_thumbnail_png_v1(
+            &self.device,
+            &self.queue,
+            self.session.scene(),
+            &self.asset_registry,
+            |sample_time, viewport| {
+                self.session
+                    .sample_render_packet("thumbnail:representative", sample_time, viewport)
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .map_err(|error| named_js_error(THUMBNAIL_FAILED_ERROR_NAME, &error.to_string()))
     }
 
     /// Evaluates and presents one bounded sample request.

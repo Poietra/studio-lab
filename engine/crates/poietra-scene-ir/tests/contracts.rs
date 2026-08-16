@@ -544,6 +544,26 @@ fn render_packet_rejects_invalid_time_and_camera_aspect() {
             .unwrap_err()
             .contains_message("camera and viewport aspect ratios must match")
     );
+
+    // The closed 854x480 rung carries the even-rounded 16:9 width, so an
+    // exact 16:9 camera is accepted at exactly that viewport.
+    let mut even_rounded_sd = empty_packet();
+    even_rounded_sd.viewport.width_px = 854;
+    even_rounded_sd.viewport.height_px = 480;
+    validate_render_packet_v1(&even_rounded_sd)
+        .expect("the closed 854x480 rung must accept its even-rounded 16:9 width");
+
+    // The carve-out never weakens the check for non-16:9 cameras.
+    let mut wrong_camera_at_sd = empty_packet();
+    wrong_camera_at_sd.viewport.width_px = 854;
+    wrong_camera_at_sd.viewport.height_px = 480;
+    wrong_camera_at_sd.camera.right = 4.5;
+    wrong_camera_at_sd.camera.left = -4.5;
+    assert!(
+        validate_render_packet_v1(&wrong_camera_at_sd)
+            .unwrap_err()
+            .contains_message("camera and viewport aspect ratios must match")
+    );
 }
 
 #[test]
