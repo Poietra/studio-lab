@@ -64,6 +64,9 @@ dependencies are documented in the
 The ownership boundary between Studio source analysis, Runtime Trace, Studio
 markers, and the independent `manim-lint` project is recorded in
 [ADR 0001](docs/adr/0001-studio-owned-source-analysis.md).
+The persistent `EditorDocument`, structurally accepted Scene Edit contract, Rust
+mutation authority, and runtime `EngineSessionV1` boundary are recorded in
+[ADR 0004](docs/adr/0004-studio-edit-ownership-and-runtime-application.md).
 
 ## Commands
 
