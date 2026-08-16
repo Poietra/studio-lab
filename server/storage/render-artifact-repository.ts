@@ -45,7 +45,7 @@ export type VersionedRenderArtifactReceiptV1 = RenderArtifactIdentityV1 &
 export type ImmutableRenderArtifactReceiptV1 = RenderArtifactIdentityV1 &
   Readonly<{
     etag: string;
-    /** Legacy persisted spelling of the random object locator token (#715); never ordered or monotonic. */
+    /** Legacy persisted spelling of the random object locator token (ADR 0005); never ordered or monotonic. */
     objectGeneration: string;
     objectKey: string;
     versionId?: never;
@@ -305,7 +305,7 @@ export function isImmutableRenderArtifactReceiptV1(
  * Column-spelled exact locator for repository adapters. `objectGeneration`
  * mirrors the legacy `object_generation` column that stores the random locator
  * token, and the `generation:` advisory-identity prefix must stay stable
- * across deployments (#715 compatibility).
+ * across deployments (ADR 0005 compatibility).
  */
 export type RenderArtifactLocatorV1 =
   | Readonly<{

@@ -5,7 +5,7 @@ import {
 } from "../storage-object-locator";
 
 export type PostgresStorageObjectLocatorRowV1 = Readonly<{
-  /** Legacy column spelling: `object_generation` stores the random immutable-object locator token (#715). */
+  /** Legacy column spelling: `object_generation` stores the random immutable-object locator token (ADR 0005). */
   object_generation: string | null;
   version_id: string | null;
 }>;

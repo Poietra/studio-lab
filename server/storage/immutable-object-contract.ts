@@ -11,7 +11,7 @@ const UTF8_ENCODER = new TextEncoder();
 
 /**
  * Persisted locator for one immutable object. The `objectGeneration` field is
- * the legacy persisted spelling of the object locator token (ADR 0005, #715):
+ * the legacy persisted spelling of the object locator token (ADR 0005):
  * stored receipts, the `object_generation` column, the
  * `immutable_object_generation_v1` Postgres domain, and the `/g/{token}`
  * object-key suffix keep this spelling byte-for-byte until an explicit
@@ -62,10 +62,10 @@ export function createImmutableObjectLocatorTokenV1() {
   return immutableObjectLocatorTokenV1(randomUUID());
 }
 
-/** @deprecated Legacy `generation` vocabulary for {@link immutableObjectLocatorTokenV1}; remove only through the explicit versioned cutover tracked by #715. */
+/** @deprecated Legacy `generation` vocabulary for {@link immutableObjectLocatorTokenV1}; remove only through its own explicit versioned cutover (ADR 0005 layer c). */
 export const immutableObjectGenerationV1 = immutableObjectLocatorTokenV1;
 
-/** @deprecated Legacy `generation` vocabulary for {@link createImmutableObjectLocatorTokenV1}; remove only through the explicit versioned cutover tracked by #715. */
+/** @deprecated Legacy `generation` vocabulary for {@link createImmutableObjectLocatorTokenV1}; remove only through its own explicit versioned cutover (ADR 0005 layer c). */
 export const createImmutableObjectGenerationV1 = createImmutableObjectLocatorTokenV1;
 
 function contentAddressedKeyV1(tenantId: string, contentDigest: string, value: unknown) {
@@ -85,7 +85,7 @@ function contentAddressedKeyV1(tenantId: string, contentDigest: string, value: u
  * Appends the application-owned locator token to a store-specific
  * content-addressed key. The `/g/{token}` suffix is a compatibility surface:
  * existing object keys remain byte-for-byte unchanged, and no copy or
- * re-upload is required for the #715 vocabulary migration. The persistence
+ * re-upload is required for the locator-token vocabulary migration. The persistence
  * adapter must enforce uniqueness with a conditional create and a database
  * constraint; this contract owns only the provider-neutral suffix.
  */

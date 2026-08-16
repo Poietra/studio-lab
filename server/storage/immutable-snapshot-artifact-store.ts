@@ -44,7 +44,7 @@ export type ImmutableSnapshotArtifactReceiptV1 = Readonly<{
   byteSize: number;
   etag: string;
   identity: ImmutableSnapshotArtifactIdentityV1;
-  /** Legacy serialized spelling of the random object locator token (#715); never ordered or monotonic. */
+  /** Legacy serialized spelling of the random object locator token (ADR 0005); never ordered or monotonic. */
   objectGeneration: string;
   objectKey: string;
   schema: typeof IMMUTABLE_SNAPSHOT_ARTIFACT_RECEIPT_SCHEMA_V1;
@@ -55,8 +55,8 @@ export type ImmutableSnapshotArtifactReceiptV1 = Readonly<{
  * Provider-neutral payload suitable for a future database-owned tombstone. The
  * tombstone pins the exact object key and locator token so deletion can never
  * resurrect or remove a later object; `objectGeneration` keeps the legacy
- * serialized spelling of the locator token until an explicit versioned cutover
- * (#715).
+ * serialized spelling of the locator token until its own explicit versioned
+ * cutover (ADR 0005 layer c).
  */
 export type ImmutableSnapshotArtifactDeletionTargetV1 = Readonly<{
   identity: ImmutableSnapshotArtifactIdentityV1;
@@ -318,7 +318,7 @@ export function immutableSnapshotArtifactMetadataV1(
   return {
     "artifact-schema": IMMUTABLE_SNAPSHOT_ARTIFACT_RECEIPT_SCHEMA_V1,
     "identity-kind": identity.kind,
-    // The provider metadata key keeps the legacy `object-generation` spelling (#715 compatibility).
+    // The provider metadata key keeps the legacy `object-generation` spelling (ADR 0005 compatibility).
     "object-generation": objectLocatorToken,
     "profile-digest": identity.profileDigest,
     "result-digest": identity.resultDigest,

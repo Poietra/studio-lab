@@ -26,7 +26,7 @@ const IDENTITY_FIELDS = [
   "sourceDigest",
 ] as const;
 
-// Provider metadata keys keep the legacy `object-generation` spelling of the locator token (#715 compatibility).
+// Provider metadata keys keep the legacy `object-generation` spelling of the locator token (ADR 0005 compatibility).
 const METADATA_FIELDS = {
   artifactDigest: "artifact-digest",
   kind: "artifact-kind",

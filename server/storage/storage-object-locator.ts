@@ -11,7 +11,7 @@ export type ProviderVersionedObjectLocatorV1 = Readonly<{
 /**
  * Application-owned exact locator for one immutable object. The
  * `objectGeneration` field is the legacy persisted spelling of the random
- * object locator token (ADR 0005, #715): receipt types intersect this shape,
+ * object locator token (ADR 0005): receipt types intersect this shape,
  * so the spelling stays byte-for-byte until an explicit versioned cutover. The
  * value is never ordered or monotonic.
  */

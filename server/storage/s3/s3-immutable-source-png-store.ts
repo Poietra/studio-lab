@@ -42,7 +42,7 @@ const SOURCE_CONTENT_TYPE_V1 = "text/x-python";
 const PROJECT_PNG_CONTENT_TYPE_V1 = "image/png";
 
 export type ImmutableS3AdapterDependenciesV1 = Readonly<{
-  /** @deprecated Legacy `generation` vocabulary for {@link ImmutableS3AdapterDependenciesV1.createObjectLocatorToken}; remove only through the #715 versioned cutover. */
+  /** @deprecated Legacy `generation` vocabulary for {@link ImmutableS3AdapterDependenciesV1.createObjectLocatorToken}; remove only through its own explicit versioned cutover (ADR 0005 layer c). */
   createObjectGeneration?: () => string;
   /** Factory for the random immutable-object locator token appended under `/g/`. */
   createObjectLocatorToken?: () => string;
@@ -170,7 +170,7 @@ function locatorTokenFactory(dependencies: ImmutableS3AdapterDependenciesV1) {
   return () => immutableObjectLocatorTokenV1(create());
 }
 
-/** Retries conditional creates with fresh locator tokens; the returned pair keeps the legacy `objectGeneration` receipt spelling (#715). */
+/** Retries conditional creates with fresh locator tokens; the returned pair keeps the legacy `objectGeneration` receipt spelling (ADR 0005). */
 async function putWithLocatorTokens(
   operation: PrivateImmutableS3BucketOperationV1,
   createObjectLocatorToken: () => string,
