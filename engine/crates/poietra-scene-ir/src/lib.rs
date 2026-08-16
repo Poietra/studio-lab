@@ -17,7 +17,7 @@ use serde::de::DeserializeOwned;
 
 pub use digest::{
     canonical_asset_manifest_v1, canonical_export_profile_v1, digest_asset_manifest_v1,
-    digest_export_profile_v1, validate_asset_manifest_digest_v1,
+    export_profile_hash_v1, validate_asset_manifest_digest_v1,
 };
 pub use export_profile::*;
 pub use integrity::{

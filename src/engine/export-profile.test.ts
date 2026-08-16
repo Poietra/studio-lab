@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   canonicalExportProfileV1,
-  digestExportProfileV1,
   EXPORT_RESOLUTION_PIXELS_V1,
+  exportProfileHashV1,
   type ExportProfileV1,
   exportProfileV1Schema,
   MAX_EXPORT_DURATION_SECONDS,
@@ -15,14 +15,14 @@ import {
 
 // The same fixture is deserialized by the Rust serde contract in
 // engine/crates/poietra-scene-ir/tests/contracts.rs; canonical string and
-// digest constants are asserted identically on both sides.
+// exportProfileHash constants are asserted identically on both sides.
 const SHARED_FIXTURE_URL = new URL("../../fixtures/engine-v1/shared-export-profile.json", import.meta.url);
 
 const SHARED_CANONICAL_JSON =
   '{"codec":"h264-mp4","colorContractVersion":1,"frameRate":30,' +
   '"maxDurationSeconds":900,"maxOutputBytes":134217728,"resolution":"1920x1080",' +
   '"schema":"poietra.export-profile","version":1}';
-const SHARED_DIGEST = "a6c8e0a9178087ae3ee29acc14a5d5e21fe596b440f1e90d61cdd91b2b87d70c";
+const SHARED_EXPORT_PROFILE_HASH = "a6c8e0a9178087ae3ee29acc14a5d5e21fe596b440f1e90d61cdd91b2b87d70c";
 
 const sharedProfile: ExportProfileV1 = {
   codec: "h264-mp4",
@@ -46,10 +46,10 @@ describe("ExportProfileV1", () => {
     expect(EXPORT_RESOLUTION_PIXELS_V1[profile.resolution]).toEqual({ heightPx: 1080, widthPx: 1920 });
   });
 
-  it("produces the canonical JSON and digest shared with the Rust contract", async () => {
+  it("produces the canonical JSON and exportProfileHash shared with the Rust contract", async () => {
     const profile = parseExportProfileV1(await sharedFixture());
     expect(canonicalExportProfileV1(profile)).toBe(SHARED_CANONICAL_JSON);
-    await expect(digestExportProfileV1(profile)).resolves.toBe(SHARED_DIGEST);
+    await expect(exportProfileHashV1(profile)).resolves.toBe(SHARED_EXPORT_PROFILE_HASH);
   });
 
   it("is closed over every field", () => {

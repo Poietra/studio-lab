@@ -96,13 +96,17 @@ export function canonicalExportProfileV1(profile: ExportProfileV1) {
 }
 
 /**
- * Computes the lower-case SHA-256 digest over the canonical export profile.
+ * Computes the lower-case SHA-256 `exportProfileHash` identity of a profile.
  *
- * The profile does not embed its own digest; this value names a profile in
- * publication lineage.
+ * Per the ADR 0005 naming rules this is a `*Hash` — the identity of the
+ * canonical export settings, not a digest of exact stored bytes. The named
+ * canonicalization is `canonicalExportProfileV1`: the profile's alphabetical
+ * camelCase JSON serialization, shared byte-for-byte with the Rust v1
+ * contract. The profile does not embed its own hash; the value names a
+ * profile in publication lineage (the `exportProfileHash` field).
  */
-export async function digestExportProfileV1(profile: ExportProfileV1) {
+export async function exportProfileHashV1(profile: ExportProfileV1) {
   const bytes = new TextEncoder().encode(canonicalExportProfileV1(profile));
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const hashBytes = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hashBytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }

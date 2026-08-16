@@ -113,16 +113,19 @@ pub fn canonical_export_profile_v1(profile: &ExportProfileV1) -> Result<String, 
     serde_json::to_string(&canonical_profile(profile))
 }
 
-/// Computes the lower-case SHA-256 digest over the canonical export profile.
+/// Computes the lower-case SHA-256 `exportProfileHash` identity of a profile.
 ///
-/// Unlike the asset manifest, an export profile does not embed its own digest;
-/// this value names a profile in publication lineage (for example an
-/// `export_profile_digest` column).
+/// Per the ADR 0005 naming rules this is a `*Hash` — the identity of the
+/// canonical export settings, not a digest of exact stored bytes. The named
+/// canonicalization is [`canonical_export_profile_v1`]: the profile's
+/// alphabetical camelCase JSON serialization, shared byte-for-byte with the
+/// TypeScript v1 contract. The profile does not embed its own hash; the value
+/// names a profile in publication lineage (the `exportProfileHash` field).
 ///
 /// # Errors
 ///
 /// Returns a serialization error if the canonical profile cannot be represented as JSON.
-pub fn digest_export_profile_v1(profile: &ExportProfileV1) -> Result<String, serde_json::Error> {
+pub fn export_profile_hash_v1(profile: &ExportProfileV1) -> Result<String, serde_json::Error> {
     let canonical = canonical_export_profile_v1(profile)?;
     Ok(format!("{:x}", Sha256::digest(canonical.as_bytes())))
 }

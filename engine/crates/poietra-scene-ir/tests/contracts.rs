@@ -926,7 +926,7 @@ const SHARED_EXPORT_PROFILE_CANONICAL: &str = concat!(
     r#""maxDurationSeconds":900,"maxOutputBytes":134217728,"resolution":"1920x1080","#,
     r#""schema":"poietra.export-profile","version":1}"#
 );
-const SHARED_EXPORT_PROFILE_DIGEST: &str =
+const SHARED_EXPORT_PROFILE_HASH: &str =
     "a6c8e0a9178087ae3ee29acc14a5d5e21fe596b440f1e90d61cdd91b2b87d70c";
 
 fn shared_export_profile() -> ExportProfileV1 {
@@ -943,7 +943,7 @@ fn shared_export_profile() -> ExportProfileV1 {
 }
 
 #[test]
-fn shared_export_profile_fixture_parses_and_matches_the_canonical_digest() {
+fn shared_export_profile_fixture_parses_and_matches_the_canonical_hash() {
     let profile = parse_export_profile_json_v1(SHARED_EXPORT_PROFILE_JSON.as_bytes()).unwrap();
     assert_eq!(profile, shared_export_profile());
     validate_export_profile_v1(&profile).unwrap();
@@ -955,8 +955,8 @@ fn shared_export_profile_fixture_parses_and_matches_the_canonical_digest() {
         SHARED_EXPORT_PROFILE_CANONICAL
     );
     assert_eq!(
-        digest_export_profile_v1(&profile).unwrap(),
-        SHARED_EXPORT_PROFILE_DIGEST
+        export_profile_hash_v1(&profile).unwrap(),
+        SHARED_EXPORT_PROFILE_HASH
     );
     assert_eq!(
         serde_json::to_string(&profile).unwrap(),
