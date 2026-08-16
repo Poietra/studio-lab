@@ -9,6 +9,10 @@ import {
   billingPortalViewSchemaV1,
   billingStatusViewSchemaV1,
 } from "../src/billing/billing-contract";
+import {
+  normalizeCombinedOrganizationSelectorHeaderV1,
+  ORGANIZATION_SELECTOR_HEADER_V1,
+} from "./accounts/organization-selector-header";
 import { MAX_STRIPE_WEBHOOK_BYTES_V1 } from "./billing/stripe-webhook";
 import { HttpError } from "./http/json";
 import type { ProductionAdmissionRequest, ProductionRequestAdmission } from "./manim-production-server";
@@ -19,7 +23,6 @@ export const BILLING_CHECKOUT_ROUTE_V1 = "/api/billing/checkout";
 export const BILLING_PORTAL_ROUTE_V1 = "/api/billing/portal";
 export const STRIPE_BILLING_WEBHOOK_ROUTE_V1 = "/api/billing/stripe/webhook";
 
-const ORGANIZATION_HEADER_V1 = "x-poietra-organization-id";
 const STRIPE_SIGNATURE_HEADER_V1 = "stripe-signature";
 const MAX_BILLING_MUTATION_BODY_BYTES_V1 = 1_024;
 const MAX_STRIPE_SIGNATURE_BYTES_V1 = 8 * 1_024;
@@ -135,13 +138,14 @@ async function readBoundedRawBody(request: Request, maximumBytes: number) {
 }
 
 function exactOrganizationHeader(request: Request) {
-  const value = request.headers.get(ORGANIZATION_HEADER_V1);
-  if (value === null) return undefined;
+  const selector = normalizeCombinedOrganizationSelectorHeaderV1(request.headers.get(ORGANIZATION_SELECTOR_HEADER_V1));
+  if (selector.kind === "absent") return undefined;
+  const value = selector.kind === "selected" ? selector.requestedOrganizationId : null;
   if (
+    value === null ||
     value.length < 1 ||
     value.length > 64 ||
     value.trim() !== value ||
-    value.includes(",") ||
     /[\u0000-\u001f\u007f]/u.test(value)
   ) {
     throw new BillingRequestErrorV1("A single organization selector is required.", 400);

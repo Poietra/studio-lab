@@ -5,6 +5,10 @@ import { isIP } from "node:net";
 import { z } from "zod";
 
 import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
+import {
+  normalizeOrganizationSelectorHeaderV1,
+  ORGANIZATION_SELECTOR_HEADER_V1,
+} from "./accounts/organization-selector-header";
 import { EditSuggestionAdmissionController } from "./edit-suggestions/admission";
 import { createEditSuggestionRequestHandler, EDIT_SUGGESTION_ROUTE } from "./edit-suggestions/handler";
 import type { EditSuggestionGenerator } from "./edit-suggestions/service";
@@ -637,11 +641,12 @@ export async function startProductionManimServer(
       if (controller.signal.aborted) return;
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
       accessBoundary = "authentication";
-      const requestedOrganizationHeaders = request.headersDistinct["x-poietra-organization-id"];
-      if (requestedOrganizationHeaders && requestedOrganizationHeaders.length !== 1) {
+      const organizationSelector = normalizeOrganizationSelectorHeaderV1(
+        request.headersDistinct[ORGANIZATION_SELECTOR_HEADER_V1],
+      );
+      if (organizationSelector.kind === "conflicting") {
         throw new TransportError("The organization selector must be a single header value.", 400);
       }
-      const requestedOrganizationHeader = requestedOrganizationHeaders?.[0];
       const principal = await raceWithSignal(
         () =>
           authenticateManimPrincipal(
@@ -660,9 +665,9 @@ export async function startProductionManimServer(
               },
               method: request.method ?? "UNKNOWN",
               pathname,
-              ...(requestedOrganizationHeader === undefined
-                ? {}
-                : { requestedOrganizationId: requestedOrganizationHeader }),
+              ...(organizationSelector.kind === "selected"
+                ? { requestedOrganizationId: organizationSelector.requestedOrganizationId }
+                : {}),
             },
             controller.signal,
           ),
