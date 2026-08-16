@@ -21,6 +21,11 @@ pub(crate) const MANIM_CAIRO_SAMPLE_COUNT_V1: u32 = 4;
 mod arena;
 mod asset;
 mod cache;
+// Crate-private offscreen export path (#718). The public `ExportProfileV1`
+// contract and its adapter wiring land with #721, so nothing is exported yet
+// and non-test builds have no caller.
+#[cfg_attr(not(test), allow(dead_code))]
+mod export;
 mod gpu;
 mod image_gpu;
 mod prepare;
