@@ -15,6 +15,7 @@ import {
   type ProductionRequestAdmission,
   parseProductionManimServerConfig,
   startProductionManimServer,
+  type TenantCellRuntimeAdapterV1,
 } from "./manim-production-server";
 import type { ManimApi } from "./manim-render-http";
 import { request as renderRequest } from "./manim-render-pipeline-test-fixtures";
@@ -728,6 +729,7 @@ describe("standalone production Manim HTTP adapter", () => {
       state: "missing" as const,
     };
     const createManagedProject = vi.fn(async () => mutationView);
+    const createNativeStudioProject = vi.fn(async () => mutationView);
     const renameProject = vi.fn(async () => mutationView);
     const unregisterProject = vi.fn(async () => ({ ...mutationView, project: null }));
     const createProject = vi.fn();
@@ -742,28 +744,30 @@ describe("standalone production Manim HTTP adapter", () => {
     const runRuntimeTrace = vi.fn();
     const start = vi.fn();
     const baseRuntime = createRuntime(() => false);
+    const runtime: TenantCellRuntimeAdapterV1 = {
+      ...baseRuntime,
+      api: {
+        ...baseRuntime.api,
+        createManagedProject,
+        createNativeStudioProject,
+        createProject,
+        generateThumbnail,
+        renameProject,
+        runRuntimeTrace,
+        runSceneSnapshot,
+        sceneSnapshotAsset,
+        start,
+        thumbnailStatus,
+        unregisterProject,
+      } as unknown as ManimApi,
+      ready: fullReadiness,
+      renderReady: renderReadiness,
+      tenantCellStorageReady: storageReadiness,
+    };
     const server = await startProductionManimServer({
       admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
       config: await startConfig(),
-      runtime: {
-        ...baseRuntime,
-        api: {
-          ...baseRuntime.api,
-          createManagedProject,
-          createProject,
-          generateThumbnail,
-          renameProject,
-          runRuntimeTrace,
-          runSceneSnapshot,
-          sceneSnapshotAsset,
-          start,
-          thumbnailStatus,
-          unregisterProject,
-        } as unknown as ManimApi,
-        ready: fullReadiness,
-        renderReady: renderReadiness,
-        tenantCellStorageReady: storageReadiness,
-      },
+      runtime,
     });
     servers.push(server);
     const mutationHeaders = { "content-type": "application/json", origin: "https://studio.example" };
@@ -774,6 +778,13 @@ describe("standalone production Manim HTTP adapter", () => {
       method: "POST",
     });
     expect(created).toMatchObject({ status: 201 });
+    const nativeCreated = await send(server, "/api/manim/projects", {
+      body: JSON.stringify({ kind: "studio-native", name: "A" }),
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(nativeCreated).toMatchObject({ status: 201 });
+    expect(createNativeStudioProject).toHaveBeenCalledOnce();
     const renamed = await send(server, "/api/manim/projects/project-a", {
       body: JSON.stringify({ name: "A" }),
       headers: mutationHeaders,
@@ -795,7 +806,7 @@ describe("standalone production Manim HTTP adapter", () => {
       method: "DELETE",
     });
     expect(removed).toMatchObject({ status: 200 });
-    expect(storageReadiness).toHaveBeenCalledTimes(6);
+    expect(storageReadiness).toHaveBeenCalledTimes(7);
     expect(fullReadiness).not.toHaveBeenCalled();
     expect(unregisterProject).toHaveBeenCalledOnce();
 
@@ -821,7 +832,7 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(JSON.parse(render.body)).toEqual({ error: "Production runtime is not ready." });
     expect(fullReadiness).toHaveBeenCalledTimes(2);
     expect(renderReadiness).toHaveBeenCalledOnce();
-    expect(storageReadiness).toHaveBeenCalledTimes(6);
+    expect(storageReadiness).toHaveBeenCalledTimes(7);
     expect(runSceneSnapshot).not.toHaveBeenCalled();
     expect(runRuntimeTrace).not.toHaveBeenCalled();
     expect(start).not.toHaveBeenCalled();
@@ -830,7 +841,7 @@ describe("standalone production Manim HTTP adapter", () => {
     const unavailable = await send(server, "/api/manim/projects/project-a/thumbnail/status");
     expect(unavailable).toMatchObject({ status: 503 });
     expect(JSON.parse(unavailable.body)).toEqual({ error: "Production runtime is not ready." });
-    expect(storageReadiness).toHaveBeenCalledTimes(7);
+    expect(storageReadiness).toHaveBeenCalledTimes(8);
     expect(thumbnailStatus).toHaveBeenCalledOnce();
   });
 
@@ -890,14 +901,15 @@ describe("standalone production Manim HTTP adapter", () => {
       () => undefined,
       () => workspaceAvailable,
     );
+    const runtime: TenantCellRuntimeAdapterV1 = {
+      ...baseRuntime,
+      api: { ...baseRuntime.api, projects, thumbnailStatus, video } as unknown as ManimApi,
+      tenantCellStorageReady: async () => true,
+    };
     const server = await startProductionManimServer({
       admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
       config: await startConfig(),
-      runtime: {
-        ...baseRuntime,
-        api: { ...baseRuntime.api, projects, thumbnailStatus, video } as unknown as ManimApi,
-        tenantCellStorageReady: async () => true,
-      },
+      runtime,
     });
     servers.push(server);
 

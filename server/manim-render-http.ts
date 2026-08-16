@@ -142,6 +142,10 @@ export function isManimRenderStartRequest(method: string | undefined, pathname: 
  * keep their dedicated workspace gate; render starts, Scene snapshot runs and
  * lookups, Runtime Trace runs, source exports, and render-session routes keep
  * their execution-inclusive gates.
+ *
+ * Adding a route here requires extending the per-route dependency mapping in
+ * `DurableManimRuntimeV1.tenantCellStorageReady`, which probes exactly the
+ * storage dependencies these routes use.
  */
 export function isTenantCellStorageLaneManimRequest(method: string | undefined, pathname: string) {
   if (method === "POST" && pathname === "/api/manim/projects") return true;

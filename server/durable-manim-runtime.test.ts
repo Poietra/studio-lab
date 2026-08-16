@@ -321,6 +321,35 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     await Promise.all([unconfigured.close(), sourceUnavailable.close(), artifactsUnavailable.close()]);
   });
 
+  it("covers every configured storage-lane dependency in TenantCell storage readiness", async () => {
+    const editorUnavailable = workspaceRuntime({
+      editorDocuments: partial<EditorDocumentRepositoryV1>({ close: async () => undefined, ready: async () => false }),
+    });
+    const projectPngUnavailable = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      namespace: "tenant-cell-png-test",
+      projectPngRepository: partial<ProjectPngRepositoryV1>({ ready: async () => true }),
+      projectPngs: partial<ProjectPngBlobStoreV1>({ close: async () => undefined, ready: async () => false }),
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      tenantId: "tenant-a",
+    });
+    const publicationUnavailable = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      namespace: "tenant-cell-publication-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      snapshots: partial<DurableFastManimSnapshotServiceV1>({
+        close: async () => undefined,
+        publicationStorageReady: async () => false,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(editorUnavailable.tenantCellStorageReady()).resolves.toBe(false);
+    await expect(projectPngUnavailable.tenantCellStorageReady()).resolves.toBe(false);
+    await expect(publicationUnavailable.tenantCellStorageReady()).resolves.toBe(false);
+    await Promise.all([editorUnavailable.close(), projectPngUnavailable.close(), publicationUnavailable.close()]);
+  });
+
   it("gates the TenantCell storage lane on storage-integrity maintenance while render admission requires every worker", async () => {
     let storageMaintenance = true;
     let executionMaintenance = false;
@@ -336,7 +365,11 @@ describe("DurableManimRuntimeV1 production readiness", () => {
         ready: async () => true,
       }),
       repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
-      snapshots: partial<DurableFastManimSnapshotServiceV1>({ close: async () => undefined, ready: async () => true }),
+      snapshots: partial<DurableFastManimSnapshotServiceV1>({
+        close: async () => undefined,
+        publicationStorageReady: async () => true,
+        ready: async () => true,
+      }),
       tenantId: "tenant-a",
     });
     const storageClose = vi.fn(async () => undefined);

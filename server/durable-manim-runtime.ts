@@ -72,8 +72,8 @@ export type DurableManimRuntimeOptionsV1 = Readonly<{
   frame?: Readonly<{ height: number; width: number }>;
   namespace: string;
   projectIdFactory?: () => string;
-  projectPngRepository?: Pick<ProjectPngRepositoryV1, "queueDeletion" | "readHead">;
-  projectPngs?: Pick<ProjectPngBlobStoreV1, "close" | "put" | "read">;
+  projectPngRepository?: Pick<ProjectPngRepositoryV1, "queueDeletion" | "readHead" | "ready">;
+  projectPngs?: Pick<ProjectPngBlobStoreV1, "close" | "put" | "read" | "ready">;
   renders?: DurableManimRenderServiceV1;
   repository: WorkspaceSourceRepositoryV1;
   snapshots?: DurableFastManimSnapshotServiceV1;
@@ -137,8 +137,8 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #projectIdFactory: () => string;
-  readonly #projectPngRepository: Pick<ProjectPngRepositoryV1, "queueDeletion" | "readHead"> | undefined;
-  readonly #projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "put" | "read"> | undefined;
+  readonly #projectPngRepository: Pick<ProjectPngRepositoryV1, "queueDeletion" | "readHead" | "ready"> | undefined;
+  readonly #projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "put" | "read" | "ready"> | undefined;
   readonly #renders: DurableManimRenderServiceV1 | undefined;
   readonly #repository: WorkspaceSourceRepositoryV1;
   readonly #snapshots: DurableFastManimSnapshotServiceV1 | undefined;
@@ -214,20 +214,59 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   /**
    * TenantCell storage lane (ADR 0005 §"Tenant Cell decision"): the durable
-   * stores behind projects, workspace sources, and published-artifact reads.
+   * stores behind projects, editor documents, and published-artifact reads.
    * It intentionally omits the sandbox execution boundary, so a Tenant Cell
    * can be ready for projects, documents, and artifacts without claiming a
    * Manim sandbox is ready.
+   *
+   * The probe is the union of every storage dependency used by the routes in
+   * `isTenantCellStorageLaneManimRequest` (kept in lockstep with it):
+   * - POST /api/manim/projects, kind "managed": blobs.putSource +
+   *   repository.createManagedProject;
+   * - POST /api/manim/projects, kind "studio-native":
+   *   editorDocuments.createNativeDocument;
+   * - PATCH /api/manim/projects/:projectId: repository.renameProject;
+   * - DELETE /api/manim/projects/:projectId: snapshots.releaseProject, whose
+   *   only durable write is the snapshot publication ledger
+   *   (publicationStorageReady), or repository.softDeleteProject when
+   *   snapshots are unconfigured;
+   * - thumbnail GET / GET status / POST generate: repository.readProject +
+   *   artifactReader.projectThumbnail(...Bytes);
+   * - GET|HEAD /projects/:projectId/scene-snapshot-assets/:digest:
+   *   projectPngRepository.readHead + projectPngs.read.
+   * Every mutation additionally refreshes the catalog via
+   * repository.listProjects. An unconfigured optional dependency keeps its
+   * route's own deterministic 503/404 response, so it probes as ready.
    */
   async tenantCellStorageReady(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const [repositoryReady, blobsReady, artifactReaderReady] = await Promise.all([
+    const [
+      repositoryReady,
+      blobsReady,
+      artifactReaderReady,
+      editorDocumentsReady,
+      projectPngRepositoryReady,
+      projectPngsReady,
+      publicationStorageReady,
+    ] = await Promise.all([
       this.#repository.ready(signal),
       this.#blobs.ready(signal),
       this.#artifactReader?.ready(signal) ?? Promise.resolve(true),
+      this.editorDocuments?.ready(signal) ?? Promise.resolve(true),
+      this.#projectPngRepository?.ready(signal) ?? Promise.resolve(true),
+      this.#projectPngs?.ready(signal) ?? Promise.resolve(true),
+      this.#snapshots?.publicationStorageReady(signal) ?? Promise.resolve(true),
     ]);
     signal?.throwIfAborted();
-    return repositoryReady && blobsReady && artifactReaderReady;
+    return (
+      repositoryReady &&
+      blobsReady &&
+      artifactReaderReady &&
+      editorDocumentsReady &&
+      projectPngRepositoryReady &&
+      projectPngsReady &&
+      publicationStorageReady
+    );
   }
 
   /** Exact source, execution, and artifact-delivery boundary used to admit final renders. */
