@@ -15,12 +15,12 @@ use super::identity::{
     resolve_studio_motion_targets,
 };
 use super::timeline::{SceneTimelineInsertion, insert_scene_time, shift_interval_for_insertion};
+use super::transform::has_animated_transform;
 use super::{
     SceneEditAnchorSource, SceneEditExecution, SceneEditOperationFacts, SceneEditScheduleMode,
     StudioAuthoringOrigin, StudioAuthoringSize, StudioProjectionEasing, TIMELINE_ANCHOR_EPSILON,
-    has_animated_transform, scene_edit_anchor_is_closed, scene_edit_structure_is_closed,
-    studio_authoring_point_is_finite, studio_authoring_size_is_positive,
-    studio_vector_to_scene_vector, unused_channel_id,
+    scene_edit_anchor_is_closed, scene_edit_structure_is_closed, studio_authoring_point_is_finite,
+    studio_authoring_size_is_positive, studio_vector_to_scene_vector, unused_channel_id,
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
