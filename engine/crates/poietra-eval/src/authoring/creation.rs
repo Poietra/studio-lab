@@ -9,19 +9,21 @@ use serde::{Deserialize, Serialize};
 
 use crate::{EngineSessionV1, EvaluationError};
 
-use super::{
-    ApplyStudioMotionEditError, ApplyStudioPersistentRemoveError, PersistentSceneRemoval,
-    PlannedSceneMotion, PlannedStudioMotion, SceneEditAnchorSource, SceneEditExecution,
-    SceneEditOperationFacts, SceneEditScheduleMode, SceneTimelineInsertion,
-    StudioAuthoringDimensions, StudioAuthoringEditResult, StudioAuthoringEntityKind,
-    StudioAuthoringOrigin, StudioAuthoringSize, StudioCreationMathTexOutline, StudioMotionEasing,
+use super::motion::{
+    ApplyStudioMotionEditError, PlannedSceneMotion, PlannedStudioMotion, StudioMotionEasing,
     StudioMotionPlan, StudioMotionProjection, StudioMotionProjectionInsertion,
-    StudioMotionProjectionTarget, StudioPersistentRemoveProjection,
-    StudioPersistentRemoveProjectionEntry, StudioProjectedMotion, TIMELINE_ANCHOR_EPSILON,
-    append_planned_scene_motions, apply_persistent_scene_removals, authored_motion_easing,
-    close_transform_baseline_value, insert_scene_time, project_studio_motion_plan,
-    scene_edit_anchor_is_closed, scene_edit_structure_is_closed, shift_interval_for_insertion,
-    studio_authoring_point_is_finite, studio_authoring_shape_size,
+    StudioMotionProjectionTarget, StudioProjectedMotion, append_planned_scene_motions,
+    authored_motion_easing, project_studio_motion_plan,
+};
+use super::{
+    ApplyStudioPersistentRemoveError, PersistentSceneRemoval, SceneEditAnchorSource,
+    SceneEditExecution, SceneEditOperationFacts, SceneEditScheduleMode, SceneTimelineInsertion,
+    StudioAuthoringDimensions, StudioAuthoringEditResult, StudioAuthoringEntityKind,
+    StudioAuthoringOrigin, StudioAuthoringSize, StudioCreationMathTexOutline,
+    StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry,
+    TIMELINE_ANCHOR_EPSILON, apply_persistent_scene_removals, close_transform_baseline_value,
+    insert_scene_time, scene_edit_anchor_is_closed, scene_edit_structure_is_closed,
+    shift_interval_for_insertion, studio_authoring_point_is_finite, studio_authoring_shape_size,
     studio_authoring_size_is_positive, studio_math_tex_appearance, studio_point_to_scene_point,
     studio_shape_appearance, studio_timeline_semantic_values_match, studio_vector_to_scene_vector,
     unused_channel_id,
