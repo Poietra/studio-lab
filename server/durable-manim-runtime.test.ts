@@ -538,6 +538,74 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     await runtime.close();
   });
 
+  it("creates a native Studio project through the explicit origin without any starter artifact", async () => {
+    const openedAt = new Date("2026-08-02T00:00:00.000Z");
+    const catalog = {
+      defaultProjectId: "project-native",
+      projects: [{ id: "project-native", kind: "managed" as const, name: "Native demo" }],
+    };
+    const putSource = vi.fn(async () => {
+      throw new Error("The native lane must not upload a starter source blob.");
+    });
+    const createManagedProject = vi.fn(async () => {
+      throw new Error("The native lane must not create a source-head project.");
+    });
+    const createNativeDocument = vi.fn(async () => ({
+      document: {
+        documentKey: "ab".repeat(32),
+        epoch: "70000000-0000-4000-8000-000000000007",
+        openedAt,
+        origin: "studio-native" as const,
+        projectId: "project-native",
+        revision: 0n,
+        sealedAt: null,
+        sourceHash: null,
+        sourcePath: null,
+        tenantId: "tenant-a",
+        updatedAt: openedAt,
+      },
+      kind: "created" as const,
+      project: { name: "Native demo", projectId: "project-native", tenantId: "tenant-a" },
+      projection: { programs: [], revision: 0n },
+    }));
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, putSource, ready: async () => true }),
+      editorDocuments: partial<EditorDocumentRepositoryV1>({ close: async () => undefined, createNativeDocument }),
+      namespace: "native-project-create-test",
+      projectIdFactory: () => "project-native",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        createManagedProject,
+        listProjects: async () => catalog,
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.createNativeStudioProject("Native demo")).resolves.toEqual({
+      catalog,
+      project: { id: "project-native", kind: "managed", name: "Native demo" },
+    });
+    expect(createNativeDocument).toHaveBeenCalledWith(
+      { name: "Native demo", projectId: "project-native", tenantId: "tenant-a" },
+      undefined,
+    );
+    expect(putSource).not.toHaveBeenCalled();
+    expect(createManagedProject).not.toHaveBeenCalled();
+    await runtime.close();
+
+    const withoutEditorStorage = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      namespace: "native-project-unconfigured-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      tenantId: "tenant-a",
+    });
+    await expect(withoutEditorStorage.createNativeStudioProject("Native demo")).rejects.toMatchObject({
+      status: 503,
+    });
+    await withoutEditorStorage.close();
+  });
+
   it("atomically publishes a browser-imported Scene under one server-owned project identity", async () => {
     const source = `from manim import *
 

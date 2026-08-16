@@ -29,6 +29,7 @@ import type {
   EditorDocumentRepositoryV1,
   EditorDocumentV1,
   EditorEditEventV1,
+  ImportedEditorDocumentV1,
 } from "./storage/editor-document-repository";
 import { createEditorDocumentKeyV1, MAX_EDITOR_PROGRAM_BYTES_V1 } from "./storage/editor-document-repository";
 
@@ -109,6 +110,19 @@ function requireSameOriginJsonMutationV1(request: IncomingMessage, expectedOrigi
     request.resume();
     throw new HttpError("Editor mutations require a same-origin request.", 403);
   }
+}
+
+/**
+ * The v1 editor HTTP contract serves the imported Manim lane; its document
+ * views carry a required source binding. Studio-native documents get their own
+ * source-free open/restore surface in a later slice and must never leak
+ * through these serializers with fabricated source fields.
+ */
+function importedDocumentV1(document: EditorDocumentV1): ImportedEditorDocumentV1 {
+  if (document.origin !== "imported-manim") {
+    throw new TypeError("Editor storage returned a document outside the imported Manim contract.");
+  }
+  return document;
 }
 
 function documentIdentityV1(
@@ -256,7 +270,9 @@ async function openDocumentV1(
       throw new TypeError("Editor storage returned an inconsistent open document.");
     }
   }
-  const view = serializeEditorDocumentOpenResultV1(result);
+  const view = serializeEditorDocumentOpenResultV1(
+    result.kind === "opened" ? { ...result, document: importedDocumentV1(result.document) } : result,
+  );
   sendJson(
     response,
     result.kind === "opened" ? (result.created ? 201 : 200) : result.kind === "not-found" ? 404 : 409,
@@ -317,7 +333,13 @@ async function readTailV1(
       throw new TypeError("Editor storage returned an event tail ahead of its document.");
     }
   }
-  sendJson(response, result === null ? 404 : 200, serializeEditorDocumentTailResultV1(result));
+  sendJson(
+    response,
+    result === null ? 404 : 200,
+    serializeEditorDocumentTailResultV1(
+      result === null ? null : { ...result, document: importedDocumentV1(result.document) },
+    ),
+  );
 }
 
 async function commitEventV1(
@@ -405,7 +427,9 @@ async function commitEventV1(
       }
     }
   }
-  const view = serializeEditorDocumentCommitResultV1(result);
+  const view = serializeEditorDocumentCommitResultV1(
+    result.kind === "committed" ? { ...result, document: importedDocumentV1(result.document) } : result,
+  );
   const status =
     result.kind === "committed"
       ? result.replayed

@@ -98,7 +98,7 @@ describe("immutable render artifact storage contract", () => {
     expect(() => parseImmutableRenderArtifactReceiptV1(TENANT, receipt({ etag: "bad\nvalue" }))).toThrow(/ETag/i);
     expect(() =>
       immutableRenderArtifactObjectKeyV1(TENANT, identity(), "123e4567-e89b-42d3-7456-426614174000"),
-    ).toThrow(/generation/i);
+    ).toThrow(/locator token/i);
   });
 
   it("uses an exact metadata binding and receipt equality", () => {

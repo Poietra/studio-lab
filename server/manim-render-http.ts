@@ -660,6 +660,14 @@ async function routeManimRequest(
     }
     signal.throwIfAborted();
     const registry = mutableProjectRegistry(manager);
+    if (parsed.data.kind === "studio-native") {
+      const createNativeStudioProject = registry.createNativeStudioProject?.bind(registry);
+      if (!createNativeStudioProject) {
+        throw new HttpError("Studio-native projects require the durable production runtime.", 403);
+      }
+      sendJson(response, 201, await createNativeStudioProject(parsed.data.name, signal));
+      return;
+    }
     sendJson(
       response,
       201,

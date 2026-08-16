@@ -29,7 +29,7 @@ import {
 } from "./fast-manim-snapshot-contract";
 import {
   FastManimSnapshotAdmissionController,
-  FastManimSnapshotPublicationStore,
+  FastManimSnapshotPreviewCache,
   FastManimSnapshotRunner,
 } from "./fast-manim-snapshot-runner";
 import { parseFastManimSnapshotProducerCommand } from "./manim-render-config";
@@ -155,7 +155,7 @@ function createRealRunner(
   projectRoot: string,
   snapshotVersion: FastManimSnapshotProfileVersionV1 | "auto" = 1,
   pngProvider?: Readonly<{ readVerified: () => Promise<{ bytes: Uint8Array; versionToken: string }> }>,
-  publicationStore = new FastManimSnapshotPublicationStore(),
+  previewCache = new FastManimSnapshotPreviewCache(),
   sourceReadHooks?: ManimSourceReadHooks,
 ) {
   if (!producerCommand) throw new Error("Unreachable: the real producer command gate failed.");
@@ -165,15 +165,15 @@ function createRealRunner(
     projectRoot,
   });
   const runner = new FastManimSnapshotRunner({
-    // Fresh per-runner admission and publication state: the real seam must
+    // Fresh per-runner admission and preview-cache state: the real seam must
     // not consume or observe the process-global budgets of other tests.
     backend,
     deployment: "test",
     frame: REAL_FRAME,
+    previewCache,
     projectId: "default",
     projectRoot,
     ...(pngProvider === undefined ? {} : { pngProvider }),
-    publicationStore,
     ...(snapshotVersion === "auto" ? {} : { snapshotVersion }),
     sourceReadHooks,
     tenantId: "test-tenant",
@@ -390,8 +390,8 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
     const sourcePath = "mixed-dynamic.py";
     const sceneName = "MixedMathDemo";
     const projectRoot = await temporaryProject(sourcePath, mixedDynamicSceneSource);
-    const publicationStore = new FastManimSnapshotPublicationStore();
-    const runner = createRealRunner(projectRoot, 7, undefined, publicationStore);
+    const previewCache = new FastManimSnapshotPreviewCache();
+    const runner = createRealRunner(projectRoot, 7, undefined, previewCache);
     const view = fastManimSnapshotRunViewV1Schema.parse(
       await runner.run({
         projectId: "default",
@@ -447,7 +447,7 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
       { entityId: `${view.snapshot.sceneId}/entity:2`, name: "particle" },
     ]);
     expect(view.sourceRuntimeIdentity?.mappings.some(({ binding }) => binding.name === "path")).toBe(false);
-    expect(publicationStore.entriesOf(1)[0]?.[1].expected.hermeticMathTexV3Plan).toEqual(
+    expect(previewCache.entriesOf(1)[0]?.[1].expected.hermeticMathTexV3Plan).toEqual(
       deriveMixedDynamicMathTexV7TransformPlan(mixedDynamicSceneSource, sceneName),
     );
 

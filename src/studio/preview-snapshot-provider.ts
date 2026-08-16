@@ -30,13 +30,16 @@ export type StudioPreviewEditingContextV1 = StudioPreviewSceneIdentityV1 &
 /**
  * Correlation evidence carried by every verified snapshot. `engineRevisionHash`
  * is the Scene IR source revision hash (the sha-256 the canvas worker echoes on
- * every frame); `serverPublicationRevision` is the issue #65 server publication
- * counter, which is a different namespace and must never be conflated with the
- * engine hash; `assetsManifestDigest` pins the verified asset revision the
- * snapshot was checked against; `sceneDuration` and `sceneId` identify the
- * Scene IR itself. Snapshot duration is internally self-correlated, while the
- * live context is correlated by project/source/Scene identity and working
- * revision: its conservative importer duration is not Python runtime evidence.
+ * every frame); `serverPublicationRevision` is a wire-frozen compatibility name
+ * (ADR 0005 `publication`/`revision` dispositions) for the issue #65 server
+ * preview freshness token — the process-local preview-cache sequence in dev, a
+ * numeric view of the durable per-Scene publication generation in production —
+ * which is a different namespace and must never be conflated with the engine
+ * hash; `assetsManifestDigest` pins the verified asset revision the snapshot
+ * was checked against; `sceneDuration` and `sceneId` identify the Scene IR
+ * itself. Snapshot duration is internally self-correlated, while the live
+ * context is correlated by project/source/Scene identity and working revision:
+ * its conservative importer duration is not Python runtime evidence.
  */
 export type StudioPreviewSnapshotCorrelationV1 = Readonly<{
   assetsManifestDigest: string;

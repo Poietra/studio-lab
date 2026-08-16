@@ -12,7 +12,7 @@ import {
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
-import { FastManimSnapshotAdmissionController } from "./fast-manim-snapshot-publication";
+import { FastManimSnapshotAdmissionController } from "./fast-manim-snapshot-preview-cache";
 import { runtimeTraceRequestFixture } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import { runtimeTraceV2RequestFixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";

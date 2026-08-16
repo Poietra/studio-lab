@@ -23,6 +23,7 @@ import {
   type applyBundledWorkspaceSourceMigrationV1,
   applyCollaborationAuthorizationMigrationV26,
   applyEditorDocumentMigrationV17,
+  applyEditorDocumentOriginMigrationV30,
   applyEditorMutationMigrationV18,
   applyEditorSessionSnapshotMigrationV23,
   applyImmutableObjectGenerationMigrationV20,
@@ -49,6 +50,8 @@ import {
   durableStorageMigrationChecksum,
   EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM,
   EDITOR_DOCUMENT_MIGRATION_V17_SOURCE,
+  EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM,
+  EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE,
   EDITOR_MUTATION_MIGRATION_V18_CHECKSUM,
   EDITOR_MUTATION_MIGRATION_V18_SOURCE,
   EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM,
@@ -124,12 +127,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 29 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 30 });
     expect([...db.installed.keys()]).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 29 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 30 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -163,7 +166,8 @@ describe("durable storage migrations", () => {
       db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE),
     ).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(58);
+    expect(db.queries.filter(({ text }) => text === EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(60);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -231,12 +235,17 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 29,
     });
+    expect(db.queries.some(({ text }) => text === EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE)).toBe(false);
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 30)).resolves.toEqual({
+      applied: true,
+      version: 30,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 30)).rejects.toThrow(
-      /migration v30 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 31)).rejects.toThrow(
+      /migration v31 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -829,6 +838,42 @@ describe("durable storage migrations", () => {
     await expect(
       applyRuntimeCellAssignmentMigrationV29(db.pool, RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v28/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("backfills the closed editor document origin and relaxes source binding conditionally in v30", async () => {
+    expect(durableStorageMigrationChecksum(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE)).toBe(
+      EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM,
+    );
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).toContain(
+      "ADD COLUMN origin text NOT NULL DEFAULT 'imported-manim'",
+    );
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).toContain("editor_documents_origin_closed_v30");
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).toContain(
+      "CHECK (origin IN ('studio-native', 'imported-manim'))",
+    );
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).toContain("ALTER COLUMN source_path DROP NOT NULL");
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).toContain("ALTER COLUMN source_hash DROP NOT NULL");
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).toContain("editor_documents_origin_source_binding_v30");
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).toContain(
+      "(origin = 'imported-manim' AND source_path IS NOT NULL AND source_hash IS NOT NULL)",
+    );
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).toContain(
+      "OR (origin = 'studio-native' AND source_path IS NULL AND source_hash IS NULL)",
+    );
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).toContain("ALTER COLUMN origin DROP DEFAULT");
+    // The v17/v18/v23 triggers and the open-document partial unique index are
+    // key-shape-agnostic; v30 must not redefine or drop any of them.
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).not.toContain("CREATE FUNCTION");
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).not.toContain("CREATE TRIGGER");
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).not.toContain("DROP TRIGGER");
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).not.toContain("DROP INDEX");
+    expect(EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE).not.toContain("second document");
+
+    const db = database();
+    await expect(
+      applyEditorDocumentOriginMigrationV30(db.pool, EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v29/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 

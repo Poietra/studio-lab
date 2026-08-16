@@ -167,13 +167,17 @@ export function immutableProjectPngFamilyPrefixV1(tenantValue: unknown) {
   return `tenants/${tenantIdV1(tenantValue)}/projects/`;
 }
 
-export function immutableSourceBlobObjectKeyV1(tenantValue: unknown, digestValue: unknown, objectGeneration: unknown) {
+export function immutableSourceBlobObjectKeyV1(
+  tenantValue: unknown,
+  digestValue: unknown,
+  objectLocatorToken: unknown,
+) {
   const tenantId = tenantIdV1(tenantValue);
   const contentDigest = digestV1(digestValue);
   return immutableObjectKeyV1({
     contentAddressedKey: sourceBlobContentAddressedKeyV1(tenantId, contentDigest),
     contentDigest,
-    objectGeneration: objectGeneration as string,
+    objectLocatorToken: objectLocatorToken as string,
     tenantId,
   });
 }
@@ -182,7 +186,7 @@ export function immutableProjectPngObjectKeyV1(
   tenantValue: unknown,
   projectValue: unknown,
   digestValue: unknown,
-  objectGeneration: unknown,
+  objectLocatorToken: unknown,
 ) {
   const tenantId = tenantIdV1(tenantValue);
   const projectId = projectIdV1(projectValue);
@@ -190,7 +194,7 @@ export function immutableProjectPngObjectKeyV1(
   return immutableObjectKeyV1({
     contentAddressedKey: projectPngObjectKeyV1(tenantId, projectId, contentDigest),
     contentDigest,
-    objectGeneration: objectGeneration as string,
+    objectLocatorToken: objectLocatorToken as string,
     tenantId,
   });
 }
@@ -204,7 +208,7 @@ export function parseImmutableSourceBlobObjectKeyV1(tenantValue: unknown, value:
   const digest = digestV1(parts[0]);
   const objectKey = immutableSourceBlobObjectKeyV1(tenantId, digest, parts[2]);
   if (objectKey !== value) throw new TypeError("Immutable source object key is invalid.");
-  return { digest, objectGeneration: parts[2]!, objectKey } as const;
+  return { digest, objectKey, objectLocatorToken: parts[2]! } as const;
 }
 
 export function parseImmutableProjectPngObjectKeyV1(tenantValue: unknown, value: unknown) {
@@ -219,7 +223,7 @@ export function parseImmutableProjectPngObjectKeyV1(tenantValue: unknown, value:
   const digest = digestV1(parts[3]);
   const objectKey = immutableProjectPngObjectKeyV1(tenantId, projectId, digest, parts[5]);
   if (objectKey !== value) throw new TypeError("Immutable project image.png object key is invalid.");
-  return { digest, objectGeneration: parts[5]!, objectKey, projectId } as const;
+  return { digest, objectKey, objectLocatorToken: parts[5]!, projectId } as const;
 }
 
 export function parseImmutableSourceBlobReceiptV1(tenantValue: unknown, value: unknown): ImmutableSourceBlobReceiptV1 {

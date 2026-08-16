@@ -12,6 +12,7 @@ import {
   createAccountSessionIdentityAuthenticatorV1,
   createOrganizationMembershipProductionAdmissionV1,
   type ProductionManimServer,
+  type ProductionRequestAdmission,
   parseProductionManimServerConfig,
   startProductionManimServer,
 } from "./manim-production-server";
@@ -114,7 +115,7 @@ function send(
   options: Readonly<{
     body?: string;
     chunked?: boolean;
-    headers?: Readonly<Record<string, string>>;
+    headers?: Readonly<Record<string, string | string[]>>;
     method?: string;
   }> = {},
 ) {
@@ -392,6 +393,39 @@ describe("standalone production Manim HTTP adapter", () => {
       "tenant-a",
       expect.any(AbortSignal),
     );
+  });
+
+  it("normalizes the organization selector at the transport without judging its bytes", async () => {
+    const authenticate = vi.fn<ProductionRequestAdmission["authenticate"]>(async () => TEST_PRINCIPAL);
+    const server = await startProductionManimServer({
+      admission: { authenticate, ready: async () => true },
+      config: await startConfig(),
+      runtime: createRuntime(),
+    });
+    servers.push(server);
+
+    const conflicting = await send(server, "/api/manim/projects", {
+      headers: { authorization: "Bearer verified", "x-poietra-organization-id": ["tenant-a", "tenant-b"] },
+    });
+    expect(conflicting.status).toBe(400);
+    expect(JSON.parse(conflicting.body)).toEqual({ error: "The organization selector must be a single header value." });
+    expect(authenticate).not.toHaveBeenCalled();
+
+    const malformed = "A".repeat(65);
+    expect(
+      await send(server, "/api/manim/projects", {
+        headers: { authorization: "Bearer verified", "x-poietra-organization-id": malformed },
+      }),
+    ).toMatchObject({ status: 200 });
+    expect(authenticate).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestedOrganizationId: malformed }),
+      expect.any(AbortSignal),
+    );
+
+    expect(await send(server, "/api/manim/projects", { headers: { authorization: "Bearer verified" } })).toMatchObject({
+      status: 200,
+    });
+    expect(authenticate.mock.calls.at(-1)?.[0]).not.toHaveProperty("requestedOrganizationId");
   });
 
   it("rejects an incomplete production runtime adapter before listening", async () => {
@@ -700,6 +734,7 @@ describe("standalone production Manim HTTP adapter", () => {
         documentKey,
         epoch,
         openedAt,
+        origin: "imported-manim",
         projectId: input.projectId,
         revision: 0n,
         sealedAt: null,
@@ -733,6 +768,9 @@ describe("standalone production Manim HTTP adapter", () => {
       close: async () => undefined,
       commitMutation: async () => {
         throw new Error("commitMutation was not expected");
+      },
+      createNativeDocument: async () => {
+        throw new Error("createNativeDocument was not expected");
       },
       openDocument,
       putSessionSnapshot,
