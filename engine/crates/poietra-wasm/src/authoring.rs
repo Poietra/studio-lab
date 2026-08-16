@@ -5,16 +5,16 @@ use poietra_eval::{
     ApplyStudioMathTexTransformEditCommand, ApplyStudioMathTexTransformEditError,
     ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand,
     ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, ProjectStudioCreationEditError,
-    ProjectStudioMotionEditCommand, ProjectStudioMotionEditError, StaticRootTransformProgram,
+    ProjectStudioMotionEditCommand, ProjectStudioMotionEditError, StaticRootTransformEditInput,
     StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
     StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
-    StudioBoundEntityProgram, StudioCreationMathTexOutline, StudioCreationProgram,
-    StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
-    StudioMathTexTransformProgram, StudioMathTexTransformProjectionEntityIdentity,
-    StudioMathTexTransformSourceBinding, StudioMotionEntityIdentity, StudioMotionProgram,
-    StudioMotionProjectionBatch, StudioMotionSourceBinding, StudioTimelineProgram,
-    project_studio_creation_programs, project_studio_math_tex_transform_programs,
-    project_studio_motion_edit, project_studio_timeline_programs,
+    StudioBoundEntityEditInput, StudioCreationEditInput, StudioCreationMathTexOutline,
+    StudioMathTexTransformEditInput, StudioMathTexTransformEntityIdentity,
+    StudioMathTexTransformOutline, StudioMathTexTransformProjectionEntityIdentity,
+    StudioMathTexTransformSourceBinding, StudioMotionEditInput, StudioMotionEntityIdentity,
+    StudioMotionProjectionBatch, StudioMotionSourceBinding, StudioTimelineEditInput,
+    project_studio_creation_edits, project_studio_math_tex_transform_edits,
+    project_studio_motion_edit, project_studio_timeline_edits,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -90,7 +90,7 @@ struct ApplyStaticRootTransformEditCommandJsonV1 {
     #[serde(default)]
     math_tex_outlines: Vec<StudioCreationMathTexOutline>,
     next_revision: String,
-    programs: Vec<StaticRootTransformProgram>,
+    programs: Vec<StaticRootTransformEditInput>,
     #[serde(rename = "schema")]
     _schema: ApplyStaticRootTransformEditSchemaV1,
     source_runtime_bindings: Vec<StaticRootTransformSourceBinding>,
@@ -122,7 +122,7 @@ struct ApplyStudioCreationEditCommandJsonV1 {
     frame: StudioAuthoringSize,
     math_tex_outlines: Vec<StudioCreationMathTexOutline>,
     next_revision: String,
-    programs: Vec<StudioCreationProgram>,
+    programs: Vec<StudioCreationEditInput>,
     #[serde(rename = "schema")]
     _schema: ApplyStudioCreationEditSchemaV1,
     #[serde(rename = "version")]
@@ -134,7 +134,7 @@ struct ApplyStudioCreationEditCommandJsonV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProjectStudioCreationEditCommandJsonV1 {
     base_duration: f64,
-    programs: Vec<StudioCreationProgram>,
+    programs: Vec<StudioCreationEditInput>,
     #[serde(rename = "schema")]
     _schema: ProjectStudioCreationEditSchemaV1,
     #[serde(rename = "version")]
@@ -159,7 +159,7 @@ impl From<ApplyStudioCreationEditCommandJsonV1> for ApplyStudioCreationEditComma
 struct ApplyStudioTimelineEditCommandJsonV1 {
     expected_base_revision: String,
     next_revision: String,
-    programs: Vec<StudioTimelineProgram>,
+    programs: Vec<StudioTimelineEditInput>,
     #[serde(rename = "schema")]
     _schema: ApplyStudioTimelineEditSchemaV1,
     #[serde(rename = "version")]
@@ -180,7 +180,7 @@ impl From<ApplyStudioTimelineEditCommandJsonV1> for ApplyStudioTimelineEditComma
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProjectStudioTimelineCommandJsonV1 {
     base_duration: f64,
-    programs: Vec<StudioTimelineProgram>,
+    programs: Vec<StudioTimelineEditInput>,
     #[serde(rename = "schema")]
     _schema: ProjectStudioTimelineSchemaV1,
     #[serde(rename = "version")]
@@ -193,7 +193,7 @@ struct ApplyStudioMotionEditCommandJsonV1 {
     expected_base_revision: String,
     frame: StudioAuthoringSize,
     next_revision: String,
-    programs: Vec<StudioMotionProgram>,
+    programs: Vec<StudioMotionEditInput>,
     #[serde(rename = "schema")]
     _schema: ApplyStudioMotionEditSchemaV1,
     source_runtime_bindings: Vec<StudioMotionSourceBinding>,
@@ -221,7 +221,7 @@ struct ApplyStudioMathTexTransformEditCommandJsonV1 {
     frame: StudioAuthoringSize,
     math_tex_outlines: Vec<StudioMathTexTransformOutline>,
     next_revision: String,
-    programs: Vec<StudioMathTexTransformProgram>,
+    programs: Vec<StudioMathTexTransformEditInput>,
     #[serde(rename = "schema")]
     _schema: ApplyStudioMathTexTransformEditSchemaV1,
     source_runtime_bindings: Vec<StudioMathTexTransformSourceBinding>,
@@ -235,7 +235,7 @@ struct ApplyStudioMathTexTransformEditCommandJsonV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProjectStudioMathTexTransformCommandJsonV1 {
     base_duration: f64,
-    programs: Vec<StudioMathTexTransformProgram>,
+    programs: Vec<StudioMathTexTransformEditInput>,
     #[serde(rename = "schema")]
     _schema: ProjectStudioMathTexTransformSchemaV1,
     studio_entities: Vec<StudioMathTexTransformProjectionEntityIdentity>,
@@ -265,7 +265,7 @@ struct ApplyStudioBoundEntityEditCommandJsonV1 {
     expected_base_revision: String,
     frame: StudioAuthoringSize,
     next_revision: String,
-    programs: Vec<StudioBoundEntityProgram>,
+    programs: Vec<StudioBoundEntityEditInput>,
     #[serde(rename = "schema")]
     _schema: ApplyStudioBoundEntityEditSchemaV1,
     #[serde(rename = "version")]
@@ -439,7 +439,7 @@ fn project_studio_creation_edit_json(
         command_json,
         poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
     )?;
-    let projection = project_studio_creation_programs(command.base_duration, &command.programs)?;
+    let projection = project_studio_creation_edits(command.base_duration, &command.programs)?;
     studio_projection_response(&projection)
 }
 
@@ -465,7 +465,7 @@ fn project_studio_timeline_json(
         command_json,
         poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
     )?;
-    let projection = project_studio_timeline_programs(command.base_duration, &command.programs)?;
+    let projection = project_studio_timeline_edits(command.base_duration, &command.programs)?;
     studio_projection_response(&projection)
 }
 
@@ -522,7 +522,7 @@ fn project_studio_math_tex_transform_json(
             command_json,
             poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
         )?;
-    let projection = project_studio_math_tex_transform_programs(
+    let projection = project_studio_math_tex_transform_edits(
         command.base_duration,
         &command.programs,
         &command.studio_entities,
@@ -584,7 +584,7 @@ pub fn apply_studio_timeline_edit_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Projects normalized Studio timeline Programs without requiring a Scene snapshot.
+/// Projects normalized Studio timeline edits without requiring a Scene snapshot.
 ///
 /// # Errors
 ///
@@ -659,7 +659,7 @@ pub fn apply_studio_bound_entity_edit_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Authorizes complete Studio Edit Programs and applies one static imported-root transform.
+/// Authorizes complete Scene edits and applies one static imported-root transform.
 ///
 /// # Errors
 ///
