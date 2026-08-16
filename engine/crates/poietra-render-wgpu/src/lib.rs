@@ -30,6 +30,7 @@ mod export;
 mod gpu;
 mod image_gpu;
 mod prepare;
+mod thumbnail;
 mod upload;
 
 pub use arena::{GpuBufferArenaErrorV1, MAX_GPU_BUFFER_ARENA_BYTES_V1};
@@ -57,6 +58,10 @@ pub use prepare::{
     tessellate_validated_frame_v1, tessellate_validated_frame_with_assets_v1,
     tessellate_validated_frame_with_cache_and_assets_v1, tessellate_validated_frame_with_cache_v1,
     validate_frame_packet_v1,
+};
+pub use thumbnail::{
+    ENGINE_THUMBNAIL_HEIGHT_PX, ENGINE_THUMBNAIL_WIDTH_PX, MAX_ENGINE_THUMBNAIL_PNG_BYTES,
+    RenderThumbnailError, render_thumbnail_png, representative_thumbnail_time,
 };
 pub use upload::{
     GpuUploadPlanErrorV1, GpuUploadPlanV1, MAX_GPU_UPLOAD_PLAN_BYTES_V1, build_gpu_upload_plan_v1,

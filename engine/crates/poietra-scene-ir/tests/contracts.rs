@@ -544,6 +544,12 @@ fn render_packet_rejects_invalid_time_and_camera_aspect() {
             .unwrap_err()
             .contains_message("camera and viewport aspect ratios must match")
     );
+
+    let mut even_rounded_sd_export = empty_packet();
+    even_rounded_sd_export.viewport.width_px = 854;
+    even_rounded_sd_export.viewport.height_px = 480;
+    validate_render_packet_v1(&even_rounded_sd_export)
+        .expect("the closed 854x480 export rung must accept its even-rounded 16:9 width");
 }
 
 #[test]

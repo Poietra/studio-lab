@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
 use std::fmt;
 
-use crate::export_profile::ExportProfileV1;
+use crate::export_profile::{ExportProfileV1, ExportResolutionV1};
 use crate::model::{
     AffineTransformV1, AnimationChannelV1, AssetManifestReferenceV1, AssetManifestV1,
     AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1, ImageLocalRectV1, IntervalV1,
@@ -1494,7 +1494,11 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
         let camera_aspect = camera_width / camera_height;
         let viewport_aspect =
             f64::from(packet.viewport.width_px) / f64::from(packet.viewport.height_px);
-        if (camera_aspect / viewport_aspect - 1.0).abs() > 0.000_001 {
+        let is_even_rounded_sd_export = packet.viewport.width_px
+            == ExportResolutionV1::Sd854x480.width_px()
+            && packet.viewport.height_px == ExportResolutionV1::Sd854x480.height_px()
+            && (camera_aspect / (16.0 / 9.0) - 1.0).abs() <= 0.000_001;
+        if (camera_aspect / viewport_aspect - 1.0).abs() > 0.000_001 && !is_even_rounded_sd_export {
             validator.issue("$.camera", "camera and viewport aspect ratios must match");
         }
     }
