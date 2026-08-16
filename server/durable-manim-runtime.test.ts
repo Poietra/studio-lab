@@ -6,7 +6,11 @@ import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditProgram } from "../src/studio/operations";
 import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
-import { createDurableProductionManimRuntimeAdapterV1, DurableManimRuntimeV1 } from "./durable-manim-runtime";
+import {
+  createDurableProductionManimRuntimeAdapterV1,
+  createTenantCellProductionManimRuntimeAdapterV1,
+  DurableManimRuntimeV1,
+} from "./durable-manim-runtime";
 import type { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { MIN_DURABLE_GC_GRACE_MS_V1 } from "./storage/durable-gc-core";
@@ -296,6 +300,76 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       },
     });
     await sourceUnavailable.close();
+  });
+
+  it("reports TenantCell storage readiness without claiming a Manim sandbox is ready", async () => {
+    const unconfigured = workspaceRuntime({});
+    const sourceUnavailable = workspaceRuntime({ blobsReady: async () => false });
+    const artifactsUnavailable = new DurableManimRuntimeV1({
+      artifactReader: partial<AuthorizedArtifactReaderV1>({ close: async () => undefined, ready: async () => false }),
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      namespace: "tenant-cell-storage-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(unconfigured.tenantCellStorageReady()).resolves.toBe(true);
+    await expect(unconfigured.ready()).resolves.toBe(false);
+    await expect(unconfigured.renderReady()).resolves.toBe(false);
+    await expect(sourceUnavailable.tenantCellStorageReady()).resolves.toBe(false);
+    await expect(artifactsUnavailable.tenantCellStorageReady()).resolves.toBe(false);
+    await Promise.all([unconfigured.close(), sourceUnavailable.close(), artifactsUnavailable.close()]);
+  });
+
+  it("gates the TenantCell storage lane on storage-integrity maintenance while render admission requires every worker", async () => {
+    let storageMaintenance = true;
+    let executionMaintenance = false;
+    const runtime = new DurableManimRuntimeV1({
+      artifactReader: partial<AuthorizedArtifactReaderV1>({ close: async () => undefined, ready: async () => true }),
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      editorDocuments: partial<EditorDocumentRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      execution: { ready: async () => true },
+      namespace: "tenant-cell-split-test",
+      renders: partial<DurableManimRenderServiceV1>({
+        close: async () => undefined,
+        deliveryReady: async () => true,
+        ready: async () => true,
+      }),
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      snapshots: partial<DurableFastManimSnapshotServiceV1>({ close: async () => undefined, ready: async () => true }),
+      tenantId: "tenant-a",
+    });
+    const storageClose = vi.fn(async () => undefined);
+    const executionClose = vi.fn(async () => undefined);
+    const adapter = createTenantCellProductionManimRuntimeAdapterV1(runtime, {
+      execution: { close: executionClose, ready: () => executionMaintenance },
+      storage: { close: storageClose, ready: () => storageMaintenance },
+    });
+    const signal = new AbortController().signal;
+
+    await expect(adapter.tenantCellStorageReady(signal)).resolves.toBe(true);
+    await expect(adapter.workspaceReady(signal)).resolves.toBe(true);
+    await expect(adapter.renderReady(signal)).resolves.toBe(false);
+    await expect(adapter.ready(signal)).resolves.toEqual({ ready: false });
+
+    executionMaintenance = true;
+    await expect(adapter.renderReady(signal)).resolves.toBe(true);
+    await expect(adapter.ready(signal)).resolves.toEqual({
+      executionBoundary: "adapter-attests-external-sandbox",
+      ready: true,
+      storageBoundary: "shared-durable",
+      tenantBoundary: "server-owned-tenant-key",
+    });
+
+    storageMaintenance = false;
+    await expect(adapter.tenantCellStorageReady(signal)).resolves.toBe(false);
+    await expect(adapter.workspaceReady(signal)).resolves.toBe(false);
+    await expect(adapter.renderReady(signal)).resolves.toBe(false);
+    await expect(adapter.ready(signal)).resolves.toEqual({ ready: false });
+
+    await Promise.all([adapter.close(), adapter.close()]);
+    expect(storageClose).toHaveBeenCalledOnce();
+    expect(executionClose).toHaveBeenCalledOnce();
   });
 
   it("includes the production maintenance gate in both capability and render admission readiness", async () => {

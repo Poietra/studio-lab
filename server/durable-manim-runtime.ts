@@ -26,6 +26,7 @@ import type { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-v
 import { authorizeSnapshotProgramWithSnapshot } from "./manim-snapshot-program-authorizer";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot, validateBrowserManimProjectImportV1 } from "./manim-workspace";
+import type { TenantCellRuntimeAdapterV1 } from "./production-runtime-cell";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { MIN_DURABLE_GC_GRACE_MS_V1 } from "./storage/durable-gc-core";
 import type { EditorDocumentOriginV1, EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
@@ -209,6 +210,24 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     const editorDocumentsReady = await this.editorDocuments.ready(signal);
     signal?.throwIfAborted();
     return editorDocumentsReady;
+  }
+
+  /**
+   * TenantCell storage lane (ADR 0005 §"Tenant Cell decision"): the durable
+   * stores behind projects, workspace sources, and published-artifact reads.
+   * It intentionally omits the sandbox execution boundary, so a Tenant Cell
+   * can be ready for projects, documents, and artifacts without claiming a
+   * Manim sandbox is ready.
+   */
+  async tenantCellStorageReady(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const [repositoryReady, blobsReady, artifactReaderReady] = await Promise.all([
+      this.#repository.ready(signal),
+      this.#blobs.ready(signal),
+      this.#artifactReader?.ready(signal) ?? Promise.resolve(true),
+    ]);
+    signal?.throwIfAborted();
+    return repositoryReady && blobsReady && artifactReaderReady;
   }
 
   /** Exact source, execution, and artifact-delivery boundary used to admit final renders. */
@@ -679,14 +698,41 @@ export async function createDurableManimRuntimeV1(options: DurableManimRuntimeOp
   }
 }
 
-/** Production composition: readiness is true only when DB, S3, and the external executor all pass. */
-export function createDurableProductionManimRuntimeAdapterV1(
+export type TenantCellMaintenanceReadinessV1 = Readonly<{
+  close: () => Promise<void>;
+  ready: () => boolean;
+}>;
+
+/**
+ * TenantCell maintenance split (ADR 0005 §"Tenant Cell decision"): the durable
+ * maintenance workers are assigned to the readiness lane whose routes can grow
+ * the storage family they reclaim, so each lane keeps its own fail-closed gate.
+ */
+export type TenantCellMaintenanceSplitV1 = Readonly<{
+  /** Workers reclaiming families that only render execution can grow. */
+  execution: TenantCellMaintenanceReadinessV1;
+  /** Workers reclaiming families written by the storage lane itself. */
+  storage: TenantCellMaintenanceReadinessV1;
+}>;
+
+/**
+ * TenantCell production composition: full attestation still requires DB, S3,
+ * the external executor, and every maintenance worker exactly as before, while
+ * the storage lane (`workspaceReady`, `tenantCellStorageReady`) gates only on
+ * durable storage plus the storage-integrity maintenance group.
+ */
+export function createTenantCellProductionManimRuntimeAdapterV1(
   runtime: DurableManimRuntimeV1,
-  maintenance: Pick<DurableSourceBlobGcWorkerV1, "close" | "ready">,
-): ProductionManimRuntimeAdapterV1 {
+  maintenance: TenantCellMaintenanceSplitV1,
+): TenantCellRuntimeAdapterV1 {
   const editorDocuments = runtime.editorDocuments;
   if (!editorDocuments) throw new TypeError("The durable production runtime requires editor document storage.");
-  runtime.bindProductionRenderOperationalReadiness(() => maintenance.ready());
+  const maintenanceGroups = [...new Set([maintenance.execution, maintenance.storage])];
+  const allMaintenanceReady = () => maintenanceGroups.every((group) => group.ready());
+  // Render admission keeps requiring every worker: renders read source blobs
+  // and write project PNGs, media artifacts, and session rows, so both
+  // maintenance groups guard families that render execution grows.
+  runtime.bindProductionRenderOperationalReadiness(allMaintenanceReady);
   let closeRequest: Promise<void> | undefined;
   return {
     api: runtime,
@@ -694,7 +740,8 @@ export function createDurableProductionManimRuntimeAdapterV1(
     close() {
       closeRequest ??= (async () => {
         const errors: unknown[] = [];
-        await maintenance.close().catch((error: unknown) => errors.push(error));
+        const maintenanceResults = await Promise.allSettled(maintenanceGroups.map((group) => group.close()));
+        errors.push(...maintenanceResults.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])));
         await runtime.close().catch((error: unknown) => errors.push(error));
         if (errors.length > 0) {
           throw new AggregateError(errors, "Could not fully close the durable production runtime.");
@@ -703,7 +750,7 @@ export function createDurableProductionManimRuntimeAdapterV1(
       return closeRequest;
     },
     async ready(signal) {
-      if (!maintenance.ready() || !(await runtime.productionReady(signal))) return { ready: false };
+      if (!allMaintenanceReady() || !(await runtime.productionReady(signal))) return { ready: false };
       return {
         executionBoundary: "adapter-attests-external-sandbox",
         ready: true,
@@ -717,8 +764,27 @@ export function createDurableProductionManimRuntimeAdapterV1(
     renderReady(signal) {
       return runtime.renderReady(signal);
     },
+    async tenantCellStorageReady(signal) {
+      return maintenance.storage.ready() && (await runtime.tenantCellStorageReady(signal));
+    },
     async workspaceReady(signal) {
-      return maintenance.ready() && (await runtime.workspaceReady(signal));
+      return maintenance.storage.ready() && (await runtime.workspaceReady(signal));
     },
   };
+}
+
+/**
+ * Backward-compatible production composition: the single maintenance gate
+ * guards both TenantCell lanes, so readiness fails closed exactly as before
+ * the storage/execution split.
+ */
+export function createDurableProductionManimRuntimeAdapterV1(
+  runtime: DurableManimRuntimeV1,
+  maintenance: Pick<DurableSourceBlobGcWorkerV1, "close" | "ready">,
+): ProductionManimRuntimeAdapterV1 {
+  const shared: TenantCellMaintenanceReadinessV1 = {
+    close: () => maintenance.close(),
+    ready: () => maintenance.ready(),
+  };
+  return createTenantCellProductionManimRuntimeAdapterV1(runtime, { execution: shared, storage: shared });
 }

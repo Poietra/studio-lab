@@ -134,6 +134,26 @@ export function isManimRenderStartRequest(method: string | undefined, pathname: 
   return method === "POST" && PROJECT_ROUTE.exec(pathname)?.[2] === "renders";
 }
 
+/**
+ * TenantCell storage lane (ADR 0005 §"Tenant Cell decision"): project catalog
+ * mutations, thumbnail reads, and digest-addressed Scene snapshot PNG reads
+ * are served entirely by durable storage, so production admission gates them
+ * on storage/tenant readiness alone. Workspace bootstrap and browser import
+ * keep their dedicated workspace gate; render starts, Scene snapshot runs and
+ * lookups, Runtime Trace runs, source exports, and render-session routes keep
+ * their execution-inclusive gates.
+ */
+export function isTenantCellStorageLaneManimRequest(method: string | undefined, pathname: string) {
+  if (method === "POST" && pathname === "/api/manim/projects") return true;
+  if ((method === "PATCH" || method === "DELETE") && PROJECT_ITEM_ROUTE.test(pathname)) return true;
+  const thumbnail = PROJECT_THUMBNAIL_ROUTE.exec(pathname);
+  if (thumbnail) {
+    if (thumbnail[2] === undefined || thumbnail[2] === "status") return method === "GET";
+    return method === "POST";
+  }
+  return (method === "GET" || method === "HEAD") && PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE.test(pathname);
+}
+
 function mediaStreamIdleTimeout(value: number | undefined) {
   const timeout = value ?? DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeout) || timeout < 1_000 || timeout > MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS) {
