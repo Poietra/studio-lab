@@ -96,13 +96,13 @@ extern "C" {
 }
 
 #[derive(Clone, Debug)]
-struct EncoderFailureV1 {
-    message: String,
-    reason: ExportEncoderRefusalReasonV1,
+pub(crate) struct EncoderFailureV1 {
+    pub(crate) message: String,
+    pub(crate) reason: ExportEncoderRefusalReasonV1,
 }
 
 impl EncoderFailureV1 {
-    fn new(reason: ExportEncoderRefusalReasonV1, message: impl Into<String>) -> Self {
+    pub(crate) fn new(reason: ExportEncoderRefusalReasonV1, message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             reason,
@@ -115,24 +115,31 @@ impl EncoderFailureV1 {
 }
 
 #[derive(Debug)]
-struct CollectedChunkV1 {
-    bytes: Vec<u8>,
-    duration_microseconds: Option<u64>,
-    key_frame: bool,
-    timestamp_microseconds: u64,
+pub(crate) struct CollectedChunkV1 {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) duration_microseconds: Option<u64>,
+    pub(crate) key_frame: bool,
+    pub(crate) timestamp_microseconds: u64,
 }
 
-#[derive(Debug)]
-struct CollectedDecoderConfigV1 {
-    color_space: ExportEncoderColorSpaceEvidenceV1,
-    description: Vec<u8>,
+#[derive(Clone, Debug)]
+pub(crate) struct CollectedDecoderConfigV1 {
+    pub(crate) color_space: ExportEncoderColorSpaceEvidenceV1,
+    pub(crate) description: Vec<u8>,
 }
 
 /// State shared between the session and the encoder's JS callbacks. Borrows
 /// are never held across `await` points, so callback re-entrancy from the
 /// browser task queue cannot observe an open borrow.
+///
+/// `chunk_count` counts every chunk the output callback ever accepted, so
+/// first-chunk detection and the chunk-count bound stay correct when an
+/// integrator drains `chunks` incrementally via
+/// [`take_collected_chunks_v1`]; the retained-chunk ABI never drains, where
+/// `chunk_count` always equals `chunks.len()`.
 #[derive(Debug, Default)]
-struct EncoderSharedStateV1 {
+pub(crate) struct EncoderSharedStateV1 {
+    chunk_count: u64,
     chunks: Vec<CollectedChunkV1>,
     decoder_config: Option<CollectedDecoderConfigV1>,
     failure: Option<EncoderFailureV1>,
@@ -140,7 +147,21 @@ struct EncoderSharedStateV1 {
     waiters: Vec<js_sys::Function>,
 }
 
-type SharedEncoderStateV1 = Rc<RefCell<EncoderSharedStateV1>>;
+pub(crate) type SharedEncoderStateV1 = Rc<RefCell<EncoderSharedStateV1>>;
+
+/// Drains every chunk collected so far, in encoder output order, leaving
+/// first-chunk evidence and byte/count accounting untouched.
+pub(crate) fn take_collected_chunks_v1(shared: &SharedEncoderStateV1) -> Vec<CollectedChunkV1> {
+    std::mem::take(&mut shared.borrow_mut().chunks)
+}
+
+/// Clones the first-chunk `decoderConfig` evidence, when the encoder has
+/// reported one.
+pub(crate) fn collected_decoder_config_v1(
+    shared: &SharedEncoderStateV1,
+) -> Option<CollectedDecoderConfigV1> {
+    shared.borrow().decoder_config.clone()
+}
 
 fn retain_first_encoder_failure(shared: &SharedEncoderStateV1, failure: EncoderFailureV1) {
     {
@@ -152,7 +173,7 @@ fn retain_first_encoder_failure(shared: &SharedEncoderStateV1, failure: EncoderF
     wake_dequeue_waiters(shared);
 }
 
-fn read_encoder_failure(shared: &SharedEncoderStateV1) -> Option<EncoderFailureV1> {
+pub(crate) fn read_encoder_failure(shared: &SharedEncoderStateV1) -> Option<EncoderFailureV1> {
     shared.borrow().failure.clone()
 }
 
@@ -231,7 +252,7 @@ fn encoder_failure_from_js(error: &JsValue) -> EncoderFailureV1 {
     )
 }
 
-fn video_encoder_constructor_available() -> bool {
+pub(crate) fn video_encoder_constructor_available() -> bool {
     js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("VideoEncoder"))
         .ok()
         .is_some_and(|value| value.is_function())
@@ -240,7 +261,7 @@ fn video_encoder_constructor_available() -> bool {
 /// Builds one complete `VideoEncoderConfig` as a plain object so the
 /// codec-registration `avc: { format: "avc" }` member (absent from generated
 /// web-sys dictionaries) is always present.
-fn build_encoder_config(
+pub(crate) fn build_encoder_config(
     codec: &str,
     width_px: u32,
     height_px: u32,
@@ -267,7 +288,7 @@ fn build_encoder_config(
 /// Constructs one `VideoFrame` from a tight RGBA buffer through stable
 /// web-sys, always tagging the export colour contract explicitly:
 /// primaries bt709 / transfer iec61966-2-1 / matrix bt709 / limited range.
-fn rgba_video_frame(
+pub(crate) fn rgba_video_frame(
     rgba: &mut [u8],
     width_px: u32,
     height_px: u32,
@@ -420,7 +441,7 @@ fn record_encoder_output(shared: &SharedEncoderStateV1, chunk: &JsValue, metadat
     };
     {
         let state = shared.borrow();
-        if state.chunks.len() >= MAX_ENCODED_CHUNKS_V1
+        if state.chunk_count >= MAX_ENCODED_CHUNKS_V1 as u64
             || state
                 .total_chunk_bytes
                 .checked_add(byte_length)
@@ -460,25 +481,26 @@ fn record_encoder_output(shared: &SharedEncoderStateV1, chunk: &JsValue, metadat
         key_frame,
         timestamp_microseconds,
     };
-    let decoder_config = if shared.borrow().chunks.is_empty() {
+    let decoder_config = if shared.borrow().chunk_count == 0 {
         collect_decoder_config_evidence(metadata)
     } else {
         None
     };
     let mut state = shared.borrow_mut();
     state.total_chunk_bytes += byte_length;
-    if state.chunks.is_empty() {
+    if state.chunk_count == 0 {
         state.decoder_config = decoder_config;
     }
+    state.chunk_count += 1;
     state.chunks.push(collected);
 }
 
 /// One constructed-and-configured encoder plus the retained JS callbacks.
 /// Dropping the harness closes the encoder first so the browser can never
 /// invoke an already-freed Rust closure.
-struct EncoderHarnessV1 {
+pub(crate) struct EncoderHarnessV1 {
     encoder: VideoEncoder,
-    shared: SharedEncoderStateV1,
+    pub(crate) shared: SharedEncoderStateV1,
     _dequeue_callback: Closure<dyn FnMut(JsValue)>,
     _error_callback: Closure<dyn FnMut(JsValue)>,
     _output_callback: Closure<dyn FnMut(JsValue, JsValue)>,
@@ -500,7 +522,7 @@ impl Drop for EncoderHarnessV1 {
 }
 
 impl EncoderHarnessV1 {
-    fn create(config: &js_sys::Object) -> Result<Self, EncoderFailureV1> {
+    pub(crate) fn create(config: &js_sys::Object) -> Result<Self, EncoderFailureV1> {
         let shared: SharedEncoderStateV1 = Rc::new(RefCell::new(EncoderSharedStateV1::default()));
 
         let output_shared = Rc::clone(&shared);
@@ -535,13 +557,13 @@ impl EncoderHarnessV1 {
         Ok(harness)
     }
 
-    fn close_quietly(&self) {
+    pub(crate) fn close_quietly(&self) {
         let _ = self.encoder.close();
     }
 
     /// Encodes one frame and closes the `VideoFrame` immediately, before the
     /// encode outcome is even inspected.
-    fn encode_and_close_frame(
+    pub(crate) fn encode_and_close_frame(
         &self,
         frame: &web_sys::VideoFrame,
         key_frame: bool,
@@ -577,7 +599,7 @@ impl EncoderHarnessV1 {
     }
 
     /// Waits until one frame can be submitted without exceeding the queue cap.
-    async fn await_enqueue_capacity(&self) -> Result<(), EncoderFailureV1> {
+    pub(crate) async fn await_enqueue_capacity(&self) -> Result<(), EncoderFailureV1> {
         while !encoder_queue_has_capacity_v1(self.encoder.encode_queue_size()) {
             if let Some(failure) = read_encoder_failure(&self.shared) {
                 return Err(failure);
@@ -590,7 +612,10 @@ impl EncoderHarnessV1 {
         Ok(())
     }
 
-    async fn flush_bounded(&self, timeout_milliseconds: f64) -> Result<(), EncoderFailureV1> {
+    pub(crate) async fn flush_bounded(
+        &self,
+        timeout_milliseconds: f64,
+    ) -> Result<(), EncoderFailureV1> {
         let flush = self
             .encoder
             .flush()
@@ -609,7 +634,7 @@ impl EncoderHarnessV1 {
 
     /// The asynchronous error callback carries the authoritative named reason;
     /// a rejected flush merely echoes it.
-    fn prefer_shared_failure(&self, fallback: EncoderFailureV1) -> EncoderFailureV1 {
+    pub(crate) fn prefer_shared_failure(&self, fallback: EncoderFailureV1) -> EncoderFailureV1 {
         read_encoder_failure(&self.shared).unwrap_or(fallback)
     }
 }
@@ -713,7 +738,7 @@ fn solid_probe_frame_rgba(byte_length: usize, red: u8, green: u8, blue: u8) -> V
 /// real two-frame encode. Session admission calls this with the requested
 /// dimensions, frame rate, bitrate, and codec rather than relying on the
 /// smaller ladder-discovery probe.
-async fn prove_encoder_config(
+pub(crate) async fn prove_encoder_config(
     config: &ExportEncoderSessionConfigV1,
     encoder_config: &js_sys::Object,
 ) -> Result<(), EncoderFailureV1> {

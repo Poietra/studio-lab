@@ -67,7 +67,7 @@ fn wasm_linear_memory_bytes() -> Result<u64, String> {
     Ok(byte_length as u64)
 }
 
-fn copy_asset_byte_arrays(values: &js_sys::Array) -> Result<Vec<Vec<u8>>, String> {
+pub(crate) fn copy_asset_byte_arrays(values: &js_sys::Array) -> Result<Vec<Vec<u8>>, String> {
     let count = usize::try_from(values.length())
         .map_err(|_| "PNG transfer count is not representable".to_owned())?;
     if count > MAX_ASSETS_V1 {

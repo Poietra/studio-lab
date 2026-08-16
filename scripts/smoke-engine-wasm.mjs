@@ -12,6 +12,14 @@ await engine.default({ module_or_path: wasmBytes });
 assert.equal(engine.poietraEngineAbiVersion(), 27);
 assert.equal(engine.poietraCanvasAbiVersion(), 5);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
+assert.equal(engine.poietraExportEncoderAbiVersion(), 1);
+assert.equal(engine.poietraExportSessionAbiVersion(), 1);
+// WebCodecs/WebGPU-only surfaces exist as symbols but are never invoked here.
+assert.equal(typeof engine.probeExportEncoderH264V1, "function");
+assert.equal(typeof engine.PoietraExportSessionV1, "function");
+assert.equal(typeof engine.PoietraExportSessionV1.create, "function");
+assert.equal(typeof engine.PoietraExportSessionV1.prototype.run, "function");
+assert.equal(typeof engine.PoietraExportSessionV1.prototype.outputBytes, "function");
 assert.equal(typeof engine.validateSceneIrBundleV1, "function");
 assert.equal(typeof engine.applyStaticRootTransformEditV1, "function");
 assert.equal(typeof engine.applyStudioBoundEntityEditV1, "function");

@@ -25,8 +25,9 @@
 //! [`SceneIrV1::state_sample_time`](poietra_scene_ir::SceneIrV1::state_sample_time)
 //! inside the caller's sampler (#721 decision). Every failure is a typed error
 //! and no partial frame is ever yielded. Export bounds come from the canonical
-//! [`ExportProfileV1`](poietra_scene_ir::ExportProfileV1) contract; everything
-//! here remains crate-private except one hidden browser-proof hook.
+//! [`ExportProfileV1`](poietra_scene_ir::ExportProfileV1) contract. The
+//! stepwise session and its typed errors are the public export integration
+//! surface (#722); the GPU internals stay crate-private.
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -85,7 +86,7 @@ const EXPORT_BLOCKING_DEADLINE_V1: Duration = Duration::from_mins(1);
 
 /// One offscreen export frame could not be produced truthfully.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ExportFrameErrorV1 {
+pub enum ExportFrameErrorV1 {
     #[error(transparent)]
     Prepare(#[from] PrepareFrameErrorV1),
     #[error("export requires a renderer created for {expected:?}, received {actual:?}")]
@@ -111,7 +112,7 @@ pub(crate) enum ExportFrameErrorV1 {
 
 /// Export sequence parameters cannot describe a bounded frame grid.
 #[derive(Clone, Debug, PartialEq, thiserror::Error)]
-pub(crate) enum ExportFrameSequenceParamsErrorV1 {
+pub enum ExportFrameSequenceParamsErrorV1 {
     #[error("export fps {fps} must be between 1 and {}", MAX_EXPORT_FPS_V1)]
     FpsOutOfRange { fps: u32 },
     #[error("validated scene duration {duration} is not a positive finite time")]
@@ -136,7 +137,7 @@ pub(crate) enum ExportFrameSequenceParamsErrorV1 {
 
 /// The export frame sequence failed closed before yielding a further frame.
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum ExportFrameSequenceErrorV1<SampleError>
+pub enum ExportFrameSequenceErrorV1<SampleError>
 where
     SampleError: std::error::Error + 'static,
 {
@@ -178,6 +179,7 @@ where
 
 /// The native blocking driver could not complete an export future.
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(not(test), allow(dead_code, reason = "test-only native driver"))]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ExportBlockingDriveErrorV1 {
     #[error("export blocking drive did not complete before its deadline")]
@@ -193,7 +195,7 @@ pub(crate) enum ExportBlockingDriveErrorV1 {
 /// Minimal crate-private parameters consumed after the canonical
 /// `ExportProfileV1` contract has selected the export settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ExportFrameSequenceParamsV1 {
+pub struct ExportFrameSequenceParamsV1 {
     /// Frames per second for the uniform requested-time grid `i / fps`.
     pub fps: u32,
     pub height_px: u32,
@@ -202,7 +204,7 @@ pub(crate) struct ExportFrameSequenceParamsV1 {
 
 /// Per-frame request handed to the packet sampler.
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ExportFrameRequestV1 {
+pub struct ExportFrameRequestV1 {
     pub frame_index: u64,
     pub requested_time: f64,
     pub viewport: ViewportV1,
@@ -212,7 +214,7 @@ pub(crate) struct ExportFrameRequestV1 {
 /// reused for the next frame after the borrow ends, so a session keeps
 /// exactly one frame in flight.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ExportSequenceFrameV1<'a> {
+pub struct ExportSequenceFrameV1<'a> {
     pub frame_index: u64,
     pub requested_time: f64,
     pub rgba: &'a [u8],
@@ -612,7 +614,7 @@ pub(crate) async fn render_export_frame_rgba_v1(
 /// session.
 /// After any error the session is fused: the error is yielded once and every
 /// later call returns `None`.
-pub(crate) struct ExportFrameSequenceSessionV1<'assets, SampleError, SamplePacket> {
+pub struct ExportFrameSequenceSessionV1<'assets, SampleError, SamplePacket> {
     assets: &'assets dyn DecodedPngAssetResolverV1,
     device: wgpu::Device,
     failed: bool,
@@ -659,7 +661,7 @@ where
     ///
     /// Fails closed on parameters outside the canonical caps or when the
     /// unified-format renderer cannot be created.
-    pub(crate) fn new(
+    pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         scene: &SceneIrV1,
@@ -689,14 +691,14 @@ where
     }
 
     #[must_use]
-    pub(crate) const fn frame_count(&self) -> u64 {
+    pub const fn frame_count(&self) -> u64 {
         self.timeline.frame_count()
     }
 
     /// Index of the next frame [`Self::next_frame`] would render; equals the
     /// number of frames already yielded.
     #[must_use]
-    pub(crate) const fn next_frame_index(&self) -> u64 {
+    pub const fn next_frame_index(&self) -> u64 {
         self.next_frame_index
     }
 
@@ -706,7 +708,7 @@ where
     /// The sampled packet's correlation `sample_time` (bit-exact) and viewport
     /// are re-verified before any GPU work for the frame. On `Some(Err(_))`
     /// the session is fused and no partial frame was yielded.
-    pub(crate) async fn next_frame(
+    pub async fn next_frame(
         &mut self,
     ) -> Option<Result<ExportSequenceFrameV1<'_>, ExportFrameSequenceErrorV1<SampleError>>> {
         if self.failed {
@@ -784,6 +786,7 @@ where
 /// Wake evidence for the native blocking driver: map callbacks fired during
 /// `device.poll` set the flag through the future's waker.
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(not(test), allow(dead_code, reason = "test-only native driver"))]
 #[derive(Debug, Default)]
 struct ExportDriveWakeFlagV1(std::sync::atomic::AtomicBool);
 
@@ -810,6 +813,7 @@ impl std::task::Wake for ExportDriveWakeFlagV1 {
 /// fails, or when the device queue is empty and nothing woke the still
 /// pending future, meaning no remaining work can ever complete it.
 #[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(not(test), allow(dead_code, reason = "test-only native driver"))]
 pub(crate) fn drive_export_blocking_v1<F: Future>(
     device: &wgpu::Device,
     future: F,

@@ -21,11 +21,9 @@ pub(crate) const MANIM_CAIRO_SAMPLE_COUNT_V1: u32 = 4;
 mod arena;
 mod asset;
 mod cache;
-// Crate-private offscreen export path (#718). The public `ExportProfileV1`
-// contract and its adapter wiring land with #721; until then only the hidden
-// browser-proof hook below leaves the module, so non-test builds may not
-// reach every item.
-#[cfg_attr(not(test), allow(dead_code))]
+// Offscreen export path (#718). The stepwise frame sequence session below is
+// the public export integration surface (#722); the native blocking driver
+// stays test-only inside the module.
 mod export;
 mod gpu;
 mod image_gpu;
@@ -62,8 +60,15 @@ pub use upload::{
     GpuUploadPlanErrorV1, GpuUploadPlanV1, MAX_GPU_UPLOAD_PLAN_BYTES_V1, build_gpu_upload_plan_v1,
 };
 
-// Test-only hook so the browser readback e2e can execute the crate-private
-// async export path (#718); superseded by the #721 public contract.
+pub use export::{
+    ExportFrameErrorV1, ExportFrameRequestV1, ExportFrameSequenceErrorV1,
+    ExportFrameSequenceParamsErrorV1, ExportFrameSequenceParamsV1, ExportFrameSequenceSessionV1,
+    ExportSequenceFrameV1,
+};
+
+// Test-only hook so the browser readback e2e can execute the async export
+// readback path (#718) without an encoder; production integration composes
+// [`ExportFrameSequenceSessionV1`] directly (#722).
 #[doc(hidden)]
 pub use export::prove_export_frame_sequence_readback_v1;
 

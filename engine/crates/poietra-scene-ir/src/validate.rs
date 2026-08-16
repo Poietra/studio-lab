@@ -37,6 +37,10 @@ pub const MAX_EXPORT_DURATION_SECONDS_V1: u32 = 900;
 /// `sandbox/manim-render-gated-oci/render-entrypoint.py`, the byte limit the
 /// existing MP4 acceptance profile enforces.
 pub const MAX_EXPORT_OUTPUT_BYTES_V1: u64 = 134_217_728;
+/// Relative tolerance under which a packet camera aspect and viewport pixel
+/// aspect count as matching. Shared with consumers (such as export camera
+/// fitting) so their notion of "already matching" is exactly the validator's.
+pub const RENDER_ASPECT_RELATIVE_TOLERANCE_V1: f64 = 0.000_001;
 const JAVASCRIPT_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 const MAX_PATH_MORPH_KEYFRAMES_V1: usize = 900;
 
@@ -1494,7 +1498,7 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
         let camera_aspect = camera_width / camera_height;
         let viewport_aspect =
             f64::from(packet.viewport.width_px) / f64::from(packet.viewport.height_px);
-        if (camera_aspect / viewport_aspect - 1.0).abs() > 0.000_001 {
+        if (camera_aspect / viewport_aspect - 1.0).abs() > RENDER_ASPECT_RELATIVE_TOLERANCE_V1 {
             validator.issue("$.camera", "camera and viewport aspect ratios must match");
         }
     }

@@ -8,11 +8,12 @@ use poietra_geometry::{
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetManifestV1, ContractVersionV1, CubicPathV1,
     EngineFrameV1, FillStyleV1, KeyframeV1, MotionPathParameterizationV1,
-    PathTrimParameterizationV1, RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1,
-    RenderDrawV1, RenderEmptyReasonV1, RenderPacketSchemaV1, RenderPacketV1, RgbaColorV1,
-    SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
-    SceneIrV1, StrokeStyleV1, VectorAppearanceValueV1, ViewportV1, affine_transform_is_singular_v1,
-    validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
+    PathTrimParameterizationV1, RENDER_ASPECT_RELATIVE_TOLERANCE_V1, RenderCameraKindV1,
+    RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketSchemaV1,
+    RenderPacketV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1,
+    SceneGeometryV1, SceneIrBundleV1, SceneIrV1, StrokeStyleV1, VectorAppearanceValueV1,
+    ViewportV1, affine_transform_is_singular_v1, validate_render_packet_for_validated_scene_v1,
+    validate_scene_ir_with_assets_v1,
 };
 
 use crate::retained_index::{
@@ -139,7 +140,39 @@ impl EngineSessionV1 {
         &self,
         options: SampleEngineSessionOptionsV1<'_>,
     ) -> Result<RenderPacketV1, EvaluationError> {
-        compile_render_packet_from_validated_v1(
+        self.sample_with_camera_fit(options, CameraViewportFitV1::Exact)
+    }
+
+    /// Samples one `RenderPacket` for a closed export-ladder viewport.
+    ///
+    /// Interactive presentation snaps the viewport onto the camera's exact
+    /// aspect, so [`Self::sample_render_packet`] never fits anything. The
+    /// export ladder is the opposite authority: its pixel grids are fixed, and
+    /// the 854×480 rung's aspect deviates from a 16:9 camera by less than one
+    /// pixel column (854 is the even-width rounding of 480 × 16/9). This
+    /// entry resolves that deviation exactly as the historically accepted
+    /// 854×480 Manim server profile did: the sampled camera window is widened
+    /// symmetrically about its center along the deficient axis until world
+    /// aspect equals pixel aspect. Content is never cropped, and a viewport
+    /// already inside the packet validator's aspect tolerance samples
+    /// bit-identically to the interactive path.
+    ///
+    /// # Errors
+    ///
+    /// Returns an evaluation error for invalid request evidence or undefined geometry.
+    pub fn sample_export_render_packet(
+        &self,
+        options: SampleEngineSessionOptionsV1<'_>,
+    ) -> Result<RenderPacketV1, EvaluationError> {
+        self.sample_with_camera_fit(options, CameraViewportFitV1::WidenToViewportAspect)
+    }
+
+    fn sample_with_camera_fit(
+        &self,
+        options: SampleEngineSessionOptionsV1<'_>,
+        camera_fit: CameraViewportFitV1,
+    ) -> Result<RenderPacketV1, EvaluationError> {
+        compile_render_packet_with_camera_fit_v1(
             CompileEngineFrameOptionsV1 {
                 assets: &self.assets,
                 evidence: options.evidence,
@@ -149,7 +182,56 @@ impl EngineSessionV1 {
                 viewport: options.viewport,
             },
             &self.index,
+            camera_fit,
         )
+    }
+}
+
+/// How a sampled camera view relates to the requested viewport grid.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CameraViewportFitV1 {
+    /// The camera is authoritative; the caller chose an aspect-exact viewport.
+    Exact,
+    /// The viewport grid is authoritative (closed export ladder); the camera
+    /// window widens sub-pixel about its center to the viewport aspect.
+    WidenToViewportAspect,
+}
+
+/// Widens the deficient camera axis about the fixed center so the world
+/// window's aspect equals the viewport's pixel aspect. A view already within
+/// the packet validator's shared aspect tolerance is returned unchanged, so
+/// aspect-exact viewports keep bit-identical sampling.
+fn fit_camera_view_to_viewport_v1(
+    view: SceneCameraViewV1,
+    viewport: &ViewportV1,
+) -> SceneCameraViewV1 {
+    // NaN frame extents fall through here; the non-finite aspect guard below
+    // returns the view unchanged for the packet validator to reject.
+    if viewport.width_px == 0
+        || viewport.height_px == 0
+        || view.frame_width <= 0.0
+        || view.frame_height <= 0.0
+    {
+        return view;
+    }
+    let viewport_aspect = f64::from(viewport.width_px) / f64::from(viewport.height_px);
+    let camera_aspect = view.frame_width / view.frame_height;
+    if !camera_aspect.is_finite()
+        || !viewport_aspect.is_finite()
+        || (camera_aspect / viewport_aspect - 1.0).abs() <= RENDER_ASPECT_RELATIVE_TOLERANCE_V1
+    {
+        return view;
+    }
+    if camera_aspect < viewport_aspect {
+        SceneCameraViewV1 {
+            frame_width: view.frame_height * viewport_aspect,
+            ..view
+        }
+    } else {
+        SceneCameraViewV1 {
+            frame_height: view.frame_width / viewport_aspect,
+            ..view
+        }
     }
 }
 
@@ -579,6 +661,15 @@ fn compile_render_packet_from_validated_v1(
     options: CompileEngineFrameOptionsV1<'_>,
     index: &RetainedSceneIndexV1,
 ) -> Result<RenderPacketV1, EvaluationError> {
+    compile_render_packet_with_camera_fit_v1(options, index, CameraViewportFitV1::Exact)
+}
+
+#[allow(clippy::too_many_lines)] // One contiguous sample-and-assemble pipeline.
+fn compile_render_packet_with_camera_fit_v1(
+    options: CompileEngineFrameOptionsV1<'_>,
+    index: &RetainedSceneIndexV1,
+    camera_fit: CameraViewportFitV1,
+) -> Result<RenderPacketV1, EvaluationError> {
     if !options.sample_time.is_finite()
         || options.sample_time < 0.0
         || options.sample_time > options.scene.duration
@@ -703,6 +794,12 @@ fn compile_render_packet_from_validated_v1(
         .collect::<Result<Vec<_>, _>>()?;
 
     let camera = sample_camera(options.scene, index, state_sample_time)?;
+    let camera = match camera_fit {
+        CameraViewportFitV1::Exact => camera,
+        CameraViewportFitV1::WidenToViewportAspect => {
+            fit_camera_view_to_viewport_v1(camera, &options.viewport)
+        }
+    };
     let packet = RenderPacketV1 {
         asset_manifest: options.scene.asset_manifest.clone(),
         camera: RenderCameraV1 {
@@ -922,6 +1019,85 @@ mod tests {
         };
         assert!((*opacity - 0.5).abs() < 1.0e-12);
         assert_eq!(path.subpaths[0].segments.len(), 4);
+    }
+
+    #[test]
+    fn export_sampling_widens_the_camera_window_to_the_sd_ladder_rung() {
+        let (assets, scene) = fixture();
+        let session = EngineSessionV1::new(SceneIrBundleV1 { assets, scene })
+            .expect("the evaluator fixture must validate");
+        let sd_viewport = ViewportV1 {
+            height_px: 480,
+            width_px: 854,
+        };
+
+        // Interactive sampling keeps the camera authoritative and refuses the
+        // sub-pixel aspect mismatch of the SD export rung.
+        let interactive = session.sample_render_packet(SampleEngineSessionOptionsV1 {
+            evidence: &[],
+            packet_id: "packet:interactive-sd",
+            sample_time: 0.5,
+            viewport: sd_viewport.clone(),
+        });
+        assert!(matches!(
+            interactive,
+            Err(EvaluationError::InvalidOutput(message)) if message.contains("aspect")
+        ));
+
+        // Export sampling widens the window about its center: height is kept,
+        // width grows below one pixel column, and the world aspect equals the
+        // pixel aspect exactly.
+        let packet = session
+            .sample_export_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "packet:export-sd",
+                sample_time: 0.5,
+                viewport: sd_viewport,
+            })
+            .expect("the SD rung must sample through the export camera fit");
+        let width = packet.camera.right - packet.camera.left;
+        let height = packet.camera.top - packet.camera.bottom;
+        assert_eq!(height.to_bits(), 9.0_f64.to_bits());
+        assert!((width / height - 854.0 / 480.0).abs() < 1.0e-12);
+        assert!(
+            width > 16.0 && width < 16.03,
+            "width {width} must widen sub-pixel"
+        );
+        assert_eq!(
+            packet.camera.left.to_bits(),
+            (-packet.camera.right).to_bits()
+        );
+    }
+
+    #[test]
+    fn export_sampling_is_bit_identical_on_aspect_exact_rungs() {
+        let (assets, scene) = fixture();
+        let session = EngineSessionV1::new(SceneIrBundleV1 { assets, scene })
+            .expect("the evaluator fixture must validate");
+        let sample = |packet_id: &str, export: bool| {
+            let options = SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id,
+                sample_time: 0.5,
+                viewport: ViewportV1 {
+                    height_px: 1080,
+                    width_px: 1920,
+                },
+            };
+            if export {
+                session.sample_export_render_packet(options)
+            } else {
+                session.sample_render_packet(options)
+            }
+            .expect("aspect-exact rungs must sample on both paths")
+        };
+        let interactive = sample("packet:parity", false);
+        let export = sample("packet:parity", true);
+        assert_eq!(
+            serde_json::to_string(&interactive).expect("packets serialize"),
+            serde_json::to_string(&export).expect("packets serialize"),
+            "an aspect-exact viewport must sample bit-identically on both paths"
+        );
     }
 
     #[test]

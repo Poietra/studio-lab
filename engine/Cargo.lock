@@ -1100,6 +1100,7 @@ dependencies = [
  "js-sys",
  "png",
  "poietra-eval",
+ "poietra-export-mux",
  "poietra-render-wgpu",
  "poietra-scene-ir",
  "serde",

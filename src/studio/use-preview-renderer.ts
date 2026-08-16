@@ -131,6 +131,17 @@ export type StudioPreviewRendererView = Readonly<{
   runtimeTraceEditCandidates: readonly StudioPreviewRuntimeTraceEditCandidate[];
   /** Runtime roots with no static Studio entity; selectors only, never authoring evidence. */
   runtimeTraceOpaqueSelectionEntities: readonly ProjectedEntity[];
+  /**
+   * The exact validated bundle and PNG payloads behind the presented frame;
+   * non-null only while presentation correlates with this revision, so an
+   * export consumer can never read a stale or unverified Scene. Optional so
+   * existing complete-view fixtures stay valid.
+   */
+  installedScene?: Readonly<{
+    assetPayloads: StudioVerifiedPreviewSnapshotV1["assetPayloads"];
+    bundle: StudioVerifiedPreviewSnapshotV1["snapshot"];
+    revision: string;
+  }> | null;
   sourceLabel: string | null;
   /** Typed provider outcome; never inferred from diagnostic text. */
   sourceMetadataFailureKind: StudioPreviewSnapshotFailureKindV1 | null;
@@ -1729,6 +1740,17 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     epoch,
     interactionGeometry,
     interactionAuthority,
+    // The presented policy already requires the frame revision to equal the
+    // compiled Scene's engine revision hash, so this snapshot is exactly what
+    // the presented pixels came from.
+    installedScene:
+      state.phase === "presented" && currentCompiledScene
+        ? {
+            assetPayloads: currentCompiledScene.snapshot.assetPayloads,
+            bundle: currentCompiledScene.bundle,
+            revision: currentCompiledScene.engineRevisionHash,
+          }
+        : null,
     runtimeTraceEditCandidates,
     runtimeTraceOpaqueSelectionEntities,
     sourceLabel: snapshot?.sourceLabel ?? null,

@@ -19,6 +19,7 @@ wasm-bindgen.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "=0.3.103"
+poietra-export-mux = { path = "../poietra-export-mux" }
 wasm-bindgen-futures = "=0.4.76"
 # Only stable web-sys features may appear here. The WebCodecs encoder types
 # (VideoEncoder, EncodedVideoChunk, VideoEncoderConfig) stay hand-bound in

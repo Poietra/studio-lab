@@ -109,6 +109,7 @@ import {
 } from "./studio/shape-resize";
 import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimelineWithProjection } from "./studio/source-timeline";
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
+import { StudioExportControl } from "./studio/studio-export-control";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import type { StudioTool } from "./studio/studio-toolbar";
@@ -3471,6 +3472,13 @@ export function App({
                 onRetry={retryPreviewRenderer}
                 providerPending={previewProviderPending}
                 renderer={previewRenderer}
+              />
+            ) : null}
+            {activeScene && !previewAwaitingConsent ? (
+              <StudioExportControl
+                disabled={sessionTransitionPending}
+                exportSource={previewRenderer?.installedScene ?? null}
+                fileBaseName={activeScene.name}
               />
             ) : null}
             <button
