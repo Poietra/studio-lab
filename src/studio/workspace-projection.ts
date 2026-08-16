@@ -15,7 +15,6 @@ import { insertSceneTime, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import {
   type EntityContent,
-  type ProgramBatchAuthority,
   type ProgramRecord,
   type ProjectedEntity,
   type PropertyChannel,
@@ -23,6 +22,7 @@ import {
   type ProposedState,
   type RuntimeEntity,
   STUDIO_STATE_VERSION,
+  type StudioEditProjectionAuthority,
   type WorkingState,
 } from "./model";
 import {
@@ -75,10 +75,10 @@ function isStaticRootWorkspaceProjectionProgramBatch(programs: readonly SceneEdi
   );
 }
 
-export function selectStudioWorkspaceProgramAuthority(
+export function selectStudioWorkspaceEditAuthority(
   records: readonly ProgramRecord[],
   previewRecords: readonly ProgramRecord[],
-  authority: ProgramBatchAuthority | null,
+  authority: StudioEditProjectionAuthority | null,
 ) {
   if (records.length === 0) return null;
   if (isSceneDurationProgramBatch(records.map(({ program }) => program))) return null;
@@ -893,7 +893,7 @@ function projectBoundEntityWorkingState(
   workingState: WorkingState,
   projection: StudioBoundEntityProjectionV1,
 ): ProposedState {
-  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const records = [...workingState.appliedEdits, ...workingState.stagedEdits];
   const programs = records.map(({ program }) => program);
   const correlated = selectBoundEntityProjection(programs, projection);
   const program = programs[0];
@@ -1002,7 +1002,7 @@ function projectCreationWorkingState(
   workingState: WorkingState,
   projection: StudioCreationProjectionV1,
 ): ProposedState {
-  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const records = [...workingState.appliedEdits, ...workingState.stagedEdits];
   const programs = records.map(({ program }) => program);
   const correlated = correlateCreationProjection(workingState.runtimeSceneState.duration, programs, projection);
   if (!correlated) throw new TypeError("Only a Studio creation Program batch can use this projection.");
@@ -1012,7 +1012,7 @@ function projectCreationWorkingState(
     throw new TypeError("The Rust creation projection returned a stale projected Scene duration.");
   }
 
-  const appliedTransactionIds = new Set(workingState.appliedPrograms.map(({ program }) => program.transactionId));
+  const appliedTransactionIds = new Set(workingState.appliedEdits.map(({ program }) => program.transactionId));
   for (const { entity, operation, program } of correlated.entities) {
     if (draft.entities[entity.entityId]) {
       throw new TypeError(`Created entity ${entity.entityId} already exists in the Studio workspace.`);
@@ -1080,7 +1080,7 @@ function projectStaticRootWorkingState(
   motionProjection: StudioMotionProjectionV1 | null = null,
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null = null,
 ): ProposedState {
-  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const records = [...workingState.appliedEdits, ...workingState.stagedEdits];
   const programs = records.map(({ program }) => program);
   const correlated = correlateStaticRootProjection(programs, projection);
   if (!correlated) throw new TypeError("Only an exact static-root Program batch can use this projection.");
@@ -1123,7 +1123,7 @@ function projectPersistentRemoveWorkingState(
   workingState: WorkingState,
   projection: StudioPersistentRemoveProjectionV1,
 ): ProposedState {
-  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const records = [...workingState.appliedEdits, ...workingState.stagedEdits];
   const programs = records.map(({ program }) => program);
   if (!isPersistentRemoveProgramBatch(programs)) {
     throw new TypeError("Persistent remove projection requires one closed remove-only Program batch.");
@@ -1137,7 +1137,7 @@ function projectMathTexTransformWorkingState(
   workingState: WorkingState,
   projection: StudioMathTexTransformProjectionV1,
 ): ProposedState {
-  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const records = [...workingState.appliedEdits, ...workingState.stagedEdits];
   const programs = records.map(({ program }) => program);
   const correlated = correlateMathTexTransformProjection(workingState.runtimeSceneState.duration, programs, projection);
   if (!correlated) throw new TypeError("Only an exact TransformContent Program batch can use this projection.");
@@ -1162,7 +1162,7 @@ function projectMathTexTransformWorkingState(
     throw new TypeError("The Rust MathTex transform projection returned a stale terminal lifetime.");
   }
 
-  const appliedTransactionIds = new Set(workingState.appliedPrograms.map(({ program }) => program.transactionId));
+  const appliedTransactionIds = new Set(workingState.appliedEdits.map(({ program }) => program.transactionId));
   for (const { operation, program, replacement } of correlated.replacements) {
     const source = draft.entities[replacement.sourceEntityId];
     const sourceLifetime = source?.lifetime.find(
@@ -1243,7 +1243,7 @@ function projectMathTexTransformWorkingState(
 }
 
 function projectMotionWorkingState(workingState: WorkingState, projection: StudioMotionProjectionV1): ProposedState {
-  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const records = [...workingState.appliedEdits, ...workingState.stagedEdits];
   const programs = records.map(({ program }) => program);
   if (studioMotionProjectionBatchKind(programs) !== "standalone") {
     throw new TypeError("Only a standalone CreateMotion batch can use the Rust motion projection directly.");
@@ -1260,7 +1260,7 @@ function projectMotionWorkingState(workingState: WorkingState, projection: Studi
 }
 
 function projectBaseWorkingState(workingState: WorkingState): ProposedState {
-  if (workingState.appliedPrograms.length > 0 || workingState.stagedPrograms.length > 0) {
+  if (workingState.appliedEdits.length > 0 || workingState.stagedEdits.length > 0) {
     throw new TypeError("A base workspace projection cannot contain Edit Programs.");
   }
   return projectedWorkingState(workingState, [], cloneProjectionDraft(workingState.runtimeSceneState));
@@ -1269,28 +1269,28 @@ function projectBaseWorkingState(workingState: WorkingState): ProposedState {
 export function projectStudioWorkspace(
   input: Readonly<{
     activeScene: ManimWorkspaceScene;
-    appliedPrograms: readonly ProgramRecord[];
+    appliedEdits: readonly ProgramRecord[];
     boundEntityProjection?: StudioBoundEntityProjectionV1 | null;
     creationProjection?: StudioCreationProjectionV1 | null;
     currentTime: number;
-    draftProgram: ProgramRecord | null;
+    draftEdit: ProgramRecord | null;
     nextScene: ManimWorkspaceScene | null;
     mathTexTransformProjection?: StudioMathTexTransformProjectionV1 | null;
     motionProjection?: StudioMotionProjectionV1 | null;
     persistentRemoveProjection?: StudioPersistentRemoveProjectionV1 | null;
-    programAuthority?: ProgramBatchAuthority | null;
+    editAuthority?: StudioEditProjectionAuthority | null;
     selectedObjectIds: readonly string[];
     staticRootProjection?: StudioStaticRootProjectionV1 | null;
     timelineProjection?: StudioTimelineProjectionV1 | null;
   }>,
 ) {
   const workingState = importedWorkingState(input.activeScene, {
-    appliedPrograms: input.appliedPrograms,
+    appliedEdits: input.appliedEdits,
     playhead: input.currentTime,
     selection: input.selectedObjectIds,
-    stagedPrograms: input.draftProgram ? [input.draftProgram] : [],
+    stagedEdits: input.draftEdit ? [input.draftEdit] : [],
   });
-  const programs = [...workingState.appliedPrograms, ...workingState.stagedPrograms].map((record) => record.program);
+  const programs = [...workingState.appliedEdits, ...workingState.stagedEdits].map((record) => record.program);
   const hasCreation = programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"));
   const hasMotion = programs.some((program) => program.operations.some(({ kind }) => kind === "CreateMotion"));
   const hasMathTexTransform = programs.some((program) =>
@@ -1319,13 +1319,13 @@ export function projectStudioWorkspace(
       workingState,
       correlateTimelineProgramBatch(programs, input.timelineProjection),
     );
-  } else if (input.programAuthority === "source-bound-endpoint") {
+  } else if (input.editAuthority === "source-bound-endpoint") {
     if (!input.boundEntityProjection) {
       throw new TypeError("A Rust bound-entity projection is required for a source-bound endpoint Program.");
     }
     proposedState = projectBoundEntityWorkingState(workingState, input.boundEntityProjection);
   } else if (hasCreation) {
-    if (input.programAuthority !== "rust-authorized-batch") {
+    if (input.editAuthority !== "rust-authorized-batch") {
       throw new TypeError("CreateEntity requires one Rust-authorized creation batch.");
     }
     if (!input.creationProjection) {
@@ -1333,7 +1333,7 @@ export function projectStudioWorkspace(
     }
     proposedState = projectCreationWorkingState(workingState, input.creationProjection);
   } else if (
-    input.programAuthority === "rust-authorized-batch" &&
+    input.editAuthority === "rust-authorized-batch" &&
     programs.some((program) => program.operations.some(({ kind }) => kind === "TransformContent"))
   ) {
     if (!isExactStudioMathTexTransformProgramBatch(programs)) {
@@ -1343,10 +1343,7 @@ export function projectStudioWorkspace(
       throw new TypeError("A Rust MathTex transform projection is required to project TransformContent Programs.");
     }
     proposedState = projectMathTexTransformWorkingState(workingState, input.mathTexTransformProjection);
-  } else if (
-    input.programAuthority === "static-imported-root" &&
-    isStaticRootWorkspaceProjectionProgramBatch(programs)
-  ) {
+  } else if (input.editAuthority === "static-imported-root" && isStaticRootWorkspaceProjectionProgramBatch(programs)) {
     if (!input.staticRootProjection) {
       throw new TypeError("A Rust static-root projection is required to project static imported-root Programs.");
     }
@@ -1360,12 +1357,12 @@ export function projectStudioWorkspace(
       persistentRemoveProjection,
     );
   } else if (
-    input.programAuthority === "rust-authorized-batch" &&
+    input.editAuthority === "rust-authorized-batch" &&
     persistentRemoveProjection &&
     isPersistentRemoveProgramBatch(programs)
   ) {
     proposedState = projectPersistentRemoveWorkingState(workingState, persistentRemoveProjection);
-  } else if (input.programAuthority === "rust-authorized-batch" && motionBatchKind === "standalone") {
+  } else if (input.editAuthority === "rust-authorized-batch" && motionBatchKind === "standalone") {
     if (!input.motionProjection) {
       throw new TypeError("A Rust motion projection is required to project standalone CreateMotion Programs.");
     }

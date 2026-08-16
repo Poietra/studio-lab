@@ -69,8 +69,8 @@ function lifecycle(overrides: Partial<EditorSourceLifecycle> = {}): EditorSource
 function revisionInput() {
   return {
     activeProjectId: "project-a",
-    appliedPrograms: [] as readonly EditorProgramRecord[],
-    draftProgram: null,
+    appliedEdits: [] as readonly EditorProgramRecord[],
+    draftEdit: null,
     editingAppliedProgram: null,
     invalidated: false,
     loadedSessionIdentity: sessionIdentity(),
@@ -90,11 +90,11 @@ describe("canonicalEditorWorkingRevision", () => {
     const revisions = [
       canonicalEditorWorkingRevision({
         ...revisionInput(),
-        appliedPrograms: [value],
+        appliedEdits: [value],
       }),
       canonicalEditorWorkingRevision({
         ...revisionInput(),
-        draftProgram: value,
+        draftEdit: value,
       }),
       canonicalEditorWorkingRevision({
         ...revisionInput(),
@@ -113,11 +113,11 @@ describe("canonicalEditorWorkingRevision", () => {
   it("identifies canonical content rather than only a retained transaction ID", () => {
     const original = record("same-transaction");
     const edited = record("same-transaction", ["changed-content"]);
-    const originalRevision = canonicalEditorWorkingRevision({ ...revisionInput(), draftProgram: original });
-    const editedRevision = canonicalEditorWorkingRevision({ ...revisionInput(), draftProgram: edited });
+    const originalRevision = canonicalEditorWorkingRevision({ ...revisionInput(), draftEdit: original });
+    const editedRevision = canonicalEditorWorkingRevision({ ...revisionInput(), draftEdit: edited });
 
     expect(editedRevision).not.toBe(originalRevision);
-    expect(canonicalEditorWorkingRevision({ ...revisionInput(), draftProgram: record("same-transaction") })).toBe(
+    expect(canonicalEditorWorkingRevision({ ...revisionInput(), draftEdit: record("same-transaction") })).toBe(
       originalRevision,
     );
   });
@@ -230,7 +230,7 @@ describe("resolveEditorRevision", () => {
         loadedSessionIdentity: sessionIdentity("project-a", rehashedScene),
         scene: rehashedScene,
       }),
-      resolveEditorRevision({ ...revisionInput(), appliedPrograms: [record("tx-1")] }),
+      resolveEditorRevision({ ...revisionInput(), appliedEdits: [record("tx-1")] }),
     ];
 
     expect(new Set(variants.map((variant) => variant.asyncRevisionKey))).toHaveLength(variants.length);
@@ -311,7 +311,7 @@ describe("editor source and duration policy", () => {
     });
     const retained = adopted.adoption;
     if (retained === null) throw new Error("Expected the pristine basis to be adopted.");
-    const edited = resolveEditorRevision({ ...revisionInput(), appliedPrograms: [record("tx-1")] });
+    const edited = resolveEditorRevision({ ...revisionInput(), appliedEdits: [record("tx-1")] });
     expect(
       resolveEditorRevisionDurationPolicy({
         candidate: null,

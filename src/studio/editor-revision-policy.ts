@@ -25,8 +25,8 @@ export type EditorRevisionScene = Readonly<{
 }>;
 
 export type EditorWorkingRevisionInput = Readonly<{
-  appliedPrograms: readonly EditorProgramRecord[];
-  draftProgram: ProgramRecord | null;
+  appliedEdits: readonly EditorProgramRecord[];
+  draftEdit: ProgramRecord | null;
   editingAppliedProgram: AppliedProgramEdit | null;
   redoPrograms: readonly RedoProgramEntry[];
 }>;
@@ -75,15 +75,15 @@ function redoRevision(entry: RedoProgramEntry) {
  */
 export function canonicalEditorWorkingRevision(input: EditorWorkingRevisionInput) {
   if (
-    input.appliedPrograms.length === 0 &&
-    input.draftProgram === null &&
+    input.appliedEdits.length === 0 &&
+    input.draftEdit === null &&
     input.editingAppliedProgram === null &&
     input.redoPrograms.length === 0
   )
     return PRISTINE_WORKING_REVISION;
   return `studio-working-v1:${canonicalJson({
-    applied: input.appliedPrograms.map((record) => record.program),
-    draft: input.draftProgram?.program ?? null,
+    applied: input.appliedEdits.map((record) => record.program),
+    draft: input.draftEdit?.program ?? null,
     editing: input.editingAppliedProgram
       ? {
           index: input.editingAppliedProgram.index,

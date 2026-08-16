@@ -21,7 +21,7 @@ function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRende
     motionProjection: null,
     persistentRemoveProjection: null,
     staticRootProjection: null,
-    programAuthority: null,
+    editAuthority: null,
     runtimeTraceEditAnchor: null,
     runtimeTraceEditCandidates: [],
     runtimeTraceOpaqueSelectionEntities: [],

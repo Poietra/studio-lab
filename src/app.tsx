@@ -163,7 +163,7 @@ import {
   selectMotionProjection,
   selectPersistentRemoveProjection,
   selectStaticRootProjection,
-  selectStudioWorkspaceProgramAuthority,
+  selectStudioWorkspaceEditAuthority,
 } from "./studio/workspace-projection";
 
 type Shell = "Browser" | "Electron" | "Tauri";
@@ -357,12 +357,12 @@ export function App({
     undoProgram,
   } = editorController;
   const {
-    appliedPrograms,
+    appliedPrograms: appliedEdits,
     currentTime,
     durationError,
     draftError,
     draftOperation,
-    draftProgram,
+    draftProgram: draftEdit,
     editingAppliedProgram,
     insertTool,
     insertValue,
@@ -429,14 +429,14 @@ export function App({
   const sourceTimingResolutionDialog = useRef<HTMLDialogElement | null>(null);
   const sourceTimingResolutionTarget = useRef<string | null>(null);
   const workspaceBounds = useRef<HTMLElement | null>(null);
-  const appliedCanonicalPrograms = appliedPrograms.map((record) => record.program);
+  const appliedSceneEdits = appliedEdits.map((record) => record.program);
   const appliedProgramTransactionIds = useMemo(
-    () => appliedPrograms.map((record) => record.program.transactionId),
-    [appliedPrograms],
+    () => appliedEdits.map((record) => record.program.transactionId),
+    [appliedEdits],
   );
   useEffect(() => {
-    if (draftProgram === null) setLifetimeEditMessage(null);
-  }, [draftProgram]);
+    if (draftEdit === null) setLifetimeEditMessage(null);
+  }, [draftEdit]);
 
   function activeEditorSessionIdentity(): EditorSessionIdentity | null {
     return activeProjectId && activeScene
@@ -553,23 +553,19 @@ export function App({
       if (!activeScene || projectionIdentityKey === null) {
         throw new TypeError("The authoritative Editor projection has no selected Scene.");
       }
-      const authoritativePrograms = await materializeAuthoritativeEditorProgramsV1(
-        activeScene,
-        appliedPrograms,
-        programs,
-      );
+      const authoritativeEdits = await materializeAuthoritativeEditorProgramsV1(activeScene, appliedEdits, programs);
       if (editorDocumentIdentityKeyRef.current !== projectionIdentityKey) return;
       installAcceptedState(
         installAuthoritativeEditorPrograms(
           editorState,
-          authoritativePrograms,
+          authoritativeEdits,
           reason === "remote"
             ? "This Scene changed in another editor. Local draft and Undo/Redo history were reset."
             : null,
         ),
       );
     },
-    [activeScene, appliedPrograms, editorDocumentIdentityKey, editorState, installAcceptedState],
+    [activeScene, appliedEdits, editorDocumentIdentityKey, editorState, installAcceptedState],
   );
   const bootstrapEditorDocumentSession = useCallback(
     async (outcome: EditorDocumentAuthorityOpenOutcomeV1) => {
@@ -586,7 +582,7 @@ export function App({
       const initialEntities = Object.values(activeScene.runtimeSceneState.objectGraph.entities).filter((entity) =>
         entity.lifetime.some((lifetime) => initialTime >= lifetime.start && initialTime < lifetime.end),
       );
-      const authoritativePrograms = await materializeAuthoritativeEditorProgramsV1(activeScene, [], outcome.programs);
+      const authoritativeEdits = await materializeAuthoritativeEditorProgramsV1(activeScene, [], outcome.programs);
       if (editorDocumentIdentityKeyRef.current !== bootstrapIdentityKey) {
         throw new DOMException("The selected Editor document changed while opening.", "AbortError");
       }
@@ -595,10 +591,10 @@ export function App({
           currentTime: clamp(initialTime, 0, activeScene.runtimeSceneState.duration),
           selectedObjectIds: initialEntities.slice(0, 1).map((entity) => entity.id),
         }),
-        authoritativePrograms,
+        authoritativeEdits,
       );
       if (outcome.session !== null) {
-        const installed = installCloudEditorSessionSnapshotV1(cleanState, authoritativePrograms, outcome.session);
+        const installed = installCloudEditorSessionSnapshotV1(cleanState, authoritativeEdits, outcome.session);
         if (installed.kind !== "installed") {
           throw new TypeError(`The private Editor session could not be installed (${installed.kind}).`);
         }
@@ -615,9 +611,9 @@ export function App({
       }
 
       const localCandidate =
-        outcome.sessionGeneration === "0" ? readLocalSessionForCloudMigration(identity, authoritativePrograms) : null;
+        outcome.sessionGeneration === "0" ? readLocalSessionForCloudMigration(identity, authoritativeEdits) : null;
       if (localCandidate !== null) {
-        const installed = installCloudEditorSessionSnapshotV1(cleanState, authoritativePrograms, localCandidate);
+        const installed = installCloudEditorSessionSnapshotV1(cleanState, authoritativeEdits, localCandidate);
         if (installed.kind !== "installed") {
           throw new TypeError(`The local Editor session could not be migrated (${installed.kind}).`);
         }
@@ -738,8 +734,8 @@ export function App({
     () =>
       resolveEditorRevision({
         activeProjectId,
-        appliedPrograms,
-        draftProgram,
+        appliedEdits,
+        draftEdit,
         editingAppliedProgram,
         invalidated: sourceLifecycle.invalidated,
         loadedSessionIdentity: activeSessionIdentity,
@@ -752,8 +748,8 @@ export function App({
       activeProjectId,
       activeScene,
       activeSessionIdentity,
-      appliedPrograms,
-      draftProgram,
+      appliedEdits,
+      draftEdit,
       editingAppliedProgram,
       redoPrograms,
       sourceLifecycle.invalidated,
@@ -770,26 +766,23 @@ export function App({
     [activeScene, editorRevision.retainedSourceDuration],
   );
   const previewReplacement =
-    editingAppliedProgram && draftProgram
+    editingAppliedProgram && draftEdit
       ? replaceAppliedProgram(
-          appliedPrograms,
+          appliedEdits,
           editingAppliedProgram.original.program.transactionId,
-          draftEditorProgramRecord(draftProgram, draftOperation, selectedObjectIds),
+          draftEditorProgramRecord(draftEdit, draftOperation, selectedObjectIds),
         )
       : null;
-  const previewAppliedPrograms =
-    previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedPrograms;
-  const draftPrecedingPrograms = editingAppliedProgram
-    ? appliedPrograms.slice(0, editingAppliedProgram.index)
-    : appliedPrograms;
-  const draftPrecedingCanonicalPrograms = draftPrecedingPrograms.map((record) => record.program);
+  const previewAppliedEdits = previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedEdits;
+  const draftPrecedingEdits = editingAppliedProgram ? appliedEdits.slice(0, editingAppliedProgram.index) : appliedEdits;
+  const draftPrecedingSceneEdits = draftPrecedingEdits.map((record) => record.program);
   const previewWorkingState =
     editorDocumentPresentationReady && projectedActiveScene
       ? importedWorkingState(projectedActiveScene, {
-          appliedPrograms: previewAppliedPrograms,
+          appliedEdits: previewAppliedEdits,
           playhead: currentTime,
           selection: selectedObjectIds,
-          stagedPrograms: editingAppliedProgram || !draftProgram ? [] : [draftProgram],
+          stagedEdits: editingAppliedProgram || !draftEdit ? [] : [draftEdit],
         })
       : null;
   const {
@@ -849,7 +842,7 @@ export function App({
   function mathTexTransformProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
     if (!isExactStudioMathTexTransformProgramBatch(programs)) return null;
-    const authority = workspaceProgramAuthorityForRecords(records);
+    const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "rust-authorized-batch") return null;
     if (!projectedActiveScene || !previewRenderer?.mathTexTransformProjection) return undefined;
@@ -866,7 +859,7 @@ export function App({
   function creationProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
     if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
-    const authority = workspaceProgramAuthorityForRecords(records);
+    const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "rust-authorized-batch") return null;
     if (!projectedActiveScene || !previewRenderer?.creationProjection) return undefined;
@@ -884,7 +877,7 @@ export function App({
     const programs = records.map((record) => record.program);
     if (programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
     if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateMotion"))) return null;
-    const authority = workspaceProgramAuthorityForRecords(records);
+    const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "rust-authorized-batch" && authority !== "static-imported-root") return null;
     if (!projectedActiveScene || !previewRenderer?.motionProjection) return undefined;
@@ -923,19 +916,12 @@ export function App({
     }
     return projectRuntimeSceneToSourceTimelineWithProjection(scene, programs, timelineProjection);
   }
-  const previewProgramRecords = [
-    ...previewAppliedPrograms,
-    ...(editingAppliedProgram || !draftProgram ? [] : [draftProgram]),
-  ];
-  function workspaceProgramAuthorityForRecords(records: readonly ProgramRecord[]) {
-    return selectStudioWorkspaceProgramAuthority(
-      records,
-      previewProgramRecords,
-      previewRenderer?.programAuthority ?? null,
-    );
+  const previewEditRecords = [...previewAppliedEdits, ...(editingAppliedProgram || !draftEdit ? [] : [draftEdit])];
+  function workspaceEditAuthorityForRecords(records: readonly ProgramRecord[]) {
+    return selectStudioWorkspaceEditAuthority(records, previewEditRecords, previewRenderer?.editAuthority ?? null);
   }
   function boundEntityProjectionForRecords(records: readonly ProgramRecord[]) {
-    const authority = workspaceProgramAuthorityForRecords(records);
+    const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "source-bound-endpoint") return null;
     if (!previewRenderer?.boundEntityProjection) return undefined;
@@ -950,7 +936,7 @@ export function App({
   }
   function staticRootProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
-    const authority = workspaceProgramAuthorityForRecords(records);
+    const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "static-imported-root") return null;
     if (!previewRenderer?.staticRootProjection) return undefined;
@@ -960,14 +946,14 @@ export function App({
       return undefined;
     }
   }
-  const workspaceTimelineProjection = timelineProjectionForRecords(previewProgramRecords);
-  const workspaceBoundEntityProjection = boundEntityProjectionForRecords(previewProgramRecords);
-  const workspaceCreationProjection = creationProjectionForRecords(previewProgramRecords);
-  const workspaceMathTexTransformProjection = mathTexTransformProjectionForRecords(previewProgramRecords);
-  const workspaceMotionProjection = motionProjectionForRecords(previewProgramRecords);
-  const workspacePersistentRemoveProjection = persistentRemoveProjectionForRecords(previewProgramRecords);
-  const workspaceProgramAuthority = workspaceProgramAuthorityForRecords(previewProgramRecords);
-  const workspaceStaticRootProjection = staticRootProjectionForRecords(previewProgramRecords);
+  const workspaceTimelineProjection = timelineProjectionForRecords(previewEditRecords);
+  const workspaceBoundEntityProjection = boundEntityProjectionForRecords(previewEditRecords);
+  const workspaceCreationProjection = creationProjectionForRecords(previewEditRecords);
+  const workspaceMathTexTransformProjection = mathTexTransformProjectionForRecords(previewEditRecords);
+  const workspaceMotionProjection = motionProjectionForRecords(previewEditRecords);
+  const workspacePersistentRemoveProjection = persistentRemoveProjectionForRecords(previewEditRecords);
+  const workspaceEditAuthority = workspaceEditAuthorityForRecords(previewEditRecords);
+  const workspaceStaticRootProjection = staticRootProjectionForRecords(previewEditRecords);
   const workspaceProjection =
     editorDocumentPresentationReady &&
     projectedActiveScene &&
@@ -977,33 +963,33 @@ export function App({
     workspaceMathTexTransformProjection !== undefined &&
     workspaceMotionProjection !== undefined &&
     workspacePersistentRemoveProjection !== undefined &&
-    workspaceProgramAuthority !== undefined &&
+    workspaceEditAuthority !== undefined &&
     workspaceStaticRootProjection !== undefined
       ? projectStudioWorkspace({
           activeScene: projectedActiveScene,
-          appliedPrograms: previewAppliedPrograms,
+          appliedEdits: previewAppliedEdits,
           boundEntityProjection: workspaceBoundEntityProjection,
           creationProjection: workspaceCreationProjection,
           currentTime,
-          draftProgram: editingAppliedProgram ? null : draftProgram,
+          draftEdit: editingAppliedProgram ? null : draftEdit,
           mathTexTransformProjection: workspaceMathTexTransformProjection,
           motionProjection: workspaceMotionProjection,
           nextScene,
           persistentRemoveProjection: workspacePersistentRemoveProjection,
-          programAuthority: workspaceProgramAuthority,
+          editAuthority: workspaceEditAuthority,
           selectedObjectIds,
           staticRootProjection: workspaceStaticRootProjection,
           timelineProjection: workspaceTimelineProjection,
         })
       : null;
-  const previewAppliedCanonicalPrograms = previewAppliedPrograms.map((record) => record.program);
-  const appliedTimelineProjection = timelineProjectionForPrograms(previewAppliedCanonicalPrograms);
+  const previewAppliedSceneEdits = previewAppliedEdits.map((record) => record.program);
+  const appliedTimelineProjection = timelineProjectionForPrograms(previewAppliedSceneEdits);
   const sourceCurrentTime =
     appliedTimelineProjection === undefined
       ? currentTime
       : appliedTimelineProjection
         ? workingTimeToSourceTimeFromProjection(appliedTimelineProjection.transforms, currentTime)
-        : workingTimeToSourceTimeWithoutTimeline(previewAppliedCanonicalPrograms, currentTime);
+        : workingTimeToSourceTimeWithoutTimeline(previewAppliedSceneEdits, currentTime);
   const timelineAnchors =
     activeScene?.anchors.map((sourceTime) => ({
       sourceTime,
@@ -1012,7 +998,7 @@ export function App({
           ? sourceTime
           : appliedTimelineProjection
             ? sourceTimeToWorkingTimeFromProjection(appliedTimelineProjection.transforms, sourceTime)
-            : sourceTimeToWorkingTimeWithoutTimeline(previewAppliedCanonicalPrograms, sourceTime),
+            : sourceTimeToWorkingTimeWithoutTimeline(previewAppliedSceneEdits, sourceTime),
     })) ?? [];
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
   const runtimeTraceEditCandidates = previewRenderer?.runtimeTraceEditCandidates ?? [];
@@ -1129,7 +1115,7 @@ export function App({
 
   function redoProgram() {
     const entry = redoPrograms.at(-1);
-    if (draftProgram || !entry) return false;
+    if (draftEdit || !entry) return false;
     if (!previewPaintAvailable) {
       setDraftError("Wait for the canonical WebGPU preview before editing the Scene.");
       return false;
@@ -1150,7 +1136,7 @@ export function App({
   }
 
   function undoProgramCommitFirst() {
-    if (!editorDocumentAuthority.enabled || draftProgram) return undoProgram();
+    if (!editorDocumentAuthority.enabled || draftEdit) return undoProgram();
     const mutation = programUndoEntries.at(-1);
     if (!mutation) return false;
     const lifecycleBlocker = readDurationBlocker();
@@ -1223,7 +1209,7 @@ export function App({
       })
     )
       return;
-    if (editorDocumentAuthority.enabled && appliedPrograms.length > 0) {
+    if (editorDocumentAuthority.enabled && appliedEdits.length > 0) {
       setDraftError(
         "Shared Editor history cannot be discarded by a local timing reset. Reimport the Scene source instead.",
       );
@@ -1232,37 +1218,37 @@ export function App({
     resetPrograms();
   }
 
-  const draftBaseTimelineProjection = timelineProjectionForRecords(draftPrecedingPrograms);
-  const draftBaseBoundEntityProjection = boundEntityProjectionForRecords(draftPrecedingPrograms);
-  const draftBaseCreationProjection = creationProjectionForRecords(draftPrecedingPrograms);
-  const draftBaseMathTexTransformProjection = mathTexTransformProjectionForRecords(draftPrecedingPrograms);
-  const draftBaseMotionProjection = motionProjectionForRecords(draftPrecedingPrograms);
-  const draftBasePersistentRemoveProjection = persistentRemoveProjectionForRecords(draftPrecedingPrograms);
-  const draftBaseProgramAuthority = workspaceProgramAuthorityForRecords(draftPrecedingPrograms);
-  const draftBaseStaticRootProjection = staticRootProjectionForRecords(draftPrecedingPrograms);
+  const draftBaseTimelineProjection = timelineProjectionForRecords(draftPrecedingEdits);
+  const draftBaseBoundEntityProjection = boundEntityProjectionForRecords(draftPrecedingEdits);
+  const draftBaseCreationProjection = creationProjectionForRecords(draftPrecedingEdits);
+  const draftBaseMathTexTransformProjection = mathTexTransformProjectionForRecords(draftPrecedingEdits);
+  const draftBaseMotionProjection = motionProjectionForRecords(draftPrecedingEdits);
+  const draftBasePersistentRemoveProjection = persistentRemoveProjectionForRecords(draftPrecedingEdits);
+  const draftBaseEditAuthority = workspaceEditAuthorityForRecords(draftPrecedingEdits);
+  const draftBaseStaticRootProjection = staticRootProjectionForRecords(draftPrecedingEdits);
   const draftBaseProjection =
-    editorDocumentPresentationReady && projectedActiveScene && draftProgram
+    editorDocumentPresentationReady && projectedActiveScene && draftEdit
       ? draftBaseTimelineProjection === undefined ||
         draftBaseBoundEntityProjection === undefined ||
         draftBaseCreationProjection === undefined ||
         draftBaseMathTexTransformProjection === undefined ||
         draftBaseMotionProjection === undefined ||
         draftBasePersistentRemoveProjection === undefined ||
-        draftBaseProgramAuthority === undefined ||
+        draftBaseEditAuthority === undefined ||
         draftBaseStaticRootProjection === undefined
         ? null
         : projectStudioWorkspace({
             activeScene: projectedActiveScene,
-            appliedPrograms: draftPrecedingPrograms,
+            appliedEdits: draftPrecedingEdits,
             boundEntityProjection: draftBaseBoundEntityProjection,
             creationProjection: draftBaseCreationProjection,
             currentTime,
-            draftProgram: null,
+            draftEdit: null,
             mathTexTransformProjection: draftBaseMathTexTransformProjection,
             motionProjection: draftBaseMotionProjection,
             nextScene,
             persistentRemoveProjection: draftBasePersistentRemoveProjection,
-            programAuthority: draftBaseProgramAuthority,
+            editAuthority: draftBaseEditAuthority,
             selectedObjectIds,
             staticRootProjection: draftBaseStaticRootProjection,
             timelineProjection: draftBaseTimelineProjection,
@@ -1270,7 +1256,7 @@ export function App({
       : workspaceProjection;
   const draftBaseState = draftBaseProjection?.proposedState ?? null;
   const draftSourceScene = draftBaseState
-    ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, draftPrecedingCanonicalPrograms)
+    ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, draftPrecedingSceneEdits)
     : null;
   const projection = workspaceProjection?.projection ?? null;
   const lifetimeControls =
@@ -1278,7 +1264,7 @@ export function App({
       ? buildLifetimeEditControls({
           anchors: projectedActiveScene.anchors,
           baseScene: projectedActiveScene.runtimeSceneState,
-          programs: previewAppliedPrograms,
+          programs: previewAppliedEdits,
           sourceDuration: projectedActiveScene.runtimeSceneState.duration,
           tracks: projection.timeline.objectTracks,
         })
@@ -1353,9 +1339,8 @@ export function App({
     ? projectMotionPaths(workspaceProjection.proposedState.evaluatedScene, selectedSet, currentTime)
     : [];
   const editableMotionIds = new Set(
-    draftProgram?.program.operations.flatMap((operation) =>
-      operation.kind === "CreateMotion" ? [operation.id] : [],
-    ) ?? [],
+    draftEdit?.program.operations.flatMap((operation) => (operation.kind === "CreateMotion" ? [operation.id] : [])) ??
+      [],
   );
   const evaluatedProgramsByTransaction = new Map(
     workspaceProjection?.proposedState.programs.map(
@@ -1363,10 +1348,10 @@ export function App({
     ) ?? [],
   );
   const appliedMotionClips: readonly AppliedMotionClip[] = projectedActiveScene
-    ? previewAppliedPrograms.flatMap((record, programIndex) => {
+    ? previewAppliedEdits.flatMap((record, programIndex) => {
         const evaluatedProgram = evaluatedProgramsByTransaction.get(record.program.transactionId);
         if (!evaluatedProgram) return [];
-        const precedingPrograms = previewAppliedPrograms.slice(0, programIndex).map((candidate) => candidate.program);
+        const precedingPrograms = previewAppliedEdits.slice(0, programIndex).map((candidate) => candidate.program);
         const metadata = record.editorMetadata;
         return evaluatedProgram.operations.flatMap((operation) => {
           if (operation.kind !== "CreateMotion") return [];
@@ -1380,7 +1365,7 @@ export function App({
             sourceOperation.id,
           );
           const busyReason =
-            draftProgram && editingAppliedProgram?.original.program.transactionId !== record.program.transactionId
+            draftEdit && editingAppliedProgram?.original.program.transactionId !== record.program.transactionId
               ? "Apply or discard the current draft before editing this motion clip."
               : null;
           const anchors = projectedActiveScene.anchors
@@ -1467,7 +1452,7 @@ export function App({
     origin: OperationOrigin,
     proposedState: ProposedState | null = draftBaseState,
     capturedPlayhead = sourceCurrentTime,
-    sourcePrograms: readonly ProgramRecord["program"][] = draftPrecedingCanonicalPrograms,
+    sourcePrograms: readonly ProgramRecord["program"][] = draftPrecedingSceneEdits,
     validationSelection: readonly string[] = selectedObjectIds,
   ) {
     if (!activeScene || !proposedState) throw new Error("Choose an imported Scene first.");
@@ -1501,10 +1486,10 @@ export function App({
   ) {
     try {
       const origin = options.origin ?? "remote-model";
-      const basePrograms = options.sourcePrograms ?? draftPrecedingCanonicalPrograms;
+      const basePrograms = options.sourcePrograms ?? draftPrecedingSceneEdits;
       const precedingPrograms =
         options.preserveDraft &&
-        !appliedPrograms.some((record) => record.program.transactionId === options.preserveDraft?.program.transactionId)
+        !appliedEdits.some((record) => record.program.transactionId === options.preserveDraft?.program.transactionId)
           ? [...basePrograms, options.preserveDraft.program]
           : basePrograms;
       const validated = createValidatedDraft(
@@ -1534,15 +1519,15 @@ export function App({
   }
 
   function updateDraftOperation(operation: EditSuggestionOperation) {
-    if (!draftProgram) return;
-    const installed = installDraft(operation, draftProgram.program.transactionId, {
-      capturedPlayhead: draftProgram.program.anchor.capturedPlayhead,
-      origin: draftProgram.program.provenance.origin,
+    if (!draftEdit) return;
+    const installed = installDraft(operation, draftEdit.program.transactionId, {
+      capturedPlayhead: draftEdit.program.anchor.capturedPlayhead,
+      origin: draftEdit.program.provenance.origin,
       preservePlayhead: true,
     });
     if (installed) {
       setSuggestion((current) => (current ? { ...current, operation } : current));
-      if (draftProgram.program.provenance.origin !== "direct-manipulation") {
+      if (draftEdit.program.provenance.origin !== "direct-manipulation") {
         setSuggestionMessage(installed.applyBlocker);
         setSuggestionStatus(installed.apply === "supported" ? "ready" : "error");
       }
@@ -1727,7 +1712,7 @@ export function App({
     const transactionId = editorRecord.program.transactionId;
     const activeEdit =
       editingAppliedProgram?.original.program.transactionId === transactionId ? editingAppliedProgram : null;
-    if (draftProgram && !activeEdit) {
+    if (draftEdit && !activeEdit) {
       setDraftError("Apply or discard the current draft before editing an Applied Program.");
       return false;
     }
@@ -1736,7 +1721,7 @@ export function App({
       setDraftError("This Program is read-only because editable Studio authoring metadata is unavailable.");
       return false;
     }
-    const precedingRecords = appliedPrograms.slice(0, index);
+    const precedingRecords = appliedEdits.slice(0, index);
     const precedingPrograms = precedingRecords.map((candidate) => candidate.program);
     const precedingTimelineProjection = timelineProjectionForRecords(precedingRecords);
     const precedingBoundEntityProjection = boundEntityProjectionForRecords(precedingRecords);
@@ -1744,7 +1729,7 @@ export function App({
     const precedingMathTexTransformProjection = mathTexTransformProjectionForRecords(precedingRecords);
     const precedingMotionProjection = motionProjectionForRecords(precedingRecords);
     const precedingPersistentRemoveProjection = persistentRemoveProjectionForRecords(precedingRecords);
-    const precedingProgramAuthority = workspaceProgramAuthorityForRecords(precedingRecords);
+    const precedingEditAuthority = workspaceEditAuthorityForRecords(precedingRecords);
     const precedingStaticRootProjection = staticRootProjectionForRecords(precedingRecords);
     if (
       precedingTimelineProjection === undefined ||
@@ -1753,7 +1738,7 @@ export function App({
       precedingMathTexTransformProjection === undefined ||
       precedingMotionProjection === undefined ||
       precedingPersistentRemoveProjection === undefined ||
-      precedingProgramAuthority === undefined ||
+      precedingEditAuthority === undefined ||
       precedingStaticRootProjection === undefined
     ) {
       setDraftError("Wait for the Rust authoring projection before editing this Program.");
@@ -1762,16 +1747,16 @@ export function App({
     const workingFocus = sourceTimeToWorkingTime(precedingPrograms, focusSourceTime);
     const baseProjection = projectStudioWorkspace({
       activeScene: projectedActiveScene,
-      appliedPrograms: precedingRecords,
+      appliedEdits: precedingRecords,
       boundEntityProjection: precedingBoundEntityProjection,
       creationProjection: precedingCreationProjection,
       currentTime: workingFocus,
-      draftProgram: null,
+      draftEdit: null,
       mathTexTransformProjection: precedingMathTexTransformProjection,
       motionProjection: precedingMotionProjection,
       nextScene,
       persistentRemoveProjection: precedingPersistentRemoveProjection,
-      programAuthority: precedingProgramAuthority,
+      editAuthority: precedingEditAuthority,
       selectedObjectIds: metadata.selection,
       staticRootProjection: precedingStaticRootProjection,
       timelineProjection: precedingTimelineProjection,
@@ -1787,7 +1772,7 @@ export function App({
         metadata.selection,
       );
       const replacement = replaceAppliedProgram(
-        appliedPrograms,
+        appliedEdits,
         transactionId,
         editorProgramRecord(validated.record, validated.operation, metadata.selection),
       );
@@ -1805,7 +1790,7 @@ export function App({
   }
 
   function editAppliedProgram(record: ProgramRecord, index: number) {
-    const editorRecord = appliedPrograms[index];
+    const editorRecord = appliedEdits[index];
     if (!editorRecord || editorRecord.program.transactionId !== record.program.transactionId) {
       setDraftError("The selected Program no longer matches the applied edit history.");
       return;
@@ -1819,7 +1804,7 @@ export function App({
   }
 
   function editAppliedMotionClip(clip: AppliedMotionClip) {
-    const record = appliedPrograms[clip.programIndex];
+    const record = appliedEdits[clip.programIndex];
     if (!record || record.program.transactionId !== clip.transactionId) {
       setDraftError("The motion clip no longer matches the applied Program history.");
       return;
@@ -1836,14 +1821,14 @@ export function App({
   }
 
   function changeAppliedMotionClip(clip: AppliedMotionClip, change: AppliedMotionClipChange) {
-    const record = appliedPrograms[clip.programIndex];
+    const record = appliedEdits[clip.programIndex];
     if (!record || record.program.transactionId !== clip.transactionId) {
       setDraftError("The motion clip no longer matches the applied Program history.");
       return;
     }
     const editingThisClip = editingAppliedProgram?.original.program.transactionId === clip.transactionId;
     const operation = editingThisClip ? draftOperation : record.editorMetadata?.operation;
-    const program = editingThisClip && draftProgram ? draftProgram.program : record.program;
+    const program = editingThisClip && draftEdit ? draftEdit.program : record.program;
     if (!operation) {
       setDraftError(clip.readOnlyReason ?? "This motion clip is read-only.");
       return;
@@ -1863,7 +1848,7 @@ export function App({
   }
 
   async function applyDraft() {
-    if (!draftProgram || draftApplyPending) return;
+    if (!draftEdit || draftApplyPending) return;
     if (!previewPaintAvailable) {
       setDraftError("Wait for the canonical WebGPU preview or discard this draft.");
       return;
@@ -1944,7 +1929,7 @@ export function App({
   function installCanonicalDraft(
     record: ProgramRecord,
     selectedIds: readonly string[] = [],
-    precedingPrograms: readonly ProgramRecord["program"][] = appliedCanonicalPrograms,
+    precedingPrograms: readonly ProgramRecord["program"][] = appliedSceneEdits,
     preserveAppliedProgram: ProgramRecord | null = null,
     appliedEdit: AppliedProgramEdit | null = null,
   ) {
@@ -1970,16 +1955,16 @@ export function App({
       setDraftError("Wait for the canonical WebGPU preview before inserting an object.");
       return false;
     }
-    const previousInsertion = draftProgram && isStudioEntityInsertion(draftProgram) ? draftProgram : null;
-    if (draftProgram && !previousInsertion) {
+    const previousInsertion = draftEdit && isStudioEntityInsertion(draftEdit) ? draftEdit : null;
+    if (draftEdit && !previousInsertion) {
       setDraftError("Apply or discard the current draft before inserting another object.");
       return false;
     }
     const precedingPrograms =
       previousInsertion &&
-      !appliedPrograms.some((record) => record.program.transactionId === previousInsertion.program.transactionId)
-        ? [...appliedCanonicalPrograms, previousInsertion.program]
-        : appliedCanonicalPrograms;
+      !appliedEdits.some((record) => record.program.transactionId === previousInsertion.program.transactionId)
+        ? [...appliedSceneEdits, previousInsertion.program]
+        : appliedSceneEdits;
     const proposedState = previousInsertion ? (workspaceProjection?.proposedState ?? null) : draftBaseState;
     if (!proposedState) return false;
     const sourceScene = previousInsertion
@@ -2026,7 +2011,7 @@ export function App({
 
   function changeSceneDuration(targetDuration: number) {
     if (!activeScene || !draftBaseState) return false;
-    if (draftProgram) {
+    if (draftEdit) {
       const message = "Apply or discard the current draft before changing the Scene duration.";
       setDraftError(message);
       setDurationError(message);
@@ -2068,7 +2053,7 @@ export function App({
   ) {
     if (rejectSelectionOnlyPreviewMutation()) return false;
     if (!projectedActiveScene || !draftSourceScene) return false;
-    if (draftProgram) {
+    if (draftEdit) {
       const message = "Apply or discard the current draft before editing an object lifetime.";
       setDraftError(message);
       setLifetimeEditMessage(message);
@@ -2076,14 +2061,14 @@ export function App({
     }
 
     const sourceSceneBefore = (index: number) => {
-      const preceding = appliedPrograms.slice(0, index);
+      const preceding = appliedEdits.slice(0, index);
       const timelineProjection = timelineProjectionForRecords(preceding);
       const boundEntityProjection = boundEntityProjectionForRecords(preceding);
       const creationProjection = creationProjectionForRecords(preceding);
       const mathTexTransformProjection = mathTexTransformProjectionForRecords(preceding);
       const motionProjection = motionProjectionForRecords(preceding);
       const persistentRemoveProjection = persistentRemoveProjectionForRecords(preceding);
-      const programAuthority = workspaceProgramAuthorityForRecords(preceding);
+      const editAuthority = workspaceEditAuthorityForRecords(preceding);
       const staticRootProjection = staticRootProjectionForRecords(preceding);
       if (
         timelineProjection === undefined ||
@@ -2092,23 +2077,23 @@ export function App({
         mathTexTransformProjection === undefined ||
         motionProjection === undefined ||
         persistentRemoveProjection === undefined ||
-        programAuthority === undefined ||
+        editAuthority === undefined ||
         staticRootProjection === undefined
       ) {
         throw new Error("Wait for the Rust authoring projection before editing this object lifetime.");
       }
       const state = projectStudioWorkspace({
         activeScene: projectedActiveScene,
-        appliedPrograms: preceding,
+        appliedEdits: preceding,
         boundEntityProjection,
         creationProjection,
         currentTime,
-        draftProgram: null,
+        draftEdit: null,
         mathTexTransformProjection,
         motionProjection,
         nextScene,
         persistentRemoveProjection,
-        programAuthority,
+        editAuthority,
         selectedObjectIds,
         staticRootProjection,
         timelineProjection,
@@ -2125,9 +2110,9 @@ export function App({
     // A new lifetime edit has no Rust projection until it is staged under its
     // new working revision. The correlated preview gates Apply after staging.
     try {
-      const owner = findStudioLifetimeOwner(appliedPrograms, entityId);
+      const owner = findStudioLifetimeOwner(appliedEdits, entityId);
       if (owner) {
-        if (findCompetingStudioLifetimeOwner(appliedPrograms, entityId, owner.index)) {
+        if (findCompetingStudioLifetimeOwner(appliedEdits, entityId, owner.index)) {
           throw new Error(
             "Another applied Program controls this object's lifetime end. Edit or remove that Program first.",
           );
@@ -2137,7 +2122,7 @@ export function App({
           entityId,
           owner: owner.record,
           scene: preceding.scene,
-          sourceAnchorBounds: programSourceAnchorBounds(appliedPrograms, owner.index),
+          sourceAnchorBounds: programSourceAnchorBounds(appliedEdits, owner.index),
           sourceAnchors: projectedActiveScene.anchors,
           target,
         });
@@ -2155,7 +2140,7 @@ export function App({
         return true;
       }
 
-      const sourceLifetimeStart = workingTimeToSourceTime(appliedCanonicalPrograms, workingLifetimeStart);
+      const sourceLifetimeStart = workingTimeToSourceTime(appliedSceneEdits, workingLifetimeStart);
       const original = projectedActiveScene.runtimeSceneState.objectGraph.entities[entityId]?.lifetime.find(
         (interval) => Math.abs(interval.start - sourceLifetimeStart) < 0.001,
       );
@@ -2167,16 +2152,16 @@ export function App({
           "The imported lifetime start is read-only because moving its original Python creation is not safely lowerable.",
         );
       }
-      const existing = findImportedLifetimeEdit(appliedPrograms, entityId, original.start);
+      const existing = findImportedLifetimeEdit(appliedEdits, entityId, original.start);
       const currentWorkingInterval = projection?.timeline.objectTracks
         .find((track) => track.entityId === entityId)
         ?.lifetimes.find((interval) => Math.abs(interval.start - workingLifetimeStart) < 0.001);
       if (!currentWorkingInterval) {
         throw new Error("Studio cannot map the current interval back to one imported source lifetime.");
       }
-      const currentSourceEnd = workingTimeToSourceTime(appliedCanonicalPrograms, currentWorkingInterval.end);
+      const currentSourceEnd = workingTimeToSourceTime(appliedSceneEdits, currentWorkingInterval.end);
       if (
-        findCompetingImportedLifetimeOwner(appliedPrograms, entityId) ||
+        findCompetingImportedLifetimeOwner(appliedEdits, entityId) ||
         (!existing && currentSourceEnd < original.end - 0.001)
       ) {
         throw new Error(
@@ -2192,13 +2177,13 @@ export function App({
         throw new Error("The selected lifetime end is not backed by a safe .py source anchor.");
       }
       const preceding = existing ? sourceSceneBefore(existing.index) : null;
-      const editIndex = existing?.index ?? appliedPrograms.length;
+      const editIndex = existing?.index ?? appliedEdits.length;
       const validation = createImportedEntityLifetimeProgram({
         entityId,
         original,
         scene: preceding?.scene ?? draftSourceScene,
         sourceAnchor,
-        sourceAnchorBounds: programSourceAnchorBounds(appliedPrograms, editIndex),
+        sourceAnchorBounds: programSourceAnchorBounds(appliedEdits, editIndex),
         targetEnd: target.end,
         transactionId: existing?.record.program.transactionId ?? `studio-lifetime-${crypto.randomUUID()}`,
       });
@@ -2208,7 +2193,7 @@ export function App({
         !installCanonicalDraft(
           validated.record,
           [entityId],
-          preceding?.canonical ?? appliedCanonicalPrograms,
+          preceding?.canonical ?? appliedSceneEdits,
           null,
           existing ? { index: existing.index, original: existing.record } : null,
         )
@@ -2228,9 +2213,9 @@ export function App({
   function deleteSelection() {
     if (rejectSelectionOnlyPreviewMutation()) return false;
     if (!draftBaseState || !draftSourceScene || selectedObjectIds.length === 0) return false;
-    if (draftProgram) {
+    if (draftEdit) {
       const ownsSelectedDraftEntity = selectedObjectIds.some((entityId) =>
-        entityId.startsWith(`tx:${draftProgram.program.transactionId}/entity:`),
+        entityId.startsWith(`tx:${draftEdit.program.transactionId}/entity:`),
       );
       if (ownsSelectedDraftEntity) {
         discardDraft();
@@ -2244,7 +2229,7 @@ export function App({
       action: "deletion",
       requireAlignedPlayhead: true,
       scene: draftSourceScene,
-      sourcePrograms: appliedCanonicalPrograms,
+      sourcePrograms: appliedSceneEdits,
       targetEntityIds: selectedObjectIds,
     });
     if (!anchor) return false;
@@ -2302,15 +2287,13 @@ export function App({
 
   function directGestureContext() {
     const previousDraft =
-      !editingAppliedProgram && draftProgram?.program.provenance.origin === "direct-manipulation" ? draftProgram : null;
+      !editingAppliedProgram && draftEdit?.program.provenance.origin === "direct-manipulation" ? draftEdit : null;
     // A source-bound endpoint admits one direct-manipulation draft. Replacing
     // that transient draft is UI bookkeeping; Rust owns whether the new
     // complete Program is semantically admissible.
     const replacesRuntimeTraceEdit = previousDraft !== null && runtimeTraceEditCandidates.length > 0;
     const sourcePrograms =
-      previousDraft && !replacesRuntimeTraceEdit
-        ? [...appliedCanonicalPrograms, previousDraft.program]
-        : appliedCanonicalPrograms;
+      previousDraft && !replacesRuntimeTraceEdit ? [...appliedSceneEdits, previousDraft.program] : appliedSceneEdits;
     return {
       preserveDraft: replacesRuntimeTraceEdit ? null : previousDraft,
       proposedState: previousDraft ? (workspaceProjection?.proposedState ?? null) : draftBaseState,
@@ -3041,7 +3024,7 @@ export function App({
         return false;
       }
       if (!draftBaseState) return false;
-      const sourcePrograms = draftPrecedingCanonicalPrograms;
+      const sourcePrograms = draftPrecedingSceneEdits;
       const sourceScene = projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, sourcePrograms);
       const anchor = manualAuthoringAnchor({
         action: "Inspector position edit",
@@ -3220,12 +3203,12 @@ export function App({
   }
 
   function changeDraftMotionControl(path: StudioMotionPath, delta: Point) {
-    if (!draftOperation || !draftProgram || !editableMotionIds.has(path.motionId)) return;
+    if (!draftOperation || !draftEdit || !editableMotionIds.has(path.motionId)) return;
     const adjusted = adjustAppliedMotionClipControl({
       delta,
       operation: draftOperation,
       operationId: path.motionId,
-      program: draftProgram.program,
+      program: draftEdit.program,
     });
     if (adjusted.kind === "invalid") {
       setDraftError(adjusted.message);
@@ -3240,7 +3223,7 @@ export function App({
       return false;
     }
     if (command === "undo") {
-      if (!draftProgram && appliedPrograms.length === 0) return false;
+      if (!draftEdit && appliedEdits.length === 0) return false;
       undoProgramCommitFirst();
       return true;
     }
@@ -3249,7 +3232,7 @@ export function App({
         setInsertTool("select");
         return true;
       }
-      if (draftProgram) {
+      if (draftEdit) {
         discardDraft();
         return true;
       }
@@ -3315,8 +3298,8 @@ export function App({
   commandHandler.current = handleStudioCommand;
 
   const renderPrograms = editingAppliedProgram
-    ? previewAppliedPrograms.map((record) => record.program)
-    : [...appliedPrograms.map((record) => record.program), ...(draftProgram ? [draftProgram.program] : [])];
+    ? previewAppliedEdits.map((record) => record.program)
+    : [...appliedEdits.map((record) => record.program), ...(draftEdit ? [draftEdit.program] : [])];
   const renderProgram = renderPrograms[0] ?? null;
   const renderCandidateUnavailableReason =
     "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
@@ -3362,7 +3345,7 @@ export function App({
       ? selectedRuntimeTraceEditAuthority
       : null;
   const appliedProgramReadOnlyReasons = Object.fromEntries(
-    appliedPrograms.map((record) => {
+    appliedEdits.map((record) => {
       const transactionId = record.program.transactionId;
       const metadata = record.editorMetadata;
       return [
@@ -3694,7 +3677,7 @@ export function App({
                 The canonical Rust core has not accepted the current timeline edit yet. Retry the preview, or remove the
                 edit that cannot be projected.
               </p>
-              {draftProgram ? (
+              {draftEdit ? (
                 <button
                   className="mt-4 border border-amber-700 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-900/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500"
                   onClick={discardDraft}
@@ -3702,7 +3685,7 @@ export function App({
                 >
                   Discard draft
                 </button>
-              ) : appliedPrograms.length > 0 ? (
+              ) : appliedEdits.length > 0 ? (
                 <button
                   className="mt-4 border border-amber-700 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-900/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500"
                   onClick={undoProgramCommitFirst}
@@ -3740,11 +3723,11 @@ export function App({
             <WorkspaceSidebar
               activeScene={activeScene}
               appliedProgramReadOnlyReasons={appliedProgramReadOnlyReasons}
-              appliedPrograms={appliedPrograms}
+              appliedEdits={appliedEdits}
               appliedTransactionIds={appliedTransactionIds}
               authoringAvailable={previewMutationAvailable}
               className="order-2 min-h-64 md:order-1 md:col-start-1 md:row-start-1 md:min-h-0"
-              draftActive={draftProgram !== null}
+              draftActive={draftEdit !== null}
               duration={activeDuration}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
               durationError={durationError}
@@ -3784,7 +3767,7 @@ export function App({
               isPlaying={isPlaying}
               lifetimeControls={lifetimeControls}
               lifetimeEditMessage={lifetimeEditMessage}
-              lifetimeTrimDisabled={draftProgram !== null}
+              lifetimeTrimDisabled={draftEdit !== null}
               motionDuration={motionDuration}
               motionPaths={motionPaths}
               onAppliedMotionClipChange={changeAppliedMotionClip}
@@ -3833,13 +3816,13 @@ export function App({
             />
 
             <StudioInspector
-              appliedProgramCount={appliedPrograms.length}
+              appliedProgramCount={appliedEdits.length}
               authoringAvailable={previewMutationAvailable}
               className="order-3 min-h-96 md:col-span-2 md:col-start-1 md:row-start-2 xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:min-h-0"
               draftError={draftError}
               draftApplyPending={draftApplyPending}
               draftOperation={draftOperation}
-              draftProgram={draftProgram}
+              draftEdit={draftEdit}
               inspectorReturnFocus={inspectorReturnFocus}
               onApplyDraft={() => void applyDraft()}
               onDiscardDraft={discardDraft}

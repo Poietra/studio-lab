@@ -431,11 +431,11 @@ describe("Studio time and transaction invariants", () => {
     };
     const movedWorkingState = createFixtureWorkingState({
       editorContext: movedEditorContext,
-      stagedPrograms: [record],
+      stagedEdits: [record],
     });
-    expect(movedWorkingState.stagedPrograms[0].program.anchor.resolvedSeconds).toBe(3);
+    expect(movedWorkingState.stagedEdits[0].program.anchor.resolvedSeconds).toBe(3);
     expect(
-      movedWorkingState.stagedPrograms[0].program.operations.some(
+      movedWorkingState.stagedEdits[0].program.operations.some(
         (candidate) => candidate.kind === "TransformContent" && candidate.sourceEntityId === "equation_1",
       ),
     ).toBe(true);

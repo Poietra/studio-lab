@@ -155,7 +155,7 @@ async function compilablePreviewInput() {
     version: 1,
   };
   const workingState: WorkingState = {
-    appliedPrograms: [],
+    appliedEdits: [],
     editorContext: {
       activeSceneId: evaluatedScene.sceneId,
       playhead: 0.5,
@@ -170,7 +170,7 @@ async function compilablePreviewInput() {
       sourceId: "scene.py",
       version: STUDIO_STATE_VERSION,
     },
-    stagedPrograms: [],
+    stagedEdits: [],
     staticSemanticState: {
       entities: [
         {
@@ -361,11 +361,11 @@ async function editedStaticRootPreviewInput(
     programRecord: record,
     workingState: {
       ...workingBase,
-      appliedPrograms: [record],
+      appliedEdits: [record],
     },
     workingRevision: canonicalEditorWorkingRevision({
-      appliedPrograms: [record],
-      draftProgram: null,
+      appliedEdits: [record],
+      draftEdit: null,
       editingAppliedProgram: null,
       redoPrograms: [],
     }),
@@ -636,7 +636,7 @@ class MathTexScene(Scene):
   });
   const workingState: WorkingState = {
     ...base.proposedState.base,
-    appliedPrograms: [],
+    appliedEdits: [],
     editorContext: {
       ...base.proposedState.base.editorContext,
       activeSceneId: runtimeSceneState.sceneId,
@@ -647,7 +647,7 @@ class MathTexScene(Scene):
       hash: `sha256:${imported.sourceHash}`,
       sourceId: "scene.py",
     },
-    stagedPrograms: [],
+    stagedEdits: [],
     staticSemanticState: imported.staticSemanticState,
   };
   const position = createDirectManipulationPositionProgram({
@@ -705,7 +705,7 @@ class MathTexScene(Scene):
   return {
     edited: {
       ...workingState,
-      appliedPrograms: [programRecord(combined.program, combined)],
+      appliedEdits: [programRecord(combined.program, combined)],
     },
     entityId,
     runtimeEntityId,
@@ -1055,7 +1055,7 @@ describe("compileStudioPreviewSceneV1", () => {
     if (validation.kind !== "valid") throw new Error("Static motion fixture did not validate.");
     const proposedState: WorkingState = {
       ...workingBase,
-      appliedPrograms: [programRecord(validation.program, validation)],
+      appliedEdits: [programRecord(validation.program, validation)],
     };
     const snapshot = {
       ...base.snapshot,
@@ -1123,7 +1123,7 @@ describe("compileStudioPreviewSceneV1", () => {
     } as const;
     const workingState: WorkingState = {
       ...workingBase,
-      appliedPrograms: [
+      appliedEdits: [
         {
           program: {
             ...validation.program,
@@ -1288,7 +1288,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: base.snapshot,
       workingState: {
         ...workingBase,
-        appliedPrograms: [programRecord(first.program, first), programRecord(second.program, second)],
+        appliedEdits: [programRecord(first.program, first), programRecord(second.program, second)],
       },
       workingRevision: "studio-working-v1:two-motions",
       workspaceKey: "project-a/scene.py/CircleScene",
@@ -1296,7 +1296,7 @@ describe("compileStudioPreviewSceneV1", () => {
 
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
-    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
+    expect(result.scene.editAuthority).toBe("rust-authorized-batch");
     expect(commands[0]?.programs.map((program) => program.transactionId)).toEqual(["first-motion", "second-motion"]);
   });
 
@@ -1329,7 +1329,7 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
     const extensionRecord = programRecord(extension.program, extension);
-    const timelineWorkingState = { ...workingBase, appliedPrograms: [extensionRecord] };
+    const timelineWorkingState = { ...workingBase, appliedEdits: [extensionRecord] };
     const commands: ApplyStudioTimelineEditWireCommandV1[] = [];
 
     const result = await compileStudioPreviewSceneV1({
@@ -1361,7 +1361,7 @@ describe("compileStudioPreviewSceneV1", () => {
 
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
-    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
+    expect(result.scene.editAuthority).toBe("rust-authorized-batch");
     expect(result.scene.timelineProjection?.projectedDuration).toBe(3);
     expect(commands[0]).toMatchObject({
       expectedBaseRevision: base.snapshot.correlation.engineRevisionHash,
@@ -1479,7 +1479,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot,
       workingState: {
         ...workingBase,
-        appliedPrograms: [programRecord(extension.program, extension)],
+        appliedEdits: [programRecord(extension.program, extension)],
       },
       workingRevision: "studio-working-v1:extend-animated-imported-scene",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
@@ -1533,7 +1533,7 @@ describe("compileStudioPreviewSceneV1", () => {
         throw new Error("mixed timeline and appearance Programs are unsupported");
       },
       snapshot: base.snapshot,
-      workingState: { ...workingBase, appliedPrograms: [extensionRecord, unsupportedRecord] },
+      workingState: { ...workingBase, appliedEdits: [extensionRecord, unsupportedRecord] },
       workingRevision: "studio-working-v1:timeline-with-appearance",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
@@ -1581,7 +1581,7 @@ describe("compileStudioPreviewSceneV1", () => {
       });
 
       if (result.kind !== "compiled") throw new Error(result.error);
-      expect(result.scene.programAuthority).toBe("static-imported-root");
+      expect(result.scene.editAuthority).toBe("static-imported-root");
       expect(result.scene.staticRootProjection?.mutations).toEqual([
         expect.objectContaining({ kind: "position", operationId: fixture.operationId }),
       ]);
@@ -1696,7 +1696,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        appliedPrograms: [fixture.programRecord, programRecord(motion.program, motion)],
+        appliedEdits: [fixture.programRecord, programRecord(motion.program, motion)],
       },
       workingRevision: "studio-working-v1:static-then-motion",
       workspaceKey: fixture.workspaceKey,
@@ -1748,7 +1748,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        appliedPrograms: [programRecord(motion.program, motion), fixture.programRecord],
+        appliedEdits: [programRecord(motion.program, motion), fixture.programRecord],
       },
       workingRevision: "studio-working-v1:motion-before-static",
       workspaceKey: fixture.workspaceKey,
@@ -1803,7 +1803,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...workingBase,
-        appliedPrograms: [programRecord(removal.program, removal)],
+        appliedEdits: [programRecord(removal.program, removal)],
       },
       workingRevision: "studio-working-v1:remove-imported-circle",
       workspaceKey: studioPreviewWorkspaceKeyV1(fixture.context),
@@ -1814,7 +1814,7 @@ describe("compileStudioPreviewSceneV1", () => {
     ]);
     expect(result).toMatchObject({ kind: "compiled", scene: { persistentRemoveProjection: projection } });
     if (result.kind !== "compiled") throw new Error(result.error);
-    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
+    expect(result.scene.editAuthority).toBe("rust-authorized-batch");
   });
 
   it("keeps Rust static-root and persistent-remove projections for one combined batch", async () => {
@@ -1868,7 +1868,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        appliedPrograms: [fixture.programRecord, programRecord(removal.program, removal)],
+        appliedEdits: [fixture.programRecord, programRecord(removal.program, removal)],
       },
       workingRevision: "studio-working-v1:move-then-remove-imported-circle",
       workspaceKey: fixture.workspaceKey,
@@ -1881,7 +1881,7 @@ describe("compileStudioPreviewSceneV1", () => {
     ]);
     expect(result.scene).toMatchObject({
       persistentRemoveProjection,
-      programAuthority: "static-imported-root",
+      editAuthority: "static-imported-root",
       staticRootProjection,
     });
   });
@@ -1951,7 +1951,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...workingBase,
-        appliedPrograms: [programRecord(validation.program, validation)],
+        appliedEdits: [programRecord(validation.program, validation)],
       },
       workingRevision: "studio-working-v1:magic-scale-remove",
       workspaceKey: studioPreviewWorkspaceKeyV1(fixture.context),
@@ -1964,7 +1964,7 @@ describe("compileStudioPreviewSceneV1", () => {
       "uniform-scale",
       "persistent-remove",
     ]);
-    expect(result.scene.programAuthority).toBe("static-imported-root");
+    expect(result.scene.editAuthority).toBe("static-imported-root");
     expect(result.scene.bundle.scene.duration).toBeCloseTo(2.9);
     expect(result.scene.staticRootProjection).toMatchObject({
       insertions: [{ at: 0.5, transactionId: "magic-scale-remove" }],
@@ -2014,7 +2014,7 @@ describe("compileStudioPreviewSceneV1", () => {
       },
       workingState: {
         ...workingBase,
-        appliedPrograms: [programRecord(removal.program, removal)],
+        appliedEdits: [programRecord(removal.program, removal)],
       },
       workingRevision: "studio-working-v1:remove-runtime-trace-circle",
       workspaceKey: studioPreviewWorkspaceKeyV1(fixture.context),
@@ -2050,10 +2050,10 @@ describe("compileStudioPreviewSceneV1", () => {
       applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
       frame: { height: 9, width: 16 },
       snapshot: fixture.snapshot,
-      workingState: { ...fixture.workingBase, appliedPrograms: [record] },
+      workingState: { ...fixture.workingBase, appliedEdits: [record] },
       workingRevision: canonicalEditorWorkingRevision({
-        appliedPrograms: [record],
-        draftProgram: null,
+        appliedEdits: [record],
+        draftEdit: null,
         editingAppliedProgram: null,
         redoPrograms: [],
       }),
@@ -2233,7 +2233,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot,
       workingState: {
         ...proposedState.base,
-        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+        appliedEdits: [programRecord(creation.validation.program, creation.validation)],
       },
       workingRevision: "studio-working-v1:normalized-mathtex",
       workspaceKey: "project-a/scene.py/CircleScene",
@@ -2278,7 +2278,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot,
       workingState: {
         ...proposedState.base,
-        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+        appliedEdits: [programRecord(creation.validation.program, creation.validation)],
       },
       workingRevision: "studio-working-v1:unsupported-text",
       workspaceKey: "project-a/scene.py/CircleScene",
@@ -2406,7 +2406,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+        appliedEdits: [programRecord(program, { issues: [], kind: "valid" })],
       },
       workingRevision: "studio-working-v1:mathtex-chain",
       workspaceKey: "project-a/scene.py/MathTexScene",
@@ -2446,7 +2446,7 @@ describe("compileStudioPreviewSceneV1", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(result.scene.interactionEntityIds).toContain(finalTargetEntityId);
     expect(result.scene.mathTexTransformProjection).toEqual(mathTexTransformProjection);
-    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
+    expect(result.scene.editAuthority).toBe("rust-authorized-batch");
 
     const missingProjection = await compileStudioPreviewSceneV1({
       applyStudioMathTexTransformEditCompiler: async (bundle) => unchangedAuthoringResult(bundle),
@@ -2455,7 +2455,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+        appliedEdits: [programRecord(program, { issues: [], kind: "valid" })],
       },
       workingRevision: "studio-working-v1:missing-mathtex-transform-projection",
       workspaceKey: "project-a/scene.py/MathTexScene",
@@ -2567,7 +2567,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+        appliedEdits: [programRecord(program, { issues: [], kind: "valid" })],
       },
       workingRevision: "studio-working-v1:mathtex-motion",
       workspaceKey: "project-a/scene.py/MathTexScene",
@@ -2663,7 +2663,7 @@ describe("compileStudioPreviewSceneV1", () => {
     if (contentEdit.kind !== "valid") throw new Error("Imported MathTex content edit fixture did not validate");
     const workingState: WorkingState = {
       ...fixture.workingState,
-      appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
+      appliedEdits: [programRecord(contentEdit.program, contentEdit)],
     };
     const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
     let outlineCompilerCalls = 0;
@@ -2703,7 +2703,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result).toMatchObject({
       kind: "compiled",
       scene: {
-        programAuthority: "static-imported-root",
+        editAuthority: "static-imported-root",
         staticRootProjection: { mutations: [{ content, kind: "math-tex-content" }] },
       },
     });
@@ -2740,7 +2740,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
+        appliedEdits: [programRecord(contentEdit.program, contentEdit)],
       },
       workingRevision: "studio-working-v1:unsupported-imported-mathtex-content-outline",
       workspaceKey: "project-a/scene.py/MathTexScene",
@@ -2772,7 +2772,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
+        appliedEdits: [programRecord(contentEdit.program, contentEdit)],
       },
       workingRevision: "studio-working-v1:missing-imported-mathtex-content-projection",
       workspaceKey: "project-a/scene.py/MathTexScene",

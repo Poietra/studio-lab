@@ -115,15 +115,15 @@ export function projectVerifiedSourceDuration(
 export function importedWorkingState(
   scene: ManimWorkspaceScene,
   input: Readonly<{
-    appliedPrograms?: WorkingState["appliedPrograms"];
+    appliedEdits?: WorkingState["appliedEdits"];
     playhead: number;
     selection: readonly string[];
-    stagedPrograms?: WorkingState["stagedPrograms"];
+    stagedEdits?: WorkingState["stagedEdits"];
     viewport?: EditorContext["viewport"];
   }>,
 ): WorkingState {
   return {
-    appliedPrograms: input.appliedPrograms ?? [],
+    appliedEdits: input.appliedEdits ?? [],
     editorContext: {
       activeSceneId: scene.sceneId,
       playhead: input.playhead,
@@ -138,7 +138,7 @@ export function importedWorkingState(
       sourceId: scene.sourcePath,
       version: STUDIO_STATE_VERSION,
     },
-    stagedPrograms: input.stagedPrograms ?? [],
+    stagedEdits: input.stagedEdits ?? [],
     staticSemanticState: scene.staticSemanticState,
     version: STUDIO_STATE_VERSION,
   };

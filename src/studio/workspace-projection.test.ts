@@ -35,7 +35,7 @@ import {
   selectMathTexTransformProjection,
   selectMotionProjection,
   selectStaticRootProjection,
-  selectStudioWorkspaceProgramAuthority,
+  selectStudioWorkspaceEditAuthority,
 } from "./workspace-projection";
 
 const source = `from manim import *
@@ -320,12 +320,12 @@ describe("Studio workspace projection", () => {
     const project = (motionProjection: StudioMotionProjectionV1) =>
       projectStudioWorkspace({
         activeScene: imported,
-        appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+        appliedEdits: [programRecord(program, { issues: [], kind: "valid" })],
         currentTime: 2,
-        draftProgram: null,
+        draftEdit: null,
         motionProjection,
         nextScene: null,
-        programAuthority: "rust-authorized-batch",
+        editAuthority: "rust-authorized-batch",
         selectedObjectIds: [],
       });
     const projected = project(projection);
@@ -409,12 +409,12 @@ describe("Studio workspace projection", () => {
 
     const projected = projectStudioWorkspace({
       activeScene: imported,
-      appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+      appliedEdits: [programRecord(program, { issues: [], kind: "valid" })],
       currentTime: 2,
-      draftProgram: null,
+      draftEdit: null,
       motionProjection: projection,
       nextScene: null,
-      programAuthority: "rust-authorized-batch",
+      editAuthority: "rust-authorized-batch",
       selectedObjectIds: [],
     });
 
@@ -467,11 +467,11 @@ describe("Studio workspace projection", () => {
     expect(() =>
       projectStudioWorkspace({
         activeScene: imported,
-        appliedPrograms: [programRecord(unsupported, { issues: [], kind: "valid" })],
+        appliedEdits: [programRecord(unsupported, { issues: [], kind: "valid" })],
         currentTime: 2,
-        draftProgram: null,
+        draftEdit: null,
         nextScene: null,
-        programAuthority: "rust-authorized-batch",
+        editAuthority: "rust-authorized-batch",
         selectedObjectIds: [],
       }),
     ).toThrow(/no supported Rust workspace projection/i);
@@ -743,16 +743,16 @@ describe("Studio workspace projection", () => {
     ).toMatchObject({ entity: { dimensions: {}, kind: "line" }, kind: "create" });
     const projected = projectStudioWorkspace({
       activeScene: imported,
-      appliedPrograms: [
+      appliedEdits: [
         programRecord(creationProgram, { issues: [], kind: "valid" }),
         programRecord(motionProgram, { issues: [], kind: "valid" }),
         programRecord(removeProgram, { issues: [], kind: "valid" }),
       ],
       creationProjection: projection,
       currentTime: 1,
-      draftProgram: null,
+      draftEdit: null,
       nextScene: null,
-      programAuthority: "rust-authorized-batch",
+      editAuthority: "rust-authorized-batch",
       selectedObjectIds: [],
     });
 
@@ -786,16 +786,14 @@ describe("Studio workspace projection", () => {
     if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
     const record = programRecord(validation.program, validation);
 
-    expect(selectStudioWorkspaceProgramAuthority([record], [record], null)).toBeUndefined();
-    expect(selectStudioWorkspaceProgramAuthority([record], [record], "static-imported-root")).toBe(
-      "static-imported-root",
-    );
-    expect(selectStudioWorkspaceProgramAuthority([record], [record], "source-bound-endpoint")).toBe(
+    expect(selectStudioWorkspaceEditAuthority([record], [record], null)).toBeUndefined();
+    expect(selectStudioWorkspaceEditAuthority([record], [record], "static-imported-root")).toBe("static-imported-root");
+    expect(selectStudioWorkspaceEditAuthority([record], [record], "source-bound-endpoint")).toBe(
       "source-bound-endpoint",
     );
-    expect(selectStudioWorkspaceProgramAuthority([record], [], "rust-authorized-batch")).toBeUndefined();
-    expect(selectStudioWorkspaceProgramAuthority([{ ...record }], [record], "rust-authorized-batch")).toBeUndefined();
-    expect(selectStudioWorkspaceProgramAuthority([], [record], "rust-authorized-batch")).toBeNull();
+    expect(selectStudioWorkspaceEditAuthority([record], [], "rust-authorized-batch")).toBeUndefined();
+    expect(selectStudioWorkspaceEditAuthority([{ ...record }], [record], "rust-authorized-batch")).toBeUndefined();
+    expect(selectStudioWorkspaceEditAuthority([], [record], "rust-authorized-batch")).toBeNull();
 
     const wait = createSceneDurationProgram({
       capturedPlayhead: imported.runtimeSceneState.duration,
@@ -806,7 +804,7 @@ describe("Studio workspace projection", () => {
     });
     if (wait.kind !== "valid") throw new Error(JSON.stringify(wait.issues));
     const timelineRecord = programRecord(wait.program, wait);
-    expect(selectStudioWorkspaceProgramAuthority([timelineRecord], [record], "rust-authorized-batch")).toBeNull();
+    expect(selectStudioWorkspaceEditAuthority([timelineRecord], [record], "rust-authorized-batch")).toBeNull();
   });
 
   it("materializes the four source-bound endpoint results only from a correlated Rust projection", () => {
@@ -891,12 +889,12 @@ describe("Studio workspace projection", () => {
       };
       const projected = projectStudioWorkspace({
         activeScene: imported,
-        appliedPrograms: [programRecord(sourceProgram, { issues: [], kind: "valid" })],
+        appliedEdits: [programRecord(sourceProgram, { issues: [], kind: "valid" })],
         boundEntityProjection: projection,
         currentTime: 0,
-        draftProgram: null,
+        draftEdit: null,
         nextScene: null,
-        programAuthority: "source-bound-endpoint",
+        editAuthority: "source-bound-endpoint",
         selectedObjectIds: [],
       });
       expect(
@@ -908,11 +906,11 @@ describe("Studio workspace projection", () => {
     expect(() =>
       projectStudioWorkspace({
         activeScene: imported,
-        appliedPrograms: [programRecord(firstProgram, { issues: [], kind: "valid" })],
+        appliedEdits: [programRecord(firstProgram, { issues: [], kind: "valid" })],
         currentTime: 0,
-        draftProgram: null,
+        draftEdit: null,
         nextScene: null,
-        programAuthority: "source-bound-endpoint",
+        editAuthority: "source-bound-endpoint",
         selectedObjectIds: [],
       }),
     ).toThrow("A Rust bound-entity projection is required");
@@ -922,9 +920,9 @@ describe("Studio workspace projection", () => {
     const imported = workspaceScene("Static", null);
     const base = projectStudioWorkspace({
       activeScene: imported,
-      appliedPrograms: [],
+      appliedEdits: [],
       currentTime: 0,
-      draftProgram: null,
+      draftEdit: null,
       nextScene: null,
       selectedObjectIds: [],
     });
@@ -992,11 +990,11 @@ describe("Studio workspace projection", () => {
     const project = (projection?: StudioStaticRootProjectionV1) =>
       projectStudioWorkspace({
         activeScene: rebased,
-        appliedPrograms: [record],
+        appliedEdits: [record],
         currentTime: rebased.runtimeSceneState.duration,
-        draftProgram: null,
+        draftEdit: null,
         nextScene: null,
-        programAuthority: "static-imported-root",
+        editAuthority: "static-imported-root",
         selectedObjectIds: [],
         staticRootProjection: projection,
       }).projection.canvas.entities[0]?.scale;
@@ -1029,12 +1027,12 @@ describe("Studio workspace projection", () => {
     };
     const combined = projectStudioWorkspace({
       activeScene: rebased,
-      appliedPrograms: [record, removeRecord],
+      appliedEdits: [record, removeRecord],
       currentTime: 1.5,
-      draftProgram: null,
+      draftEdit: null,
       nextScene: null,
       persistentRemoveProjection,
-      programAuthority: "static-imported-root",
+      editAuthority: "static-imported-root",
       selectedObjectIds: [],
       staticRootProjection,
     });
@@ -1119,12 +1117,12 @@ describe("Studio workspace projection", () => {
     const projectMagicAt = (currentTime: number) =>
       projectStudioWorkspace({
         activeScene: rebased,
-        appliedPrograms: [programRecord(magic.program, magic)],
+        appliedEdits: [programRecord(magic.program, magic)],
         currentTime,
-        draftProgram: null,
+        draftEdit: null,
         nextScene: null,
         persistentRemoveProjection: magicRemoveProjection,
-        programAuthority: "static-imported-root",
+        editAuthority: "static-imported-root",
         selectedObjectIds: [],
         staticRootProjection: magicStaticProjection,
       });
@@ -1140,12 +1138,12 @@ describe("Studio workspace projection", () => {
 
     const pureRemoval = projectStudioWorkspace({
       activeScene: rebased,
-      appliedPrograms: [removeRecord],
+      appliedEdits: [removeRecord],
       currentTime: 1.5,
-      draftProgram: null,
+      draftEdit: null,
       nextScene: null,
       persistentRemoveProjection,
-      programAuthority: "rust-authorized-batch",
+      editAuthority: "rust-authorized-batch",
       selectedObjectIds: [],
     });
     expect(pureRemoval.projection.canvas.entities[0]).toMatchObject({ opacity: 0, present: false, scale: 3 });
@@ -1167,9 +1165,9 @@ describe("Studio workspace projection", () => {
     const imported = workspaceScene("MathFormula", null);
     const initial = projectStudioWorkspace({
       activeScene: imported,
-      appliedPrograms: [],
+      appliedEdits: [],
       currentTime: 0,
-      draftProgram: null,
+      draftEdit: null,
       nextScene: null,
       selectedObjectIds: [],
     });
@@ -1253,11 +1251,11 @@ describe("Studio workspace projection", () => {
     ).toThrow("is not correlated");
     const projected = projectStudioWorkspace({
       activeScene: rebased,
-      appliedPrograms: [programRecord(edit.program, edit)],
+      appliedEdits: [programRecord(edit.program, edit)],
       currentTime: 0.75,
-      draftProgram: null,
+      draftEdit: null,
       nextScene: null,
-      programAuthority: "static-imported-root",
+      editAuthority: "static-imported-root",
       selectedObjectIds: [],
       staticRootProjection,
     });
@@ -1299,24 +1297,24 @@ describe("Studio workspace projection", () => {
     expect(
       projectStudioWorkspace({
         activeScene: imported,
-        appliedPrograms: [programRecord(singleProgram, { issues: [], kind: "valid" })],
+        appliedEdits: [programRecord(singleProgram, { issues: [], kind: "valid" })],
         currentTime: first.interval.end + 0.01,
-        draftProgram: null,
+        draftEdit: null,
         mathTexTransformProjection: singleProjection,
         nextScene: null,
-        programAuthority: "rust-authorized-batch",
+        editAuthority: "rust-authorized-batch",
         selectedObjectIds: [],
       }).projection.inspector.entities.find(({ id }) => id === first.targetEntityId)?.content,
     ).toEqual(first.content);
 
     const projected = projectStudioWorkspace({
       activeScene: imported,
-      appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+      appliedEdits: [programRecord(program, { issues: [], kind: "valid" })],
       currentTime: 0.9,
-      draftProgram: null,
+      draftEdit: null,
       mathTexTransformProjection: projection,
       nextScene: null,
-      programAuthority: "rust-authorized-batch",
+      editAuthority: "rust-authorized-batch",
       selectedObjectIds: [],
     });
 
@@ -1389,12 +1387,12 @@ describe("Studio workspace projection", () => {
     );
     const projected = projectStudioWorkspace({
       activeScene: imported,
-      appliedPrograms: programs.map((program) => programRecord(program, { issues: [], kind: "valid" })),
+      appliedEdits: programs.map((program) => programRecord(program, { issues: [], kind: "valid" })),
       currentTime: projection.motions[0]!.interval.end,
-      draftProgram: null,
+      draftEdit: null,
       mathTexTransformProjection: projection,
       nextScene: null,
-      programAuthority: "rust-authorized-batch",
+      editAuthority: "rust-authorized-batch",
       selectedObjectIds: [],
     });
     const projectedMotion = projection.motions[0]!;
@@ -1447,12 +1445,12 @@ describe("Studio workspace projection", () => {
     const project = (candidate?: StudioMathTexTransformProjectionV1) =>
       projectStudioWorkspace({
         activeScene: imported,
-        appliedPrograms: [record],
+        appliedEdits: [record],
         currentTime: 0.9,
-        draftProgram: null,
+        draftEdit: null,
         mathTexTransformProjection: candidate,
         nextScene: null,
-        programAuthority: "rust-authorized-batch",
+        editAuthority: "rust-authorized-batch",
         selectedObjectIds: [],
       });
 
@@ -1596,9 +1594,9 @@ describe("Studio workspace projection", () => {
     const projectedScene = projectVerifiedSourceDuration(imported, 1);
     const projected = projectStudioWorkspace({
       activeScene: projectedScene,
-      appliedPrograms: [],
+      appliedEdits: [],
       currentTime: 0.75,
-      draftProgram: null,
+      draftEdit: null,
       nextScene: null,
       selectedObjectIds: [],
     });
@@ -1718,9 +1716,9 @@ describe("Studio workspace projection", () => {
 
     const projected = projectStudioWorkspace({
       activeScene: projectVerifiedSourceDuration(imported, 1),
-      appliedPrograms: [programRecord(edit.program, edit)],
+      appliedEdits: [programRecord(edit.program, edit)],
       currentTime: 1.25,
-      draftProgram: null,
+      draftEdit: null,
       nextScene: null,
       selectedObjectIds: [],
       timelineProjection: {
@@ -1774,9 +1772,9 @@ describe("Studio workspace projection", () => {
 
     const projected = projectStudioWorkspace({
       activeScene: activeSceneWithBoundary,
-      appliedPrograms: [],
+      appliedEdits: [],
       currentTime: 6,
-      draftProgram: null,
+      draftEdit: null,
       nextScene,
       selectedObjectIds: [],
     });

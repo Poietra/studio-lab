@@ -56,12 +56,12 @@ export function projectPersistentRemoveFixture(program: SceneEdit, scene = STUDI
       sourceVariables: {},
       staticSemanticState: STUDIO_FIXTURE_STATIC_STATE,
     },
-    appliedPrograms: draft ? [] : [record],
+    appliedEdits: draft ? [] : [record],
     currentTime: 0,
-    draftProgram: draft ? record : null,
+    draftEdit: draft ? record : null,
     nextScene: null,
     persistentRemoveProjection: persistentRemoveProjectionFixture(program),
-    programAuthority: "rust-authorized-batch",
+    editAuthority: "rust-authorized-batch",
     selectedObjectIds: [],
   }).proposedState;
 }
@@ -251,10 +251,10 @@ export const STUDIO_FIXTURE_STATIC_STATE: StaticSemanticState = {
 };
 
 export function createFixtureWorkingState(
-  overrides: Partial<Pick<WorkingState, "appliedPrograms" | "editorContext" | "stagedPrograms">> = {},
+  overrides: Partial<Pick<WorkingState, "appliedEdits" | "editorContext" | "stagedEdits">> = {},
 ): WorkingState {
   return {
-    appliedPrograms: overrides.appliedPrograms ?? [],
+    appliedEdits: overrides.appliedEdits ?? [],
     editorContext: overrides.editorContext ?? {
       activeSceneId: STUDIO_FIXTURE_SCENE.sceneId,
       playhead: 5,
@@ -269,7 +269,7 @@ export function createFixtureWorkingState(
       sourceId: "examples/relativity.py",
       version: STUDIO_STATE_VERSION,
     },
-    stagedPrograms: overrides.stagedPrograms ?? [],
+    stagedEdits: overrides.stagedEdits ?? [],
     staticSemanticState: STUDIO_FIXTURE_STATIC_STATE,
     version: STUDIO_STATE_VERSION,
   };
@@ -277,7 +277,7 @@ export function createFixtureWorkingState(
 
 /** Wraps an already-materialized fixture scene without evaluating its Programs. */
 export function createFixtureProposedState(workingState = createFixtureWorkingState()): ProposedState {
-  if (workingState.appliedPrograms.length > 0 || workingState.stagedPrograms.length > 0) {
+  if (workingState.appliedEdits.length > 0 || workingState.stagedEdits.length > 0) {
     throw new TypeError("The base ProposedState fixture cannot evaluate Programs.");
   }
   return {

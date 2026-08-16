@@ -42,7 +42,7 @@ function importedSquareEntity(id: string): RuntimeEntity {
 
 function workingState(scene: RuntimeSceneState, snapshot: StudioVerifiedPreviewSnapshotV1): WorkingState {
   return {
-    appliedPrograms: [],
+    appliedEdits: [],
     editorContext: {
       activeSceneId: scene.sceneId,
       playhead: 0,
@@ -57,7 +57,7 @@ function workingState(scene: RuntimeSceneState, snapshot: StudioVerifiedPreviewS
       sourceId: snapshot.correlation.context.sourcePath,
       version: STUDIO_STATE_VERSION,
     },
-    stagedPrograms: [],
+    stagedEdits: [],
     staticSemanticState: { entities: [], unknowns: [], version: STUDIO_STATE_VERSION },
     version: STUDIO_STATE_VERSION,
   };
@@ -179,7 +179,7 @@ async function moveInput() {
     record,
     snapshot,
     validationScene,
-    workingState: { ...base, appliedPrograms: [record] },
+    workingState: { ...base, appliedEdits: [record] },
   };
 }
 
@@ -477,7 +477,7 @@ describe("source-bound endpoint compilation", () => {
     expect(compiled.kind).toBe("compiled");
     if (compiled.kind === "compiled") {
       expect(compiled.scene.boundEntityProjection).toEqual(projection);
-      expect(compiled.scene.programAuthority).toBe("source-bound-endpoint");
+      expect(compiled.scene.editAuthority).toBe("source-bound-endpoint");
     }
     const mismatched = await compileStudioPreviewSceneV1({
       applyStudioBoundEntityEditCompiler: async (bundle) => ({
