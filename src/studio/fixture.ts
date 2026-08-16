@@ -1,5 +1,11 @@
 import type { StudioPersistentRemoveProjectionV1 } from "../engine/scene-authoring";
-import { type RuntimeSceneState, STUDIO_STATE_VERSION, type StaticSemanticState, type WorkingState } from "./model";
+import {
+  type ProposedState,
+  type RuntimeSceneState,
+  STUDIO_STATE_VERSION,
+  type StaticSemanticState,
+  type WorkingState,
+} from "./model";
 import type { CanonicalEditProgram } from "./operations";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 import { projectStudioWorkspace } from "./workspace-projection";
@@ -269,6 +275,20 @@ export function createFixtureWorkingState(
     },
     stagedPrograms: overrides.stagedPrograms ?? [],
     staticSemanticState: STUDIO_FIXTURE_STATIC_STATE,
+    version: STUDIO_STATE_VERSION,
+  };
+}
+
+/** Wraps an already-materialized fixture scene without evaluating its Programs. */
+export function createFixtureProposedState(workingState = createFixtureWorkingState()): ProposedState {
+  if (workingState.appliedPrograms.length > 0 || workingState.stagedPrograms.length > 0) {
+    throw new TypeError("The base ProposedState fixture cannot evaluate Programs.");
+  }
+  return {
+    base: workingState,
+    evaluatedScene: workingState.runtimeSceneState,
+    issues: [],
+    programs: [],
     version: STUDIO_STATE_VERSION,
   };
 }

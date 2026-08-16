@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { evaluateWorkingState, projectProposedState } from "../studio/evaluator";
-import { createFixtureWorkingState } from "../studio/fixture";
+import { projectProposedState } from "../studio/evaluator";
+import { createFixtureProposedState, createFixtureWorkingState } from "../studio/fixture";
 import { runtimeSceneStateSchema } from "../studio/state-schema";
 import {
   AmbiguousSourceSceneError,
@@ -973,7 +973,7 @@ class Replaced(Scene):
     if (!imported) return;
     const entityId = "source:scene.py#Replaced:label";
     const workingState = createFixtureWorkingState();
-    const proposed = evaluateWorkingState({
+    const proposed = createFixtureProposedState({
       ...workingState,
       runtimeSceneState: imported.runtimeSceneState,
       staticSemanticState: imported.staticSemanticState,

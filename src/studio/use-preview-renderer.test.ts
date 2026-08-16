@@ -30,9 +30,9 @@ import {
   createStudioEntitiesProgram,
 } from "./authoring-commands";
 import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
-import { evaluateWorkingState, programRecord } from "./evaluator";
-import { validateMotionProgramFixture } from "./fixture";
-import { type ProposedState, type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
+import { programRecord } from "./evaluator";
+import { createFixtureProposedState, validateMotionProgramFixture } from "./fixture";
+import { type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
 import type { CanonicalEditProgram } from "./operations";
 import {
   PRISTINE_WORKING_REVISION,
@@ -184,7 +184,7 @@ async function compilablePreviewInput() {
     },
     version: STUDIO_STATE_VERSION,
   };
-  const proposedState = evaluateWorkingState(workingState);
+  const proposedState = createFixtureProposedState(workingState);
   const context = {
     projectId: "project-a",
     sceneName: "CircleScene",
@@ -356,10 +356,10 @@ async function editedStaticRootPreviewInput(
     ...base,
     operationId: validation.program.operations[0]?.id,
     programRecord: record,
-    proposedState: evaluateWorkingState({
+    workingState: {
       ...workingBase,
       appliedPrograms: [record],
-    }),
+    },
     workingRevision: canonicalEditorWorkingRevision({
       appliedPrograms: [record],
       draftProgram: null,
@@ -700,10 +700,10 @@ class MathTexScene(Scene):
     ]),
   };
   return {
-    edited: evaluateWorkingState({
+    edited: {
       ...workingState,
       appliedPrograms: [programRecord(combined.program, combined)],
-    }),
+    },
     entityId,
     runtimeEntityId,
     snapshot,
@@ -726,7 +726,7 @@ async function importedImagePreviewInput() {
     sourcePath: "scene.py",
   });
   const image = png.scene.entities[0];
-  const studioEntity = fixture.edited.base.runtimeSceneState.objectGraph.entities[fixture.entityId];
+  const studioEntity = fixture.edited.runtimeSceneState.objectGraph.entities[fixture.entityId];
   if (!image || !studioEntity) throw new Error("Imported Image preview fixture is incomplete.");
   const imageEntity = {
     ...studioEntity,
@@ -738,10 +738,9 @@ async function importedImagePreviewInput() {
     ...scene,
     objectGraph: { ...scene.objectGraph, entities: { [fixture.entityId]: imageEntity } },
   });
-  const proposedState: ProposedState = {
+  const edited: WorkingState = {
     ...fixture.edited,
-    base: { ...fixture.edited.base, runtimeSceneState: withImage(fixture.edited.base.runtimeSceneState) },
-    evaluatedScene: withImage(fixture.edited.evaluatedScene),
+    runtimeSceneState: withImage(fixture.edited.runtimeSceneState),
   };
   const unsigned = await parseVerifiedSceneIrBundleV1({
     assets: png.assets,
@@ -770,7 +769,7 @@ async function importedImagePreviewInput() {
     scene: { ...unsigned.scene, source: { ...unsigned.scene.source, snapshotHash: revision } },
   });
   return {
-    edited: proposedState,
+    edited,
     frame: { height: 9, width: 16 } as const,
     runtimeEntityId,
     snapshot: {
@@ -1573,7 +1572,7 @@ describe("compileStudioPreviewSceneV1", () => {
         applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
         frame: { height: 9, width: 16 },
         snapshot: fixture.snapshot,
-        workingState: fixture.proposedState.base,
+        workingState: fixture.workingState,
         workingRevision: fixture.workingRevision,
         workspaceKey: fixture.workspaceKey,
       });
@@ -1639,7 +1638,7 @@ describe("compileStudioPreviewSceneV1", () => {
       controlOffset: { x: 32, y: 18 },
       delta: { x: 64, y: -36 },
       interval: { end: 1, start: 0 },
-      scene: fixture.proposedState.evaluatedScene,
+      scene: fixture.workingState.runtimeSceneState,
       targetEntityIds: ["source:circle"],
       transactionId: "move-transformed-imported-root",
     });
@@ -1693,7 +1692,7 @@ describe("compileStudioPreviewSceneV1", () => {
       frame: { height: 9, width: 16 },
       snapshot: fixture.snapshot,
       workingState: {
-        ...fixture.proposedState.base,
+        ...fixture.workingState,
         appliedPrograms: [fixture.programRecord, programRecord(motion.program, motion)],
       },
       workingRevision: "studio-working-v1:static-then-motion",
@@ -1729,7 +1728,7 @@ describe("compileStudioPreviewSceneV1", () => {
       controlOffset: { x: 0, y: 0 },
       delta: { x: 64, y: 0 },
       interval: { end: 1, start: 0 },
-      scene: fixture.proposedState.base.runtimeSceneState,
+      scene: fixture.workingState.runtimeSceneState,
       targetEntityIds: ["source:circle"],
       transactionId: "motion-before-static",
     });
@@ -1745,7 +1744,7 @@ describe("compileStudioPreviewSceneV1", () => {
       frame: { height: 9, width: 16 },
       snapshot: fixture.snapshot,
       workingState: {
-        ...fixture.proposedState.base,
+        ...fixture.workingState,
         appliedPrograms: [programRecord(motion.program, motion), fixture.programRecord],
       },
       workingRevision: "studio-working-v1:motion-before-static",
@@ -1820,7 +1819,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const removal = createRemoveEntitiesProgram({
       capturedPlayhead: 0.5,
       entityIds: ["source:circle"],
-      scene: fixture.proposedState.evaluatedScene,
+      scene: fixture.workingState.runtimeSceneState,
       transactionId: "remove-moved-imported-circle",
     });
     if (removal.kind !== "valid") throw new Error(JSON.stringify(removal.issues));
@@ -1865,7 +1864,7 @@ describe("compileStudioPreviewSceneV1", () => {
       frame: { height: 9, width: 16 },
       snapshot: fixture.snapshot,
       workingState: {
-        ...fixture.proposedState.base,
+        ...fixture.workingState,
         appliedPrograms: [fixture.programRecord, programRecord(removal.program, removal)],
       },
       workingRevision: "studio-working-v1:move-then-remove-imported-circle",
@@ -2071,7 +2070,7 @@ describe("compileStudioPreviewSceneV1", () => {
       },
       frame: { height: 9, width: 16 },
       snapshot: fixture.snapshot,
-      workingState: fixture.proposedState.base,
+      workingState: fixture.workingState,
       workingRevision: fixture.workingRevision,
       workspaceKey: fixture.workspaceKey,
     });
@@ -2088,7 +2087,7 @@ describe("compileStudioPreviewSceneV1", () => {
       applyStaticRootTransformEditCompiler: async (bundle) => unchangedAuthoringResult(bundle),
       frame: { height: 9, width: 16 },
       snapshot: fixture.snapshot,
-      workingState: fixture.proposedState.base,
+      workingState: fixture.workingState,
       workingRevision: fixture.workingRevision,
       workspaceKey: fixture.workspaceKey,
     });
@@ -2110,8 +2109,8 @@ describe("compileStudioPreviewSceneV1", () => {
       frame: { height: 9, width: 16 },
       snapshot: fixture.snapshot,
       workingState: {
-        ...fixture.proposedState.base,
-        sourceSnapshot: { ...fixture.proposedState.base.sourceSnapshot, hash: `sha256:${HASH_B}` },
+        ...fixture.workingState,
+        sourceSnapshot: { ...fixture.workingState.sourceSnapshot, hash: `sha256:${HASH_B}` },
       },
       workingRevision: fixture.workingRevision,
       workspaceKey: fixture.workspaceKey,
@@ -2602,7 +2601,7 @@ describe("compileStudioPreviewSceneV1", () => {
         return compiledMathTexResponse();
       },
       snapshot: fixture.snapshot,
-      workingState: fixture.edited.base,
+      workingState: fixture.edited,
       workingRevision: "studio-working-v1:edit-imported-mathtex",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
@@ -2629,7 +2628,7 @@ describe("compileStudioPreviewSceneV1", () => {
       applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
       frame: fixture.frame,
       snapshot: fixture.snapshot,
-      workingState: fixture.edited.base,
+      workingState: fixture.edited,
       workingRevision: "studio-working-v1:edit-imported-image",
       workspaceKey: "project-a/image_scene.py/ImageScene",
     });
@@ -2656,10 +2655,10 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "edit-imported-mathtex-content",
     });
     if (contentEdit.kind !== "valid") throw new Error("Imported MathTex content edit fixture did not validate");
-    const proposedState = evaluateWorkingState({
+    const workingState: WorkingState = {
       ...fixture.workingState,
       appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
-    });
+    };
     const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
     let outlineCompilerCalls = 0;
     const result = await compileStudioPreviewSceneV1({
@@ -2671,7 +2670,7 @@ describe("compileStudioPreviewSceneV1", () => {
         return compiledMathTexResponse();
       },
       snapshot: fixture.snapshot,
-      workingState: proposedState.base,
+      workingState,
       workingRevision: "studio-working-v1:edit-imported-mathtex-content",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
