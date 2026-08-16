@@ -1,4 +1,5 @@
 import type {
+  StudioBoundEntityProjectionV1,
   StudioCreationProjectionMutationV1,
   StudioCreationProjectionV1,
   StudioMathTexTransformProjectionV1,
@@ -636,6 +637,63 @@ export function selectStaticRootProjection(
     : null;
 }
 
+function boundEntityProjectionPayloadMatches(
+  operation: CanonicalEditOperation,
+  projection: StudioBoundEntityProjectionV1,
+) {
+  if (projection.kind === "position") {
+    return (
+      operation.kind === "SetProperty" &&
+      operation.key === "position" &&
+      typeof operation.value === "object" &&
+      "x" in operation.value &&
+      "y" in operation.value &&
+      sameProjectionNumber(operation.value.x, projection.value.x) &&
+      sameProjectionNumber(operation.value.y, projection.value.y)
+    );
+  }
+  if (projection.kind === "opacity") {
+    return (
+      operation.kind === "SetProperty" &&
+      operation.key === "appearance" &&
+      typeof operation.value === "number" &&
+      sameProjectionNumber(operation.value, projection.value)
+    );
+  }
+  return (
+    operation.kind === "AnimateProperty" &&
+    operation.key === (projection.kind === "rotation" ? "rotation" : "scale") &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number" &&
+    sameProjectionNumber(operation.from, projection.from) &&
+    sameProjectionNumber(operation.to, projection.to)
+  );
+}
+
+export function selectBoundEntityProjection(
+  programs: readonly CanonicalEditProgram[],
+  projection: StudioBoundEntityProjectionV1 | null,
+): StudioBoundEntityProjectionV1 | null {
+  const program = programs.length === 1 ? programs[0] : undefined;
+  const operation = program?.operations.length === 1 ? program.operations[0] : undefined;
+  if (!program || !operation) return null;
+  if (!projection) {
+    throw new TypeError("A Rust bound-entity projection is required to project a source-bound endpoint Program.");
+  }
+  if (
+    projection.operationId !== operation.id ||
+    projection.transactionId !== program.transactionId ||
+    !("entityId" in operation) ||
+    projection.studioEntityId !== operation.entityId ||
+    !sameProjectionNumber(projection.interval.start, operation.interval.start) ||
+    !sameProjectionNumber(projection.interval.end, operation.interval.end) ||
+    !boundEntityProjectionPayloadMatches(operation, projection)
+  ) {
+    throw new TypeError(`Source-bound operation ${operation.id} is not correlated with the Rust projection.`);
+  }
+  return projection;
+}
+
 function appendProjectedSample(
   propertyChannels: Record<string, PropertyChannel>,
   entityId: string,
@@ -654,15 +712,16 @@ function appendProjectedSample(
 
 function appendProjectedMutation(
   draft: MotionProjectionDraft,
-  mutation: StudioCreationProjectionMutationV1 | StudioStaticRootMutationV1,
+  mutation: StudioBoundEntityProjectionV1 | StudioCreationProjectionMutationV1 | StudioStaticRootMutationV1,
   projectedDuration?: number,
 ) {
+  const entityId = "studioEntityId" in mutation ? mutation.studioEntityId : mutation.entityId;
   const metadata = {
     operationId: mutation.operationId,
     provenanceId: `${mutation.operationId}/provenance`,
   };
   if (mutation.kind === "position") {
-    appendProjectedSample(draft.propertyChannels, mutation.entityId, "position", {
+    appendProjectedSample(draft.propertyChannels, entityId, "position", {
       ...metadata,
       interval:
         projectedDuration === undefined
@@ -671,8 +730,15 @@ function appendProjectedMutation(
       kind: "exact",
       value: mutation.value,
     });
-  } else if (mutation.kind === "fade-in") {
-    appendProjectedSample(draft.propertyChannels, mutation.entityId, "appearance", {
+  } else if (mutation.kind === "opacity") {
+    appendProjectedSample(draft.propertyChannels, entityId, "appearance", {
+      ...metadata,
+      interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.start },
+      kind: "exact",
+      value: mutation.value,
+    });
+  } else if (mutation.kind === "rotation") {
+    appendProjectedSample(draft.propertyChannels, entityId, "rotation", {
       ...metadata,
       easing: "smooth",
       from: mutation.from,
@@ -680,14 +746,23 @@ function appendProjectedMutation(
       kind: "animated",
       value: mutation.to,
     });
-    appendProjectedSample(draft.propertyChannels, mutation.entityId, "appearance", {
+  } else if (mutation.kind === "fade-in") {
+    appendProjectedSample(draft.propertyChannels, entityId, "appearance", {
+      ...metadata,
+      easing: "smooth",
+      from: mutation.from,
+      interval: mutation.interval,
+      kind: "animated",
+      value: mutation.to,
+    });
+    appendProjectedSample(draft.propertyChannels, entityId, "appearance", {
       ...metadata,
       interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.end },
       kind: "exact",
       value: mutation.to,
     });
   } else if (mutation.kind === "uniform-scale") {
-    appendProjectedSample(draft.propertyChannels, mutation.entityId, "scale", {
+    appendProjectedSample(draft.propertyChannels, entityId, "scale", {
       ...metadata,
       easing: ("easing" in mutation && mutation.easing) || "smooth",
       from: mutation.from,
@@ -701,7 +776,7 @@ function appendProjectedMutation(
       ["dimensions", mutation.fromDimensions, mutation.toDimensions],
       ["position", mutation.fromPosition, mutation.toPosition],
     ] as const) {
-      appendProjectedSample(draft.propertyChannels, mutation.entityId, key, {
+      appendProjectedSample(draft.propertyChannels, entityId, key, {
         ...metadata,
         from,
         interval: mutation.interval,
@@ -710,7 +785,7 @@ function appendProjectedMutation(
       });
     }
   } else {
-    appendProjectedSample(draft.propertyChannels, mutation.entityId, "content", {
+    appendProjectedSample(draft.propertyChannels, entityId, "content", {
       ...metadata,
       interval: mutation.interval,
       kind: "exact",
@@ -802,6 +877,27 @@ function appendProjectedOperationRecord(
     operationId: operation.id,
     transactionId: program.transactionId,
   });
+}
+
+function projectBoundEntityWorkingState(
+  workingState: WorkingState,
+  projection: StudioBoundEntityProjectionV1,
+): ProposedState {
+  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const programs = records.map(({ program }) => program);
+  const correlated = selectBoundEntityProjection(programs, projection);
+  const program = programs[0];
+  const operation = program?.operations[0];
+  if (!correlated || !program || !operation) {
+    throw new TypeError("Only one source-bound endpoint Program can use the Rust bound-entity projection.");
+  }
+  const draft = cloneProjectionDraft(workingState.runtimeSceneState);
+  if (!draft.entities[correlated.studioEntityId]) {
+    throw new TypeError(`Source-bound entity ${correlated.studioEntityId} is not in the Studio workspace.`);
+  }
+  appendProjectedOperationRecord(draft, operation, program, correlated.interval);
+  appendProjectedMutation(draft, correlated, draft.duration);
+  return projectedWorkingState(workingState, records, draft);
 }
 
 function appendCorrelatedMotions(draft: MotionProjectionDraft, correlated: readonly CorrelatedProjectedMotion[]) {
@@ -1169,6 +1265,7 @@ export function projectStudioWorkspace(
   input: Readonly<{
     activeScene: ManimWorkspaceScene;
     appliedPrograms: readonly ProgramRecord[];
+    boundEntityProjection?: StudioBoundEntityProjectionV1 | null;
     creationProjection?: StudioCreationProjectionV1 | null;
     currentTime: number;
     draftProgram: ProgramRecord | null;
@@ -1219,6 +1316,11 @@ export function projectStudioWorkspace(
       workingState,
       correlateTimelineProgramBatch(programs, input.timelineProjection),
     );
+  } else if (input.programAuthority === "source-bound-endpoint") {
+    if (!input.boundEntityProjection) {
+      throw new TypeError("A Rust bound-entity projection is required for a source-bound endpoint Program.");
+    }
+    proposedState = projectBoundEntityWorkingState(workingState, input.boundEntityProjection);
   } else if (hasCreation) {
     if (input.programAuthority !== "rust-authorized-batch") {
       throw new TypeError("CreateEntity requires one Rust-authorized creation batch.");

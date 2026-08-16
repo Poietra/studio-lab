@@ -507,6 +507,17 @@ describe("Scene authoring WASM adapter", () => {
 
   it("forwards one complete source-bound endpoint edit without reconstructing it", async () => {
     const bundle = await fixtureBundle();
+    const response = {
+      bundle,
+      projection: {
+        interval: { end: 0, start: 0 },
+        kind: "position",
+        operationId: "move-circle",
+        studioEntityId: "source:circle",
+        transactionId: "move-circle",
+        value: { x: 400, y: 180 },
+      },
+    } as const;
     const calls: unknown[] = [];
     const compile = createApplyStudioBoundEntityEditCompiler(async () => ({
       applyStudioBoundEntityEditV1: (snapshotJson, commandJson) => {
@@ -514,12 +525,13 @@ describe("Scene authoring WASM adapter", () => {
           JSON.parse(new TextDecoder().decode(snapshotJson)),
           JSON.parse(new TextDecoder().decode(commandJson)),
         );
-        return new TextEncoder().encode(JSON.stringify(bundle));
+        return new TextEncoder().encode(JSON.stringify(response));
       },
     }));
 
     const result = await compile(bundle, boundEntityEditCommand);
-    expect(result).toEqual(calls[0]);
+    expect(result).toEqual(response);
+    expect(result.bundle).toEqual(calls[0]);
     expect(calls[1]).toEqual(boundEntityEditCommand);
   });
 

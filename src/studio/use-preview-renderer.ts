@@ -37,6 +37,7 @@ import {
   type ProjectStudioTimelineCompiler,
   projectStudioMotion,
   projectStudioTimeline,
+  type StudioBoundEntityProjectionV1,
   type StudioCreationProjectionV1,
   type StudioMathTexTransformProjectionV1,
   type StudioMotionProjectionV1,
@@ -98,6 +99,7 @@ import {
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import { normalizeTimelineProjectionCommand } from "./timeline-projection";
 import {
+  selectBoundEntityProjection,
   selectCreationProjection,
   selectMathTexTransformProjection,
   selectMotionProjection,
@@ -117,6 +119,8 @@ export type StudioPreviewRendererView = Readonly<{
   interactionAuthority: StudioPreviewInteractionAuthority;
   /** Rust-authorized complete view facts for a Studio-created entity history. */
   creationProjection: StudioCreationProjectionV1 | null;
+  /** Rust-authorized read-model facts for one source-bound endpoint edit. */
+  boundEntityProjection: StudioBoundEntityProjectionV1 | null;
   /** Verified Runtime Trace candidates editable at this exact endpoint. */
   runtimeTraceEditCandidates: readonly StudioPreviewRuntimeTraceEditCandidate[];
   /** Runtime roots with no static Studio entity; selectors only, never authoring evidence. */
@@ -207,6 +211,7 @@ type BoundHostStateV1 = Readonly<{
 }>;
 
 type CompiledStudioPreviewSceneV1 = Readonly<{
+  boundEntityProjection?: StudioBoundEntityProjectionV1;
   bundle: StudioVerifiedPreviewSnapshotV1["snapshot"];
   creationProjection?: StudioCreationProjectionV1;
   engineRevisionHash: string;
@@ -1212,17 +1217,30 @@ export async function compileStudioPreviewSceneV1(
         kind: "unsupported",
       };
     }
-    const bundle = { assets: input.snapshot.snapshot.assets, scene: rebased.scene };
+    const { bundle, projection } = rebased.result;
+    let boundEntityProjection: StudioBoundEntityProjectionV1 | null;
+    try {
+      boundEntityProjection = selectBoundEntityProjection(sourceProgramBatch, projection);
+    } catch (error) {
+      return {
+        error: `Runtime Trace endpoint projection is not correlated: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
+    if (!boundEntityProjection) {
+      return { error: "Runtime Trace endpoint projection does not match one bound Program.", kind: "unsupported" };
+    }
     return {
       kind: "compiled",
       scene: {
+        boundEntityProjection,
         bundle,
         engineRevisionHash,
         frame: { ...input.frame },
         interactionEntityIds: studioPreviewInteractionEntityIdsV1(
           input.snapshot.sourceRuntimeIdentity,
           studioPreviewInteractionAuthority(input.snapshot, 0, input.workingState.runtimeSceneState.eventTrack.events),
-          rebased.scene.entities,
+          bundle.scene.entities,
         ),
         programAuthority: "source-bound-endpoint",
         snapshot: input.snapshot,
@@ -1699,6 +1717,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   });
   return {
     attachCanvas,
+    boundEntityProjection: state.phase === "presented" ? (currentCompiledScene?.boundEntityProjection ?? null) : null,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     creationProjection: state.phase === "presented" ? (currentCompiledScene?.creationProjection ?? null) : null,
     epoch,
