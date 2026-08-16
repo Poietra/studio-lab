@@ -20,7 +20,20 @@ wasm-bindgen.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "=0.3.103"
 wasm-bindgen-futures = "=0.4.76"
-web-sys = { version = "=0.3.103", features = ["OffscreenCanvas"] }
+# Only stable web-sys features may appear here. The WebCodecs encoder types
+# (VideoEncoder, EncodedVideoChunk, VideoEncoderConfig) stay hand-bound in
+# `export_encoder.rs` because web-sys gates them behind `web_sys_unstable_apis`
+# and omits the AVC `avc: { format }` registration member (issue #693).
+web-sys = { version = "=0.3.103", features = [
+  "OffscreenCanvas",
+  "VideoColorPrimaries",
+  "VideoColorSpaceInit",
+  "VideoFrame",
+  "VideoFrameBufferInit",
+  "VideoMatrixCoefficients",
+  "VideoPixelFormat",
+  "VideoTransferCharacteristics",
+] }
 wgpu = { workspace = true, features = ["std", "webgpu", "wgsl"] }
 
 [dev-dependencies]
