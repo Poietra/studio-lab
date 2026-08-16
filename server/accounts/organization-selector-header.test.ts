@@ -6,11 +6,7 @@ import {
   ORGANIZATION_SELECTOR_HEADER_V1,
 } from "./organization-selector-header";
 
-const REJECTED = Object.freeze({
-  kind: "rejected",
-  message: "The organization selector must be a single header value.",
-  status: 400,
-});
+const CONFLICTING = Object.freeze({ kind: "conflicting" });
 
 describe("organization selector header normalization", () => {
   it("names the one shared wire header", () => {
@@ -23,7 +19,7 @@ describe("organization selector header normalization", () => {
     expect(normalizeCombinedOrganizationSelectorHeaderV1(null)).toEqual({ kind: "absent" });
   });
 
-  it("forwards exactly one selector value untouched so membership admission alone judges it", () => {
+  it("forwards exactly one selector value untouched without judging its bytes", () => {
     expect(normalizeOrganizationSelectorHeaderV1(["tenant-a"])).toEqual({
       kind: "selected",
       requestedOrganizationId: "tenant-a",
@@ -43,13 +39,13 @@ describe("organization selector header normalization", () => {
     });
   });
 
-  it("rejects conflicting selector values with the shared transport response", () => {
-    expect(normalizeOrganizationSelectorHeaderV1(["tenant-a", "tenant-b"])).toEqual(REJECTED);
-    expect(normalizeOrganizationSelectorHeaderV1(["tenant-a", "tenant-a"])).toEqual(REJECTED);
+  it("reports conflicting selector values so each transport keeps its own wire rejection", () => {
+    expect(normalizeOrganizationSelectorHeaderV1(["tenant-a", "tenant-b"])).toEqual(CONFLICTING);
+    expect(normalizeOrganizationSelectorHeaderV1(["tenant-a", "tenant-a"])).toEqual(CONFLICTING);
   });
 
   it("treats a comma-joined Fetch header value as conflicting selector values", () => {
-    expect(normalizeCombinedOrganizationSelectorHeaderV1("tenant-a, tenant-b")).toEqual(REJECTED);
-    expect(normalizeCombinedOrganizationSelectorHeaderV1("tenant-a,tenant-b")).toEqual(REJECTED);
+    expect(normalizeCombinedOrganizationSelectorHeaderV1("tenant-a, tenant-b")).toEqual(CONFLICTING);
+    expect(normalizeCombinedOrganizationSelectorHeaderV1("tenant-a,tenant-b")).toEqual(CONFLICTING);
   });
 });

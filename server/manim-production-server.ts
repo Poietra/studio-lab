@@ -644,8 +644,8 @@ export async function startProductionManimServer(
       const organizationSelector = normalizeOrganizationSelectorHeaderV1(
         request.headersDistinct[ORGANIZATION_SELECTOR_HEADER_V1],
       );
-      if (organizationSelector.kind === "rejected") {
-        throw new TransportError(organizationSelector.message, organizationSelector.status);
+      if (organizationSelector.kind === "conflicting") {
+        throw new TransportError("The organization selector must be a single header value.", 400);
       }
       const principal = await raceWithSignal(
         () =>

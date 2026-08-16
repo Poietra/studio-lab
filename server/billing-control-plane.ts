@@ -139,8 +139,18 @@ async function readBoundedRawBody(request: Request, maximumBytes: number) {
 
 function exactOrganizationHeader(request: Request) {
   const selector = normalizeCombinedOrganizationSelectorHeaderV1(request.headers.get(ORGANIZATION_SELECTOR_HEADER_V1));
-  if (selector.kind === "rejected") throw new BillingRequestErrorV1(selector.message, selector.status);
-  return selector.kind === "selected" ? selector.requestedOrganizationId : undefined;
+  if (selector.kind === "absent") return undefined;
+  const value = selector.kind === "selected" ? selector.requestedOrganizationId : null;
+  if (
+    value === null ||
+    value.length < 1 ||
+    value.length > 64 ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new BillingRequestErrorV1("A single organization selector is required.", 400);
+  }
+  return value;
 }
 
 function billingAdmissionRequest(request: Request, pathname: string): ProductionAdmissionRequest {

@@ -291,23 +291,22 @@ describe("billing control-plane Fetch boundary", () => {
     expect(rejected.acceptWebhook).not.toHaveBeenCalled();
   });
 
-  it("rejects conflicting selector values with the production transport response before admission", async () => {
+  it("keeps the original billing rejection bytes for conflicting or malformed selectors before admission", async () => {
     const { authenticate, handler, readStatus } = harness();
-    const conflicting = await handler.fetch(
-      new Request(`${ORIGIN}${BILLING_STATUS_ROUTE_V1}`, {
-        headers: authenticatedHeaders({ "x-poietra-organization-id": "tenant-a, tenant-b" }),
-      }),
-    );
-
-    expect(conflicting.status).toBe(400);
-    await expect(conflicting.json()).resolves.toEqual({
-      error: "The organization selector must be a single header value.",
-    });
+    for (const selector of ["tenant-a, tenant-b", "tenant-a,tenant-b", "", "A".repeat(65)]) {
+      const rejected = await handler.fetch(
+        new Request(`${ORIGIN}${BILLING_STATUS_ROUTE_V1}`, {
+          headers: authenticatedHeaders({ "x-poietra-organization-id": selector }),
+        }),
+      );
+      expect(rejected.status).toBe(400);
+      await expect(rejected.json()).resolves.toEqual({ error: "A single organization selector is required." });
+    }
     expect(authenticate).not.toHaveBeenCalled();
     expect(readStatus).not.toHaveBeenCalled();
   });
 
-  it("leaves every non-conflicting selector decision to organization membership admission", async () => {
+  it("leaves the tenant decision for well-formed selectors to organization membership admission", async () => {
     const identityAuthenticate = vi.fn(async () => ({
       issuer: "https://identity.example",
       sessionOrganizationId: ORGANIZATION_ID,
@@ -357,12 +356,6 @@ describe("billing control-plane Fetch boundary", () => {
       "tenant-b",
       expect.any(AbortSignal),
     );
-
-    resolveActiveMembership.mockClear();
-    const malformed = await statusRequest(authenticatedHeaders({ "x-poietra-organization-id": "A".repeat(65) }));
-    expect(malformed.status).toBe(403);
-    await expect(malformed.json()).resolves.toEqual({ error: "Billing access is not available." });
-    expect(resolveActiveMembership).not.toHaveBeenCalled();
     expect(readStatus).toHaveBeenCalledTimes(2);
   });
 });
