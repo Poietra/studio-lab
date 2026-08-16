@@ -149,6 +149,49 @@ export function createFixturePreviewSnapshotProviderV1(): StudioPreviewSnapshotP
   };
 }
 
+/** Six-frame variant used only by the browser MP4 E2E. */
+export function createExportFixturePreviewSnapshotProviderV1(): StudioPreviewSnapshotProviderV1 {
+  const base = createFixturePreviewSnapshotProviderV1();
+  return {
+    ...base,
+    id: "checked-in-export-fixture",
+    loadVerifiedSnapshot: async (input) => {
+      const original = await base.loadVerifiedSnapshot(input);
+      const scale = 0.1;
+      const duration = original.snapshot.scene.duration * scale;
+      const snapshot = await parseVerifiedSceneIrBundleV1({
+        assets: original.snapshot.assets,
+        scene: {
+          ...original.snapshot.scene,
+          animationChannels: original.snapshot.scene.animationChannels.map((channel) => ({
+            ...channel,
+            keyframes: channel.keyframes.map((keyframe) => ({ ...keyframe, at: keyframe.at * scale })),
+          })),
+          duration,
+          entities: original.snapshot.scene.entities.map((entity) => ({
+            ...entity,
+            lifetimes: entity.lifetimes.map((lifetime) => ({
+              end: lifetime.end * scale,
+              start: lifetime.start * scale,
+            })),
+          })),
+        },
+      });
+      return {
+        ...original,
+        correlation: {
+          ...original.correlation,
+          context: { ...original.correlation.context, sourceDuration: duration },
+          sceneDuration: duration,
+        },
+        duration,
+        snapshot,
+        sourceLabel: "verified short export fixture",
+      };
+    },
+  };
+}
+
 /**
  * Serves an empty, static imported Scene exclusively for the Studio-created
  * MathTex browser slice. Keeping it separate from the shared renderer fixture

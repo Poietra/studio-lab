@@ -3,13 +3,51 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(target_arch = "wasm32")]
+use poietra_render_wgpu::MAX_ENCODED_PNG_BYTES_V1;
 use poietra_render_wgpu::{DecodedPngAssetResolverV1, DecodedPngAssetV1, decode_verified_png_v1};
 use poietra_scene_ir::{
     AssetManifestV1, MAX_ASSETS_V1, MAX_ENCODED_ASSET_BYTES_V1, MAX_TOTAL_IMAGE_PIXELS_V1,
     PngAssetV1,
 };
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
 
 const MAX_ASSET_METADATA_JSON_BYTES_V1: usize = 2 * 1024 * 1024;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn copy_asset_byte_arrays(values: &js_sys::Array) -> Result<Vec<Vec<u8>>, String> {
+    let count = usize::try_from(values.length())
+        .map_err(|_| "PNG transfer count is not representable".to_owned())?;
+    if count > MAX_ASSETS_V1 {
+        return Err(format!(
+            "PNG transfer contains more than {MAX_ASSETS_V1} assets"
+        ));
+    }
+    let mut copied = Vec::with_capacity(count);
+    let mut total_bytes = 0_u64;
+    for index in 0..values.length() {
+        let bytes = values
+            .get(index)
+            .dyn_into::<js_sys::Uint8Array>()
+            .map_err(|_| format!("PNG transfer {index} is not a Uint8Array"))?;
+        if u64::from(bytes.length()) > MAX_ENCODED_PNG_BYTES_V1 {
+            return Err(format!(
+                "PNG transfer {index} exceeds the {MAX_ENCODED_PNG_BYTES_V1}-byte limit"
+            ));
+        }
+        total_bytes = total_bytes
+            .checked_add(u64::from(bytes.length()))
+            .ok_or_else(|| "PNG transfer byte length overflowed".to_owned())?;
+        if total_bytes > MAX_ENCODED_ASSET_BYTES_V1 {
+            return Err(format!(
+                "PNG transfers exceed the {MAX_ENCODED_ASSET_BYTES_V1}-byte limit"
+            ));
+        }
+        copied.push(bytes.to_vec());
+    }
+    Ok(copied)
+}
 
 #[derive(Clone, Debug)]
 struct RegisteredPngAssetV1 {

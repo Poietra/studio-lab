@@ -1492,9 +1492,13 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
         && packet.viewport.width_px > 0
     {
         let camera_aspect = camera_width / camera_height;
-        let viewport_aspect =
-            f64::from(packet.viewport.width_px) / f64::from(packet.viewport.height_px);
-        if (camera_aspect / viewport_aspect - 1.0).abs() > 0.000_001 {
+        let expected_width_px = camera_aspect * f64::from(packet.viewport.height_px);
+        // Integer raster dimensions cannot always encode the camera aspect
+        // exactly. In particular, the closed 854x480 export rung is the
+        // even-width rounding of a 16:9 frame (853.333… px). Accept at most
+        // that one-pixel horizontal quantization; larger mismatches still
+        // fail before rendering.
+        if (expected_width_px - f64::from(packet.viewport.width_px)).abs() > 1.0 {
             validator.issue("$.camera", "camera and viewport aspect ratios must match");
         }
     }

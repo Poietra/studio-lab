@@ -1,6 +1,9 @@
-import { expect, type Page, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+
+import { type Download, expect, type Page, test } from "@playwright/test";
 
 const FIXTURE_QUERY = "?previewRenderer=fixture";
+const EXPORT_FIXTURE_QUERY = "?previewRenderer=export-fixture";
 const MATHTEX_FIXTURE_QUERY = "?previewRenderer=mathtex-fixture";
 // The fixture Scene IR's source revision hash — the revision the retained
 // worker echoes on every frame and every piece of evidence.
@@ -49,6 +52,23 @@ async function expectPresented(page: Page) {
 
 async function expectPaintFreeInteractionOverlay(page: Page) {
   await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
+}
+
+function topLevelMp4Atoms(bytes: Uint8Array) {
+  const atoms: string[] = [];
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    if (bytes.byteLength - offset < 8) throw new Error("MP4 ends inside a top-level atom header.");
+    const size = view.getUint32(offset);
+    const kind = new TextDecoder().decode(bytes.subarray(offset + 4, offset + 8));
+    if (size < 8 || offset + size > bytes.byteLength) {
+      throw new Error(`MP4 atom ${kind} has invalid size ${size}.`);
+    }
+    atoms.push(kind);
+    offset += size;
+  }
+  return atoms;
 }
 
 async function retainedFrameIdentity(page: Page) {
@@ -272,6 +292,82 @@ test("presents exactly correlated WebGPU frames with a paint-free interaction ov
   // imported entities are truthful selectors only; editable imported slices
   // are covered by the real Runtime Trace suites.
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+});
+
+test("downloads a playable 30 fps MP4 from the exact presented Rust Scene", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto(`/${EXPORT_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  await page
+    .getByLabel("Active imported Scene")
+    .selectOption({ label: "shared_circle_opacity.py · SharedCircleOpacity" });
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expectPresented(page);
+
+  const exportButton = page.getByRole("button", { name: "Export MP4" });
+  await expect(exportButton).toBeEnabled();
+  const downloadPromise = new Promise<Download>((resolve) => page.once("download", resolve));
+  await exportButton.click();
+  const outcome = await Promise.race([
+    downloadPromise.then((download) => ({ download, kind: "download" as const })),
+    page
+      .getByRole("alert")
+      .last()
+      .waitFor({ state: "visible", timeout: 110_000 })
+      .then(async () => ({ detail: await page.getByRole("alert").last().innerText(), kind: "refused" as const })),
+  ]);
+  if (outcome.kind === "refused") {
+    throw new Error(`Browser export refused:\n${outcome.detail}`);
+  }
+  const { download } = outcome;
+  expect(download.suggestedFilename()).toBe("shared-circle-opacity.mp4");
+  const path = await download.path();
+  if (!path) throw new Error("Chromium did not retain the downloaded MP4.");
+  const bytes = new Uint8Array(await readFile(path));
+  expect(bytes.byteLength).toBeGreaterThan(256);
+  const atoms = topLevelMp4Atoms(bytes);
+  expect(atoms.slice(0, 3)).toEqual(["ftyp", "uuid", "mdat"]);
+  expect(atoms.at(-1)).toBe("moov");
+  expect(atoms.filter((atom) => atom === "mdat")).toHaveLength(6);
+
+  const playback = await page.evaluate(async (base64) => {
+    const binary = atob(base64);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const url = URL.createObjectURL(new Blob([bytes], { type: "video/mp4" }));
+    const video = document.createElement("video");
+    video.muted = true;
+    video.src = url;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("MP4 playback probe timed out.")), 15_000);
+        video.addEventListener(
+          "loadeddata",
+          () => {
+            clearTimeout(timeout);
+            resolve();
+          },
+          { once: true },
+        );
+        video.addEventListener(
+          "error",
+          () => {
+            clearTimeout(timeout);
+            reject(new Error(video.error?.message || "Chromium rejected the exported MP4."));
+          },
+          { once: true },
+        );
+        video.load();
+      });
+      return { duration: video.duration, height: video.videoHeight, width: video.videoWidth };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }, Buffer.from(bytes).toString("base64"));
+  expect(playback.width).toBe(854);
+  expect(playback.height).toBe(480);
+  expect(playback.duration).toBeCloseTo(0.2, 1);
 });
 
 test("reinstalls a fresh worker and canvas across workspace close and reopen", async ({ page }) => {

@@ -10,6 +10,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 poietra-eval.workspace = true
+poietra-export-mux.workspace = true
 poietra-render-wgpu = { path = "../poietra-render-wgpu" }
 poietra-scene-ir.workspace = true
 serde.workspace = true

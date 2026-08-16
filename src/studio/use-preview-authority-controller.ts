@@ -114,7 +114,10 @@ export function selectStudioPreviewProvider(
   fixtureAllowed: boolean,
 ): StudioPreviewProviderKind {
   const requested = new URLSearchParams(browserSearch ?? "").get(STUDIO_PREVIEW_RENDERER_QUERY_PARAM);
-  return fixtureAllowed && (requested === "fixture" || requested === "mathtex-fixture") ? requested : "server";
+  return fixtureAllowed &&
+    (requested === "fixture" || requested === "mathtex-fixture" || requested === "export-fixture")
+    ? requested
+    : "server";
 }
 
 type StudioPreviewLocationSearchSources = Readonly<{

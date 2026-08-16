@@ -21,10 +21,6 @@ pub(crate) const MANIM_CAIRO_SAMPLE_COUNT_V1: u32 = 4;
 mod arena;
 mod asset;
 mod cache;
-// Crate-private offscreen export path (#718). The public `ExportProfileV1`
-// contract and its adapter wiring land with #721; until then only the hidden
-// browser-proof hook below leaves the module, so non-test builds may not
-// reach every item.
 #[cfg_attr(not(test), allow(dead_code))]
 mod export;
 mod gpu;
@@ -35,6 +31,11 @@ mod upload;
 pub use arena::{GpuBufferArenaErrorV1, MAX_GPU_BUFFER_ARENA_BYTES_V1};
 pub use asset::{
     DecodePngAssetErrorV1, DecodedPngAssetV1, MAX_ENCODED_PNG_BYTES_V1, decode_verified_png_v1,
+};
+pub use export::{
+    ExportFrameErrorV1, ExportFrameRequestV1, ExportFrameSequenceErrorV1,
+    ExportFrameSequenceParamsErrorV1, ExportFrameSequenceParamsV1, ExportFrameSequenceSessionV1,
+    ExportSequenceFrameV1,
 };
 pub use gpu::{
     CreateRendererErrorV1, MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1, RenderFrameErrorV1,
@@ -62,8 +63,7 @@ pub use upload::{
     GpuUploadPlanErrorV1, GpuUploadPlanV1, MAX_GPU_UPLOAD_PLAN_BYTES_V1, build_gpu_upload_plan_v1,
 };
 
-// Test-only hook so the browser readback e2e can execute the crate-private
-// async export path (#718); superseded by the #721 public contract.
+// Test-only hook retained for the focused browser readback proof.
 #[doc(hidden)]
 pub use export::prove_export_frame_sequence_readback_v1;
 

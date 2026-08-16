@@ -184,7 +184,7 @@ export function studioPreviewWorkspaceKeyV1(context: StudioPreviewEditingContext
  * production can never present fixture data or include their client evidence
  * extension.
  */
-export type StudioPreviewProviderKind = "fixture" | "mathtex-fixture" | "server";
+export type StudioPreviewProviderKind = "export-fixture" | "fixture" | "mathtex-fixture" | "server";
 
 export async function resolveStudioPreviewSnapshotProvider(
   providerKind: StudioPreviewProviderKind,
@@ -196,5 +196,6 @@ export async function resolveStudioPreviewSnapshotProvider(
   if (!import.meta.env.DEV) throw new Error("Fixture preview providers are unavailable in production.");
   const fixture = await import("./preview-snapshot-provider.fixture");
   if (providerKind === "fixture") return fixture.createFixturePreviewSnapshotProviderV1();
+  if (providerKind === "export-fixture") return fixture.createExportFixturePreviewSnapshotProviderV1();
   return fixture.createMathTexFixturePreviewSnapshotProviderV1();
 }

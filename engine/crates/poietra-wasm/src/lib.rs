@@ -7,6 +7,8 @@
 mod authoring;
 mod bounded_writer;
 #[cfg(target_arch = "wasm32")]
+mod browser_export;
+#[cfg(target_arch = "wasm32")]
 mod canvas;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod canvas_assets;
@@ -47,6 +49,8 @@ pub use protocol::{
     EngineWorkerSessionV1, MAX_SAMPLE_REQUEST_JSON_BYTES_V1, MAX_WORKER_RESPONSE_JSON_BYTES_V1,
 };
 
+#[cfg(target_arch = "wasm32")]
+pub use browser_export::export_scene_mp4_v1;
 #[cfg(target_arch = "wasm32")]
 pub use canvas::PoietraCanvasEngineV1;
 #[cfg(target_arch = "wasm32")]
