@@ -119,7 +119,7 @@ function DraftPositionRefinement({
 export function WorkspaceSidebar({
   activeScene,
   appliedProgramReadOnlyReasons,
-  appliedPrograms,
+  appliedEdits,
   appliedTransactionIds,
   authoringAvailable = true,
   className,
@@ -140,7 +140,7 @@ export function WorkspaceSidebar({
 }: Readonly<{
   activeScene: ManimWorkspaceScene;
   appliedProgramReadOnlyReasons: Readonly<Record<string, string | null>>;
-  appliedPrograms: readonly ProgramRecord[];
+  appliedEdits: readonly ProgramRecord[];
   appliedTransactionIds: ReadonlySet<string>;
   authoringAvailable?: boolean;
   className?: string;
@@ -255,7 +255,7 @@ export function WorkspaceSidebar({
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-balance text-xs font-medium text-zinc-300">Applied programs</h2>
           <div className="flex items-center gap-2">
-            {appliedPrograms.length > 0 ? (
+            {appliedEdits.length > 0 ? (
               <button
                 aria-keyshortcuts="Control+Z Meta+Z"
                 className="text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"
@@ -278,9 +278,9 @@ export function WorkspaceSidebar({
             ) : null}
           </div>
         </div>
-        {appliedPrograms.length > 0 ? (
+        {appliedEdits.length > 0 ? (
           <ol className="mt-2 space-y-1">
-            {appliedPrograms.map((record, index) => {
+            {appliedEdits.map((record, index) => {
               const transactionId = record.program.transactionId;
               const readOnlyReason = appliedProgramReadOnlyReasons[transactionId];
               const editing = editingAppliedTransactionId === transactionId;
@@ -362,7 +362,7 @@ export function StudioInspector({
   draftApplyPending,
   draftError,
   draftOperation,
-  draftProgram,
+  draftEdit,
   onApplyDraft,
   onDiscardDraft,
   onDraftOperationChange,
@@ -394,7 +394,7 @@ export function StudioInspector({
   draftApplyPending: boolean;
   draftError: string | null;
   draftOperation: EditSuggestionOperation | null;
-  draftProgram: ProgramRecord | null;
+  draftEdit: ProgramRecord | null;
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
@@ -420,7 +420,7 @@ export function StudioInspector({
   suggestion: EditSuggestion | null;
   workspace: ManimWorkspaceView | null;
 }>) {
-  const draftPosition = draftProgram ? directPositionDraft(draftProgram, selectedEntity) : null;
+  const draftPosition = draftEdit ? directPositionDraft(draftEdit, selectedEntity) : null;
   const geometryUnknowns = selectedEntity
     ? (
         [
@@ -434,7 +434,7 @@ export function StudioInspector({
   const scaleUnknown = selectedEntity?.geometry.scale.kind === "unknown";
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
-      {draftProgram ? (
+      {draftEdit ? (
         <>
           <DraftInspector
             applyLabel={replacingAppliedProgram ? "Replace program" : "Apply program"}
@@ -445,13 +445,13 @@ export function StudioInspector({
             onDiscard={onDiscardDraft}
             onOperationChange={onDraftOperationChange}
             operation={draftOperation}
-            record={draftProgram}
+            record={draftEdit}
           />
           <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={!authoringAvailable}>
             {draftPosition && selectedEntity ? (
               <DraftPositionRefinement
                 entity={selectedEntity}
-                key={`${draftProgram.program.transactionId}/${draftPosition.x}/${draftPosition.y}`}
+                key={`${draftEdit.program.transactionId}/${draftPosition.x}/${draftPosition.y}`}
                 onSubmit={(position) => {
                   onEntityEdit(selectedEntity.id, { position }, "x");
                 }}

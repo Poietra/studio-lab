@@ -315,7 +315,7 @@ describe("Studio timeline projection adapter", () => {
       validation: { issues: [], status: "valid" as const },
     }));
     const workingState: WorkingState = {
-      appliedPrograms: records,
+      appliedEdits: records,
       editorContext: {
         activeSceneId: "scene",
         playhead: 5,
@@ -330,7 +330,7 @@ describe("Studio timeline projection adapter", () => {
         sourceId: "scene.py",
         version: STUDIO_STATE_VERSION,
       },
-      stagedPrograms: [],
+      stagedEdits: [],
       staticSemanticState: { entities: [], unknowns: [], version: STUDIO_STATE_VERSION },
       version: STUDIO_STATE_VERSION,
     };

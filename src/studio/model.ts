@@ -194,14 +194,14 @@ export type ProgramRecord = Readonly<{
   }>;
 }>;
 
-export type ProgramBatchAuthority = "rust-authorized-batch" | "source-bound-endpoint" | "static-imported-root";
+export type StudioEditProjectionAuthority = "rust-authorized-batch" | "source-bound-endpoint" | "static-imported-root";
 
 export type WorkingState = Readonly<{
-  appliedPrograms: readonly ProgramRecord[];
+  appliedEdits: readonly ProgramRecord[];
   editorContext: EditorContext;
   runtimeSceneState: RuntimeSceneState;
   sourceSnapshot: SourceSnapshot;
-  stagedPrograms: readonly ProgramRecord[];
+  stagedEdits: readonly ProgramRecord[];
   staticSemanticState: StaticSemanticState;
   version: typeof STUDIO_STATE_VERSION;
 }>;

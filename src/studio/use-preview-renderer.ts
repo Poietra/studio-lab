@@ -46,7 +46,13 @@ import {
   type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
-import type { ProgramBatchAuthority, ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
+import type {
+  ProgramRecord,
+  ProjectedEntity,
+  RuntimeSceneState,
+  StudioEditProjectionAuthority,
+  WorkingState,
+} from "./model";
 import {
   hasImportedRootTransformTarget,
   isExactStaticRootTransformProgramBatch,
@@ -144,7 +150,7 @@ export type StudioPreviewRendererView = Readonly<{
   /** Rust-authorized source-to-working timeline projection for timeline-only edits. */
   timelineProjection: StudioTimelineProjectionV1 | null;
   /** Rust compiler path that admitted the exact current Program revision. */
-  programAuthority: StudioPreviewProgramAuthority | null;
+  editAuthority: StudioPreviewEditAuthority | null;
   /** Preview-only endpoint authority; source lowering still verifies the exact boundary. */
   runtimeTraceEditAnchor: number | null;
   /** Validation bound to the staged Program and snapshot, independent of the playhead. */
@@ -153,7 +159,7 @@ export type StudioPreviewRendererView = Readonly<{
   verifiedSourceDuration: number | null;
 }>;
 
-export type StudioPreviewProgramAuthority = ProgramBatchAuthority;
+export type StudioPreviewEditAuthority = StudioEditProjectionAuthority;
 
 export type StudioPreviewInteractionAuthority =
   | Readonly<{ kind: "interactive"; nestedGroupEntityIds?: readonly string[] }>
@@ -220,7 +226,7 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   mathTexTransformProjection?: StudioMathTexTransformProjectionV1;
   motionProjection?: StudioMotionProjectionV1;
   persistentRemoveProjection?: StudioPersistentRemoveProjectionV1;
-  programAuthority?: StudioPreviewProgramAuthority;
+  editAuthority?: StudioPreviewEditAuthority;
   snapshot: StudioVerifiedPreviewSnapshotV1;
   staticRootProjection?: StudioStaticRootProjectionV1;
   timelineProjection?: StudioTimelineProjectionV1;
@@ -475,8 +481,8 @@ export async function digestStudioPreviewSceneRevisionV1(
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function sourceProgramRecords(workingState: WorkingState): readonly ProgramRecord[] {
-  return [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+function sourceEditRecords(workingState: WorkingState): readonly ProgramRecord[] {
+  return [...workingState.appliedEdits, ...workingState.stagedEdits];
 }
 
 function staticRootTransformEditCommand(
@@ -493,7 +499,7 @@ function staticRootTransformEditCommand(
     frame: input.frame,
     mathTexOutlines,
     nextRevision,
-    programs: sourceProgramRecords(input.workingState).map(({ program }) => program),
+    programs: sourceEditRecords(input.workingState).map(({ program }) => program),
     sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
       ([sourceIdentityKey, { entityId, sourceName }]) => ({
         runtimeEntityId: entityId,
@@ -539,7 +545,7 @@ function studioMotionEditCommand(
     expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
     frame: input.frame,
     nextRevision,
-    programs: sourceProgramRecords(input.workingState).map(({ program }) => program),
+    programs: sourceEditRecords(input.workingState).map(({ program }) => program),
     sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
       ([sourceIdentityKey, { entityId, sourceName }]) => ({
         runtimeEntityId: entityId,
@@ -561,7 +567,7 @@ function studioTimelineCommands(
 }> {
   const projection = normalizeTimelineProjectionCommand(
     input.workingState.runtimeSceneState.duration,
-    sourceProgramRecords(input.workingState).map(({ program }) => program),
+    sourceEditRecords(input.workingState).map(({ program }) => program),
   );
   return {
     apply: {
@@ -595,17 +601,17 @@ export async function compileStudioPreviewSceneV1(
 ): Promise<
   Readonly<{ error: string; kind: "unsupported" }> | Readonly<{ kind: "compiled"; scene: CompiledStudioPreviewSceneV1 }>
 > {
-  const sourcePrograms = sourceProgramRecords(input.workingState);
+  const sourceEdits = sourceEditRecords(input.workingState);
   if (Math.abs(input.workingState.runtimeSceneState.duration - input.snapshot.duration) >= 0.0005) {
     return {
       error: "Studio source state is not correlated with the verified imported Scene timing.",
       kind: "unsupported",
     };
   }
-  if (input.workingRevision === PRISTINE_WORKING_REVISION && sourcePrograms.length > 0) {
+  if (input.workingRevision === PRISTINE_WORKING_REVISION && sourceEdits.length > 0) {
     return { error: "A pristine Studio revision cannot contain evaluated edit Programs.", kind: "unsupported" };
   }
-  if (sourcePrograms.length === 0) {
+  if (sourceEdits.length === 0) {
     const { correlation, snapshot } = input.snapshot;
     if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
       return { error: "The base verified preview has inconsistent revision evidence.", kind: "unsupported" };
@@ -627,7 +633,7 @@ export async function compileStudioPreviewSceneV1(
       },
     };
   }
-  const sourceProgramBatch = sourcePrograms.map(({ program }) => program);
+  const sourceProgramBatch = sourceEdits.map(({ program }) => program);
   const importedSource = input.snapshot.snapshot.scene.source;
   if (
     input.snapshot.snapshot.scene.animationChannels.length > 0 &&
@@ -638,7 +644,7 @@ export async function compileStudioPreviewSceneV1(
       kind: "unsupported",
     };
   }
-  const hasStudioCreation = sourcePrograms.some(({ program }) =>
+  const hasStudioCreation = sourceEdits.some(({ program }) =>
     program.operations.some(({ kind }) => kind === "CreateEntity"),
   );
   if (hasStudioCreation) {
@@ -646,7 +652,7 @@ export async function compileStudioPreviewSceneV1(
       return { error: "Studio creation requires an exactly correlated base snapshot.", kind: "unsupported" };
     }
     const outlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
-    for (const { program } of sourcePrograms) {
+    for (const { program } of sourceEdits) {
       for (const operation of program.operations) {
         if (operation.kind !== "CreateEntity" || operation.entity.type !== "MathTex") continue;
         const texParts = studioCreationMathTexParts(operation.entity.content);
@@ -692,7 +698,7 @@ export async function compileStudioPreviewSceneV1(
       frame: input.frame,
       mathTexOutlines,
       nextRevision: engineRevisionHash,
-      programs: sourcePrograms.map(({ program }) => program),
+      programs: sourceEdits.map(({ program }) => program),
       viewport: STUDIO_VIEWPORT,
     });
     try {
@@ -737,7 +743,7 @@ export async function compileStudioPreviewSceneV1(
           engineRevisionHash,
           frame: { ...input.frame },
           interactionEntityIds,
-          programAuthority: "rust-authorized-batch",
+          editAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -834,7 +840,7 @@ export async function compileStudioPreviewSceneV1(
             bundle.scene.entities,
           ),
           persistentRemoveProjection: result.persistentRemoveProjection,
-          programAuthority: "static-imported-root",
+          editAuthority: "static-imported-root",
           snapshot: input.snapshot,
           staticRootProjection,
           workingRevision: input.workingRevision,
@@ -969,7 +975,7 @@ export async function compileStudioPreviewSceneV1(
                 },
               }
             : {}),
-          programAuthority: "rust-authorized-batch",
+          editAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -990,7 +996,7 @@ export async function compileStudioPreviewSceneV1(
       kind: "unsupported",
     };
   }
-  const hasPersistentRemove = sourcePrograms.some(({ program }) =>
+  const hasPersistentRemove = sourceEdits.some(({ program }) =>
     program.operations.some(
       (operation) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
     ),
@@ -1063,8 +1069,8 @@ export async function compileStudioPreviewSceneV1(
           persistentRemoveProjection: result.persistentRemoveProjection,
           ...(staticRootProjection ? { staticRootProjection } : {}),
           ...(hasStaticRootTransform
-            ? { programAuthority: "static-imported-root" as const }
-            : { programAuthority: "rust-authorized-batch" as const }),
+            ? { editAuthority: "static-imported-root" as const }
+            : { editAuthority: "rust-authorized-batch" as const }),
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -1077,7 +1083,7 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const hasStudioSceneDurationEdit = sourcePrograms.some(({ program }) =>
+  const hasStudioSceneDurationEdit = sourceEdits.some(({ program }) =>
     program.operations.some(isSceneDurationOperation),
   );
   if (hasStudioSceneDurationEdit) {
@@ -1117,7 +1123,7 @@ export async function compileStudioPreviewSceneV1(
             ),
             bundle.scene.entities,
           ),
-          programAuthority: "rust-authorized-batch",
+          editAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           timelineProjection,
           workingRevision: input.workingRevision,
@@ -1184,7 +1190,7 @@ export async function compileStudioPreviewSceneV1(
             bundle.scene.entities,
           ),
           motionProjection,
-          programAuthority: "rust-authorized-batch",
+          editAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -1242,7 +1248,7 @@ export async function compileStudioPreviewSceneV1(
           studioPreviewInteractionAuthority(input.snapshot, 0, input.workingState.runtimeSceneState.eventTrack.events),
           bundle.scene.entities,
         ),
-        programAuthority: "source-bound-endpoint",
+        editAuthority: "source-bound-endpoint",
         snapshot: input.snapshot,
         workingRevision: input.workingRevision,
         workspaceKey: input.workspaceKey,
@@ -1321,9 +1327,9 @@ export async function compileStudioPreviewSceneV1(
           persistentRemoveProjection: result.persistentRemoveProjection,
           ...(motionProjection ? { motionProjection } : {}),
           ...(result.staticRootProjection ? { staticRootProjection: result.staticRootProjection } : {}),
-          ...(hasImportedRootTransformTarget(sourcePrograms.map(({ program }) => program))
-            ? { programAuthority: "static-imported-root" as const }
-            : { programAuthority: "rust-authorized-batch" as const }),
+          ...(hasImportedRootTransformTarget(sourceEdits.map(({ program }) => program))
+            ? { editAuthority: "static-imported-root" as const }
+            : { editAuthority: "rust-authorized-batch" as const }),
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -1485,9 +1491,9 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const runtimeTraceSource = snapshot?.snapshot.scene.source;
   const runtimeTraceProgramValidation: StudioPreviewRuntimeTraceProgramValidation =
     runtimeTraceSource?.kind !== "imported-manim-runtime-trace" ||
-    (workingState === null ? 0 : sourceProgramRecords(workingState).length) === 0
+    (workingState === null ? 0 : sourceEditRecords(workingState).length) === 0
       ? "not-applicable"
-      : currentCompiledScene?.programAuthority === "source-bound-endpoint"
+      : currentCompiledScene?.editAuthority === "source-bound-endpoint"
         ? "authorized"
         : "rejected";
   const interactionEntityIds = currentCompiledScene?.interactionEntityIds ?? [];
@@ -1741,7 +1747,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       state.phase === "presented" ? (currentCompiledScene?.mathTexTransformProjection ?? null) : null,
     motionProjection: state.phase === "presented" ? (currentCompiledScene?.motionProjection ?? null) : null,
     persistentRemoveProjection: currentCompiledScene?.persistentRemoveProjection ?? null,
-    programAuthority: state.phase === "presented" ? (currentCompiledScene?.programAuthority ?? null) : null,
+    editAuthority: state.phase === "presented" ? (currentCompiledScene?.editAuthority ?? null) : null,
     staticRootProjection: state.phase === "presented" ? (currentCompiledScene?.staticRootProjection ?? null) : null,
     timelineProjection: currentCompiledScene?.timelineProjection ?? null,
     verifiedSourceDuration,

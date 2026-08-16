@@ -508,7 +508,7 @@ function appendOperationView(scene: RuntimeSceneState, program: SceneDurationPro
 }
 
 function assertWorkingStateCorrelation(workingState: WorkingState, programs: readonly SceneDurationProgram[]) {
-  const sourceRecords = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const sourceRecords = [...workingState.appliedEdits, ...workingState.stagedEdits];
   if (sourceRecords.length !== programs.length) {
     throw new Error("The legacy timeline view does not match the projected WorkingState Program count.");
   }

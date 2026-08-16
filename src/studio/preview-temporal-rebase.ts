@@ -502,7 +502,7 @@ export async function compileStudioPreviewRuntimeTraceEdit(
     workingState: WorkingState;
   }>,
 ): Promise<StudioPreviewTemporalRebaseResult> {
-  const sourcePrograms = [...input.workingState.appliedPrograms, ...input.workingState.stagedPrograms];
+  const sourcePrograms = [...input.workingState.appliedEdits, ...input.workingState.stagedEdits];
   const sourceAnchor = sourcePrograms[0]?.program.anchor.resolvedSeconds;
   const candidates =
     sourceAnchor === undefined

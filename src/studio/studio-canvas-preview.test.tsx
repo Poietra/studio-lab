@@ -106,7 +106,7 @@ function baseProps(): StudioCanvasProps {
 function renderSelectedInspector(
   entity: ProjectedEntity,
   draftError: string | null,
-  draftProgram: Parameters<typeof StudioInspector>[0]["draftProgram"] = null,
+  draftEdit: Parameters<typeof StudioInspector>[0]["draftEdit"] = null,
   rotationAvailable = false,
   opacityAvailable = false,
   opacityValue: number | null = null,
@@ -117,7 +117,7 @@ function renderSelectedInspector(
       draftApplyPending={false}
       draftError={draftError}
       draftOperation={null}
-      draftProgram={draftProgram}
+      draftEdit={draftEdit}
       inspectorReturnFocus={null}
       onApplyDraft={vi.fn()}
       onDiscardDraft={vi.fn()}
@@ -167,7 +167,7 @@ function previewView(
     motionProjection: null,
     persistentRemoveProjection: null,
     staticRootProjection: null,
-    programAuthority: null,
+    editAuthority: null,
     runtimeTraceEditAnchor,
     runtimeTraceEditCandidates,
     runtimeTraceOpaqueSelectionEntities,
