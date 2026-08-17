@@ -13,6 +13,7 @@ const cookie = `${ACCOUNT_SESSION_COOKIE_NAME_V1}=${token}`;
 
 function repository(
   result: Awaited<ReturnType<AccountMembershipViewRepositoryV1["listActiveOrganizationMembers"]>> = {
+    actorRole: "owner",
     kind: "listed",
     members: [
       {
@@ -92,6 +93,24 @@ describe("account membership fetch boundary", () => {
         handler.fetch(new Request("https://studio.example/api/account/members", { headers: { cookie } })),
       ).resolves.toMatchObject({ status });
     }
+
+    const billing = repository({
+      actorRole: "billing",
+      kind: "listed",
+      members: [
+        {
+          displayName: "Billing User",
+          id: "24a6f56d-df1d-4d89-8017-732daa15e070",
+          role: "billing",
+          version: 1,
+        },
+      ],
+    });
+    await expect(
+      createAccountMembershipFetchHandlerV1(billing.value, "https://studio.example").fetch(
+        new Request("https://studio.example/api/account/members", { headers: { cookie } }),
+      ),
+    ).resolves.toMatchObject({ status: 403 });
 
     const unavailable = repository();
     unavailable.listActiveOrganizationMembers.mockRejectedValueOnce(new Error("database unavailable"));

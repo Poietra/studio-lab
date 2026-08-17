@@ -1,5 +1,6 @@
 import type { AccountOrganizationMemberV1 } from "../../src/accounts/account-membership-contract";
 import type { AccountSessionViewV1 } from "../../src/accounts/account-session-contract";
+import type { OrganizationRoleV1 } from "./account-domain";
 import type { ExternalAccountIdentityV1 } from "./organization-membership-repository";
 
 export type ResolvedAccountSessionV1 = ExternalAccountIdentityV1 &
@@ -45,7 +46,11 @@ export type SwitchActiveOrganizationResultV1 =
 export type ListActiveOrganizationMembersResultV1 =
   | Readonly<{ kind: "forbidden" }>
   | Readonly<{ kind: "invalid-session" }>
-  | Readonly<{ kind: "listed"; members: readonly AccountOrganizationMemberV1[] }>;
+  | Readonly<{
+      actorRole: OrganizationRoleV1;
+      kind: "listed";
+      members: readonly AccountOrganizationMemberV1[];
+    }>;
 
 export interface AccountMembershipViewRepositoryV1 {
   close(): Promise<void>;

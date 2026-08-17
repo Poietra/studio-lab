@@ -34,6 +34,7 @@ function sessionRepository() {
   const value: AccountSessionControlRepositoryV1 = {
     close,
     listActiveOrganizationMembers: vi.fn(async () => ({
+      actorRole: "owner" as const,
       kind: "listed" as const,
       members: [
         {

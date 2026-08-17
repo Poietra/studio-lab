@@ -49,6 +49,7 @@ type AccountSessionSwitchRow = AccountSessionAccountRow & {
 
 type AccountOrganizationMemberRow = QueryResultRow & {
   access_status: string;
+  actor_role: string | null;
   member_display_name: string | null;
   member_id: string | null;
   member_role: string | null;
@@ -245,12 +246,13 @@ function switchResultFromRows(rows: readonly AccountSessionSwitchRow[]): SwitchA
 
 function membersFromRows(rows: readonly AccountOrganizationMemberRow[]): ListActiveOrganizationMembersResultV1 {
   const first = rows[0];
-  if (!first || rows.some((row) => row.access_status !== first.access_status)) {
+  if (!first || rows.some((row) => row.access_status !== first.access_status || row.actor_role !== first.actor_role)) {
     throw new TypeError("PostgreSQL returned an invalid organization member result.");
   }
   if (first.access_status === "invalid-session" || first.access_status === "forbidden") {
     if (
       rows.length !== 1 ||
+      first.actor_role !== null ||
       first.member_id !== null ||
       first.member_display_name !== null ||
       first.member_role !== null ||
@@ -266,6 +268,8 @@ function membersFromRows(rows: readonly AccountOrganizationMemberRow[]): ListAct
   if (rows.length > MAX_ACCOUNT_ORGANIZATION_MEMBERS_V1) {
     throw new TypeError("PostgreSQL returned too many organization members.");
   }
+  const actorRole = organizationRoleSchemaV1.safeParse(first.actor_role);
+  if (!actorRole.success) throw new TypeError("PostgreSQL returned an invalid organization member actor role.");
   const members: AccountOrganizationMemberV1[] = rows.map((row) => {
     const parsed = accountOrganizationMemberSchemaV1.safeParse({
       displayName: row.member_display_name,
@@ -284,7 +288,7 @@ function membersFromRows(rows: readonly AccountOrganizationMemberRow[]): ListAct
       throw new TypeError("PostgreSQL returned non-canonical organization members.");
     }
   }
-  return { kind: "listed", members };
+  return { actorRole: actorRole.data, kind: "listed", members };
 }
 
 export class PostgresAccountSessionRepositoryV1
@@ -410,14 +414,13 @@ export class PostgresAccountSessionRepositoryV1
             AND account.status = 'active'
           LIMIT 1
        ), actor AS MATERIALIZED (
-         SELECT selected.user_id, selected.active_tenant_id
+         SELECT selected.user_id, selected.active_tenant_id, membership.role AS actor_role
            FROM selected_session selected
            JOIN public.organization_memberships membership
              ON membership.tenant_id = selected.active_tenant_id
             AND membership.user_id = selected.user_id
            JOIN public.organizations organization ON organization.tenant_id = membership.tenant_id
           WHERE membership.status = 'active'
-            AND membership.role IN ('owner', 'admin', 'member')
             AND organization.status = 'active'
        ), active_members AS MATERIALIZED (
          SELECT membership.user_id::text AS member_id,
@@ -438,6 +441,7 @@ export class PostgresAccountSessionRepositoryV1
                 WHEN actor.user_id IS NULL THEN 'forbidden'
                 ELSE 'listed'
               END AS access_status,
+              actor.actor_role,
               member.member_id,
               member.member_display_name,
               member.member_role,

@@ -169,7 +169,8 @@ describe("PostgresAccountSessionRepositoryV1", () => {
     const hash = Buffer.alloc(32, 11);
     const fixture = fakePool((text, values) => {
       expect(text).toContain("session.active_tenant_id");
-      expect(text).toContain("membership.role IN ('owner', 'admin', 'member')");
+      expect(text).toContain("membership.role AS actor_role");
+      expect(text).not.toContain("membership.role IN");
       expect(text).toContain("membership.status = 'active'");
       expect(text).toContain("account.status = 'active'");
       expect(text).toContain("LIMIT 257");
@@ -181,6 +182,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
         rows: [
           {
             access_status: "listed",
+            actor_role: "member",
             member_display_name: "Ada Lovelace",
             member_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
             member_role: "owner",
@@ -188,6 +190,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
           },
           {
             access_status: "listed",
+            actor_role: "member",
             member_display_name: "Grace Hopper",
             member_id: "8c0d7bf4-1d10-4769-8a4a-8fe2b11b699c",
             member_role: "member",
@@ -199,6 +202,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
     const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
 
     await expect(repository.listActiveOrganizationMembers(hash)).resolves.toEqual({
+      actorRole: "member",
       kind: "listed",
       members: [
         {
@@ -225,6 +229,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
           rows: [
             {
               access_status: accessStatus,
+              actor_role: null,
               member_display_name: null,
               member_id: null,
               member_role: null,
@@ -243,6 +248,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
   it("fails closed on oversized or malformed organization member results", async () => {
     const oversized = Array.from({ length: 257 }, (_, index) => ({
       access_status: "listed",
+      actor_role: "member",
       member_display_name: `Member ${index}`,
       member_id: `00000000-0000-4000-8000-${index.toString().padStart(12, "0")}`,
       member_role: "member",
@@ -259,6 +265,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
         rows: [
           {
             access_status: "listed",
+            actor_role: "member",
             member_display_name: "Ada Lovelace",
             member_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
             member_role: "future-role",
@@ -268,6 +275,25 @@ describe("PostgresAccountSessionRepositoryV1", () => {
       })).pool,
     });
     await expect(malformedRepository.listActiveOrganizationMembers(Buffer.alloc(32))).rejects.toThrow(/invalid/i);
+
+    const malformedActorRepository = new PostgresAccountSessionRepositoryV1({
+      pool: fakePool(() => ({
+        rowCount: 1,
+        rows: [
+          {
+            access_status: "listed",
+            actor_role: "future-role",
+            member_display_name: "Ada Lovelace",
+            member_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+            member_role: "owner",
+            member_version: "1",
+          },
+        ],
+      })).pool,
+    });
+    await expect(malformedActorRepository.listActiveOrganizationMembers(Buffer.alloc(32))).rejects.toThrow(
+      /actor role/i,
+    );
   });
 
   it("switches the active organization and returns one bounded account snapshot", async () => {

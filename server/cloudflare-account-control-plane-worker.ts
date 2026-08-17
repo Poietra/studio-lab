@@ -255,7 +255,7 @@ export function createCloudflareAccountControlPlaneWorkerV1(
                 : createAccountSessionActionFetchRequestGuardV1(publicOrigin).reject(request)
               : pathname === ACCOUNT_MEMBERS_ROUTE_V1
                 ? createAccountMembershipFetchRequestGuardV1(publicOrigin).reject(request)
-              : createAccountInvitationFetchRequestGuardV1(publicOrigin).reject(request);
+                : createAccountInvitationFetchRequestGuardV1(publicOrigin).reject(request);
           if (rejected) return rejected;
           if (isInvitation) {
             const key = invitationMutationRateLimitKey(request);

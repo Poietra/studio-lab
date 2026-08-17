@@ -1,4 +1,5 @@
 import { accountOrganizationMembersViewSchemaV1 } from "../../src/accounts/account-membership-contract";
+import { organizationRoleAllowsV1 } from "./account-domain";
 import { accountSessionTokenHashV1 } from "./account-session-authenticator";
 import type { AccountMembershipViewRepositoryV1 } from "./account-session-repository";
 
@@ -89,6 +90,9 @@ export function createAccountMembershipFetchHandlerV1(
         request.signal.throwIfAborted();
         if (result.kind === "invalid-session") return errorResponse(401, "Authentication is required.");
         if (result.kind === "forbidden") return errorResponse(403, "Account member access is not available.");
+        if (!organizationRoleAllowsV1(result.actorRole, "membership:read")) {
+          return errorResponse(403, "Account member access is not available.");
+        }
         const view = accountOrganizationMembersViewSchemaV1.safeParse({ members: result.members });
         return view.success
           ? jsonResponse(200, view.data)
