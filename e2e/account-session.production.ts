@@ -39,12 +39,8 @@ test("signs in, selects a Studio organization, loads cookie-native media, then l
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
     // Track both tenant API route families: the legacy /api/manim prefix and
-    // the neutral aliases the shipped browser client uses (#712).
-    if (
-      pathname.startsWith("/api/manim/") ||
-      pathname.startsWith("/api/projects") ||
-      pathname === "/api/project-imports"
-    ) {
+    // the neutral Project aliases the shipped browser client uses (#712).
+    if (pathname.startsWith("/api/manim/") || pathname.startsWith("/api/projects")) {
       browserManimRequests.push(pathname);
     }
   });

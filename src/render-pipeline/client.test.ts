@@ -265,7 +265,7 @@ describe("Manim API client contracts", () => {
       }),
     ).resolves.toEqual(imported);
 
-    expect(fetch).toHaveBeenCalledWith("/api/project-imports", {
+    expect(fetch).toHaveBeenCalledWith("/api/manim/project-imports", {
       body: JSON.stringify({ imagePngBase64: null, name: "Imported demo", source, sourceName: "scene.py" }),
       headers: { "content-type": "application/json" },
       method: "POST",

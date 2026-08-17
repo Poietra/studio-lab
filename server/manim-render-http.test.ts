@@ -1068,12 +1068,6 @@ describe("neutral tenant route aliases (#712)", () => {
     sourcePath: null,
     state: "missing",
   };
-  const importRequest = {
-    imagePngBase64: null,
-    name: "Imported",
-    source: "from manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n",
-    sourceName: "demo.py",
-  };
   const jsonHeaders = { "content-type": "application/json" };
 
   function aliasApi() {
@@ -1200,15 +1194,6 @@ describe("neutral tenant route aliases (#712)", () => {
         neutral: `/api/projects/project-a/scene-snapshot-assets/${digest}`,
         status: 200,
       },
-      {
-        body: JSON.stringify(importRequest),
-        handler: () => api.importBrowserProject,
-        headers: jsonHeaders,
-        legacy: "/api/manim/project-imports",
-        method: "POST",
-        neutral: "/api/project-imports",
-        status: 201,
-      },
     ];
     try {
       for (const route of cases) {
@@ -1273,6 +1258,7 @@ describe("neutral tenant route aliases (#712)", () => {
       ["GET", "/api/renders/00000000-0000-4000-8000-000000000001"],
       ["GET", "/api/renders/00000000-0000-4000-8000-000000000001/video"],
       ["GET", "/api/workspace"],
+      ["POST", "/api/project-imports"],
       ["GET", `/api/projects/project-a/scene-snapshot-assets/${"c".repeat(63)}`],
       ["GET", "/api/projects/project-a/thumbnail/refresh"],
     ];
@@ -1303,7 +1289,7 @@ describe("neutral tenant route aliases (#712)", () => {
     expect(canonicalManimRoutePathname(`/api/projects/project-a/scene-snapshot-assets/${digest}`)).toBe(
       `/api/manim/projects/project-a/scene-snapshot-assets/${digest}`,
     );
-    expect(canonicalManimRoutePathname("/api/project-imports")).toBe("/api/manim/project-imports");
+    expect(canonicalManimRoutePathname("/api/project-imports")).toBe("/api/project-imports");
     // The legacy family and non-aliased paths pass through unchanged.
     expect(canonicalManimRoutePathname("/api/manim/projects")).toBe("/api/manim/projects");
     expect(canonicalManimRoutePathname("/api/manim/renders")).toBe("/api/manim/renders");
@@ -1319,7 +1305,7 @@ describe("neutral tenant route aliases (#712)", () => {
     expect(isManimWorkspaceBootstrapRequest("GET", "/api/projects")).toBe(true);
     expect(isManimWorkspaceBootstrapRequest("GET", "/api/projects/project-a/workspace")).toBe(true);
     expect(isManimWorkspaceBootstrapRequest("GET", "/api/workspace")).toBe(false);
-    expect(isManimBrowserProjectImportRequest("POST", "/api/project-imports")).toBe(true);
+    expect(isManimBrowserProjectImportRequest("POST", "/api/project-imports")).toBe(false);
     expect(isManimBrowserProjectImportRequest("POST", "/api/manim/project-imports")).toBe(true);
     expect(isTenantCellStorageLaneManimRequest("POST", "/api/projects")).toBe(true);
     expect(isTenantCellStorageLaneManimRequest("PATCH", "/api/projects/project-a")).toBe(true);
@@ -1351,11 +1337,6 @@ describe("neutral tenant route aliases (#712)", () => {
       await send(port, "/api/manim/projects/project-a/workspace");
       await send(port, "/api/projects/project-a/workspace");
       await send(port, "/api/projects/project-a/thumbnail/status");
-      await send(port, "/api/project-imports", {
-        body: JSON.stringify(importRequest),
-        headers: jsonHeaders,
-        method: "POST",
-      });
       const routes = records
         .filter((record) => record.event === "request.started")
         .map((record) => record.context.route);
@@ -1365,7 +1346,6 @@ describe("neutral tenant route aliases (#712)", () => {
         "/api/manim/projects/:projectId/:action",
         "/api/projects/:projectId/workspace",
         "/api/projects/:projectId/thumbnail/:action?",
-        "/api/project-imports",
       ]);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));

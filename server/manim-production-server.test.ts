@@ -912,7 +912,18 @@ describe("standalone production Manim HTTP adapter", () => {
     // Workspace-bootstrap gate: catalog list and per-project workspace read.
     expect(await send(server, "/api/projects")).toMatchObject({ status: 200 });
     expect(await send(server, "/api/projects/project-a/workspace")).toMatchObject({ status: 200 });
-    const imported = await send(server, "/api/project-imports", {
+    const neutralImport = await send(server, "/api/project-imports", {
+      body: JSON.stringify({
+        imagePngBase64: null,
+        name: "Imported",
+        source: "from manim import *\nclass DemoScene(Scene):\n    def construct(self):\n        self.wait(1)\n",
+        sourceName: "demo.py",
+      }),
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(neutralImport).toMatchObject({ status: 404 });
+    const imported = await send(server, "/api/manim/project-imports", {
       body: JSON.stringify({
         imagePngBase64: null,
         name: "Imported",

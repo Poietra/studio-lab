@@ -197,7 +197,7 @@ export async function createManimProject(input: ManimProjectCreationInput, signa
       throw new Error("The selected browser project exceeds the import request byte limit.");
     }
     const imported = await readJson(
-      await fetchOrganizationScopedManimApiV1("/api/project-imports", {
+      await fetchOrganizationScopedManimApiV1("/api/manim/project-imports", {
         body,
         headers: { "content-type": "application/json" },
         method: "POST",

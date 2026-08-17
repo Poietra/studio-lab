@@ -81,14 +81,13 @@ const BROWSER_PROJECT_IMPORT_ROUTE = "/api/manim/project-imports";
  *
  * Only the generic surfaces are aliased: project catalog CRUD
  * (`/api/projects`, `/api/projects/:projectId`), per-project workspace read,
- * thumbnails, digest-addressed Scene snapshot assets, and browser project
- * imports. Render-session and render-start routes, Python source export,
+ * thumbnails, and digest-addressed Scene snapshot assets. Browser project
+ * import, render-session and render-start routes, Python source export,
  * Runtime Trace runs, and Scene snapshot runs/lookups remain exclusively
- * under the Manim namespace: they are the frozen legacy execution lane and
- * retire with it instead of gaining a neutral twin.
+ * under the Manim namespace.
  */
 const NEUTRAL_TENANT_ROUTE_ALIAS =
-  /^\/api\/(?:project-imports|projects(?:\/[a-z][a-z0-9_-]{0,63}(?:\/(?:workspace|thumbnail(?:\/(?:status|generate))?|scene-snapshot-assets\/[0-9a-f]{64}))?)?)$/;
+  /^\/api\/projects(?:\/[a-z][a-z0-9_-]{0,63}(?:\/(?:workspace|thumbnail(?:\/(?:status|generate))?|scene-snapshot-assets\/[0-9a-f]{64}))?)?$/;
 
 export function isNeutralTenantRouteAlias(pathname: string) {
   return NEUTRAL_TENANT_ROUTE_ALIAS.test(pathname);

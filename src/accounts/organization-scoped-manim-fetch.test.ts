@@ -44,7 +44,6 @@ describe("organization-scoped Manim fetch", () => {
 
     await fetchOrganizationScopedManimApiV1("/api/projects");
     await fetchOrganizationScopedManimApiV1("/api/projects/project-a/thumbnail/status");
-    await fetchOrganizationScopedManimApiV1("/api/project-imports", { method: "POST" });
 
     for (const call of fetch.mock.calls) {
       expect(new Headers(call[1]?.headers).get(POIETRA_ORGANIZATION_HEADER_V1)).toBe("organization-a");
@@ -67,6 +66,7 @@ describe("organization-scoped Manim fetch", () => {
     );
     await expect(fetchOrganizationScopedManimApiV1("/api/editor/projects")).rejects.toThrow("same-origin API paths");
     await expect(fetchOrganizationScopedManimApiV1("/api/projectsx")).rejects.toThrow("same-origin API paths");
+    await expect(fetchOrganizationScopedManimApiV1("/api/project-imports")).rejects.toThrow("same-origin API paths");
     await expect(
       fetchOrganizationScopedManimApiV1("/api/manim/projects", {
         headers: { [POIETRA_ORGANIZATION_HEADER_V1]: "organization-b" },

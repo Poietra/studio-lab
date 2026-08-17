@@ -421,7 +421,7 @@ test("submits one browser-selected Python file with optional image.png and keeps
   const source = "from manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
   const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   let importBody: Record<string, unknown> | null = null;
-  await page.route("**/api/project-imports", async (route) => {
+  await page.route("**/api/manim/project-imports", async (route) => {
     importBody = route.request().postDataJSON() as Record<string, unknown>;
     await route.fulfill({
       body: JSON.stringify({ error: "The fixture import was refused." }),
@@ -453,7 +453,7 @@ test("submits one browser-selected Python file with optional image.png and keeps
   await expect(dialog.getByRole("alert")).toHaveCount(0);
   await expect(imagePicker).toHaveAttribute("aria-invalid", "false");
   const importResponse = page.waitForResponse(
-    (response) => new URL(response.url()).pathname === "/api/project-imports",
+    (response) => new URL(response.url()).pathname === "/api/manim/project-imports",
   );
   await dialog.getByRole("button", { name: "Import workspace" }).click();
   await importResponse;
@@ -494,7 +494,7 @@ test("opens and byte-preserves a browser-imported Python file through export", a
     });
     const importResponsePromise = page.waitForResponse(
       (response) =>
-        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/project-imports",
+        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/manim/project-imports",
     );
     await dialog.getByRole("button", { name: "Import workspace" }).click();
     const importResponse = await importResponsePromise;

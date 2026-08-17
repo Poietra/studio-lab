@@ -1,4 +1,4 @@
-import { createServer, request as createRequest } from "node:http";
+import { request as createRequest, createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { describe, expect, it } from "vitest";
@@ -74,12 +74,12 @@ describe("Manim render dev middleware routing", () => {
       "/api/projects/project-a/thumbnail/status",
       "/api/projects/project-a/thumbnail?v=2026-07-23T10:00:00.000Z",
       `/api/projects/project-a/scene-snapshot-assets/${"a".repeat(64)}`,
-      "/api/project-imports",
     ];
     const passedThrough = [
       "/",
       "/api/editor/projects/project-a/documents/open",
       "/api/projectsx",
+      "/api/project-imports",
       "/api/project-imports/extra",
       "/api/projects/project-a/renders",
       "/api/projects/project-a/export",
