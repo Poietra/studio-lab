@@ -440,7 +440,14 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     return { heads, project };
   }
 
-  async #renderCapability(signal?: AbortSignal): Promise<ManimRenderCapability> {
+  async #renderCapability(nativeRenderFrozen: boolean, signal?: AbortSignal): Promise<ManimRenderCapability> {
+    if (nativeRenderFrozen) {
+      return {
+        available: false,
+        kind: "durable-sandbox",
+        unavailableReason: "native-render-frozen",
+      };
+    }
     if (!this.#execution || !this.#renders) {
       return {
         available: false,
@@ -464,15 +471,6 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async workspace(projectId?: string, signal?: AbortSignal): Promise<ManimWorkspaceView> {
     const { heads, project } = await this.#projectAndHeads(projectId, signal);
-    const [renderCapability, importedSources] = await Promise.all([
-      this.#renderCapability(signal),
-      Promise.all(
-        heads.map(async (head) => {
-          const source = await this.#blobs.readSource(this.tenantId, head.blob, signal);
-          return importSourceSnapshot(source, head.sourcePath, this.#frame).view;
-        }),
-      ),
-    ]);
     // Imported workspaces always carry at least one source head, so their
     // responses never gain the marker and stay byte-identical. Only a
     // head-less project probes for its Studio-native document.
@@ -483,6 +481,15 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
             signal,
           )
         : null;
+    const [renderCapability, importedSources] = await Promise.all([
+      this.#renderCapability(nativeDocument !== null, signal),
+      Promise.all(
+        heads.map(async (head) => {
+          const source = await this.#blobs.readSource(this.tenantId, head.blob, signal);
+          return importSourceSnapshot(source, head.sourcePath, this.#frame).view;
+        }),
+      ),
+    ]);
     return {
       commandAvailable: false,
       frame: this.#frame,

@@ -295,7 +295,12 @@ export type ManimWorkspaceSource = Readonly<{
 export type ManimRenderCapability = Readonly<{
   available: boolean;
   kind: "durable-sandbox" | "local-command";
-  unavailableReason: "durable-render-unavailable" | "durable-render-unconfigured" | "local-command-unavailable" | null;
+  unavailableReason:
+    | "durable-render-unavailable"
+    | "durable-render-unconfigured"
+    | "local-command-unavailable"
+    | "native-render-frozen"
+    | null;
 }>;
 
 export type ManimWorkspaceView = Readonly<{
@@ -526,7 +531,12 @@ export const manimRenderCapabilitySchema: z.ZodType<ManimRenderCapability> = z
     available: z.boolean(),
     kind: z.enum(["durable-sandbox", "local-command"]),
     unavailableReason: z
-      .enum(["durable-render-unavailable", "durable-render-unconfigured", "local-command-unavailable"])
+      .enum([
+        "durable-render-unavailable",
+        "durable-render-unconfigured",
+        "local-command-unavailable",
+        "native-render-frozen",
+      ])
       .nullable(),
   })
   .strict()
@@ -537,7 +547,8 @@ export const manimRenderCapabilitySchema: z.ZodType<ManimRenderCapability> = z
         : capability.kind === "local-command"
           ? capability.unavailableReason === "local-command-unavailable"
           : capability.unavailableReason === "durable-render-unavailable" ||
-            capability.unavailableReason === "durable-render-unconfigured",
+            capability.unavailableReason === "durable-render-unconfigured" ||
+            capability.unavailableReason === "native-render-frozen",
     { message: "Render capability availability and reason do not match." },
   );
 

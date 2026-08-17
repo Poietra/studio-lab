@@ -163,6 +163,7 @@ describe("render pipeline lifecycle policy", () => {
     ["local-command-unavailable", "The configured Manim command is unavailable."],
     ["durable-render-unconfigured", "Durable rendering is not configured for this workspace."],
     ["durable-render-unavailable", "The durable render service is temporarily unavailable."],
+    ["native-render-frozen", "Studio-native documents use client-side export instead of legacy Manim rendering."],
   ] as const)("explains the bounded %s capability", (unavailableReason, expected) => {
     expect(
       renderCapabilityBlocker({

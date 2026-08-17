@@ -118,6 +118,28 @@ describe("Manim API client contracts", () => {
     await expect(loadManimWorkspace()).resolves.toEqual(workspace);
   });
 
+  it("accepts the bounded Studio-native render freeze capability", async () => {
+    const workspace = {
+      commandAvailable: false,
+      frame: { height: 8, width: 14.222 },
+      nativeDocument: { documentKey: "ab".repeat(32) },
+      projectId: "project-native",
+      projectName: "Native demo",
+      renderCapability: {
+        available: false,
+        kind: "durable-sandbox",
+        unavailableReason: "native-render-frozen",
+      },
+      sources: [],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(workspace), { status: 200 })),
+    );
+
+    await expect(loadManimWorkspace()).resolves.toEqual(workspace);
+  });
+
   it("rejects undeclared workspace fields instead of exposing server paths", async () => {
     vi.stubGlobal(
       "fetch",

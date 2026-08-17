@@ -171,6 +171,9 @@ export function renderCapabilityBlocker(capability: ManimRenderCapability | null
   if (capability.unavailableReason === "durable-render-unconfigured") {
     return "Durable rendering is not configured for this workspace.";
   }
+  if (capability.unavailableReason === "native-render-frozen") {
+    return "Studio-native documents use client-side export instead of legacy Manim rendering.";
+  }
   return "The durable render service is temporarily unavailable.";
 }
 
