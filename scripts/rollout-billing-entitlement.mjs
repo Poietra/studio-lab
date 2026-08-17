@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { Pool } from "pg";
 import { createServer } from "vite";
 import { z } from "zod";
+import { applyBundledMigrationsV1, readRecordedMigrationInventoryV1 } from "./apply-bundled-migrations.mjs";
 
 export const BILLING_ENTITLEMENT_ROLLOUT_SCHEMA_V1 = "poietra.billing-entitlement-rollout";
 export const BILLING_ENTITLEMENT_ROLLOUT_VERSION_V1 = 1;
@@ -106,8 +107,18 @@ function activeAt(input, now) {
 export async function rolloutBillingEntitlementV1(specValue, dependencies) {
   const input = parseBillingEntitlementRolloutSpecV1(specValue);
   const migration = await dependencies.migrate();
-  if (migration?.version !== BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1) {
-    fail("PostgreSQL did not reach the exact bundled durable-storage migration v19.");
+  const migrationHead = migration?.head;
+  if (!Number.isSafeInteger(migrationHead) || migrationHead < BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1) {
+    fail("The bundled durable-storage catalog no longer carries the billing render-lifecycle migration.");
+  }
+  if (
+    migration.databaseAtHead !== true ||
+    migration.targetIsHead !== true ||
+    migration.target !== migrationHead ||
+    !Array.isArray(migration.pending) ||
+    migration.pending.length !== 0
+  ) {
+    fail(`PostgreSQL did not reach the validated bundled durable-storage catalog head v${migrationHead}.`);
   }
   if (!(await dependencies.ready())) fail("PostgreSQL is not ready at the exact billing-entitlement schema v14.");
 
@@ -285,7 +296,16 @@ async function main() {
         const result = await pool.query("SELECT clock_timestamp() AS now");
         return result.rows[0]?.now;
       },
-      migrate: () => migrationModule.applyBundledDurableStorageMigrations(pool),
+      migrate: () =>
+        applyBundledMigrationsV1(
+          { dryRun: false, through: null },
+          {
+            applyThrough: (version) => migrationModule.applyBundledDurableStorageMigrationsThrough(pool, version),
+            bundledCatalog: () => migrationModule.BUNDLED_DURABLE_STORAGE_MIGRATION_CATALOG_V1,
+            migrationHead: () => migrationModule.BUNDLED_DURABLE_STORAGE_MIGRATION_HEAD_V1,
+            recordedInventory: () => readRecordedMigrationInventoryV1(pool),
+          },
+        ),
       readCurrentHead: (tenantId) => readCurrentHead(pool, domainModule.parseEntitlementSnapshotV1, tenantId),
       ready: () => repository.ready(),
     });

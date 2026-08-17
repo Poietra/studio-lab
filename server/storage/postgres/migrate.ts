@@ -490,6 +490,24 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   editorDocumentOriginMigrationV30,
 ]);
 
+/**
+ * Public, source-free view of the bundled catalog for operator tooling.
+ * Keeping the checksum beside its version lets a dry-run reject a database
+ * whose migration ledger does not match the artifact that is about to deploy.
+ */
+export const BUNDLED_DURABLE_STORAGE_MIGRATION_CATALOG_V1: readonly Readonly<{
+  checksum: string;
+  version: number;
+}>[] = Object.freeze(
+  BUNDLED_DURABLE_STORAGE_MIGRATIONS.map(({ checksum, version }) => Object.freeze({ checksum, version })),
+);
+
+const bundledDurableStorageMigrationHead = BUNDLED_DURABLE_STORAGE_MIGRATION_CATALOG_V1.at(-1);
+if (!bundledDurableStorageMigrationHead) throw new Error("No durable storage migrations are bundled.");
+
+/** Exact catalog head that operator and rollout tooling must derive from this artifact. */
+export const BUNDLED_DURABLE_STORAGE_MIGRATION_HEAD_V1 = bundledDurableStorageMigrationHead.version;
+
 function bundledMigrationsThrough(version: number) {
   const index = BUNDLED_DURABLE_STORAGE_MIGRATIONS.findIndex((migration) => migration.version === version);
   if (index < 0) throw new TypeError(`Durable storage migration v${version} is not bundled.`);
