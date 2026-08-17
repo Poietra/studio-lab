@@ -3,10 +3,19 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  BUNDLED_DURABLE_STORAGE_MIGRATION_CATALOG_V1,
+  BUNDLED_DURABLE_STORAGE_MIGRATION_HEAD_V1,
+} from "../server/storage/postgres/migrate";
+import { applyBundledMigrationsV1 } from "./apply-bundled-migrations.mjs";
+import {
+  BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1,
   parseBillingEntitlementRolloutArgumentsV1,
   parseBillingEntitlementRolloutSpecV1,
   rolloutBillingEntitlementV1,
 } from "./rollout-billing-entitlement.mjs";
+
+const MIGRATION_HEAD = BUNDLED_DURABLE_STORAGE_MIGRATION_HEAD_V1;
+const MIGRATION_CATALOG = BUNDLED_DURABLE_STORAGE_MIGRATION_CATALOG_V1;
 
 const SPEC = Object.freeze({
   accessUntil: "2026-08-31T00:00:00.000Z",
@@ -34,7 +43,13 @@ function dependencies(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
     applySnapshot: vi.fn(async (input) => ({ kind: "applied", snapshot: { ...input, createdAt: DATABASE_NOW } })),
     databaseNow: vi.fn(async () => DATABASE_NOW),
-    migrate: vi.fn(async () => ({ applied: true, version: 19 })),
+    migrate: vi.fn(async () => ({
+      databaseAtHead: true,
+      head: MIGRATION_HEAD,
+      pending: [],
+      target: MIGRATION_HEAD,
+      targetIsHead: true,
+    })),
     readCurrentHead: vi.fn(async () => exactHead()),
     ready: vi.fn(async () => true),
     ...overrides,
@@ -77,7 +92,13 @@ describe("billing entitlement rollout", () => {
       }),
       migrate: vi.fn(async () => {
         calls.push("migrate");
-        return { applied: true, version: 19 };
+        return {
+          databaseAtHead: true,
+          head: MIGRATION_HEAD,
+          pending: [],
+          target: MIGRATION_HEAD,
+          targetIsHead: true,
+        };
       }),
       readCurrentHead: vi.fn(async () => {
         calls.push("verify");
@@ -99,6 +120,55 @@ describe("billing entitlement rollout", () => {
     expect(calls).toEqual(["migrate", "ready", "clock", "apply", "verify"]);
   });
 
+  it("requires a fully validated catalog head instead of stale migration v19", async () => {
+    expect(MIGRATION_HEAD).toBeGreaterThanOrEqual(BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1);
+    await expect(rolloutBillingEntitlementV1(SPEC, dependencies())).resolves.toMatchObject({ status: "seeded" });
+
+    const staleArtifact = dependencies({
+      migrate: vi.fn(async () => ({
+        databaseAtHead: true,
+        head: BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1 - 1,
+        pending: [],
+        target: BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1 - 1,
+        targetIsHead: true,
+      })),
+    });
+    await expect(rolloutBillingEntitlementV1(SPEC, staleArtifact)).rejects.toThrow(/render-lifecycle migration/iu);
+    expect(staleArtifact.applySnapshot).not.toHaveBeenCalled();
+
+    const incomplete = dependencies({
+      migrate: vi.fn(async () => ({
+        databaseAtHead: false,
+        head: MIGRATION_HEAD,
+        pending: [MIGRATION_HEAD],
+        target: MIGRATION_HEAD,
+        targetIsHead: true,
+      })),
+    });
+    await expect(rolloutBillingEntitlementV1(SPEC, incomplete)).rejects.toThrow(/validated.*catalog head/iu);
+    expect(incomplete.applySnapshot).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown newer database migration before entitlement mutation", async () => {
+    const fixture = dependencies({
+      migrate: () =>
+        applyBundledMigrationsV1(
+          { dryRun: false, through: null },
+          {
+            applyThrough: vi.fn(async (version: number) => ({ applied: false, version })),
+            bundledCatalog: () => MIGRATION_CATALOG,
+            migrationHead: () => MIGRATION_HEAD,
+            recordedInventory: vi.fn(async () => [
+              ...MIGRATION_CATALOG,
+              { checksum: "a".repeat(64), version: MIGRATION_HEAD + 1 },
+            ]),
+          },
+        ),
+    });
+    await expect(rolloutBillingEntitlementV1(SPEC, fixture)).rejects.toThrow(/does not carry/iu);
+    expect(fixture.applySnapshot).not.toHaveBeenCalled();
+  });
+
   it("accepts only an exact generation-1 replay", async () => {
     const fixture = dependencies({
       applySnapshot: vi.fn(async () => ({ appliedGeneration: 1n, kind: "conflict" })),
@@ -114,7 +184,15 @@ describe("billing entitlement rollout", () => {
   it("fails closed before promotion for readiness, generation, identity, or activity drift", async () => {
     const input = parseBillingEntitlementRolloutSpecV1(SPEC);
     const cases = [
-      dependencies({ migrate: vi.fn(async () => ({ applied: true, version: 14 })) }),
+      dependencies({
+        migrate: vi.fn(async () => ({
+          databaseAtHead: false,
+          head: MIGRATION_HEAD,
+          pending: [MIGRATION_HEAD],
+          target: MIGRATION_HEAD,
+          targetIsHead: true,
+        })),
+      }),
       dependencies({ ready: vi.fn(async () => false) }),
       dependencies({ applySnapshot: vi.fn(async () => ({ appliedGeneration: 2n, kind: "conflict" })) }),
       dependencies({

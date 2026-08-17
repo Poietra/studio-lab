@@ -127,10 +127,12 @@ production configuration.
 
 Authentication must use a dedicated Hyperdrive configuration created or
 updated with `--caching-disabled`; stale reads are not acceptable for sessions,
-memberships, invitations, or one-time login state. Apply bundled migrations
-through v24 before deploying this Worker. The invitation repository requires
-the exact v24 quota migration, while the OIDC repository requires the exact v22
-invitation migration. The Worker routes must remain limited to the same-origin
+memberships, invitations, or one-time login state. Apply the bundled catalog
+with `pnpm storage:migrate` before deploying this Worker; it must reach at least
+v28 because account-session reads and organization switches use
+`account_organization_switch_mutations`. The invitation repository additionally
+requires the exact v24 quota migration, while the OIDC repository requires the
+exact v22 invitation migration. The Worker routes must remain limited to the same-origin
 `/auth/oidc/*` path and the exact `/api/account/session`,
 `/api/account/members`, `/api/account/logout`, and
 `/api/account/invitations[/<id>]` paths, with
@@ -277,6 +279,40 @@ server-owned return URL; it validates the credential-free HTTPS response but
 does not persist, log, or navigate to it. The lane uses bounded requests and
 best-effort cancellation/Customer deletion; a passing local run is still not a
 claim that production billing credentials or routes are configured.
+
+## Bundled durable-storage migrations
+
+Worker and operator-led deployments apply the catalog with
+`pnpm storage:migrate`. The runtime-server composition retains its existing,
+explicitly configured migration-pool startup path; both paths call the same
+bundled migration applier.
+
+Run a preflight before applying:
+
+```sh
+PGHOST=... PGPORT=5432 PGDATABASE=... PGUSER=... PGPASSWORD=... \
+  pnpm storage:migrate -- --dry-run
+```
+
+**Safety:** the dry-run is safe to use as an inventory check. A non-dry-run
+apply to the catalog head is not a rolling-deployment convenience. Before
+applying, inspect every pending migration's runbook and complete all required
+drain or cutover steps; keep the affected processes drained until that
+migration and its matching deployment are complete.
+
+The command accepts explicit `PG*` settings only, connects over verified TLS,
+and does not include credentials in its JSON report. `databaseAtHead` describes
+the database's complete version-and-checksum inventory; `targetIsHead`
+describes the requested target. They intentionally remain separate when an
+already-current database is inspected with an older `--through <version>`.
+
+Without `--through`, the target is the catalog head carried by the current
+artifact. `--through` exists for the drain-and-stage procedures documented for
+non-rolling migrations; it is not a downgrade. The preflight rejects unknown
+versions and checksum drift before mutation. After an apply, the command reads
+the ledger again and refuses success when any migration through the target is
+missing. Keep the database drained while following a migration-specific
+stop-the-world sequence.
 
 ## Runtime cell routing
 
