@@ -42,7 +42,8 @@ type ExportRunStateV1 =
   | Readonly<{ kind: "failed"; message: string }>
   | Readonly<{ kind: "idle" }>
   | Readonly<{ kind: "refused"; message: string; reason: ExportRefusalReasonV1 }>
-  | Readonly<{ kind: "running"; progress: ExportProgressV1 | null }>;
+  | Readonly<{ kind: "running"; progress: ExportProgressV1 | null }>
+  | Readonly<{ kind: "saving" }>;
 
 export type StudioExportControlStateKindV1 = ExportRunStateV1["kind"] | "unavailable";
 
@@ -59,7 +60,8 @@ export function StudioExportControl({ disabled = false, exportSource }: StudioEx
   const stateKind: StudioExportControlStateKindV1 =
     run.kind === "running" ? "running" : exportSource === null ? "unavailable" : run.kind;
   const running = run.kind === "running";
-  const startBlocked = disabled || running || exportSource === null;
+  const saving = run.kind === "saving";
+  const startBlocked = disabled || running || saving || exportSource === null;
 
   async function startExport() {
     if (startBlocked || activeExport.current || !exportSource) return;
@@ -86,6 +88,7 @@ export function StudioExportControl({ disabled = false, exportSource }: StudioEx
         return;
       }
       const fileName = browserMp4ExportFileNameV1(exportSource.bundle.scene.sceneId);
+      setRun({ kind: "saving" });
       const desktopSaved = await saveVideoFileWithDesktop(fileName, new Uint8Array(await outcome.mp4.arrayBuffer()));
       if (desktopSaved === null) {
         downloadMp4Blob(fileName, outcome.mp4);
@@ -118,7 +121,11 @@ export function StudioExportControl({ disabled = false, exportSource }: StudioEx
         title="Export the exact Scene shown by the canonical WebGPU preview"
         type="button"
       >
-        {running ? `Exporting MP4… ${studioExportProgressPercentV1(run.progress)}%` : "Export MP4"}
+        {running
+          ? `Exporting MP4… ${studioExportProgressPercentV1(run.progress)}%`
+          : saving
+            ? "Saving MP4…"
+            : "Export MP4"}
       </button>
       {running ? (
         <button

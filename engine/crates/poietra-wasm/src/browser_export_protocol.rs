@@ -131,9 +131,8 @@ mod tests {
             frames_encoded: 1,
         };
         let serde_bytes = browser_export_progress_envelope_v1(progress);
-        let fallback = format!(
-            r#"{{"result":{{"encodedMediaBytes":7,"frameCount":2,"framesEncoded":1,"kind":"progress"}},"schema":"poietra.browser-export-progress","version":1}}"#
-        );
+        let fallback =
+            r#"{"result":{"encodedMediaBytes":7,"frameCount":2,"framesEncoded":1,"kind":"progress"},"schema":"poietra.browser-export-progress","version":1}"#.to_string();
         let serde_value: Value = serde_json::from_slice(&serde_bytes).unwrap();
         let fallback_value: Value = serde_json::from_str(&fallback).unwrap();
         assert_eq!(serde_value, fallback_value);

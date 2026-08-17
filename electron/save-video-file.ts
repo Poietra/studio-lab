@@ -1,4 +1,6 @@
-import { basename } from "node:path";
+import { randomUUID } from "node:crypto";
+import { rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 
 import { MAX_EXPORT_OUTPUT_BYTES } from "../src/engine/export-profile";
 
@@ -34,4 +36,15 @@ export function parseSaveVideoFileRequestV1(input: unknown): SaveVideoFileReques
     throw new TypeError("Video export input is invalid.");
   }
   return { bytes, fileName };
+}
+
+/** Writes beside the destination and publishes only one complete MP4. */
+export async function saveVideoFileAtomicallyV1(filePath: string, bytes: Uint8Array) {
+  const temporaryPath = join(dirname(filePath), `.${basename(filePath)}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporaryPath, bytes, { flag: "wx", mode: 0o600 });
+    await rename(temporaryPath, filePath);
+  } finally {
+    await rm(temporaryPath, { force: true }).catch(() => undefined);
+  }
 }

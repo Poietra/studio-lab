@@ -52,6 +52,10 @@ function errorMessage(error: unknown, fallback: string) {
   return bounded || fallback;
 }
 
+function yieldToQueuedWorkerMessages() {
+  return new Promise<void>((resolve) => setTimeout(resolve, 0));
+}
+
 export async function initializeBrowserMp4ExportBindingsV1(module: unknown): Promise<BrowserMp4ExportWasmBindingsV1> {
   if (!isRecord(module) || typeof module.default !== "function") {
     throw new Error("The Poietra WASM module does not export its initializer.");
@@ -210,8 +214,10 @@ export class BrowserMp4ExportWorkerRuntimeV1 {
       }
       return;
     }
-    // The cancel window closes only when the finished bytes leave the worker:
-    // a cancellation that raced the final muxing still discards the file.
+    // WASM final muxing is synchronous. Yield once after it returns so a
+    // cancel message queued while JS was blocked can update this run before
+    // finished bytes leave the worker.
+    await yieldToQueuedWorkerMessages();
     if (active.cancelled) {
       this.postRefused(request.requestId, "cancelled", "the export was cancelled before its bytes were delivered");
       return;

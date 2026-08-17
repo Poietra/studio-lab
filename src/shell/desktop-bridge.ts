@@ -9,7 +9,7 @@ export type DesktopVideoSaveResult = Readonly<{ cancelled: boolean }>;
 export type PoietraDesktopBridge = Readonly<{
   registerExistingWorkspace: (name: string) => Promise<DesktopProjectRegistrationResult>;
   savePythonSource: (fileName: string, source: string) => Promise<DesktopPythonSaveResult>;
-  saveVideoFile: (fileName: string, bytes: Uint8Array) => Promise<DesktopVideoSaveResult>;
+  saveVideoFile?: (fileName: string, bytes: Uint8Array) => Promise<DesktopVideoSaveResult>;
 }>;
 
 declare global {
@@ -23,8 +23,7 @@ export function desktopBridge() {
   const bridge = window.poietraDesktop;
   return bridge &&
     typeof bridge.registerExistingWorkspace === "function" &&
-    typeof bridge.savePythonSource === "function" &&
-    typeof bridge.saveVideoFile === "function"
+    typeof bridge.savePythonSource === "function"
     ? bridge
     : null;
 }
@@ -48,7 +47,7 @@ export async function savePythonSourceWithDesktop(fileName: string, source: stri
  */
 export async function saveVideoFileWithDesktop(fileName: string, bytes: Uint8Array) {
   const bridge = desktopBridge();
-  if (!bridge) return null;
+  if (!bridge || typeof bridge.saveVideoFile !== "function") return null;
   const result = await bridge.saveVideoFile(fileName, bytes);
   if (typeof result !== "object" || result === null || typeof result.cancelled !== "boolean") {
     throw new Error("The desktop shell returned an invalid video save result.");

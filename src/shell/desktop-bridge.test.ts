@@ -14,7 +14,7 @@ describe("desktop bridge", () => {
     await expect(saveVideoFileWithDesktop("scene.mp4", MP4_BYTES)).resolves.toBeNull();
   });
 
-  it("requires the complete bridge surface including the video save channel", async () => {
+  it("keeps existing desktop features available when the video channel is absent", async () => {
     vi.stubGlobal("window", {
       poietraDesktop: {
         registerExistingWorkspace: vi.fn(),
@@ -22,7 +22,7 @@ describe("desktop bridge", () => {
       },
     });
 
-    await expect(savePythonSourceWithDesktop("scene.py", "print('ok')\n")).resolves.toBeNull();
+    await expect(savePythonSourceWithDesktop("scene.py", "print('ok')\n")).resolves.toBe(true);
     await expect(saveVideoFileWithDesktop("scene.mp4", MP4_BYTES)).resolves.toBeNull();
   });
 

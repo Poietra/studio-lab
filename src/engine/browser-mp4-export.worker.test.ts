@@ -189,6 +189,32 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
     expect(posted[0]?.response).toMatchObject({ kind: "export-refused", reason: "cancelled", requestId: 7 });
   });
 
+  it("processes a cancel task queued while synchronous final muxing blocked the worker", async () => {
+    let finishMux: ((bytes: Uint8Array) => void) | undefined;
+    let exportStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      exportStarted = resolve;
+    });
+    const muxed = new Promise<Uint8Array>((resolve) => {
+      finishMux = resolve;
+    });
+    const { posted, runtime } = runtimeWith(async () => {
+      exportStarted?.();
+      return muxed;
+    });
+    const run = runtime.accept(exportRequest());
+    await started;
+    const cancelProcessed = new Promise<void>((resolve) => {
+      setTimeout(() => void runtime.accept(cancelRequest()).then(resolve), 0);
+    });
+    finishMux?.(new Uint8Array([1, 2, 3]));
+    await Promise.all([run, cancelProcessed]);
+
+    expect(posted).toHaveLength(1);
+    expect(posted[0]?.response).toMatchObject({ kind: "export-refused", reason: "cancelled", requestId: 7 });
+    expect(posted.some(({ response }) => response.kind === "export-finished")).toBe(false);
+  });
+
   it("fails closed on an empty finished output", async () => {
     const { posted, runtime } = runtimeWith(async () => new Uint8Array());
     await runtime.accept(exportRequest());

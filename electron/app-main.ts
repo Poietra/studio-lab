@@ -1,15 +1,15 @@
-import { app, BrowserWindow, dialog, ipcMain, session, type Session } from "electron";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { app, BrowserWindow, dialog, ipcMain, type Session, session } from "electron";
 
-import { manimProjectNameSchema } from "../src/render-pipeline/contracts";
-import { parseSaveVideoFileRequestV1 } from "./save-video-file";
-import { startElectronShellServer, type ElectronShellServer } from "../server/electron-shell-server";
+import { type ElectronShellServer, startElectronShellServer } from "../server/electron-shell-server";
 import { HttpError } from "../server/http/json";
 import { createConsoleJsonSink, createStructuredLogger } from "../server/logging/structured-logger";
 import { parseManimCommand, parseManimProjects } from "../server/manim-render-pipeline";
+import { manimProjectNameSchema } from "../src/render-pipeline/contracts";
+import { parseSaveVideoFileRequestV1, saveVideoFileAtomicallyV1 } from "./save-video-file";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const preloadPath = resolve(currentDirectory, "../electron/preload.cjs");
@@ -139,7 +139,7 @@ function registerNativeHandlers() {
       title: "Save exported video",
     });
     if (selection.canceled || !selection.filePath) return { cancelled: true };
-    await writeFile(selection.filePath, bytes, { mode: 0o600 });
+    await saveVideoFileAtomicallyV1(selection.filePath, bytes);
     return { cancelled: false };
   });
 }

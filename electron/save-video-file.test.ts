@@ -1,7 +1,16 @@
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { MAX_EXPORT_OUTPUT_BYTES } from "../src/engine/export-profile";
-import { MAX_VIDEO_SAVE_BYTES, MAX_VIDEO_SAVE_FILE_NAME_LENGTH, parseSaveVideoFileRequestV1 } from "./save-video-file";
+import {
+  MAX_VIDEO_SAVE_BYTES,
+  MAX_VIDEO_SAVE_FILE_NAME_LENGTH,
+  parseSaveVideoFileRequestV1,
+  saveVideoFileAtomicallyV1,
+} from "./save-video-file";
 
 const VALID_BYTES = new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]);
 
@@ -53,5 +62,32 @@ describe("parseSaveVideoFileRequestV1", () => {
     const oversized = { byteLength: MAX_VIDEO_SAVE_BYTES + 1 };
     Object.setPrototypeOf(oversized, Uint8Array.prototype);
     expect(() => parseSaveVideoFileRequestV1(request({ bytes: oversized }))).toThrow(/Video export input is invalid/);
+  });
+});
+
+describe("saveVideoFileAtomicallyV1", () => {
+  it("replaces the destination only after the complete temporary file is written", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "poietra-video-save-"));
+    const destination = join(directory, "scene.mp4");
+    try {
+      await writeFile(destination, new Uint8Array([9, 9]));
+      await saveVideoFileAtomicallyV1(destination, VALID_BYTES);
+      expect(new Uint8Array(await readFile(destination))).toEqual(VALID_BYTES);
+      expect(await readdir(directory)).toEqual(["scene.mp4"]);
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
+  });
+
+  it("cleans the temporary file when publication fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "poietra-video-save-"));
+    const destination = join(directory, "scene.mp4");
+    try {
+      await mkdir(destination);
+      await expect(saveVideoFileAtomicallyV1(destination, VALID_BYTES)).rejects.toThrow();
+      expect(await readdir(directory)).toEqual(["scene.mp4"]);
+    } finally {
+      await rm(directory, { force: true, recursive: true });
+    }
   });
 });
