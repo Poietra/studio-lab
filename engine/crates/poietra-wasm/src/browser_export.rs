@@ -20,6 +20,10 @@ use wasm_bindgen::prelude::*;
 
 use crate::POIETRA_ENGINE_ABI_VERSION;
 use crate::bounded_writer::BoundedWriter;
+use crate::browser_export_protocol::{
+    BROWSER_EXPORT_CANCELLED_REASON_V1, BrowserExportProgressV1,
+    browser_export_progress_envelope_v1,
+};
 use crate::canvas_assets::{CanvasPngAssetRegistryV1, copy_asset_byte_arrays};
 use crate::export_encoder::{EncoderFailureV1, PoietraExportEncoderSessionV1};
 use crate::export_encoder_protocol::{
@@ -152,16 +156,55 @@ fn mux_error(error: ExportMuxErrorV1) -> JsValue {
     }
 }
 
+/// Reports one bounded JSON progress envelope through the optional callback.
+///
+/// Returning the literal `false` — or throwing — cancels the export
+/// fail-closed with the named `cancelled` refusal: everything collected so
+/// far is discarded and no bytes ever cross the JavaScript boundary.
+fn report_progress(
+    progress: Option<&js_sys::Function>,
+    report: BrowserExportProgressV1,
+) -> Result<(), JsValue> {
+    let Some(progress) = progress else {
+        return Ok(());
+    };
+    let envelope = browser_export_progress_envelope_v1(report);
+    let payload = js_sys::Uint8Array::from(envelope.as_slice());
+    match progress.call1(&JsValue::UNDEFINED, &payload) {
+        Ok(value) if value == JsValue::FALSE => Err(refused(
+            BROWSER_EXPORT_CANCELLED_REASON_V1,
+            format!(
+                "the export was cancelled after frame {} of {}",
+                report.frames_encoded, report.frame_count
+            ),
+        )),
+        Ok(_) => Ok(()),
+        Err(_) => Err(refused(
+            BROWSER_EXPORT_CANCELLED_REASON_V1,
+            format!(
+                "the progress callback threw after frame {} of {}",
+                report.frames_encoded, report.frame_count
+            ),
+        )),
+    }
+}
+
 /// Exports one validated canonical Scene bundle as a complete MP4 byte array.
 ///
 /// No bytes cross the JavaScript boundary until rendering, encoding and mux
 /// finalization have all succeeded. Any stage rejects with a named refusal;
 /// there is no renderer, codec or partial-file fallback.
 ///
+/// The optional `progress` callback receives one bounded JSON envelope per
+/// encoded frame (`poietra.browser-export-progress`); returning the literal
+/// `false` — or throwing — cancels the export fail-closed with the named
+/// `cancelled` refusal and discards everything collected.
+///
 /// # Errors
 ///
 /// Returns a named `PoietraBrowserMp4ExportRefused` JavaScript error when the
-/// Scene, assets, GPU, encoder evidence, output bound, or muxing fails.
+/// Scene, assets, GPU, encoder evidence, output bound, or muxing fails, or
+/// when the progress callback cancels the export.
 #[allow(
     clippy::too_many_lines,
     reason = "the composition stays linear so every fail-closed stage is visible in one place"
@@ -172,6 +215,7 @@ pub async fn export_scene_mp4_v1(
     profile_json: &[u8],
     asset_metadata_json: &[u8],
     asset_bytes: &js_sys::Array,
+    progress: Option<js_sys::Function>,
 ) -> Result<js_sys::Uint8Array, JsValue> {
     let bundle = parse_scene_ir_bundle_json_v1(snapshot_json)
         .map_err(|error| refused("invalid-scene", error))?;
@@ -248,6 +292,7 @@ pub async fn export_scene_mp4_v1(
         )
     })?;
 
+    let mut frames_encoded: u64 = 0;
     while let Some(frame) = sequence.next_frame().await {
         let frame = frame.map_err(|error| refused("render-failed", error))?;
         let timestamp = frame_timestamp_microseconds_v1(frame.frame_index, fps)
@@ -256,11 +301,30 @@ pub async fn export_scene_mp4_v1(
             .push_frame_for_export(frame.rgba.to_vec(), timestamp)
             .await
             .map_err(|failure| refused(failure.reason.wire_name(), failure.message))?;
+        frames_encoded += 1;
+        report_progress(
+            progress.as_ref(),
+            BrowserExportProgressV1 {
+                encoded_media_bytes: video_encoder.collected_media_bytes(),
+                frame_count,
+                frames_encoded,
+            },
+        )?;
     }
     video_encoder
         .finish_for_export()
         .await
         .map_err(|failure| refused(failure.reason.wire_name(), failure.message))?;
+    // The bounded flush may have waited many seconds; honor a cancellation
+    // that arrived meanwhile before any muxing work begins.
+    report_progress(
+        progress.as_ref(),
+        BrowserExportProgressV1 {
+            encoded_media_bytes: video_encoder.collected_media_bytes(),
+            frame_count,
+            frames_encoded,
+        },
+    )?;
     let encoded_output = video_encoder
         .take_finished_output()
         .map_err(|failure| refused(failure.reason.wire_name(), failure.message))?;

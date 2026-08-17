@@ -370,6 +370,34 @@ test("downloads a playable 30 fps MP4 from the exact presented Rust Scene", { ta
   expect(playback.duration).toBeCloseTo(0.2, 1);
 });
 
+test("cancels a running MP4 export without delivering any file", { tag: "@ci-smoke" }, async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto(`/${EXPORT_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  await page
+    .getByLabel("Active imported Scene")
+    .selectOption({ label: "shared_circle_opacity.py · SharedCircleOpacity" });
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expectPresented(page);
+
+  const downloads: Download[] = [];
+  page.on("download", (download) => downloads.push(download));
+  const exportControl = page.locator("[data-studio-export-mp4-state]");
+  await expect(exportControl).toHaveAttribute("data-studio-export-mp4-state", "idle");
+  await page.getByRole("button", { name: "Export MP4" }).click();
+  // Cancel lands while the worker is still loading WASM / probing the GPU —
+  // long before the 6-frame fixture export can finish.
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(exportControl).toHaveAttribute("data-studio-export-mp4-state", "cancelled", { timeout: 110_000 });
+  await expect(exportControl).toContainText("Export cancelled");
+  // The fail-closed rule: a cancelled session delivers nothing, ever.
+  expect(downloads).toHaveLength(0);
+  // The affordance recovers: a fresh export can start again.
+  await expect(page.getByRole("button", { name: "Export MP4" })).toBeEnabled();
+});
+
 test("reinstalls a fresh worker and canvas across workspace close and reopen", async ({ page }) => {
   await openHarnessWorkspace(page);
   await expectPresented(page);

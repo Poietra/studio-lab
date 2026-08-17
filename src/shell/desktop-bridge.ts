@@ -4,9 +4,12 @@ export type DesktopProjectRegistrationResult =
 
 export type DesktopPythonSaveResult = Readonly<{ cancelled: boolean }>;
 
+export type DesktopVideoSaveResult = Readonly<{ cancelled: boolean }>;
+
 export type PoietraDesktopBridge = Readonly<{
   registerExistingWorkspace: (name: string) => Promise<DesktopProjectRegistrationResult>;
   savePythonSource: (fileName: string, source: string) => Promise<DesktopPythonSaveResult>;
+  saveVideoFile?: (fileName: string, bytes: Uint8Array) => Promise<DesktopVideoSaveResult>;
 }>;
 
 declare global {
@@ -31,6 +34,23 @@ export async function savePythonSourceWithDesktop(fileName: string, source: stri
   const result = await bridge.savePythonSource(fileName, source);
   if (typeof result !== "object" || result === null || typeof result.cancelled !== "boolean") {
     throw new Error("The desktop shell returned an invalid Python export result.");
+  }
+  return !result.cancelled;
+}
+
+/**
+ * Saves one exported MP4 through the desktop shell's native dialog (#723).
+ *
+ * Returns `null` when no desktop bridge is present (the browser Blob download
+ * stays the fallback), `true` after a native save, and `false` when the user
+ * cancelled the save dialog.
+ */
+export async function saveVideoFileWithDesktop(fileName: string, bytes: Uint8Array) {
+  const bridge = desktopBridge();
+  if (!bridge || typeof bridge.saveVideoFile !== "function") return null;
+  const result = await bridge.saveVideoFile(fileName, bytes);
+  if (typeof result !== "object" || result === null || typeof result.cancelled !== "boolean") {
+    throw new Error("The desktop shell returned an invalid video save result.");
   }
   return !result.cancelled;
 }

@@ -8,6 +8,8 @@ mod authoring;
 mod bounded_writer;
 #[cfg(target_arch = "wasm32")]
 mod browser_export;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod browser_export_protocol;
 #[cfg(target_arch = "wasm32")]
 mod canvas;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
@@ -36,6 +38,7 @@ pub use authoring::{
     project_studio_timeline_v1,
 };
 
+pub use browser_export_protocol::MAX_BROWSER_EXPORT_PROGRESS_JSON_BYTES_V1;
 pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
 pub use canvas_telemetry::{
     MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES_V1, MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES_V1,

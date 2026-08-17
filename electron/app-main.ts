@@ -1,14 +1,15 @@
-import { app, BrowserWindow, dialog, ipcMain, session, type Session } from "electron";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { app, BrowserWindow, dialog, ipcMain, type Session, session } from "electron";
 
-import { manimProjectNameSchema } from "../src/render-pipeline/contracts";
-import { startElectronShellServer, type ElectronShellServer } from "../server/electron-shell-server";
+import { type ElectronShellServer, startElectronShellServer } from "../server/electron-shell-server";
 import { HttpError } from "../server/http/json";
 import { createConsoleJsonSink, createStructuredLogger } from "../server/logging/structured-logger";
 import { parseManimCommand, parseManimProjects } from "../server/manim-render-pipeline";
+import { manimProjectNameSchema } from "../src/render-pipeline/contracts";
+import { parseSaveVideoFileRequestV1, saveVideoFileAtomicallyV1 } from "./save-video-file";
 
 const currentDirectory = dirname(fileURLToPath(import.meta.url));
 const preloadPath = resolve(currentDirectory, "../electron/preload.cjs");
@@ -128,6 +129,19 @@ function registerNativeHandlers() {
     await writeFile(selection.filePath, source, { encoding: "utf8", mode: 0o600 });
     return { cancelled: false };
   });
+
+  ipcMain.handle("poietra:save-video-file", async (event, input: unknown) => {
+    const senderWindow = trustedSender(event);
+    const { bytes, fileName } = parseSaveVideoFileRequestV1(input);
+    const selection = await dialog.showSaveDialog(senderWindow, {
+      defaultPath: fileName,
+      filters: [{ extensions: ["mp4"], name: "MP4 video" }],
+      title: "Save exported video",
+    });
+    if (selection.canceled || !selection.filePath) return { cancelled: true };
+    await saveVideoFileAtomicallyV1(selection.filePath, bytes);
+    return { cancelled: false };
+  });
 }
 
 function secureWindow(window: BrowserWindow) {
@@ -178,6 +192,7 @@ function shutdown() {
   shutdownRequest ??= (async () => {
     ipcMain.removeHandler("poietra:register-existing-workspace");
     ipcMain.removeHandler("poietra:save-python-source");
+    ipcMain.removeHandler("poietra:save-video-file");
     await shellServer?.close();
   })();
   return shutdownRequest;
