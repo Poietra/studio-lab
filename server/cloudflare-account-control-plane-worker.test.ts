@@ -76,6 +76,12 @@ function accountSwitchRequest() {
   });
 }
 
+function membersRequest() {
+  return new Request(`${origin}/api/account/members`, {
+    headers: { cookie: `__Host-poietra_session=${opaqueToken}`, origin, "sec-fetch-site": "same-origin" },
+  });
+}
+
 function logoutRequest() {
   return new Request(`${origin}/api/account/logout`, {
     headers: { cookie: `__Host-poietra_session=${opaqueToken}`, origin, "sec-fetch-site": "same-origin" },
@@ -141,6 +147,7 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
 
     expect(configuration.routes?.map(({ pattern }) => pattern)).toEqual(
       expect.arrayContaining([
+        "https://studio.example.com/api/account/members",
         "https://studio.example.com/api/account/invitations",
         "https://studio.example.com/api/account/invitations/*",
       ]),
@@ -178,6 +185,7 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     await expect(worker.fetch(callback, env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(accountRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(accountSwitchRequest(), env.value)).resolves.toMatchObject({ status: 204 });
+    await expect(worker.fetch(membersRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(logoutRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(invitationRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(invitationRevokeRequest(), env.value)).resolves.toMatchObject({ status: 204 });
@@ -194,7 +202,7 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     );
     expect(forwarded).toHaveBeenNthCalledWith(1, start, env.value);
     expect(forwarded).toHaveBeenNthCalledWith(2, callback, env.value);
-    expect(forwarded).toHaveBeenCalledTimes(7);
+    expect(forwarded).toHaveBeenCalledTimes(8);
   });
 
   it("keeps existing account and OIDC session paths independent from the invitation limiter", async () => {
@@ -209,18 +217,18 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     const { createControlPlane, forwarded, worker } = harness();
 
     const responses = await Promise.all(
-      [accountRequest(), accountSwitchRequest(), logoutRequest()].map((request) =>
+      [accountRequest(), accountSwitchRequest(), membersRequest(), logoutRequest()].map((request) =>
         worker.fetch(request, accountOnlyEnvironment),
       ),
     );
     const invitation = await worker.fetch(invitationRequest(), accountOnlyEnvironment);
     const oidc = await worker.fetch(startRequest(), env.value);
 
-    expect(responses.map(({ status }) => status)).toEqual([204, 204, 204]);
+    expect(responses.map(({ status }) => status)).toEqual([204, 204, 204, 204]);
     expect(invitation.status).toBe(503);
     expect(oidc.status).toBe(204);
     expect(createControlPlane).toHaveBeenCalledOnce();
-    expect(forwarded).toHaveBeenCalledTimes(4);
+    expect(forwarded).toHaveBeenCalledTimes(5);
     expect(env.start.limit).toHaveBeenCalledOnce();
     expect(env.callback.limit).not.toHaveBeenCalled();
   });
@@ -232,6 +240,7 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
       new Request(`${origin}/api/account/session?organization=organization-a`),
       new Request(`${origin}/api/account/session`, { method: "POST" }),
       new Request(`${origin}/api/account/session`, { headers: { origin: "https://attacker.example" } }),
+      new Request(`${origin}/api/account/members`, { headers: { origin: "https://attacker.example" } }),
       new Request(`${origin}/api/account/logout`, {
         body: "{}",
         headers: { origin, "sec-fetch-site": "same-origin" },
@@ -246,7 +255,7 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
 
     const responses = await Promise.all(requests.map((request) => worker.fetch(request, env.value)));
 
-    expect(responses.map(({ status }) => status)).toEqual([400, 405, 403, 400, 403]);
+    expect(responses.map(({ status }) => status)).toEqual([400, 405, 403, 403, 400, 403]);
     expect(createControlPlane).not.toHaveBeenCalled();
     expect(env.start.limit).not.toHaveBeenCalled();
     expect(env.callback.limit).not.toHaveBeenCalled();

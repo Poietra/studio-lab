@@ -57,7 +57,9 @@ this browser authenticator. Migration v13 and the Fetch API account-control-plan
 handler add `/auth/oidc/start`, `/auth/oidc/callback`, browser bootstrap
 `GET /api/account/session`, version-fenced active-organization switching through
 same-origin `PATCH /api/account/session`, and current-session logout through same-origin
-`POST /api/account/logout`. Login uses Authorization
+`POST /api/account/logout`. Authenticated users with `membership:read` may list
+the bounded active membership of their session-selected organization through
+`GET /api/account/members`; the request cannot select another organization. Login uses Authorization
 Code, PKCE S256, state, nonce, and a separate short-lived browser-binding cookie.
 PostgreSQL stores only the state and binding hashes; `DELETE ... RETURNING`
 consumes the verifier and nonce exactly once. A successful callback issues a new
@@ -130,7 +132,8 @@ through v24 before deploying this Worker. The invitation repository requires
 the exact v24 quota migration, while the OIDC repository requires the exact v22
 invitation migration. The Worker routes must remain limited to the same-origin
 `/auth/oidc/*` path and the exact `/api/account/session`,
-`/api/account/logout`, and `/api/account/invitations[/<id>]` paths, with
+`/api/account/members`, `/api/account/logout`, and
+`/api/account/invitations[/<id>]` paths, with
 `workers_dev` and preview URLs off.
 Set those security-critical routes to fail closed in Cloudflare before promotion.
 Invocation logs and traces remain disabled because callback URLs contain OIDC

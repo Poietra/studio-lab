@@ -1,4 +1,6 @@
+import type { AccountOrganizationMemberV1 } from "../../src/accounts/account-membership-contract";
 import type { AccountSessionViewV1 } from "../../src/accounts/account-session-contract";
+import type { OrganizationRoleV1 } from "./account-domain";
 import type { ExternalAccountIdentityV1 } from "./organization-membership-repository";
 
 export type ResolvedAccountSessionV1 = ExternalAccountIdentityV1 &
@@ -41,8 +43,27 @@ export type SwitchActiveOrganizationResultV1 =
       mutation: NonNullable<AccountSessionViewV1["organizationSwitch"]>;
     }>;
 
+export type ListActiveOrganizationMembersResultV1 =
+  | Readonly<{ kind: "forbidden" }>
+  | Readonly<{ kind: "invalid-session" }>
+  | Readonly<{
+      actorRole: OrganizationRoleV1;
+      kind: "listed";
+      members: readonly AccountOrganizationMemberV1[];
+    }>;
+
+export interface AccountMembershipViewRepositoryV1 {
+  close(): Promise<void>;
+  listActiveOrganizationMembers(
+    sessionTokenHash: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<ListActiveOrganizationMembersResultV1>;
+}
+
 /** Request-scoped browser account mutations; raw session tokens never cross this boundary. */
-export interface AccountSessionControlRepositoryV1 extends AccountSessionViewRepositoryV1 {
+export interface AccountSessionControlRepositoryV1
+  extends AccountSessionViewRepositoryV1,
+    AccountMembershipViewRepositoryV1 {
   revokeAccountSession(sessionTokenHash: Uint8Array, signal?: AbortSignal): Promise<void>;
   switchActiveOrganization(
     sessionTokenHash: Uint8Array,
