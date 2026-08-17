@@ -8,7 +8,7 @@ import { sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
-import { handleManimRequest } from "./manim-render-http";
+import { handleManimRequest, isNeutralTenantRouteAlias } from "./manim-render-http";
 import { localManimTenantId } from "./manim-request-principal";
 import { ManimProjectRegistry, type ManimProjectConfig } from "./manim-render-pipeline";
 
@@ -126,7 +126,9 @@ export async function startElectronShellServer(
       return;
     }
     const url = new URL(request.url ?? "/", `http://${expectedHost}`);
-    if (url.pathname.startsWith("/api/manim/")) {
+    // #712: the shell serves both tenant API route families — the legacy
+    // `/api/manim/` prefix and the neutral aliases of its generic surfaces.
+    if (url.pathname.startsWith("/api/manim/") || isNeutralTenantRouteAlias(url.pathname)) {
       void handleManimRequest(requestContext, request, response, options.logger ?? nullLogger, {
         allowExistingProjectRegistration: false,
       });

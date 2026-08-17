@@ -37,16 +37,36 @@ describe("organization-scoped Manim fetch", () => {
     expect(headers.get(POIETRA_ORGANIZATION_HEADER_V1)).toBe("organization-a");
   });
 
+  it("pins neutral tenant route requests exactly like their legacy /api/manim twins", async () => {
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetch);
+    setManimOrganizationScopeV1("organization-a");
+
+    await fetchOrganizationScopedManimApiV1("/api/projects");
+    await fetchOrganizationScopedManimApiV1("/api/projects/project-a/thumbnail/status");
+
+    for (const call of fetch.mock.calls) {
+      expect(new Headers(call[1]?.headers).get(POIETRA_ORGANIZATION_HEADER_V1)).toBe("organization-a");
+    }
+  });
+
   it("fails closed while account state changes and never leaks organization IDs off origin", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     setManimOrganizationScopeV1(null);
     await expect(fetchOrganizationScopedManimApiV1("/api/manim/projects")).rejects.toThrow("being refreshed");
+    await expect(fetchOrganizationScopedManimApiV1("/api/projects")).rejects.toThrow("being refreshed");
 
     setManimOrganizationScopeV1("organization-a");
     await expect(fetchOrganizationScopedManimApiV1("https://attacker.example/api/manim/projects")).rejects.toThrow(
       "same-origin API paths",
     );
+    await expect(fetchOrganizationScopedManimApiV1("https://attacker.example/api/projects")).rejects.toThrow(
+      "same-origin API paths",
+    );
+    await expect(fetchOrganizationScopedManimApiV1("/api/editor/projects")).rejects.toThrow("same-origin API paths");
+    await expect(fetchOrganizationScopedManimApiV1("/api/projectsx")).rejects.toThrow("same-origin API paths");
+    await expect(fetchOrganizationScopedManimApiV1("/api/project-imports")).rejects.toThrow("same-origin API paths");
     await expect(
       fetchOrganizationScopedManimApiV1("/api/manim/projects", {
         headers: { [POIETRA_ORGANIZATION_HEADER_V1]: "organization-b" },

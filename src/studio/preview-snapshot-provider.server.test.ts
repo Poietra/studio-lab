@@ -413,7 +413,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).endsWith("/runtime-traces")) return jsonResponse(unsupportedRuntimeTraceRun());
       if (String(input).endsWith("/scene-snapshots")) return jsonResponse(run);
-      expect(String(input)).toBe(`/api/manim/projects/default/scene-snapshot-assets/${asset.sha256}`);
+      expect(String(input)).toBe(`/api/projects/default/scene-snapshot-assets/${asset.sha256}`);
       expect(init).toMatchObject({ headers: { accept: "image/png" }, method: "GET" });
       return new Response(PNG_BYTES.slice(), {
         headers: { "content-length": String(PNG_BYTES.byteLength), "content-type": "image/png" },

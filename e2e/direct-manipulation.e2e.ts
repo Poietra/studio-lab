@@ -472,7 +472,7 @@ test("keeps shape resize routes out of an Applied Program edit", async ({ page }
 test("labels runtime-dependent geometry and blocks unsafe direct manipulation", async ({ page }) => {
   const positionReason = "Position depends on a runtime move_to expression.";
   const scaleReason = "Scale depends on a runtime function call.";
-  await page.route("**/api/manim/projects/studio-lab/workspace", async (route) => {
+  await page.route("**/api/projects/studio-lab/workspace", async (route) => {
     const response = await route.fetch();
     const workspace = (await response.json()) as {
       sources: Array<{

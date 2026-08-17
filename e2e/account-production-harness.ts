@@ -24,6 +24,7 @@ import type {
 import { createOrganizationMembershipProductionAdmissionV1 } from "../server/accounts/organization-membership-admission";
 import type { ManimApi } from "../server/manim-api";
 import { type ProductionManimServer, startProductionManimServer } from "../server/manim-production-server";
+import { isNeutralTenantRouteAlias } from "../server/manim-render-http";
 import { applyBundledDurableStorageMigrations } from "../server/storage/postgres/migrate";
 import { PostgresAccountInvitationRepositoryV1 } from "../server/storage/postgres/postgres-account-invitation-repository";
 import { PostgresAccountSessionRepositoryV1 } from "../server/storage/postgres/postgres-account-session-repository";
@@ -425,7 +426,11 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
             await sendFetchResponse(await invitationHandler.fetch(fetchRequest(request, publicOrigin)), response);
             return;
           }
-          if (url.pathname.startsWith("/api/manim/") || url.pathname.startsWith("/api/editor/")) {
+          if (
+            url.pathname.startsWith("/api/manim/") ||
+            url.pathname.startsWith("/api/editor/") ||
+            isNeutralTenantRouteAlias(url.pathname)
+          ) {
             manimEvidence.push({
               method: request.method ?? "GET",
               organizationHeader:

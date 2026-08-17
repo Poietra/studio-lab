@@ -218,7 +218,7 @@ async function loadSnapshotAssetPayloads(
   for (const asset of assets) {
     signal?.throwIfAborted();
     const response = await fetcher(
-      `/api/manim/projects/${encodeURIComponent(projectId)}/scene-snapshot-assets/${asset.sha256}`,
+      `/api/projects/${encodeURIComponent(projectId)}/scene-snapshot-assets/${asset.sha256}`,
       { headers: { accept: "image/png" }, method: "GET", signal },
     );
     signal?.throwIfAborted();

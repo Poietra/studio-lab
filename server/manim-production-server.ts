@@ -21,6 +21,7 @@ import {
   isManimRenderStartRequest,
   isManimVideoRequest,
   isManimWorkspaceBootstrapRequest,
+  isNeutralTenantRouteAlias,
   isTenantCellStorageLaneManimRequest,
   type ManimApi,
 } from "./manim-render-http";
@@ -656,7 +657,10 @@ export async function startProductionManimServer(
       if (
         (!isEditSuggestionRequest || !editSuggestionHandler) &&
         !isEditorRequest &&
-        !pathname.startsWith("/api/manim/")
+        !pathname.startsWith("/api/manim/") &&
+        // #712: the tenant handler also owns the neutral aliases of its
+        // generic surfaces; non-aliased neutral paths keep the transport 404.
+        !isNeutralTenantRouteAlias(pathname)
       ) {
         throw new TransportError("Endpoint not found.", 404);
       }

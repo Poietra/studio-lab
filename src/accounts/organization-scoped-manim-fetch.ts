@@ -17,7 +17,10 @@ export function setManimOrganizationScopeV1(organizationId: string | null | unde
 }
 
 export async function fetchOrganizationScopedManimApiV1(input: RequestInfo | URL, init?: RequestInit) {
-  if (typeof input !== "string" || !/^\/api\/manim(?:\/|$)/.test(input)) {
+  // The tenant API mounts two route families for one handler set (#712): the
+  // legacy `/api/manim/` prefix and the neutral aliases of its generic
+  // surfaces (`/api/projects`). Manim import remains in the integration namespace.
+  if (typeof input !== "string" || !/^\/api\/(?:manim|projects)(?:\/|$)/.test(input)) {
     throw new TypeError("The Manim API client accepts only same-origin API paths.");
   }
   if (activeOrganizationId === undefined) return fetch(input, init);

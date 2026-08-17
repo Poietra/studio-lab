@@ -65,7 +65,7 @@ test("fails closed with a visible reason when the persisted source hash is stale
   await page.getByRole("button", { name: "Apply program" }).click();
   await waitForPersistedSession(page);
 
-  await page.route("**/api/manim/projects/studio-lab/workspace", async (route) => {
+  await page.route("**/api/projects/studio-lab/workspace", async (route) => {
     const response = await route.fetch();
     const workspace = (await response.json()) as {
       sources: Array<{ scenes: Array<{ sourceHash: string }> }>;

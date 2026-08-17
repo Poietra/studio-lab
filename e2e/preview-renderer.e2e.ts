@@ -34,7 +34,7 @@ async function openWorkspaceWithQuery(page: Page, query: string, name: string) {
 }
 
 async function makePreviewHarnessCommandAvailable(page: Page) {
-  await page.route("**/api/manim/projects/preview-harness/workspace", async (route) => {
+  await page.route("**/api/projects/preview-harness/workspace", async (route) => {
     const response = await route.fetch();
     const workspace = (await response.json()) as Record<string, unknown>;
     await route.fulfill({
@@ -261,7 +261,7 @@ test("source reimport locks Studio editing until the committed revision is loade
   const reimportStarted = new Promise<void>((resolve) => {
     markReimportStarted = resolve;
   });
-  await page.route("**/api/manim/projects/preview-harness/workspace", async (route) => {
+  await page.route("**/api/projects/preview-harness/workspace", async (route) => {
     const response = await route.fetch();
     const workspace = (await response.json()) as {
       sources: readonly Readonly<{

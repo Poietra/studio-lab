@@ -28,7 +28,19 @@ import {
 import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-identity";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
-import { handleManimRequest, type ManimApi, type ManimRequestPolicy, resolveByteRange } from "./manim-render-http";
+import {
+  canonicalManimRoutePathname,
+  handleManimRequest,
+  isManimBrowserProjectImportRequest,
+  isManimRenderStartRequest,
+  isManimVideoRequest,
+  isManimWorkspaceBootstrapRequest,
+  isNeutralTenantRouteAlias,
+  isTenantCellStorageLaneManimRequest,
+  type ManimApi,
+  type ManimRequestPolicy,
+  resolveByteRange,
+} from "./manim-render-http";
 import genericRuntimeTraceFixture from "./test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 
 type FastManimRuntimeTraceRunViewV2WithBundle = Omit<FastManimRuntimeTraceRunViewV2, "bundle"> & {
@@ -1033,6 +1045,308 @@ describe("Runtime Trace preview routing", () => {
       expect(response.status).toBe(502);
       expect(response.body.toString("utf8")).not.toContain(leakedSource);
       expect(response.body.toString("utf8")).not.toContain("/private/workspace");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
+
+describe("neutral tenant route aliases (#712)", () => {
+  const digest = "c".repeat(64);
+  const mutationView = {
+    catalog: { defaultProjectId: "project-a", projects: [{ id: "project-a", kind: "managed", name: "Demo" }] },
+    project: { id: "project-a", kind: "managed", name: "Demo" },
+  };
+  const thumbnailStatusView = {
+    cachedSourceHash: null,
+    error: null,
+    generatedAt: null,
+    imageKind: "empty",
+    projectId: "project-a",
+    sceneName: null,
+    sourceHash: null,
+    sourcePath: null,
+    state: "missing",
+  };
+  const jsonHeaders = { "content-type": "application/json" };
+
+  function aliasApi() {
+    return {
+      createManagedProject: vi.fn(async () => mutationView),
+      createProject: vi.fn(async () => mutationView),
+      generateThumbnail: vi.fn(async () => ({ ...thumbnailStatusView, state: "generating" })),
+      importBrowserProject: vi.fn(async () => mutationView),
+      projects: vi.fn(async () => ({ defaultProjectId: "project-a", projects: mutationView.catalog.projects })),
+      renameProject: vi.fn(async () => mutationView),
+      sceneSnapshotAsset: vi.fn(async () => ({
+        body: Uint8Array.from([137, 80, 78, 71]),
+        digest,
+        mediaType: "image/png",
+      })),
+      start: vi.fn(),
+      storageBoundary: { kind: "shared-durable", namespace: "neutral-alias-test" },
+      tenantId: "tenant-alias",
+      thumbnail: vi.fn(async () => ({
+        body: Buffer.from("<svg xmlns='http://www.w3.org/2000/svg'/>", "utf8"),
+        kind: "semantic",
+        mediaType: "image/svg+xml; charset=utf-8",
+        state: "current",
+        status: 200,
+      })),
+      thumbnailStatus: vi.fn(async () => thumbnailStatusView),
+      unregisterProject: vi.fn(async () => ({ ...mutationView, project: null })),
+      workspace: vi.fn(async () => ({
+        commandAvailable: false,
+        frame: { height: 8, width: 14.222 },
+        projectId: "project-a",
+        projectName: "Demo",
+        renderCapability: {
+          available: false,
+          kind: "durable-sandbox",
+          unavailableReason: "durable-render-unavailable",
+        },
+        sources: [],
+      })),
+    };
+  }
+
+  const VOLATILE_HEADERS = new Set(["date", "x-poietra-request-id"]);
+  function comparable(
+    response: Readonly<{ body: Buffer; headers: import("node:http").IncomingHttpHeaders; status: number }>,
+  ) {
+    return {
+      body: response.body.toString("base64"),
+      headers: Object.fromEntries(Object.entries(response.headers).filter(([name]) => !VOLATILE_HEADERS.has(name))),
+      status: response.status,
+    };
+  }
+
+  it("serves every aliased generic surface byte-identically through both route families", async () => {
+    const api = aliasApi();
+    const server = await listen(api as unknown as ManimApi);
+    const port = (server.address() as AddressInfo).port;
+    const cases: readonly {
+      body?: string;
+      handler: () => ReturnType<typeof vi.fn>;
+      headers?: Record<string, string>;
+      legacy: string;
+      method?: string;
+      neutral: string;
+      status: number;
+    }[] = [
+      { handler: () => api.projects, legacy: "/api/manim/projects", neutral: "/api/projects", status: 200 },
+      {
+        body: JSON.stringify({ kind: "managed", name: "Demo" }),
+        handler: () => api.createManagedProject,
+        headers: jsonHeaders,
+        legacy: "/api/manim/projects",
+        method: "POST",
+        neutral: "/api/projects",
+        status: 201,
+      },
+      {
+        body: JSON.stringify({ name: "Renamed" }),
+        handler: () => api.renameProject,
+        headers: jsonHeaders,
+        legacy: "/api/manim/projects/project-a",
+        method: "PATCH",
+        neutral: "/api/projects/project-a",
+        status: 200,
+      },
+      {
+        handler: () => api.unregisterProject,
+        headers: jsonHeaders,
+        legacy: "/api/manim/projects/project-a",
+        method: "DELETE",
+        neutral: "/api/projects/project-a",
+        status: 200,
+      },
+      {
+        handler: () => api.workspace,
+        legacy: "/api/manim/projects/project-a/workspace",
+        neutral: "/api/projects/project-a/workspace",
+        status: 200,
+      },
+      {
+        handler: () => api.thumbnail,
+        legacy: "/api/manim/projects/project-a/thumbnail",
+        neutral: "/api/projects/project-a/thumbnail",
+        status: 200,
+      },
+      {
+        handler: () => api.thumbnailStatus,
+        legacy: "/api/manim/projects/project-a/thumbnail/status",
+        neutral: "/api/projects/project-a/thumbnail/status",
+        status: 200,
+      },
+      {
+        body: "{}",
+        handler: () => api.generateThumbnail,
+        headers: jsonHeaders,
+        legacy: "/api/manim/projects/project-a/thumbnail/generate",
+        method: "POST",
+        neutral: "/api/projects/project-a/thumbnail/generate",
+        status: 202,
+      },
+      {
+        handler: () => api.sceneSnapshotAsset,
+        legacy: `/api/manim/projects/project-a/scene-snapshot-assets/${digest}`,
+        neutral: `/api/projects/project-a/scene-snapshot-assets/${digest}`,
+        status: 200,
+      },
+    ];
+    try {
+      for (const route of cases) {
+        const options = { body: route.body, headers: route.headers, method: route.method };
+        const handler = route.handler();
+        const callsBefore = handler.mock.calls.length;
+        const legacyResponse = await send(port, route.legacy, options);
+        const neutralResponse = await send(port, route.neutral, options);
+        expect(legacyResponse.status, route.legacy).toBe(route.status);
+        expect(comparable(neutralResponse), route.neutral).toEqual(comparable(legacyResponse));
+        expect(handler.mock.calls.length, route.neutral).toBe(callsBefore + 2);
+      }
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("propagates handler errors and method rejections byte-identically to both families", async () => {
+    const api = {
+      projects: vi.fn(async () => {
+        throw new Error("Catalog storage failed.");
+      }),
+      storageBoundary: { kind: "shared-durable", namespace: "neutral-alias-error-test" },
+      tenantId: "tenant-alias",
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    const port = (server.address() as AddressInfo).port;
+    try {
+      const legacyFailure = await send(port, "/api/manim/projects");
+      const neutralFailure = await send(port, "/api/projects");
+      expect(legacyFailure.status).toBe(500);
+      expect(comparable(neutralFailure)).toEqual(comparable(legacyFailure));
+
+      const legacyMethod = await send(port, "/api/manim/projects/project-a/workspace", {
+        body: "{}",
+        headers: jsonHeaders,
+        method: "POST",
+      });
+      const neutralMethod = await send(port, "/api/projects/project-a/workspace", {
+        body: "{}",
+        headers: jsonHeaders,
+        method: "POST",
+      });
+      expect(legacyMethod.status).toBe(405);
+      expect(comparable(neutralMethod)).toEqual(comparable(legacyMethod));
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("does not alias the frozen Manim execution lane onto neutral routes", async () => {
+    const api = aliasApi();
+    const server = await listen(api as unknown as ManimApi);
+    const port = (server.address() as AddressInfo).port;
+    const unaliased: readonly (readonly [string, string])[] = [
+      ["POST", "/api/projects/project-a/renders"],
+      ["POST", "/api/projects/project-a/export"],
+      ["GET", "/api/projects/project-a/scene-snapshots"],
+      ["POST", "/api/projects/project-a/scene-snapshots"],
+      ["POST", "/api/projects/project-a/runtime-traces"],
+      ["POST", "/api/renders"],
+      ["GET", "/api/renders/00000000-0000-4000-8000-000000000001"],
+      ["GET", "/api/renders/00000000-0000-4000-8000-000000000001/video"],
+      ["GET", "/api/workspace"],
+      ["POST", "/api/project-imports"],
+      ["GET", `/api/projects/project-a/scene-snapshot-assets/${"c".repeat(63)}`],
+      ["GET", "/api/projects/project-a/thumbnail/refresh"],
+    ];
+    try {
+      for (const [method, path] of unaliased) {
+        const response = await send(port, path, {
+          ...(method === "POST" ? { body: "{}", headers: jsonHeaders } : {}),
+          method,
+        });
+        expect(response.status, path).toBe(404);
+        expect(JSON.parse(response.body.toString("utf8")), path).toEqual({ error: "Manim endpoint not found." });
+      }
+      expect(api.start).not.toHaveBeenCalled();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("canonicalizes exactly the aliased neutral surfaces", () => {
+    expect(canonicalManimRoutePathname("/api/projects")).toBe("/api/manim/projects");
+    expect(canonicalManimRoutePathname("/api/projects/project-a")).toBe("/api/manim/projects/project-a");
+    expect(canonicalManimRoutePathname("/api/projects/project-a/workspace")).toBe(
+      "/api/manim/projects/project-a/workspace",
+    );
+    expect(canonicalManimRoutePathname("/api/projects/project-a/thumbnail")).toBe(
+      "/api/manim/projects/project-a/thumbnail",
+    );
+    expect(canonicalManimRoutePathname(`/api/projects/project-a/scene-snapshot-assets/${digest}`)).toBe(
+      `/api/manim/projects/project-a/scene-snapshot-assets/${digest}`,
+    );
+    expect(canonicalManimRoutePathname("/api/project-imports")).toBe("/api/project-imports");
+    // The legacy family and non-aliased paths pass through unchanged.
+    expect(canonicalManimRoutePathname("/api/manim/projects")).toBe("/api/manim/projects");
+    expect(canonicalManimRoutePathname("/api/manim/renders")).toBe("/api/manim/renders");
+    expect(canonicalManimRoutePathname("/api/projects/project-a/renders")).toBe("/api/projects/project-a/renders");
+    expect(canonicalManimRoutePathname("/api/projects/project-a/export")).toBe("/api/projects/project-a/export");
+    expect(canonicalManimRoutePathname("/api/workspace")).toBe("/api/workspace");
+    expect(isNeutralTenantRouteAlias("/api/projects/Bad")).toBe(false);
+    expect(isNeutralTenantRouteAlias("/api/projectsx")).toBe(false);
+    expect(isNeutralTenantRouteAlias("/api/projects/project-a/thumbnail/generate")).toBe(true);
+  });
+
+  it("classifies neutral aliases through the same production admission predicates", () => {
+    expect(isManimWorkspaceBootstrapRequest("GET", "/api/projects")).toBe(true);
+    expect(isManimWorkspaceBootstrapRequest("GET", "/api/projects/project-a/workspace")).toBe(true);
+    expect(isManimWorkspaceBootstrapRequest("GET", "/api/workspace")).toBe(false);
+    expect(isManimBrowserProjectImportRequest("POST", "/api/project-imports")).toBe(false);
+    expect(isManimBrowserProjectImportRequest("POST", "/api/manim/project-imports")).toBe(true);
+    expect(isTenantCellStorageLaneManimRequest("POST", "/api/projects")).toBe(true);
+    expect(isTenantCellStorageLaneManimRequest("PATCH", "/api/projects/project-a")).toBe(true);
+    expect(isTenantCellStorageLaneManimRequest("DELETE", "/api/projects/project-a")).toBe(true);
+    expect(isTenantCellStorageLaneManimRequest("GET", "/api/projects/project-a/thumbnail")).toBe(true);
+    expect(isTenantCellStorageLaneManimRequest("GET", "/api/projects/project-a/thumbnail/status")).toBe(true);
+    expect(isTenantCellStorageLaneManimRequest("POST", "/api/projects/project-a/thumbnail/generate")).toBe(true);
+    expect(isTenantCellStorageLaneManimRequest("GET", `/api/projects/project-a/scene-snapshot-assets/${digest}`)).toBe(
+      true,
+    );
+    expect(isTenantCellStorageLaneManimRequest("GET", "/api/projects")).toBe(false);
+    // The render lane is never reachable through a neutral path.
+    expect(isManimRenderStartRequest("POST", "/api/projects/project-a/renders")).toBe(false);
+    expect(isManimRenderStartRequest("POST", "/api/renders")).toBe(false);
+    expect(isManimRenderStartRequest("POST", "/api/manim/projects/project-a/renders")).toBe(true);
+    expect(isManimVideoRequest("GET", "/api/renders/00000000-0000-4000-8000-000000000001/video")).toBe(false);
+    expect(isManimVideoRequest("GET", "/api/manim/renders/00000000-0000-4000-8000-000000000001/video")).toBe(true);
+  });
+
+  it("logs each route family under its own request route template", async () => {
+    const records: StructuredLogRecord[] = [];
+    const logger = createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] });
+    const api = aliasApi();
+    const server = await listen(api as unknown as ManimApi, undefined, logger);
+    const port = (server.address() as AddressInfo).port;
+    try {
+      await send(port, "/api/manim/projects");
+      await send(port, "/api/projects");
+      await send(port, "/api/manim/projects/project-a/workspace");
+      await send(port, "/api/projects/project-a/workspace");
+      await send(port, "/api/projects/project-a/thumbnail/status");
+      const routes = records
+        .filter((record) => record.event === "request.started")
+        .map((record) => record.context.route);
+      expect(routes).toEqual([
+        "/api/manim/projects",
+        "/api/projects",
+        "/api/manim/projects/:projectId/:action",
+        "/api/projects/:projectId/workspace",
+        "/api/projects/:projectId/thumbnail/:action?",
+      ]);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

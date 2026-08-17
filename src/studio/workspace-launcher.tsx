@@ -83,7 +83,7 @@ function WorkspaceThumbnailImage({ assetVersion, projectId }: Readonly<{ assetVe
       loading="lazy"
       onError={() => setState("error")}
       onLoad={() => setState("loaded")}
-      src={`/api/manim/projects/${encodeURIComponent(projectId)}/thumbnail?v=${encodeURIComponent(assetVersion)}`}
+      src={`/api/projects/${encodeURIComponent(projectId)}/thumbnail?v=${encodeURIComponent(assetVersion)}`}
     />
   );
 }

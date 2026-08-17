@@ -38,7 +38,11 @@ test("signs in, selects a Studio organization, loads cookie-native media, then l
   });
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
-    if (pathname.startsWith("/api/manim/")) browserManimRequests.push(pathname);
+    // Track both tenant API route families: the legacy /api/manim prefix and
+    // the neutral Project aliases the shipped browser client uses (#712).
+    if (pathname.startsWith("/api/manim/") || pathname.startsWith("/api/projects")) {
+      browserManimRequests.push(pathname);
+    }
   });
 
   await page.goto("/");
@@ -71,17 +75,17 @@ test("signs in, selects a Studio organization, loads cookie-native media, then l
   expect(evidence.manimRequests).toContainEqual({
     method: "GET",
     organizationHeader: "editor-team",
-    pathname: "/api/manim/projects",
+    pathname: "/api/projects",
   });
   expect(evidence.manimRequests).toContainEqual({
     method: "GET",
     organizationHeader: "editor-team",
-    pathname: "/api/manim/projects/production-demo/thumbnail/status",
+    pathname: "/api/projects/production-demo/thumbnail/status",
   });
   expect(evidence.manimRequests).toContainEqual({
     method: "GET",
     organizationHeader: null,
-    pathname: "/api/manim/projects/production-demo/thumbnail",
+    pathname: "/api/projects/production-demo/thumbnail",
   });
   await page.getByLabel("Active organization").selectOption(ACCOUNT_E2E_BILLING_ORGANIZATION_ID);
   await expect(page.getByRole("heading", { name: "Billing account" })).toBeVisible();
