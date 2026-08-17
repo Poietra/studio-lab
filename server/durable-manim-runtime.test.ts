@@ -11,6 +11,7 @@ import {
   createTenantCellProductionManimRuntimeAdapterV1,
   DurableManimRuntimeV1,
 } from "./durable-manim-runtime";
+import { request as renderRequestFixture } from "./manim-render-pipeline-test-fixtures";
 import type { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { MIN_DURABLE_GC_GRACE_MS_V1 } from "./storage/durable-gc-core";
@@ -768,6 +769,11 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     await expect(runtime.workspace("project-native")).resolves.toMatchObject({
       nativeDocument: { documentKey: "ab".repeat(32) },
       projectId: "project-native",
+      renderCapability: {
+        available: false,
+        kind: "durable-sandbox",
+        unavailableReason: "native-render-frozen",
+      },
       sources: [],
     });
     expect(readNativeDocumentHead).toHaveBeenCalledWith(
@@ -791,7 +797,15 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       sourcePath: "main.py",
       tenantId: "tenant-a",
     };
-    const neverProbed = vi.fn(async () => null);
+    const nativeDocumentProbe = vi.fn(async () => ({
+      documentKey: "cd".repeat(32),
+      epoch: "70000000-0000-4000-8000-000000000008",
+      revision: 1n,
+    }));
+    const delegated = new Error("imported render delegated");
+    const start = vi.fn(async () => {
+      throw delegated;
+    });
     const importedRuntime = new DurableManimRuntimeV1({
       blobs: partial<SourceContentBlobStoreV1>({
         close: async () => undefined,
@@ -800,9 +814,15 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       }),
       editorDocuments: partial<EditorDocumentRepositoryV1>({
         close: async () => undefined,
-        readNativeDocumentHead: neverProbed,
+        readNativeDocumentHead: nativeDocumentProbe,
       }),
+      execution: { ready: async () => true },
       namespace: "imported-workspace-marker-test",
+      renders: partial<DurableManimRenderServiceV1>({
+        close: async () => undefined,
+        deliveryReady: async () => true,
+        start,
+      }),
       repository: partial<WorkspaceSourceRepositoryV1>({
         close: async () => undefined,
         listSourceHeads: async () => [head],
@@ -814,7 +834,20 @@ describe("DurableManimRuntimeV1 production readiness", () => {
 
     const importedWorkspace = await importedRuntime.workspace("project-imported");
     expect("nativeDocument" in importedWorkspace).toBe(false);
-    expect(neverProbed).not.toHaveBeenCalled();
+    expect(importedWorkspace.renderCapability).toEqual({
+      available: true,
+      kind: "durable-sandbox",
+      unavailableReason: null,
+    });
+    await expect(
+      importedRuntime.start({
+        ...renderRequestFixture("main.py"),
+        projectId: "project-imported",
+        sourceHash: digest,
+      }),
+    ).rejects.toBe(delegated);
+    expect(start).toHaveBeenCalledOnce();
+    expect(nativeDocumentProbe).not.toHaveBeenCalled();
     await importedRuntime.close();
   });
 
