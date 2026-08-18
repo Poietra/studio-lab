@@ -20,7 +20,7 @@ describe("generic Manim importability scoreboard", () => {
     expect(manifest.cases.filter(({ sourcePath }) => sourcePath === "example_scenes/basic.py")).toHaveLength(7);
   });
 
-  it("admits all seven official Scene declarations through the canonical source analysis", async () => {
+  it("admits all seven official Scenes and pins measured roots to the full source identity", async () => {
     const manifest = await loadGenericImportabilityManifest(manifestPath);
     const official = manifest.cases.filter(({ sourcePath }) => sourcePath === "example_scenes/basic.py");
     const sourceText = await readFile(join(root, official[0]!.fixturePaths[0]!), "utf8");
@@ -35,6 +35,14 @@ describe("generic Manim importability scoreboard", () => {
           sourceText,
         }).scene.name,
       ).toBe(entry.sceneName);
+      if (entry.rootCoverage.status === "unmeasured") continue;
+      const fixture = JSON.parse(await readFile(join(root, entry.rootCoverage.fixturePath), "utf8")) as {
+        evidence?: { sourceHash?: string; sourcePath?: string };
+        sourceHash?: string;
+        sourcePath?: string;
+      };
+      expect(fixture.evidence?.sourcePath ?? fixture.sourcePath).toBe(entry.sourcePath);
+      expect(fixture.evidence?.sourceHash ?? fixture.sourceHash).toBe(expectedSourceHash);
     }
   });
 
