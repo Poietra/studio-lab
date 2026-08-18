@@ -160,8 +160,14 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
     for (line_index, line) in text.split('\n').enumerate() {
         let mut cursor_x = 0.0;
         let mut previous = None;
+        let line_index = u32::try_from(line_index).map_err(|_| {
+            CompileFailure::new(
+                TextOutlineUnsupportedCodeV1::InternalFailure,
+                "The bounded Text line index could not be represented",
+            )
+        })?;
         let baseline_y =
-            -(line_index as f64) * f64::from(face.units_per_em()) * TEXT_LINE_ADVANCE_EM;
+            -f64::from(line_index) * f64::from(face.units_per_em()) * TEXT_LINE_ADVANCE_EM;
         for character in line.chars() {
             let glyph = face.glyph_index(character).ok_or_else(|| {
                 CompileFailure::new(

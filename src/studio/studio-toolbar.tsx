@@ -86,7 +86,6 @@ export function StudioToolbar({
               className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-sky-500"
               maxLength={tool === "Text" ? STUDIO_CREATION_TEXT_MAX_LENGTH : undefined}
               onChange={(event) => onInsertValueChange(event.currentTarget.value)}
-              pattern={tool === "Text" ? "[ -~]{1,256}" : undefined}
               placeholder={tool === "Text" ? "Type text" : String.raw`e.g. E = mc^2`}
               title={tool === "Text" ? STUDIO_CREATION_TEXT_CONTRACT : undefined}
               value={insertValue}
