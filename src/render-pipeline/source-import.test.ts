@@ -648,6 +648,38 @@ class StaticAppearance(Scene):
     expect(runtimeSceneStateSchema.parse(imported?.runtimeSceneState)).toEqual(imported?.runtimeSceneState);
   });
 
+  it("does not publish stale rotation or opacity after a dynamic mutation", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class DynamicAppearance(Scene):
+    def construct(self):
+        before = Square()
+        before.rotate(theta)
+        before.rotate(0.25)
+        after = Square()
+        after.rotate(0.5)
+        after.rotate(theta)
+        faded = Square()
+        faded.set_opacity(0.4)
+        faded.set_opacity(alpha)
+        self.add(before, after, faded)
+        self.wait(1)
+`,
+      "scene.py",
+      "DynamicAppearance",
+    );
+
+    for (const variable of ["before", "after"]) {
+      expect(
+        imported?.runtimeSceneState.propertyChannels[`source:scene.py#DynamicAppearance:${variable}/rotation`],
+      ).toBeUndefined();
+    }
+    expect(
+      imported?.runtimeSceneState.propertyChannels["source:scene.py#DynamicAppearance:faded/appearance"],
+    ).toBeUndefined();
+  });
+
   it.each([
     ["anchor before scale", "# poietra:anchor 0.000\n        equation.scale(2)"],
     ["no anchor", "equation.scale(2)"],
