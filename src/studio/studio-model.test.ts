@@ -37,6 +37,9 @@ const NEWTON_TARGET: MathTexSuggestionTarget = {
   texParts: ["F", "=", "m", "a"],
 };
 
+const FIELD_EXPLANATION = "Changing electric and magnetic fields generate each other.";
+const MAXWELL_EXPLANATION = "Four equations describe changing electric and magnetic fields.";
+
 function motionSuggestion(playhead = 8): EditSuggestionOperation {
   return {
     anchor: { kind: "playhead", referenceSeconds: playhead },
@@ -159,7 +162,7 @@ function transformAndExplanationSuggestion(playhead = 8): EditSuggestionOperatio
         placement: "right",
         start,
         targetObjectId: "equation_1",
-        text: "電場と磁場の変化が互いを生み出します",
+        text: FIELD_EXPLANATION,
       },
     ],
   };
@@ -175,7 +178,7 @@ function explanationSuggestion(playhead = 3): EditSuggestionOperation {
     placement: "right",
     start: playhead,
     targetObjectId: "equation_1",
-    text: "電場と磁場の変化が互いを生み出します",
+    text: FIELD_EXPLANATION,
   };
 }
 
@@ -213,7 +216,7 @@ function threeStepSuggestion(playhead = 5): EditSuggestionOperation {
         placement: "right",
         start: playhead + 3,
         targetObjectId: "equation_1",
-        text: "電場と磁場の変化が互いを生み出します",
+        text: FIELD_EXPLANATION,
       },
     ],
   };
@@ -252,7 +255,7 @@ function explainedMaxwellEquationSuggestion(playhead = 5): CreateExplainedEquati
     end: playhead + 1.5,
     explanation: {
       placement: "right",
-      text: "電場と磁場の発生と変化を四つの式で表します",
+      text: MAXWELL_EXPLANATION,
     },
     kind: "create-explained-equation",
     placement: "center",
@@ -272,7 +275,7 @@ function explainedMaxwellThenTransitionSuggestion(playhead = 5): EditSuggestionO
         end: playhead + 1.5,
         explanation: {
           placement: "right",
-          text: "電場と磁場の発生と変化を四つの式で表します",
+          text: MAXWELL_EXPLANATION,
         },
         kind: "create-explained-equation",
         placement: "center",
@@ -1030,7 +1033,7 @@ describe("Studio semantic model", () => {
     ).toEqual(
       expect.objectContaining({
         entity: expect.objectContaining({
-          content: expect.objectContaining({ text: expect.stringContaining("電場と磁場") }),
+          content: expect.objectContaining({ text: MAXWELL_EXPLANATION }),
         }),
       }),
     );
