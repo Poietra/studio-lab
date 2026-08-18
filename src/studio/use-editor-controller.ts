@@ -19,6 +19,7 @@ import {
   editorSessionIdentityKey,
   type RedoProgramEntry,
 } from "./editor-session-store";
+import type { ProjectFragmentMaterialStateV1 } from "./fragment-material-authoring";
 import type { SuggestionStatus } from "./magic-edit-panel";
 import type { ProgramRecord } from "./model";
 import { programExecutionCapabilities } from "./operation-registry";
@@ -660,6 +661,15 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     sessionStore.current?.save(identity, snapshotEditorSession(stateRef.current));
   }, []);
 
+  const loadProjectFragmentMaterials = useCallback(
+    (projectId: string) => sessionStore.current?.restoreProjectFragmentMaterials(projectId),
+    [],
+  );
+
+  const saveProjectFragmentMaterials = useCallback((projectId: string, state: ProjectFragmentMaterialStateV1) => {
+    return sessionStore.current?.saveProjectFragmentMaterials(projectId, state) ?? false;
+  }, []);
+
   const openSession = useCallback(
     (
       identity: EditorSessionIdentity,
@@ -840,6 +850,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     finishSuggestionRequest,
     isSuggestionRequestCurrent,
     installAcceptedState,
+    loadProjectFragmentMaterials,
     openSession,
     pruneSessions: (projectIds: ReadonlySet<string>) => {
       sessionStore.current?.pruneProjects(projectIds);
@@ -854,6 +865,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     redoProgram,
     resetPrograms,
     saveSession,
+    saveProjectFragmentMaterials,
     markSessionCloudManaged,
     setCurrentTime: (value: SetStateAction<number>) => setField("currentTime", value),
     setDurationError: (value: SetStateAction<string | null>) => setField("durationError", value),
