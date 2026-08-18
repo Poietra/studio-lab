@@ -53,7 +53,9 @@ the private catalog, managed workspace content, and Studio Trash. The server
 resolves every root and gives the browser catalog only opaque project IDs and
 display names.
 
-Rendered workspace thumbnails are derived cache data below
+The Manim subprocess thumbnail cache is a local Vite/Electron compatibility path only.
+Browser-managed workspaces publish thumbnails rendered by the canonical Rust/WGPU
+preview instead. Local rendered workspace thumbnails are derived cache data below
 `POIETRA_STUDIO_DATA_ROOT/thumbnails/:projectId`, never inside a linked project.
 Each project retains at most eight PNG frames keyed by source SHA-256 plus the
 source path and Scene identity. Manifest and image writes use same-directory
@@ -95,7 +97,7 @@ explicit frame and the captured Studio viewport.
   PNG when one exists. Otherwise it returns the bounded semantic SVG derived from
   current imported object state, or a safe empty SVG when no Scene is available.
   Neither GET endpoint starts Manim or executes project Python.
-- `POST /api/manim/projects/:projectId/thumbnail/generate` is the explicit execution
+- `POST /api/manim/projects/:projectId/thumbnail/generate` is the local-only explicit execution
   boundary. It renders the first importable Scene's last frame in an isolated
   temporary copy with `--output_file poietra-thumbnail` and accepts only a strict
   `application/json` `{}` request. Cross-origin browser requests are rejected.

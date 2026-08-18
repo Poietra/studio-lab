@@ -167,6 +167,13 @@ const STORAGE_SUITES = [
       "expires read claims, queues deletion only when unpinned, and drains tombstones",
     ],
   },
+  {
+    database: "poietra_client_thumbnail",
+    file: "server/storage/client-thumbnail-storage.real.test.ts",
+    id: "client-thumbnail",
+    objectStorage: false,
+    title: "restores the current head while refusing stale revisions and cross-tenant lineage",
+  },
 ];
 
 function postgresIdentifier(value) {

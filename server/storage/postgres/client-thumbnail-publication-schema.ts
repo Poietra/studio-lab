@@ -1,0 +1,3 @@
+// Generated from migrations/0033_client_thumbnail_publications.sql.
+export const CLIENT_THUMBNAIL_PUBLICATION_MIGRATION_V33_CHECKSUM =
+  "62c95580dbc9b95d04839e1c7234b1e0023a2da1298213386e02657b3352459e";

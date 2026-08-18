@@ -43,6 +43,7 @@ const RECOVERABLE_RENDER_ERROR_CODES = new Set<CanvasWorkerClientErrorCode>([
   "surface-outdated",
   "surface-timeout",
   "telemetry-unavailable",
+  "thumbnail-failed",
   "unsupported-frame",
 ]);
 
@@ -186,7 +187,12 @@ type ScheduledRenderV1 = {
   settled: boolean;
 };
 
-type ExclusiveCanvasOperationV1 = "adapter-evidence" | "device-loss-injection" | "frame-evidence" | "telemetry-render";
+type ExclusiveCanvasOperationV1 =
+  | "adapter-evidence"
+  | "device-loss-injection"
+  | "frame-evidence"
+  | "telemetry-render"
+  | "thumbnail-render";
 
 function createCanvasWorker() {
   return new Worker(new URL("./poietra-canvas.worker.ts", import.meta.url), { type: "module" });
@@ -640,6 +646,44 @@ export class PoietraCanvasWorkerClient {
         this.failFatally(normalized);
       }
       throw normalized;
+    } finally {
+      this.exclusiveOperation = null;
+    }
+  }
+
+  async generateThumbnail(revision: string): Promise<Uint8Array<ArrayBuffer>> {
+    if (this.exclusiveOperation !== null) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        `The ${this.exclusiveOperation} operation is in flight; thumbnail rendering is mutually exclusive with it.`,
+      );
+    }
+    if (this.state !== "ready" || this.currentRevision !== revision) {
+      throw new CanvasWorkerClientError("invalid-state", "The requested thumbnail Scene revision is not installed.");
+    }
+    if (this.activeRender?.settled === false || this.queuedRender?.settled === false) {
+      throw new CanvasWorkerClientError(
+        "invalid-state",
+        "Thumbnail rendering cannot interleave with in-flight canvas renders.",
+      );
+    }
+    const request = parseWorkerRequest({
+      kind: "generate-thumbnail",
+      requestId: this.takeRequestId(),
+      revision,
+      schema: "poietra.canvas-worker-request",
+      version: POIETRA_CANVAS_WORKER_VERSION,
+    });
+    if (request.kind !== "generate-thumbnail") {
+      throw new CanvasWorkerClientError("protocol-violation", "The thumbnail request kind was lost.");
+    }
+    this.exclusiveOperation = "thumbnail-render";
+    try {
+      const response = await this.dispatch(request, ["thumbnail-generated"]);
+      if (response.kind !== "thumbnail-generated") {
+        throw new CanvasWorkerClientError("protocol-violation", "The canvas worker did not return a thumbnail.");
+      }
+      return new Uint8Array(response.png);
     } finally {
       this.exclusiveOperation = null;
     }

@@ -5,6 +5,7 @@ import { isIP } from "node:net";
 import { z } from "zod";
 
 import { MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1 } from "../src/collaboration/client-export-http-contract";
+import { MAX_CLIENT_THUMBNAIL_FINALIZE_BODY_BYTES_V1 } from "../src/collaboration/client-thumbnail-http-contract";
 import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
 import {
   normalizeOrganizationSelectorHeaderV1,
@@ -16,6 +17,7 @@ import {
   isClientExportRequest,
   isClientExportVideoRequest,
 } from "./client-export-http";
+import { handleClientThumbnailRequest, isClientThumbnailPublicationRequest } from "./client-thumbnail-http";
 import { EditSuggestionAdmissionController } from "./edit-suggestions/admission";
 import { createEditSuggestionRequestHandler, EDIT_SUGGESTION_ROUTE } from "./edit-suggestions/handler";
 import type { EditSuggestionGenerator } from "./edit-suggestions/service";
@@ -349,7 +351,9 @@ function validateTransportRequest(
   const pathname = new URL(request.url, config.publicOrigin).pathname;
   const maxBodyBytes = isClientExportFinalizeRequest(request.method, pathname)
     ? MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1
-    : config.limits.maxBodyBytes;
+    : isClientThumbnailPublicationRequest(request.method, pathname)
+      ? MAX_CLIENT_THUMBNAIL_FINALIZE_BODY_BYTES_V1
+      : config.limits.maxBodyBytes;
   if (
     contentLength !== undefined &&
     (!/^\d+$/.test(contentLength) || !Number.isSafeInteger(parsedContentLength) || parsedContentLength > maxBodyBytes)
@@ -656,6 +660,7 @@ export async function startProductionManimServer(
       const transport = validateTransportRequest(request, config, trustedProxyAddresses);
       const pathname = new URL(request.url!, config.publicOrigin).pathname;
       const isClientExport = isClientExportRequest(pathname);
+      const isClientThumbnail = isClientThumbnailPublicationRequest(request.method, pathname);
       const isLongLivedMediaRequest =
         (request.method === "GET" && isManimVideoRequest(request.method, pathname)) ||
         isClientExportFinalizeRequest(request.method, pathname) ||
@@ -680,6 +685,7 @@ export async function startProductionManimServer(
         (!isEditSuggestionRequest || !editSuggestionHandler) &&
         !isEditorRequest &&
         !isClientExport &&
+        !isClientThumbnail &&
         !pathname.startsWith("/api/manim/") &&
         // #712: the tenant handler also owns the neutral aliases of its
         // generic surfaces; non-aliased neutral paths keep the transport 404.
@@ -812,6 +818,27 @@ export async function startProductionManimServer(
               handleClientExportRequest(runtime.clientExports!, context.principal, request, response, {
                 expectedMutationOrigin: config.publicOrigin,
                 mediaStreamIdleTimeoutMs: config.limits.mediaStreamIdleTimeoutMs,
+                requestSignal: controller.signal,
+              }),
+            ),
+          controller.signal,
+        );
+        return;
+      }
+      if (isClientThumbnail) {
+        if (!runtime.clientThumbnails) {
+          throw new TransportError("Production client thumbnail storage is not configured.", 503);
+        }
+        if (!(await runtimeStorageIsReady(runtime, controller.signal))) {
+          throw new TransportError("Production client thumbnail storage is not ready.", 503);
+        }
+        if (controller.signal.aborted) return;
+        if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
+        await raceWithSignal(
+          () =>
+            trackRuntimeTask(() =>
+              handleClientThumbnailRequest(runtime.clientThumbnails!, context.principal, request, response, {
+                expectedMutationOrigin: config.publicOrigin,
                 requestSignal: controller.signal,
               }),
             ),

@@ -21,6 +21,7 @@ import {
   MAX_CANVAS_SAMPLE_JSON_BYTES,
   MAX_CANVAS_SNAPSHOT_JSON_BYTES,
   MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES,
+  MAX_CANVAS_THUMBNAIL_PNG_BYTES,
   MAX_CANVAS_WASM_MODULE_URL_LENGTH,
   normalizeCanvasInteractionEntityIdsV1,
 } from "./canvas-worker-protocol";
@@ -81,6 +82,33 @@ describe("canvas worker v1 protocol", () => {
     expect(MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES).toBe(16 * 1024);
     expect(MAX_CANVAS_INTERACTION_ENTITY_IDS).toBe(128);
     expect(MAX_CANVAS_WASM_MODULE_URL_LENGTH).toBe(2_048);
+    expect(MAX_CANVAS_THUMBNAIL_PNG_BYTES).toBe(4 * 1024 * 1024);
+  });
+
+  it("carries one bounded thumbnail payload without widening frame responses", () => {
+    const request = {
+      kind: "generate-thumbnail",
+      requestId: 3,
+      revision: REVISION,
+      schema: "poietra.canvas-worker-request",
+      version: 1,
+    } as const;
+    expect(canvasWorkerRequestV1Schema.parse(request)).toEqual(request);
+    const response = {
+      kind: "thumbnail-generated",
+      png: new ArrayBuffer(24),
+      requestId: 3,
+      revision: REVISION,
+      schema: "poietra.canvas-worker-response",
+      version: 1,
+    } as const;
+    expect(canvasWorkerResponseV1Schema.parse(response)).toEqual(response);
+    expect(
+      canvasWorkerResponseV1Schema.safeParse({
+        ...response,
+        png: new ArrayBuffer(MAX_CANVAS_THUMBNAIL_PNG_BYTES + 1),
+      }).success,
+    ).toBe(false);
   });
 
   it("matches the strict Rust canvas response without a RenderPacket", () => {

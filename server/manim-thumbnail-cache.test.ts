@@ -5,15 +5,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-import { findRenderedImage } from "./manim-render-process";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
-import { ManimThumbnailCache } from "./manim-thumbnail-cache";
+import { findRenderedImage } from "./manim-render-process";
+import { createLocalManimThumbnailCache, type LocalManimThumbnailCache } from "./manim-thumbnail-cache";
 
 const fakeRenderer = fileURLToPath(new URL("./test-fixtures/fake-manim.mjs", import.meta.url));
 const frame = { height: 8, width: 14.222 } as const;
 const temporaryRoots: string[] = [];
-const caches: ManimThumbnailCache[] = [];
+const caches: LocalManimThumbnailCache[] = [];
 
 afterEach(async () => {
   await Promise.allSettled(caches.splice(0).map((cache) => cache.close()));
@@ -49,7 +48,7 @@ function thumbnailCache(
     projectRoot: string;
   }>,
 ) {
-  const instance = new ManimThumbnailCache({
+  const instance = createLocalManimThumbnailCache({
     cacheRoot: options.cacheRoot,
     command: options.command ?? [process.execPath, fakeRenderer],
     frame,
@@ -62,7 +61,7 @@ function thumbnailCache(
   return instance;
 }
 
-async function waitForStatus(instance: ManimThumbnailCache, expected: "current" | "failed") {
+async function waitForStatus(instance: LocalManimThumbnailCache, expected: "current" | "failed") {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const status = await instance.status();
     if (status.state === expected) return status;
@@ -435,16 +434,15 @@ describe("persistent real Manim thumbnail cache", () => {
 
   it("fails closed when cache IDs, child links, or parent links could escape deletion", async () => {
     const { cacheRoot, projectRoot } = await fixture();
-    expect(
-      () =>
-        new ManimThumbnailCache({
-          cacheRoot,
-          command: [process.execPath, fakeRenderer],
-          frame,
-          projectId: "../outside",
-          projectRoot,
-          renderTimeoutMs: 5_000,
-        }),
+    expect(() =>
+      createLocalManimThumbnailCache({
+        cacheRoot,
+        command: [process.execPath, fakeRenderer],
+        frame,
+        projectId: "../outside",
+        projectRoot,
+        renderTimeoutMs: 5_000,
+      }),
     ).toThrow(/project ID/i);
 
     const external = await mkdtemp(join(tmpdir(), "poietra-thumbnail-external-"));

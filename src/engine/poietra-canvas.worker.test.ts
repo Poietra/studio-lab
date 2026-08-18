@@ -89,6 +89,17 @@ function renderRequest(overrides: Readonly<Record<string, unknown>> = {}) {
   };
 }
 
+function thumbnailRequest(overrides: Readonly<Record<string, unknown>> = {}) {
+  return {
+    kind: "generate-thumbnail",
+    requestId: 3,
+    revision: REVISION_A,
+    schema: "poietra.canvas-worker-request",
+    version: 1,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
 });
@@ -98,6 +109,40 @@ afterEach(() => {
 });
 
 describe("Poietra canvas worker runtime", () => {
+  it("returns a bounded transferable PNG from the installed Rust engine", async () => {
+    const png = new Uint8Array([137, 80, 78, 71]);
+    class Engine implements PoietraWasmCanvasEngineV1 {
+      static async create() {
+        return new Engine();
+      }
+      async generateThumbnail() {
+        return png;
+      }
+      replaceSnapshot() {}
+      async render() {
+        return encodeResponse(presentedResponse("canvas:2"));
+      }
+    }
+    const posted: CanvasWorkerResponseV1[] = [];
+    const transfers: Transferable[][] = [];
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: (response, transfer = []) => {
+        posted.push(response);
+        transfers.push(transfer);
+      },
+      scopeUrl: "https://studio.test/worker.js",
+    });
+
+    await runtime.accept(installRequest());
+    await runtime.accept(thumbnailRequest());
+
+    expect(posted.at(-1)).toMatchObject({ kind: "thumbnail-generated", requestId: 3, revision: REVISION_A });
+    const generated = posted.at(-1);
+    expect(generated?.kind === "thumbnail-generated" ? new Uint8Array(generated.png) : null).toEqual(png);
+    expect(transfers.at(-1)).toHaveLength(1);
+  });
+
   it("retains the snapshot and returns only correlated presentation metadata", async () => {
     const snapshots: string[] = [];
     const samples: unknown[] = [];

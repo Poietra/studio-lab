@@ -11,6 +11,7 @@ import type { StudioPreviewRendererView } from "./use-preview-renderer";
 function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRendererView {
   return {
     attachCanvas: vi.fn(),
+    generateThumbnail: vi.fn(),
     boundEntityProjection: null,
     cameraCenter: null,
     canonicalScene: null,
