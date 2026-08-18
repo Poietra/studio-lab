@@ -1,4 +1,8 @@
-import type { AccountOrganizationMemberV1 } from "../../src/accounts/account-membership-contract";
+import type {
+  AccountMembershipMutationRequestV1,
+  AccountMembershipMutationResponseV1,
+  AccountOrganizationMemberV1,
+} from "../../src/accounts/account-membership-contract";
 import type { AccountSessionViewV1 } from "../../src/accounts/account-session-contract";
 import type { OrganizationRoleV1 } from "./account-domain";
 import type { ExternalAccountIdentityV1 } from "./organization-membership-repository";
@@ -52,6 +56,18 @@ export type ListActiveOrganizationMembersResultV1 =
       members: readonly AccountOrganizationMemberV1[];
     }>;
 
+export type MutateActiveOrganizationMemberResultV1 =
+  | Readonly<{ kind: "conflict" }>
+  | Readonly<{ kind: "forbidden" }>
+  | Readonly<{ kind: "invalid-session" }>
+  | Readonly<{ kind: "member-unavailable" }>
+  | Readonly<{
+      kind: "applied";
+      member: AccountMembershipMutationResponseV1["member"];
+      mutationId: string;
+      replayed: boolean;
+    }>;
+
 export interface AccountMembershipViewRepositoryV1 {
   close(): Promise<void>;
   listActiveOrganizationMembers(
@@ -60,10 +76,21 @@ export interface AccountMembershipViewRepositoryV1 {
   ): Promise<ListActiveOrganizationMembersResultV1>;
 }
 
+export interface AccountMembershipMutationRepositoryV1 {
+  close(): Promise<void>;
+  mutateActiveOrganizationMember(
+    sessionTokenHash: Uint8Array,
+    memberId: string,
+    request: AccountMembershipMutationRequestV1,
+    signal?: AbortSignal,
+  ): Promise<MutateActiveOrganizationMemberResultV1>;
+}
+
 /** Request-scoped browser account mutations; raw session tokens never cross this boundary. */
 export interface AccountSessionControlRepositoryV1
   extends AccountSessionViewRepositoryV1,
-    AccountMembershipViewRepositoryV1 {
+    AccountMembershipViewRepositoryV1,
+    AccountMembershipMutationRepositoryV1 {
   revokeAccountSession(sessionTokenHash: Uint8Array, signal?: AbortSignal): Promise<void>;
   switchActiveOrganization(
     sessionTokenHash: Uint8Array,

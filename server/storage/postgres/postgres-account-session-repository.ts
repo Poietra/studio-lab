@@ -1,6 +1,8 @@
 import type { Pool, PoolConfig, QueryResultRow } from "pg";
 
 import {
+  type AccountMembershipMutationRequestV1,
+  accountMembershipMutationRequestSchemaV1,
   type AccountOrganizationMemberV1,
   accountOrganizationMemberSchemaV1,
 } from "../../../src/accounts/account-membership-contract";
@@ -13,10 +15,12 @@ import type {
   AccountSessionControlRepositoryV1,
   AccountSessionRepositoryV1,
   ListActiveOrganizationMembersResultV1,
+  MutateActiveOrganizationMemberResultV1,
   ResolvedAccountSessionAccountV1,
   ResolvedAccountSessionV1,
   SwitchActiveOrganizationResultV1,
 } from "../../accounts/account-session-repository";
+import { ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM } from "./account-organization-lifecycle-schema";
 import { ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM } from "./account-organization-switch-mutation-schema";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
@@ -54,6 +58,28 @@ type AccountOrganizationMemberRow = QueryResultRow & {
   member_id: string | null;
   member_role: string | null;
   member_version: string | null;
+};
+
+type AccountMembershipActorRow = QueryResultRow & {
+  actor_role: string;
+  organization_id: string;
+  user_id: string;
+};
+
+type AccountMembershipTargetRow = QueryResultRow & {
+  member_role: string;
+  member_version: string;
+};
+
+type AccountMembershipMutationRow = QueryResultRow & {
+  action: string;
+  actor_user_id: string;
+  expected_membership_version: string;
+  member_user_id: string;
+  mutation_id: string;
+  organization_id: string;
+  requested_role: string | null;
+  resulting_membership_version: string;
 };
 
 const MAX_ACCOUNT_ORGANIZATIONS_V1 = 256;
@@ -291,6 +317,41 @@ function membersFromRows(rows: readonly AccountOrganizationMemberRow[]): ListAct
   return { actorRole: actorRole.data, kind: "listed", members };
 }
 
+function membershipMutationFromRow(row: AccountMembershipMutationRow) {
+  const actorUserId = accountUserIdSchemaV1.safeParse(row.actor_user_id);
+  const memberId = accountUserIdSchemaV1.safeParse(row.member_user_id);
+  const organizationId = organizationIdSchemaV1.safeParse(row.organization_id);
+  const request = accountMembershipMutationRequestSchemaV1.safeParse({
+    action: row.action,
+    expectedVersion: exactSessionVersion(row.expected_membership_version),
+    mutationId: row.mutation_id,
+    ...(row.requested_role === null ? {} : { role: row.requested_role }),
+  });
+  const resultingVersion = exactSessionVersion(row.resulting_membership_version);
+  if (
+    !actorUserId.success ||
+    !memberId.success ||
+    !organizationId.success ||
+    !request.success ||
+    resultingVersion !== request.data.expectedVersion + 1
+  ) {
+    throw new TypeError("PostgreSQL returned an invalid account membership mutation.");
+  }
+  return {
+    actorUserId: actorUserId.data,
+    memberId: memberId.data,
+    organizationId: organizationId.data,
+    request: request.data,
+    resultingVersion,
+  };
+}
+
+function membershipMutationAllowed(actorRole: string, targetRole: string, request: AccountMembershipMutationRequestV1) {
+  if (actorRole === "owner") return true;
+  if (actorRole !== "admin" || targetRole === "owner" || targetRole === "admin") return false;
+  return request.action === "remove" || request.role === "member" || request.role === "billing";
+}
+
 export class PostgresAccountSessionRepositoryV1
   implements AccountSessionRepositoryV1, AccountSessionControlRepositoryV1
 {
@@ -303,17 +364,19 @@ export class PostgresAccountSessionRepositoryV1
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (12, 28) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (12, 28, 34) ORDER BY version",
         [],
         signal,
       );
       throwIfAborted(signal);
       return (
-        result.rowCount === 2 &&
+        result.rowCount === 3 &&
         result.rows[0]?.version === 12 &&
         result.rows[0]?.checksum === ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM &&
         result.rows[1]?.version === 28 &&
-        result.rows[1]?.checksum === ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM
+        result.rows[1]?.checksum === ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM &&
+        result.rows[2]?.version === 34 &&
+        result.rows[2]?.checksum === ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -456,6 +519,204 @@ export class PostgresAccountSessionRepositoryV1
     );
     throwIfAborted(signal);
     return membersFromRows(result.rows);
+  }
+
+  async mutateActiveOrganizationMember(
+    sessionTokenHashValue: Uint8Array,
+    memberIdValue: string,
+    requestValue: AccountMembershipMutationRequestV1,
+    signal?: AbortSignal,
+  ) {
+    const sessionTokenHash = exactSessionTokenHash(sessionTokenHashValue);
+    const memberId = accountUserIdSchemaV1.parse(memberIdValue);
+    const request = accountMembershipMutationRequestSchemaV1.parse(requestValue);
+    throwIfAborted(signal);
+    return this.#connection.transaction(async (client): Promise<MutateActiveOrganizationMemberResultV1> => {
+      const actors = await client.query<AccountMembershipActorRow>(
+        `SELECT session.user_id::text,
+                session.active_tenant_id AS organization_id,
+                membership.role AS actor_role
+           FROM public.account_sessions session
+           JOIN public.users account ON account.user_id = session.user_id
+           JOIN public.organizations organization ON organization.tenant_id = session.active_tenant_id
+           JOIN public.organization_memberships membership
+             ON membership.tenant_id = session.active_tenant_id
+            AND membership.user_id = session.user_id
+          WHERE session.session_token_hash = $1
+            AND session.revoked_at IS NULL
+            AND session.expires_at > clock_timestamp()
+            AND account.status = 'active'
+            AND organization.status = 'active'
+            AND membership.status = 'active'
+          FOR UPDATE OF session, organization, membership`,
+        [sessionTokenHash],
+      );
+      throwIfAborted(signal);
+      if (actors.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate account membership actors.");
+
+      const sessionExists =
+        actors.rows.length > 0
+          ? true
+          : (
+              await client.query(
+                `SELECT 1
+                   FROM public.account_sessions session
+                   JOIN public.users account ON account.user_id = session.user_id
+                  WHERE session.session_token_hash = $1
+                    AND session.revoked_at IS NULL
+                    AND session.expires_at > clock_timestamp()
+                    AND account.status = 'active'
+                  LIMIT 1`,
+                [sessionTokenHash],
+              )
+            ).rowCount === 1;
+      const actor = actors.rows[0];
+      if (!actor) return { kind: sessionExists ? "forbidden" : "invalid-session" };
+      const actorUserId = accountUserIdSchemaV1.parse(actor.user_id);
+      const organizationId = organizationIdSchemaV1.parse(actor.organization_id);
+      const actorRole = organizationRoleSchemaV1.parse(actor.actor_role);
+      // Changing the actor's own membership also changes the authority carried
+      // by the current account view. Self-service role/leave flows must update
+      // that session atomically, so the member-administration use case rejects it.
+      if (memberId === actorUserId) return { kind: "forbidden" };
+
+      const existingMutations = await client.query<AccountMembershipMutationRow>(
+        `SELECT mutation_id::text,
+                actor_user_id::text,
+                organization_id,
+                member_user_id::text,
+                action,
+                requested_role,
+                expected_membership_version::text,
+                resulting_membership_version::text
+           FROM public.account_membership_mutations
+          WHERE session_token_hash = $1 AND mutation_id = $2::uuid`,
+        [sessionTokenHash, request.mutationId],
+      );
+      if (existingMutations.rows.length > 1) {
+        throw new TypeError("PostgreSQL returned duplicate account membership mutations.");
+      }
+      const existingRow = existingMutations.rows[0];
+      if (existingRow) {
+        const existing = membershipMutationFromRow(existingRow);
+        if (
+          existing.actorUserId !== actorUserId ||
+          existing.organizationId !== organizationId ||
+          existing.memberId !== memberId ||
+          JSON.stringify(existing.request) !== JSON.stringify(request)
+        ) {
+          return { kind: "conflict" };
+        }
+        return {
+          kind: "applied",
+          member:
+            request.action === "set-role"
+              ? { id: memberId, role: request.role, status: "active", version: existing.resultingVersion }
+              : { id: memberId, status: "removed", version: existing.resultingVersion },
+          mutationId: request.mutationId,
+          replayed: true,
+        };
+      }
+
+      const targets = await client.query<AccountMembershipTargetRow>(
+        `SELECT membership.role AS member_role, membership.version::text AS member_version
+           FROM public.organization_memberships membership
+           JOIN public.users account ON account.user_id = membership.user_id
+          WHERE membership.tenant_id = $1
+            AND membership.user_id = $2::uuid
+            AND membership.status = 'active'
+            AND account.status = 'active'
+          FOR UPDATE OF membership`,
+        [organizationId, memberId],
+      );
+      if (targets.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate target memberships.");
+      const target = targets.rows[0];
+      if (!target) return { kind: "member-unavailable" };
+      const targetRole = organizationRoleSchemaV1.parse(target.member_role);
+      const targetVersion = exactSessionVersion(target.member_version);
+      if (
+        targetVersion !== request.expectedVersion ||
+        !membershipMutationAllowed(actorRole, targetRole, request) ||
+        (request.action === "set-role" && request.role === targetRole)
+      ) {
+        return targetVersion !== request.expectedVersion ||
+          (request.action === "set-role" && request.role === targetRole)
+          ? { kind: "conflict" }
+          : { kind: "forbidden" };
+      }
+
+      if (targetRole === "owner" && (request.action === "remove" || request.role !== "owner")) {
+        const owners = await client.query<{ owner_count: string }>(
+          `SELECT count(*)::text AS owner_count
+             FROM public.organization_memberships membership
+             JOIN public.users account ON account.user_id = membership.user_id
+            WHERE membership.tenant_id = $1
+              AND membership.role = 'owner'
+              AND membership.status = 'active'
+              AND account.status = 'active'`,
+          [organizationId],
+        );
+        if (owners.rows[0]?.owner_count === "1") return { kind: "conflict" };
+      }
+
+      const updated = await client.query<{ member_version: string }>(
+        request.action === "set-role"
+          ? `UPDATE public.organization_memberships
+                SET role = $3
+              WHERE tenant_id = $1 AND user_id = $2::uuid AND version = $4::bigint AND status = 'active'
+            RETURNING version::text AS member_version`
+          : `UPDATE public.organization_memberships
+                SET status = 'suspended'
+              WHERE tenant_id = $1 AND user_id = $2::uuid AND version = $3::bigint AND status = 'active'
+            RETURNING version::text AS member_version`,
+        request.action === "set-role"
+          ? [organizationId, memberId, request.role, request.expectedVersion]
+          : [organizationId, memberId, request.expectedVersion],
+      );
+      const updatedRow = updated.rows[0];
+      if (updated.rows.length !== 1 || !updatedRow) return { kind: "conflict" };
+      const resultingVersion = exactSessionVersion(updatedRow.member_version);
+      if (resultingVersion !== request.expectedVersion + 1) {
+        throw new TypeError("PostgreSQL returned an inconsistent account membership version.");
+      }
+      if (request.action === "remove") {
+        await client.query(
+          `UPDATE public.account_sessions
+              SET revoked_at = clock_timestamp()
+            WHERE user_id = $1::uuid
+              AND active_tenant_id = $2
+              AND revoked_at IS NULL`,
+          [memberId, organizationId],
+        );
+      }
+      await client.query(
+        `INSERT INTO public.account_membership_mutations
+           (session_token_hash, mutation_id, actor_user_id, organization_id, member_user_id,
+            action, requested_role, expected_membership_version, resulting_membership_version)
+         VALUES ($1, $2::uuid, $3::uuid, $4, $5::uuid, $6, $7, $8::bigint, $9::bigint)`,
+        [
+          sessionTokenHash,
+          request.mutationId,
+          actorUserId,
+          organizationId,
+          memberId,
+          request.action,
+          request.action === "set-role" ? request.role : null,
+          request.expectedVersion,
+          resultingVersion,
+        ],
+      );
+      throwIfAborted(signal);
+      return {
+        kind: "applied",
+        member:
+          request.action === "set-role"
+            ? { id: memberId, role: request.role, status: "active", version: resultingVersion }
+            : { id: memberId, status: "removed", version: resultingVersion },
+        mutationId: request.mutationId,
+        replayed: false,
+      };
+    }, signal);
   }
 
   async switchActiveOrganization(

@@ -4,6 +4,7 @@ import type { Pool } from "pg";
 import { ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM } from "./account-invitation-quota-schema";
 import { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-schema";
 import { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
+import { ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM } from "./account-organization-lifecycle-schema";
 import { ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM } from "./account-organization-switch-mutation-schema";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 import { BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM } from "./billing-entitlement-grant-schema";
@@ -50,6 +51,7 @@ import editorDocumentOriginSqlV30 from "./migrations/0030_editor_document_origin
 import clientExportPublicationSqlV31 from "./migrations/0031_client_export_publications.sql?raw";
 import billingEntitlementGrantSqlV32 from "./migrations/0032_billing_entitlement_grants.sql?raw";
 import clientThumbnailPublicationSqlV33 from "./migrations/0033_client_thumbnail_publications.sql?raw";
+import accountOrganizationLifecycleSqlV34 from "./migrations/0034_account_organization_lifecycle.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -71,6 +73,7 @@ import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 export { ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM } from "./account-invitation-quota-schema";
 export { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-schema";
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
+export { ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM } from "./account-organization-lifecycle-schema";
 export { ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM } from "./account-organization-switch-mutation-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 export { BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM } from "./billing-entitlement-grant-schema";
@@ -154,6 +157,7 @@ export const EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE = editorDocumentOriginS
 export const CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE = clientExportPublicationSqlV31;
 export const BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_SOURCE = billingEntitlementGrantSqlV32;
 export const CLIENT_THUMBNAIL_PUBLICATION_MIGRATION_V33_SOURCE = clientThumbnailPublicationSqlV33;
+export const ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_SOURCE = accountOrganizationLifecycleSqlV34;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -502,6 +506,18 @@ const clientThumbnailPublicationMigrationV33: DurableStorageMigration<33> = Obje
   version: 33,
 });
 
+const accountOrganizationLifecycleMigrationV34: DurableStorageMigration<34> = Object.freeze({
+  checksum: ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM,
+  checksumMismatch: "The account organization-lifecycle migration checksum is invalid.",
+  installedMismatch: "The installed account organization-lifecycle schema does not match migration v34.",
+  missingPrerequisite:
+    "Account organization-lifecycle migration v34 requires durable storage migrations v1 through v33.",
+  prerequisiteMismatch:
+    "Account organization-lifecycle migration v34 requires exact durable storage migrations v1 through v33.",
+  source: ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_SOURCE,
+  version: 34,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -536,6 +552,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   clientExportPublicationMigrationV31,
   billingEntitlementGrantMigrationV32,
   clientThumbnailPublicationMigrationV33,
+  accountOrganizationLifecycleMigrationV34,
 ]);
 
 /**
@@ -846,6 +863,10 @@ export function applyBillingEntitlementGrantMigrationV32(pool: Pool, source: str
 
 export function applyClientThumbnailPublicationMigrationV33(pool: Pool, source: string) {
   return applyMigration(pool, { ...clientThumbnailPublicationMigrationV33, source }, bundledMigrationsBefore(33));
+}
+
+export function applyAccountOrganizationLifecycleMigrationV34(pool: Pool, source: string) {
+  return applyMigration(pool, { ...accountOrganizationLifecycleMigrationV34, source }, bundledMigrationsBefore(34));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

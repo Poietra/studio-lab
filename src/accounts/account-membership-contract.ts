@@ -28,5 +28,56 @@ export const accountOrganizationMembersViewSchemaV1 = z
     }
   });
 
+const accountMembershipMutationIdSchemaV1 = z.uuid().transform((value) => value.toLowerCase());
+const accountMembershipExpectedVersionSchemaV1 = z.number().int().safe().positive();
+
+export const accountMembershipMutationRequestSchemaV1 = z.discriminatedUnion("action", [
+  z
+    .object({
+      action: z.literal("set-role"),
+      expectedVersion: accountMembershipExpectedVersionSchemaV1,
+      mutationId: accountMembershipMutationIdSchemaV1,
+      role: accountOrganizationRoleSchemaV1,
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal("remove"),
+      expectedVersion: accountMembershipExpectedVersionSchemaV1,
+      mutationId: accountMembershipMutationIdSchemaV1,
+    })
+    .strict(),
+]);
+
+export const accountMembershipMutationResponseSchemaV1 = z
+  .object({
+    member: z.discriminatedUnion("status", [
+      z
+        .object({
+          id: z.uuid(),
+          role: accountOrganizationRoleSchemaV1,
+          status: z.literal("active"),
+          version: accountMembershipExpectedVersionSchemaV1,
+        })
+        .strict(),
+      z
+        .object({
+          id: z.uuid(),
+          status: z.literal("removed"),
+          version: accountMembershipExpectedVersionSchemaV1,
+        })
+        .strict(),
+    ]),
+    mutation: z
+      .object({
+        mutationId: accountMembershipMutationIdSchemaV1,
+        replayed: z.boolean(),
+      })
+      .strict(),
+  })
+  .strict();
+
 export type AccountOrganizationMemberV1 = z.infer<typeof accountOrganizationMemberSchemaV1>;
 export type AccountOrganizationMembersViewV1 = z.infer<typeof accountOrganizationMembersViewSchemaV1>;
+export type AccountMembershipMutationRequestV1 = z.infer<typeof accountMembershipMutationRequestSchemaV1>;
+export type AccountMembershipMutationResponseV1 = z.infer<typeof accountMembershipMutationResponseSchemaV1>;

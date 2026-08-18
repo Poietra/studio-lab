@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
+import { ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM } from "./account-organization-lifecycle-schema";
 import { ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM } from "./account-organization-switch-mutation-schema";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 import { PostgresAccountSessionRepositoryV1 } from "./postgres-account-session-repository";
@@ -35,13 +36,14 @@ function fakePool(handle: (text: string, values: readonly unknown[]) => QueryRes
 describe("PostgresAccountSessionRepositoryV1", () => {
   it("requires the exact account-session migration", async () => {
     const fixture = fakePool((text, values) => {
-      expect(text).toContain("version IN (12, 28)");
+      expect(text).toContain("version IN (12, 28, 34)");
       expect(values).toEqual([]);
       return {
-        rowCount: 2,
+        rowCount: 3,
         rows: [
           { checksum: ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM, version: 12 },
           { checksum: ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM, version: 28 },
+          { checksum: ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM, version: 34 },
         ],
       };
     });
@@ -294,6 +296,207 @@ describe("PostgresAccountSessionRepositoryV1", () => {
     await expect(malformedActorRepository.listActiveOrganizationMembers(Buffer.alloc(32))).rejects.toThrow(
       /actor role/i,
     );
+  });
+
+  it("changes one active member role and records an exact replay key", async () => {
+    const actorId = "6b0cd2da-7b88-4542-87ea-e48e73b33df3";
+    const memberId = "8c0d7bf4-1d10-4769-8a4a-8fe2b11b699c";
+    const fixture = fakePool((text, values) => {
+      if (text.includes("session.active_tenant_id AS organization_id")) {
+        return {
+          rowCount: 1,
+          rows: [{ actor_role: "owner", organization_id: "organization-a", user_id: actorId }],
+        };
+      }
+      if (text.includes("FROM public.account_membership_mutations")) return { rowCount: 0, rows: [] };
+      if (text.includes("membership.role AS member_role")) {
+        return { rowCount: 1, rows: [{ member_role: "member", member_version: "3" }] };
+      }
+      if (text.startsWith("UPDATE public.organization_memberships")) {
+        expect(values).toEqual(["organization-a", memberId, "admin", 3]);
+        return { rowCount: 1, rows: [{ member_version: "4" }] };
+      }
+      if (text.includes("INSERT INTO public.account_membership_mutations")) {
+        expect(values.slice(1)).toEqual([mutationId, actorId, "organization-a", memberId, "set-role", "admin", 3, 4]);
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.mutateActiveOrganizationMember(Buffer.alloc(32), memberId, {
+        action: "set-role",
+        expectedVersion: 3,
+        mutationId,
+        role: "admin",
+      }),
+    ).resolves.toEqual({
+      kind: "applied",
+      member: { id: memberId, role: "admin", status: "active", version: 4 },
+      mutationId,
+      replayed: false,
+    });
+  });
+
+  it("does not let an admin promote a member to admin", async () => {
+    const actorId = "6b0cd2da-7b88-4542-87ea-e48e73b33df3";
+    const memberId = "8c0d7bf4-1d10-4769-8a4a-8fe2b11b699c";
+    const fixture = fakePool((text) => {
+      if (text.includes("session.active_tenant_id AS organization_id")) {
+        return {
+          rowCount: 1,
+          rows: [{ actor_role: "admin", organization_id: "organization-a", user_id: actorId }],
+        };
+      }
+      if (text.includes("FROM public.account_membership_mutations")) return { rowCount: 0, rows: [] };
+      if (text.includes("membership.role AS member_role")) {
+        return { rowCount: 1, rows: [{ member_role: "member", member_version: "3" }] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.mutateActiveOrganizationMember(Buffer.alloc(32), memberId, {
+        action: "set-role",
+        expectedVersion: 3,
+        mutationId,
+        role: "admin",
+      }),
+    ).resolves.toEqual({ kind: "forbidden" });
+    expect(fixture.query.mock.calls.some(([text]) => text.startsWith("UPDATE"))).toBe(false);
+  });
+
+  it("revokes sessions that still select a removed membership", async () => {
+    const actorId = "6b0cd2da-7b88-4542-87ea-e48e73b33df3";
+    const memberId = "8c0d7bf4-1d10-4769-8a4a-8fe2b11b699c";
+    const fixture = fakePool((text, values) => {
+      if (text.includes("session.active_tenant_id AS organization_id")) {
+        return {
+          rowCount: 1,
+          rows: [{ actor_role: "owner", organization_id: "organization-a", user_id: actorId }],
+        };
+      }
+      if (text.includes("FROM public.account_membership_mutations")) return { rowCount: 0, rows: [] };
+      if (text.includes("membership.role AS member_role")) {
+        return { rowCount: 1, rows: [{ member_role: "member", member_version: "3" }] };
+      }
+      if (text.startsWith("UPDATE public.organization_memberships")) {
+        expect(values).toEqual(["organization-a", memberId, 3]);
+        return { rowCount: 1, rows: [{ member_version: "4" }] };
+      }
+      if (text.startsWith("UPDATE public.account_sessions")) {
+        expect(values).toEqual([memberId, "organization-a"]);
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.includes("INSERT INTO public.account_membership_mutations")) {
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.mutateActiveOrganizationMember(Buffer.alloc(32), memberId, {
+        action: "remove",
+        expectedVersion: 3,
+        mutationId,
+      }),
+    ).resolves.toMatchObject({ kind: "applied", replayed: false });
+  });
+
+  it("replays membership mutations without updating the member twice", async () => {
+    const actorId = "6b0cd2da-7b88-4542-87ea-e48e73b33df3";
+    const memberId = "8c0d7bf4-1d10-4769-8a4a-8fe2b11b699c";
+    const fixture = fakePool((text) => {
+      if (text.includes("session.active_tenant_id AS organization_id")) {
+        return {
+          rowCount: 1,
+          rows: [{ actor_role: "owner", organization_id: "organization-a", user_id: actorId }],
+        };
+      }
+      if (text.includes("FROM public.account_membership_mutations")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              action: "remove",
+              actor_user_id: actorId,
+              expected_membership_version: "3",
+              member_user_id: memberId,
+              mutation_id: mutationId,
+              organization_id: "organization-a",
+              requested_role: null,
+              resulting_membership_version: "4",
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.mutateActiveOrganizationMember(Buffer.alloc(32), memberId, {
+        action: "remove",
+        expectedVersion: 3,
+        mutationId,
+      }),
+    ).resolves.toEqual({
+      kind: "applied",
+      member: { id: memberId, status: "removed", version: 4 },
+      mutationId,
+      replayed: true,
+    });
+    expect(fixture.query.mock.calls.some(([text]) => text.startsWith("UPDATE"))).toBe(false);
+  });
+
+  it("rejects removing the actor from their active organization", async () => {
+    const ownerId = "6b0cd2da-7b88-4542-87ea-e48e73b33df3";
+    const fixture = fakePool((text) => {
+      if (text.includes("session.active_tenant_id AS organization_id")) {
+        return {
+          rowCount: 1,
+          rows: [{ actor_role: "owner", organization_id: "organization-a", user_id: ownerId }],
+        };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.mutateActiveOrganizationMember(Buffer.alloc(32), ownerId, {
+        action: "remove",
+        expectedVersion: 3,
+        mutationId,
+      }),
+    ).resolves.toEqual({ kind: "forbidden" });
+    expect(fixture.query.mock.calls.some(([text]) => text.startsWith("UPDATE"))).toBe(false);
+  });
+
+  it("rejects changing the actor's own role", async () => {
+    const actorId = "6b0cd2da-7b88-4542-87ea-e48e73b33df3";
+    const fixture = fakePool((text) => {
+      if (text.includes("session.active_tenant_id AS organization_id")) {
+        return {
+          rowCount: 1,
+          rows: [{ actor_role: "owner", organization_id: "organization-a", user_id: actorId }],
+        };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.mutateActiveOrganizationMember(Buffer.alloc(32), actorId, {
+        action: "set-role",
+        expectedVersion: 3,
+        mutationId,
+        role: "admin",
+      }),
+    ).resolves.toEqual({ kind: "forbidden" });
+    expect(fixture.query.mock.calls.some(([text]) => text.startsWith("UPDATE"))).toBe(false);
   });
 
   it("switches the active organization and returns one bounded account snapshot", async () => {

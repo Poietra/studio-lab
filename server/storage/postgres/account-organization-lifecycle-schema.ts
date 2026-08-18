@@ -1,0 +1,3 @@
+// Generated from server/storage/postgres/migrations/0034_account_organization_lifecycle.sql.
+export const ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM =
+  "aa3708acc92b64204ae6b4e80df12347821e4503d5ce0d2dca702fefb1b386f7";
