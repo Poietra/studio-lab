@@ -8,6 +8,7 @@ type ThumbnailEngineClass = {
     assetMetadataJson: Uint8Array,
     assetBytes: Uint8Array[],
     canvas: OffscreenCanvas,
+    fragmentMaterialRegistryJson: Uint8Array,
   ) => Promise<ThumbnailEngine>;
 };
 
@@ -21,6 +22,10 @@ type ThumbnailRequest = Readonly<{
   snapshotJson: ArrayBuffer;
   wasmModuleUrl: string;
 }>;
+
+const EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON = new TextEncoder().encode(
+  '{"materials":[],"schema":"poietra.fragment-material-registry","version":1}',
+);
 
 self.addEventListener("message", (event: MessageEvent<ThumbnailRequest>) => {
   void (async () => {
@@ -38,6 +43,7 @@ self.addEventListener("message", (event: MessageEvent<ThumbnailRequest>) => {
         new TextEncoder().encode("[]"),
         [],
         new OffscreenCanvas(160, 90),
+        EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON,
       );
       if (typeof engine.generateThumbnail !== "function") {
         throw new Error("The canvas engine does not expose thumbnail generation.");
