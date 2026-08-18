@@ -22,11 +22,21 @@ const source = readFileSync(
   new URL("../../fixtures/real-preview-harness/scene_runtime_trace_v3.py", import.meta.url),
   "utf8",
 );
+const officialSourcePath = "example_scenes/basic.py";
+const officialSource = readFileSync(
+  new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+  "utf8",
+);
+const officialSourceHash = createHash("sha256").update(officialSource, "utf8").digest("hex");
 
-function moveEditProgram(value = { x: 410, y: 135 }, sourceAnchor = 0): CanonicalEditProgram {
+function moveEditProgram(
+  value = { x: 410, y: 135 },
+  sourceAnchor = 0,
+  targetEntityId = entityId,
+): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     dependsOn: [],
-    entityId,
+    entityId: targetEntityId,
     id: "runtime-trace-position-edit",
     interval: { end: sourceAnchor, start: sourceAnchor },
     key: "position",
@@ -52,11 +62,16 @@ function moveEditProgram(value = { x: 410, y: 135 }, sourceAnchor = 0): Canonica
   };
 }
 
-function resizeEditProgram(relativeFactor = 1.5, from = 1, sourceAnchor = 0): CanonicalEditProgram {
+function resizeEditProgram(
+  relativeFactor = 1.5,
+  from = 1,
+  sourceAnchor = 0,
+  targetEntityId = entityId,
+): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     dependsOn: [],
     easing: "smooth",
-    entityId,
+    entityId: targetEntityId,
     from,
     id: "runtime-trace-scale-edit",
     interval: { end: sourceAnchor, start: sourceAnchor },
@@ -137,6 +152,45 @@ function lower(sourceText = source, renderRequest = request(sourceText)) {
     frame,
     null,
   );
+}
+
+function officialRequest(
+  targetSceneName: string,
+  bindingName: string,
+  targetEntityId: string,
+  program: CanonicalEditProgram,
+): ProgramRenderRequest {
+  return {
+    cameraCenter: { x: 0, y: 0 },
+    destination: null,
+    program,
+    projectId: "generic-preview",
+    sceneName: targetSceneName,
+    sourceBindings: [{ entityId: targetEntityId, sourceVariable: bindingName }],
+    sourceHash: officialSourceHash,
+    sourcePath: officialSourcePath,
+    viewport: { height: 360, width: 640 },
+  };
+}
+
+function roundTripOfficialEdit(
+  targetSceneName: string,
+  bindingName: string,
+  targetEntityId: string,
+  program: CanonicalEditProgram,
+) {
+  const renderRequest = officialRequest(targetSceneName, bindingName, targetEntityId, program);
+  const lowered = lowerRuntimeTraceEditSource(
+    officialSource,
+    renderRequest,
+    [{ program: renderRequest.program, sourceAnchor: renderRequest.program.anchor.resolvedSeconds }],
+    frame,
+    null,
+  );
+  if (!lowered) throw new Error(`${targetSceneName} did not lower through the Runtime Trace source route.`);
+  const imported = importManimScene(lowered.source, officialSourcePath, targetSceneName, frame);
+  if (!imported) throw new Error(`${targetSceneName} emitted source did not reimport.`);
+  return { imported, lowered };
 }
 
 describe("Runtime Trace edit source lowering", () => {
@@ -661,6 +715,91 @@ describe("Runtime Trace edit source lowering", () => {
       testCase.assertImported(imported!);
       expect(testCase.derive(lowered!.source).baseSource, testCase.label).toBe(source);
     }
+  });
+
+  it("round-trips the advertised OpeningManim terminal move through Python and fresh derivation", () => {
+    const targetEntityId = `source:${officialSourcePath}#OpeningManim:grid_title`;
+    const targetWorld = { x: 1.25, y: -0.5 };
+    const { imported, lowered } = roundTripOfficialEdit(
+      "OpeningManim",
+      "grid_title",
+      targetEntityId,
+      moveEditProgram(
+        {
+          x: (targetWorld.x / frame.width + 0.5) * 640,
+          y: (0.5 - targetWorld.y / frame.height) * 360,
+        },
+        13,
+        targetEntityId,
+      ),
+    );
+
+    expect(imported.sourceVariables[targetEntityId]).toBe("grid_title");
+    expect(imported.runtimeSceneState.propertyChannels[`${targetEntityId}/position`]?.samples.at(-1)).toMatchObject({
+      interval: { end: 14, start: 13 },
+      knowledge: { kind: "known", value: { x: 376.25, y: 202.5 } },
+      value: { x: 376.25, y: 202.5 },
+    });
+    expect(
+      deriveRuntimeTraceMoveSourceEditPlan(lowered.source, "OpeningManim", officialSourcePath, "grid_title", 13),
+    ).toMatchObject({
+      baseSource: officialSource,
+      baseSourceHash: officialSourceHash,
+      expectedWorldCenter: targetWorld,
+      sourceAnchor: 13,
+    });
+  });
+
+  it("round-trips the advertised WarpSquare move through Python and fresh derivation", () => {
+    const targetEntityId = `source:${officialSourcePath}#WarpSquare:square`;
+    const { imported, lowered } = roundTripOfficialEdit(
+      "WarpSquare",
+      "square",
+      targetEntityId,
+      moveEditProgram({ x: 410, y: 135 }, 0, targetEntityId),
+    );
+
+    expect(imported.sourceVariables[targetEntityId]).toBe("square");
+    expect(imported.runtimeSceneState.propertyChannels[`${targetEntityId}/position`]?.samples.at(-1)).toMatchObject({
+      interval: { end: 2, start: 0 },
+      knowledge: { kind: "known", value: { x: 410, y: 135 } },
+      value: { x: 410, y: 135 },
+    });
+    expect(
+      deriveRuntimeTraceMoveSourceEditPlan(lowered.source, "WarpSquare", officialSourcePath, "square"),
+    ).toMatchObject({
+      baseSource: officialSource,
+      baseSourceHash: officialSourceHash,
+      expectedWorldCenter: { x: 2, y: 1 },
+      sourceAnchor: 0,
+    });
+  });
+
+  it("round-trips the advertised UpdatersExample terminal resize through Python and fresh derivation", () => {
+    const targetEntityId = `source:${officialSourcePath}#UpdatersExample:square`;
+    const { imported, lowered } = roundTripOfficialEdit(
+      "UpdatersExample",
+      "square",
+      targetEntityId,
+      resizeEditProgram(1.5, 1, 5, targetEntityId),
+    );
+
+    expect(imported.sourceVariables[targetEntityId]).toBe("square");
+    expect(imported.runtimeSceneState.propertyChannels[`${targetEntityId}/scale`]?.samples.at(-1)).toMatchObject({
+      from: 1,
+      interval: { end: 6, start: 5 },
+      knowledge: { kind: "known", value: 1.5 },
+      relative: true,
+      value: 1.5,
+    });
+    expect(
+      deriveRuntimeTraceResizeSourceEditPlan(lowered.source, "UpdatersExample", officialSourcePath, "square", 5),
+    ).toMatchObject({
+      baseSource: officialSource,
+      baseSourceHash: officialSourceHash,
+      expectedScaleFactor: 1.5,
+      sourceAnchor: 5,
+    });
   });
 
   it("accepts a negative rotation and rejects no-op, non-finite, or unbounded angles", () => {

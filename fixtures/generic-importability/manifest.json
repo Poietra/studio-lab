@@ -2,7 +2,7 @@
   "schema": "poietra.generic-importability-scoreboard",
   "completion": {
     "acceptedVisibleRootMissing": { "met": true, "observed": 0, "required": 0 },
-    "claimedEditRoundtripPercent": { "met": false, "observed": 57.14285714285714, "required": 100 },
+    "claimedEditRoundtripPercent": { "met": true, "observed": 100, "required": 100 },
     "silentOmissions": { "met": true, "observed": 0, "required": 0 }
   },
   "evidenceTests": [
@@ -28,17 +28,15 @@
         "selection": "unmeasured",
         "edit": { "move": "pass", "uniform-resize": "unmeasured", "rotation": "unmeasured", "opacity": "unmeasured" },
         "py-export": "pass",
-        "reimport": "unmeasured",
-        "fresh-validation": "unmeasured"
+        "reimport": "pass",
+        "fresh-validation": "pass"
       },
       "notes": {
         "preview": "Old Scene-specific evidence is not current generic evidence.",
         "selection": "No exact offline selection assertion.",
         "edit.uniform-resize": "Not exercised for this Scene.",
         "edit.rotation": "Not exercised for this Scene.",
-        "edit.opacity": "Not exercised for this Scene.",
-        "reimport": "Exported source is not reimported by an existing test.",
-        "fresh-validation": "No exact offline candidate validation."
+        "edit.opacity": "Not exercised for this Scene."
       }
     },
     {
@@ -87,17 +85,15 @@
         "selection": "unmeasured",
         "edit": { "move": "pass", "uniform-resize": "unmeasured", "rotation": "unmeasured", "opacity": "unmeasured" },
         "py-export": "pass",
-        "reimport": "unmeasured",
-        "fresh-validation": "unmeasured"
+        "reimport": "pass",
+        "fresh-validation": "pass"
       },
       "notes": {
         "preview": "Old Scene-specific evidence is not current generic evidence.",
         "selection": "No exact offline selection assertion.",
         "edit.uniform-resize": "Not exercised for this Scene.",
         "edit.rotation": "Not exercised for this Scene.",
-        "edit.opacity": "Not exercised for this Scene.",
-        "reimport": "Exported source is not reimported by an existing test.",
-        "fresh-validation": "No exact offline candidate validation."
+        "edit.opacity": "Not exercised for this Scene."
       }
     },
     {
@@ -146,17 +142,15 @@
         "selection": "unmeasured",
         "edit": { "move": "unmeasured", "uniform-resize": "pass", "rotation": "unmeasured", "opacity": "unmeasured" },
         "py-export": "pass",
-        "reimport": "unmeasured",
-        "fresh-validation": "unmeasured"
+        "reimport": "pass",
+        "fresh-validation": "pass"
       },
       "notes": {
         "preview": "Old updater Runtime Trace is not current generic preview evidence.",
         "selection": "No exact offline selection assertion.",
         "edit.move": "Not exercised for this Scene.",
         "edit.rotation": "Not exercised for this Scene.",
-        "edit.opacity": "Not exercised for this Scene.",
-        "reimport": "Exported source is not reimported by an existing test.",
-        "fresh-validation": "No exact offline candidate validation."
+        "edit.opacity": "Not exercised for this Scene."
       }
     },
     {
