@@ -385,38 +385,38 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the server-sealed real SquareToCircle V8 timeline to the default full-RGBA gate", async () => {
-    const fixtureRevision = "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2";
+    const fixtureRevision = "4c1e9d141a1177c6b826fadcfd27210a637c2223c190f855e53e523551a2e71f";
     const corpus = await corpusFixture();
     const expectedSamples = [
       [
         "real-square-to-circle-v8--create-midpoint",
         "create-midpoint",
         0.5,
-        "52ff334baaa31dd518c3310e5d9d4e0b5dc993fb8b9c5d01f84bab89c1d85d11",
+        "11f552e315738e1792a97e900d7f283a8172085ddaff32bc13973781f2005a67",
       ],
       [
         "real-square-to-circle-v8--square",
         "square",
         1,
-        "1f3964983f864af023b7f8753debeedb1050cce981fff45f9dbfa657581f1554",
+        "4713e36861ab25f709da96b271c3ad14f110bfbe4d5be94749d226c89c2bb8d6",
       ],
       [
         "real-square-to-circle-v8--analytic-winding-root",
         "analytic-winding-root",
         1.5119159473817447,
-        "202f38ab181c09c8b9ebe5a2cb4eed0b7cdf2ed7be84fe453df5efb6661db0f3",
+        "00699c9dc4ac1335814dbc57259528ca67d16c9fa2b221c80c1564a2fc8a81b8",
       ],
       [
         "real-square-to-circle-v8--circle",
         "circle",
         2,
-        "641817594b8a9e6c6af8e1c9c7bbc2499740672ba11d96971cc4055269b8a470",
+        "2038f0233dcbc29e7e917c18207c7a4c43f6de5c03932ec0ec143de9bf76a7d3",
       ],
       [
         "real-square-to-circle-v8--fade-midpoint",
         "fade-midpoint",
         2.5,
-        "2489a3989fd4a1a86a971c2f0f7510475e316f965093013bd0a92bcffe7ceddf",
+        "27ffbf86fa8c8cd8c1796c5b9e1a6191124fdd031d61e6ad3849c75c2f124e39",
       ],
     ] as const;
     const entries = expectedSamples.map(([entryId]) => {
@@ -462,7 +462,7 @@ describe("visual parity v1 contracts", () => {
         runtimeConfigHash: "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2",
         snapshotHash: fixtureRevision,
         snapshotVersion: 8,
-        sourceHash: "ef874f1ab5899aadf870956ec71ce71653d373366b23e40c2ee8b070ad193c40",
+        sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
       },
     });
     expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
@@ -475,12 +475,14 @@ describe("visual parity v1 contracts", () => {
       "path-trim",
     ]);
     expect(fixture.producerReference).toEqual({
-      engineCommit: "1f195ba48d4e2ea92dd45b3cac4928342da320c9",
-      fastManimCommit: "a1e886fb854268ad7d06b00168f9a5ce3339857d",
+      engineCommit: "2e63bbd550f794ec7d728c4e409145c61e1795d2",
+      fastManimCommit: "5db5254b61b20359878b7b331c63ceadb6580e4b",
+      fastManimTree: "13d985d0b8d5e5ffafdddc3a7351bf0e838c17fa",
       kind: "server-sealed-real-fast-manim-profile-v8",
+      producerSnapshotDigest: "d7f519604785d29aca32d1af0f18eefc0906d707616d5be46bbcbeafbaf2e797",
       snapshotHash: fixtureRevision,
-      sourcePath: "fixtures/real-preview-harness/scene_square_to_circle.py",
-      sourceSha256: "ef874f1ab5899aadf870956ec71ce71653d373366b23e40c2ee8b070ad193c40",
+      sourcePath: "fixtures/real-preview-harness/example_scenes/basic.py",
+      sourceSha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
     });
     expect(sha256(new Uint8Array(await readFile(fixture.producerReference.sourcePath)))).toBe(
       fixture.producerReference.sourceSha256,

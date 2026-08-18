@@ -1,0 +1,11 @@
+{
+  "combinedWireSha256": "626e068e703373cebdeafa2ef2b04dac758a90241f43553221583ce380cbd805",
+  "fastManimCommit": "5db5254b61b20359878b7b331c63ceadb6580e4b",
+  "fastManimTree": "13d985d0b8d5e5ffafdddc3a7351bf0e838c17fa",
+  "regeneration": "Run the existing official V8 real seam against fixtures/real-preview-harness/example_scenes/basic.py with python -m manim.renderer.source_runtime_identity and PYTHONHASHSEED=0; capture the validated combined stdout and server-seal its embedded snapshot with the checked Studio contract.",
+  "runtimeConfigHash": "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2",
+  "snapshotDigest": "d7f519604785d29aca32d1af0f18eefc0906d707616d5be46bbcbeafbaf2e797",
+  "sourcePath": "example_scenes/basic.py",
+  "sourceSha256": "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+  "version": 1
+}
