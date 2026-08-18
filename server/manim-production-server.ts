@@ -4,11 +4,18 @@ import { isIP } from "node:net";
 
 import { z } from "zod";
 
+import { MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1 } from "../src/collaboration/client-export-http-contract";
 import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
 import {
   normalizeOrganizationSelectorHeaderV1,
   ORGANIZATION_SELECTOR_HEADER_V1,
 } from "./accounts/organization-selector-header";
+import {
+  handleClientExportRequest,
+  isClientExportFinalizeRequest,
+  isClientExportRequest,
+  isClientExportVideoRequest,
+} from "./client-export-http";
 import { EditSuggestionAdmissionController } from "./edit-suggestions/admission";
 import { createEditSuggestionRequestHandler, EDIT_SUGGESTION_ROUTE } from "./edit-suggestions/handler";
 import type { EditSuggestionGenerator } from "./edit-suggestions/service";
@@ -336,11 +343,13 @@ function validateTransportRequest(
   }
   const contentLength = request.headers["content-length"];
   const parsedContentLength = contentLength === undefined ? 0 : Number(contentLength);
+  const pathname = new URL(request.url, config.publicOrigin).pathname;
+  const maxBodyBytes = isClientExportFinalizeRequest(request.method, pathname)
+    ? MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1
+    : config.limits.maxBodyBytes;
   if (
     contentLength !== undefined &&
-    (!/^\d+$/.test(contentLength) ||
-      !Number.isSafeInteger(parsedContentLength) ||
-      parsedContentLength > config.limits.maxBodyBytes)
+    (!/^\d+$/.test(contentLength) || !Number.isSafeInteger(parsedContentLength) || parsedContentLength > maxBodyBytes)
   ) {
     request.resume();
     throw new TransportError("Request body is too large.", 413);
@@ -637,7 +646,11 @@ export async function startProductionManimServer(
     try {
       const transport = validateTransportRequest(request, config, trustedProxyAddresses);
       const pathname = new URL(request.url!, config.publicOrigin).pathname;
-      const isMediaStream = request.method === "GET" && isManimVideoRequest(request.method, pathname);
+      const isClientExport = isClientExportRequest(pathname);
+      const isLongLivedMediaRequest =
+        (request.method === "GET" && isManimVideoRequest(request.method, pathname)) ||
+        isClientExportFinalizeRequest(request.method, pathname) ||
+        isClientExportVideoRequest(request.method, pathname);
       if (pathname === "/healthz") {
         if (request.method !== "GET") throw new TransportError("Method not allowed.", 405);
         sendJson(response, lifecycle === "accepting" ? 200 : 503, {
@@ -657,6 +670,7 @@ export async function startProductionManimServer(
       if (
         (!isEditSuggestionRequest || !editSuggestionHandler) &&
         !isEditorRequest &&
+        !isClientExport &&
         !pathname.startsWith("/api/manim/") &&
         // #712: the tenant handler also owns the neutral aliases of its
         // generic surfaces; non-aliased neutral paths keep the transport 404.
@@ -773,6 +787,29 @@ export async function startProductionManimServer(
         );
         return;
       }
+      if (isClientExport) {
+        if (!runtime.clientExports) {
+          throw new TransportError("Production client export storage is not configured.", 503);
+        }
+        if (!(await runtimeStorageIsReady(runtime, controller.signal))) {
+          throw new TransportError("Production client export storage is not ready.", 503);
+        }
+        if (controller.signal.aborted) return;
+        if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
+        if (isLongLivedMediaRequest) armHandlerTimeout(config.limits.mediaStreamTimeoutMs);
+        await raceWithSignal(
+          () =>
+            trackRuntimeTask(() =>
+              handleClientExportRequest(runtime.clientExports!, context.principal, request, response, {
+                expectedMutationOrigin: config.publicOrigin,
+                mediaStreamIdleTimeoutMs: config.limits.mediaStreamIdleTimeoutMs,
+                requestSignal: controller.signal,
+              }),
+            ),
+          controller.signal,
+        );
+        return;
+      }
       // Project/workspace bootstrap and bounded browser import require only
       // their durable source, editor-document, and optional PNG stores, so they
       // remain available through a render outage. Render-start routes use the
@@ -796,7 +833,7 @@ export async function startProductionManimServer(
       }
       if (controller.signal.aborted) return;
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
-      if (isMediaStream) armHandlerTimeout(config.limits.mediaStreamTimeoutMs);
+      if (isLongLivedMediaRequest) armHandlerTimeout(config.limits.mediaStreamTimeoutMs);
       await raceWithSignal(
         () =>
           trackRuntimeTask(() =>
@@ -850,7 +887,10 @@ export async function startProductionManimServer(
       headersTimeout: config.limits.headersTimeoutMs,
       keepAliveTimeout: config.limits.keepAliveTimeoutMs,
       maxHeaderSize: config.limits.maxHeaderBytes,
-      requestTimeout: config.limits.requestTimeoutMs,
+      // Node applies this while receiving request bodies. Keep the socket
+      // open for the bounded client-export media deadline; non-media routes
+      // still use the shorter handler deadline armed above.
+      requestTimeout: Math.max(config.limits.requestTimeoutMs, config.limits.mediaStreamTimeoutMs),
     },
     (request, response) => {
       response.setHeader("x-content-type-options", "nosniff");

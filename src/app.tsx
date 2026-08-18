@@ -109,6 +109,7 @@ import {
 } from "./studio/shape-resize";
 import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimelineWithProjection } from "./studio/source-timeline";
 import { StudioExportControl } from "./studio/studio-export-control";
+import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
@@ -801,6 +802,12 @@ export function App({
     sceneBoundaryActive: importedSceneBoundaryActive,
     sourceEvents: projectedActiveScene?.runtimeSceneState.eventTrack.events ?? [],
     workingState: previewWorkingState,
+  });
+  const studioExportSource = previewRenderer?.canonicalScene ?? null;
+  const studioExportPublication = resolveStudioExportPublicationAvailabilityV1({
+    exportSource: studioExportSource,
+    lineage: editorDocumentAuthority.exportLineage,
+    organizationId: accountSession?.activeOrganization.id ?? null,
   });
 
   function timelineProjectionForPrograms(programs: readonly SceneEdit[]) {
@@ -3475,7 +3482,7 @@ export function App({
                 renderer={previewRenderer}
               />
             ) : null}
-            <StudioExportControl exportSource={previewRenderer?.canonicalScene ?? null} />
+            <StudioExportControl exportSource={studioExportSource} publication={studioExportPublication} />
             <button
               className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
               disabled={

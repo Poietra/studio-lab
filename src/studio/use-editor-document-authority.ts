@@ -37,6 +37,7 @@ import {
   type EditorMutationPendingJournalLookupV1,
   type EditorMutationPendingJournalV1,
 } from "./editor-mutation-pending-journal";
+import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import {
   browserEditorSessionPendingJournalV1,
   type EditorSessionPendingJournalBasisV1,
@@ -101,6 +102,37 @@ export type EditorDocumentAuthorityHookCommitOutcomeV1 =
 export type EditorDocumentSessionFlushOutcomeV1 = Readonly<{
   kind: "busy" | "failed" | "journaled" | "stored";
 }>;
+
+export type EditorDocumentExportLineageV1 = Readonly<{
+  documentEpoch: string;
+  documentKey: string;
+  documentRevision: string;
+  projectId: string;
+  sceneName: string | null;
+  sourceHash: string | null;
+  sourcePath: string | null;
+  workingRevision: string;
+}>;
+
+/** Immutable document/source identity paired with the exact durable Program projection. */
+export function editorDocumentExportLineageV1(
+  snapshot: EditorDocumentAuthoritySnapshotV1,
+  sceneName: string | null,
+): EditorDocumentExportLineageV1 {
+  if (snapshot.document.revision !== snapshot.revision) {
+    throw new TypeError("The Editor Document lineage revision is inconsistent.");
+  }
+  return Object.freeze({
+    documentEpoch: snapshot.document.epoch,
+    documentKey: snapshot.document.documentKey,
+    documentRevision: snapshot.revision,
+    projectId: snapshot.document.projectId,
+    sceneName,
+    sourceHash: snapshot.document.sourceHash,
+    sourcePath: snapshot.document.sourcePath,
+    workingRevision: canonicalAppliedProgramsWorkingRevisionV1(snapshot.programs),
+  });
+}
 
 export function editorDocumentSessionFlushAllowsTransitionV1(
   outcome: EditorDocumentSessionFlushOutcomeV1,
@@ -1880,6 +1912,17 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     }
   }, []);
 
+  const activeSnapshot = authoritySnapshot.current;
+  const exportLineage =
+    input.identity !== null &&
+    identityKey !== null &&
+    authorityIdentityKey.current === identityKey &&
+    presentationReady.current &&
+    state.phase === "ready" &&
+    activeSnapshot !== null
+      ? editorDocumentExportLineageV1(activeSnapshot, input.identity.sceneName ?? null)
+      : null;
+
   return {
     authoringBlocked:
       input.identity !== null &&
@@ -1890,6 +1933,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     commitMutation,
     discardPendingSession,
     enabled: input.identity !== null,
+    exportLineage,
     flushSession,
     message: state.message,
     pendingSessionConflict: state.journalConflict,

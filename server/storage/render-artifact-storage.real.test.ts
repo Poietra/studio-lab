@@ -943,7 +943,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         ],
       );
 
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 30 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 31 });
       await expect(repository.pendingDeletions(tenantId, 8)).resolves.toEqual([
         { deletionId, receipt: upgradedReceipt, tenantId },
       ]);

@@ -156,6 +156,16 @@ const STORAGE_SUITES = [
     id: "project-png",
     title: "replaces atomically across ABA reuse, pins render generations, isolates tenants, and collects orphans",
   },
+  {
+    database: "poietra_client_export",
+    file: "server/storage/client-export-storage.real.test.ts",
+    id: "client-export",
+    titles: [
+      "accepts, replays, refuses, and isolates client export publications atomically",
+      "serializes concurrent first-use publication IDs into replay or conflict",
+      "expires read claims, queues deletion only when unpinned, and drains tombstones",
+    ],
+  },
 ];
 
 function postgresIdentifier(value) {

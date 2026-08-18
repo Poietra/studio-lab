@@ -15,7 +15,6 @@ use poietra_scene_ir::{
     ExportFrameRateV1, ExportProfileV1, export_profile_hash_v1, parse_export_profile_json_v1,
     parse_scene_ir_bundle_json_v1,
 };
-use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 use crate::POIETRA_ENGINE_ABI_VERSION;
@@ -31,6 +30,7 @@ use crate::export_encoder_protocol::{
     frame_duration_microseconds_v1, frame_timestamp_microseconds_v1,
     verify_export_chunk_timestamp_v1,
 };
+use crate::export_verify::ExportProvenanceV1;
 
 const BROWSER_EXPORT_REFUSED_ERROR_NAME: &str = "PoietraBrowserMp4ExportRefused";
 const MP4_TIMESCALE_V1: u32 = 1_000_000;
@@ -137,15 +137,6 @@ fn refused_color_evidence(
         "color-evidence-rejected",
         format!("WebCodecs returned unknown or incomplete color evidence {evidence:?}"),
     )
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ExportProvenanceV1<'a> {
-    engine_abi_version: u32,
-    export_profile_hash: &'a str,
-    scene_id: &'a str,
-    scene_revision_hash: &'a str,
 }
 
 fn mux_error(error: ExportMuxErrorV1) -> JsValue {
@@ -336,9 +327,9 @@ pub async fn export_scene_mp4_v1(
     .ok_or_else(|| refused("mux-failed", "an empty Scene cannot be exported"))?;
     let provenance = serde_json::to_vec(&ExportProvenanceV1 {
         engine_abi_version: POIETRA_ENGINE_ABI_VERSION,
-        export_profile_hash: &profile_hash,
-        scene_id: &scene_id,
-        scene_revision_hash: &scene_revision_hash,
+        export_profile_hash: profile_hash,
+        scene_id,
+        scene_revision_hash,
     })
     .map_err(|error| refused("mux-failed", error))?;
     let output_limit = usize::try_from(profile.max_output_bytes)

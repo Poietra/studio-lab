@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { ClientExportHttpServiceV1 } from "./client-export-http";
 import { HttpError } from "./http/json";
 import type { ManimApi } from "./manim-api";
 import {
@@ -26,6 +27,8 @@ export type ProductionRuntimeReadinessV1 =
  */
 export type ProductionManimRuntimeAdapterV1 = Readonly<{
   api: ManimApi;
+  /** Native client-export publication capability beside, not inside, the Manim runtime. */
+  clientExports?: ClientExportHttpServiceV1;
   close: () => Promise<void>;
   editorDocuments?: EditorDocumentRepositoryV1;
   editorReady?: (signal: AbortSignal) => Promise<boolean>;
@@ -197,6 +200,21 @@ function assertEditorAdapter(runtime: ProductionManimRuntimeAdapterV1) {
   }
 }
 
+function assertClientExportAdapter(runtime: ProductionManimRuntimeAdapterV1, expectedTenantId: string) {
+  const candidate = runtime.clientExports;
+  if (candidate === undefined) return;
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    typeof candidate.publisher?.publish !== "function" ||
+    typeof candidate.reader?.publication !== "function" ||
+    typeof candidate.reader?.publicationVideo !== "function" ||
+    candidate.tenantId !== expectedTenantId
+  ) {
+    throw new TypeError("Production client export adapter is incomplete.");
+  }
+}
+
 export function assertProductionManimRuntimeAdapterV1(
   runtime: unknown,
   expectedTenantId?: string,
@@ -235,6 +253,7 @@ export function assertProductionManimRuntimeAdapterV1(
     throw new TypeError("Production runtime storage must use a tenant-keyed shared durable boundary.");
   }
   assertEditorAdapter(candidate);
+  assertClientExportAdapter(candidate, parsedTenant.data);
 }
 
 function assertAssignmentSource(source: unknown): asserts source is ProductionRuntimeCellAssignmentSourceV1 {

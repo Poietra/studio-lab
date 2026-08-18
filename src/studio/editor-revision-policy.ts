@@ -7,6 +7,7 @@ import type {
 import { editorSessionIdentityKey } from "./editor-session-store";
 import type { ProgramRecord } from "./model";
 import { PRISTINE_WORKING_REVISION, type StudioPreviewEditingContextV1 } from "./preview-snapshot-provider";
+import type { SceneEdit } from "./scene-edit-contract";
 
 export const SOURCE_TIMING_LOADING_BLOCKER = "Wait for verified Scene timing before continuing.";
 export const SOURCE_TIMING_MISMATCH_BLOCKER =
@@ -91,6 +92,17 @@ export function canonicalEditorWorkingRevision(input: EditorWorkingRevisionInput
         }
       : null,
     redo: input.redoPrograms.map(redoRevision),
+  })}`;
+}
+
+/** Exact preview revision for one durable Editor Document program list. */
+export function canonicalAppliedProgramsWorkingRevisionV1(programs: readonly SceneEdit[]) {
+  if (programs.length === 0) return PRISTINE_WORKING_REVISION;
+  return `studio-working-v1:${canonicalJson({
+    applied: programs,
+    draft: null,
+    editing: null,
+    redo: [],
   })}`;
 }
 

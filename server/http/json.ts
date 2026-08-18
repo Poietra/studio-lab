@@ -12,8 +12,9 @@ export class HttpError extends Error {
 
 function isJsonMediaType(header: string | undefined) {
   const mediaType = header?.split(";", 1)[0]?.trim().toLowerCase();
-  return mediaType === "application/json"
-    || Boolean(mediaType?.startsWith("application/") && mediaType.endsWith("+json"));
+  return (
+    mediaType === "application/json" || Boolean(mediaType?.startsWith("application/") && mediaType.endsWith("+json"))
+  );
 }
 
 function readBody(request: IncomingMessage, maxBytes: number) {
@@ -85,6 +86,14 @@ export async function readJsonBody(request: IncomingMessage, maxBytes = 64 * 102
   } catch {
     throw new HttpError("Request body must be valid JSON.");
   }
+}
+
+/** Reads a bounded raw request body without a media-type requirement. */
+export async function readRawBody(request: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new RangeError("Maximum request body size must be a positive integer.");
+  }
+  return readBody(request, maxBytes);
 }
 
 export function sendJson(response: ServerResponse, status: number, body: unknown) {

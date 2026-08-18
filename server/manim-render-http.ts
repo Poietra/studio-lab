@@ -1,7 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { isNativeError, isProxy } from "node:util/types";
 
 import { parseVerifiedSceneIrBundleV1, sceneIrSourceRevisionHash } from "../src/engine/contracts";
@@ -48,6 +46,7 @@ import {
 import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-identity";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
+import { streamHttpMediaV1 } from "./http/media-stream";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { BrowserManimProjectImportApiV1, ManimApi, MutableManimProjectApi } from "./manim-api";
 import {
@@ -116,6 +115,7 @@ export function isManimBrowserProjectImportRequest(method: string | undefined, p
 const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
 const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS = 120_000;
 
+export { resolveByteRange } from "./http/media-stream";
 export type { ManimApi } from "./manim-api";
 export type ManimRequestContext = Readonly<{
   principal: VerifiedManimPrincipal;
@@ -321,85 +321,6 @@ function browserProjectImporter(manager: ManimApi) {
     throw new HttpError("Browser project import is not configured.", 405);
   }
   return candidate as BrowserManimProjectImportApiV1;
-}
-
-export function resolveByteRange(
-  header: string | undefined,
-  size: number,
-):
-  | Readonly<{ kind: "full" }>
-  | Readonly<{ kind: "invalid" }>
-  | Readonly<{ end: number; kind: "partial"; start: number }> {
-  if (!header) return { kind: "full" };
-  const match = header.match(/^bytes=(\d*)-(\d*)$/);
-  if (!match || (!match[1] && !match[2])) return { kind: "invalid" };
-  const suffixLength = !match[1] && match[2] ? Number(match[2]) : null;
-  const start = suffixLength === null ? Number(match[1]) : Math.max(0, size - suffixLength);
-  const end = suffixLength === null && match[2] ? Math.min(Number(match[2]), size - 1) : size - 1;
-  if (
-    !Number.isInteger(start) ||
-    !Number.isInteger(end) ||
-    (suffixLength !== null && (!Number.isInteger(suffixLength) || suffixLength <= 0)) ||
-    start < 0 ||
-    end < start ||
-    start >= size
-  )
-    return { kind: "invalid" };
-  return { end, kind: "partial", start };
-}
-
-async function streamVideo(
-  request: IncomingMessage,
-  response: ServerResponse,
-  asset: Awaited<ReturnType<ManimApi["video"]>>,
-  signal: AbortSignal,
-  idleTimeoutMs: number,
-) {
-  const idleAbort = new AbortController();
-  const streamSignal = AbortSignal.any([signal, idleAbort.signal]);
-  let idleTimer: NodeJS.Timeout | null = null;
-  const armIdleTimeout = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(
-      () => idleAbort.abort(new Error("Media stream stalled beyond its idle deadline.")),
-      idleTimeoutMs,
-    );
-    idleTimer.unref();
-  };
-  try {
-    const range = resolveByteRange(request.headers.range, asset.byteSize);
-    response.setHeader("accept-ranges", "bytes");
-    response.setHeader("cache-control", "no-store");
-    response.setHeader("content-type", asset.mediaType);
-    response.setHeader("x-content-type-options", "nosniff");
-    if (range.kind === "invalid") {
-      response.statusCode = 416;
-      response.setHeader("content-range", `bytes */${asset.byteSize}`);
-      response.end();
-      return;
-    }
-    const selected = range.kind === "partial" ? { end: range.end, start: range.start } : null;
-    response.statusCode = selected ? 206 : 200;
-    response.setHeader("content-length", selected ? selected.end - selected.start + 1 : asset.byteSize);
-    if (selected) response.setHeader("content-range", `bytes ${selected.start}-${selected.end}/${asset.byteSize}`);
-    if (request.method === "HEAD") {
-      response.end();
-      return;
-    }
-    armIdleTimeout();
-    const body = await asset.open(selected, streamSignal);
-    const boundedBody = (async function* () {
-      for await (const chunk of body) {
-        streamSignal.throwIfAborted();
-        armIdleTimeout();
-        yield chunk;
-      }
-    })();
-    await pipeline(Readable.from(boundedBody), response, { signal: streamSignal });
-  } finally {
-    if (idleTimer) clearTimeout(idleTimer);
-    await asset.close();
-  }
 }
 
 function requireEmptyRenderActionBody(body: unknown) {
@@ -945,7 +866,7 @@ async function routeManimRequest(
   }
   if ((request.method === "GET" || request.method === "HEAD") && action === "video") {
     const idleTimeoutMs = mediaStreamIdleTimeout(policy.mediaStreamIdleTimeoutMs);
-    await streamVideo(request, response, await manager.video(id, signal), signal, idleTimeoutMs);
+    await streamHttpMediaV1(request, response, await manager.video(id, signal), signal, idleTimeoutMs);
     return;
   }
   if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);

@@ -1,6 +1,7 @@
 import type { S3ClientConfig } from "@aws-sdk/client-s3";
 import { Pool, type PoolConfig } from "pg";
 
+import { exportMp4VerificationReadyV1, verifyExportMp4V1 } from "../src/engine/export-mp4-verification";
 import { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import {
   createDurableManimRenderCancellationRelayV1,
@@ -29,8 +30,13 @@ import {
   type ProductionRuntimeCellAssignmentV1,
 } from "./production-runtime-cell";
 import { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
+import { createDurableClientExportGcWorkerV1 } from "./storage/client-export-gc";
+import { createUnmeteredClientExportPublicationMeteringV1 } from "./storage/client-export-metering";
+import { ClientExportPublisherV1 } from "./storage/client-export-publisher";
+import { ClientExportReaderV1 } from "./storage/client-export-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifact-repository";
+import { PostgresClientExportRepositoryV1 } from "./storage/postgres/postgres-client-export-repository";
 import { PostgresEditorDocumentRepositoryV1 } from "./storage/postgres/postgres-editor-document-repository";
 import { PostgresProjectPngRepositoryV1 } from "./storage/postgres/postgres-project-png-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
@@ -51,6 +57,7 @@ import {
   type StorageWriteLaneV1,
 } from "./storage/routed-source-png-store";
 import { S3ArtifactReaderV1 } from "./storage/s3/s3-artifact-reader";
+import { S3ClientExportArtifactStoreV1 } from "./storage/s3/s3-client-export-artifact-store";
 import { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
 import { S3ImmutableRenderArtifactStoreV1 } from "./storage/s3/s3-immutable-render-artifact-store";
 import { S3ImmutableSnapshotArtifactStoreV1 } from "./storage/s3/s3-immutable-snapshot-artifact-store";
@@ -71,6 +78,17 @@ import { createDurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import { VerifiedArtifactPublisherV1 } from "./storage/verified-artifact-publisher";
 
 export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
+  clientExports?: Readonly<{
+    artifactExpirationMs?: number;
+    claimDurationMs?: number;
+    gc?: Readonly<{
+      batchSize: number;
+      graceMs: number;
+      intervalMs: number;
+      onFailure: (error: unknown) => void;
+      sweepTimeoutMs: number;
+    }>;
+  }>;
   database: Readonly<{
     migrationPoolConfig: PoolConfig;
     migrationTimeoutMs?: number;
@@ -381,11 +399,13 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   await migrate(options.database);
   signal?.throwIfAborted();
 
+  const clientExportMetering = options.clientExports ? createUnmeteredClientExportPublicationMeteringV1() : undefined;
   let repository: PostgresWorkspaceSourceRepositoryV1 | undefined;
   let editorDocuments: PostgresEditorDocumentRepositoryV1 | undefined;
   let renderRepository: PostgresRenderSessionRepositoryV1 | undefined;
   let projectPngRepository: PostgresProjectPngRepositoryV1 | undefined;
   let mediaRepository: PostgresArtifactRepositoryV1 | undefined;
+  let clientExportRepository: PostgresClientExportRepositoryV1 | undefined;
   let snapshotRepository: PostgresSnapshotPublicationRepositoryV1 | undefined;
   let immutableTransport: PrivateImmutableS3BucketTransportV1 | undefined;
   let legacyTransport: PrivateVersionedS3BucketTransportV1 | undefined;
@@ -396,6 +416,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let immutableArtifacts: S3ImmutableSnapshotArtifactStoreV1 | undefined;
   let legacyArtifacts: S3SnapshotArtifactStoreV1 | undefined;
   let immutableMediaArtifacts: S3ImmutableRenderArtifactStoreV1 | undefined;
+  let clientExportArtifacts: S3ClientExportArtifactStoreV1 | undefined;
   let legacyMediaArtifacts: S3ArtifactReaderV1 | undefined;
   let blobs: RoutedSourceContentBlobStoreV1 | undefined;
   let projectPngs: RoutedProjectPngBlobStoreV1 | undefined;
@@ -422,6 +443,13 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
     });
+    if (clientExportMetering) {
+      clientExportRepository = new PostgresClientExportRepositoryV1({
+        metering: clientExportMetering,
+        poolConfig: options.database.runtimePoolConfig,
+        statementTimeoutMs: options.database.statementTimeoutMs,
+      });
+    }
     snapshotRepository = new PostgresSnapshotPublicationRepositoryV1({
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
@@ -443,6 +471,9 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     immutableProjectPngs = new ImmutableS3ProjectPngStoreV1({ transport: immutableTransport });
     immutableArtifacts = new S3ImmutableSnapshotArtifactStoreV1({ transport: immutableTransport });
     immutableMediaArtifacts = new S3ImmutableRenderArtifactStoreV1({ transport: immutableTransport });
+    if (options.clientExports) {
+      clientExportArtifacts = new S3ClientExportArtifactStoreV1({ transport: immutableTransport });
+    }
     if (legacyTransport) {
       legacyBlobs = new S3ContentBlobStoreV1({ transport: legacyTransport });
       legacyProjectPngs = new S3ProjectPngStoreV1({ transport: legacyTransport });
@@ -474,7 +505,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     return cleanupInOrderAndThrow(
       error,
       [
-        [mediaArtifacts, artifacts, projectPngs, blobs],
+        [mediaArtifacts, clientExportArtifacts, artifacts, projectPngs, blobs],
         [
           immutableMediaArtifacts,
           legacyMediaArtifacts,
@@ -486,7 +517,15 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
           legacyBlobs,
         ],
         [immutableTransport, legacyTransport],
-        [mediaRepository, snapshotRepository, projectPngRepository, renderRepository, editorDocuments, repository],
+        [
+          mediaRepository,
+          clientExportRepository,
+          snapshotRepository,
+          projectPngRepository,
+          renderRepository,
+          editorDocuments,
+          repository,
+        ],
       ],
       "Production storage composition and cleanup failed.",
     );
@@ -496,6 +535,8 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let renderExecutor: ProductionDurableManimRenderExecutorV1 | undefined;
   let renderCancellationRelay: DurableManimRenderCancellationRelayV1 | undefined;
   let artifactReader: AuthorizedArtifactReaderV1 | undefined;
+  let clientExportPublisher: ClientExportPublisherV1 | undefined;
+  let clientExportReader: ClientExportReaderV1 | undefined;
   let renderPublisher: VerifiedArtifactPublisherV1 | undefined;
   let renders: DurableManimRenderServiceV1 | undefined;
   let snapshotFactory: FastManimProductionSnapshotRunnerFactoryV1 | undefined;
@@ -538,6 +579,29 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       store: mediaArtifacts,
       tenantId: options.tenantId,
     });
+    if (options.clientExports) {
+      if (!clientExportMetering || !clientExportRepository || !clientExportArtifacts) {
+        throw new Error("Client export storage composition is unavailable.");
+      }
+      clientExportPublisher = new ClientExportPublisherV1({
+        artifactExpirationMs:
+          options.clientExports.artifactExpirationMs ?? options.renderArtifacts.artifactExpirationMs,
+        artifacts: clientExportArtifacts,
+        metering: clientExportMetering,
+        publications: clientExportRepository,
+        tenantId: options.tenantId,
+        verifyMp4: verifyExportMp4V1,
+        verifyMp4Ready: exportMp4VerificationReadyV1,
+      });
+      clientExportReader = new ClientExportReaderV1({
+        ...(options.clientExports.claimDurationMs === undefined
+          ? {}
+          : { claimDurationMs: options.clientExports.claimDurationMs }),
+        repository: clientExportRepository,
+        store: clientExportArtifacts,
+        tenantId: options.tenantId,
+      });
+    }
     renderPublisher = new VerifiedArtifactPublisherV1({
       artifactExpirationMs: options.renderArtifacts.artifactExpirationMs,
       artifacts: mediaArtifacts,
@@ -604,9 +668,17 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       error,
       [
         [renderWorker ?? renderExecutor, renders, snapshots ?? publisher, ...(snapshots ? [] : [snapshotFactory])],
-        [mediaArtifacts, artifacts, projectPngs, blobs],
+        [mediaArtifacts, clientExportArtifacts, artifacts, projectPngs, blobs],
         [immutableTransport, legacyTransport],
-        [mediaRepository, snapshotRepository, projectPngRepository, renderRepository, editorDocuments, repository],
+        [
+          mediaRepository,
+          clientExportRepository,
+          snapshotRepository,
+          projectPngRepository,
+          renderRepository,
+          editorDocuments,
+          repository,
+        ],
       ],
       "Production runtime service composition and cleanup failed.",
     );
@@ -655,9 +727,17 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       error,
       [
         runtime ? [runtime] : [renderExecution ?? renderWorker, renders, snapshots],
-        [mediaArtifacts, artifacts, projectPngs, blobs],
+        [mediaArtifacts, clientExportArtifacts, artifacts, projectPngs, blobs],
         [immutableTransport, legacyTransport],
-        [mediaRepository, snapshotRepository, projectPngRepository, renderRepository, editorDocuments, repository],
+        [
+          mediaRepository,
+          clientExportRepository,
+          snapshotRepository,
+          projectPngRepository,
+          renderRepository,
+          editorDocuments,
+          repository,
+        ],
       ],
       "Production durable runtime construction and cleanup failed.",
     );
@@ -667,6 +747,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let projectPngMaintenance: Awaited<ReturnType<typeof createDurableProjectPngGcWorkerV1>> | undefined;
   let snapshotMaintenance: Awaited<ReturnType<typeof createDurableSnapshotArtifactGcWorkerV1>> | undefined;
   let mediaMaintenance: Awaited<ReturnType<typeof createDurableRenderArtifactGcWorkerV1>> | undefined;
+  let clientExportMaintenance: Awaited<ReturnType<typeof createDurableClientExportGcWorkerV1>> | undefined;
   let retentionMaintenance: Awaited<ReturnType<typeof createDurableRenderSessionRetentionWorkerV1>> | undefined;
   try {
     const sourceGc = await createDurableSourceBlobGcWorkerV1(
@@ -709,6 +790,24 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       signal,
     );
     mediaMaintenance = mediaGc;
+    let clientExportGc: Awaited<ReturnType<typeof createDurableClientExportGcWorkerV1>> | undefined;
+    if (options.clientExports) {
+      const gcRepository = clientExportRepository;
+      const gcArtifacts = clientExportArtifacts;
+      if (!gcRepository || !gcArtifacts) {
+        throw new Error("Client export GC storage composition is unavailable.");
+      }
+      clientExportGc = await createDurableClientExportGcWorkerV1(
+        {
+          ...(options.clientExports.gc ?? options.renderArtifacts.gc),
+          artifacts: gcArtifacts,
+          repository: gcRepository,
+          tenantId: options.tenantId,
+        },
+        signal,
+      );
+    }
+    clientExportMaintenance = clientExportGc;
     const retention = await createDurableRenderSessionRetentionWorkerV1(
       {
         ...options.renderSessionRetention,
@@ -735,6 +834,9 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     //   snapshot_scene_heads publications and their references, and only this
     //   worker reclaims the orphaned snapshot artifacts and publication
     //   tombstones.
+    // - clientExportGc (createDurableClientExportGcWorkerV1): browser-finalized
+    //   MP4s are written directly by the storage lane, and this worker expires
+    //   their publications, read claims, objects, and deletion tombstones.
     //
     // Render-only workers reclaim families that only render execution grows,
     // so they gate render admission but no longer the storage lane:
@@ -752,20 +854,64 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       },
       storage: {
         close: () =>
-          closeAll([artifactGc, projectPngGc, sourceGc], "Could not fully close durable storage maintenance."),
-        ready: () => sourceGc.ready() && projectPngGc.ready() && artifactGc.ready(),
+          closeAll(
+            [clientExportGc, artifactGc, projectPngGc, sourceGc],
+            "Could not fully close durable storage maintenance.",
+          ),
+        ready: () =>
+          sourceGc.ready() && projectPngGc.ready() && artifactGc.ready() && (clientExportGc?.ready() ?? true),
       },
     };
-    const adapter = createTenantCellProductionManimRuntimeAdapterV1(runtime, maintenance);
+    const clientExports =
+      clientExportPublisher && clientExportReader
+        ? {
+            ready: async (readySignal?: AbortSignal) => {
+              const ready = await Promise.all([
+                clientExportPublisher.ready(readySignal),
+                clientExportReader.ready(readySignal),
+              ]);
+              return ready.every(Boolean);
+            },
+            service: {
+              publisher: clientExportPublisher,
+              reader: clientExportReader,
+              tenantId: options.tenantId,
+            },
+          }
+        : undefined;
+    const baseAdapter = createTenantCellProductionManimRuntimeAdapterV1(runtime, maintenance);
+    const adapter = clientExports
+      ? {
+          ...baseAdapter,
+          clientExports: clientExports.service,
+          async ready(readySignal: AbortSignal) {
+            const [baseReadiness, clientExportsReady] = await Promise.all([
+              baseAdapter.ready(readySignal),
+              clientExports.ready(readySignal),
+            ]);
+            if (!baseReadiness.ready || !clientExportsReady) return { ready: false } as const;
+            return baseReadiness;
+          },
+          async tenantCellStorageReady(readySignal: AbortSignal) {
+            const ready = await Promise.all([
+              baseAdapter.tenantCellStorageReady(readySignal),
+              clientExports.ready(readySignal),
+            ]);
+            return ready.every(Boolean);
+          },
+        }
+      : baseAdapter;
     return createProductionStorageOwnershipBoundaryV1(
       adapter,
       [
         mediaArtifacts,
+        clientExportArtifacts,
         artifacts,
         projectPngs,
         blobs,
         projectPngRepository,
         mediaRepository,
+        clientExportRepository,
         snapshotRepository,
         renderRepository,
         editorDocuments,
@@ -777,15 +923,24 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     return cleanupInOrderAndThrow(
       error,
       [
-        [retentionMaintenance, mediaMaintenance, snapshotMaintenance, projectPngMaintenance, sourceMaintenance],
+        [
+          retentionMaintenance,
+          clientExportMaintenance,
+          mediaMaintenance,
+          snapshotMaintenance,
+          projectPngMaintenance,
+          sourceMaintenance,
+        ],
         [runtime],
         [
           mediaArtifacts,
+          clientExportArtifacts,
           artifacts,
           projectPngs,
           blobs,
           projectPngRepository,
           mediaRepository,
+          clientExportRepository,
           snapshotRepository,
           renderRepository,
           editorDocuments,

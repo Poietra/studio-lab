@@ -22,6 +22,7 @@ mod canvas_telemetry;
 mod export_encoder;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod export_encoder_protocol;
+mod export_verify;
 // Test-only browser proof for the offscreen async export readback (#718);
 // superseded by the #721 export contract.
 #[cfg(target_arch = "wasm32")]
@@ -47,6 +48,10 @@ pub use canvas_telemetry::{
 pub use export_encoder_protocol::{
     MAX_EXPORT_ENCODER_REQUEST_JSON_BYTES_V1, MAX_EXPORT_ENCODER_RESPONSE_JSON_BYTES_V1,
     POIETRA_EXPORT_ENCODER_ABI_VERSION_V1,
+};
+pub use export_verify::{
+    ExportProvenanceV1, MAX_EXPORT_VERIFY_RESPONSE_JSON_BYTES_V1,
+    POIETRA_EXPORT_VERIFY_ABI_VERSION_V1, verify_export_mp4_v1,
 };
 pub use protocol::{
     EngineWorkerSessionV1, MAX_SAMPLE_REQUEST_JSON_BYTES_V1, MAX_WORKER_RESPONSE_JSON_BYTES_V1,
@@ -92,6 +97,13 @@ pub fn poietra_canvas_telemetry_abi_version() -> u32 {
 #[wasm_bindgen(js_name = poietraExportEncoderAbiVersion)]
 pub fn poietra_export_encoder_abi_version() -> u32 {
     POIETRA_EXPORT_ENCODER_ABI_VERSION_V1
+}
+
+/// Returns the export MP4 verification ABI version.
+#[must_use]
+#[wasm_bindgen(js_name = poietraExportVerifyAbiVersion)]
+pub fn poietra_export_verify_abi_version() -> u32 {
+    POIETRA_EXPORT_VERIFY_ABI_VERSION_V1
 }
 
 /// Validates one complete Scene IR bundle with the canonical Rust contract.
@@ -156,5 +168,6 @@ mod tests {
         assert_eq!(poietra_canvas_abi_version(), 5);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
         assert_eq!(poietra_export_encoder_abi_version(), 1);
+        assert_eq!(poietra_export_verify_abi_version(), 1);
     }
 }

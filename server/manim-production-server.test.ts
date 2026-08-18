@@ -2,6 +2,7 @@ import { createServer as createHttpServer, request as createRequest } from "node
 import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { CLIENT_EXPORT_FINALIZE_MEDIA_TYPE_V1 } from "../src/collaboration/client-export-http-contract";
 import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
 import { fastManimSnapshotSceneIdV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
@@ -1644,6 +1645,78 @@ describe("standalone production Manim HTTP adapter", () => {
         method: "POST",
       }),
     ).toMatchObject({ status: 413 });
+  });
+
+  it("widens the transport ceiling only for storage-gated client export finalization", async () => {
+    const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
+    let storageAvailable = true;
+    const storageReadiness = vi.fn(async () => storageAvailable);
+    const publish = vi.fn(async () => {
+      throw new Error("invalid framing must not publish");
+    });
+    const baseRuntime = createRuntime(() => false);
+    const runtime: TenantCellRuntimeAdapterV1 = {
+      ...baseRuntime,
+      clientExports: {
+        publisher: { publish },
+        reader: {
+          publication: async () => {
+            throw new Error("not used");
+          },
+          publicationVideo: async () => {
+            throw new Error("not used");
+          },
+        },
+        tenantId: "tenant-a",
+      },
+      ready: fullReadiness,
+      tenantCellStorageReady: storageReadiness,
+    };
+    const server = await startProductionManimServer({
+      admission: {
+        authenticate: async () => ({
+          subjectId: "10000000-0000-4000-8000-000000000001",
+          tenantId: "tenant-a",
+        }),
+        ready: async () => true,
+      },
+      config: await startConfig({ limits: { maxBodyBytes: 1_024 } }),
+      runtime,
+    });
+    servers.push(server);
+    const finalizePath = "/api/projects/project-a/exports";
+    const mutationHeaders = {
+      "content-type": CLIENT_EXPORT_FINALIZE_MEDIA_TYPE_V1,
+      origin: "https://studio.example",
+    };
+
+    const widened = await send(server, finalizePath, {
+      body: "x".repeat(2_048),
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(widened).toMatchObject({ status: 400 });
+    expect(storageReadiness).toHaveBeenCalledOnce();
+    expect(fullReadiness).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+
+    expect(
+      await send(server, "/api/manim/renders/deadbeef/cancel", {
+        body: JSON.stringify({ padding: "x".repeat(1_024) }),
+        headers: { "content-type": "application/json", origin: "https://studio.example" },
+        method: "POST",
+      }),
+    ).toMatchObject({ status: 413 });
+
+    storageAvailable = false;
+    expect(
+      await send(server, finalizePath, {
+        body: "xxxx",
+        headers: mutationHeaders,
+        method: "POST",
+      }),
+    ).toMatchObject({ status: 503 });
+    expect(storageReadiness).toHaveBeenCalledTimes(2);
   });
 
   it("logs a stable route template without query values or resource identifiers", async () => {
