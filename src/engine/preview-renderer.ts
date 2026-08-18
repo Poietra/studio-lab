@@ -301,18 +301,26 @@ export class StudioPreviewRendererHost {
     return evidence;
   }
 
-  async generateThumbnail() {
+  async generateThumbnail(expectedRevision: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     const renderer = this.renderer;
-    const revision = this.revision;
-    if (this.phase !== "ready" || !renderer || revision === null || this.currentState.phase !== "presented") {
+    if (
+      this.phase !== "ready" ||
+      !renderer ||
+      this.revision !== expectedRevision ||
+      this.currentState.phase !== "presented" ||
+      this.currentState.frame.revision !== expectedRevision
+    ) {
       throw new CanvasWorkerClientError("invalid-state", "The preview host has no current presented Scene thumbnail.");
     }
-    const png = await renderer.generateThumbnail(revision);
+    const png = await renderer.generateThumbnail(expectedRevision);
+    signal?.throwIfAborted();
     if (
       this.phase !== "ready" ||
       this.renderer !== renderer ||
-      this.revision !== revision ||
-      this.currentState.phase !== "presented"
+      this.revision !== expectedRevision ||
+      this.currentState.phase !== "presented" ||
+      this.currentState.frame.revision !== expectedRevision
     ) {
       throw new CanvasWorkerClientError("stale-response", "The preview Scene changed while generating its thumbnail.");
     }

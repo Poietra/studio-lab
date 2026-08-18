@@ -116,7 +116,7 @@ import {
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
   /** Renders the exact currently presented Scene through the retained Rust/WGPU worker. */
-  generateThumbnail: () => Promise<Uint8Array<ArrayBuffer>>;
+  generateThumbnail: (signal?: AbortSignal) => Promise<Uint8Array<ArrayBuffer>>;
   /** Exact Rust-admitted Scene currently presented by the retained renderer. */
   canonicalScene: Readonly<{
     assetPayloads: readonly CanvasPngAssetTransferV1[];
@@ -1730,6 +1730,12 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
         : null,
     [frame, interactionEntityIds, state],
   );
+  const presentedCompiledScene =
+    state.phase === "presented" &&
+    currentCompiledScene &&
+    state.frame.revision === currentCompiledScene.engineRevisionHash
+      ? currentCompiledScene
+      : null;
   if (!provider) return null;
   const interactionAuthority = studioPreviewInteractionAuthority(snapshot, sampleTime, sourceEvents);
   const runtimeTraceOpaqueSelectionEntities = projectStudioPreviewRuntimeTraceOpaqueSelectionEntities({
@@ -1739,31 +1745,30 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   });
   return {
     attachCanvas,
-    generateThumbnail: () => {
-      if (!host || state.phase !== "presented") {
+    generateThumbnail: (signal) => {
+      if (!host || !presentedCompiledScene) {
         return Promise.reject(
           new CanvasWorkerClientError("invalid-state", "No current Scene can produce a thumbnail."),
         );
       }
-      return host.generateThumbnail();
+      return host.generateThumbnail(presentedCompiledScene.engineRevisionHash, signal);
     },
     boundEntityProjection: state.phase === "presented" ? (currentCompiledScene?.boundEntityProjection ?? null) : null,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
-    canonicalScene:
-      state.phase === "presented" && currentCompiledScene
-        ? {
-            assetPayloads: currentCompiledScene.snapshot.assetPayloads,
-            bundle: currentCompiledScene.bundle,
-            sourceLineage: {
-              projectId: currentCompiledScene.snapshot.correlation.context.projectId,
-              sceneId: currentCompiledScene.snapshot.correlation.sceneId,
-              sceneName: currentCompiledScene.snapshot.correlation.context.sceneName,
-              sourceHash: currentCompiledScene.snapshot.correlation.context.sourceHash,
-              sourcePath: currentCompiledScene.snapshot.correlation.context.sourcePath,
-              workingRevision: currentCompiledScene.workingRevision,
-            },
-          }
-        : null,
+    canonicalScene: presentedCompiledScene
+      ? {
+          assetPayloads: presentedCompiledScene.snapshot.assetPayloads,
+          bundle: presentedCompiledScene.bundle,
+          sourceLineage: {
+            projectId: presentedCompiledScene.snapshot.correlation.context.projectId,
+            sceneId: presentedCompiledScene.snapshot.correlation.sceneId,
+            sceneName: presentedCompiledScene.snapshot.correlation.context.sceneName,
+            sourceHash: presentedCompiledScene.snapshot.correlation.context.sourceHash,
+            sourcePath: presentedCompiledScene.snapshot.correlation.context.sourcePath,
+            workingRevision: presentedCompiledScene.workingRevision,
+          },
+        }
+      : null,
     creationProjection: state.phase === "presented" ? (currentCompiledScene?.creationProjection ?? null) : null,
     epoch,
     interactionGeometry,

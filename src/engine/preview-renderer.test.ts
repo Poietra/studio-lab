@@ -59,6 +59,7 @@ function createFixture() {
   const installs: InstallCanvasSceneInputV1[] = [];
   const replacements: { deferred: Deferred<void>; input: ReplaceCanvasSceneInputV1 }[] = [];
   const renders: { deferred: Deferred<PresentedCanvasFrameV1>; input: RenderCanvasFrameInputV1 }[] = [];
+  const thumbnails: { deferred: Deferred<Uint8Array<ArrayBuffer>>; revision: string }[] = [];
   let disposeCount = 0;
   let evidence: CanvasFrameEvidenceResponseV1 | null = null;
   let deferredEvidence: Deferred<CanvasFrameEvidenceResponseV1> | null = null;
@@ -75,7 +76,11 @@ function createFixture() {
     dispose: () => {
       disposeCount += 1;
     },
-    generateThumbnail: () => Promise.resolve(new Uint8Array([1])),
+    generateThumbnail: (revision) => {
+      const pending = deferred<Uint8Array<ArrayBuffer>>();
+      thumbnails.push({ deferred: pending, revision });
+      return pending.promise;
+    },
     installScene: (input) => {
       installs.push(input);
       return install.promise;
@@ -127,6 +132,7 @@ function createFixture() {
     },
     renders,
     replacements,
+    thumbnails,
     setEvidence: (value: CanvasFrameEvidenceResponseV1 | null) => {
       evidence = value;
     },
@@ -234,6 +240,22 @@ async function requestAndPresent(
 }
 
 describe("StudioPreviewRendererHost", () => {
+  it("renders a thumbnail only for the revision captured by the caller", async () => {
+    const { fixture, snapshot } = await readyUpdateFixture();
+    await requestAndPresent(fixture, 0, 1);
+    await expect(fixture.host.generateThumbnail(OTHER_REVISION)).rejects.toMatchObject({ code: "invalid-state" });
+    expect(fixture.thumbnails).toHaveLength(0);
+
+    const thumbnail = fixture.host.generateThumbnail(REVISION);
+    expect(fixture.thumbnails[0]?.revision).toBe(REVISION);
+    const update = await updateInput(snapshot, OTHER_REVISION, 3, []);
+    const updating = fixture.host.update(update.input);
+    fixture.thumbnails[0]?.deferred.resolve(new Uint8Array([1]));
+    await expect(thumbnail).rejects.toMatchObject({ code: "stale-response" });
+    fixture.replacements[0]?.deferred.resolve();
+    await updating;
+  });
+
   it("presents only after an exactly correlated frame arrives", async () => {
     const fixture = createFixture();
     const pending = fixture.host.install(installInput());
