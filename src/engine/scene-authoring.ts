@@ -375,6 +375,7 @@ export type ProjectStudioTimelineCompiler = (
 ) => Promise<StudioTimelineProjectionV1>;
 
 const finiteNumberSchema = z.number().finite();
+const canonicalRgbHexSchema = z.string().regex(/^#[0-9a-f]{6}$/u);
 const studioTimelineProjectionIntervalV1Schema = z
   .object({ end: finiteNumberSchema, start: finiteNumberSchema })
   .strict();
@@ -505,6 +506,26 @@ const studioCreationProjectionV1Schema = z
     motions: z.array(studioProjectedMotionV1Schema),
     mutations: z.array(
       z.discriminatedUnion("kind", [
+        z
+          .object({
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("fill-color"),
+            operationId: z.string().min(1),
+            transactionId: z.string().min(1),
+            value: canonicalRgbHexSchema,
+          })
+          .strict(),
+        z
+          .object({
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("stroke-color"),
+            operationId: z.string().min(1),
+            transactionId: z.string().min(1),
+            value: canonicalRgbHexSchema,
+          })
+          .strict(),
         z
           .object({
             entityId: z.string().min(1),
@@ -735,6 +756,7 @@ type StudioCreationOperationV1 = Readonly<{
         kind: "create";
       }>
     | Readonly<{ entityId: string; kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
+    | Readonly<{ color: string | null; entityId: string; kind: "fill-color" | "stroke-color" }>
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
     | Readonly<{ alpha: number | null; entityId: string; kind: "opacity" }>
     | Readonly<{ entityId: string; kind: "persistent-remove"; persistent: boolean }>

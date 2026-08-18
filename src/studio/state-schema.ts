@@ -92,11 +92,13 @@ const propertyChannelSchema = z
       "camera",
       "content",
       "dimensions",
+      "fillColor",
       "ordering",
       "position",
       "presence",
       "rotation",
       "scale",
+      "strokeColor",
     ]),
     samples: z.array(propertyChannelSampleSchema),
   })

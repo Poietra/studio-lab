@@ -270,6 +270,8 @@ function creationEntityKind(type: string): StudioCreationProjectionV1["entities"
 function creationMutationKind(operation: SceneEditOperation): StudioCreationProjectionMutationV1["kind"] | null {
   if (operation.kind === "SetProperty" && operation.key === "position") return "position";
   if (operation.kind === "SetProperty" && operation.key === "appearance") return "opacity";
+  if (operation.kind === "SetProperty" && operation.key === "fillColor") return "fill-color";
+  if (operation.kind === "SetProperty" && operation.key === "strokeColor") return "stroke-color";
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") return "fade-in";
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") return "rotation";
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
@@ -750,6 +752,18 @@ function appendProjectedMutation(
       kind: "exact",
       value: mutation.value,
     });
+  } else if (mutation.kind === "fill-color" || mutation.kind === "stroke-color") {
+    appendProjectedSample(
+      draft.propertyChannels,
+      entityId,
+      mutation.kind === "fill-color" ? "fillColor" : "strokeColor",
+      {
+        ...metadata,
+        interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.start },
+        kind: "exact",
+        value: mutation.value,
+      },
+    );
   } else if (mutation.kind === "rotation") {
     appendProjectedSample(draft.propertyChannels, entityId, "rotation", {
       ...metadata,

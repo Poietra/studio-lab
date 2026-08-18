@@ -11,7 +11,7 @@ import type {
 import { canonicalEditableContent } from "./editable-content";
 import type { RuntimeSceneState } from "./model";
 import { isPointValue } from "./property-sampling";
-import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "./scene-edit-contract";
 
 type StaticRootTransformCommandInput = Omit<
   ApplyStaticRootTransformEditWireCommandV1,
@@ -210,6 +210,14 @@ function normalizedStudioCreationOperation(
       entityId: operation.entityId,
       kind: "position",
       position: isPointValue(operation.value) ? operation.value : null,
+    };
+  }
+  if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
+    return {
+      ...common,
+      color: isCanonicalRgbHex(operation.value) ? operation.value : null,
+      entityId: operation.entityId,
+      kind: operation.key === "fillColor" ? "fill-color" : "stroke-color",
     };
   }
   if (operation.kind === "SetProperty" && operation.key === "appearance") {

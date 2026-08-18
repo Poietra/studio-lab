@@ -21,7 +21,7 @@ import {
 import type { EntityDimensions, Point, RuntimeSceneState } from "./model";
 import { EDIT_OPERATION_VERSION, type OperationOrigin, operationId, provisionalEntityId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
-import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "./scene-edit-contract";
 import { STUDIO_STYLE_PROFILE } from "./style-profile";
 import { resolveTimeAnchorOnce } from "./time";
 
@@ -832,6 +832,63 @@ export function createDirectManipulationOpacityProgram(
       loweringStatus: "supported",
       operations: [operation],
       provenance: provenance("direct-manipulation", ["absolute static appearance constraint"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
+}
+
+export function createDirectManipulationColorProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    color: string;
+    entityId: string;
+    property: "fillColor" | "strokeColor";
+    scene: RuntimeSceneState;
+    start: number;
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  if (!isCanonicalRgbHex(input.color)) {
+    throw new Error("Object color must be a lowercase canonical #rrggbb value.");
+  }
+  if (
+    !Number.isFinite(input.start) ||
+    !Number.isFinite(input.capturedPlayhead) ||
+    input.start < 0 ||
+    input.start > input.scene.duration
+  ) {
+    throw new Error("Object color requires a valid source time inside the Scene.");
+  }
+  const sourceAnchor =
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute" as const, seconds: input.start };
+  const resolution = resolveTimeAnchorOnce(sourceAnchor, {
+    capturedPlayhead: input.capturedPlayhead,
+    sceneDuration: input.scene.duration,
+  });
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: SceneEditOperation = {
+    dependsOn: [],
+    entityId: input.entityId,
+    id: operationId(input.transactionId, `set-${input.property}`),
+    interval: { end: input.start, start: input.start },
+    key: input.property,
+    kind: "SetProperty",
+    provenance: provenance("direct-manipulation", [`${input.property} control`, "absolute shape color"]),
+    value: input.color,
+  };
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["absolute static shape color constraint"]),
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
       transactionId: input.transactionId,

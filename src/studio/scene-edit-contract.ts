@@ -3,6 +3,11 @@ import { z } from "zod";
 import { styleProfileRefSchema } from "./style-profile";
 
 export const SCENE_EDIT_VERSION = 1 as const;
+export const canonicalRgbHexSchema = z.string().regex(/^#[0-9a-f]{6}$/u);
+
+export function isCanonicalRgbHex(value: unknown): value is string {
+  return canonicalRgbHexSchema.safeParse(value).success;
+}
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
 const dimensionsSchema = z
@@ -31,7 +36,7 @@ const contentSchema = z.object({
 });
 
 /** Structural grammar shared by every accepted Scene Edit boundary. */
-export const sceneEditOperationSchema = z.discriminatedUnion("kind", [
+const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   operationBaseSchema.extend({
     entity: z.object({
       content: contentSchema.optional(),
@@ -44,7 +49,18 @@ export const sceneEditOperationSchema = z.discriminatedUnion("kind", [
   }),
   operationBaseSchema.extend({
     entityId: z.string(),
-    key: z.enum(["appearance", "camera", "content", "ordering", "position", "presence", "rotation", "scale"]),
+    key: z.enum([
+      "appearance",
+      "camera",
+      "content",
+      "fillColor",
+      "ordering",
+      "position",
+      "presence",
+      "rotation",
+      "scale",
+      "strokeColor",
+    ]),
     kind: z.literal("SetProperty"),
     value: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]),
   }),
@@ -120,6 +136,20 @@ export const sceneEditOperationSchema = z.discriminatedUnion("kind", [
     value: z.union([z.number(), pointSchema]),
   }),
 ]);
+
+export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superRefine((operation, context) => {
+  if (
+    operation.kind === "SetProperty" &&
+    (operation.key === "fillColor" || operation.key === "strokeColor") &&
+    !isCanonicalRgbHex(operation.value)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${operation.key} must be a lowercase canonical #rrggbb color.`,
+      path: ["value"],
+    });
+  }
+});
 
 const finiteNumber = z.number().finite();
 const resolvedAnchorSchema = z.object({

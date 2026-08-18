@@ -50,6 +50,10 @@ function styleSummary(entity: ProjectedEntity) {
   return [color, fillColor, strokeColor].filter(Boolean).join(" · ") || "Manim defaults";
 }
 
+function colorInputValue(value: string | null) {
+  return value && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : "#ffffff";
+}
+
 function directPositionDraft(record: ProgramRecord, entity: ProjectedEntity | null) {
   const operation = record.program.operations[0];
   if (
@@ -359,13 +363,16 @@ export function StudioInspector({
   appliedProgramCount,
   authoringAvailable = true,
   className,
+  colorAvailable,
   draftApplyPending,
   draftError,
   draftOperation,
   draftEdit,
+  fillColorValue,
   onApplyDraft,
   onDiscardDraft,
   onDraftOperationChange,
+  onEntityColorChange,
   onEntityEdit,
   onEntityOpacityChange,
   onEntityRotate,
@@ -385,19 +392,23 @@ export function StudioInspector({
   selectedEntity,
   inspectorReturnFocus,
   sourceExport,
+  strokeColorValue,
   suggestion,
   workspace,
 }: Readonly<{
   appliedProgramCount: number;
   authoringAvailable?: boolean;
   className?: string;
+  colorAvailable: boolean;
   draftApplyPending: boolean;
   draftError: string | null;
   draftOperation: EditSuggestionOperation | null;
   draftEdit: ProgramRecord | null;
+  fillColorValue: string | null;
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
+  onEntityColorChange: (entityId: string, property: "fillColor" | "strokeColor", color: string) => void;
   onEntityEdit: (entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) => boolean;
   onEntityOpacityChange: (entityId: string, opacity: number) => void;
   onEntityRotate: (entityId: string, angleRadians: number) => void;
@@ -417,6 +428,7 @@ export function StudioInspector({
   selectedEntity: ProjectedEntity | null;
   inspectorReturnFocus: InspectorEditField | null;
   sourceExport: OriginalManimSourceExportRequest | null;
+  strokeColorValue: string | null;
   suggestion: EditSuggestion | null;
   workspace: ManimWorkspaceView | null;
 }>) {
@@ -487,6 +499,52 @@ export function StudioInspector({
                 <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>
                   {styleSummary(selectedEntity)}
                 </dd>
+                {selectedEntity.type === "Circle" || selectedEntity.type === "Rectangle"
+                  ? (
+                      [
+                        ["Fill", "fillColor", fillColorValue],
+                        ["Stroke", "strokeColor", strokeColorValue],
+                      ] as const
+                    ).map(([label, property, value]) => (
+                      <div className="contents" key={property}>
+                        <dt className="self-center text-zinc-600">{label}</dt>
+                        <dd>
+                          <form
+                            className="flex items-center gap-1"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              const data = new FormData(event.currentTarget);
+                              onEntityColorChange(selectedEntity.id, property, String(data.get("color")));
+                            }}
+                          >
+                            <input
+                              aria-label={`${label} color ${entityLabel(selectedEntity)}`}
+                              className="h-7 w-10 cursor-pointer border border-zinc-700 bg-zinc-950 p-0.5 disabled:cursor-not-allowed"
+                              defaultValue={colorInputValue(value)}
+                              disabled={!colorAvailable}
+                              key={`${selectedEntity.id}/${property}/${value ?? "unset"}`}
+                              name="color"
+                              title={
+                                colorAvailable
+                                  ? property === "fillColor"
+                                    ? "Set a solid fill color and enable the shape fill"
+                                    : "Set the shape stroke color"
+                                  : "Color editing currently requires a Studio-created circle or rectangle at its creation time"
+                              }
+                              type="color"
+                            />
+                            <button
+                              className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                              disabled={!colorAvailable}
+                              type="submit"
+                            >
+                              Set
+                            </button>
+                          </form>
+                        </dd>
+                      </div>
+                    ))
+                  : null}
                 <dt className="self-center text-zinc-600">Opacity</dt>
                 <dd>
                   <form

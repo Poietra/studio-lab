@@ -118,6 +118,7 @@ import type { StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
 import { STUDIO_STYLE_PROFILE } from "./studio/style-profile";
 import {
+  createDirectManipulationColorProgram,
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -3080,6 +3081,56 @@ export function App({
     }
   }
 
+  function setEntityColorFromInspector(entityId: string, property: "fillColor" | "strokeColor", color: string) {
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!createdAuthority || !entity || (entity.type !== "Circle" && entity.type !== "Rectangle")) {
+      setDraftError("Fill and stroke colors can currently be changed on Studio-created circles and rectangles.");
+      return false;
+    }
+    const normalizedColor = color.toLowerCase();
+    if (!/^#[0-9a-f]{6}$/.test(normalizedColor)) {
+      setDraftError("Color must use the #rrggbb format.");
+      return false;
+    }
+    if (entity.geometry.style.kind === "known") {
+      const style = entity.geometry.style.value;
+      const currentColor = style[property] ?? (property === "strokeColor" ? (style.color ?? "#ffffff") : undefined);
+      if (currentColor?.toLowerCase() === normalizedColor) return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "shape color edit",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor || Math.abs(anchor.sourceTime - createdAuthority.sourceAnchor) >= 0.0005) return false;
+    try {
+      const validation = createDirectManipulationColorProgram({
+        capturedPlayhead: createdAuthority.sourceAnchor,
+        color: normalizedColor,
+        entityId,
+        property,
+        scene: sourceScene,
+        start: createdAuthority.sourceAnchor,
+        transactionId: `studio-${property}-input-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, createdAuthority.sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The shape color could not be changed.");
+      return false;
+    }
+  }
+
   function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     if (previewSelectionOnly) {
       setDraftError("This verified snapshot is selection-only because it has no safe .py source edit anchor.");
@@ -3912,6 +3963,9 @@ export function App({
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
               onEntityEdit={editEntityFromInspector}
+              onEntityColorChange={(entityId, property, color) =>
+                void setEntityColorFromInspector(entityId, property, color)
+              }
               onEntityOpacityChange={(entityId, opacity) => void setEntityOpacityFromInspector(entityId, opacity)}
               onEntityRotate={(entityId, angleRadians) => void rotateEntityFromInspector(entityId, angleRadians)}
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
@@ -3924,6 +3978,15 @@ export function App({
               renderCandidateUnavailableReason={renderCandidateUnavailableReason}
               renderSession={activeProjectId ? (renderSessions[activeProjectId] ?? null) : null}
               replacingAppliedProgram={editingAppliedProgram !== null}
+              colorAvailable={
+                selectedStudioCreationAppearanceAtAnchor &&
+                (selectedEntity?.type === "Circle" || selectedEntity?.type === "Rectangle")
+              }
+              fillColorValue={
+                selectedEntity?.geometry.style.kind === "known"
+                  ? (selectedEntity.geometry.style.value.fillColor ?? null)
+                  : null
+              }
               opacityAvailable={selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null}
               opacityValue={
                 selectedStudioCreationAppearanceAtAnchor
@@ -3936,6 +3999,13 @@ export function App({
                 selectedRuntimeTraceEditCapabilities?.rotation === true
               }
               selectedEntity={selectedEntity}
+              strokeColorValue={
+                selectedEntity?.geometry.style.kind === "known"
+                  ? (selectedEntity.geometry.style.value.strokeColor ??
+                    selectedEntity.geometry.style.value.color ??
+                    (selectedStudioCreationAppearanceAuthority ? "#ffffff" : null))
+                  : null
+              }
               sourceExport={
                 activeProjectId && activeScene
                   ? {

@@ -7,6 +7,7 @@ import { createFixtureProposedState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { canonicalOperationSchema, programExecutionCapabilities } from "./operation-registry";
 import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
 import {
+  createDirectManipulationColorProgram,
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -414,6 +415,101 @@ describe("Studio draft validation boundary", () => {
       kind: "valid",
       program: { operations: [{ interval: { end: 5, start: 5 } }] },
     });
+  });
+
+  it("creates a canonical color edit only for a Studio-created shape", () => {
+    const entityId = "tx:shape/entity:circle";
+    const scene = {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          [entityId]: {
+            id: entityId,
+            lifetime: [{ end: STUDIO_FIXTURE_SCENE.duration, start: 0 }],
+            provisional: false,
+            sourceIdentity: { kind: "unknown" as const, reason: "Studio-created entity." },
+            transactionId: "shape",
+            type: "Circle",
+          },
+        },
+      },
+    };
+    const validation = createDirectManipulationColorProgram({
+      capturedPlayhead: 0,
+      color: "#12abef",
+      entityId,
+      property: "fillColor",
+      scene,
+      start: 0,
+      transactionId: "fill-shape",
+    });
+
+    expect(validation.issues).toEqual([]);
+    expect(validation).toMatchObject({
+      kind: "valid",
+      program: {
+        loweringStatus: "supported",
+        operations: [{ entityId, key: "fillColor", kind: "SetProperty", value: "#12abef" }],
+      },
+    });
+    expect(() =>
+      createDirectManipulationColorProgram({
+        capturedPlayhead: 0,
+        color: "#12ABEF",
+        entityId,
+        property: "fillColor",
+        scene,
+        start: 0,
+        transactionId: "invalid-fill-shape",
+      }),
+    ).toThrow(/lowercase canonical/i);
+    expect(
+      createDirectManipulationColorProgram({
+        capturedPlayhead: 0,
+        color: "#12abef",
+        entityId: "equation_1",
+        property: "strokeColor",
+        scene,
+        start: 0,
+        transactionId: "imported-stroke",
+      }),
+    ).toMatchObject({ kind: "invalid" });
+  });
+
+  it("samples projected shape colors only from their edit time", () => {
+    const base = createFixtureProposedState();
+    const entityId = "equation_1";
+    const proposed = {
+      ...base,
+      evaluatedScene: {
+        ...base.evaluatedScene,
+        propertyChannels: {
+          ...base.evaluatedScene.propertyChannels,
+          [`${entityId}/fillColor`]: {
+            entityId,
+            key: "fillColor" as const,
+            samples: [
+              {
+                interval: { end: base.evaluatedScene.duration, start: 5 },
+                kind: "exact" as const,
+                provenanceId: "fill/provenance",
+                value: "#12abef",
+              },
+            ],
+          },
+        },
+      },
+    };
+
+    const before = projectProposedState(proposed, 4).canvas.entities.find((entity) => entity.id === entityId);
+    const after = projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === entityId);
+
+    expect(before?.geometry.style.kind === "known" ? before.geometry.style.value.fillColor : undefined).not.toBe(
+      "#12abef",
+    );
+    expect(after?.geometry.style).toMatchObject({ kind: "known", value: { fillColor: "#12abef" } });
   });
 
   it("rejects a resize shape that does not match its target", () => {

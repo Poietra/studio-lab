@@ -9,7 +9,7 @@ import { operationExecutionCapabilities, programExecutionCapabilities } from "..
 import { type CreateEntityOperation, EDIT_OPERATION_VERSION } from "../studio/operations";
 import { insertedProgramDuration } from "../studio/program-composition";
 import { samplePropertyKnowledge, samplePropertyValue } from "../studio/property-sampling";
-import type { SceneEdit, SceneEditOperation } from "../studio/scene-edit-contract";
+import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "../studio/scene-edit-contract";
 import { scaleTransformViolation, sceneBoundaryViolation } from "../studio/source-lowering-invariants";
 import { type ProgramRenderRequest, renderRequestPrograms, type SingleProgramRenderRequest } from "./contracts";
 import {
@@ -128,6 +128,7 @@ export type LoweredProgramBatchSource = Readonly<{
 
 type ProgramSourceLoweringOptions = Readonly<{
   entityAliases?: ReadonlyMap<string, ReadonlySet<string>>;
+  entityOpacityStates?: Map<string, number>;
   entityScaleStates?: Map<string, SourceScaleState>;
   finiteCreatedLifetimesHandled?: boolean;
   generatedEntityIds?: ReadonlySet<string>;
@@ -950,6 +951,19 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
     if (options.generatedEntityIds?.has(operation.entityId)) return;
     throw new ProgramLoweringError("operation-unsupported", "Opacity requires the Runtime Trace source lowerer.");
   }
+  if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
+    if (!isCanonicalRgbHex(operation.value)) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "Shape colors require a lowercase canonical #rrggbb value.",
+      );
+    }
+    if (options.generatedEntityIds?.has(operation.entityId)) return;
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Shape colors currently support only Studio-created Circle and Rectangle entities.",
+    );
+  }
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
     if (options.generatedEntityIds?.has(operation.entityId)) return;
     throw new ProgramLoweringError(
@@ -1476,6 +1490,7 @@ export function lowerCanonicalProgramSource(
           output.push(`# poietra:entity ${JSON.stringify({ id: operation.entity.id, variable })}`);
         }
         output.push(`${variable} = ${entityConstructor(operation)}`);
+        options.entityOpacityStates?.set(operation.entity.id, 1);
       } else if (operation.kind === "TransformContent") {
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
         const target =
@@ -1584,6 +1599,22 @@ export function lowerCanonicalProgramSource(
         typeof operation.value === "number"
       ) {
         output.push(`${variable}.set_opacity(${formatAmount(operation.value)})`);
+        options.entityOpacityStates?.set(operation.entityId, operation.value);
+      } else if (
+        variable &&
+        operation.kind === "SetProperty" &&
+        operation.key === "fillColor" &&
+        isCanonicalRgbHex(operation.value)
+      ) {
+        const opacity = options.entityOpacityStates?.get(operation.entityId) ?? 1;
+        output.push(`${variable}.set_fill(${JSON.stringify(operation.value)}, opacity=${formatAmount(opacity)})`);
+      } else if (
+        variable &&
+        operation.kind === "SetProperty" &&
+        operation.key === "strokeColor" &&
+        isCanonicalRgbHex(operation.value)
+      ) {
+        output.push(`${variable}.set_stroke(${JSON.stringify(operation.value)})`);
       } else if (
         variable &&
         operation.kind === "AnimateProperty" &&
@@ -2993,6 +3024,7 @@ export function lowerCanonicalProgramBatchSource(
   const sourceBindings = new Map(request.sourceBindings.map((binding) => [binding.entityId, binding.sourceVariable]));
   const generatedEntityIds = new Set<string>();
   const generatedSourceVariables = new Set<string>();
+  const entityOpacityStates = new Map<string, number>();
   const entityScaleStates = new Map<string, SourceScaleState>();
   const entityAliases = new Map<string, ReadonlySet<string>>(
     [...sourceBindings].map(([entityId, sourceVariable]) => [entityId, new Set([sourceVariable])]),
@@ -3034,6 +3066,7 @@ export function lowerCanonicalProgramBatchSource(
       incoming,
       {
         entityAliases,
+        entityOpacityStates,
         entityScaleStates,
         finiteCreatedLifetimesHandled: true,
         generatedEntityIds,

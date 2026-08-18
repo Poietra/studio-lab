@@ -770,6 +770,107 @@ describe("Studio workspace projection", () => {
     ]);
   });
 
+  it("installs Studio-created shape color channels from the Rust projection", () => {
+    const imported = workspaceScene("First", null);
+    const entityId = "tx:create-color/entity:circle";
+    const creationProgram: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          entity: {
+            dimensions: { radius: 1 },
+            id: entityId,
+            lifetime: { end: null, start: 0 },
+            type: "Circle",
+          },
+          id: "create-color/circle",
+          interval: { end: 0, start: 0 },
+          kind: "CreateEntity",
+          provenance: { evidence: [], origin: "studio-default" },
+        },
+      ],
+      provenance: { evidence: [], origin: "studio-default" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: ["create-color/circle"] },
+      transactionId: "create-color",
+      version: 1,
+    };
+    const colorProgram: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          entityId,
+          id: "fill-color/circle",
+          interval: { end: 0, start: 0 },
+          key: "fillColor",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          value: "#12abef",
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: ["fill-color/circle"] },
+      transactionId: "fill-color",
+      version: 1,
+    };
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
+          entityId,
+          initialDimensions: { radius: 1 },
+          initialScale: 1,
+          kind: "circle",
+          operationId: "create-color/circle",
+          transactionId: "create-color",
+        },
+      ],
+      insertions: [],
+      motions: [],
+      mutations: [
+        {
+          entityId,
+          interval: { end: imported.runtimeSceneState.duration, start: 0 },
+          kind: "fill-color",
+          operationId: "fill-color/circle",
+          transactionId: "fill-color",
+          value: "#12abef",
+        },
+      ],
+      projectedDuration: imported.runtimeSceneState.duration,
+      removals: [],
+    };
+
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedEdits: [
+        programRecord(creationProgram, { issues: [], kind: "valid" }),
+        programRecord(colorProgram, { issues: [], kind: "valid" }),
+      ],
+      creationProjection: projection,
+      currentTime: 0,
+      draftEdit: null,
+      editAuthority: "rust-authorized-batch",
+      nextScene: null,
+      selectedObjectIds: [entityId],
+    });
+
+    expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/fillColor`]?.samples).toEqual([
+      expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: "#12abef" }),
+    ]);
+    expect(projected.projection.inspector.entities.find((entity) => entity.id === entityId)?.geometry.style).toEqual({
+      kind: "known",
+      value: { fillColor: "#12abef" },
+    });
+  });
+
   it("waits for exact Rust authority for non-timeline Program batches", () => {
     const imported = workspaceScene("Static", null);
     const [entityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
