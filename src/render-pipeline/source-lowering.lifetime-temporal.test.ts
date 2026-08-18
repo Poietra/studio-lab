@@ -765,7 +765,9 @@ class GroupedEquation(Scene):
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
 
     expect(lowered.insertedCode).toContain('MathTex("E", "=", "m", "c^2")');
-    expect(lowered.insertedCode).toContain('Text("Energy")');
+    expect(lowered.insertedCode).toContain(
+      'Text("Energy", font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)',
+    );
     expect(lowered.insertedCode).toContain(".get_center() + 3.2222 * RIGHT");
     expect(lowered.insertedCode.indexOf(".get_center() + 3.2222 * RIGHT")).toBeLessThan(
       lowered.insertedCode.indexOf(".move_to((0, 0, 0))"),
