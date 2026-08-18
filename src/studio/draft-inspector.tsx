@@ -366,6 +366,9 @@ export function DraftInspector({
       ? (record.validation.issues.find((issue) => issue.severity === "error")?.message ??
         "This Program is invalid and cannot be applied.")
       : null;
+  const styleWarnings = record.validation.issues.filter(
+    (issue) => issue.code === "style-profile-deviation" && issue.severity === "warning",
+  );
   const applyStatus = record.validation.status === "valid" ? execution.apply : "blocked";
   const displayedError = execution.applyBlocker ?? validationError ?? error;
   return (
@@ -377,9 +380,16 @@ export function DraftInspector({
             {record.program.transactionId}
           </p>
         </div>
-        <span className="shrink-0 border border-sky-900 px-1.5 py-0.5 text-[10px] text-sky-300">
-          {record.program.intentCount} intents
-        </span>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {record.program.provenance.styleProfileRef ? (
+            <span className="border border-amber-900 px-1.5 py-0.5 text-[10px] text-amber-300">
+              {record.program.provenance.styleProfileRef.id}
+            </span>
+          ) : null}
+          <span className="border border-sky-900 px-1.5 py-0.5 text-[10px] text-sky-300">
+            {record.program.intentCount} intents
+          </span>
+        </div>
       </div>
 
       <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={editingDisabled}>
@@ -454,6 +464,21 @@ export function DraftInspector({
         >
           {displayedError}
         </p>
+      ) : null}
+
+      {styleWarnings.length > 0 ? (
+        <div
+          className="mt-3 border border-amber-900 bg-amber-950/30 p-2 text-pretty text-xs leading-5 text-amber-200"
+          data-style-profile-warning
+          role="status"
+        >
+          <p className="font-medium">Style profile deviation</p>
+          <ul className="mt-1 list-disc space-y-1 pl-4">
+            {styleWarnings.map((warning) => (
+              <li key={`${warning.operationId ?? "program"}:${warning.field}:${warning.message}`}>{warning.message}</li>
+            ))}
+          </ul>
+        </div>
       ) : null}
 
       <div className="mt-4 flex justify-end gap-2 border-t border-zinc-800 pt-3">

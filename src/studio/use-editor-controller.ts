@@ -27,6 +27,7 @@ import { sourceTimeToWorkingTime } from "./program-composition";
 import { sceneEditSchema } from "./scene-edit-contract";
 import type { StudioTool } from "./studio-toolbar";
 import type { InteractionMode } from "./studio-viewport";
+import { STUDIO_STYLE_PROFILE } from "./style-profile";
 import { appendAppliedProgram, replaceAppliedProgram } from "./transactions";
 
 function editorTransitionTime(programs: readonly ProgramRecord["program"][], sourceTime: number, currentTime: number) {
@@ -79,7 +80,6 @@ type EditorControllerAction =
       type: "update";
     }>;
 
-const DEFAULT_MOTION_DURATION = 1.5;
 const SESSION_AUTOSAVE_DELAY_MS = 300;
 
 export function editorProgramRecord(
@@ -119,7 +119,7 @@ export function createInitialEditorState(): EditorControllerState {
     instruction: "",
     interactionMode: "animate",
     isPlaying: false,
-    motionDuration: DEFAULT_MOTION_DURATION,
+    motionDuration: STUDIO_STYLE_PROFILE.durationSeconds.deliberate,
     pendingClarification: null,
     programUndoEntries: [],
     redoPrograms: [],

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import type { ProgramRecord } from "../studio/model";
+import { STUDIO_STYLE_PROFILE, styleProfileRef } from "../studio/style-profile";
 import {
   canonicalEditorSessionSnapshotJsonV1,
   EDITOR_SESSION_SNAPSHOT_VERSION_V1,
@@ -46,13 +47,27 @@ function record(transactionId: string, evidence: readonly string[] = []) {
           value: 0.5,
         },
       ],
-      provenance: { evidence, origin: "studio-default" },
+      provenance: {
+        evidence,
+        origin: "studio-default",
+        styleProfileRef: styleProfileRef(STUDIO_STYLE_PROFILE),
+      },
       requestedExecution: "sequence",
       schedule: { edges: [], mode: "sequence", order: [operationId] },
       transactionId,
       version: 1,
     },
-    validation: { issues: [], status: "valid" },
+    validation: {
+      issues: [
+        {
+          code: "style-profile-deviation",
+          field: "duration",
+          message: "Explicit timing differs from the Studio style profile.",
+          severity: "warning",
+        },
+      ],
+      status: "valid",
+    },
   } as const satisfies ProgramRecord;
 }
 

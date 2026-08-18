@@ -15,6 +15,7 @@ import type { CanonicalEditOperation } from "./operations";
 import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
+import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
 
 describe("manual Studio authoring commands", () => {
   function studioOwnedCircleScene(
@@ -261,6 +262,13 @@ describe("manual Studio authoring commands", () => {
       }),
       expect.objectContaining({ effect: "fade-in", entityId: result.entityIds[0], kind: "ChangePresence" }),
     ]);
+    const appearance = result.validation.program.operations.find(
+      (operation) => operation.kind === "ChangePresence" && operation.effect === "fade-in",
+    );
+    expect(appearance).toBeDefined();
+    if (!appearance) return;
+    expect(appearance.interval.end - appearance.interval.start).toBeCloseTo(STUDIO_STYLE_PROFILE.durationSeconds.brief);
+    expect(result.validation.program.provenance.styleProfileRef).toEqual(styleProfileRef(STUDIO_STYLE_PROFILE));
   });
 
   it("rejects creation dimensions that do not match the entity type", () => {
@@ -385,6 +393,10 @@ describe("manual Studio authoring commands", () => {
     expect(result.program.operations).toEqual([
       expect.objectContaining({ effect: "remove", entityId: "equation_1", persistent: true }),
     ]);
+    expect(result.program.operations[0]!.interval.end - result.program.operations[0]!.interval.start).toBeCloseTo(
+      STUDIO_STYLE_PROFILE.durationSeconds.brief,
+    );
+    expect(result.program.provenance.styleProfileRef).toEqual(styleProfileRef(STUDIO_STYLE_PROFILE));
     const proposed = projectPersistentRemoveFixture(result.program, STUDIO_FIXTURE_SCENE, true);
     expect(
       projectProposedState(proposed, 5.5).canvas.entities.find((entity) => entity.id === "equation_1")?.present,

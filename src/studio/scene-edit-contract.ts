@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { styleProfileRefSchema } from "./style-profile";
+
 export const SCENE_EDIT_VERSION = 1 as const;
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
@@ -150,6 +152,7 @@ export const sceneEditSchema = z.object({
   provenance: z.object({
     evidence: z.array(z.string().max(500)).max(64),
     origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
+    styleProfileRef: styleProfileRefSchema.optional(),
   }),
   requestedExecution: z.enum(["parallel", "sequence"]),
   schedule: z.object({
@@ -209,6 +212,7 @@ export const sceneEditDraftSchema = z
       .object({
         evidence: draftEvidenceSchema,
         origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
+        styleProfileRef: styleProfileRefSchema.optional(),
       })
       .strict(),
     requestedExecution: z.enum(["parallel", "sequence"]),

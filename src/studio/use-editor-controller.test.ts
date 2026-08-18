@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { EditorSessionStore } from "./editor-session-store";
 import type { ProgramRecord } from "./model";
+import { STUDIO_STYLE_PROFILE } from "./style-profile";
 import {
   applyEditorDraft,
   createInitialEditorState,
@@ -92,6 +93,10 @@ const motionOperation: EditSuggestionOperation = {
 };
 
 describe("editor session lifecycle", () => {
+  it("uses the Studio style profile for the initial motion duration", () => {
+    expect(createInitialEditorState().motionDuration).toBe(STUDIO_STYLE_PROFILE.durationSeconds.deliberate);
+  });
+
   it("saves and restores session state while clearing transient request UI", () => {
     const draft = record("draft");
     const sessionState = {

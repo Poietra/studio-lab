@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import type { CreateCameraFocusSuggestion } from "../ai/edit-suggestions";
+import type { CreateCameraFocusSuggestion, CreateMotionSuggestion } from "../ai/edit-suggestions";
 import { DraftInspector } from "./draft-inspector";
 import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
@@ -18,7 +18,67 @@ const CAMERA_FOCUS: CreateCameraFocusSuggestion = {
   zoomScale: 1.35,
 };
 
+const MOTION: CreateMotionSuggestion = {
+  anchor: { kind: "playhead", referenceSeconds: 5 },
+  controlOffset: { x: 0, y: 0 },
+  delta: { x: 40, y: 0 },
+  easing: "smooth",
+  end: 7,
+  kind: "create-motion",
+  start: 5,
+  targetObjectIds: ["equation_1"],
+};
+
 describe("DraftInspector execution capabilities", () => {
+  it("shows StyleProfile warnings without blocking Apply", () => {
+    const validation = canonicalizeSuggestionProgram(MOTION, {
+      capturedPlayhead: 5,
+      origin: "remote-model",
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "style-warning-inspector",
+    });
+    expect(validation.kind).toBe("valid");
+    const record = programRecord(validation.program, validation);
+    const markup = renderToStaticMarkup(
+      <DraftInspector
+        error={null}
+        isApplying={false}
+        onApply={() => undefined}
+        onDiscard={() => undefined}
+        onOperationChange={() => undefined}
+        operation={MOTION}
+        record={{
+          ...record,
+          program: {
+            ...record.program,
+            provenance: {
+              ...record.program.provenance,
+              styleProfileRef: { id: "poietra-balanced", version: 1 },
+            },
+          },
+          validation: {
+            issues: [
+              ...record.validation.issues,
+              {
+                code: "style-profile-deviation",
+                field: "duration",
+                message: "create-motion lasts 2s; poietra-balanced recommends 1.5s.",
+                severity: "warning",
+              },
+            ],
+            status: "valid",
+          },
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Style profile deviation");
+    expect(markup).toContain("poietra-balanced");
+    expect(markup).toContain("poietra-balanced recommends 1.5s");
+    expect(markup).toMatch(/<button[^>]*>Apply program<\/button>/);
+    expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
+  });
+
   it("shows the shared apply/lowering contract and disables blocked Apply", () => {
     const validation = canonicalizeSuggestionProgram(CAMERA_FOCUS, {
       capturedPlayhead: 4.42,
