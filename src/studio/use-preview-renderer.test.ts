@@ -58,6 +58,7 @@ import {
   claimStudioPreviewCanvasV1,
   compileStudioPreviewSceneV1,
   digestStudioPreviewSceneRevisionV1,
+  projectStudioPreviewRuntimeTraceOpaqueSelectionEntities,
   type StudioPreviewSnapshotMetadataStateV1,
   studioPreviewHostReadyForSceneUpdateV1,
   studioPreviewInteractionAuthority,
@@ -1003,35 +1004,93 @@ describe("studioPreviewInteractionAuthority", () => {
     });
   });
 
-  it("does not advertise mutations for an animated server snapshot the canonical compiler cannot edit", async () => {
-    const { snapshot } = await compilablePreviewInput();
-    const animated = {
-      ...snapshot,
-      snapshot: {
-        ...snapshot.snapshot,
-        scene: {
-          ...snapshot.snapshot.scene,
-          animationChannels: [
-            {
-              entityId: "earlier",
-              id: "opacity:earlier",
-              keyframes: [
-                { at: 0, easingToNext: { kind: "smooth" }, value: 0 },
-                { at: 2, easingToNext: null, value: 1 },
-              ],
-              kind: "opacity",
-              provenanceId: "test",
-            },
-          ],
-        },
-      },
-    } as StudioVerifiedPreviewSnapshotV1;
+  it("keeps the two visible WriteStuff groups selectable without advertising mutations", async () => {
+    const [engineFixtureText, identityFixtureText] = await Promise.all([
+      readFile(new URL("../../fixtures/engine-v1/real-write-stuff-v12.json", import.meta.url), "utf8"),
+      readFile(new URL("../../server/test-fixtures/fast-manim-write-stuff-v12-combined.json", import.meta.url), "utf8"),
+    ]);
+    const fixture = JSON.parse(engineFixtureText) as Readonly<{ assets: unknown; scene: unknown }>;
+    const bundle = await parseVerifiedSceneIrBundleV1({ assets: fixture.assets, scene: fixture.scene });
+    const source = bundle.scene.source;
+    if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected the V12 server snapshot.");
+    const identityFixture = JSON.parse(identityFixtureText) as Readonly<{
+      evidence: Readonly<{
+        records: readonly Readonly<{
+          bindings: readonly Readonly<{ binding: Readonly<{ id: string; name: string }> }>[];
+          entityId: string;
+          lifecycle: readonly unknown[];
+          status: string;
+        }>[];
+      }>;
+    }>;
+    const mappedRecords = identityFixture.evidence.records.filter(
+      ({ bindings, status }) => status === "mapped" && bindings.length === 1,
+    );
+    const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>(
+      mappedRecords.map(({ bindings, entityId }) => {
+        const binding = bindings[0]!.binding;
+        return [binding.name, { bindingId: binding.id, entityId, sourceName: binding.name }];
+      }),
+    );
+    const visibleRecords = mappedRecords.filter(({ lifecycle }) => lifecycle.length > 0);
+    expect(visibleRecords.map(({ bindings }) => bindings[0]!.binding.name)).toEqual(["example_text", "example_tex"]);
+    expect(bundle.scene.animationChannels.length).toBeGreaterThan(0);
 
-    expect(studioPreviewInteractionAuthority(animated, 0, [])).toEqual({
+    const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+      assetPayloads: [],
+      correlation: {
+        assetsManifestDigest: bundle.assets.manifestDigest,
+        context: {
+          projectId: "write-stuff-generic-preview",
+          sceneName: "WriteStuff",
+          sourceDuration: bundle.scene.duration,
+          sourceHash: source.sourceHash,
+          sourcePath: "example_scenes/basic.py",
+          workingRevision: PRISTINE_WORKING_REVISION,
+        },
+        engineRevisionHash: source.snapshotHash,
+        sceneDuration: bundle.scene.duration,
+        sceneId: bundle.scene.sceneId,
+        serverPublicationRevision: null,
+      },
+      duration: bundle.scene.duration,
+      sceneId: bundle.scene.sceneId,
+      snapshot: bundle,
+      sourceLabel: "verified WriteStuff V12 fixture",
+      sourceRuntimeIdentity: identity,
+    };
+    const visibleIds = visibleRecords.map(({ entityId }) => entityId);
+    const authority = studioPreviewInteractionAuthority(snapshot, 0, []);
+    expect(authority).toEqual({
       kind: "selection-only",
       reason: "source-edit-unsupported",
+      verifiedRuntimeEntityIds: visibleIds,
     });
-    expect(studioPreviewInteractionAuthority({ ...animated, sourceRuntimeIdentity: null }, 0, [])).toEqual({
+    const interactionEntityIds = studioPreviewInteractionEntityIdsV1(identity, authority, bundle.scene.entities);
+    expect(interactionEntityIds).toEqual(visibleIds);
+
+    // Real bounds remain covered by the checked V12 WGPU parity; this seam
+    // receives only the prepared-frame interaction map.
+    const interactionGeometry = new Map(
+      interactionEntityIds.map((entityId, index) => [
+        entityId,
+        {
+          dimensions: { height: 40, width: 100 },
+          position: { x: 200 + index * 240, y: 180 },
+        },
+      ]),
+    );
+    expect(
+      projectStudioPreviewRuntimeTraceOpaqueSelectionEntities({
+        interactionGeometry,
+        sourceRuntimeIdentity: identity,
+        studioSceneId: "example_scenes/basic.py#WriteStuff",
+      }).map(({ id }) => id),
+    ).toEqual([
+      "source:example_scenes/basic.py#WriteStuff:example_text",
+      "source:example_scenes/basic.py#WriteStuff:example_tex",
+    ]);
+    expect(studioPreviewInteractionAuthority({ ...snapshot, sourceRuntimeIdentity: null }, 0, [])).toEqual({
       kind: "display-only",
       reason: "source-runtime-identity-unverified",
     });
