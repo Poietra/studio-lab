@@ -127,6 +127,18 @@ pub fn validate_scene_ir_bundle_v1(snapshot_json: &[u8]) -> Result<(), JsValue> 
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
+/// Compiles one bounded Vulkan GLSL 450 fragment source to canonical WGSL.
+///
+/// # Errors
+///
+/// Returns a line/column diagnostic when parsing, validation, or the fixed
+/// fragment-material ABI check fails.
+#[wasm_bindgen(js_name = compileFragmentMaterialGlsl)]
+pub fn compile_fragment_material_glsl(source: &str, entry_point: &str) -> Result<String, JsValue> {
+    poietra_render_wgpu::compile_fragment_material_glsl(source, entry_point)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
 /// Opaque WASM handle owned by one dedicated browser worker.
 #[wasm_bindgen]
 #[derive(Debug)]

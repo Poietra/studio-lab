@@ -13,6 +13,7 @@ import {
   renameStudioFragmentMaterialV1,
   sceneHasFragmentMaterialAssignmentsV1,
   studioFragmentMaterialCompileErrorV1,
+  updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialSourceV1,
 } from "./fragment-material-authoring";
 
@@ -124,5 +125,41 @@ describe("project-local fragment material authoring", () => {
         reason: "installing",
       }),
     ).toBeNull();
+  });
+
+  it("retains editable GLSL beside canonical WGSL and clears it on a direct WGSL edit", () => {
+    const created = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "GLSL" });
+    const glsl = "#version 450\nvoid main() {}";
+    const imported = updateStudioFragmentMaterialFromGlslV1(created.state, {
+      entryPoint: "main",
+      shaderId: created.shaderId,
+      source: glsl,
+      wgsl: "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+    });
+
+    expect(listStudioFragmentMaterialsV1(imported)).toMatchObject([
+      {
+        glslSource: { entryPoint: "main", source: glsl },
+        revision: 2,
+        source: expect.stringContaining("fn fs_main"),
+      },
+    ]);
+    const assigned = assignStudioFragmentMaterialV1(imported, {
+      entityId: "rectangle",
+      sceneId: "scene-a",
+      shaderId: created.shaderId,
+    });
+    const rendererInput = projectFragmentMaterialsForSceneV1(assigned, "scene-a");
+    expect(rendererInput.registry.materials[0]?.source).toContain("fn fs_main");
+    expect(JSON.stringify(rendererInput)).not.toContain("#version 450");
+
+    const duplicated = duplicateStudioFragmentMaterialV1(imported, created.shaderId);
+    expect(duplicated.state.glslSourcesByShaderId[duplicated.shaderId]).toEqual({ entryPoint: "main", source: glsl });
+
+    const editedAsWgsl = updateStudioFragmentMaterialSourceV1(imported, {
+      shaderId: created.shaderId,
+      source: "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(0.5); }",
+    });
+    expect(editedAsWgsl.glslSourcesByShaderId).not.toHaveProperty(created.shaderId);
   });
 });

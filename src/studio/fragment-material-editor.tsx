@@ -7,6 +7,7 @@ import {
 
 export type FragmentMaterialEditorItem = Readonly<{
   assignmentCount: number;
+  glslSource: Readonly<{ entryPoint: "main"; source: string }> | null;
   name: string;
   revision: number;
   shaderId: string;
@@ -22,6 +23,7 @@ export function FragmentMaterialEditor({
   onAssign,
   onCreate,
   onDuplicate,
+  onImportGlsl,
   onRemoveAsset,
   onRename,
   onUpdateSource,
@@ -34,6 +36,7 @@ export function FragmentMaterialEditor({
   onAssign: (shaderId: string | null) => void;
   onCreate: (name: string) => string | null;
   onDuplicate: (shaderId: string) => string | null;
+  onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
   onRemoveAsset: (shaderId: string) => void;
   onRename: (shaderId: string, name: string) => void;
   onUpdateSource: (shaderId: string, source: string) => void;
@@ -59,7 +62,7 @@ export function FragmentMaterialEditor({
         </span>
       </div>
       <p className="mt-1 text-pretty text-[10px] leading-4 text-zinc-600">
-        Project-local WGSL assets. Scene IR stores only the selected material reference.
+        Project-local shader assets compile to canonical WGSL. Scene IR stores only the selected material reference.
       </p>
 
       <label className="mt-3 block text-[10px] font-medium text-zinc-500" htmlFor="fragment-material-assignment">
@@ -215,9 +218,17 @@ export function FragmentMaterialEditor({
               className="mt-2 h-8 w-full border border-sky-800 bg-sky-950/50 text-xs text-sky-200 hover:bg-sky-900/50"
               type="submit"
             >
-              Apply source
+              Apply WGSL source
             </button>
           </form>
+          <FragmentMaterialGlslImporter
+            initialSource={editingMaterial.glslSource?.source ?? ""}
+            key={`glsl/${editingMaterial.shaderId}/${editingMaterial.revision}`}
+            onImport={async (input) => {
+              await onImportGlsl(editingMaterial.shaderId, input);
+              setInputError(null);
+            }}
+          />
         </>
       ) : null}
       {inputError || compileError ? (
@@ -226,5 +237,122 @@ export function FragmentMaterialEditor({
         </p>
       ) : null}
     </section>
+  );
+}
+
+const GLSL_FRAGMENT_STARTER = `#version 450
+layout(location = 0) in vec4 base_color;
+layout(location = 1) in vec2 screen_position;
+layout(location = 0) out vec4 output_color;
+layout(set = 0, binding = 0, std140) uniform PoietraHost {
+    vec4 viewport_and_time;
+    vec4 parameters_0;
+    vec4 parameters_1;
+} host;
+
+void main() {
+    float wave = 0.5 + 0.5 * sin(
+        6.2831853 * (screen_position.x * host.parameters_0.y + host.viewport_and_time.z * host.parameters_0.x)
+    );
+    output_color = vec4(base_color.rgb * wave, base_color.a);
+}
+`;
+
+function FragmentMaterialGlslImporter({
+  initialSource,
+  onImport,
+}: Readonly<{
+  initialSource: string;
+  onImport: (input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
+}>) {
+  const [source, setSource] = useState(initialSource || GLSL_FRAGMENT_STARTER);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+
+  return (
+    <details className="mt-3 border border-zinc-800 p-2" open={initialSource.length > 0}>
+      <summary className="cursor-pointer text-[10px] font-medium text-zinc-400 hover:text-zinc-200">
+        Import Vulkan GLSL 450
+      </summary>
+      <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+        Fragment-only profile. Entry point main; locations 0/1 use base color and normalized screen position. Textures
+        are not supported yet.
+      </p>
+      <label className="mt-2 block text-[10px] font-medium text-zinc-500" htmlFor="fragment-material-glsl-entry">
+        Entry point
+      </label>
+      <input
+        className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 font-mono text-xs text-zinc-400"
+        id="fragment-material-glsl-entry"
+        readOnly
+        value="main"
+      />
+      <label className="mt-2 block text-[10px] font-medium text-zinc-500" htmlFor="fragment-material-glsl-file">
+        Local .frag/.glsl file
+      </label>
+      <input
+        accept=".frag,.glsl,text/plain"
+        className="mt-1 block w-full text-[10px] text-zinc-500 file:mr-2 file:border file:border-zinc-700 file:bg-zinc-950 file:px-2 file:py-1 file:text-zinc-300 hover:file:bg-zinc-800"
+        id="fragment-material-glsl-file"
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (!file) return;
+          if (!/\.(?:frag|glsl)$/i.test(file.name)) {
+            setError("Choose a .frag or .glsl file.");
+            return;
+          }
+          if (file.size > MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1) {
+            setError(`GLSL accepts at most ${MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1} UTF-8 bytes.`);
+            return;
+          }
+          void file
+            .text()
+            .then((value) => {
+              setSource(value);
+              setError(null);
+            })
+            .catch(() => setError("The GLSL file could not be read."));
+        }}
+        type="file"
+      />
+      <form
+        className="mt-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (new TextEncoder().encode(source).byteLength > MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1) {
+            setError(`GLSL accepts at most ${MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1} UTF-8 bytes.`);
+            return;
+          }
+          setPending(true);
+          setError(null);
+          void onImport({ entryPoint: "main", source })
+            .catch((caught) => {
+              setError(caught instanceof Error ? caught.message : "The Rust core rejected the GLSL source.");
+            })
+            .finally(() => setPending(false));
+        }}
+      >
+        <textarea
+          aria-label="Vulkan GLSL fragment source"
+          className="h-40 w-full resize-y border border-zinc-700 bg-zinc-950 p-2 font-mono text-[10px] leading-4 text-zinc-300 outline-none focus:border-sky-500"
+          onChange={(event) => setSource(event.currentTarget.value)}
+          required
+          spellCheck={false}
+          value={source}
+        />
+        <button
+          className="mt-2 h-8 w-full border border-sky-800 bg-sky-950/50 text-xs text-sky-200 hover:bg-sky-900/50 disabled:cursor-wait disabled:border-zinc-800 disabled:text-zinc-600"
+          disabled={pending}
+          type="submit"
+        >
+          {pending ? "Compiling…" : "Compile and apply GLSL"}
+        </button>
+      </form>
+      {error ? (
+        <p className="mt-2 whitespace-pre-wrap break-words border border-red-950 bg-red-950/20 p-2 font-mono text-[10px] leading-4 text-red-300">
+          {error}
+        </p>
+      ) : null}
+    </details>
   );
 }

@@ -24,6 +24,7 @@ mod asset;
 mod cache;
 #[cfg_attr(not(test), allow(dead_code))]
 mod export;
+mod fragment_material_glsl;
 mod gpu;
 mod image_gpu;
 mod prepare;
@@ -39,6 +40,7 @@ pub use export::{
     ExportFrameSequenceParamsErrorV1, ExportFrameSequenceParamsV1, ExportFrameSequenceSessionV1,
     ExportSequenceFrameV1,
 };
+pub use fragment_material_glsl::{FragmentMaterialGlslError, compile_fragment_material_glsl};
 pub use gpu::{
     CreateRendererErrorV1, FragmentMaterialRegistryErrorV1, FragmentMaterialSourceV1,
     MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1, MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1,

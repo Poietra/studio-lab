@@ -25,6 +25,7 @@ import {
   MAX_EDITOR_LIVE_PLAYHEAD_SECONDS_V1,
   MAX_EDITOR_LIVE_SELECTED_ENTITY_IDS_V1,
 } from "./collaboration/editor-live-contract";
+import { compileFragmentMaterialGlsl } from "./engine/fragment-material-glsl";
 import { cn } from "./lib/cn";
 import { exportManimSource } from "./render-pipeline/client";
 import type { RenderSessionView } from "./render-pipeline/contracts";
@@ -74,6 +75,7 @@ import {
   sceneHasFragmentMaterialAssignmentsV1,
   studioFragmentMaterialAssignmentCountV1,
   studioFragmentMaterialCompileErrorV1,
+  updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialSourceV1,
 } from "./studio/fragment-material-authoring";
 import { importedWorkingState, projectVerifiedSourceDuration } from "./studio/imported-workspace";
@@ -3750,6 +3752,18 @@ export function App({
     }
   }
 
+  async function importFragmentMaterialGlsl(shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) {
+    const wgsl = await compileFragmentMaterialGlsl(input);
+    const next = updateStudioFragmentMaterialFromGlslV1(activeProjectFragmentMaterials, {
+      ...input,
+      shaderId,
+      wgsl,
+    });
+    if (!commitActiveProjectFragmentMaterials(next)) {
+      throw new Error("The compiled GLSL material could not be saved.");
+    }
+  }
+
   function assignSelectedFragmentMaterial(shaderId: string | null) {
     if (!activeScene || !selectedFragmentMaterialEntity || (shaderId !== null && !selectedFragmentMaterialAvailable)) {
       return;
@@ -4335,6 +4349,7 @@ export function App({
                 onAssign: assignSelectedFragmentMaterial,
                 onCreate: createFragmentMaterial,
                 onDuplicate: duplicateFragmentMaterial,
+                onImportGlsl: importFragmentMaterialGlsl,
                 onRemoveAsset: removeFragmentMaterialAsset,
                 onRename: renameFragmentMaterial,
                 onUpdateSource: updateFragmentMaterialSource,
