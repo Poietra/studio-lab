@@ -9,6 +9,7 @@ import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema
 import { BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM } from "./billing-entitlement-grant-schema";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_CHECKSUM } from "./client-export-publication-schema";
+import { CLIENT_THUMBNAIL_PUBLICATION_MIGRATION_V33_CHECKSUM } from "./client-thumbnail-publication-schema";
 import { COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM } from "./collaboration-authorization-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM } from "./editor-document-origin-schema";
@@ -48,6 +49,7 @@ import runtimeCellAssignmentSqlV29 from "./migrations/0029_runtime_cell_assignme
 import editorDocumentOriginSqlV30 from "./migrations/0030_editor_document_origins.sql?raw";
 import clientExportPublicationSqlV31 from "./migrations/0031_client_export_publications.sql?raw";
 import billingEntitlementGrantSqlV32 from "./migrations/0032_billing_entitlement_grants.sql?raw";
+import clientThumbnailPublicationSqlV33 from "./migrations/0033_client_thumbnail_publications.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -74,6 +76,7 @@ export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema
 export { BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM } from "./billing-entitlement-grant-schema";
 export { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 export { CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_CHECKSUM } from "./client-export-publication-schema";
+export { CLIENT_THUMBNAIL_PUBLICATION_MIGRATION_V33_CHECKSUM } from "./client-thumbnail-publication-schema";
 export { COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM } from "./collaboration-authorization-schema";
 export { EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM } from "./editor-document-origin-schema";
 export { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
@@ -150,6 +153,7 @@ export const RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE = runtimeCellAssignmen
 export const EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE = editorDocumentOriginSqlV30;
 export const CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE = clientExportPublicationSqlV31;
 export const BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_SOURCE = billingEntitlementGrantSqlV32;
+export const CLIENT_THUMBNAIL_PUBLICATION_MIGRATION_V33_SOURCE = clientThumbnailPublicationSqlV33;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -487,6 +491,17 @@ const billingEntitlementGrantMigrationV32: DurableStorageMigration<32> = Object.
   version: 32,
 });
 
+const clientThumbnailPublicationMigrationV33: DurableStorageMigration<33> = Object.freeze({
+  checksum: CLIENT_THUMBNAIL_PUBLICATION_MIGRATION_V33_CHECKSUM,
+  checksumMismatch: "The client-thumbnail publication migration checksum is invalid.",
+  installedMismatch: "The installed client-thumbnail publication schema does not match migration v33.",
+  missingPrerequisite: "Client-thumbnail publication migration v33 requires durable storage migrations v1 through v32.",
+  prerequisiteMismatch:
+    "Client-thumbnail publication migration v33 requires exact durable storage migrations v1 through v32.",
+  source: CLIENT_THUMBNAIL_PUBLICATION_MIGRATION_V33_SOURCE,
+  version: 33,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -520,6 +535,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   editorDocumentOriginMigrationV30,
   clientExportPublicationMigrationV31,
   billingEntitlementGrantMigrationV32,
+  clientThumbnailPublicationMigrationV33,
 ]);
 
 /**
@@ -826,6 +842,10 @@ export function applyClientExportPublicationMigrationV31(pool: Pool, source: str
 
 export function applyBillingEntitlementGrantMigrationV32(pool: Pool, source: string) {
   return applyMigration(pool, { ...billingEntitlementGrantMigrationV32, source }, bundledMigrationsBefore(32));
+}
+
+export function applyClientThumbnailPublicationMigrationV33(pool: Pool, source: string) {
+  return applyMigration(pool, { ...clientThumbnailPublicationMigrationV33, source }, bundledMigrationsBefore(33));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

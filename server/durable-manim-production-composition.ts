@@ -39,10 +39,10 @@ import { ClientThumbnailPublisherV1 } from "./storage/client-thumbnail-publisher
 import { ClientThumbnailReaderV1 } from "./storage/client-thumbnail-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifact-repository";
-import { PostgresBillingEntitlementRepositoryV1 } from "./storage/postgres/postgres-entitlement-repository";
 import { PostgresClientExportRepositoryV1 } from "./storage/postgres/postgres-client-export-repository";
 import { PostgresClientThumbnailRepositoryV1 } from "./storage/postgres/postgres-client-thumbnail-repository";
 import { PostgresEditorDocumentRepositoryV1 } from "./storage/postgres/postgres-editor-document-repository";
+import { PostgresBillingEntitlementRepositoryV1 } from "./storage/postgres/postgres-entitlement-repository";
 import { PostgresProjectPngRepositoryV1 } from "./storage/postgres/postgres-project-png-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
 import { PostgresRuntimeCellAssignmentRepositoryV1 } from "./storage/postgres/postgres-runtime-cell-assignment-repository";
