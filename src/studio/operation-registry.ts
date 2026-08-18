@@ -1,4 +1,4 @@
-import { canonicalEditableContent, studioCreationText } from "./editable-content";
+import { canonicalEditableContent, STUDIO_CREATION_TEXT_CONTRACT, studioCreationText } from "./editable-content";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type { EntityDimensions, PropertyChannel, RuntimeSceneState } from "./model";
 import type { ChannelAccess, SceneEditValidationIssue } from "./operations";
@@ -464,7 +464,7 @@ export const OPERATION_REGISTRY = {
         issues.push({
           code: "schema-invalid",
           field: "entity.content",
-          message: "Text creation accepts one non-blank printable ASCII line of at most 256 characters.",
+          message: STUDIO_CREATION_TEXT_CONTRACT,
           operationId: operation.id,
           severity: "error",
         });

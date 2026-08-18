@@ -8,8 +8,8 @@ distributions.
 
 The Rust source code in this package is licensed under the MIT license
 declared by the Poietra Engine workspace. The package also incorporates RaTeX
-source and embeds KaTeX and DejaVu Sans font software under the licenses
-retained below.
+source and embeds KaTeX, Noto Sans CJK JP, and DejaVu Sans font software under
+the licenses retained below.
 
 RaTeX provenance and MIT license
 --------------------------------
@@ -175,6 +175,36 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER DEALINGS
 IN THE FONT SOFTWARE.
+
+Noto Sans CJK JP provenance and subset scope
+---------------------------------------------
+
+Name: Noto Sans CJK JP Regular
+Version: 2.004
+Official distribution: https://github.com/notofonts/noto-cjk
+Copyright: Copyright 2014-2021 Adobe (http://www.adobe.com/).
+License: SIL Open Font License, Version 1.1 (reproduced above)
+
+The embedded `NotoSansCJKjp-Regular-Joyo.otf` is a mechanically reduced copy
+of face zero in `NotoSansCJK-Regular.ttc`. Its source SHA-256 is
+`b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a`; the
+embedded subset SHA-256 is
+`3b20029c2d55abc5fbaf99a66de9701ed22acd4ab73c85f99d75509e18a08f5c`.
+FontTools 4.61.1 selected the 2,136 Joyo kanji listed by the Agency for
+Cultural Affairs, plus ASCII, Latin-1, Japanese punctuation, hiragana,
+katakana, and full-width forms. It removed the GSUB, GPOS, and GDEF tables,
+which the Text outline compiler does not execute. Glyph outlines and metrics
+were not edited.
+
+Official Joyo index:
+https://www.bunka.go.jp/seisaku/kokugo_nihongo/kokugo_shisaku/joyokanjihyo_sakuin/index.html
+
+The selected face is 609,668 bytes (535,787 bytes with gzip level 6). For
+comparison on the same host, an IPA Gothic subset across broad Japanese CJK
+ranges was 5,545,516 bytes (3,890,692 gzip), while the corresponding Noto CJK
+subset was 13,458,308 bytes (11,354,699 gzip). This smaller face deliberately
+does not claim arbitrary CJK, emoji, or all-Unicode coverage; absent glyphs
+produce the public `glyph-missing` result.
 
 DejaVu Sans provenance and license
 ----------------------------------

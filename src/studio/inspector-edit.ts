@@ -1,5 +1,6 @@
 import katex from "katex";
 
+import { STUDIO_CREATION_TEXT_CONTRACT, studioCreationText } from "./editable-content";
 import type { EntityContent, EntityDimensions, Point, ProjectedEntity } from "./model";
 
 export type InspectorEditField = "content" | "height" | "radius" | "width" | "x" | "y";
@@ -78,7 +79,10 @@ function validateMathTex(parts: readonly string[]) {
 }
 
 function currentContentValue(entity: ProjectedEntity) {
-  if (entity.type === "Text") return entity.content?.text ?? entity.content?.displayLines.join(" ") ?? "";
+  if (entity.type === "Text") {
+    const text = entity.content?.text ?? entity.content?.displayLines.join("\n") ?? "";
+    return studioCreationText({ displayLines: text.split(/\r?\n/u), text }) ?? text;
+  }
   if (entity.type === "MathTex") return (entity.content?.texParts ?? entity.content?.displayLines ?? []).join("\n");
   return null;
 }
@@ -97,10 +101,15 @@ function validateContent(entity: ProjectedEntity, value: string, errors: Partial
     return undefined;
   }
   if (entity.type === "Text") {
+    const text = studioCreationText({ displayLines: value.split(/\r?\n/u), text: value });
+    if (text === null) {
+      errors.content = STUDIO_CREATION_TEXT_CONTRACT;
+      return undefined;
+    }
     return {
-      displayLines: value.split("\n"),
-      label: entity.content?.label,
-      text: value,
+      displayLines: text.split("\n"),
+      label: entity.content?.label?.replaceAll("\r\n", "\n"),
+      text,
     } satisfies EntityContent;
   }
   const rawParts = value.split("\n");

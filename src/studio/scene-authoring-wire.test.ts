@@ -17,7 +17,12 @@ function creationProgram(type: string): SceneEdit {
         dependsOn: [],
         entity: {
           ...(type === "Text"
-            ? { content: { displayLines: ["Hello Text"], label: "Hello Text", text: "Hello Text" } }
+            ? {
+                content: {
+                  displayLines: ["日本語で動画を作る", "こんにちは"],
+                  text: "日本語で動画を作る\r\nこんにちは",
+                },
+              }
             : {}),
           id: `entity:${type}`,
           lifetime: { end: null, start: 0 },
@@ -73,11 +78,11 @@ describe("Studio creation wire", () => {
     expect(projection.programs[0]?.operations[0]).toMatchObject({ entity: { kind: "arrow" }, kind: "create" });
   });
 
-  it("normalizes bounded Text as a first-class creation kind", () => {
+  it("normalizes bounded Japanese multiline Text to LF as a first-class creation kind", () => {
     const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs: [creationProgram("Text")] });
 
     expect(command.programs[0]?.operations[0]).toMatchObject({
-      entity: { kind: "text", text: "Hello Text", texParts: null },
+      entity: { kind: "text", text: "日本語で動画を作る\nこんにちは", texParts: null },
       kind: "create",
     });
   });

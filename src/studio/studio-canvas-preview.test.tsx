@@ -743,6 +743,8 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-studio-inline-text-editor="create"');
     expect(markup).toContain('aria-label="New text content"');
     expect(markup).toContain("sample</textarea>");
+    expect(markup).toContain("Enter for new line");
+    expect(markup).toContain("Ctrl/⌘+Enter to commit");
     expect(markup).not.toContain("data-studio-semantic-paint");
   });
 
@@ -778,7 +780,8 @@ describe("StudioCanvas retained preview layer", () => {
   it("does not turn IME composition keys into inline Text commits", () => {
     expect(studioInlineTextKeyAction("Enter", true)).toBeNull();
     expect(studioInlineTextKeyAction("Escape", true)).toBeNull();
-    expect(studioInlineTextKeyAction("Enter", false)).toBe("commit");
+    expect(studioInlineTextKeyAction("Enter", false)).toBeNull();
+    expect(studioInlineTextKeyAction("Enter", false, true)).toBe("commit");
     expect(studioInlineTextKeyAction("Escape", false)).toBe("cancel");
     expect(studioInlineTextKeyAction("a", false)).toBeNull();
     expect(studioInlineTextBlurCommits(true)).toBe(false);

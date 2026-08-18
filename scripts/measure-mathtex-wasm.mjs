@@ -4,9 +4,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { gzipSync } from "node:zlib";
 
 const BASELINE_GZIP_BYTES = 10_600_905;
-const PRE_SEGMENTED_GZIP_BYTES = 1_027_693;
-const MAX_SEGMENTED_GZIP_DELTA_BYTES = 64 * 1024;
-const MAX_GZIP_BYTES = 1_200_000;
+const PRE_JAPANESE_TEXT_GZIP_BYTES = 1_027_693;
+const MAX_JAPANESE_TEXT_GZIP_DELTA_BYTES = 640 * 1024;
+const MAX_GZIP_BYTES = 1_700_000;
 const MAX_WARM_COMPILE_P95_MS = 10;
 const WARMUP_RUNS = 20;
 const MEASURED_RUNS = 200;
@@ -71,8 +71,8 @@ const report = {
   maxWarmCompileP95Ms: MAX_WARM_COMPILE_P95_MS,
   measuredRuns: MEASURED_RUNS,
   rawWasmBytes: wasmBytes.byteLength,
-  segmentedGzipDeltaBytes: gzipBytes - PRE_SEGMENTED_GZIP_BYTES,
-  segmentedGzipDeltaLimitBytes: MAX_SEGMENTED_GZIP_DELTA_BYTES,
+  japaneseTextGzipDeltaBytes: gzipBytes - PRE_JAPANESE_TEXT_GZIP_BYTES,
+  japaneseTextGzipDeltaLimitBytes: MAX_JAPANESE_TEXT_GZIP_DELTA_BYTES,
   warmCompileMedianMs,
   warmCompileP95Ms,
   warmupRuns: WARMUP_RUNS,
@@ -83,9 +83,9 @@ if (check && gzipBytes > MAX_GZIP_BYTES) {
   throw new Error(`MathTex outline WASM gzip budget exceeded: ${gzipBytes} > ${MAX_GZIP_BYTES} bytes.`);
 }
 
-if (check && gzipBytes - PRE_SEGMENTED_GZIP_BYTES > MAX_SEGMENTED_GZIP_DELTA_BYTES) {
+if (check && gzipBytes - PRE_JAPANESE_TEXT_GZIP_BYTES > MAX_JAPANESE_TEXT_GZIP_DELTA_BYTES) {
   throw new Error(
-    `Segmented Tex outline WASM gzip delta exceeded: ${gzipBytes - PRE_SEGMENTED_GZIP_BYTES} > ${MAX_SEGMENTED_GZIP_DELTA_BYTES} bytes.`,
+    `Japanese Text outline WASM gzip delta exceeded: ${gzipBytes - PRE_JAPANESE_TEXT_GZIP_BYTES} > ${MAX_JAPANESE_TEXT_GZIP_DELTA_BYTES} bytes.`,
   );
 }
 

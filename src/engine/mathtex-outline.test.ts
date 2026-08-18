@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { initializePoietraMathTexOutlineBindingsV1 } from "./mathtex-outline";
+import { canonicalTextOutlineInputV1, initializePoietraMathTexOutlineBindingsV1 } from "./mathtex-outline";
 
 function candidate(initialize: (input?: unknown) => Promise<unknown>) {
   return {
@@ -28,4 +28,15 @@ describe("MathTex outline WASM initialization", () => {
 
     expect(initialize).toHaveBeenCalledWith(input);
   });
+});
+
+describe("plain Text outline input", () => {
+  it("accepts bounded Japanese multiline text and canonicalizes CRLF", () => {
+    expect(canonicalTextOutlineInputV1("日本語で動画を作る\r\nこんにちは")).toBe("日本語で動画を作る\nこんにちは");
+  });
+
+  it.each(["tab\tcharacter", ["a", "b", "c", "d", "e", "f", "g", "h", "i"].join("\n"), "a".repeat(129)])(
+    "rejects text outside the bounded multiline contract: %s",
+    (text) => expect(canonicalTextOutlineInputV1(text)).toBeNull(),
+  );
 });

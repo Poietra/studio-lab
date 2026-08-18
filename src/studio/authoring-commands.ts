@@ -1,4 +1,4 @@
-import { studioCreationText } from "./editable-content";
+import { canonicalEditableContent, STUDIO_CREATION_TEXT_CONTRACT, studioCreationText } from "./editable-content";
 import {
   importedLifetimeEditEvidence,
   MIN_OBJECT_LIFETIME_SECONDS,
@@ -119,8 +119,11 @@ export function createStudioEntitiesProgram(
   const origin = input.origin ?? "studio-default";
   const entityIds: string[] = [];
   const operations = input.entities.flatMap((entity, index): readonly SceneEditOperation[] => {
-    if (entity.type === "Text" && !studioCreationText(entity.content)) {
-      throw new Error("Text creation accepts one non-blank printable ASCII line of at most 256 characters.");
+    let content = entity.content;
+    if (entity.type === "Text") {
+      const canonicalTextContent = canonicalEditableContent(entity.content, "Text");
+      if (canonicalTextContent === null) throw new Error(STUDIO_CREATION_TEXT_CONTRACT);
+      content = canonicalTextContent;
     }
     const entityId = provisionalEntityId(input.transactionId, `insert-${index}`);
     const createId = operationId(input.transactionId, `create-${index}`);
@@ -131,7 +134,7 @@ export function createStudioEntitiesProgram(
       {
         dependsOn: [],
         entity: {
-          content: entity.content,
+          content,
           dimensions: entity.dimensions ?? defaultEntityDimensions(entity.type),
           id: entityId,
           lifetime: { end: null, start: input.capturedPlayhead },
@@ -658,15 +661,13 @@ export function duplicateEntityInput(
 }
 
 export function defaultEntityContent(type: InsertEntityType, value: string): EntityContent | undefined {
-  const normalized = value.trim();
   if (type === "Text") {
-    const text = normalized || "Text";
-    const content = { displayLines: [text], label: text, text } as const;
-    if (!studioCreationText(content)) {
-      throw new Error("Text creation accepts one non-blank printable ASCII line of at most 256 characters.");
-    }
-    return content;
+    const candidate = value.trim().length === 0 ? "Text" : value;
+    const text = studioCreationText({ displayLines: candidate.split(/\r?\n/u), text: candidate });
+    if (text === null) throw new Error(STUDIO_CREATION_TEXT_CONTRACT);
+    return { displayLines: text.split("\n"), label: text, text };
   }
+  const normalized = value.trim();
   if (type === "MathTex") {
     const tex = normalized || "x";
     return { displayLines: [tex], label: tex, texParts: [tex] };

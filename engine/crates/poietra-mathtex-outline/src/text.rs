@@ -11,11 +11,19 @@ pub const TEXT_OUTLINE_REQUEST_SCHEMA_V1: &str = "poietra.text-outline-request";
 pub const TEXT_OUTLINE_RESPONSE_SCHEMA_V1: &str = "poietra.text-outline-response";
 /// Contract version shared by the core and WASM wrapper.
 pub const TEXT_OUTLINE_VERSION_V1: u32 = 1;
-/// Maximum number of printable ASCII characters accepted in one line.
+/// Maximum number of Unicode scalar values accepted after CRLF normalization.
 pub const MAX_TEXT_CHARACTERS_V1: usize = 256;
+/// Maximum number of lines accepted by the plain-text compiler.
+pub const MAX_TEXT_LINES_V1: usize = 8;
+/// Maximum number of Unicode scalar values accepted on one line.
+pub const MAX_TEXT_LINE_CHARACTERS_V1: usize = 128;
+/// Maximum number of cubic segments emitted for one text artifact.
+pub const MAX_TEXT_CUBIC_SEGMENTS_V1: usize = 2_048;
 
 const DEJAVU_SANS_REGULAR: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
-const MAX_TEXT_CUBIC_SEGMENTS: usize = 2_048;
+const NOTO_SANS_CJK_JP_REGULAR_JOYO: &[u8] =
+    include_bytes!("../assets/NotoSansCJKjp-Regular-Joyo.otf");
+const TEXT_LINE_ADVANCE_EM: f64 = 1.2;
 
 /// Literal request schema represented as a closed serde enum.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -24,7 +32,7 @@ pub enum TextOutlineRequestSchemaV1 {
     TextOutlineRequest,
 }
 
-/// One bounded single-line plain-text outline request.
+/// One bounded plain-text outline request.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextOutlineRequestV1 {
@@ -47,7 +55,7 @@ impl TextOutlineRequestV1 {
 /// Canonical centered unit-height ink bounds for a compiled text outline.
 pub type TextOutlineBoundsV1 = MathTexOutlineBoundsV1;
 
-/// Renderer-native output for one supported plain-text line.
+/// Renderer-native output for one supported plain-text block.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextOutlineArtifactV1 {
@@ -108,7 +116,13 @@ impl CompileFailure {
     }
 }
 
-/// Compiles printable, single-line ASCII with the embedded `DejaVu Sans Regular` face.
+/// Compiles bounded Unicode text with embedded, deterministic font faces.
+///
+/// Printable ASCII keeps the existing `DejaVu Sans Regular` subset. Text that
+/// needs Japanese glyphs uses a `Noto Sans CJK JP` subset containing the 2,136
+/// Joyo kanji, kana, Japanese punctuation, full-width forms, and Latin text.
+/// Other scripts fail with `glyph-missing` instead of silently substituting a
+/// browser or system font.
 #[must_use]
 pub fn compile_text_outline_v1(request: &TextOutlineRequestV1) -> TextOutlineResultV1 {
     match compile_inner(request) {
@@ -118,43 +132,63 @@ pub fn compile_text_outline_v1(request: &TextOutlineRequestV1) -> TextOutlineRes
 }
 
 fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1, CompileFailure> {
-    validate_request(request)?;
-    let face = Face::parse(DEJAVU_SANS_REGULAR, 0).map_err(|_| {
+    let text = validate_request(request)?;
+    let dejavu = Face::parse(DEJAVU_SANS_REGULAR, 0).map_err(|_| {
         CompileFailure::new(
             TextOutlineUnsupportedCodeV1::InternalFailure,
             "The embedded DejaVu Sans font could not be parsed",
         )
     })?;
+    let japanese = Face::parse(NOTO_SANS_CJK_JP_REGULAR_JOYO, 0).map_err(|_| {
+        CompileFailure::new(
+            TextOutlineUnsupportedCodeV1::InternalFailure,
+            "The embedded Japanese text font could not be parsed",
+        )
+    })?;
+    let face = if text
+        .chars()
+        .filter(|character| *character != '\n')
+        .all(|character| dejavu.glyph_index(character).is_some())
+    {
+        &dejavu
+    } else {
+        &japanese
+    };
     let mut subpaths = Vec::new();
     let mut segment_count = 0usize;
-    let mut cursor_x = 0.0;
-    let mut previous = None;
 
-    for character in request.text.chars() {
-        let glyph = face.glyph_index(character).ok_or_else(|| {
-            CompileFailure::new(
-                TextOutlineUnsupportedCodeV1::GlyphMissing,
-                "DejaVu Sans has no glyph for this text character",
-            )
-        })?;
-        if let Some(left) = previous {
-            cursor_x += f64::from(horizontal_kerning(&face, left, glyph));
+    for (line_index, line) in text.split('\n').enumerate() {
+        let mut cursor_x = 0.0;
+        let mut previous = None;
+        let baseline_y =
+            -(line_index as f64) * f64::from(face.units_per_em()) * TEXT_LINE_ADVANCE_EM;
+        for character in line.chars() {
+            let glyph = face.glyph_index(character).ok_or_else(|| {
+                CompileFailure::new(
+                    TextOutlineUnsupportedCodeV1::GlyphMissing,
+                    "The embedded text fonts have no glyph for this Unicode scalar",
+                )
+            })?;
+            if let Some(left) = previous {
+                cursor_x += f64::from(horizontal_kerning(face, left, glyph));
+            }
+            append_glyph(
+                face,
+                glyph,
+                character,
+                cursor_x,
+                baseline_y,
+                &mut subpaths,
+                &mut segment_count,
+            )?;
+            cursor_x += f64::from(face.glyph_hor_advance(glyph).ok_or_else(|| {
+                CompileFailure::new(
+                    TextOutlineUnsupportedCodeV1::OutlineInvalid,
+                    "An embedded text glyph has no horizontal advance",
+                )
+            })?);
+            previous = Some(glyph);
         }
-        append_glyph(
-            &face,
-            glyph,
-            character,
-            cursor_x,
-            &mut subpaths,
-            &mut segment_count,
-        )?;
-        cursor_x += f64::from(face.glyph_hor_advance(glyph).ok_or_else(|| {
-            CompileFailure::new(
-                TextOutlineUnsupportedCodeV1::OutlineInvalid,
-                "A DejaVu Sans glyph has no horizontal advance",
-            )
-        })?);
-        previous = Some(glyph);
     }
 
     let (path, bounds) = normalize_outline_subpaths(subpaths).map_err(map_outline_failure)?;
@@ -170,18 +204,19 @@ fn append_glyph(
     glyph: GlyphId,
     character: char,
     cursor_x: f64,
+    baseline_y: f64,
     target: &mut Vec<CubicSubpathV1>,
     segment_count: &mut usize,
 ) -> Result<(), CompileFailure> {
-    let Some(glyph_subpaths) = glyph_outline_subpaths(face, glyph, 1.0, 1.0, cursor_x, 0.0)
+    let Some(glyph_subpaths) = glyph_outline_subpaths(face, glyph, 1.0, 1.0, cursor_x, baseline_y)
         .map_err(map_outline_failure)?
     else {
-        return if character == ' ' {
+        return if character.is_whitespace() {
             Ok(())
         } else {
             Err(CompileFailure::new(
                 TextOutlineUnsupportedCodeV1::OutlineInvalid,
-                "A DejaVu Sans glyph has no vector outline",
+                "An embedded text glyph has no vector outline",
             ))
         };
     };
@@ -194,37 +229,69 @@ fn append_glyph(
     *segment_count = segment_count
         .checked_add(added_segments)
         .ok_or_else(outline_limit_exceeded)?;
-    if *segment_count > MAX_TEXT_CUBIC_SEGMENTS {
+    if *segment_count > MAX_TEXT_CUBIC_SEGMENTS_V1 {
         return Err(outline_limit_exceeded());
     }
     target.extend(glyph_subpaths);
     Ok(())
 }
 
-fn validate_request(request: &TextOutlineRequestV1) -> Result<(), CompileFailure> {
+fn validate_request(request: &TextOutlineRequestV1) -> Result<String, CompileFailure> {
     if request.version != TEXT_OUTLINE_VERSION_V1 || request.text.is_empty() {
         return Err(CompileFailure::new(
             TextOutlineUnsupportedCodeV1::InvalidRequest,
             "Text outline request does not match the v1 contract",
         ));
     }
-    if request.text.chars().count() > MAX_TEXT_CHARACTERS_V1 {
+    let mut normalized = String::with_capacity(request.text.len());
+    let mut characters = request.text.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == '\r' {
+            if characters.next_if_eq(&'\n').is_none() {
+                return Err(CompileFailure::new(
+                    TextOutlineUnsupportedCodeV1::CharacterUnsupported,
+                    "Text accepts CR only as part of a CRLF line ending",
+                ));
+            }
+            normalized.push('\n');
+        } else if character.is_control() && character != '\n' {
+            return Err(CompileFailure::new(
+                TextOutlineUnsupportedCodeV1::CharacterUnsupported,
+                "Text rejects control characters other than LF",
+            ));
+        } else {
+            normalized.push(character);
+        }
+    }
+    if normalized.chars().count() > MAX_TEXT_CHARACTERS_V1 {
         return Err(CompileFailure::new(
             TextOutlineUnsupportedCodeV1::RequestTooLarge,
-            "Text outline requests accept at most 256 characters",
+            "Text outline requests accept at most 256 Unicode scalars",
         ));
     }
-    if !request
-        .text
-        .bytes()
-        .all(|byte| (b' '..=b'~').contains(&byte))
+    let lines = normalized.split('\n').collect::<Vec<_>>();
+    if lines.len() > MAX_TEXT_LINES_V1 {
+        return Err(CompileFailure::new(
+            TextOutlineUnsupportedCodeV1::RequestTooLarge,
+            "Text outline requests accept at most 8 lines",
+        ));
+    }
+    if lines
+        .iter()
+        .any(|line| line.chars().count() > MAX_TEXT_LINE_CHARACTERS_V1)
     {
         return Err(CompileFailure::new(
-            TextOutlineUnsupportedCodeV1::CharacterUnsupported,
-            "Text outlines support printable ASCII on one line",
+            TextOutlineUnsupportedCodeV1::RequestTooLarge,
+            "Text outline requests accept at most 128 Unicode scalars per line",
         ));
     }
-    Ok(())
+    if normalized.chars().all(char::is_whitespace) {
+        return Err(CompileFailure::new(
+            TextOutlineUnsupportedCodeV1::InvalidRequest,
+            "Text outline requests must contain visible text",
+        ));
+    }
+    Ok(normalized)
 }
 
 fn horizontal_kerning(face: &Face<'_>, left: GlyphId, right: GlyphId) -> i32 {
@@ -291,6 +358,21 @@ mod tests {
     }
 
     #[test]
+    fn compiles_joyo_japanese_and_multiline_text_to_one_centered_outline() {
+        let japanese = compiled("日本語で動画を作る");
+        assert!(!japanese.path.subpaths.is_empty());
+        validate_cubic_path_v1(&japanese.path).expect("Japanese text path must be valid");
+
+        let multiline = compiled("こんにちは\nPoietra");
+        assert!(!multiline.path.subpaths.is_empty());
+        assert!((multiline.bounds.top - multiline.bounds.bottom - 1.0).abs() <= 0.000_002);
+        assert!((multiline.bounds.left + multiline.bounds.right).abs() <= 0.000_002);
+        assert!((multiline.bounds.bottom + multiline.bounds.top).abs() <= 0.000_002);
+        assert_eq!(multiline, compiled("こんにちは\r\nPoietra"));
+        validate_cubic_path_v1(&multiline.path).expect("multiline text path must be valid");
+    }
+
+    #[test]
     fn output_is_deterministic_and_layout_applies_space_advance() {
         let compact = compiled("AA");
         let spaced = compiled("A A");
@@ -320,12 +402,16 @@ mod tests {
             TextOutlineUnsupportedCodeV1::InvalidRequest
         );
         assert_eq!(
-            unsupported_code("first\nsecond"),
+            unsupported_code("first\rsecond"),
             TextOutlineUnsupportedCodeV1::CharacterUnsupported
         );
         assert_eq!(
-            unsupported_code("こんにちは"),
+            unsupported_code("tab\tcharacter"),
             TextOutlineUnsupportedCodeV1::CharacterUnsupported
+        );
+        assert_eq!(
+            unsupported_code("𠮷"),
+            TextOutlineUnsupportedCodeV1::GlyphMissing
         );
         assert_eq!(
             unsupported_code(&"A".repeat(MAX_TEXT_CHARACTERS_V1 + 1)),
@@ -333,10 +419,18 @@ mod tests {
         );
         assert_eq!(
             unsupported_code("   "),
-            TextOutlineUnsupportedCodeV1::OutlineInvalid
+            TextOutlineUnsupportedCodeV1::InvalidRequest
         );
         assert_eq!(
-            unsupported_code(&"@".repeat(MAX_TEXT_CHARACTERS_V1)),
+            unsupported_code(&["A"; MAX_TEXT_LINES_V1 + 1].join("\n")),
+            TextOutlineUnsupportedCodeV1::RequestTooLarge
+        );
+        assert_eq!(
+            unsupported_code(&"A".repeat(MAX_TEXT_LINE_CHARACTERS_V1 + 1)),
+            TextOutlineUnsupportedCodeV1::RequestTooLarge
+        );
+        assert_eq!(
+            unsupported_code(&"@".repeat(MAX_TEXT_LINE_CHARACTERS_V1)),
             TextOutlineUnsupportedCodeV1::OutlineLimitExceeded
         );
     }

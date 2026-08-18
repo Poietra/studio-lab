@@ -14,6 +14,8 @@ assert.equal(outline.poietraMathTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileMathTexOutlineV1, "function");
 assert.equal(outline.poietraSegmentedTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileSegmentedTexOutlineV1, "function");
+assert.equal(outline.poietraTextOutlineAbiVersion(), 1);
+assert.equal(typeof outline.compileTextOutlineV1, "function");
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -30,6 +32,23 @@ function encodeRequest(texParts) {
 
 function compileWasm(request) {
   const responseBytes = outline.compileMathTexOutlineV1(request);
+  assert.ok(responseBytes instanceof Uint8Array);
+  assert.ok(responseBytes.byteLength > 0 && responseBytes.byteLength <= 1024 * 1024);
+  return responseBytes;
+}
+
+function encodeTextRequest(text) {
+  return encoder.encode(
+    JSON.stringify({
+      schema: "poietra.text-outline-request",
+      text,
+      version: 1,
+    }),
+  );
+}
+
+function compileTextWasm(request) {
+  const responseBytes = outline.compileTextOutlineV1(request);
   assert.ok(responseBytes instanceof Uint8Array);
   assert.ok(responseBytes.byteLength > 0 && responseBytes.byteLength <= 1024 * 1024);
   return responseBytes;
@@ -160,6 +179,58 @@ for (const [index, wasmResponse] of wasmResponses.entries()) {
     `native and WASM response ${index} must be byte-identical`,
   );
 }
+
+const textRequests = [
+  encodeTextRequest("日本語で動画を作る"),
+  encodeTextRequest("こんにちは\nPoietra"),
+  encodeTextRequest("こんにちは\r\nPoietra"),
+  encodeTextRequest("tab\tcharacter"),
+];
+const textWasmResponses = textRequests.map(compileTextWasm);
+const textNativeOutput = execFileSync(
+  "cargo",
+  [
+    "run",
+    "--quiet",
+    "--locked",
+    "--package",
+    "poietra-mathtex-wasm",
+    "--example",
+    "compile_text_request",
+    "--manifest-path",
+    "engine/Cargo.toml",
+  ],
+  { input: Buffer.concat(textRequests.flatMap((request) => [request, Buffer.from("\n")])), maxBuffer: 3 * 1024 * 1024 },
+);
+const textNativeResponses = decoder
+  .decode(textNativeOutput)
+  .trimEnd()
+  .split("\n")
+  .map((response) => encoder.encode(response));
+assert.equal(textNativeResponses.length, textWasmResponses.length);
+for (const [index, wasmResponse] of textWasmResponses.entries()) {
+  assert.deepEqual(
+    Buffer.from(wasmResponse),
+    Buffer.from(textNativeResponses[index]),
+    `plain Text native and WASM response ${index} must be byte-identical`,
+  );
+}
+for (const response of textWasmResponses.slice(0, 3)) {
+  const parsed = JSON.parse(decoder.decode(response));
+  assert.equal(parsed.schema, "poietra.text-outline-response");
+  assert.equal(parsed.version, 1);
+  assert.equal(parsed.result.kind, "compiled");
+  assert.equal(parsed.result.fillRule, "nonzero");
+  assert.ok(parsed.result.path.subpaths.length > 0);
+}
+assert.deepEqual(
+  Buffer.from(textWasmResponses[1]),
+  Buffer.from(textWasmResponses[2]),
+  "LF and CRLF must compile to the same canonical Text outline",
+);
+const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[3]));
+assert.equal(unsupportedText.result.kind, "unsupported");
+assert.equal(unsupportedText.result.code, "character-unsupported");
 
 for (const [index, response] of wasmResponses.slice(0, compiledRequests.length).entries()) {
   const result = JSON.parse(decoder.decode(response));
