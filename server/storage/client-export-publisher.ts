@@ -42,7 +42,7 @@ export type PublishClientExportInputV1 = Readonly<{
   documentEpoch: string;
   documentKey: string;
   documentRevision: bigint;
-  encoderEvidence: Readonly<Record<string, unknown>>;
+  encoderEvidence: unknown;
   exportProfile: unknown;
   projectId: string;
   publicationId: string;
@@ -123,7 +123,7 @@ export class ClientExportPublisherV1 {
     return artifacts && publications && verifier;
   }
 
-  async #verify(input: PublishClientExportInputV1, profile: ExportProfileV1) {
+  async #verify(input: PublishClientExportInputV1, profile: ExportProfileV1, profileHash: string) {
     const bytes = input.bytes;
     if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > MAX_CLIENT_EXPORT_VIDEO_BYTES_V1) {
       throw new HttpError("The client export upload exceeds the 128 MiB bound.", 413);
@@ -142,7 +142,6 @@ export class ClientExportPublisherV1 {
       throw new HttpError(`The client export MP4 failed structural verification (${verification.code}).`, 400);
     }
 
-    const profileHash = await exportProfileHashV1(profile);
     if (
       verification.provenance.sceneRevisionHash !== input.sceneRevisionHash ||
       verification.provenance.exportProfileHash !== profileHash
@@ -165,7 +164,7 @@ export class ClientExportPublisherV1 {
     ) {
       throw new HttpError("The client export MP4 duration exceeds the export profile bound.", 400);
     }
-    return { contentDigest, profileHash };
+    return contentDigest;
   }
 
   async publish(input: PublishClientExportInputV1, signal?: AbortSignal): Promise<PublishClientExportResultV1> {
@@ -180,8 +179,7 @@ export class ClientExportPublisherV1 {
     } catch {
       throw new HttpError("The client export profile is invalid.", 400);
     }
-    const { contentDigest, profileHash } = await this.#verify(input, profile);
-    signal?.throwIfAborted();
+    const profileHash = await exportProfileHashV1(profile);
 
     let lineage: ClientExportLineageV1;
     try {
@@ -199,6 +197,15 @@ export class ClientExportPublisherV1 {
     } catch (error) {
       throw new HttpError(error instanceof Error ? error.message : "Client export lineage is invalid.", 400);
     }
+    if (
+      lineage.encoderEvidence.codec !== profile.codec ||
+      lineage.encoderEvidence.frameRate !== profile.frameRate ||
+      lineage.encoderEvidence.resolution !== profile.resolution
+    ) {
+      throw new HttpError("The client export encoder evidence does not match the export profile.", 400);
+    }
+    const contentDigest = await this.#verify(input, profile, profileHash);
+    signal?.throwIfAborted();
 
     // Replay detection before any reservation (ADR 0005): a retry whose
     // payload matches the stored publication returns the existing success

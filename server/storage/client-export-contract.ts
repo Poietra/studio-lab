@@ -1,3 +1,7 @@
+import {
+  type BrowserWebCodecsEncoderEvidenceV1,
+  browserWebCodecsEncoderEvidenceSchemaV1,
+} from "../../src/collaboration/client-export-http-contract";
 import { canonicalJsonV1 } from "../../src/engine/canonical-json";
 import { manimProjectIdSchema } from "../../src/render-pipeline/contracts";
 import { manimTenantIdSchema } from "../manim-request-principal";
@@ -212,7 +216,7 @@ export type ClientExportLineageV1 = Readonly<{
   documentEpoch: string;
   documentKey: string;
   documentRevision: bigint;
-  encoderEvidence: Readonly<Record<string, unknown>>;
+  encoderEvidence: BrowserWebCodecsEncoderEvidenceV1;
   encoderEvidenceVersion: typeof CLIENT_EXPORT_ENCODER_EVIDENCE_VERSION_V1;
   exportProfileHash: string;
   producerKind: typeof CLIENT_EXPORT_PRODUCER_KIND_V1;
@@ -239,13 +243,11 @@ export function parseClientExportLineageV1(value: unknown): ClientExportLineageV
   ) {
     throw new TypeError("Client export lineage is invalid.");
   }
-  const evidence = candidate.encoderEvidence;
-  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
-    throw new TypeError("Client export encoder evidence must be a JSON object.");
-  }
+  const evidence = browserWebCodecsEncoderEvidenceSchemaV1.safeParse(candidate.encoderEvidence);
+  if (!evidence.success) throw new TypeError("Client export encoder evidence is invalid.");
   let evidenceJson: string;
   try {
-    evidenceJson = canonicalJsonV1(evidence);
+    evidenceJson = canonicalJsonV1(evidence.data);
   } catch {
     throw new TypeError("Client export encoder evidence must be canonical JSON.");
   }
@@ -256,7 +258,7 @@ export function parseClientExportLineageV1(value: unknown): ClientExportLineageV
     documentEpoch: candidate.documentEpoch,
     documentKey: candidate.documentKey,
     documentRevision: candidate.documentRevision,
-    encoderEvidence: evidence as Readonly<Record<string, unknown>>,
+    encoderEvidence: evidence.data,
     encoderEvidenceVersion: CLIENT_EXPORT_ENCODER_EVIDENCE_VERSION_V1,
     exportProfileHash: digestV1(candidate.exportProfileHash, "Client export profile hash"),
     producerKind: CLIENT_EXPORT_PRODUCER_KIND_V1,

@@ -28,6 +28,13 @@ const OBJECT_LOCATOR_TOKEN = "30000000-0000-4000-8000-000000000003";
 const ORIGIN = "https://studio.example";
 const VIDEO = new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70, 9, 9]);
 const CONTENT_DIGEST = "a".repeat(64);
+const ENCODER_EVIDENCE = {
+  codec: "h264-mp4",
+  frameRate: 30,
+  resolution: "854x480",
+  schema: "poietra.browser-webcodecs-encoder-evidence",
+  version: 1,
+} as const;
 const servers: ReturnType<typeof createServer>[] = [];
 
 function publication(): ClientExportPublicationV1 {
@@ -49,7 +56,7 @@ function publication(): ClientExportPublicationV1 {
       documentEpoch: "50000000-0000-4000-8000-000000000005",
       documentKey: "b".repeat(64),
       documentRevision: 0n,
-      encoderEvidence: { codec: "h264-mp4" },
+      encoderEvidence: ENCODER_EVIDENCE,
       encoderEvidenceVersion: 1,
       exportProfileHash: "c".repeat(64),
       producerKind: "browser-webcodecs",
@@ -70,7 +77,7 @@ function metadata(overrides: Partial<ClientExportFinalizeMetadataV1> = {}): Clie
     documentEpoch: "50000000-0000-4000-8000-000000000005",
     documentKey: "b".repeat(64),
     documentRevision: "0",
-    encoderEvidence: { codec: "h264-mp4" },
+    encoderEvidence: ENCODER_EVIDENCE,
     exportProfile: { schema: "poietra.export-profile" },
     projectId: PROJECT,
     publicationId: PUBLICATION_ID,

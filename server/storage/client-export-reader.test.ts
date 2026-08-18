@@ -8,6 +8,13 @@ import type {
 import { ClientExportReaderV1 } from "./client-export-reader";
 
 const PUBLICATION_ID = "00000000-0000-4000-8000-000000000010";
+const ENCODER_EVIDENCE = {
+  codec: "h264-mp4",
+  frameRate: 30,
+  resolution: "854x480",
+  schema: "poietra.browser-webcodecs-encoder-evidence",
+  version: 1,
+} as const;
 
 function publication(expiresAt: Date): ClientExportPublicationV1 {
   return {
@@ -28,7 +35,7 @@ function publication(expiresAt: Date): ClientExportPublicationV1 {
       documentEpoch: "00000000-0000-4000-8000-000000000050",
       documentKey: "b".repeat(64),
       documentRevision: 0n,
-      encoderEvidence: {},
+      encoderEvidence: ENCODER_EVIDENCE,
       encoderEvidenceVersion: 1,
       exportProfileHash: "c".repeat(64),
       producerKind: "browser-webcodecs",

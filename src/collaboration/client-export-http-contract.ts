@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { exportFrameRateV1Schema, exportResolutionV1Schema } from "../engine/export-profile";
 import { manimProjectIdSchema } from "../render-pipeline/contracts";
 
 /**
@@ -23,6 +24,18 @@ export const MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1 =
 const sha256SchemaV1 = z.string().regex(/^[0-9a-f]{64}$/u);
 const revisionStringSchemaV1 = z.string().regex(/^(0|[1-9][0-9]{0,15})$/u);
 
+export const browserWebCodecsEncoderEvidenceSchemaV1 = z
+  .object({
+    codec: z.literal("h264-mp4"),
+    frameRate: exportFrameRateV1Schema,
+    resolution: exportResolutionV1Schema,
+    schema: z.literal("poietra.browser-webcodecs-encoder-evidence"),
+    version: z.literal(1),
+  })
+  .strict();
+
+export type BrowserWebCodecsEncoderEvidenceV1 = z.infer<typeof browserWebCodecsEncoderEvidenceSchemaV1>;
+
 export const clientExportFinalizeMetadataSchemaV1 = z
   .object({
     byteSize: z.number().int().min(1).max(MAX_CLIENT_EXPORT_FINALIZE_VIDEO_BYTES_V1),
@@ -30,7 +43,7 @@ export const clientExportFinalizeMetadataSchemaV1 = z
     documentEpoch: z.uuid(),
     documentKey: sha256SchemaV1,
     documentRevision: revisionStringSchemaV1,
-    encoderEvidence: z.record(z.string(), z.unknown()),
+    encoderEvidence: browserWebCodecsEncoderEvidenceSchemaV1,
     exportProfile: z.unknown(),
     projectId: manimProjectIdSchema,
     publicationId: z.uuid(),

@@ -48,6 +48,13 @@ const EXPORT_PROFILE_HASH = createHash("sha256")
   .digest("hex");
 
 const SCENE_REVISION_HASH = "b".repeat(64);
+const ENCODER_EVIDENCE = {
+  codec: "h264-mp4",
+  frameRate: 30,
+  resolution: "854x480",
+  schema: "poietra.browser-webcodecs-encoder-evidence",
+  version: 1,
+} as const;
 
 function verification(): ClientExportMp4VerificationV1 {
   return {
@@ -91,7 +98,7 @@ function publication(storedReceipt = receipt()): ClientExportPublicationV1 {
       documentEpoch: "00000000-0000-4000-8000-000000000040",
       documentKey: "c".repeat(64),
       documentRevision: 0n,
-      encoderEvidence: { codec: "h264-mp4" },
+      encoderEvidence: ENCODER_EVIDENCE,
       encoderEvidenceVersion: 1,
       exportProfileHash: EXPORT_PROFILE_HASH,
       producerKind: "browser-webcodecs",
@@ -113,7 +120,7 @@ function input() {
     documentEpoch: "00000000-0000-4000-8000-000000000040",
     documentKey: "c".repeat(64),
     documentRevision: 0n,
-    encoderEvidence: { codec: "h264-mp4" },
+    encoderEvidence: ENCODER_EVIDENCE,
     exportProfile: EXPORT_PROFILE,
     projectId: "project-1",
     publicationId: PUBLICATION_ID,
@@ -213,12 +220,21 @@ describe("ClientExportPublisherV1", () => {
     const { artifacts, metering, publisher } = harness({
       read: {
         ...stored,
-        lineage: { ...stored.lineage, encoderEvidence: { codec: "h264-mp4", hardwareAcceleration: "prefer-software" } },
+        lineage: {
+          ...stored.lineage,
+          encoderEvidence: {
+            version: 1,
+            schema: "poietra.browser-webcodecs-encoder-evidence",
+            resolution: "854x480",
+            frameRate: 30,
+            codec: "h264-mp4",
+          },
+        },
       },
     });
     const result = await publisher.publish({
       ...input(),
-      encoderEvidence: { hardwareAcceleration: "prefer-software", codec: "h264-mp4" },
+      encoderEvidence: ENCODER_EVIDENCE,
     });
     expect(result.replayed).toBe(true);
     expect(metering.reservePublication).not.toHaveBeenCalled();
@@ -289,6 +305,17 @@ describe("ClientExportPublisherV1", () => {
       message: "The client export MP4 frame rate does not match the export profile.",
       status: 400,
     });
+  });
+
+  it("refuses encoder evidence that disagrees with the export profile", async () => {
+    const { publisher, verifyMp4 } = harness();
+    await expect(
+      publisher.publish({ ...input(), encoderEvidence: { ...ENCODER_EVIDENCE, frameRate: 60 } }),
+    ).rejects.toMatchObject({
+      message: "The client export encoder evidence does not match the export profile.",
+      status: 400,
+    });
+    expect(verifyMp4).not.toHaveBeenCalled();
   });
 
   it("refuses a duration beyond the export profile bound", async () => {

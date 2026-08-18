@@ -10,6 +10,13 @@ import { CLIENT_EXPORT_FINALIZE_MEDIA_TYPE_V1, decodeClientExportFinalizeBodyV1 
 
 const VIDEO = new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]);
 const PUBLICATION_ID = "00000000-0000-4000-8000-000000000002";
+const ENCODER_EVIDENCE = {
+  codec: "h264-mp4",
+  frameRate: 30,
+  resolution: "854x480",
+  schema: "poietra.browser-webcodecs-encoder-evidence",
+  version: 1,
+} as const;
 
 function input(): ClientExportPublishInputV1 {
   return {
@@ -20,7 +27,7 @@ function input(): ClientExportPublishInputV1 {
       documentEpoch: "00000000-0000-4000-8000-000000000001",
       documentKey: "b".repeat(64),
       documentRevision: "7",
-      encoderEvidence: { codec: "h264-mp4", version: 1 },
+      encoderEvidence: ENCODER_EVIDENCE,
       exportProfile: { schema: "poietra.export-profile" },
       projectId: "project-a",
       publicationId: PUBLICATION_ID,

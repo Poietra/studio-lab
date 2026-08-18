@@ -11,6 +11,13 @@ import {
 } from "./client-export-http-contract";
 
 const VIDEO = new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]);
+const ENCODER_EVIDENCE = {
+  codec: "h264-mp4",
+  frameRate: 30,
+  resolution: "854x480",
+  schema: "poietra.browser-webcodecs-encoder-evidence",
+  version: 1,
+} as const;
 
 function metadata(overrides: Partial<ClientExportFinalizeMetadataV1> = {}): ClientExportFinalizeMetadataV1 {
   return {
@@ -19,7 +26,7 @@ function metadata(overrides: Partial<ClientExportFinalizeMetadataV1> = {}): Clie
     documentEpoch: "00000000-0000-4000-8000-000000000001",
     documentKey: "b".repeat(64),
     documentRevision: "0",
-    encoderEvidence: { codec: "h264-mp4", version: 1 },
+    encoderEvidence: ENCODER_EVIDENCE,
     exportProfile: { schema: "poietra.export-profile" },
     projectId: "project-1",
     publicationId: "00000000-0000-4000-8000-000000000002",
@@ -76,6 +83,16 @@ describe("client export finalize envelope", () => {
     framed.set(widenedBytes, 4);
     framed.set(VIDEO, 4 + widenedBytes.byteLength);
     expect(() => decodeClientExportFinalizeBodyV1(framed)).toThrow(/versioned contract/i);
+  });
+
+  it("refuses unversioned or widened browser encoder evidence", () => {
+    expect(() => encodeClientExportFinalizeBodyV1(metadata({ encoderEvidence: {} as never }), VIDEO)).toThrow();
+    expect(() =>
+      encodeClientExportFinalizeBodyV1(
+        metadata({ encoderEvidence: { ...ENCODER_EVIDENCE, hardwareAcceleration: "prefer-software" } as never }),
+        VIDEO,
+      ),
+    ).toThrow();
   });
 
   it("names the neutral video path for a publication", () => {
