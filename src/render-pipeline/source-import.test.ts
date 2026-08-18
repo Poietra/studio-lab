@@ -248,6 +248,29 @@ class MixedScene(Scene):
     });
   });
 
+  it("keeps a direct marker attached to its canonical multiline assignment", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class MarkedMultiline(Scene):
+    def construct(self):
+        # poietra:entity {"id":"tx:multi/entity:circle","variable":"poietra_multi_1"}
+        poietra_multi_1 = Circle(
+            radius=2,
+        ).set_color(BLUE)
+        self.add(poietra_multi_1)
+        # poietra:anchor 0.000
+        self.wait(1)
+`,
+      "scene.py",
+      "MarkedMultiline",
+    );
+
+    expect(imported?.sourceVariables).toEqual({ "tx:multi/entity:circle": "poietra_multi_1" });
+    expect(imported?.initialization).toEqual(["poietra_multi_1 = Circle(\nradius=2,\n).set_color(BLUE)"]);
+    expect(imported?.anchors).toEqual([0]);
+  });
+
   it("accepts content metadata only when it matches the emitted replacement expression", () => {
     const edited = `from manim import *
 
@@ -292,6 +315,62 @@ class RepeatedName(Scene):
     );
     expect(() => importManimScene(duplicate, "scenes/duplicate.py", "RepeatedName")).toThrow(
       /Scene "RepeatedName".*scenes\/duplicate\.py.*lines 3, 8/i,
+    );
+  });
+
+  it("fails closed when the canonical CST cannot admit one construct", () => {
+    const duplicateConstruct = `from manim import *
+
+class DuplicateConstruct(Scene):
+    def construct(self):
+        first = Circle()
+
+    def construct(self):
+        second = Square()
+`;
+    const parserRecovery = `from manim import *
+
+class ParserRecovery(Scene):
+    def construct(self):
+        visible_by_lexer = Circle()
+        yield
+`;
+    const sceneFactoryBase = `class WrongBase(SceneFactory):
+    def construct(self):
+        not_a_scene = Circle()
+`;
+
+    expect(findSceneBlocks(duplicateConstruct).map(({ name }) => name)).toEqual(["DuplicateConstruct"]);
+    expect(importManimScene(duplicateConstruct, "scene.py", "DuplicateConstruct")).toBeNull();
+    expect(findSceneBlocks(parserRecovery).map(({ name }) => name)).toEqual(["ParserRecovery"]);
+    expect(importManimScene(parserRecovery, "scene.py", "ParserRecovery")).toBeNull();
+    expect(findSceneBlocks(sceneFactoryBase).map(({ name }) => name)).toEqual(["WrongBase"]);
+    expect(importManimScene(sceneFactoryBase, "scene.py", "WrongBase")).toBeNull();
+  });
+
+  it("admits only unique direct CST bindings and leaves rebinding or nested flow read-only", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class BindingAuthority(Scene):
+    def construct(self):
+        rebound = Circle()
+        rebound = Square()
+        if enabled:
+            nested = Circle()
+        direct = Square()
+        self.add(rebound, nested, direct)
+`,
+      "scene.py",
+      "BindingAuthority",
+    );
+
+    expect(imported?.sourceVariables).toEqual({ "source:scene.py#BindingAuthority:direct": "direct" });
+    expect(imported?.importOutcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "unsupported", reason: "ambiguous-binding", sourceVariable: "rebound" }),
+        expect.objectContaining({ kind: "runtime-only", reason: "dynamic-control-flow", sourceVariable: "nested" }),
+      ]),
     );
   });
 
