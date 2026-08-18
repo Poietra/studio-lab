@@ -931,6 +931,59 @@ function literalStyleValue(source: string) {
   return null;
 }
 
+const PAINT_STYLE_PROPERTIES = {
+  set_color: "color",
+  set_fill: "fillColor",
+  set_stroke: "strokeColor",
+} as const satisfies Readonly<Record<string, keyof EntityStyle>>;
+const PAINT_METHOD_PATTERN = Object.keys(PAINT_STYLE_PROPERTIES).join("|");
+type PaintMethod = Readonly<{
+  argumentsSource: string;
+  name: keyof typeof PAINT_STYLE_PROPERTIES;
+}>;
+
+function isPaintMethod(method: Readonly<{ name: string }>): method is PaintMethod {
+  return method.name in PAINT_STYLE_PROPERTIES;
+}
+
+function paintColorArgument(argumentsSource: string) {
+  const positional: string[] = [];
+  const colors: string[] = [];
+  for (const argument of splitTopLevelArguments(argumentsSource)) {
+    const keyword = argument.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/s);
+    if (!keyword) positional.push(argument);
+    else if (keyword[1] === "color") colors.push(keyword[2].trim());
+  }
+  if (colors.length > 1 || (colors.length === 1 && positional.length > 0)) {
+    return { kind: "unknown" as const };
+  }
+  const expression = colors[0] ?? positional[0];
+  if (expression === undefined) return { kind: "absent" as const };
+  const value = literalStyleValue(expression);
+  return value === null ? { expression, kind: "unknown" as const } : { kind: "known" as const, value };
+}
+
+function applyPaintMethods(
+  style: Knowledge<EntityStyle>,
+  methods: readonly PaintMethod[],
+  evidence: string,
+): Knowledge<EntityStyle> {
+  if (style.kind === "unknown") return style;
+  const value = { ...style.value };
+  for (const method of methods) {
+    const color = paintColorArgument(method.argumentsSource);
+    if (color.kind === "absent") continue;
+    const property = PAINT_STYLE_PROPERTIES[method.name];
+    if (color.kind === "unknown") {
+      return unknown(`Object ${property} uses a dynamic or ambiguous source expression.`, [
+        color.expression ?? evidence,
+      ]);
+    }
+    value[property] = color.value;
+  }
+  return { kind: "known", value };
+}
+
 function styleFrom(argumentsSource: string, suffix: string): Knowledge<EntityStyle> {
   const { keywords } = constructorArguments(argumentsSource);
   const properties: Array<readonly ["color" | "fillColor" | "strokeColor", string | undefined]> = [
@@ -938,14 +991,6 @@ function styleFrom(argumentsSource: string, suffix: string): Knowledge<EntitySty
     ["fillColor", keywords.get("fill_color")],
     ["strokeColor", keywords.get("stroke_color")],
   ];
-  if (/\.(?:set_fill|set_stroke)\s*\(/.test(suffix)) {
-    return unknown("Object style is changed by a chained source method.", [suffix.trim()]);
-  }
-  const setColor = suffix.match(/\.set_color\(\s*([^()]*)\s*\)/s)?.[1];
-  if (setColor !== undefined) properties.push(["color", setColor]);
-  if (suffix.includes(".set_color(") && setColor === undefined) {
-    return unknown("Object color uses a dynamic set_color expression.", [suffix.trim()]);
-  }
   const style: Record<string, string> = {};
   for (const [property, expression] of properties) {
     if (expression === undefined) continue;
@@ -955,7 +1000,13 @@ function styleFrom(argumentsSource: string, suffix: string): Knowledge<EntitySty
     }
     style[property] = literal;
   }
-  return { kind: "known", value: style };
+  const methods = chainedMethods(suffix);
+  if (methods === null) {
+    return new RegExp(`\\.(?:${PAINT_METHOD_PATTERN})\\b`).test(suffix)
+      ? unknown("Object style uses an unsupported chained paint expression.", [suffix.trim()])
+      : { kind: "known", value: style };
+  }
+  return applyPaintMethods({ kind: "known", value: style }, methods.filter(isPaintMethod), suffix.trim());
 }
 
 function initialScaleFrom(suffix: string): Readonly<{ knowledge: Knowledge<number>; value: number }> {
@@ -1500,6 +1551,42 @@ function chainedMethods(suffix: string) {
   return methods;
 }
 
+function directPaintMethods(statement: string, sourceVariable: string): readonly PaintMethod[] | null {
+  const variable = sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const suffix = statement.match(new RegExp(`^\\s*${variable}(\\s*\\.[\\s\\S]*)$`))?.[1];
+  if (!suffix) return null;
+  const methods = chainedMethods(suffix);
+  return methods !== null && methods.length > 0 && methods.every(isPaintMethod) ? methods : null;
+}
+
+function styleFromStatement(
+  style: Knowledge<EntityStyle>,
+  statement: CanonicalImportStatement,
+  sourceVariable: string,
+  callPaths: readonly (readonly string[] | null)[],
+): Knowledge<EntityStyle> | null {
+  const directMethods = directPaintMethods(statement.text, sourceVariable);
+  if (directMethods) return applyPaintMethods(style, directMethods, statement.text.trim());
+  const paintCall = callPaths.find(
+    (path) =>
+      path?.[0] === sourceVariable &&
+      path.at(-1) !== undefined &&
+      Object.hasOwn(PAINT_STYLE_PROPERTIES, path.at(-1) as string),
+  );
+  const variable = sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const applyMethodPaint = new RegExp(
+    `\\bApplyMethod\\s*\\(\\s*${variable}\\s*\\.\\s*(?:${PAINT_METHOD_PATTERN})\\b`,
+  ).test(statement.text);
+  if (!paintCall && !applyMethodPaint) return null;
+  const animated = applyMethodPaint || paintCall?.includes("animate") === true;
+  return unknown(
+    animated
+      ? "Object style is changed by an animated paint mutation."
+      : "Object style is changed by an unsupported or ambiguous paint mutation.",
+    [statement.text.trim()],
+  );
+}
+
 function isStaticStringLiteral(source: string) {
   const value = source.trim();
   if (!/^(?:[rRuU])?(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')$/s.test(value)) return false;
@@ -1847,6 +1934,9 @@ export function importManimScene(
   const analysis = canonicalImportAnalysis(source, sourcePath, sceneName);
   if (!analysis) return null;
   const collectedStatements = canonicalImportStatements(source, analysis);
+  const callPathsByStatementId = new Map(
+    analysis.scene.statements.map((statement) => [statement.id, statement.calls.map(({ path }) => path)]),
+  );
   const returnIndex = collectedStatements.findIndex((statement) => /^return\b/.test(statement.text));
   const statements = returnIndex < 0 ? collectedStatements : collectedStatements.slice(0, returnIndex + 1);
   const sourceAnchors = statements.flatMap((statement, index) => {
@@ -2063,6 +2153,11 @@ export function importManimScene(
         // Invalid markers remain inert comments.
       }
       continue;
+    }
+    const callPaths = statement.statementId ? (callPathsByStatementId.get(statement.statementId) ?? []) : [];
+    for (const entity of mutableEntities) {
+      const style = styleFromStatement(entity.style, statement, entity.sourceVariable, callPaths);
+      if (style) entity.style = style;
     }
     const wait = waitDuration(statement.text);
     if (wait !== null) {
