@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-
+import type { ExportMp4VerificationResultV1 } from "../../src/engine/export-mp4-verification";
 import {
   EXPORT_RESOLUTION_PIXELS_V1,
   type ExportProfileV1,
@@ -31,24 +31,7 @@ const PUBLICATION_RESERVATION_LIFETIME_MS_V1 = 5 * 60_000;
  * loads the same WASM artifact the browser exporter uses, so producer and
  * verifier share one container and provenance contract).
  */
-export type ClientExportMp4VerificationV1 =
-  | Readonly<{
-      kind: "verified";
-      provenance: Readonly<{
-        engineAbiVersion: number;
-        exportProfileHash: string;
-        sceneId: string;
-        sceneRevisionHash: string;
-      }>;
-      structure: Readonly<{
-        durationTicks: number;
-        heightPx: number;
-        sampleCount: number;
-        timescale: number;
-        widthPx: number;
-      }>;
-    }>
-  | Readonly<{ code: string; kind: "refused"; message: string }>;
+export type ClientExportMp4VerificationV1 = ExportMp4VerificationResultV1;
 
 export type ClientExportMp4VerifierV1 = (bytes: Uint8Array) => Promise<ClientExportMp4VerificationV1>;
 
@@ -172,6 +155,9 @@ export class ClientExportPublisherV1 {
       verification.structure.heightPx !== resolution.heightPx
     ) {
       throw new HttpError("The client export MP4 dimensions do not match the export profile.", 400);
+    }
+    if (verification.structure.frameRate !== profile.frameRate) {
+      throw new HttpError("The client export MP4 frame rate does not match the export profile.", 400);
     }
     if (
       verification.structure.timescale < 1 ||

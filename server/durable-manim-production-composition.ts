@@ -1,6 +1,7 @@
 import type { S3ClientConfig } from "@aws-sdk/client-s3";
 import { Pool, type PoolConfig } from "pg";
 
+import { exportMp4VerificationReadyV1, verifyExportMp4V1 } from "../src/engine/export-mp4-verification";
 import { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import {
   createDurableManimRenderCancellationRelayV1,
@@ -31,7 +32,7 @@ import {
 import { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { createDurableClientExportGcWorkerV1 } from "./storage/client-export-gc";
 import { createUnmeteredClientExportPublicationMeteringV1 } from "./storage/client-export-metering";
-import { type ClientExportMp4VerifierV1, ClientExportPublisherV1 } from "./storage/client-export-publisher";
+import { ClientExportPublisherV1 } from "./storage/client-export-publisher";
 import { ClientExportReaderV1 } from "./storage/client-export-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifact-repository";
@@ -87,8 +88,6 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
       onFailure: (error: unknown) => void;
       sweepTimeoutMs: number;
     }>;
-    verifyMp4: ClientExportMp4VerifierV1;
-    verifyMp4Ready: (signal?: AbortSignal) => Promise<boolean>;
   }>;
   database: Readonly<{
     migrationPoolConfig: PoolConfig;
@@ -591,8 +590,8 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         metering: clientExportMetering,
         publications: clientExportRepository,
         tenantId: options.tenantId,
-        verifyMp4: options.clientExports.verifyMp4,
-        verifyMp4Ready: options.clientExports.verifyMp4Ready,
+        verifyMp4: verifyExportMp4V1,
+        verifyMp4Ready: exportMp4VerificationReadyV1,
       });
       clientExportReader = new ClientExportReaderV1({
         ...(options.clientExports.claimDurationMs === undefined

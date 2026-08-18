@@ -58,7 +58,16 @@ function verification(): ClientExportMp4VerificationV1 {
       sceneId: "scene-1",
       sceneRevisionHash: SCENE_REVISION_HASH,
     },
-    structure: { durationTicks: 100_000, heightPx: 480, sampleCount: 3, timescale: 1_000_000, widthPx: 854 },
+    structure: {
+      color: { fullRange: false, matrix: 1, primaries: 1, transfer: 1 },
+      durationTicks: 100_000,
+      frameRate: 30,
+      heightPx: 480,
+      sampleCount: 3,
+      syncSampleCount: 1,
+      timescale: 1_000_000,
+      widthPx: 854,
+    },
   };
 }
 
@@ -266,6 +275,18 @@ describe("ClientExportPublisherV1", () => {
     });
     await expect(publisher.publish(input())).rejects.toMatchObject({
       message: "The client export MP4 dimensions do not match the export profile.",
+      status: 400,
+    });
+  });
+
+  it("refuses an MP4 timestamp grid outside the claimed frame rate", async () => {
+    const base = verification();
+    if (base.kind !== "verified") throw new Error("unreachable");
+    const { publisher } = harness({
+      verify: { ...base, structure: { ...base.structure, frameRate: 60 } },
+    });
+    await expect(publisher.publish(input())).rejects.toMatchObject({
+      message: "The client export MP4 frame rate does not match the export profile.",
       status: 400,
     });
   });

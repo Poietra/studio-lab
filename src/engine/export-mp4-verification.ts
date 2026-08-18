@@ -121,6 +121,19 @@ export function resetExportMp4VerificationBindingsForTestV1() {
   bindingsPromise = null;
 }
 
+/** Fail-closed readiness probe for the packaged canonical WASM verifier. */
+export async function exportMp4VerificationReadyV1(signal?: AbortSignal) {
+  try {
+    signal?.throwIfAborted();
+    await loadBindings();
+    signal?.throwIfAborted();
+    return true;
+  } catch {
+    signal?.throwIfAborted();
+    return false;
+  }
+}
+
 /**
  * Structurally verifies one client-produced MP4 and extracts its provenance.
  * Refusals are data, not exceptions: only a missing/incompatible WASM module

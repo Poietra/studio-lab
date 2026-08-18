@@ -3,7 +3,11 @@ import { resolve } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { MAX_VERIFIED_EXPORT_MP4_BYTES_V1, verifyExportMp4V1 } from "./export-mp4-verification";
+import {
+  exportMp4VerificationReadyV1,
+  MAX_VERIFIED_EXPORT_MP4_BYTES_V1,
+  verifyExportMp4V1,
+} from "./export-mp4-verification";
 
 const FIXTURE_PATH = resolve(process.cwd(), "fixtures", "client-export", "tiny-client-export.mp4");
 
@@ -41,6 +45,7 @@ function withTruncatingNestedLargeSize(bytes: Uint8Array): Uint8Array {
 
 describe("verifyExportMp4V1", () => {
   it("verifies the committed muxer fixture and extracts its provenance through the shared WASM core", async () => {
+    await expect(exportMp4VerificationReadyV1()).resolves.toBe(true);
     const bytes = new Uint8Array(await readFile(FIXTURE_PATH));
     const result = await verifyExportMp4V1(bytes);
     expect(result.kind).toBe("verified");
