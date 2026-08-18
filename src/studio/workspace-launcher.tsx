@@ -156,12 +156,14 @@ function WorkspaceCover({
 }
 
 function WorkspaceCard({
+  allowLocalThumbnailGeneration,
   mutationPending,
   onOpen,
   onRemove,
   onRename,
   project,
 }: Readonly<{
+  allowLocalThumbnailGeneration: boolean;
   mutationPending: boolean;
   onOpen: (workspaceId: string) => void;
   onRemove: (project: ManimProjectSummary) => void;
@@ -271,15 +273,17 @@ function WorkspaceCard({
         </span>
       </button>
       <div className="flex flex-wrap items-center gap-1 px-2 pb-2">
-        <button
-          aria-label={`${generateLabel} for ${project.name}`}
-          className={cardActionButtonClassName}
-          disabled={mutationPending || generatingThumbnail || thumbnailStatus?.state === "generating"}
-          onClick={() => void generateThumbnail()}
-          type="button"
-        >
-          {generatingThumbnail || thumbnailStatus?.state === "generating" ? "Generating…" : generateLabel}
-        </button>
+        {allowLocalThumbnailGeneration ? (
+          <button
+            aria-label={`${generateLabel} for ${project.name}`}
+            className={cardActionButtonClassName}
+            disabled={mutationPending || generatingThumbnail || thumbnailStatus?.state === "generating"}
+            onClick={() => void generateThumbnail()}
+            type="button"
+          >
+            {generatingThumbnail || thumbnailStatus?.state === "generating" ? "Generating…" : generateLabel}
+          </button>
+        ) : null}
         {thumbnailStatusError && thumbnailStatusRetryAvailable ? (
           <button
             aria-label={`Retry preview status for ${project.name}`}
@@ -548,6 +552,7 @@ export function WorkspaceLauncher({
             <ul className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" data-workspace-grid>
               {projects.map((project) => (
                 <WorkspaceCard
+                  allowLocalThumbnailGeneration={creationMode !== "managed"}
                   key={project.id}
                   mutationPending={mutationPending}
                   onOpen={onOpen}

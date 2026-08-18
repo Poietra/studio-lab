@@ -173,7 +173,8 @@ async function readStablePrivateFile(path: string, maxBytes: number) {
   }
 }
 
-export class ManimThumbnailCache {
+/** Local Vite/Electron compatibility cache. Production thumbnails come from the browser Rust/WGPU renderer. */
+class ManimThumbnailCache {
   private readonly activeOperations = new Set<Promise<unknown>>();
   private readonly cacheDirectory: string;
   private readonly cacheRoot: string;
@@ -845,4 +846,12 @@ export class ManimThumbnailCache {
   }
 }
 
-export type { ThumbnailAsset };
+type LocalManimThumbnailCache = ManimThumbnailCache;
+
+export function createLocalManimThumbnailCache(
+  options: ConstructorParameters<typeof ManimThumbnailCache>[0],
+): LocalManimThumbnailCache {
+  return new ManimThumbnailCache(options);
+}
+
+export type { LocalManimThumbnailCache, ThumbnailAsset };

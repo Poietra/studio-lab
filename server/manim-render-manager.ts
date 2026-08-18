@@ -69,7 +69,7 @@ import { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifi
 import { authorizeSnapshotProgramWithSnapshot } from "./manim-snapshot-program-authorizer";
 import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim-source-store";
 import { normalizeManimStorageRoots } from "./manim-tenant-storage";
-import { ManimThumbnailCache } from "./manim-thumbnail-cache";
+import { createLocalManimThumbnailCache, type LocalManimThumbnailCache } from "./manim-thumbnail-cache";
 import { discoverPythonSources } from "./manim-workspace";
 
 type RenderSession = {
@@ -205,7 +205,7 @@ export class ManimRenderManager {
   private readonly sessions = new Map<string, RenderSession>();
   private readonly snapshotRunner: FastManimSnapshotRunner;
   private readonly sourceStore: ManimSourceStore;
-  private readonly thumbnailCache: ManimThumbnailCache;
+  private readonly thumbnailCache: LocalManimThumbnailCache;
   private thumbnailRefreshRequest: Promise<void> | null = null;
   private thumbnailSlotRequest: Promise<void> | null = null;
   private thumbnailStartRequest: Promise<ManimThumbnailStatus> | null = null;
@@ -358,7 +358,7 @@ export class ManimRenderManager {
     });
     const thumbnailCacheRoot = options.thumbnailCacheRoot ?? join(this.projectRoot, ".poietra", "thumbnails");
     this.storageRoots = normalizeManimStorageRoots([this.projectRoot, thumbnailCacheRoot]);
-    this.thumbnailCache = new ManimThumbnailCache({
+    this.thumbnailCache = createLocalManimThumbnailCache({
       cacheRoot: thumbnailCacheRoot,
       command: this.command,
       frame: this.frame,
