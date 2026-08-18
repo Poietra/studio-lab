@@ -9,6 +9,7 @@ import {
   type ExportWorkerResponseV1,
   exportWorkerRequestV1Schema,
 } from "./export-worker-protocol";
+import { fragmentMaterialRegistryV1Schema, STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "./fragment-material-registry";
 
 class FakeWorker {
   readonly posted: unknown[] = [];
@@ -63,6 +64,64 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("runBrowserMp4ExportV1", () => {
+  it("hands the same object parameter values and canonical WGSL registry to the WebCodecs worker", async () => {
+    const base = await fixtureBundle();
+    const first = base.scene.entities[0];
+    if (!first || first.appearance.kind !== "vector" || !first.appearance.fill) {
+      throw new Error("Expected a filled vector fixture.");
+    }
+    const bundle = sceneIrBundleV1Schema.parse({
+      ...base,
+      scene: {
+        ...base.scene,
+        entities: [
+          {
+            ...first,
+            appearance: {
+              ...first.appearance,
+              fill: {
+                ...first.appearance.fill,
+                fragmentMaterial: { parameters: [1.15, 13], revision: 1, shaderId: "project-material-1" },
+              },
+            },
+          },
+          ...base.scene.entities.slice(1),
+        ],
+        requiredCapabilities: [...base.scene.requiredCapabilities, "fragment-material"],
+      },
+    });
+    const registry = fragmentMaterialRegistryV1Schema.parse({
+      materials: [{ revision: 1, shaderId: "project-material-1", source: STUDIO_WAVE_FRAGMENT_SOURCE_V1 }],
+      schema: "poietra.fragment-material-registry",
+      version: 1,
+    });
+    const worker = new FakeWorker();
+    const outcomePromise = runBrowserMp4ExportV1({
+      fragmentMaterialRegistry: registry,
+      profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+      snapshot: bundle,
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    const request = exportWorkerRequestV1Schema.parse(worker.posted[0]);
+    if (request.kind !== "export-mp4") throw new Error("missing export request");
+    const exportedBundle = sceneIrBundleV1Schema.parse(JSON.parse(new TextDecoder().decode(request.snapshotJson)));
+    const exported = exportedBundle.scene.entities[0];
+    expect(exported?.appearance.kind === "vector" ? exported.appearance.fill?.fragmentMaterial : null).toMatchObject({
+      parameters: [1.15, 13],
+      shaderId: "project-material-1",
+    });
+    expect(JSON.parse(new TextDecoder().decode(request.fragmentMaterialRegistryJson))).toEqual(registry);
+    worker.emitMessage({
+      bytes: new Uint8Array([0, 0, 0, 8]).buffer,
+      kind: "export-finished",
+      requestId: request.requestId,
+      schema: "poietra.export-worker-response",
+      version: 1,
+    } satisfies ExportWorkerResponseV1);
+    await expect(outcomePromise).resolves.toMatchObject({ kind: "exported" });
+  });
+
   it("hands the exact official SquareToCircle Scene IR to the WebCodecs worker", async () => {
     const bundle = await fixtureBundle("real-square-to-circle-v8.json");
     const worker = new FakeWorker();

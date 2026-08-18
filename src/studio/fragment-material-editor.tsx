@@ -4,11 +4,13 @@ import {
   MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
   MAX_PROJECT_FRAGMENT_MATERIALS_V1,
 } from "../engine/fragment-material-registry";
+import type { StudioFragmentMaterialParameterSchemaV1 } from "./fragment-material-authoring";
 
 export type FragmentMaterialEditorItem = Readonly<{
   assignmentCount: number;
   glslSource: Readonly<{ entryPoint: "main"; source: string }> | null;
   name: string;
+  parameterSchema: StudioFragmentMaterialParameterSchemaV1;
   revision: number;
   shaderId: string;
   source: string;
@@ -16,30 +18,36 @@ export type FragmentMaterialEditorItem = Readonly<{
 
 export function FragmentMaterialEditor({
   active,
+  assignedParameters,
   assignedShaderId,
   available,
   compileError,
   materials,
   onAssign,
   onCreate,
+  onCreatePreset,
   onDuplicate,
   onImportGlsl,
   onRemoveAsset,
   onRename,
   onUpdateSource,
+  onUpdateParameter,
 }: Readonly<{
   active: boolean;
+  assignedParameters: readonly number[] | null;
   assignedShaderId: string | null;
   available: boolean;
   compileError: string | null;
   materials: readonly FragmentMaterialEditorItem[];
   onAssign: (shaderId: string | null) => void;
   onCreate: (name: string) => string | null;
+  onCreatePreset: () => string | null;
   onDuplicate: (shaderId: string) => string | null;
   onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
   onRemoveAsset: (shaderId: string) => void;
   onRename: (shaderId: string, name: string) => void;
   onUpdateSource: (shaderId: string, source: string) => void;
+  onUpdateParameter: (name: string, value: number) => void;
 }>) {
   const [inputError, setInputError] = useState<string | null>(null);
   const [editingShaderId, setEditingShaderId] = useState<string | null>(
@@ -51,6 +59,7 @@ export function FragmentMaterialEditor({
       ? assignedShaderId
       : (materials[0]?.shaderId ?? null);
   const editingMaterial = materials.find(({ shaderId }) => shaderId === effectiveEditingShaderId) ?? null;
+  const assignedMaterial = materials.find(({ shaderId }) => shaderId === assignedShaderId) ?? null;
   const assigned = assignedShaderId !== null;
 
   return (
@@ -88,6 +97,64 @@ export function FragmentMaterialEditor({
           Select a vector object with an existing fill to assign a material.
         </p>
       ) : null}
+
+      {assignedMaterial && assignedParameters ? (
+        assignedMaterial.parameterSchema.length > 0 ? (
+          <fieldset className="mt-3 border border-zinc-800 p-2" aria-label="Material parameters">
+            <legend className="px-1 text-[10px] font-medium text-zinc-400">Object parameters</legend>
+            <div className="space-y-2">
+              {assignedMaterial.parameterSchema.map((parameter, index) => {
+                const value = assignedParameters[index] ?? parameter.default;
+                return (
+                  <label className="block" key={parameter.name}>
+                    <span className="flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+                      <span>{parameter.name}</span>
+                      <output>{value}</output>
+                    </span>
+                    <input
+                      aria-label={`${parameter.name} material parameter`}
+                      className="mt-1 w-full accent-sky-500"
+                      disabled={!available}
+                      max={parameter.range.max}
+                      min={parameter.range.min}
+                      onChange={(event) => onUpdateParameter(parameter.name, event.currentTarget.valueAsNumber)}
+                      step={parameter.range.step}
+                      type="range"
+                      value={value}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
+        ) : (
+          <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+            This material does not expose object parameters.
+          </p>
+        )
+      ) : null}
+
+      <div className="mt-3 border border-sky-950 bg-sky-950/20 p-2">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-medium text-sky-200">Wave preset</p>
+            <p className="mt-0.5 text-pretty text-[10px] leading-4 text-zinc-500">
+              Animated color bands with Speed and Bands controls. No shader code required.
+            </p>
+          </div>
+          <button
+            className="shrink-0 border border-sky-800 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+            disabled={materials.length >= MAX_PROJECT_FRAGMENT_MATERIALS_V1}
+            onClick={() => {
+              const shaderId = onCreatePreset();
+              if (shaderId) setEditingShaderId(shaderId);
+            }}
+            type="button"
+          >
+            {available ? "Create & apply" : "Create"}
+          </button>
+        </div>
+      </div>
 
       <div className="mt-3 grid grid-cols-[1fr_auto_auto] gap-1.5">
         <select

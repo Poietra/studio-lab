@@ -9,6 +9,7 @@ describe("FragmentMaterialEditor", () => {
     const markup = renderToStaticMarkup(
       <FragmentMaterialEditor
         active
+        assignedParameters={[0.65, 12]}
         assignedShaderId="project-material-1"
         available
         compileError={null}
@@ -17,6 +18,10 @@ describe("FragmentMaterialEditor", () => {
             assignmentCount: 2,
             glslSource: null,
             name: "Ocean wave",
+            parameterSchema: [
+              { default: 0.35, name: "Speed", range: { max: 2, min: -2, step: 0.05 }, type: "f32" },
+              { default: 8, name: "Bands", range: { max: 24, min: 1, step: 1 }, type: "f32" },
+            ],
             revision: 3,
             shaderId: "project-material-1",
             source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
@@ -25,6 +30,7 @@ describe("FragmentMaterialEditor", () => {
             assignmentCount: 0,
             glslSource: { entryPoint: "main", source: "#version 450\nvoid main() {}" },
             name: "Warm glow",
+            parameterSchema: [],
             revision: 1,
             shaderId: "project-material-2",
             source: `${STUDIO_WAVE_FRAGMENT_SOURCE_V1}\n// warm`,
@@ -32,11 +38,13 @@ describe("FragmentMaterialEditor", () => {
         ]}
         onAssign={vi.fn()}
         onCreate={vi.fn(() => null)}
+        onCreatePreset={vi.fn(() => null)}
         onDuplicate={vi.fn(() => null)}
         onImportGlsl={vi.fn(async () => undefined)}
         onRemoveAsset={vi.fn()}
         onRename={vi.fn()}
         onUpdateSource={vi.fn()}
+        onUpdateParameter={vi.fn()}
       />,
     );
 
@@ -47,6 +55,12 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain("Assigned to 2 object(s). Unassign all uses before deleting.");
     expect(markup).toContain("Unassign this material from 2 object(s) before deleting it.");
     expect(markup).toContain('aria-label="Fragment material WGSL source"');
+    expect(markup).toContain("Wave preset");
+    expect(markup).toContain("Create &amp; apply");
+    expect(markup).toContain('aria-label="Speed material parameter"');
+    expect(markup).toContain('aria-label="Bands material parameter"');
+    expect(markup).toContain("0.65");
+    expect(markup).toContain("12");
     expect(markup).toContain("Import Vulkan GLSL 450");
     expect(markup).toContain('aria-label="Vulkan GLSL fragment source"');
     expect(markup).toContain("#version 450");
@@ -56,6 +70,7 @@ describe("FragmentMaterialEditor", () => {
     const markup = renderToStaticMarkup(
       <FragmentMaterialEditor
         active={false}
+        assignedParameters={null}
         assignedShaderId={null}
         available
         compileError="WGSL compilation failed"
@@ -64,6 +79,7 @@ describe("FragmentMaterialEditor", () => {
             assignmentCount: 1,
             glslSource: null,
             name: "Broken wave",
+            parameterSchema: [],
             revision: 2,
             shaderId: "project-material-1",
             source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
@@ -71,11 +87,13 @@ describe("FragmentMaterialEditor", () => {
         ]}
         onAssign={vi.fn()}
         onCreate={vi.fn(() => null)}
+        onCreatePreset={vi.fn(() => null)}
         onDuplicate={vi.fn(() => null)}
         onImportGlsl={vi.fn(async () => undefined)}
         onRemoveAsset={vi.fn()}
         onRename={vi.fn()}
         onUpdateSource={vi.fn()}
+        onUpdateParameter={vi.fn()}
       />,
     );
 

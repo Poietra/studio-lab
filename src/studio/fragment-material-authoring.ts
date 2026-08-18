@@ -10,7 +10,13 @@ import {
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "../engine/fragment-material-registry";
 import type { PreviewRendererHostStateV1 } from "../engine/preview-renderer";
-import { fragmentMaterialV1Schema, opaqueIdV1Schema, sourceIdentityV1Schema } from "../engine/primitives";
+import {
+  fragmentMaterialV1Schema,
+  MAX_FINITE_F32,
+  MAX_FRAGMENT_MATERIAL_PARAMETERS_V1,
+  opaqueIdV1Schema,
+  sourceIdentityV1Schema,
+} from "../engine/primitives";
 
 export type StudioFragmentMaterialReferenceV1 = Readonly<{
   parameters: readonly number[];
@@ -27,6 +33,7 @@ export type ProjectFragmentMaterialStateV1 = Readonly<{
   assignmentsByScene: Readonly<Record<string, Readonly<Record<string, StudioFragmentMaterialReferenceV1>>>>;
   glslSourcesByShaderId: Readonly<Record<string, StudioFragmentMaterialGlslSource>>;
   namesByShaderId: Readonly<Record<string, string>>;
+  parameterSchemasByShaderId: Readonly<Record<string, StudioFragmentMaterialParameterSchemaV1>>;
   registry: FragmentMaterialRegistryV1;
 }>;
 
@@ -35,10 +42,20 @@ export type StudioFragmentMaterialGlslSource = Readonly<{
   source: string;
 }>;
 
+export type StudioFragmentMaterialF32ParameterV1 = Readonly<{
+  default: number;
+  name: string;
+  range: Readonly<{ max: number; min: number; step: number }>;
+  type: "f32";
+}>;
+
+export type StudioFragmentMaterialParameterSchemaV1 = readonly StudioFragmentMaterialF32ParameterV1[];
+
 export type StudioNamedFragmentMaterialV1 = FragmentMaterialSourceV1 &
   Readonly<{
     glslSource: StudioFragmentMaterialGlslSource | null;
     name: string;
+    parameterSchema: StudioFragmentMaterialParameterSchemaV1;
   }>;
 
 const fragmentMaterialNameSchema = z
@@ -61,11 +78,67 @@ const fragmentMaterialGlslSourceSchema = z
   })
   .strict();
 
+const finiteF32Schema = z.number().finite().min(-MAX_FINITE_F32).max(MAX_FINITE_F32);
+const fragmentMaterialF32ParameterSchema = z
+  .object({
+    default: finiteF32Schema,
+    name: z
+      .string()
+      .min(1)
+      .max(40)
+      .refine((name) => name === name.trim(), "Parameter names must not have surrounding whitespace.")
+      .refine((name) => !/[\u0000-\u001f\u007f]/.test(name), "Parameter names must not contain control characters."),
+    range: z
+      .object({
+        max: finiteF32Schema,
+        min: finiteF32Schema,
+        step: finiteF32Schema.positive(),
+      })
+      .strict(),
+    type: z.literal("f32"),
+  })
+  .strict()
+  .superRefine((parameter, context) => {
+    if (parameter.range.max <= parameter.range.min) {
+      context.addIssue({ code: "custom", message: "Parameter range max must be greater than min.", path: ["range"] });
+    }
+    if (parameter.default < parameter.range.min || parameter.default > parameter.range.max) {
+      context.addIssue({ code: "custom", message: "Parameter default must be inside its range.", path: ["default"] });
+    }
+    if (parameter.range.step > parameter.range.max - parameter.range.min) {
+      context.addIssue({
+        code: "custom",
+        message: "Parameter step must not exceed its range.",
+        path: ["range", "step"],
+      });
+    }
+  });
+
+const fragmentMaterialParameterSchema = z
+  .array(fragmentMaterialF32ParameterSchema)
+  .max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1)
+  .superRefine((parameters, context) => {
+    const names = new Set<string>();
+    for (const [index, parameter] of parameters.entries()) {
+      const folded = parameter.name.toLowerCase();
+      if (names.has(folded)) {
+        context.addIssue({ code: "custom", message: "Parameter names must be unique.", path: [index, "name"] });
+      }
+      names.add(folded);
+    }
+  });
+
+export const STUDIO_WAVE_FRAGMENT_PARAMETER_SCHEMA_V1: StudioFragmentMaterialParameterSchemaV1 = Object.freeze([
+  Object.freeze({ default: 0.35, name: "Speed", range: Object.freeze({ max: 2, min: -2, step: 0.05 }), type: "f32" }),
+  Object.freeze({ default: 8, name: "Bands", range: Object.freeze({ max: 24, min: 1, step: 1 }), type: "f32" }),
+]);
+
 const rawProjectFragmentMaterialStateSchema = z
   .object({
     assignmentsByScene: z.record(sourceIdentityV1Schema, z.record(sourceIdentityV1Schema, fragmentMaterialV1Schema)),
     glslSourcesByShaderId: z.record(opaqueIdV1Schema, fragmentMaterialGlslSourceSchema).optional(),
     namesByShaderId: z.record(opaqueIdV1Schema, fragmentMaterialNameSchema).optional(),
+    parameterSchemasByShaderId: z.record(opaqueIdV1Schema, fragmentMaterialParameterSchema).optional(),
     registry: fragmentMaterialRegistryV1Schema,
   })
   .strict();
@@ -84,6 +157,12 @@ export const projectFragmentMaterialStateV1Schema = rawProjectFragmentMaterialSt
           material.shaderId,
           state.namesByShaderId?.[material.shaderId] ?? legacyMaterialName(material.shaderId),
         ]),
+      ),
+      parameterSchemasByShaderId: Object.fromEntries(
+        state.registry.materials.flatMap((material) => {
+          const parameterSchema = state.parameterSchemasByShaderId?.[material.shaderId] ?? null;
+          return parameterSchema === null ? [] : [[material.shaderId, parameterSchema]];
+        }),
       ),
     }),
   )
@@ -111,6 +190,15 @@ export const projectFragmentMaterialStateV1Schema = rawProjectFragmentMaterialSt
         });
       }
     }
+    for (const shaderId of Object.keys(state.parameterSchemasByShaderId)) {
+      if (!shaderIds.has(shaderId)) {
+        context.addIssue({
+          code: "custom",
+          message: "Parameter schema must belong to an existing project material.",
+          path: ["parameterSchemasByShaderId", shaderId],
+        });
+      }
+    }
     for (const [sceneId, assignments] of Object.entries(state.assignmentsByScene)) {
       for (const [entityId, assignment] of Object.entries(assignments)) {
         if (!availableMaterials.has(`${assignment.shaderId}\0${assignment.revision}`)) {
@@ -120,6 +208,24 @@ export const projectFragmentMaterialStateV1Schema = rawProjectFragmentMaterialSt
             path: ["assignmentsByScene", sceneId, entityId],
           });
         }
+        const parameterSchema = state.parameterSchemasByShaderId[assignment.shaderId];
+        if (parameterSchema && assignment.parameters.length !== parameterSchema.length) {
+          context.addIssue({
+            code: "custom",
+            message: "The material reference must contain one value for every declared parameter.",
+            path: ["assignmentsByScene", sceneId, entityId, "parameters"],
+          });
+        }
+        parameterSchema?.forEach((parameter, index) => {
+          const value = assignment.parameters[index];
+          if (value !== undefined && (value < parameter.range.min || value > parameter.range.max)) {
+            context.addIssue({
+              code: "custom",
+              message: `${parameter.name} must be between ${parameter.range.min} and ${parameter.range.max}.`,
+              path: ["assignmentsByScene", sceneId, entityId, "parameters", index],
+            });
+          }
+        });
       }
     }
   });
@@ -128,6 +234,7 @@ export const EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1: ProjectFragmentMaterialSt
   assignmentsByScene: Object.freeze({}),
   glslSourcesByShaderId: Object.freeze({}),
   namesByShaderId: Object.freeze({}),
+  parameterSchemasByShaderId: Object.freeze({}),
   registry: EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
 });
 
@@ -170,18 +277,27 @@ export function listStudioFragmentMaterialsV1(
     ...material,
     glslSource: state.glslSourcesByShaderId[material.shaderId] ?? null,
     name: state.namesByShaderId[material.shaderId] ?? legacyMaterialName(material.shaderId),
+    parameterSchema: state.parameterSchemasByShaderId[material.shaderId] ?? [],
   }));
 }
 
 export function createStudioFragmentMaterialV1(
   state: ProjectFragmentMaterialStateV1,
-  input: Readonly<{ glslSource?: StudioFragmentMaterialGlslSource; name: string; source?: string }>,
+  input: Readonly<{
+    glslSource?: StudioFragmentMaterialGlslSource;
+    name: string;
+    parameterSchema?: StudioFragmentMaterialParameterSchemaV1 | null;
+    source?: string;
+  }>,
 ): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
   if (state.registry.materials.length >= MAX_PROJECT_FRAGMENT_MATERIALS_V1) {
     throw new Error(`A project accepts at most ${MAX_PROJECT_FRAGMENT_MATERIALS_V1} materials.`);
   }
   const name = checkedMaterialName(state, input.name);
   const shaderId = nextMaterialShaderId(state);
+  const source = input.source ?? STUDIO_WAVE_FRAGMENT_SOURCE_V1;
+  const parameterSchema =
+    input.parameterSchema === undefined ? STUDIO_WAVE_FRAGMENT_PARAMETER_SCHEMA_V1 : input.parameterSchema;
   return {
     shaderId,
     state: parseProjectFragmentMaterialState({
@@ -190,15 +306,34 @@ export function createStudioFragmentMaterialV1(
         ? { ...state.glslSourcesByShaderId, [shaderId]: input.glslSource }
         : state.glslSourcesByShaderId,
       namesByShaderId: { ...state.namesByShaderId, [shaderId]: name },
+      parameterSchemasByShaderId: parameterSchema
+        ? { ...state.parameterSchemasByShaderId, [shaderId]: parameterSchema }
+        : state.parameterSchemasByShaderId,
       registry: {
         ...state.registry,
-        materials: [
-          ...state.registry.materials,
-          { revision: 1, shaderId, source: input.source ?? STUDIO_WAVE_FRAGMENT_SOURCE_V1 },
-        ],
+        materials: [...state.registry.materials, { revision: 1, shaderId, source }],
       },
     }),
   };
+}
+
+function uniquePresetName(state: ProjectFragmentMaterialStateV1, baseName: string) {
+  if (!materialNameTaken(state, baseName)) return baseName;
+  for (let suffix = 2; suffix <= MAX_PROJECT_FRAGMENT_MATERIALS_V1 + 1; suffix += 1) {
+    const candidate = `${baseName} ${suffix}`;
+    if (!materialNameTaken(state, candidate)) return candidate;
+  }
+  throw new Error("No preset material name is available.");
+}
+
+export function createStudioWaveFragmentMaterialPresetV1(
+  state: ProjectFragmentMaterialStateV1,
+): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
+  return createStudioFragmentMaterialV1(state, {
+    name: uniquePresetName(state, "Wave"),
+    parameterSchema: STUDIO_WAVE_FRAGMENT_PARAMETER_SCHEMA_V1,
+    source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+  });
 }
 
 export function renameStudioFragmentMaterialV1(
@@ -230,8 +365,10 @@ export function duplicateStudioFragmentMaterialV1(
 ): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
   const source = state.registry.materials.find((material) => material.shaderId === shaderId);
   if (!source) throw new Error("The material no longer exists.");
+  const parameterSchema = state.parameterSchemasByShaderId[shaderId];
   return createStudioFragmentMaterialV1(state, {
     name: uniqueDuplicateName(state, state.namesByShaderId[shaderId] ?? legacyMaterialName(shaderId)),
+    parameterSchema: parameterSchema ?? null,
     ...(state.glslSourcesByShaderId[shaderId] ? { glslSource: state.glslSourcesByShaderId[shaderId] } : {}),
     source: source.source,
   });
@@ -262,12 +399,15 @@ export function removeStudioFragmentMaterialAssetV1(
   delete namesByShaderId[shaderId];
   const glslSourcesByShaderId = { ...state.glslSourcesByShaderId };
   delete glslSourcesByShaderId[shaderId];
+  const parameterSchemasByShaderId = { ...state.parameterSchemasByShaderId };
+  delete parameterSchemasByShaderId[shaderId];
   return {
     kind: "removed",
     state: parseProjectFragmentMaterialState({
       assignmentsByScene: state.assignmentsByScene,
       glslSourcesByShaderId,
       namesByShaderId,
+      parameterSchemasByShaderId,
       registry: {
         ...state.registry,
         materials: state.registry.materials.filter((material) => material.shaderId !== shaderId),
@@ -305,10 +445,13 @@ export function updateStudioFragmentMaterialSourceV1(
   );
   const glslSourcesByShaderId = { ...state.glslSourcesByShaderId };
   delete glslSourcesByShaderId[input.shaderId];
+  const parameterSchemasByShaderId = { ...state.parameterSchemasByShaderId };
+  delete parameterSchemasByShaderId[input.shaderId];
   return parseProjectFragmentMaterialState({
     assignmentsByScene,
     glslSourcesByShaderId,
     namesByShaderId: state.namesByShaderId,
+    parameterSchemasByShaderId,
     registry: {
       ...state.registry,
       materials: state.registry.materials.map((material) =>
@@ -369,7 +512,9 @@ export function assignStudioFragmentMaterialV1(
   assignmentsByScene[input.sceneId] = {
     ...assignmentsByScene[input.sceneId],
     [input.entityId]: {
-      parameters: [0.35, 8],
+      parameters: state.parameterSchemasByShaderId[activeMaterial.shaderId]?.map((parameter) => parameter.default) ?? [
+        0.35, 8,
+      ],
       revision: activeMaterial.revision,
       shaderId: activeMaterial.shaderId,
     },
@@ -378,7 +523,39 @@ export function assignStudioFragmentMaterialV1(
     assignmentsByScene,
     glslSourcesByShaderId: state.glslSourcesByShaderId,
     namesByShaderId: state.namesByShaderId,
+    parameterSchemasByShaderId: state.parameterSchemasByShaderId,
     registry: state.registry,
+  });
+}
+
+export function updateStudioFragmentMaterialParameterV1(
+  state: ProjectFragmentMaterialStateV1,
+  input: Readonly<{ entityId: string; name: string; sceneId: string; value: number }>,
+): ProjectFragmentMaterialStateV1 {
+  const assignment = state.assignmentsByScene[input.sceneId]?.[input.entityId];
+  if (!assignment) throw new Error("The selected object no longer has a material.");
+  const parameterSchema = state.parameterSchemasByShaderId[assignment.shaderId];
+  if (!parameterSchema) throw new Error("This material does not declare editable parameters.");
+  const parameterIndex = parameterSchema.findIndex((parameter) => parameter.name === input.name);
+  if (parameterIndex < 0) throw new Error("The material parameter no longer exists.");
+  const parameter = parameterSchema[parameterIndex];
+  if (!parameter || !Number.isFinite(input.value) || Math.abs(input.value) > MAX_FINITE_F32) {
+    throw new Error("The material parameter must be a finite f32 value.");
+  }
+  if (input.value < parameter.range.min || input.value > parameter.range.max) {
+    throw new Error(`${parameter.name} must be between ${parameter.range.min} and ${parameter.range.max}.`);
+  }
+  const parameters = [...assignment.parameters];
+  parameters[parameterIndex] = input.value;
+  return parseProjectFragmentMaterialState({
+    ...state,
+    assignmentsByScene: {
+      ...state.assignmentsByScene,
+      [input.sceneId]: {
+        ...state.assignmentsByScene[input.sceneId],
+        [input.entityId]: { ...assignment, parameters },
+      },
+    },
   });
 }
 
@@ -395,6 +572,7 @@ export function removeStudioFragmentMaterialV1(
     assignmentsByScene,
     glslSourcesByShaderId: state.glslSourcesByShaderId,
     namesByShaderId: state.namesByShaderId,
+    parameterSchemasByShaderId: state.parameterSchemasByShaderId,
     registry: state.registry,
   };
 }

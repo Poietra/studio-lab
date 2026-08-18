@@ -65,6 +65,7 @@ import {
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
+  createStudioWaveFragmentMaterialPresetV1,
   duplicateStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   listStudioFragmentMaterialsV1,
@@ -77,6 +78,7 @@ import {
   studioFragmentMaterialAssignmentCountV1,
   studioFragmentMaterialCompileErrorV1,
   updateStudioFragmentMaterialFromGlslV1,
+  updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
 } from "./studio/fragment-material-authoring";
 import { importedWorkingState, projectVerifiedSourceDuration } from "./studio/imported-workspace";
@@ -3718,6 +3720,24 @@ export function App({
     }
   }
 
+  function createWaveFragmentMaterialPreset() {
+    try {
+      const created = createStudioWaveFragmentMaterialPresetV1(activeProjectFragmentMaterials);
+      const next =
+        activeScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable
+          ? assignStudioFragmentMaterialV1(created.state, {
+              entityId: selectedFragmentMaterialEntity.id,
+              sceneId: activeScene.sceneId,
+              shaderId: created.shaderId,
+            })
+          : created.state;
+      return commitActiveProjectFragmentMaterials(next) ? created.shaderId : null;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Wave preset could not be created.");
+      return null;
+    }
+  }
+
   function duplicateFragmentMaterial(shaderId: string) {
     try {
       const duplicated = duplicateStudioFragmentMaterialV1(activeProjectFragmentMaterials, shaderId);
@@ -3810,6 +3830,28 @@ export function App({
       commitActiveProjectFragmentMaterials(next);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The material assignment could not be updated.");
+    }
+  }
+
+  function updateSelectedFragmentMaterialParameter(name: string, value: number) {
+    if (
+      !activeScene ||
+      !selectedFragmentMaterialEntity ||
+      !selectedFragmentMaterialAssignment ||
+      !selectedFragmentMaterialAvailable
+    )
+      return;
+    try {
+      commitActiveProjectFragmentMaterials(
+        updateStudioFragmentMaterialParameterV1(activeProjectFragmentMaterials, {
+          entityId: selectedFragmentMaterialEntity.id,
+          name,
+          sceneId: activeScene.sceneId,
+          value,
+        }),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material parameter could not be updated.");
     }
   }
   const selectedRuntimeTraceEditAuthority = runtimeTraceProjectionAuthorityFor(selectedEntity?.id);
@@ -4374,17 +4416,20 @@ export function App({
               }
               fragmentMaterial={{
                 active: selectedFragmentMaterialAssigned && previewRenderer?.state.phase === "presented",
+                assignedParameters: selectedFragmentMaterialAssignment?.parameters ?? null,
                 assignedShaderId: selectedFragmentMaterialAssignment?.shaderId ?? null,
                 available: selectedFragmentMaterialAvailable,
                 compileError: activeSceneFragmentMaterialCompileError,
                 materials: activeProjectNamedFragmentMaterials,
                 onAssign: assignSelectedFragmentMaterial,
                 onCreate: createFragmentMaterial,
+                onCreatePreset: createWaveFragmentMaterialPreset,
                 onDuplicate: duplicateFragmentMaterial,
                 onImportGlsl: importFragmentMaterialGlsl,
                 onRemoveAsset: removeFragmentMaterialAsset,
                 onRename: renameFragmentMaterial,
                 onUpdateSource: updateFragmentMaterialSource,
+                onUpdateParameter: updateSelectedFragmentMaterialParameter,
               }}
               opacityAvailable={selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null}
               opacityValue={

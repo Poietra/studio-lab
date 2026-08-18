@@ -44,6 +44,7 @@ import {
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
   projectFragmentMaterialsForSceneV1,
+  updateStudioFragmentMaterialParameterV1,
 } from "./fragment-material-authoring";
 import { type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
 import type { CanonicalEditProgram } from "./operations";
@@ -1173,11 +1174,17 @@ describe("compileStudioPreviewSceneV1", () => {
       },
     });
     const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
+    const assignedMaterial = assignStudioFragmentMaterialV1(material.state, {
+      entityId: "source:circle",
+      sceneId: "studio:circle-scene",
+      shaderId: material.shaderId,
+    });
     const sceneFragmentMaterials = projectFragmentMaterialsForSceneV1(
-      assignStudioFragmentMaterialV1(material.state, {
+      updateStudioFragmentMaterialParameterV1(assignedMaterial, {
         entityId: "source:circle",
+        name: "Speed",
         sceneId: "studio:circle-scene",
-        shaderId: material.shaderId,
+        value: 1.15,
       }),
       "studio:circle-scene",
     );
@@ -1199,7 +1206,10 @@ describe("compileStudioPreviewSceneV1", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
     expect(commands[0]?.assignments).toEqual([
-      expect.objectContaining({ entityId: "earlier", material: expect.objectContaining({ revision: 1 }) }),
+      expect.objectContaining({
+        entityId: "earlier",
+        material: expect.objectContaining({ parameters: [1.15, 8], revision: 1 }),
+      }),
     ]);
     expect(result.scene.fragmentMaterialInput).toBe(sceneFragmentMaterials);
     expect(result.scene.fragmentMaterialRegistry).toBe(sceneFragmentMaterials.registry);
@@ -1207,6 +1217,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const assigned = result.scene.bundle.scene.entities.find(({ id }) => id === "earlier");
     const collided = result.scene.bundle.scene.entities.find(({ id }) => id === "source:circle");
     expect(assigned?.appearance.kind === "vector" ? assigned.appearance.fill?.fragmentMaterial : null).toMatchObject({
+      parameters: [1.15, 8],
       revision: 1,
       shaderId: material.shaderId,
     });
