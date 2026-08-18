@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { styleProfileSchema } from "../studio/style-profile";
 
 const motionDeltaSchema = z.object({
   x: z.number().min(-220).max(220),
@@ -412,6 +413,7 @@ export const editSuggestionRequestSchema = z.object({
   }),
   sceneDuration: z.number().positive(),
   selectedObjectIds: z.array(z.string()),
+  styleProfile: styleProfileSchema,
 });
 
 const modelClarificationOptionSchema = z.object({

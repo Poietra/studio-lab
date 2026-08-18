@@ -1,10 +1,11 @@
 import { validateEditProgram } from "../ai/edit-program-validation";
-import type { EditSuggestionOperation } from "../ai/edit-suggestions";
+import type { EditProgramStep, EditSuggestionLeafOperation, EditSuggestionOperation } from "../ai/edit-suggestions";
 import { programRecord } from "./evaluator";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE, magicEditCapabilities } from "./magic-edit-capabilities";
 import type { ProgramRecord, ProjectedEntity, ProposedState } from "./model";
-import type { OperationOrigin } from "./operations";
+import type { OperationOrigin, SceneEditValidationIssue } from "./operations";
 import type { SceneEditValidationResult } from "./program-validation";
+import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
 export type DraftValidationResult =
@@ -63,6 +64,55 @@ function magicObjectEditIssue(
   return null;
 }
 
+type StyleProfileStep = EditProgramStep | EditSuggestionLeafOperation;
+
+function styleProfileSteps(operation: EditSuggestionOperation): readonly StyleProfileStep[] {
+  return operation.kind === "edit-program" ? operation.operations : [operation];
+}
+
+function expectedDurationSeconds(step: StyleProfileStep) {
+  if (step.kind === "delete-objects") return STUDIO_STYLE_PROFILE.durationSeconds.brief;
+  if (step.kind === "create-explanation" || step.kind === "scale-objects") {
+    return STUDIO_STYLE_PROFILE.durationSeconds.standard;
+  }
+  return STUDIO_STYLE_PROFILE.durationSeconds.deliberate;
+}
+
+function secondsLabel(seconds: number) {
+  return Number(seconds.toFixed(3)).toString();
+}
+
+function styleProfileDeviationIssues(operation: EditSuggestionOperation): readonly SceneEditValidationIssue[] {
+  const steps = styleProfileSteps(operation);
+  const nested = operation.kind === "edit-program";
+  const parallelDuration =
+    operation.kind === "edit-program" && operation.execution === "parallel"
+      ? Math.max(...steps.map(expectedDurationSeconds))
+      : null;
+  return steps.flatMap((step, index) => {
+    const issues: SceneEditValidationIssue[] = [];
+    const duration = step.end - step.start;
+    const expectedDuration = parallelDuration ?? expectedDurationSeconds(step);
+    if (Math.abs(duration - expectedDuration) >= 0.001) {
+      issues.push({
+        code: "style-profile-deviation",
+        field: nested ? `operations[${index}].duration` : "duration",
+        message: `${step.kind} lasts ${secondsLabel(duration)}s; ${STUDIO_STYLE_PROFILE.id} recommends ${secondsLabel(expectedDuration)}s.`,
+        severity: "warning",
+      });
+    }
+    if ("easing" in step && step.easing !== STUDIO_STYLE_PROFILE.easing) {
+      issues.push({
+        code: "style-profile-deviation",
+        field: nested ? `operations[${index}].easing` : "easing",
+        message: `${step.kind} uses ${step.easing} easing; ${STUDIO_STYLE_PROFILE.id} recommends ${STUDIO_STYLE_PROFILE.easing}.`,
+        severity: "warning",
+      });
+    }
+    return issues;
+  });
+}
+
 export function validateSuggestionDraft(
   operation: EditSuggestionOperation,
   context: Readonly<{
@@ -111,10 +161,22 @@ export function validateSuggestionDraft(
         "The Canonical EditProgram is invalid.",
     };
   }
+  const program = {
+    ...canonical.program,
+    provenance: {
+      ...canonical.program.provenance,
+      styleProfileRef: styleProfileRef(STUDIO_STYLE_PROFILE),
+    },
+  };
+  const validation: SceneEditValidationResult = {
+    ...canonical,
+    issues: [...canonical.issues, ...styleProfileDeviationIssues(normalizedOperation)],
+    program,
+  };
   return {
     kind: "valid",
     operation: normalizedOperation,
-    record: programRecord(canonical.program, canonical),
+    record: programRecord(program, validation),
   };
 }
 

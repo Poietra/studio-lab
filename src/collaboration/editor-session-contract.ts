@@ -105,6 +105,7 @@ const validationIssueSchema = z
       "parallel-conflict",
       "provisional-id-invalid",
       "schema-invalid",
+      "style-profile-deviation",
       "target-missing",
     ]),
     field: z.string().max(256),

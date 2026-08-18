@@ -5,6 +5,7 @@ import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } f
 import { projectProposedState } from "./evaluator";
 import { createFixtureProposedState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { canonicalOperationSchema, programExecutionCapabilities } from "./operation-registry";
+import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
 import {
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
@@ -132,6 +133,110 @@ describe("Studio draft validation boundary", () => {
         interval: { end: 8, start: 7 },
       },
     ]);
+  });
+
+  it("records the active style profile without warning for a matching suggestion", () => {
+    const operation = {
+      anchor: { kind: "playhead", referenceSeconds: 5 },
+      controlOffset: { x: 0, y: -10 },
+      delta: { x: 40, y: 0 },
+      easing: STUDIO_STYLE_PROFILE.easing,
+      end: 5 + STUDIO_STYLE_PROFILE.durationSeconds.deliberate,
+      kind: "create-motion",
+      start: 5,
+      targetObjectIds: ["equation_1"],
+    } satisfies EditSuggestionOperation;
+
+    const result = validateSuggestionDraft(operation, {
+      capturedPlayhead: 5,
+      hasNextScene: false,
+      origin: "remote-model",
+      proposedState: createFixtureProposedState(),
+      selectedObjectIds: ["equation_1"],
+      transactionId: "matching-style-profile",
+    });
+
+    expect(result.kind).toBe("valid");
+    if (result.kind !== "valid") return;
+    expect(result.record.program.provenance.styleProfileRef).toEqual(styleProfileRef(STUDIO_STYLE_PROFILE));
+    expect(result.record.validation.issues).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "style-profile-deviation" })]),
+    );
+  });
+
+  it("warns about duration and easing deviations without blocking Apply", () => {
+    const operation = {
+      anchor: { kind: "playhead", referenceSeconds: 5 },
+      controlOffset: { x: 0, y: -10 },
+      delta: { x: 40, y: 0 },
+      easing: "linear",
+      end: 6,
+      kind: "create-motion",
+      start: 5,
+      targetObjectIds: ["equation_1"],
+    } satisfies EditSuggestionOperation;
+
+    const result = validateSuggestionDraft(operation, {
+      capturedPlayhead: 5,
+      hasNextScene: false,
+      origin: "remote-model",
+      proposedState: createFixtureProposedState(),
+      selectedObjectIds: ["equation_1"],
+      transactionId: "deviating-style-profile",
+    });
+
+    expect(result.kind).toBe("valid");
+    if (result.kind !== "valid") return;
+    expect(result.record.validation.status).toBe("valid");
+    expect(result.record.validation.issues.filter((issue) => issue.code === "style-profile-deviation")).toEqual([
+      expect.objectContaining({ field: "duration", severity: "warning" }),
+      expect.objectContaining({ field: "easing", severity: "warning" }),
+    ]);
+    expect(programExecutionCapabilities(result.record.program)).toMatchObject({ apply: "supported" });
+  });
+
+  it("uses the longest role duration for a mixed parallel program", () => {
+    const operation = {
+      anchor: { kind: "playhead", referenceSeconds: 5 },
+      execution: "parallel",
+      kind: "edit-program",
+      operations: [
+        {
+          controlOffset: { x: 0, y: -10 },
+          delta: { x: 40, y: 0 },
+          easing: "smooth",
+          end: 6.5,
+          kind: "create-motion",
+          start: 5,
+          targetObjectIds: ["equation_1"],
+        },
+        {
+          animation: "fade-in",
+          end: 6.5,
+          kind: "create-explanation",
+          objectKind: "text",
+          placement: "below",
+          start: 5,
+          targetObjectId: "proof_box",
+          text: "Explanation",
+        },
+      ],
+    } satisfies EditSuggestionOperation;
+
+    const result = validateSuggestionDraft(operation, {
+      capturedPlayhead: 5,
+      hasNextScene: false,
+      origin: "remote-model",
+      proposedState: createFixtureProposedState(),
+      selectedObjectIds: ["equation_1", "proof_box"],
+      transactionId: "parallel-style-profile",
+    });
+
+    expect(result.kind).toBe("valid");
+    if (result.kind !== "valid") return;
+    expect(result.record.validation.issues).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "style-profile-deviation" })]),
+    );
   });
 
   it("does not invent an origin position for an entity missing from the projection", () => {

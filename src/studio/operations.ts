@@ -124,6 +124,7 @@ export type SceneEditValidationIssue = Readonly<{
     | "parallel-conflict"
     | "provisional-id-invalid"
     | "schema-invalid"
+    | "style-profile-deviation"
     | "target-missing";
   field: string;
   message: string;

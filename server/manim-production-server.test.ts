@@ -8,6 +8,7 @@ import {
   encodeClientThumbnailFinalizeBodyV1,
 } from "../src/collaboration/client-thumbnail-http-contract";
 import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
+import { STUDIO_STYLE_PROFILE } from "../src/studio/style-profile";
 import type { EditSuggestionUsageMeterV1 } from "./edit-suggestions/usage-metering";
 import { fastManimSnapshotSceneIdV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
@@ -48,6 +49,7 @@ function editSuggestionBody() {
     scene: { id: "SECRET_SOURCE_PATH.py#Scene", name: "Scene", nextSceneId: null },
     sceneDuration: 1,
     selectedObjectIds: [],
+    styleProfile: STUDIO_STYLE_PROFILE,
   };
 }
 

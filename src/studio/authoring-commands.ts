@@ -15,6 +15,7 @@ import type {
 import { EDIT_OPERATION_VERSION, type OperationOrigin, operationId, provisionalEntityId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import { STUDIO_STYLE_PROFILE, type StyleProfileRef, styleProfileRef } from "./style-profile";
 import { resolveTimeAnchorOnce } from "./time";
 import type { SceneDurationTrimAvailability } from "./timeline-projection";
 
@@ -56,6 +57,7 @@ function authoringProgram(
     capturedPlayhead: number;
     origin: OperationOrigin;
     programEvidence?: readonly string[];
+    styleProfileRef?: StyleProfileRef;
     requestedExecution?: "parallel" | "sequence";
     scene: RuntimeSceneState;
     transactionId: string;
@@ -79,7 +81,10 @@ function authoringProgram(
     intentCount: 1,
     loweringStatus: "supported",
     operations,
-    provenance: provenance(input.origin, ["manual Studio authoring", ...(input.programEvidence ?? [])]),
+    provenance: {
+      ...provenance(input.origin, ["manual Studio authoring", ...(input.programEvidence ?? [])]),
+      ...(input.styleProfileRef ? { styleProfileRef: input.styleProfileRef } : {}),
+    },
     requestedExecution: input.requestedExecution ?? "parallel",
     schedule: {
       edges: [],
@@ -93,7 +98,7 @@ function authoringProgram(
 }
 
 function appearanceEnd(scene: RuntimeSceneState, start: number) {
-  return Math.min(scene.duration, start + 0.4);
+  return Math.min(scene.duration, start + STUDIO_STYLE_PROFILE.durationSeconds.brief);
 }
 
 export function createStudioEntitiesProgram(
@@ -161,6 +166,7 @@ export function createStudioEntitiesProgram(
       capturedPlayhead: input.capturedPlayhead,
       origin,
       scene: input.scene,
+      styleProfileRef: styleProfileRef(STUDIO_STYLE_PROFILE),
       transactionId: input.transactionId,
     }),
   };
@@ -289,6 +295,7 @@ export function createRemoveEntitiesProgram(
     capturedPlayhead: input.capturedPlayhead,
     origin: "studio-default",
     scene: input.scene,
+    styleProfileRef: styleProfileRef(STUDIO_STYLE_PROFILE),
     transactionId: input.transactionId,
   });
 }

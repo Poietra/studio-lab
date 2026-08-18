@@ -8,6 +8,7 @@ import type { ResolvedConfig, ViteDevServer } from "vite";
 import { afterEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { ModelSuggestion } from "../../src/ai/edit-suggestion-schema";
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
+import { STUDIO_STYLE_PROFILE } from "../../src/studio/style-profile";
 import {
   createConsoleJsonSink,
   createRotatingJsonlSink,
@@ -75,6 +76,7 @@ function requestBody(): EditSuggestionRequest {
     scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
     sceneDuration: 12,
     selectedObjectIds: [],
+    styleProfile: STUDIO_STYLE_PROFILE,
   };
 }
 
