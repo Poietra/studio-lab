@@ -187,6 +187,7 @@ pub type StaticRootTransformOrigin = StudioAuthoringOrigin;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StudioAuthoringEntityKind {
+    Arrow,
     Circle,
     Image,
     Line,
@@ -774,6 +775,23 @@ fn studio_white() -> RgbaColorV1 {
 fn studio_shape_appearance() -> SceneAppearanceV1 {
     SceneAppearanceV1::Vector {
         fill: None,
+        opacity: 1.0,
+        stroke: Some(StrokeStyleV1 {
+            cap: StrokeCapV1::Butt,
+            color: studio_white(),
+            join: StrokeJoinV1::Miter,
+            miter_limit: 10.0,
+            width_world: 0.04,
+        }),
+    }
+}
+
+fn studio_arrow_appearance() -> SceneAppearanceV1 {
+    SceneAppearanceV1::Vector {
+        fill: Some(FillStyleV1 {
+            color: studio_white(),
+            rule: FillRuleV1::NonZero,
+        }),
         opacity: 1.0,
         stroke: Some(StrokeStyleV1 {
             cap: StrokeCapV1::Butt,

@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 
 use poietra_scene_ir::{
-    AffineTransformV1, AnimationChannelV1, ContractVersionV1, CubicPathV1, EasingV1, FidelityV1,
-    IntervalV1, KeyframeV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, SceneAppearanceV1,
-    SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1,
+    AffineTransformV1, AnimationChannelV1, ContractVersionV1, CubicPathV1, CubicSegmentV1,
+    CubicSubpathV1, EasingV1, FidelityV1, IntervalV1, KeyframeV1, PointV1, ProvenanceOriginV1,
+    ProvenanceRecordV1, SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1,
+    SceneIrBundleV1, SceneSourceV1,
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,14 +24,16 @@ use super::{
     StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioAuthoringOrigin,
     StudioAuthoringSize, StudioCreationMathTexOutline, StudioPersistentRemoveProjection,
     StudioPersistentRemoveProjectionEntry, TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value,
-    scene_edit_anchor_is_closed, scene_edit_structure_is_closed, studio_authoring_point_is_finite,
-    studio_authoring_shape_size, studio_authoring_size_is_positive, studio_math_tex_appearance,
-    studio_point_to_scene_point, studio_shape_appearance, studio_timeline_semantic_values_match,
-    studio_vector_to_scene_vector, unused_channel_id,
+    scene_edit_anchor_is_closed, scene_edit_structure_is_closed, studio_arrow_appearance,
+    studio_authoring_point_is_finite, studio_authoring_shape_size,
+    studio_authoring_size_is_positive, studio_math_tex_appearance, studio_point_to_scene_point,
+    studio_shape_appearance, studio_timeline_semantic_values_match, studio_vector_to_scene_vector,
+    unused_channel_id,
 };
 
 #[derive(Clone, Debug, PartialEq)]
 enum CreateSceneEntityGeometry {
+    Arrow,
     Circle { radius: f64 },
     Line,
     Rectangle { height: f64, width: f64 },
@@ -772,7 +775,8 @@ fn plan_studio_creation_edits(
             if !created_ids.insert(entity.id.as_str())
                 || !matches!(
                     entity.kind,
-                    StudioAuthoringEntityKind::Circle
+                    StudioAuthoringEntityKind::Arrow
+                        | StudioAuthoringEntityKind::Circle
                         | StudioAuthoringEntityKind::Line
                         | StudioAuthoringEntityKind::MathTex
                         | StudioAuthoringEntityKind::Rectangle
@@ -835,7 +839,7 @@ fn plan_studio_creation_edits(
                 spec.tex_parts.is_none()
                     && studio_authoring_shape_size(spec.kind, spec.dimensions).is_some()
             }
-            StudioAuthoringEntityKind::Line => {
+            StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
                 spec.tex_parts.is_none() && spec.dimensions == StudioAuthoringDimensions::default()
             }
             StudioAuthoringEntityKind::MathTex => spec.tex_parts.as_ref().is_some_and(|parts| {
@@ -1333,10 +1337,54 @@ pub fn project_studio_creation_edits(
     Ok(plan_studio_creation_edits(base_duration, programs)?.projection())
 }
 
+fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
+    CubicSegmentV1 {
+        control1: PointV1 {
+            x: start.x + (end.x - start.x) / 3.0,
+            y: start.y + (end.y - start.y) / 3.0,
+        },
+        control2: PointV1 {
+            x: start.x + (end.x - start.x) * 2.0 / 3.0,
+            y: start.y + (end.y - start.y) * 2.0 / 3.0,
+        },
+        end,
+    }
+}
+
+fn studio_arrow_path() -> CubicPathV1 {
+    let points = [
+        PointV1 { x: -1.0, y: -0.02 },
+        PointV1 { x: 0.65, y: -0.02 },
+        PointV1 { x: 0.65, y: -0.175 },
+        PointV1 { x: 1.0, y: 0.0 },
+        PointV1 { x: 0.65, y: 0.175 },
+        PointV1 { x: 0.65, y: 0.02 },
+        PointV1 { x: -1.0, y: 0.02 },
+    ];
+    let mut segments = Vec::with_capacity(points.len() - 1);
+    for pair in points.windows(2) {
+        segments.push(straight_cubic_segment(&pair[0], pair[1].clone()));
+    }
+    CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: true,
+            segments,
+            start: points[0].clone(),
+        }],
+    }
+}
+
 fn created_geometry_and_appearance(
     geometry: CreateSceneEntityGeometry,
 ) -> (SceneGeometryV1, SceneAppearanceV1, SceneCapabilityV1) {
     match geometry {
+        CreateSceneEntityGeometry::Arrow => (
+            SceneGeometryV1::CubicPath {
+                path: studio_arrow_path(),
+            },
+            studio_arrow_appearance(),
+            SceneCapabilityV1::CubicPathGeometry,
+        ),
         CreateSceneEntityGeometry::Circle { radius } => (
             SceneGeometryV1::Circle {
                 center: PointV1 { x: 0.0, y: 0.0 },
@@ -1662,6 +1710,7 @@ impl EngineSessionV1 {
         let mut persistent_removals = Vec::new();
         for state in &plan.entities {
             let geometry = match state.kind {
+                StudioAuthoringEntityKind::Arrow => CreateSceneEntityGeometry::Arrow,
                 StudioAuthoringEntityKind::Circle => {
                     let size = studio_authoring_shape_size(state.kind, state.initial_dimensions)
                         .ok_or(ApplyStudioCreationEditError::Unsupported)?;
@@ -1708,9 +1757,9 @@ impl EngineSessionV1 {
                             current.height / initial.height,
                         )
                     }
-                    StudioAuthoringEntityKind::Line | StudioAuthoringEntityKind::MathTex => {
-                        (1.0, 1.0)
-                    }
+                    StudioAuthoringEntityKind::Arrow
+                    | StudioAuthoringEntityKind::Line
+                    | StudioAuthoringEntityKind::MathTex => (1.0, 1.0),
                     StudioAuthoringEntityKind::Image | StudioAuthoringEntityKind::Other => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
@@ -2124,6 +2173,83 @@ mod tests {
     }
 
     #[test]
+    fn normalized_creation_projects_applies_and_animates_an_arrow() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let program = &mut command.programs[0];
+        for operation in &mut program.operations {
+            if operation.entity_id.as_deref() == Some("tx:create/entity:circle") {
+                operation.entity_id = Some("tx:create/entity:arrow".to_owned());
+            }
+        }
+        let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
+            panic!("creation fixture must start with CreateEntity");
+        };
+        entity.id = "tx:create/entity:arrow".to_owned();
+        entity.kind = StudioAuthoringEntityKind::Arrow;
+        entity.dimensions = StudioAuthoringDimensions::default();
+        command.programs.push(studio_created_motion_edit_input(vec![
+            "tx:create/entity:arrow".to_owned(),
+        ]));
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(
+            projection.entities[0].kind,
+            StudioAuthoringEntityKind::Arrow
+        );
+        assert_eq!(projection.motions.len(), 1);
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "tx:create/entity:arrow")
+            .unwrap();
+        let SceneGeometryV1::CubicPath { path } = &created.geometry else {
+            panic!("Studio Arrow must materialize one cubic-path entity");
+        };
+        assert_eq!(path.subpaths.len(), 1);
+        assert!(path.subpaths[0].closed);
+        assert_eq!(path.subpaths[0].start, PointV1 { x: -1.0, y: -0.02 });
+        assert_eq!(path.subpaths[0].segments[2].end, PointV1 { x: 1.0, y: 0.0 });
+        assert!(matches!(
+            &created.appearance,
+            SceneAppearanceV1::Vector {
+                fill: Some(_),
+                stroke: Some(_),
+                ..
+            }
+        ));
+        assert!(
+            result
+                .bundle
+                .scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::CubicPathGeometry)
+        );
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::MotionPath { entity_id, .. }
+                            if entity_id == "tx:create/entity:arrow"
+                    )
+                })
+        );
+    }
+
+    #[test]
     #[allow(
         clippy::float_cmp,
         reason = "exact authored intervals and endpoints verify the atomic creation motion"
@@ -2243,7 +2369,7 @@ mod tests {
         clippy::float_cmp,
         reason = "the normalized batch produces exact stored timeline and transform values"
     )]
-    fn normalized_line_creation_composes_motion_then_scale_and_remove() {
+    fn normalized_arrow_creation_composes_motion_then_scale_and_remove() {
         let bundle = static_imported_bundle();
         let entity_id = "tx:create/entity:circle";
         let mut command = studio_creation_command(&bundle);
@@ -2252,7 +2378,7 @@ mod tests {
         else {
             panic!("creation fixture must start with CreateEntity");
         };
-        entity.kind = StudioAuthoringEntityKind::Line;
+        entity.kind = StudioAuthoringEntityKind::Arrow;
         entity.dimensions = StudioAuthoringDimensions::default();
         command.programs[1].operations[0].kind = StudioCreationOperationKind::UniformScale {
             control_present: false,

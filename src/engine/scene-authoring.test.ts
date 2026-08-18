@@ -15,6 +15,7 @@ import {
   createApplyStudioMathTexTransformEditCompiler,
   createApplyStudioMotionEditCompiler,
   createApplyStudioTimelineEditCompiler,
+  createProjectStudioCreationCompiler,
   createProjectStudioMathTexTransformCompiler,
   createProjectStudioMotionCompiler,
   createProjectStudioTimelineCompiler,
@@ -469,6 +470,39 @@ describe("Scene authoring WASM adapter", () => {
     const result = await compile(bundle, creationEditCommand);
     expect(result).toEqual(response);
     expect(calls[1]).toEqual(creationEditCommand);
+  });
+
+  it("accepts Arrow in a Studio creation projection", async () => {
+    const response = {
+      entities: [
+        {
+          createdLifetime: { end: 2, start: 0 },
+          entityId: "entity:arrow",
+          initialDimensions: {},
+          initialScale: 1,
+          kind: "arrow",
+          operationId: "create:arrow",
+          transactionId: "create:arrow",
+        },
+      ],
+      insertions: [],
+      motions: [],
+      mutations: [],
+      projectedDuration: 2,
+      removals: [],
+    } as const;
+    const compile = createProjectStudioCreationCompiler(async () => ({
+      projectStudioCreationEditV1: () => new TextEncoder().encode(JSON.stringify(response)),
+    }));
+
+    await expect(
+      compile({
+        baseDuration: 2,
+        programs: [],
+        schema: "poietra.project-studio-creation-edit",
+        version: 1,
+      }),
+    ).resolves.toEqual(response);
   });
 
   it("returns the MathTex transform projection from the existing adapter", async () => {

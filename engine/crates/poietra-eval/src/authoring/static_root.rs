@@ -214,6 +214,7 @@ fn static_transform_geometry_matches(
     entity: &SceneEntityV1,
 ) -> bool {
     match kind {
+        StaticRootTransformEntityKind::Arrow => false,
         StaticRootTransformEntityKind::Circle => {
             matches!(
                 entity.geometry,

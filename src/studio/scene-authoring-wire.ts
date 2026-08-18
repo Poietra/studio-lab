@@ -184,17 +184,19 @@ function normalizedStudioCreationOperation(
         dimensions: operation.entity.dimensions ?? {},
         id: operation.entity.id,
         kind:
-          type === "Circle"
-            ? "circle"
-            : type === "Line"
-              ? "line"
-              : type === "ImageMobject"
-                ? "image"
-                : type === "MathTex"
-                  ? "math-tex"
-                  : type === "Rectangle"
-                    ? "rectangle"
-                    : "other",
+          type === "Arrow"
+            ? "arrow"
+            : type === "Circle"
+              ? "circle"
+              : type === "Line"
+                ? "line"
+                : type === "ImageMobject"
+                  ? "image"
+                  : type === "MathTex"
+                    ? "math-tex"
+                    : type === "Rectangle"
+                      ? "rectangle"
+                      : "other",
         lifetimeEnd: operation.entity.lifetime.end,
         lifetimeStart: operation.entity.lifetime.start,
         texParts: type === "MathTex" ? studioCreationMathTexParts(operation.entity.content) : null,

@@ -494,7 +494,7 @@ const studioCreationProjectionV1Schema = z
           entityId: z.string().min(1),
           initialDimensions: studioStaticRootDimensionsV1Schema,
           initialScale: finiteNumberSchema.positive(),
-          kind: z.enum(["circle", "line", "math-tex", "rectangle"]),
+          kind: z.enum(["arrow", "circle", "line", "math-tex", "rectangle"]),
           operationId: z.string().min(1),
           texParts: z.array(z.string().min(1)).optional(),
           transactionId: z.string().min(1),
@@ -693,7 +693,7 @@ const studioTimelineProjectionV1Schema = z
   .strict();
 
 type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
-type StudioCreationEntityKindV1 = "circle" | "image" | "line" | "math-tex" | "other" | "rectangle";
+type StudioCreationEntityKindV1 = "arrow" | "circle" | "image" | "line" | "math-tex" | "other" | "rectangle";
 type StudioCreationOperationV1 = Readonly<{
   dependsOn: readonly string[];
   entityId?: string;
