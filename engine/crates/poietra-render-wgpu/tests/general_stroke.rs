@@ -168,6 +168,7 @@ fn manim_square_to_circle_packet(progress: f64) -> poietra_scene_ir::RenderPacke
             green: 71.0 / 255.0,
             red: 209.0 / 255.0,
         },
+        fragment_material: None,
         rule: FillRuleV1::NonZero,
     });
     *opacity = 1.0;
@@ -204,6 +205,7 @@ fn transparent_degenerate_fill_is_skipped_before_visible_stroke_tessellation() {
             green: 0.0,
             red: 1.0,
         },
+        fragment_material: None,
         rule: FillRuleV1::NonZero,
     });
     packet.required_capabilities = vec![
@@ -235,6 +237,7 @@ fn zero_draw_opacity_skips_all_path_paint_phases() {
             green: 0.0,
             red: 1.0,
         },
+        fragment_material: None,
         rule: FillRuleV1::NonZero,
     });
     *opacity = 0.0;

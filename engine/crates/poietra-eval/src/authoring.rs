@@ -799,6 +799,7 @@ fn studio_arrow_appearance() -> SceneAppearanceV1 {
     SceneAppearanceV1::Vector {
         fill: Some(FillStyleV1 {
             color: studio_white(),
+            fragment_material: None,
             rule: FillRuleV1::NonZero,
         }),
         opacity: 1.0,
@@ -816,6 +817,7 @@ fn studio_math_tex_appearance() -> SceneAppearanceV1 {
     SceneAppearanceV1::Vector {
         fill: Some(FillStyleV1 {
             color: studio_white(),
+            fragment_material: None,
             rule: FillRuleV1::NonZero,
         }),
         opacity: 1.0,

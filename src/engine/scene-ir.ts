@@ -348,6 +348,7 @@ export const sceneCapabilityV1Schema = z.enum([
   "affine-transform-animation",
   "camera-animation",
   "cubic-path-geometry",
+  "fragment-material",
   "logical-group",
   "motion-path-animation",
   "opacity-animation",
@@ -356,6 +357,13 @@ export const sceneCapabilityV1Schema = z.enum([
   "png-image",
   "shape-primitives",
   "vector-appearance-animation",
+]);
+
+export const renderCapabilityV1Schema = z.enum([
+  "cubic-path-fill",
+  "cubic-path-stroke",
+  "fragment-material",
+  "png-image",
 ]);
 
 const sceneStateSamplingV1Schema = z

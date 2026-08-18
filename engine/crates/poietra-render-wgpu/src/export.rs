@@ -924,10 +924,10 @@ mod tests {
     use poietra_scene_ir::{
         AffineTransformV1, AnimationChannelV1, AssetManifestReferenceV1, AssetManifestSchemaV1,
         AssetManifestV1, ContractVersionV1, CoordinateSpaceV1, EasingV1, FidelityV1, FillRuleV1,
-        FillStyleV1, IntervalV1, KeyframeV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1,
-        RenderCompositingV1, RgbaColorV1, SceneAppearanceV1, SceneCameraV1, SceneCameraViewV1,
-        SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneIrSchemaV1,
-        SceneSourceV1, SceneStateSamplingV1,
+        FillStyleV1, FragmentMaterialV1, IntervalV1, KeyframeV1, PointV1, ProvenanceOriginV1,
+        ProvenanceRecordV1, RenderCompositingV1, RgbaColorV1, SceneAppearanceV1, SceneCameraV1,
+        SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
+        SceneIrSchemaV1, SceneSourceV1, SceneStateSamplingV1,
     };
 
     use super::*;
@@ -1021,6 +1021,7 @@ mod tests {
                             green: 0.0,
                             red: 1.0,
                         },
+                        fragment_material: None,
                         rule: FillRuleV1::NonZero,
                     }),
                     opacity: 1.0,
@@ -1061,6 +1062,26 @@ mod tests {
             version: ContractVersionV1,
         };
         SceneIrBundleV1 { assets, scene }
+    }
+
+    fn time_gradient_export_bundle() -> SceneIrBundleV1 {
+        let mut bundle = export_scene_bundle(RenderCompositingV1::LinearLight, false, false);
+        let SceneAppearanceV1::Vector {
+            fill: Some(fill), ..
+        } = &mut bundle.scene.entities[0].appearance
+        else {
+            unreachable!()
+        };
+        fill.fragment_material = Some(FragmentMaterialV1 {
+            parameters: vec![1.0, 1.0, 0.0, 0.2],
+            revision: crate::TIME_GRADIENT_SHADER_REVISION_V1,
+            shader_id: crate::TIME_GRADIENT_SHADER_ID_V1.to_owned(),
+        });
+        bundle.scene.required_capabilities = vec![
+            SceneCapabilityV1::FragmentMaterial,
+            SceneCapabilityV1::ShapePrimitives,
+        ];
+        bundle
     }
 
     fn sample_scene_packet(
@@ -1386,6 +1407,33 @@ mod tests {
             "out-of-memory",
             pollster::block_on(out_of_memory_scope.pop()),
         );
+    }
+
+    #[test]
+    #[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+    fn exports_time_gradient_frames_through_the_shared_renderer() {
+        let (device, queue) = export_gpu_context();
+        let frames = collect_frames(
+            &device,
+            &queue,
+            time_gradient_export_bundle(),
+            ExportFrameSequenceParamsV1 {
+                fps: 4,
+                ..EXPORT_PROOF_PARAMS
+            },
+        );
+
+        assert_eq!(frames.len(), 8);
+        assert_eq!(frames[0].1.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(frames[1].1.to_bits(), 0.25_f64.to_bits());
+        let first_center = pixel(&frames[0].2, 160, 80, 45);
+        let later_center = pixel(&frames[1].2, 160, 80, 45);
+        assert_ne!(first_center, later_center);
+        assert!(first_center[0] > later_center[0]);
+        assert_eq!(first_center[1..], [0, 0, 255]);
+        assert_eq!(later_center[1..], [0, 0, 255]);
+        assert_eq!(pixel(&frames[0].2, 160, 0, 0), [0, 0, 0, 255]);
+        assert_eq!(pixel(&frames[1].2, 160, 0, 0), [0, 0, 0, 255]);
     }
 
     #[test]

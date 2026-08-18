@@ -135,6 +135,7 @@ fn parses_and_evaluates_shared_fixture(file_name: &str) {
         .map(|capability| match capability {
             poietra_scene_ir::RenderCapabilityV1::CubicPathFill => "cubic-path-fill",
             poietra_scene_ir::RenderCapabilityV1::CubicPathStroke => "cubic-path-stroke",
+            poietra_scene_ir::RenderCapabilityV1::FragmentMaterial => "fragment-material",
             poietra_scene_ir::RenderCapabilityV1::PngImage => "png-image",
         })
         .collect();

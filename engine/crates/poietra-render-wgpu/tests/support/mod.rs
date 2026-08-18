@@ -8,9 +8,9 @@ use poietra_render_wgpu::{DecodedPngAssetV1, decode_verified_png_v1};
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetAlphaModeV1, AssetColorSpaceV1, AssetManifestV1,
     AssetReferenceV1, CubicPathV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1,
-    ImageLocalRectV1, ImageSamplerV1, PngAssetKindV1, PngAssetV1, PngMediaTypeV1, PointV1,
-    RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrV1,
-    StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
+    FragmentMaterialV1, ImageLocalRectV1, ImageSamplerV1, PngAssetKindV1, PngAssetV1,
+    PngMediaTypeV1, PointV1, RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderPacketV1,
+    RgbaColorV1, SceneIrV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -221,6 +221,7 @@ pub fn solid_rectangle_draw(
         entity_id: entity_id.to_owned(),
         fill: Some(FillStyleV1 {
             color,
+            fragment_material: None,
             rule: FillRuleV1::NonZero,
         }),
         opacity,
@@ -230,6 +231,107 @@ pub fn solid_rectangle_draw(
         stroke: None,
         transform: AffineTransformV1::identity(),
     }
+}
+
+#[allow(dead_code)]
+pub fn time_gradient_paint_order_packet(sample_time: f64) -> RenderPacketV1 {
+    let mut packet = empty_render_packet(
+        ViewportV1 {
+            height_px: 16,
+            width_px: 32,
+        },
+        RenderCameraV1 {
+            bottom: -1.0,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            kind: poietra_scene_ir::RenderCameraKindV1::Orthographic2d,
+            left: -2.0,
+            right: 2.0,
+            top: 1.0,
+        },
+    );
+    let background_rect = ImageLocalRectV1 {
+        bottom: -1.0,
+        left: -2.0,
+        right: 2.0,
+        top: 1.0,
+    };
+    let middle = ImageLocalRectV1 {
+        bottom: -0.75,
+        left: -1.5,
+        right: 1.5,
+        top: 0.75,
+    };
+    let foreground = ImageLocalRectV1 {
+        bottom: -0.35,
+        left: -0.5,
+        right: 0.5,
+        top: 0.35,
+    };
+    let mut fragment_draw = solid_rectangle_draw(
+        "draw:time-gradient",
+        "entity:time-gradient",
+        &middle,
+        RgbaColorV1 {
+            alpha: 1.0,
+            blue: 1.0,
+            green: 1.0,
+            red: 1.0,
+        },
+        1.0,
+        1,
+    );
+    let RenderDrawV1::Path {
+        fill: Some(fill_style),
+        ..
+    } = &mut fragment_draw
+    else {
+        unreachable!()
+    };
+    fill_style.fragment_material = Some(FragmentMaterialV1 {
+        parameters: vec![1.0, 1.0, 0.0, 0.2],
+        revision: 1,
+        shader_id: "time-gradient".to_owned(),
+    });
+    packet.draws = vec![
+        solid_rectangle_draw(
+            "draw:background",
+            "entity:background",
+            &background_rect,
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 1.0,
+            },
+            1.0,
+            0,
+        ),
+        fragment_draw,
+        solid_rectangle_draw(
+            "draw:foreground",
+            "entity:foreground",
+            &foreground,
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 1.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            1.0,
+            2,
+        ),
+    ];
+    packet.required_capabilities = vec![
+        RenderCapabilityV1::CubicPathFill,
+        RenderCapabilityV1::FragmentMaterial,
+    ];
+    packet.sample_time = sample_time;
+    packet
 }
 
 #[allow(dead_code)]

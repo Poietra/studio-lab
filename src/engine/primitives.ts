@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const POIETRA_ENGINE_CONTRACT_VERSION = 1 as const;
 export const MAX_COORDINATE = 1_000_000_000;
+export const MAX_FINITE_F32 = 3.402_823_466_385_288_6e38;
+export const MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 = 8;
 export const MAX_TOTAL_PATH_SEGMENTS = 100_000;
 
 export const finiteNumberV1Schema = z.number().finite();
@@ -106,9 +108,20 @@ export const assetManifestReferenceV1Schema = z
   })
   .strict();
 
+export const fragmentMaterialV1Schema = z
+  .object({
+    parameters: z
+      .array(finiteNumberV1Schema.min(-MAX_FINITE_F32).max(MAX_FINITE_F32))
+      .max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1),
+    revision: z.number().int().positive().max(0xffff_ffff),
+    shaderId: opaqueIdV1Schema,
+  })
+  .strict();
+
 export const fillStyleV1Schema = z
   .object({
     color: rgbaColorV1Schema,
+    fragmentMaterial: fragmentMaterialV1Schema.optional(),
     rule: z.enum(["evenodd", "nonzero"]),
   })
   .strict();
