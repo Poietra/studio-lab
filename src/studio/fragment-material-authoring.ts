@@ -1,3 +1,4 @@
+import { z } from "zod";
 import {
   EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
   type FragmentMaterialRegistryV1,
@@ -6,6 +7,7 @@ import {
   PROJECT_FRAGMENT_SHADER_REVISION_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "../engine/fragment-material-registry";
+import { fragmentMaterialV1Schema, sourceIdentityV1Schema } from "../engine/primitives";
 
 export type StudioFragmentMaterialReferenceV1 = Readonly<{
   parameters: readonly number[];
@@ -22,6 +24,29 @@ export type ProjectFragmentMaterialStateV1 = Readonly<{
   assignmentsByScene: Readonly<Record<string, Readonly<Record<string, StudioFragmentMaterialReferenceV1>>>>;
   registry: FragmentMaterialRegistryV1;
 }>;
+
+export const projectFragmentMaterialStateV1Schema = z
+  .object({
+    assignmentsByScene: z.record(sourceIdentityV1Schema, z.record(sourceIdentityV1Schema, fragmentMaterialV1Schema)),
+    registry: fragmentMaterialRegistryV1Schema,
+  })
+  .strict()
+  .superRefine((state, context) => {
+    const availableMaterials = new Set(
+      state.registry.materials.map((material) => `${material.shaderId}\0${material.revision}`),
+    );
+    for (const [sceneId, assignments] of Object.entries(state.assignmentsByScene)) {
+      for (const [entityId, assignment] of Object.entries(assignments)) {
+        if (!availableMaterials.has(`${assignment.shaderId}\0${assignment.revision}`)) {
+          context.addIssue({
+            code: "custom",
+            message: "The fragment material assignment has no matching project source revision.",
+            path: ["assignmentsByScene", sceneId, entityId],
+          });
+        }
+      }
+    }
+  });
 
 export const EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1: ProjectFragmentMaterialStateV1 = Object.freeze({
   assignmentsByScene: Object.freeze({}),

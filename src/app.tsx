@@ -343,6 +343,7 @@ export function App({
     finishSuggestionRequest,
     installAcceptedState,
     isSuggestionRequestCurrent,
+    loadProjectFragmentMaterials,
     markSessionCloudManaged,
     openSession,
     pruneSessions,
@@ -350,6 +351,7 @@ export function App({
     redoProgram: redoEditorProgram,
     resetPrograms,
     saveSession,
+    saveProjectFragmentMaterials,
     setCurrentTime,
     setDurationError,
     setDraftError,
@@ -483,11 +485,23 @@ export function App({
     });
     setProjectFragmentMaterials((current) => {
       const next = Object.fromEntries(
-        Object.entries(current).filter(([projectId]) => registeredProjectIds.has(projectId)),
+        projects.flatMap((project) => {
+          const retained = current[project.id];
+          if (retained) return [[project.id, retained] as const];
+          const restored = loadProjectFragmentMaterials(project.id);
+          return restored &&
+            (restored.registry.materials.length > 0 || Object.keys(restored.assignmentsByScene).length > 0)
+            ? [[project.id, restored] as const]
+            : [];
+        }),
       );
-      return Object.keys(next).length === Object.keys(current).length ? current : next;
+      const entries = Object.entries(next);
+      return entries.length === Object.keys(current).length &&
+        entries.every(([projectId, state]) => current[projectId] === state)
+        ? current
+        : next;
     });
-  }, [projects, workspaceStatus]);
+  }, [loadProjectFragmentMaterials, projects, workspaceStatus]);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -3517,6 +3531,10 @@ export function App({
         sceneId: activeScene.sceneId,
         source,
       });
+      if (!saveProjectFragmentMaterials(activeProjectId, next)) {
+        setDraftError("The project fragment material could not be saved.");
+        return;
+      }
       setProjectFragmentMaterials((current) => ({ ...current, [activeProjectId]: next }));
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The fragment material source is invalid.");
@@ -3529,6 +3547,10 @@ export function App({
       entityId: selectedEntity.id,
       sceneId: activeScene.sceneId,
     });
+    if (!saveProjectFragmentMaterials(activeProjectId, next)) {
+      setDraftError("The project fragment material could not be saved.");
+      return;
+    }
     setProjectFragmentMaterials((current) => ({ ...current, [activeProjectId]: next }));
   }
   const selectedRuntimeTraceEditAuthority = runtimeTraceProjectionAuthorityFor(selectedEntity?.id);
@@ -3574,6 +3596,12 @@ export function App({
   async function unregisterWorkspaceAndClearSession(workspaceId: string) {
     if (!(await unregisterWorkspace(workspaceId))) return false;
     clearProjectSessions(workspaceId);
+    setProjectFragmentMaterials((current) => {
+      if (!(workspaceId in current)) return current;
+      const next = { ...current };
+      delete next[workspaceId];
+      return next;
+    });
     setRenderSessions((current) => {
       if (!(workspaceId in current)) return current;
       const next = { ...current };

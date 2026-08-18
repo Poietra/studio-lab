@@ -6,6 +6,11 @@ import {
   MAX_EDITOR_SESSION_SNAPSHOT_BYTES_V1,
   parseEditorSessionSnapshotV1,
 } from "../collaboration/editor-session-contract";
+import {
+  EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
+  type ProjectFragmentMaterialStateV1,
+  projectFragmentMaterialStateV1Schema,
+} from "./fragment-material-authoring";
 
 export type {
   AcceptedProgramRecord,
@@ -111,6 +116,7 @@ const identitySchema = z
     sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict();
+const projectIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 const storedIdentitySchema = z
   .object({
     projectId: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
@@ -125,9 +131,16 @@ const storedEntrySchema = z
     snapshot: editorSessionSnapshotSchemaV1,
   })
   .strict();
+const storedProjectFragmentMaterialSchema = z
+  .object({
+    sourceLanguage: z.literal("wgsl"),
+    state: projectFragmentMaterialStateV1Schema,
+  })
+  .strict();
 const storedEnvelopeSchema = z
   .object({
     entries: z.array(storedEntrySchema).max(100),
+    fragmentMaterials: z.record(projectIdSchema, storedProjectFragmentMaterialSchema).optional(),
     version: z.literal(EDITOR_SESSION_STORAGE_VERSION),
   })
   .strict();
@@ -242,6 +255,7 @@ function migrateStoredEnvelope(value: unknown) {
         ...entry,
         snapshot: parseEditorSessionSnapshotV1(entry.snapshot),
       })),
+      fragmentMaterials: parsed.data.fragmentMaterials ?? {},
     };
   } catch {
     return null;
@@ -252,6 +266,7 @@ export class EditorSessionStore {
   private readonly cloudManagedSessions = new Set<string>();
   private readonly memorySessions = new Map<string, EditorSessionSnapshot>();
   private readonly persistedSessions = new Map<string, StoredEntry>();
+  private readonly projectFragmentMaterials = new Map<string, ProjectFragmentMaterialStateV1>();
 
   constructor(
     private readonly adapter: EditorSessionStorageAdapter | null = null,
@@ -269,7 +284,7 @@ export class EditorSessionStore {
   }
 
   clearProject(projectId: string) {
-    let changed = false;
+    let changed = this.projectFragmentMaterials.delete(projectId);
     for (const [key, entry] of this.persistedSessions) {
       if (entry.identity.projectId === projectId) {
         this.persistedSessions.delete(key);
@@ -307,6 +322,12 @@ export class EditorSessionStore {
 
   pruneProjects(projectIds: ReadonlySet<string>) {
     let changed = false;
+    for (const projectId of this.projectFragmentMaterials.keys()) {
+      if (!projectIds.has(projectId)) {
+        this.projectFragmentMaterials.delete(projectId);
+        changed = true;
+      }
+    }
     for (const [key, entry] of this.persistedSessions) {
       if (!projectIds.has(entry.identity.projectId)) {
         this.persistedSessions.delete(key);
@@ -360,6 +381,36 @@ export class EditorSessionStore {
     return { kind: "empty" };
   }
 
+  restoreProjectFragmentMaterials(projectId: string): ProjectFragmentMaterialStateV1 {
+    if (!projectIdSchema.safeParse(projectId).success) return EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
+    return this.projectFragmentMaterials.get(projectId) ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
+  }
+
+  saveProjectFragmentMaterials(projectId: string, state: ProjectFragmentMaterialStateV1) {
+    const parsedProjectId = projectIdSchema.safeParse(projectId);
+    const parsedState = projectFragmentMaterialStateV1Schema.safeParse(state);
+    if (!parsedProjectId.success || !parsedState.success) return false;
+
+    const empty =
+      parsedState.data.registry.materials.length === 0 && Object.keys(parsedState.data.assignmentsByScene).length === 0;
+    const previous = this.projectFragmentMaterials.get(parsedProjectId.data);
+    if (empty) this.projectFragmentMaterials.delete(parsedProjectId.data);
+    else this.projectFragmentMaterials.set(parsedProjectId.data, parsedState.data);
+
+    const materialEnvelope = JSON.stringify({
+      entries: [],
+      fragmentMaterials: this.serializedProjectFragmentMaterials(),
+      version: EDITOR_SESSION_STORAGE_VERSION,
+    });
+    if (serializedBytes(materialEnvelope) > MAX_EDITOR_SESSION_STORAGE_BYTES) {
+      if (previous) this.projectFragmentMaterials.set(parsedProjectId.data, previous);
+      else this.projectFragmentMaterials.delete(parsedProjectId.data);
+      return false;
+    }
+    this.flush();
+    return true;
+  }
+
   save(identity: EditorSessionIdentity, snapshot: EditorSessionSnapshot) {
     const parsedIdentity = identitySchema.safeParse(identity);
     const parsedSnapshot = parseLocalEditorSessionSnapshot(snapshot);
@@ -389,7 +440,8 @@ export class EditorSessionStore {
       .sort((left, right) => right.savedAt - left.savedAt)
       .filter((entry) => serializedBytes(JSON.stringify(entry)) <= MAX_STORED_EDITOR_SESSION_BYTES)
       .slice(0, MAX_STORED_EDITOR_SESSIONS);
-    let envelope = { entries: retained, version: EDITOR_SESSION_STORAGE_VERSION } as const;
+    const fragmentMaterials = this.serializedProjectFragmentMaterials();
+    let envelope = { entries: retained, fragmentMaterials, version: EDITOR_SESSION_STORAGE_VERSION } as const;
     while (
       envelope.entries.length > 0 &&
       serializedBytes(JSON.stringify(envelope)) > MAX_EDITOR_SESSION_STORAGE_BYTES
@@ -402,7 +454,7 @@ export class EditorSessionStore {
     }
     if (!this.adapter) return;
     try {
-      if (envelope.entries.length === 0) this.adapter.clear();
+      if (envelope.entries.length === 0 && Object.keys(envelope.fragmentMaterials).length === 0) this.adapter.clear();
       else this.adapter.write(JSON.stringify(envelope));
     } catch {
       // Storage can be unavailable or over quota. The in-memory session remains usable.
@@ -439,7 +491,19 @@ export class EditorSessionStore {
       const previous = this.persistedSessions.get(key);
       if (!previous || previous.savedAt <= entry.savedAt) this.persistedSessions.set(key, entry);
     }
+    for (const [projectId, material] of Object.entries(envelope.fragmentMaterials)) {
+      this.projectFragmentMaterials.set(projectId, material.state);
+    }
     this.flush();
+  }
+
+  private serializedProjectFragmentMaterials() {
+    return Object.fromEntries(
+      [...this.projectFragmentMaterials.entries()].map(([projectId, state]) => [
+        projectId,
+        { sourceLanguage: "wgsl" as const, state },
+      ]),
+    );
   }
 
   private clearUnreadableStorage() {
