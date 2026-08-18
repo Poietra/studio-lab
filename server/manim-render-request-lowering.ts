@@ -17,7 +17,7 @@ import {
   isExactStudioMotionProgramBatch,
   studioCreationMathTexParts,
 } from "../src/studio/scene-authoring-wire";
-import type { SceneEdit } from "../src/studio/scene-edit-contract";
+import { isCanonicalRgbHex, type SceneEdit } from "../src/studio/scene-edit-contract";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "../src/studio/timeline-projection";
 import { HttpError } from "./http/json";
 import { importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
@@ -47,10 +47,12 @@ export type ManimRenderRequestLoweringResult = Readonly<{
 
 function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
   const operations = programs.flatMap((program) => program.operations);
-  const createdEntityIds = new Set(
-    operations.flatMap((operation) => (operation.kind === "CreateEntity" ? [operation.entity.id] : [])),
+  const createdEntities = new Map(
+    operations.flatMap((operation) =>
+      operation.kind === "CreateEntity" ? [[operation.entity.id, operation.entity.type] as const] : [],
+    ),
   );
-  if (createdEntityIds.size === 0) return false;
+  if (createdEntities.size === 0) return false;
   return operations.every((operation) => {
     if (operation.kind === "CreateEntity") {
       const { dimensions, type } = operation.entity;
@@ -80,7 +82,11 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
       return type === "MathTex" && studioCreationMathTexParts(operation.entity.content) !== null;
     }
     if (operation.kind === "CreateMotion") return true;
-    if (!("entityId" in operation) || !createdEntityIds.has(operation.entityId)) return false;
+    if (!("entityId" in operation) || !createdEntities.has(operation.entityId)) return false;
+    if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
+      const type = createdEntities.get(operation.entityId);
+      return (type === "Circle" || type === "Rectangle") && isCanonicalRgbHex(operation.value);
+    }
     return (
       operation.kind === "ResizeEntity" ||
       (operation.kind === "SetProperty" && operation.key === "position") ||

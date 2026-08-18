@@ -110,18 +110,24 @@ function renderSelectedInspector(
   rotationAvailable = false,
   opacityAvailable = false,
   opacityValue: number | null = null,
+  colorAvailable = false,
+  fillColorValue: string | null = null,
+  strokeColorValue: string | null = null,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
       appliedProgramCount={0}
+      colorAvailable={colorAvailable}
       draftApplyPending={false}
       draftError={draftError}
       draftOperation={null}
       draftEdit={draftEdit}
+      fillColorValue={fillColorValue}
       inspectorReturnFocus={null}
       onApplyDraft={vi.fn()}
       onDiscardDraft={vi.fn()}
       onDraftOperationChange={vi.fn()}
+      onEntityColorChange={vi.fn()}
       onEntityEdit={vi.fn()}
       onEntityOpacityChange={vi.fn()}
       onEntityRotate={vi.fn()}
@@ -140,6 +146,7 @@ function renderSelectedInspector(
       rotationAvailable={rotationAvailable}
       selectedEntity={entity}
       sourceExport={null}
+      strokeColorValue={strokeColorValue}
       suggestion={null}
       workspace={null}
     />,
@@ -791,6 +798,20 @@ describe("StudioCanvas retained preview layer", () => {
     expect(enabled.match(control)?.[0]).not.toContain('disabled=""');
     expect(enabled.match(control)?.[0]).toContain('value="0.35"');
     expect(mixed.match(control)?.[0]).toContain('placeholder="Mixed"');
+  });
+
+  it("enables solid fill and stroke colors only for an authorized Studio-created shape", () => {
+    const disabled = renderSelectedInspector(CIRCLE_ENTITY, null);
+    const enabled = renderSelectedInspector(CIRCLE_ENTITY, null, null, false, false, null, true, "#123456", "#abcdef");
+    const fill = /<input aria-label="Fill color circle_1"[^>]*>/u;
+    const stroke = /<input aria-label="Stroke color circle_1"[^>]*>/u;
+
+    expect(disabled.match(fill)?.[0]).toContain('disabled=""');
+    expect(disabled.match(stroke)?.[0]).toContain('disabled=""');
+    expect(enabled.match(fill)?.[0]).not.toContain('disabled=""');
+    expect(enabled.match(fill)?.[0]).toContain('value="#123456"');
+    expect(enabled.match(stroke)?.[0]).not.toContain('disabled=""');
+    expect(enabled.match(stroke)?.[0]).toContain('value="#abcdef"');
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

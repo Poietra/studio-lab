@@ -9,12 +9,14 @@ export type PropertyChannelKey =
   | "camera"
   | "content"
   | "dimensions"
+  | "fillColor"
   | "identity"
   | "ordering"
   | "position"
   | "presence"
   | "rotation"
-  | "scale";
+  | "scale"
+  | "strokeColor";
 
 export type ChannelAccess = Readonly<{
   channel: PropertyChannelKey;

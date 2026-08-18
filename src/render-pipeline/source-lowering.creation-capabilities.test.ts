@@ -127,6 +127,84 @@ describe("Canonical EditProgram source lowering", () => {
     expect(lowered.insertedCode).toContain("poietra_created_appearance_1.rotate(0.5236)");
   });
 
+  it("lowers Studio-created shape colors in operation order with the current opacity", () => {
+    const entityId = "tx:created-colors/entity:circle";
+    const create = canonicalProgram(
+      [
+        {
+          ...operationBase("create-color-circle", 7),
+          entity: {
+            dimensions: { radius: 1 },
+            id: entityId,
+            lifetime: { end: null, start: 7 },
+            type: "Circle",
+          },
+          kind: "CreateEntity",
+        },
+      ],
+      "created-colors",
+    );
+    const propertyProgram = (
+      transactionId: string,
+      key: "appearance" | "fillColor" | "strokeColor",
+      value: number | string,
+    ) =>
+      canonicalProgram(
+        [
+          {
+            ...operationBase(`${transactionId}/operation`, 7),
+            entityId,
+            key,
+            kind: "SetProperty",
+            value,
+          },
+        ],
+        transactionId,
+      );
+    const opacity = propertyProgram("created-opacity", "appearance", 0.4);
+    const fill = propertyProgram("created-fill", "fillColor", "#12abef");
+    const stroke = propertyProgram("created-stroke", "strokeColor", "#fedcba");
+
+    const lowered = lowerCanonicalProgramBatchSource(
+      source,
+      request(create, []),
+      [create, opacity, fill, stroke].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    expect(lowered.insertedCode).toContain('poietra_created_colors_1.set_fill("#12abef", opacity=0.4)');
+    expect(lowered.insertedCode).toContain('poietra_created_colors_1.set_stroke("#fedcba")');
+    expect(lowered.insertedCode.indexOf(".set_opacity(0.4)")).toBeLessThan(lowered.insertedCode.indexOf(".set_fill("));
+
+    const fillFirst = lowerCanonicalProgramBatchSource(
+      source,
+      request(create, []),
+      [create, fill, opacity].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    expect(fillFirst.insertedCode).toContain('poietra_created_colors_1.set_fill("#12abef", opacity=1)');
+    expect(fillFirst.insertedCode.indexOf(".set_fill(")).toBeLessThan(
+      fillFirst.insertedCode.indexOf(".set_opacity(0.4)"),
+    );
+  });
+
+  it("rejects shape colors for imported entities", () => {
+    const importedFill = canonicalProgram([
+      {
+        ...operationBase("imported-fill", 7),
+        entityId: "equation_1",
+        key: "fillColor",
+        kind: "SetProperty",
+        value: "#12abef",
+      },
+    ]);
+
+    expect(() =>
+      lowerCanonicalProgramSource(source, request(importedFill), { height: 8, width: 14.222 }, null),
+    ).toThrow(/only Studio-created Circle and Rectangle/i);
+  });
+
   it("lowers a Scene duration extension to an explicit wait", () => {
     const wait: CanonicalEditOperation = {
       ...operationBase("extend-duration", 7, 10),

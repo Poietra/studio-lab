@@ -126,7 +126,9 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const appearance = channelAt(proposedState.evaluatedScene, entity.id, "appearance", time);
       const content = channelAt(proposedState.evaluatedScene, entity.id, "content", time);
       const dimensions = channelAt(proposedState.evaluatedScene, entity.id, "dimensions", time);
+      const fillColor = channelAt(proposedState.evaluatedScene, entity.id, "fillColor", time);
       const scale = channelAt(proposedState.evaluatedScene, entity.id, "scale", time);
+      const strokeColor = channelAt(proposedState.evaluatedScene, entity.id, "strokeColor", time);
       const positionValue = isPointValue(position) ? position : undefined;
       const dimensionsValue = isEntityDimensionsValue(dimensions) ? dimensions : undefined;
       const scaleValue = typeof scale === "number" ? scale : undefined;
@@ -154,6 +156,13 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
               }),
         style: { kind: "known" as const, value: {} },
       };
+      const baseStyle = entity.geometry?.style.kind === "known" ? entity.geometry.style.value : {};
+      const sampledStyle = {
+        ...baseStyle,
+        ...(typeof fillColor === "string" ? { fillColor } : {}),
+        ...(typeof strokeColor === "string" ? { strokeColor } : {}),
+      };
+      const hasSampledStyle = typeof fillColor === "string" || typeof strokeColor === "string";
       return {
         content: content === UNKNOWN_EDITABLE_CONTENT ? undefined : isContent(content) ? content : entity.content,
         geometry: {
@@ -161,6 +170,9 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
           dimensions: dimensionsKnowledge ?? entity.geometry?.dimensions ?? fallbackGeometry.dimensions,
           position: positionKnowledge ?? entity.geometry?.position ?? fallbackGeometry.position,
           scale: scaleKnowledge ?? entity.geometry?.scale ?? fallbackGeometry.scale,
+          style: hasSampledStyle
+            ? { kind: "known", value: sampledStyle }
+            : (entity.geometry?.style ?? fallbackGeometry.style),
         },
         id: entity.id,
         opacity: typeof appearance === "number" ? appearance : 1,

@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { type Download, expect, type Page, test } from "@playwright/test";
+import { type Download, expect, type Locator, type Page, test } from "@playwright/test";
 
 import { verifyExportMp4V1 } from "../src/engine/export-mp4-verification";
 
@@ -164,6 +164,48 @@ async function captureHostEvidence(
     if (!capture) return null;
     return capture(samples);
   }, points)) as HostFrameEvidence | null;
+}
+
+async function captureRectanglePaintEvidence(
+  page: Page,
+  rectangle: Locator,
+  expectedRevision: string,
+  expectedSampleTime: number,
+) {
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const [canvasBox, rectangleBox, packetId] = await Promise.all([
+    canvasRoot.boundingBox(),
+    rectangle.boundingBox(),
+    canvasRoot.getAttribute("data-preview-packet-id"),
+  ]);
+  if (!canvasBox || !rectangleBox || !packetId) {
+    throw new Error("The presented Rectangle or its correlated canvas evidence is unavailable.");
+  }
+
+  const centerX = rectangleBox.x + rectangleBox.width / 2;
+  const centerY = rectangleBox.y + rectangleBox.height / 2;
+  const fraction = (x: number, y: number) => ({
+    fractionX: (x - canvasBox.x) / canvasBox.width,
+    fractionY: (y - canvasBox.y) / canvasBox.height,
+  });
+  const edgeOffsets = [-3, -2, -1, 0, 1, 2, 3];
+  const evidence = await captureHostEvidence(page, [
+    fraction(centerX, centerY),
+    ...edgeOffsets.map((offset) => fraction(centerX, rectangleBox.y + offset)),
+    ...edgeOffsets.map((offset) => fraction(rectangleBox.x + offset, centerY)),
+  ]);
+  if (!evidence) throw new Error("The preview frame evidence channel is not exposed.");
+  expect(evidence.packetId).toBe(packetId);
+  expect(evidence.revision).toBe(expectedRevision);
+  expect(evidence.sampleTime).toBe(expectedSampleTime);
+  return {
+    center: evidence.samples[0],
+    edges: evidence.samples.slice(1),
+  };
+}
+
+function isRedDominant([red, green, blue]: RgbaPixel) {
+  return red > 48 && red > green * 1.8 && red > blue * 1.8;
 }
 
 async function expectMathTexCanvasInk(page: Page, revision: string, sampleTime: number, label: string) {
@@ -395,6 +437,97 @@ test("applies created Rectangle opacity and rotation through the canonical WebGP
     .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))
     .toBeGreaterThan(initialWidth);
   await expect(canvasRoot).toHaveAttribute("data-preview-revision", rotationAppliedFrame.revision);
+  expect(localExportPreflights).toBe(3);
+});
+
+test("applies created Rectangle fill and stroke colors through the canonical WebGPU preview", async ({ page }) => {
+  let localExportPreflights = 0;
+  await page.route("**/api/manim/projects/preview-harness/export", async (route) => {
+    localExportPreflights += 1;
+    await route.fulfill({
+      body: "from manim import *\n",
+      headers: {
+        "content-disposition": 'attachment; filename="studio_mathtex.poietra.py"',
+        "content-type": "text/x-python; charset=utf-8",
+        "x-poietra-project-id": "preview-harness",
+      },
+      status: 200,
+    });
+  });
+  await page.goto(`/${MATHTEX_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  await page.getByLabel("Active imported Scene").selectOption({
+    label: "studio_mathtex.py · StudioMathTexPreview",
+  });
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expectPresented(page);
+  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
+
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const playhead = page.getByRole("slider", { name: "Scene playhead" });
+  await playhead.fill("0");
+  const pristineFrame = await retainedFrameIdentity(page);
+  await page.getByRole("button", { name: /Insert rectangle/ }).click();
+  await canvasRoot.click({ position: { x: 400, y: 250 } });
+  const creationDraftFrame = await waitForNewPresentedFrame(page, pristineFrame);
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  const creationAppliedFrame = await waitForNewPresentedRevision(page, creationDraftFrame.revision);
+
+  await playhead.fill("0.4");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.4");
+  const rectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
+  await rectangle.click();
+  await expect(rectangle).toHaveAttribute("aria-pressed", "true");
+  const initialPaint = await captureRectanglePaintEvidence(page, rectangle, creationAppliedFrame.revision, 0.4);
+  expectPixelNear(initialPaint.center, [0, 0, 0, 255]);
+  expect(initialPaint.edges.some(isRedDominant)).toBe(false);
+
+  const fillColor = page.getByLabel("Fill color Rectangle");
+  await expect(fillColor).toBeEnabled();
+  await fillColor.fill("#3b82f6");
+  await fillColor.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  const fillDraftFrame = await waitForNewPresentedRevision(page, creationAppliedFrame.revision);
+  const fillDraftPaint = await captureRectanglePaintEvidence(page, rectangle, fillDraftFrame.revision, 0.4);
+  expectPixelNear(fillDraftPaint.center, [59, 130, 246, 255], 8);
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  const fillAppliedFrame = await waitForNewPresentedRevision(page, fillDraftFrame.revision);
+  const fillAppliedPaint = await captureRectanglePaintEvidence(page, rectangle, fillAppliedFrame.revision, 0.4);
+  expectPixelNear(fillAppliedPaint.center, [59, 130, 246, 255], 8);
+  await expect(fillColor).toHaveValue("#3b82f6");
+
+  const strokeColor = page.getByLabel("Stroke color Rectangle");
+  await expect(strokeColor).toBeEnabled();
+  await strokeColor.fill("#ef4444");
+  await strokeColor.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  const strokeDraftFrame = await waitForNewPresentedRevision(page, fillAppliedFrame.revision);
+  const strokeDraftPaint = await captureRectanglePaintEvidence(page, rectangle, strokeDraftFrame.revision, 0.4);
+  expectPixelNear(strokeDraftPaint.center, [59, 130, 246, 255], 8);
+  expect(strokeDraftPaint.edges.some(isRedDominant)).toBe(true);
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  const strokeAppliedFrame = await waitForNewPresentedRevision(page, strokeDraftFrame.revision);
+  const strokeAppliedPaint = await captureRectanglePaintEvidence(page, rectangle, strokeAppliedFrame.revision, 0.4);
+  expectPixelNear(strokeAppliedPaint.center, [59, 130, 246, 255], 8);
+  expect(strokeAppliedPaint.edges.some(isRedDominant)).toBe(true);
+  await expect(strokeColor).toHaveValue("#ef4444");
+
+  await playhead.fill("0.2");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.2");
+  const beforeEditPaint = await captureRectanglePaintEvidence(page, rectangle, strokeAppliedFrame.revision, 0.2);
+  expectPixelNear(beforeEditPaint.center, [0, 0, 0, 255]);
+  expect(beforeEditPaint.edges.some(isRedDominant)).toBe(false);
+
+  await playhead.fill("0.4");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.4");
+  const afterEditPaint = await captureRectanglePaintEvidence(page, rectangle, strokeAppliedFrame.revision, 0.4);
+  expectPixelNear(afterEditPaint.center, [59, 130, 246, 255], 8);
+  expect(afterEditPaint.edges.some(isRedDominant)).toBe(true);
   expect(localExportPreflights).toBe(3);
 });
 

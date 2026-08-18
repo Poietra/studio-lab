@@ -771,7 +771,7 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("routes created-object opacity and rotation through the same snapshot authorization", async () => {
+  it("routes created-object appearance and rotation through the same snapshot authorization", async () => {
     const baseCreation = createCircleProgram("created-before-appearance");
     const creation: CanonicalEditProgram = {
       ...baseCreation,
@@ -816,7 +816,27 @@ describe("Manim render request lowering", () => {
       relativeDelta: Math.PI / 6,
       to: Math.PI / 6,
     });
-    const programs = [creation, opacity, rotation];
+    const fill = followup("created-fill", {
+      dependsOn: [],
+      entityId: createdEntityId,
+      id: "created-fill/operation",
+      interval: { end: 5, start: 5 },
+      key: "fillColor",
+      kind: "SetProperty",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      value: "#12abef",
+    });
+    const stroke = followup("created-stroke", {
+      dependsOn: [],
+      entityId: createdEntityId,
+      id: "created-stroke/operation",
+      interval: { end: 5, start: 5 },
+      key: "strokeColor",
+      kind: "SetProperty",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      value: "#fedcba",
+    });
+    const programs = [creation, opacity, fill, stroke, rotation];
     const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
 
     const result = await lower({ ...request(creation), programs }, sceneSource, async (input) => {
@@ -825,6 +845,8 @@ describe("Manim render request lowering", () => {
 
     expect(authorizations[0]?.programs).toEqual(programs);
     expect(result.lowered.source).toContain(".set_opacity(0.4)");
+    expect(result.lowered.source).toContain('.set_fill("#12abef", opacity=0.4)');
+    expect(result.lowered.source).toContain('.set_stroke("#fedcba")');
     expect(result.lowered.source).toContain(".rotate(0.5236)");
   });
 

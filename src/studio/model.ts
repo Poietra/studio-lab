@@ -106,7 +106,18 @@ export type PropertyChannelSample = Readonly<{
 
 export type PropertyChannel = Readonly<{
   entityId: string;
-  key: "appearance" | "camera" | "content" | "dimensions" | "ordering" | "position" | "presence" | "rotation" | "scale";
+  key:
+    | "appearance"
+    | "camera"
+    | "content"
+    | "dimensions"
+    | "fillColor"
+    | "ordering"
+    | "position"
+    | "presence"
+    | "rotation"
+    | "scale"
+    | "strokeColor";
   samples: readonly PropertyChannelSample[];
 }>;
 

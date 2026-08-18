@@ -2,9 +2,9 @@ use std::collections::BTreeSet;
 
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, ContractVersionV1, CubicPathV1, CubicSegmentV1,
-    CubicSubpathV1, EasingV1, FidelityV1, IntervalV1, KeyframeV1, PointV1, ProvenanceOriginV1,
-    ProvenanceRecordV1, SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1,
-    SceneIrBundleV1, SceneSourceV1, VectorAppearanceValueV1,
+    CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1, IntervalV1, KeyframeV1, PointV1,
+    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCapabilityV1,
+    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
 
@@ -58,6 +58,7 @@ struct CreateSceneEntityInstantTransform {
 struct CreateSceneEntity {
     appearance_at: Option<f64>,
     fade_in: Option<CreateSceneEntityFadeIn>,
+    fill_color: Option<RgbaColorV1>,
     geometry: CreateSceneEntityGeometry,
     id: String,
     lifetime: IntervalV1,
@@ -65,6 +66,7 @@ struct CreateSceneEntity {
     position: PointV1,
     rotation: f64,
     scale: f64,
+    stroke_color: Option<RgbaColorV1>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
 }
 
@@ -119,6 +121,12 @@ pub enum StudioCreationProjectedMutationKind {
     },
     Opacity {
         value: f64,
+    },
+    FillColor {
+        value: String,
+    },
+    StrokeColor {
+        value: String,
     },
     Resize {
         from_dimensions: StudioAuthoringDimensions,
@@ -192,6 +200,12 @@ pub enum StudioCreationOperationKind {
     },
     Opacity {
         alpha: Option<f64>,
+    },
+    FillColor {
+        color: Option<String>,
+    },
+    StrokeColor {
+        color: Option<String>,
     },
     Resize {
         from_dimensions: StudioAuthoringDimensions,
@@ -314,6 +328,8 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Rotation { .. }
             | StudioCreationOperationKind::Opacity { .. }
+            | StudioCreationOperationKind::FillColor { .. }
+            | StudioCreationOperationKind::StrokeColor { .. }
             | StudioCreationOperationKind::Resize { .. }
             | StudioCreationOperationKind::PersistentRemove { .. }
             | StudioCreationOperationKind::CreateMotion { .. }
@@ -439,8 +455,10 @@ struct PlannedStudioCreationEntity {
     creation_transaction_id: String,
     creation_program_rank: usize,
     current_dimensions: StudioAuthoringDimensions,
+    fill_color_override: Option<String>,
     current_opacity: f64,
     current_rotation: f64,
+    stroke_color_override: Option<String>,
     fade_interval: Option<IntervalV1>,
     initial_dimensions: StudioAuthoringDimensions,
     initial_position: PointV1,
@@ -754,6 +772,8 @@ fn plan_studio_creation_edits(
                 StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
+                | StudioCreationOperationKind::FillColor { .. }
+                | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
@@ -784,6 +804,8 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
+                | StudioCreationOperationKind::FillColor { .. }
+                | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
@@ -971,8 +993,10 @@ fn plan_studio_creation_edits(
             creation_program_rank: program_rank,
             creation_transaction_id: program.transaction_id.clone(),
             current_dimensions: spec.dimensions,
+            fill_color_override: None,
             current_opacity: 1.0,
             current_rotation: 0.0,
+            stroke_color_override: None,
             fade_interval,
             has_position_or_resize_instant: false,
             initial_dimensions: spec.dimensions,
@@ -1256,6 +1280,76 @@ fn plan_studio_creation_edits(
                         },
                     ));
                 }
+                StudioCreationOperationKind::FillColor { color: Some(color) }
+                    if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                        && matches!(
+                            state.kind,
+                            StudioAuthoringEntityKind::Circle
+                                | StudioAuthoringEntityKind::Rectangle
+                        )
+                        && canonical_studio_hex_color(color).is_some()
+                        && state.fill_color_override.as_deref() != Some(color.as_str())
+                        && studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
+                        && studio_timeline_semantic_values_match(
+                            program.anchor_resolved_seconds,
+                            state.spec.lifetime_start,
+                        )
+                        && state.persistent_removal.is_none() =>
+                {
+                    record_planned_studio_creation_appearance(state, instant_at)?;
+                    state.fill_color_override = Some(color.clone());
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: instant_interval,
+                            kind: StudioCreationProjectedMutationKind::FillColor {
+                                value: color.clone(),
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
+                StudioCreationOperationKind::StrokeColor { color: Some(color) }
+                    if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                        && matches!(
+                            state.kind,
+                            StudioAuthoringEntityKind::Circle
+                                | StudioAuthoringEntityKind::Rectangle
+                        )
+                        && canonical_studio_hex_color(color).is_some()
+                        && state.stroke_color_override.as_deref().unwrap_or("#ffffff") != color
+                        && studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
+                        && studio_timeline_semantic_values_match(
+                            program.anchor_resolved_seconds,
+                            state.spec.lifetime_start,
+                        )
+                        && state.persistent_removal.is_none() =>
+                {
+                    record_planned_studio_creation_appearance(state, instant_at)?;
+                    state.stroke_color_override = Some(color.clone());
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: instant_interval,
+                            kind: StudioCreationProjectedMutationKind::StrokeColor {
+                                value: color.clone(),
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
                 StudioCreationOperationKind::Resize {
                     from_dimensions,
                     from_position,
@@ -1338,6 +1432,8 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
+                | StudioCreationOperationKind::FillColor { .. }
+                | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
@@ -1451,6 +1547,29 @@ fn record_planned_studio_creation_instant(
     }
     state.instant_at = Some(instant_at);
     Ok(())
+}
+
+fn canonical_studio_hex_color(value: &str) -> Option<RgbaColorV1> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 7
+        || bytes[0] != b'#'
+        || !bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+    {
+        return None;
+    }
+    let component = |start| {
+        u8::from_str_radix(&value[start..start + 2], 16)
+            .ok()
+            .map(|component| f64::from(component) / 255.0)
+    };
+    Some(RgbaColorV1 {
+        alpha: 1.0,
+        blue: component(5)?,
+        green: component(3)?,
+        red: component(1)?,
+    })
 }
 
 fn record_planned_studio_creation_appearance(
@@ -1611,11 +1730,29 @@ fn validate_create_scene_entities_command(
         {
             return Err(CreateSceneEntitiesError::InvalidInstantTransform);
         }
+        let colors_are_valid = [&entity.fill_color, &entity.stroke_color]
+            .into_iter()
+            .flatten()
+            .all(|color| {
+                [color.red, color.green, color.blue, color.alpha]
+                    .into_iter()
+                    .all(|component| component.is_finite() && (0.0..=1.0).contains(&component))
+                    && close_transform_baseline_value(color.alpha, entity.paint_opacity)
+            });
+        let has_color_override = entity.fill_color.is_some() || entity.stroke_color.is_some();
         let appearance_changed = !close_transform_baseline_value(entity.paint_opacity, 1.0)
-            || !rotation_is_noop(entity.rotation);
+            || !rotation_is_noop(entity.rotation)
+            || has_color_override;
         if !entity.paint_opacity.is_finite()
             || !(0.0..=1.0).contains(&entity.paint_opacity)
             || !entity.rotation.is_finite()
+            || !colors_are_valid
+            || (has_color_override
+                && !matches!(
+                    &entity.geometry,
+                    CreateSceneEntityGeometry::Circle { .. }
+                        | CreateSceneEntityGeometry::Rectangle { .. }
+                ))
             || (!rotation_is_noop(entity.rotation) && entity.instant_transform.is_some())
             || (appearance_changed && entity.appearance_at.is_none())
             || entity.appearance_at.is_some_and(|at| {
@@ -1643,7 +1780,18 @@ fn append_created_entity(
     source_z_index: f64,
     capabilities: &mut BTreeSet<SceneCapabilityV1>,
 ) {
-    let (geometry, appearance, capability) = created_geometry_and_appearance(entity.geometry);
+    let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
+    if let Some(color) = &entity.fill_color {
+        let SceneAppearanceV1::Vector { fill, .. } = &mut appearance else {
+            unreachable!("Studio shape color admission requires vector appearance");
+        };
+        let mut transparent = color.clone();
+        transparent.alpha = 0.0;
+        *fill = Some(FillStyleV1 {
+            color: transparent,
+            rule: FillRuleV1::NonZero,
+        });
+    }
     capabilities.insert(capability);
     let created_id = entity.id;
     let lifetime = entity.lifetime;
@@ -1689,11 +1837,29 @@ fn append_created_entity(
         });
     }
     if let Some(at) = entity.appearance_at {
-        if !close_transform_baseline_value(entity.paint_opacity, 1.0) {
+        if !close_transform_baseline_value(entity.paint_opacity, 1.0)
+            || entity.fill_color.is_some()
+            || entity.stroke_color.is_some()
+        {
             let mut changed_appearance = appearance.clone();
-            let paint_updated =
-                set_vector_paint_alpha(&mut changed_appearance, entity.paint_opacity);
-            debug_assert_eq!(paint_updated, Some(true));
+            let SceneAppearanceV1::Vector { fill, stroke, .. } = &mut changed_appearance else {
+                unreachable!("supported Studio creation geometry always uses vector appearance");
+            };
+            if let Some(color) = &entity.fill_color {
+                *fill = Some(FillStyleV1 {
+                    color: color.clone(),
+                    rule: FillRuleV1::NonZero,
+                });
+            }
+            if let Some(color) = &entity.stroke_color {
+                let stroke = stroke
+                    .as_mut()
+                    .expect("Studio shape color admission requires an existing stroke");
+                stroke.color = color.clone();
+            }
+            debug_assert!(
+                set_vector_paint_alpha(&mut changed_appearance, entity.paint_opacity).is_some()
+            );
             let SceneAppearanceV1::Vector { fill, stroke, .. } = changed_appearance else {
                 unreachable!("supported Studio creation geometry always uses vector appearance");
             };
@@ -2001,12 +2167,29 @@ impl EngineSessionV1 {
             if let Some(removal) = &state.persistent_removal {
                 persistent_removals.push(removal.clone());
             }
+            let color_with_opacity = |value: &str| {
+                let mut color = canonical_studio_hex_color(value)
+                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                color.alpha = state.current_opacity;
+                Ok::<_, ApplyStudioCreationEditError>(color)
+            };
+            let fill_color = state
+                .fill_color_override
+                .as_deref()
+                .map(color_with_opacity)
+                .transpose()?;
+            let stroke_color = state
+                .stroke_color_override
+                .as_deref()
+                .map(color_with_opacity)
+                .transpose()?;
             entities.push(CreateSceneEntity {
                 appearance_at: state.appearance_at,
                 fade_in: state
                     .fade_interval
                     .as_ref()
                     .map(|interval| CreateSceneEntityFadeIn { end: interval.end }),
+                fill_color,
                 geometry,
                 id: state.spec.id.clone(),
                 instant_transform,
@@ -2020,6 +2203,7 @@ impl EngineSessionV1 {
                 ),
                 rotation: state.current_rotation,
                 scale: 1.0,
+                stroke_color,
             });
         }
         let motions = plan
@@ -2116,6 +2300,7 @@ mod tests {
                 CreateSceneEntity {
                     appearance_at: None,
                     fade_in: None,
+                    fill_color: None,
                     geometry: CreateSceneEntityGeometry::Circle { radius: 0.75 },
                     id: "tx:create/entity:circle".to_owned(),
                     lifetime: IntervalV1 {
@@ -2126,11 +2311,13 @@ mod tests {
                     position: PointV1 { x: 2.0, y: -1.0 },
                     rotation: 0.0,
                     scale: 1.25,
+                    stroke_color: None,
                     instant_transform: None,
                 },
                 CreateSceneEntity {
                     appearance_at: None,
                     fade_in: Some(CreateSceneEntityFadeIn { end: 0.9 }),
+                    fill_color: None,
                     geometry: CreateSceneEntityGeometry::Rectangle {
                         height: 2.0,
                         width: 3.0,
@@ -2144,6 +2331,7 @@ mod tests {
                     position: PointV1 { x: -2.0, y: 1.0 },
                     rotation: 0.0,
                     scale: 0.5,
+                    stroke_color: None,
                     instant_transform: Some(CreateSceneEntityInstantTransform {
                         at: 1.25,
                         position: PointV1 { x: -1.0, y: 0.5 },
@@ -2154,6 +2342,7 @@ mod tests {
                 CreateSceneEntity {
                     appearance_at: None,
                     fade_in: None,
+                    fill_color: None,
                     geometry: CreateSceneEntityGeometry::MathTex { path },
                     id: "tx:create/entity:mathtex".to_owned(),
                     lifetime: IntervalV1 {
@@ -2164,6 +2353,7 @@ mod tests {
                     position: PointV1 { x: 0.0, y: 1.5 },
                     rotation: 0.0,
                     scale: 2.0,
+                    stroke_color: None,
                     instant_transform: None,
                 },
             ],
@@ -2570,6 +2760,191 @@ mod tests {
                     )
                 })
         );
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one temporal sample test pins the complete fill/stroke/opacity composition"
+    )]
+    fn normalized_creation_applies_shape_colors_only_from_the_appearance_anchor() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        command.programs.extend([
+            studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "opacity-before-colors",
+                StudioCreationOperationKind::Opacity { alpha: Some(0.25) },
+            ),
+            studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "fill-color",
+                StudioCreationOperationKind::FillColor {
+                    color: Some("#e07a5f".to_owned()),
+                },
+            ),
+            studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "stroke-color",
+                StudioCreationOperationKind::StrokeColor {
+                    color: Some("#81b29a".to_owned()),
+                },
+            ),
+        ]);
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert!(matches!(
+            &projection.mutations[2].kind,
+            StudioCreationProjectedMutationKind::Opacity { value }
+                if (*value - 0.25).abs() < 1e-12
+        ));
+        assert!(matches!(
+            &projection.mutations[3].kind,
+            StudioCreationProjectedMutationKind::FillColor { value } if value == "#e07a5f"
+        ));
+        assert!(matches!(
+            &projection.mutations[4].kind,
+            StudioCreationProjectedMutationKind::StrokeColor { value } if value == "#81b29a"
+        ));
+        assert!(
+            projection.mutations[2..]
+                .iter()
+                .all(|mutation| (mutation.interval.start - 0.9).abs() < 1e-12)
+        );
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+        assert!(matches!(
+            &created.appearance,
+            SceneAppearanceV1::Vector { fill: Some(fill), stroke: Some(stroke), .. }
+                if fill.color.alpha.abs() < 1e-12
+                    && (stroke.color.red - 1.0).abs() < 1e-12
+                    && (stroke.color.green - 1.0).abs() < 1e-12
+                    && (stroke.color.blue - 1.0).abs() < 1e-12
+                    && (stroke.color.alpha - 1.0).abs() < 1e-12
+        ));
+        let sample = |at| {
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "created-color-sample",
+                    sample_time: at,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            let poietra_scene_ir::RenderDrawV1::Path { fill, stroke, .. } = packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == entity_id)
+                .unwrap()
+            else {
+                panic!("created circle must evaluate to one vector path");
+            };
+            (fill.clone(), stroke.clone().unwrap().color)
+        };
+        let (before_fill, before_stroke) = sample(0.899_999);
+        assert!(before_fill.is_some_and(|fill| fill.color.alpha.abs() < 1e-12));
+        assert!((before_stroke.red - 1.0).abs() < 1e-12);
+        assert!((before_stroke.green - 1.0).abs() < 1e-12);
+        assert!((before_stroke.blue - 1.0).abs() < 1e-12);
+        assert!((before_stroke.alpha - 1.0).abs() < 1e-12);
+
+        let (after_fill, after_stroke) = sample(0.9);
+        let after_fill = after_fill.expect("fill color edit must enable the shape fill");
+        assert!((after_fill.color.red - 224.0 / 255.0).abs() < 1e-12);
+        assert!((after_fill.color.green - 122.0 / 255.0).abs() < 1e-12);
+        assert!((after_fill.color.blue - 95.0 / 255.0).abs() < 1e-12);
+        assert!((after_fill.color.alpha - 0.25).abs() < 1e-12);
+        assert!((after_stroke.red - 129.0 / 255.0).abs() < 1e-12);
+        assert!((after_stroke.green - 178.0 / 255.0).abs() < 1e-12);
+        assert!((after_stroke.blue - 154.0 / 255.0).abs() < 1e-12);
+        assert!((after_stroke.alpha - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn normalized_creation_rejects_invalid_shape_color_edits() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut uppercase = studio_creation_command(&bundle);
+        uppercase.programs.truncate(1);
+        uppercase
+            .programs
+            .push(studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "uppercase-color",
+                StudioCreationOperationKind::FillColor {
+                    color: Some("#E07A5F".to_owned()),
+                },
+            ));
+        let mut missing_color = studio_creation_command(&bundle);
+        missing_color.programs.truncate(1);
+        missing_color
+            .programs
+            .push(studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "missing-color",
+                StudioCreationOperationKind::FillColor { color: None },
+            ));
+        let mut wrong_anchor = studio_creation_command(&bundle);
+        wrong_anchor.programs.truncate(1);
+        wrong_anchor
+            .programs
+            .push(studio_created_appearance_edit_input(
+                1.0,
+                entity_id,
+                "wrong-color-anchor",
+                StudioCreationOperationKind::StrokeColor {
+                    color: Some("#81b29a".to_owned()),
+                },
+            ));
+
+        let mut line = studio_creation_command(&bundle);
+        line.programs.truncate(1);
+        for operation in &mut line.programs[0].operations {
+            if operation.entity_id.as_deref() == Some(entity_id) {
+                operation.entity_id = Some("tx:create/entity:line".to_owned());
+            }
+        }
+        let StudioCreationOperationKind::Create { entity } =
+            &mut line.programs[0].operations[0].kind
+        else {
+            panic!("creation fixture must start with CreateEntity");
+        };
+        entity.id = "tx:create/entity:line".to_owned();
+        entity.kind = StudioAuthoringEntityKind::Line;
+        entity.dimensions = StudioAuthoringDimensions::default();
+        line.programs.push(studio_created_appearance_edit_input(
+            0.5,
+            "tx:create/entity:line",
+            "line-color",
+            StudioCreationOperationKind::StrokeColor {
+                color: Some("#81b29a".to_owned()),
+            },
+        ));
+
+        for command in [uppercase, missing_color, wrong_anchor, line] {
+            assert!(matches!(
+                project_studio_creation_edits(bundle.scene.duration, &command.programs),
+                Err(ProjectStudioCreationEditError::Unsupported)
+            ));
+        }
     }
 
     #[test]

@@ -114,4 +114,39 @@ describe("Studio creation wire", () => {
       to: Math.PI / 6,
     });
   });
+
+  it("normalizes created-shape colors without accepting non-canonical values", () => {
+    const entityId = "entity:Circle";
+    const common = {
+      dependsOn: [] as string[],
+      entityId,
+      interval: { end: 0, start: 0 },
+      kind: "SetProperty" as const,
+      provenance: { evidence: [] as string[], origin: "direct-manipulation" as const },
+    };
+    const programs = [
+      creationProgram("Circle"),
+      followupProgram("fill:Circle", {
+        ...common,
+        id: "fill:Circle",
+        key: "fillColor",
+        value: "#12abef",
+      }),
+      followupProgram("stroke:Circle", {
+        ...common,
+        id: "stroke:Circle",
+        key: "strokeColor",
+        value: "#FEDCBA",
+      }),
+    ];
+
+    const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs });
+
+    expect(command.programs[1]?.operations[0]).toMatchObject({
+      color: "#12abef",
+      entityId,
+      kind: "fill-color",
+    });
+    expect(command.programs[2]?.operations[0]).toMatchObject({ color: null, entityId, kind: "stroke-color" });
+  });
 });

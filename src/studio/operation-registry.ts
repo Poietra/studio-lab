@@ -8,7 +8,12 @@ import {
   samplePropertyKnowledge,
   samplePropertyValue,
 } from "./property-sampling";
-import { type SceneEdit, type SceneEditOperation, sceneEditOperationSchema } from "./scene-edit-contract";
+import {
+  isCanonicalRgbHex,
+  type SceneEdit,
+  type SceneEditOperation,
+  sceneEditOperationSchema,
+} from "./scene-edit-contract";
 
 export { sceneEditOperationSchema as canonicalOperationSchema } from "./scene-edit-contract";
 
@@ -81,6 +86,8 @@ function setPropertyExecution(
     operation.value >= 0 &&
     operation.value <= 1
   )
+    return SUPPORTED_EXECUTION;
+  if ((operation.key === "fillColor" || operation.key === "strokeColor") && isCanonicalRgbHex(operation.value))
     return SUPPORTED_EXECUTION;
   if (operation.key === "content") {
     if (canonicalEditableContent(operation.value, "Text") || canonicalEditableContent(operation.value, "MathTex"))
@@ -402,6 +409,27 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
         code: "schema-invalid" as const,
         field: "value",
         message: "Content edits must match a Text or MathTex target with non-empty content.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+  }
+  if (operation.key === "fillColor" || operation.key === "strokeColor") {
+    const entity = scene.objectGraph.entities[operation.entityId];
+    if (!isCanonicalRgbHex(operation.value)) {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "value",
+        message: "Shape colors require a lowercase canonical #rrggbb value.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+    if (!entity?.transactionId || (entity.type !== "Circle" && entity.type !== "Rectangle")) {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "entityId",
+        message: "Shape colors currently support only Studio-created Circle and Rectangle entities.",
         operationId: operation.id,
         severity: "error" as const,
       });
