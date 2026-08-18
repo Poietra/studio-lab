@@ -1,6 +1,7 @@
 import type { KeyboardEvent, PointerEvent } from "react";
 
 import { cn } from "../lib/cn";
+import type { CanvasSelectionMode } from "./canvas-selection";
 import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 import type { StudioMotionPath } from "./motion-paths";
 import { describeStudioPreviewFallback } from "./preview-renderer-policy";
@@ -78,7 +79,7 @@ export type StudioCanvasProps = Readonly<{
   onInlineTextCommit: (text: string) => boolean;
   onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
   onPresenceCursorChange?: (cursor: Readonly<{ x: number; y: number }> | null) => void;
-  onSelectEntity: (entityId: string) => void;
+  onSelectEntity: (entityId: string, mode?: CanvasSelectionMode) => void;
   presenceParticipants?: readonly StudioPresenceParticipantV1[];
   preview?: StudioPreviewRendererView | null;
   readOnly: boolean;
@@ -91,6 +92,57 @@ export type StudioCanvasProps = Readonly<{
 
 export function entityLabel(entity: ProjectedEntity) {
   return entity.content?.label ?? entity.content?.text ?? entity.id.split(":").at(-1) ?? entity.id;
+}
+
+function dimensionSize(dimensions: EntityDimensions) {
+  return {
+    height: dimensions.height ?? (dimensions.radius === undefined ? null : dimensions.radius * 2),
+    width: dimensions.width ?? (dimensions.radius === undefined ? null : dimensions.radius * 2),
+  };
+}
+
+/** Unions only prepared renderer AABBs. This projection does not inspect
+ * Scene shapes or repeat geometry evaluation in React. */
+export function unionPreparedSelectionBounds(
+  geometries: readonly Readonly<{ dimensions: EntityDimensions | null; position: Point }>[],
+  frame: Readonly<{ height: number; width: number }>,
+): Readonly<{ dimensions: Readonly<{ height: number; width: number }>; position: Point }> | null {
+  if (frame.height <= 0 || frame.width <= 0) return null;
+  let minimumX = Number.POSITIVE_INFINITY;
+  let minimumY = Number.POSITIVE_INFINITY;
+  let maximumX = Number.NEGATIVE_INFINITY;
+  let maximumY = Number.NEGATIVE_INFINITY;
+  let count = 0;
+  for (const geometry of geometries) {
+    if (!geometry.dimensions) continue;
+    const size = dimensionSize(geometry.dimensions);
+    if (
+      size.height === null ||
+      size.width === null ||
+      !Number.isFinite(size.height) ||
+      !Number.isFinite(size.width) ||
+      size.height < 0 ||
+      size.width < 0 ||
+      !Number.isFinite(geometry.position.x) ||
+      !Number.isFinite(geometry.position.y)
+    )
+      continue;
+    const halfWidth = (size.width / frame.width) * (STUDIO_VIEWPORT.width / 2);
+    const halfHeight = (size.height / frame.height) * (STUDIO_VIEWPORT.height / 2);
+    minimumX = Math.min(minimumX, geometry.position.x - halfWidth);
+    maximumX = Math.max(maximumX, geometry.position.x + halfWidth);
+    minimumY = Math.min(minimumY, geometry.position.y - halfHeight);
+    maximumY = Math.max(maximumY, geometry.position.y + halfHeight);
+    count += 1;
+  }
+  if (count < 2) return null;
+  return {
+    dimensions: {
+      height: ((maximumY - minimumY) / STUDIO_VIEWPORT.height) * frame.height,
+      width: ((maximumX - minimumX) / STUDIO_VIEWPORT.width) * frame.width,
+    },
+    position: { x: (minimumX + maximumX) / 2, y: (minimumY + maximumY) / 2 },
+  };
 }
 
 function entityPreviewGeometry(preview: EntityGeometryPreview | null, entity: ProjectedEntity) {
@@ -383,6 +435,34 @@ export function StudioCanvas({
       );
     }
   }
+  const preparedSelectedGeometries =
+    selectedIds.size > 1 && showingCanvasPixels && preview?.interactionGeometry
+      ? entities.flatMap((entity) => {
+          if (!selectedIds.has(entity.id)) return [];
+          const runtimeTraceCandidate = runtimeTraceEditCandidatesByStudioEntityId.get(entity.id);
+          const verified = verifiedPreviewGeometryForStudioEntity(preview, studioEntityIdByUniqueSourceName, entity);
+          const geometry =
+            verified?.geometry ??
+            (runtimeTraceCandidate
+              ? (preview.interactionGeometry?.get(runtimeTraceCandidate.runtimeEntityId) ?? null)
+              : null);
+          if (!geometry) return [];
+          const delta = entityDragDelta(dragPreview, entity.id);
+          return [
+            {
+              ...geometry,
+              position: {
+                x: geometry.position.x + delta.x * cameraScale,
+                y: geometry.position.y + delta.y * cameraScale,
+              },
+            },
+          ];
+        })
+      : [];
+  const compositeSelectionBounds =
+    preparedSelectedGeometries.length === selectedIds.size
+      ? unionPreparedSelectionBounds(preparedSelectedGeometries, frame)
+      : null;
   return (
     <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-4">
       <div
@@ -599,7 +679,7 @@ export function StudioCanvas({
                       }
                       if (event.key !== "Enter" && event.key !== " ") return;
                       event.preventDefault();
-                      onSelectEntity(entity.id);
+                      onSelectEntity(entity.id, "single");
                     }}
                     onLostPointerCapture={selectionOnlyEntity ? undefined : onEntityPointerCancel}
                     onDoubleClick={
@@ -623,12 +703,18 @@ export function StudioCanvas({
                     }
                     onPointerCancel={selectionOnlyEntity ? undefined : onEntityPointerCancel}
                     onPointerDown={(event) => {
+                      if (event.shiftKey || event.metaKey || event.ctrlKey) {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        onSelectEntity(entity.id, "toggle");
+                        return;
+                      }
                       if (!selectionOnlyEntity) {
                         onEntityPointerDown(event, entity.id);
                         return;
                       }
                       event.stopPropagation();
-                      onSelectEntity(entity.id);
+                      onSelectEntity(entity.id, "single");
                     }}
                     onPointerMove={selectionOnlyEntity ? undefined : onEntityPointerMove}
                     onPointerUp={selectionOnlyEntity ? undefined : onEntityPointerUp}
@@ -642,7 +728,7 @@ export function StudioCanvas({
                     }
                     type="button"
                   >
-                    {selected ? (
+                    {selected && !compositeSelectionBounds ? (
                       <span className="pointer-events-none absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
                         {entityLabel(entity)}
                       </span>
@@ -686,6 +772,23 @@ export function StudioCanvas({
             );
           })}
         </div>
+        {compositeSelectionBounds ? (
+          <div
+            aria-label={`${selectedIds.size} objects selected`}
+            className="pointer-events-none absolute z-20 box-border -translate-x-1/2 -translate-y-1/2 border border-sky-400"
+            data-studio-composite-selection={selectedIds.size}
+            data-studio-selection-height={compositeSelectionBounds.dimensions.height.toFixed(4)}
+            data-studio-selection-width={compositeSelectionBounds.dimensions.width.toFixed(4)}
+            style={{
+              ...entityDimensionStyle(compositeSelectionBounds.dimensions, frame),
+              ...viewportPositionStyle(compositeSelectionBounds.position),
+            }}
+          >
+            <span className="absolute -top-6 left-0 whitespace-nowrap bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
+              {selectedIds.size} objects
+            </span>
+          </div>
+        ) : null}
         {inlineTextEditor ? (
           <StudioInlineTextEditor
             key={`${inlineTextEditor.kind}:${inlineTextEditor.entityId ?? "new"}:${inlineTextEditor.point.x}:${inlineTextEditor.point.y}`}

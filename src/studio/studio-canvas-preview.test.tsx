@@ -10,6 +10,7 @@ import {
   rotationHandleLayoutStyle,
   StudioCanvas,
   type StudioCanvasProps,
+  unionPreparedSelectionBounds,
   verifiedPreviewGeometryForStudioEntity,
 } from "./studio-canvas";
 import {
@@ -226,6 +227,136 @@ function previewView(
 }
 
 describe("StudioCanvas retained preview layer", () => {
+  it("unions prepared renderer AABBs without consulting entity shapes", () => {
+    const bounds = unionPreparedSelectionBounds(
+      [
+        { dimensions: { height: 2, width: 2 }, position: { x: 160, y: 180 } },
+        { dimensions: { height: 4, width: 2 }, position: { x: 480, y: 180 } },
+      ],
+      { height: 8, width: 16 },
+    );
+
+    expect(bounds).toEqual({
+      dimensions: { height: 4, width: 10 },
+      position: { x: 320, y: 180 },
+    });
+  });
+
+  it.each([
+    ["Shift", { ctrlKey: false, metaKey: false, shiftKey: true }],
+    ["Command", { ctrlKey: false, metaKey: true, shiftKey: false }],
+    ["Control", { ctrlKey: true, metaKey: false, shiftKey: false }],
+  ])("uses %s-click to toggle selection without beginning a drag", (_label, modifiers) => {
+    const onEntityPointerDown = vi.fn();
+    const onSelectEntity = vi.fn();
+    const tree = StudioCanvas({
+      ...baseProps(),
+      onEntityPointerDown,
+      onSelectEntity,
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:selection-modifier",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        new Map([["scene:circle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 320, y: 180 } }]]),
+        new Map([
+          [
+            "circle_1",
+            {
+              bindingId: `source-binding:${"a".repeat(64)}`,
+              entityId: "scene:circle/entity:0",
+              sourceName: "circle_1",
+            },
+          ],
+        ]),
+      ),
+    });
+    const button = findEntityButton(tree, CIRCLE_ENTITY.id);
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    const pointerDown = button.props.onPointerDown as (event: {
+      ctrlKey: boolean;
+      metaKey: boolean;
+      preventDefault: () => void;
+      shiftKey: boolean;
+      stopPropagation: () => void;
+    }) => void;
+
+    pointerDown({ ...modifiers, preventDefault, stopPropagation });
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(onSelectEntity).toHaveBeenCalledWith(CIRCLE_ENTITY.id, "toggle");
+    expect(onEntityPointerDown).not.toHaveBeenCalled();
+  });
+
+  it("draws one paint-free outline from two prepared AABBs and keeps entity handles hidden", () => {
+    const rectangle: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      geometry: {
+        ...CIRCLE_ENTITY.geometry,
+        dimensions: { kind: "known", value: { height: 2, width: 2 } },
+      },
+      id: "entity:rectangle_1",
+      position: { x: 480, y: 180 },
+      sourceIdentity: { kind: "known", value: "rectangle_1" },
+      type: "Rectangle",
+    };
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        entities={[CIRCLE_ENTITY, rectangle]}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:multi-selection",
+              revision: "a".repeat(64),
+              sampleTime: 0,
+              viewport: { heightPx: 360, widthPx: 640 },
+            },
+            phase: "presented",
+          },
+          new Map([
+            ["scene:circle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 160, y: 180 } }],
+            ["scene:rectangle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 480, y: 180 } }],
+          ]),
+          new Map([
+            [
+              "circle_1",
+              {
+                bindingId: `source-binding:${"a".repeat(64)}`,
+                entityId: "scene:circle/entity:0",
+                sourceName: "circle_1",
+              },
+            ],
+            [
+              "rectangle_1",
+              {
+                bindingId: `source-binding:${"b".repeat(64)}`,
+                entityId: "scene:rectangle/entity:0",
+                sourceName: "rectangle_1",
+              },
+            ],
+          ]),
+        )}
+        rotationHandleEntityId={CIRCLE_ENTITY.id}
+        selectedIds={new Set([CIRCLE_ENTITY.id, rectangle.id])}
+      />,
+    );
+
+    expect(markup).toContain('data-studio-composite-selection="2"');
+    expect(markup).toContain('aria-label="2 objects selected"');
+    expect(markup).toContain('data-studio-selection-height="2.0000"');
+    expect(markup).toContain('data-studio-selection-width="9.1110"');
+    expect(markup).not.toContain("data-studio-resize-handle");
+    expect(markup).not.toContain("data-studio-rotation-handle");
+  });
+
   it.each([
     [0.5, -98, 2],
     [1, -56, 1],
