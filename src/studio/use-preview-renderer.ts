@@ -122,6 +122,7 @@ export type StudioPreviewRendererView = Readonly<{
     sourceLineage: Readonly<{
       projectId: string;
       sceneId: string;
+      sceneName: string;
       sourceHash: string;
       sourcePath: string;
       workingRevision: string;
@@ -1746,6 +1747,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
             sourceLineage: {
               projectId: currentCompiledScene.snapshot.correlation.context.projectId,
               sceneId: currentCompiledScene.snapshot.correlation.sceneId,
+              sceneName: currentCompiledScene.snapshot.correlation.context.sceneName,
               sourceHash: currentCompiledScene.snapshot.correlation.context.sourceHash,
               sourcePath: currentCompiledScene.snapshot.correlation.context.sourcePath,
               workingRevision: currentCompiledScene.workingRevision,

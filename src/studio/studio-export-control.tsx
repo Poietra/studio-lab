@@ -61,6 +61,11 @@ type PublicationRunStateV1 =
   | Readonly<{ kind: "unavailable"; reason: string }>
   | Readonly<{ kind: "failed"; message: string }>;
 
+type BrowserExportPublicationCompletionV1 = Readonly<{
+  artifact: PreparedStudioExportPublicationV1 | null;
+  state: PublicationRunStateV1;
+}>;
+
 const defaultPublicationClient = new FetchClientExportPublicationClientV1();
 
 export type StudioExportControlStateKindV1 = ExportRunStateV1["kind"] | "unavailable";
@@ -69,6 +74,57 @@ export type StudioExportControlStateKindV1 = ExportRunStateV1["kind"] | "unavail
 export function studioExportProgressPercentV1(progress: ExportProgressV1 | null) {
   if (!progress || progress.frameCount === 0) return 0;
   return Math.min(100, Math.floor((progress.framesEncoded / progress.frameCount) * 100));
+}
+
+/**
+ * Commits the browser download before optional publication work. A failure to
+ * mint or digest cloud lineage must never discard an already encoded MP4.
+ */
+export async function completeBrowserMp4ExportV1(
+  input: Readonly<{
+    capturedAvailability: StudioExportPublicationAvailabilityV1;
+    capturedPublication: ReturnType<typeof captureStudioExportPublicationV1>;
+    deliverLocal: () => void;
+    publicationCaptureFailure: string | null;
+    video: Uint8Array<ArrayBuffer>;
+    preparePublication?: typeof prepareStudioExportPublicationV1;
+  }>,
+): Promise<BrowserExportPublicationCompletionV1> {
+  input.deliverLocal();
+  if (input.publicationCaptureFailure) {
+    return {
+      artifact: null,
+      state: { kind: "failed", message: input.publicationCaptureFailure },
+    };
+  }
+  if (!input.capturedPublication) {
+    return {
+      artifact: null,
+      state: {
+        kind: "unavailable",
+        reason:
+          input.capturedAvailability.kind === "unavailable"
+            ? input.capturedAvailability.reason
+            : "This export has no publishable Editor Document lineage.",
+      },
+    };
+  }
+  try {
+    const artifact = await (input.preparePublication ?? prepareStudioExportPublicationV1)(
+      input.capturedPublication,
+      DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+      input.video,
+    );
+    return { artifact, state: { kind: "ready" } };
+  } catch (error) {
+    return {
+      artifact: null,
+      state: {
+        kind: "failed",
+        message: error instanceof Error ? error.message : "The MP4 publication could not be prepared.",
+      },
+    };
+  }
 }
 
 export function StudioExportControl({
@@ -105,7 +161,14 @@ export function StudioExportControl({
     // later preview or Editor Document revision for this artifact.
     const capturedSource = exportSource;
     const capturedAvailability = publication;
-    const capturedPublication = captureStudioExportPublicationV1(capturedAvailability);
+    let capturedPublication: ReturnType<typeof captureStudioExportPublicationV1> = null;
+    let publicationCaptureFailure: string | null = null;
+    try {
+      capturedPublication = captureStudioExportPublicationV1(capturedAvailability);
+    } catch (error) {
+      publicationCaptureFailure =
+        error instanceof Error ? error.message : "The MP4 publication identity could not be created.";
+    }
     const controller = new AbortController();
     activeExport.current = controller;
     pendingPublication.current = null;
@@ -135,24 +198,18 @@ export function StudioExportControl({
       const video = new Uint8Array(await outcome.mp4.arrayBuffer());
       const desktopSaved = await saveVideoFileWithDesktop(fileName, video);
       if (desktopSaved === null) {
-        if (capturedPublication) {
-          pendingPublication.current = await prepareStudioExportPublicationV1(
-            capturedPublication,
-            DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
-            video,
-          );
-          setPublicationRun({ kind: "ready" });
-        } else {
-          setPublicationRun({
-            kind: "unavailable",
-            reason:
-              capturedAvailability.kind === "unavailable"
-                ? capturedAvailability.reason
-                : "This export has no publishable Editor Document lineage.",
-          });
-        }
-        downloadMp4Blob(fileName, outcome.mp4);
-        setRun({ fileName, kind: "done" });
+        const completion = await completeBrowserMp4ExportV1({
+          capturedAvailability,
+          capturedPublication,
+          deliverLocal: () => {
+            downloadMp4Blob(fileName, outcome.mp4);
+            setRun({ fileName, kind: "done" });
+          },
+          publicationCaptureFailure,
+          video,
+        });
+        pendingPublication.current = completion.artifact;
+        setPublicationRun(completion.state);
       } else if (desktopSaved) {
         setPublicationRun({ kind: "unavailable", reason: "Desktop exports are saved locally and are not published." });
         setRun({ fileName, kind: "done" });
@@ -175,7 +232,10 @@ export function StudioExportControl({
     setPublicationRun({ kind: "publishing" });
     try {
       await client.publish(artifact);
-      if (pendingPublication.current === artifact) setPublicationRun({ kind: "published" });
+      if (pendingPublication.current === artifact) {
+        pendingPublication.current = null;
+        setPublicationRun({ kind: "published" });
+      }
     } catch (error) {
       if (pendingPublication.current !== artifact) return;
       setPublicationRun({

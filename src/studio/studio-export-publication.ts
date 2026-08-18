@@ -12,6 +12,7 @@ export type StudioMp4ExportSourceV1 = Readonly<{
   sourceLineage: Readonly<{
     projectId: string;
     sceneId: string;
+    sceneName: string;
     sourceHash: string;
     sourcePath: string;
     workingRevision: string;
@@ -58,6 +59,7 @@ export function resolveStudioExportPublicationAvailabilityV1(
   const { sourceLineage } = input.exportSource;
   if (
     input.lineage.projectId !== sourceLineage.projectId ||
+    input.lineage.sceneName !== sourceLineage.sceneName ||
     input.lineage.sourceHash !== sourceLineage.sourceHash ||
     input.lineage.sourcePath !== sourceLineage.sourcePath
   ) {

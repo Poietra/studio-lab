@@ -108,6 +108,7 @@ export type EditorDocumentExportLineageV1 = Readonly<{
   documentKey: string;
   documentRevision: string;
   projectId: string;
+  sceneName: string | null;
   sourceHash: string | null;
   sourcePath: string | null;
   workingRevision: string;
@@ -116,6 +117,7 @@ export type EditorDocumentExportLineageV1 = Readonly<{
 /** Immutable document/source identity paired with the exact durable Program projection. */
 export function editorDocumentExportLineageV1(
   snapshot: EditorDocumentAuthoritySnapshotV1,
+  sceneName: string | null,
 ): EditorDocumentExportLineageV1 {
   if (snapshot.document.revision !== snapshot.revision) {
     throw new TypeError("The Editor Document lineage revision is inconsistent.");
@@ -125,6 +127,7 @@ export function editorDocumentExportLineageV1(
     documentKey: snapshot.document.documentKey,
     documentRevision: snapshot.revision,
     projectId: snapshot.document.projectId,
+    sceneName,
     sourceHash: snapshot.document.sourceHash,
     sourcePath: snapshot.document.sourcePath,
     workingRevision: canonicalAppliedProgramsWorkingRevisionV1(snapshot.programs),
@@ -1917,7 +1920,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     presentationReady.current &&
     state.phase === "ready" &&
     activeSnapshot !== null
-      ? editorDocumentExportLineageV1(activeSnapshot)
+      ? editorDocumentExportLineageV1(activeSnapshot, input.identity.sceneName ?? null)
       : null;
 
   return {

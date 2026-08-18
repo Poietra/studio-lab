@@ -29,6 +29,7 @@ function exportSource(overrides: Partial<StudioMp4ExportSourceV1["sourceLineage"
     sourceLineage: {
       projectId: "project-a",
       sceneId: "scene:one",
+      sceneName: "SceneOne",
       sourceHash: SOURCE_HASH,
       sourcePath: "scene.py",
       workingRevision: "working-7",
@@ -43,6 +44,7 @@ function lineage(overrides: Partial<EditorDocumentExportLineageV1> = {}): Editor
     documentKey: "c".repeat(64),
     documentRevision: "7",
     projectId: "project-a",
+    sceneName: "SceneOne",
     sourceHash: SOURCE_HASH,
     sourcePath: "scene.py",
     workingRevision: "working-7",
@@ -79,6 +81,7 @@ describe("Studio client-export publication controller", () => {
   it("fails publication closed when source, project, Scene, or working revision drifts", () => {
     expect(availability(exportSource({ sourceHash: "d".repeat(64) }))).toMatchObject({ kind: "unavailable" });
     expect(availability(exportSource({ projectId: "project-b" }))).toMatchObject({ kind: "unavailable" });
+    expect(availability(exportSource({ sceneName: "SceneTwo" }))).toMatchObject({ kind: "unavailable" });
     expect(availability(exportSource({ sceneId: "scene:other" }))).toMatchObject({ kind: "unavailable" });
     expect(availability(exportSource({ workingRevision: "working-8" }))).toMatchObject({
       kind: "unavailable",

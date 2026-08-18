@@ -32,16 +32,17 @@ describe("Editor Document export lineage", () => {
       sessionGeneration: "1",
     } satisfies EditorDocumentAuthoritySnapshotV1;
 
-    expect(editorDocumentExportLineageV1(snapshot)).toEqual({
+    expect(editorDocumentExportLineageV1(snapshot, "Demo")).toEqual({
       documentEpoch: snapshot.document.epoch,
       documentKey: snapshot.document.documentKey,
       documentRevision: "0",
       projectId: "project-a",
+      sceneName: "Demo",
       sourceHash: "b".repeat(64),
       sourcePath: "scene.py",
       workingRevision: "pristine",
     });
-    expect(Object.isFrozen(editorDocumentExportLineageV1(snapshot))).toBe(true);
+    expect(Object.isFrozen(editorDocumentExportLineageV1(snapshot, "Demo"))).toBe(true);
   });
 
   it("refuses a split document and projection revision", () => {
@@ -50,7 +51,7 @@ describe("Editor Document export lineage", () => {
       programs: [],
       revision: "2",
     } as unknown as EditorDocumentAuthoritySnapshotV1;
-    expect(() => editorDocumentExportLineageV1(snapshot)).toThrow(/revision is inconsistent/i);
+    expect(() => editorDocumentExportLineageV1(snapshot, "Demo")).toThrow(/revision is inconsistent/i);
   });
 });
 
