@@ -42,10 +42,15 @@ use poietra_scene_ir::{
     SceneIrV1, ViewportV1,
 };
 
+use crate::PreparedGeometryCacheV1;
 use crate::WgpuPaintRendererV1;
-use crate::gpu::{CreateRendererErrorV1, RenderFrameErrorV1, WgpuRenderTargetV1};
+use crate::gpu::{
+    CreateRendererErrorV1, FragmentMaterialRegistryErrorV1, FragmentMaterialSourceV1,
+    RenderFrameErrorV1, WgpuRenderTargetV1,
+};
 use crate::prepare::{
-    DecodedPngAssetResolverV1, PrepareFrameErrorV1, PreparedFrameV1, prepare_frame_with_assets_v1,
+    DecodedPngAssetResolverV1, PrepareFrameErrorV1, PreparedFrameV1,
+    prepare_frame_with_cache_assets_and_fragment_materials_v1,
 };
 
 /// RGBA8 bytes per exported pixel.
@@ -145,6 +150,8 @@ where
     Params(#[from] ExportFrameSequenceParamsErrorV1),
     #[error(transparent)]
     Renderer(#[from] CreateRendererErrorV1),
+    #[error(transparent)]
+    FragmentMaterialRegistry(#[from] FragmentMaterialRegistryErrorV1),
     #[error("export frame {frame_index} could not be sampled: {source}")]
     Sample {
         frame_index: u64,
@@ -617,6 +624,7 @@ pub struct ExportFrameSequenceSessionV1<'assets, SampleError, SamplePacket> {
     assets: &'assets dyn DecodedPngAssetResolverV1,
     device: wgpu::Device,
     failed: bool,
+    geometry_cache: PreparedGeometryCacheV1,
     next_frame_index: u64,
     queue: wgpu::Queue,
     renderer: WgpuPaintRendererV1,
@@ -675,6 +683,7 @@ where
             assets,
             device: device.clone(),
             failed: false,
+            geometry_cache: PreparedGeometryCacheV1::default(),
             next_frame_index: 0,
             queue: queue.clone(),
             renderer,
@@ -687,6 +696,25 @@ where
                 width_px: params.width_px,
             },
         })
+    }
+
+    /// Creates an export session using the exact project-local fragment
+    /// registry shared with the interactive preview renderer.
+    pub async fn new_with_fragment_material_sources(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &SceneIrV1,
+        params: ExportFrameSequenceParamsV1,
+        assets: &'assets dyn DecodedPngAssetResolverV1,
+        sample_packet: SamplePacket,
+        fragment_materials: &[FragmentMaterialSourceV1],
+    ) -> Result<Self, ExportFrameSequenceErrorV1<SampleError>> {
+        let mut session = Self::new(device, queue, scene, params, assets, sample_packet)?;
+        session
+            .renderer
+            .replace_fragment_material_sources(device, fragment_materials)
+            .await?;
+        Ok(session)
     }
 
     #[must_use]
@@ -761,11 +789,15 @@ where
                 frame_index,
             });
         }
-        let prepared = prepare_frame_with_assets_v1(&packet, self.assets).map_err(|source| {
-            ExportFrameSequenceErrorV1::Frame {
-                frame_index,
-                source: source.into(),
-            }
+        let prepared = prepare_frame_with_cache_assets_and_fragment_materials_v1(
+            &packet,
+            &mut self.geometry_cache,
+            self.assets,
+            &self.renderer,
+        )
+        .map_err(|source| ExportFrameSequenceErrorV1::Frame {
+            frame_index,
+            source: source.into(),
         })?;
         render_export_frame_rgba_v1(
             &self.device,

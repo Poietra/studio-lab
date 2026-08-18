@@ -262,7 +262,11 @@ describe("Poietra canvas worker client", () => {
 
     expect(installRequest.wasmModuleUrl).toBe("https://studio.test/app/engine-wasm/poietra_wasm.js");
     expect(canvas.transferControlToOffscreen).toHaveBeenCalledOnce();
-    expect(worker.posted[0]?.transfer).toEqual([installRequest.canvas, installRequest.snapshotJson]);
+    expect(worker.posted[0]?.transfer).toEqual([
+      installRequest.canvas,
+      installRequest.fragmentMaterialRegistryJson,
+      installRequest.snapshotJson,
+    ]);
 
     const rendered = client.render({
       revision: REVISION_A,
@@ -447,7 +451,10 @@ describe("Poietra canvas worker client", () => {
 
     const replaceRequest = requestAt(worker, 2);
     if (replaceRequest.kind !== "replace-scene") throw new Error("missing replacement request");
-    expect(worker.posted[2]?.transfer).toEqual([replaceRequest.snapshotJson]);
+    expect(worker.posted[2]?.transfer).toEqual([
+      replaceRequest.fragmentMaterialRegistryJson,
+      replaceRequest.snapshotJson,
+    ]);
     expect(canvas.transferControlToOffscreen).toHaveBeenCalledOnce();
     const renderRequest = requestAt(worker, 1);
     if (renderRequest.kind !== "render-frame") throw new Error("missing stale render request");
@@ -492,8 +499,8 @@ describe("Poietra canvas worker client", () => {
     expect(installRequest.assetPayloads).toHaveLength(1);
     expect(installRequest.assetPayloads[0]?.bytes.byteLength).toBe(4);
     const installTransfer = worker.posted[0]?.transfer;
-    expect(installTransfer).toHaveLength(3);
-    const transferredPng = installTransfer?.[2];
+    expect(installTransfer).toHaveLength(4);
+    const transferredPng = installTransfer?.[3];
     expect(transferredPng).not.toBe(firstBytes);
     if (!(transferredPng instanceof ArrayBuffer)) throw new Error("missing transferred PNG buffer");
     expect(transferredPng.byteLength).toBe(4);
@@ -510,7 +517,7 @@ describe("Poietra canvas worker client", () => {
     const reuseRequest = requestAt(worker, 1);
     if (reuseRequest.kind !== "replace-scene") throw new Error("missing PNG reuse request");
     expect(reuseRequest.assetPayloads).toEqual([]);
-    expect(worker.posted[1]?.transfer).toHaveLength(1);
+    expect(worker.posted[1]?.transfer).toHaveLength(2);
     worker.emitMessage(readyResponse(reuseRequest));
     await reusing;
 
@@ -526,7 +533,7 @@ describe("Poietra canvas worker client", () => {
     const advanceRequest = requestAt(worker, 2);
     if (advanceRequest.kind !== "replace-scene") throw new Error("missing PNG advance request");
     expect(advanceRequest.assetPayloads).toHaveLength(1);
-    expect(worker.posted[2]?.transfer).toHaveLength(2);
+    expect(worker.posted[2]?.transfer).toHaveLength(3);
     expect(secondBytes.byteLength).toBe(4);
     worker.emitMessage(readyResponse(advanceRequest));
     await advancing;

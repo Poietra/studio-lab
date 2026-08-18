@@ -161,7 +161,7 @@ impl PreparedGeometryVertexV1 {
 /// preparation. The linear-light representation is submitted through an sRGB
 /// target view; the Cairo-compatible representation is submitted through the
 /// corresponding base Unorm view.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PreparedMaterialV1 {
     fragment_material: Option<PreparedFragmentMaterialV1>,
     premultiplied_linear_color: [f32; 4],
@@ -169,15 +169,27 @@ pub struct PreparedMaterialV1 {
 }
 
 /// Resolved fixed-ABI values for one host-admitted fragment material.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PreparedFragmentMaterialV1 {
     parameters: [f32; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1],
+    revision: u32,
+    shader_id: String,
 }
 
 impl PreparedFragmentMaterialV1 {
     #[must_use]
     pub const fn parameters(&self) -> &[f32; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1] {
         &self.parameters
+    }
+
+    #[must_use]
+    pub const fn revision(&self) -> u32 {
+        self.revision
+    }
+
+    #[must_use]
+    pub fn shader_id(&self) -> &str {
+        &self.shader_id
     }
 }
 
@@ -1426,6 +1438,21 @@ pub struct ValidatedRenderPacketV1<'a> {
     packet: &'a RenderPacketV1,
 }
 
+/// Registry view used while preparing a frame. Scene IR carries only a
+/// material reference; the application-owned WGSL source remains outside it.
+pub trait FragmentMaterialSupportV1 {
+    fn supports_fragment_material(&self, shader_id: &str, revision: u32) -> bool;
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BuiltinFragmentMaterialSupportV1;
+
+impl FragmentMaterialSupportV1 for BuiltinFragmentMaterialSupportV1 {
+    fn supports_fragment_material(&self, shader_id: &str, revision: u32) -> bool {
+        shader_id == TIME_GRADIENT_SHADER_ID_V1 && revision == TIME_GRADIENT_SHADER_REVISION_V1
+    }
+}
+
 /// Validates a complete packet before tessellation without accessing a GPU.
 ///
 /// This is the packet-validation half of [`prepare_frame_v1`], exposed so
@@ -1483,7 +1510,12 @@ pub fn prepare_frame_with_cache_v1(
     cache: &mut PreparedGeometryCacheV1,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     cache.begin_frame();
-    tessellate_validated_frame_inner_v1(validate_frame_packet_v1(packet)?, Some(cache), None)
+    tessellate_validated_frame_inner_v1(
+        validate_frame_packet_v1(packet)?,
+        Some(cache),
+        None,
+        &BuiltinFragmentMaterialSupportV1,
+    )
 }
 
 /// Validates and prepares a packet through both the retained path cache and a
@@ -1502,6 +1534,24 @@ pub fn prepare_frame_with_cache_and_assets_v1(
         validate_frame_packet_v1(packet)?,
         Some(cache),
         Some(assets),
+        &BuiltinFragmentMaterialSupportV1,
+    )
+}
+
+/// Validates and prepares a packet against the exact application-owned
+/// fragment-material registry installed in the renderer.
+pub fn prepare_frame_with_cache_assets_and_fragment_materials_v1(
+    packet: &RenderPacketV1,
+    cache: &mut PreparedGeometryCacheV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+    fragment_materials: &dyn FragmentMaterialSupportV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    cache.begin_frame();
+    tessellate_validated_frame_inner_v1(
+        validate_frame_packet_v1(packet)?,
+        Some(cache),
+        Some(assets),
+        fragment_materials,
     )
 }
 
@@ -1510,10 +1560,11 @@ fn prepare_material(
     fragment_material: Option<&FragmentMaterialV1>,
     opacity: f64,
     draw_id: &str,
+    fragment_materials: &dyn FragmentMaterialSupportV1,
 ) -> Result<PreparedMaterialV1, PrepareFrameErrorV1> {
     Ok(PreparedMaterialV1 {
         fragment_material: fragment_material
-            .map(|material| prepare_fragment_material(material, draw_id))
+            .map(|material| prepare_fragment_material(material, draw_id, fragment_materials))
             .transpose()?,
         premultiplied_linear_color: premultiplied_linear_color(color, opacity, Some(draw_id))?,
         premultiplied_srgb_color: premultiplied_srgb_color(color, opacity, Some(draw_id))?,
@@ -1523,10 +1574,9 @@ fn prepare_material(
 fn prepare_fragment_material(
     material: &FragmentMaterialV1,
     draw_id: &str,
+    fragment_materials: &dyn FragmentMaterialSupportV1,
 ) -> Result<PreparedFragmentMaterialV1, PrepareFrameErrorV1> {
-    if material.shader_id != TIME_GRADIENT_SHADER_ID_V1
-        || material.revision != TIME_GRADIENT_SHADER_REVISION_V1
-    {
+    if !fragment_materials.supports_fragment_material(&material.shader_id, material.revision) {
         return Err(PrepareFrameErrorV1::UnsupportedFragmentMaterial {
             draw_id: draw_id.to_owned(),
             revision: material.revision,
@@ -1544,7 +1594,11 @@ fn prepare_fragment_material(
             &format!("fragment material parameter {index}"),
         )?;
     }
-    Ok(PreparedFragmentMaterialV1 { parameters })
+    Ok(PreparedFragmentMaterialV1 {
+        parameters,
+        revision: material.revision,
+        shader_id: material.shader_id.clone(),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -2217,9 +2271,10 @@ fn prepare_fill_geometry(
     Ok(())
 }
 
-struct PreparedFrameAccumulatorV1 {
+struct PreparedFrameAccumulatorV1<'materials> {
     commands: Vec<PreparedRenderCommandV1>,
     draws: Vec<PreparedDrawV1>,
+    fragment_materials: &'materials dyn FragmentMaterialSupportV1,
     image_draws: Vec<PreparedImageDrawV1>,
     indices: Vec<u32>,
     materials: Vec<PreparedMaterialV1>,
@@ -2227,11 +2282,15 @@ struct PreparedFrameAccumulatorV1 {
     vertices: Vec<PreparedGeometryVertexV1>,
 }
 
-impl PreparedFrameAccumulatorV1 {
-    fn with_phase_capacity(phase_capacity: usize) -> Self {
+impl<'materials> PreparedFrameAccumulatorV1<'materials> {
+    fn with_phase_capacity(
+        phase_capacity: usize,
+        fragment_materials: &'materials dyn FragmentMaterialSupportV1,
+    ) -> Self {
         Self {
             commands: Vec::with_capacity(phase_capacity),
             draws: Vec::with_capacity(phase_capacity),
+            fragment_materials,
             image_draws: Vec::with_capacity(phase_capacity / 2),
             indices: Vec::new(),
             materials: Vec::with_capacity(phase_capacity),
@@ -2252,7 +2311,13 @@ impl PreparedFrameAccumulatorV1 {
             &mut Vec<u32>,
         ) -> Result<(), PrepareFrameErrorV1>,
     ) -> Result<(usize, usize), PrepareFrameErrorV1> {
-        let material = prepare_material(color, fragment_material, opacity, draw_id)?;
+        let material = prepare_material(
+            color,
+            fragment_material,
+            opacity,
+            draw_id,
+            self.fragment_materials,
+        )?;
         let index_start_len = self.indices.len();
         let vertex_start_len = self.vertices.len();
         let index_start =
@@ -2333,7 +2398,13 @@ impl PreparedFrameAccumulatorV1 {
                 maximum_vertices: MAX_PREPARED_VERTICES_V1,
             });
         }
-        let material = prepare_material(color, fragment_material, opacity, draw_id)?;
+        let material = prepare_material(
+            color,
+            fragment_material,
+            opacity,
+            draw_id,
+            self.fragment_materials,
+        )?;
         let index_start =
             u32::try_from(self.indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
         let vertex_start =
@@ -2420,7 +2491,7 @@ impl PreparedPathDrawInputV1<'_> {
 }
 
 fn append_fill_phase_v1(
-    prepared: &mut PreparedFrameAccumulatorV1,
+    prepared: &mut PreparedFrameAccumulatorV1<'_>,
     cache: &mut Option<&mut PreparedGeometryCacheV1>,
     input: PreparedPathDrawInputV1<'_>,
 ) -> Result<(), PrepareFrameErrorV1> {
@@ -2471,7 +2542,7 @@ fn append_fill_phase_v1(
 }
 
 fn append_stroke_phase_v1(
-    prepared: &mut PreparedFrameAccumulatorV1,
+    prepared: &mut PreparedFrameAccumulatorV1<'_>,
     cache: &mut Option<&mut PreparedGeometryCacheV1>,
     input: PreparedPathDrawInputV1<'_>,
 ) -> Result<(), PrepareFrameErrorV1> {
@@ -2557,7 +2628,7 @@ fn prepare_image_vertex(
 }
 
 fn append_image_draw_v1(
-    prepared: &mut PreparedFrameAccumulatorV1,
+    prepared: &mut PreparedFrameAccumulatorV1<'_>,
     assets: &dyn DecodedPngAssetResolverV1,
     camera: &RenderCameraV1,
     draw: &RenderDrawV1,
@@ -2620,7 +2691,7 @@ fn append_image_draw_v1(
 pub fn tessellate_validated_frame_v1(
     validated: ValidatedRenderPacketV1<'_>,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
-    tessellate_validated_frame_inner_v1(validated, None, None)
+    tessellate_validated_frame_inner_v1(validated, None, None, &BuiltinFragmentMaterialSupportV1)
 }
 
 /// Prepares a validated packet using immutable decoded PNG assets.
@@ -2633,7 +2704,12 @@ pub fn tessellate_validated_frame_with_assets_v1(
     validated: ValidatedRenderPacketV1<'_>,
     assets: &dyn DecodedPngAssetResolverV1,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
-    tessellate_validated_frame_inner_v1(validated, None, Some(assets))
+    tessellate_validated_frame_inner_v1(
+        validated,
+        None,
+        Some(assets),
+        &BuiltinFragmentMaterialSupportV1,
+    )
 }
 
 /// Tessellates a validated packet through a bounded exact-signature cache.
@@ -2646,7 +2722,12 @@ pub fn tessellate_validated_frame_with_cache_v1(
     cache: &mut PreparedGeometryCacheV1,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     cache.begin_frame();
-    tessellate_validated_frame_inner_v1(validated, Some(cache), None)
+    tessellate_validated_frame_inner_v1(
+        validated,
+        Some(cache),
+        None,
+        &BuiltinFragmentMaterialSupportV1,
+    )
 }
 
 /// Prepares a validated packet through both the retained path cache and
@@ -2662,7 +2743,24 @@ pub fn tessellate_validated_frame_with_cache_and_assets_v1(
     assets: &dyn DecodedPngAssetResolverV1,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     cache.begin_frame();
-    tessellate_validated_frame_inner_v1(validated, Some(cache), Some(assets))
+    tessellate_validated_frame_inner_v1(
+        validated,
+        Some(cache),
+        Some(assets),
+        &BuiltinFragmentMaterialSupportV1,
+    )
+}
+
+/// Tessellates a validated packet against the exact application-owned
+/// fragment-material registry while retaining geometry and decoded assets.
+pub fn tessellate_validated_frame_with_cache_assets_and_fragment_materials_v1(
+    validated: ValidatedRenderPacketV1<'_>,
+    cache: &mut PreparedGeometryCacheV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+    fragment_materials: &dyn FragmentMaterialSupportV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    cache.begin_frame();
+    tessellate_validated_frame_inner_v1(validated, Some(cache), Some(assets), fragment_materials)
 }
 
 fn validate_fragment_material_frame_v1(packet: &RenderPacketV1) -> Result<(), PrepareFrameErrorV1> {
@@ -2700,6 +2798,7 @@ fn tessellate_validated_frame_inner_v1(
     validated: ValidatedRenderPacketV1<'_>,
     mut cache: Option<&mut PreparedGeometryCacheV1>,
     assets: Option<&dyn DecodedPngAssetResolverV1>,
+    fragment_materials: &dyn FragmentMaterialSupportV1,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     let packet = validated.packet;
     validate_fragment_material_frame_v1(packet)?;
@@ -2715,7 +2814,8 @@ fn tessellate_validated_frame_inner_v1(
         });
     }
     let phase_capacity = packet.draws.len().saturating_mul(2);
-    let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(phase_capacity);
+    let mut prepared =
+        PreparedFrameAccumulatorV1::with_phase_capacity(phase_capacity, fragment_materials);
     for draw in &packet.draws {
         if matches!(draw, RenderDrawV1::Image { .. }) {
             let assets = assets.ok_or_else(|| PrepareFrameErrorV1::Unsupported {
@@ -2799,7 +2899,14 @@ mod tests {
             green: 0.25,
             red: 0.5,
         };
-        let material = prepare_material(&color, None, 0.5, "draw:test").unwrap();
+        let material = prepare_material(
+            &color,
+            None,
+            0.5,
+            "draw:test",
+            &BuiltinFragmentMaterialSupportV1,
+        )
+        .unwrap();
         let alpha = 0.4;
 
         for (actual, expected) in material
@@ -3103,7 +3210,8 @@ mod tests {
 
     #[test]
     fn prepared_phase_rolls_back_geometry_when_tessellation_fails() {
-        let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(1);
+        let mut prepared =
+            PreparedFrameAccumulatorV1::with_phase_capacity(1, &BuiltinFragmentMaterialSupportV1);
         let error = prepared.append_phase(
             "draw:rollback",
             "entity:rollback",

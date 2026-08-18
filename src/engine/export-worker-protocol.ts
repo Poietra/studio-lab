@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { canvasPngAssetTransfersV1Schema } from "./canvas-png-assets";
+import { MAX_CANVAS_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES } from "./canvas-worker-protocol";
 
 /**
  * Page <-> export-worker protocol for the composed browser MP4 export
@@ -117,6 +118,10 @@ const exportMp4RequestV1Schema = z
       .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= MAX_EXPORT_WAV_BYTES)
       .optional(),
     assetPayloads: canvasPngAssetTransfersV1Schema,
+    fragmentMaterialRegistryJson: z
+      .instanceof(ArrayBuffer)
+      .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= MAX_CANVAS_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES)
+      .optional(),
     kind: z.literal("export-mp4"),
     profileJson: z.instanceof(ArrayBuffer),
     snapshotJson: z.instanceof(ArrayBuffer),

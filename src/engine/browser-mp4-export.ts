@@ -14,6 +14,11 @@ import {
   exportWorkerResponseV1Schema,
   MAX_EXPORT_WAV_BYTES,
 } from "./export-worker-protocol";
+import {
+  EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+  encodeFragmentMaterialRegistryV1,
+  type FragmentMaterialRegistryV1,
+} from "./fragment-material-registry";
 
 export const DEFAULT_BROWSER_MP4_EXPORT_PROFILE: ExportProfileV1 = parseExportProfileV1({
   codec: "h264-mp4",
@@ -37,6 +42,7 @@ export type BrowserMp4ExportInput = Readonly<{
   /** Optional local WAV attachment. It is transferred to, validated, and encoded in the worker. */
   audioWav?: ArrayBuffer;
   assetPayloads?: readonly CanvasPngAssetTransferV1[];
+  fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   /** Bounded per-frame progress reports from the Rust export loop (#723). */
   onProgress?: (progress: ExportProgressV1) => void;
   profile: ExportProfileV1;
@@ -77,6 +83,9 @@ export async function runBrowserMp4ExportV1(input: BrowserMp4ExportInput): Promi
   const encoder = new TextEncoder();
   const snapshotJson = encoder.encode(JSON.stringify(snapshot)).buffer;
   const profileJson = encoder.encode(canonicalExportProfileV1(profile)).buffer;
+  const fragmentMaterialRegistryJson = encodeFragmentMaterialRegistryV1(
+    input.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+  );
   const requestId = 1;
   if (input.audioWav && (input.audioWav.byteLength === 0 || input.audioWav.byteLength > MAX_EXPORT_WAV_BYTES)) {
     throw new BrowserMp4ExportRefused(`The WAV attachment must be between 1 byte and ${MAX_EXPORT_WAV_BYTES} bytes.`);
@@ -84,6 +93,7 @@ export async function runBrowserMp4ExportV1(input: BrowserMp4ExportInput): Promi
   const request: ExportWorkerRequestV1 = {
     ...(input.audioWav ? { audioWav: input.audioWav } : {}),
     assetPayloads: [...(input.assetPayloads ?? [])],
+    fragmentMaterialRegistryJson,
     kind: "export-mp4",
     profileJson,
     requestId,
@@ -142,8 +152,8 @@ export async function runBrowserMp4ExportV1(input: BrowserMp4ExportInput): Promi
         resolve({ kind: "exported", mp4: new Blob([response.bytes], { type: "video/mp4" }) });
       });
       // Transfer the potentially large WAV without a second main-thread copy.
-      if (input.audioWav) worker.postMessage(request, [input.audioWav]);
-      else worker.postMessage(request);
+      if (input.audioWav) worker.postMessage(request, [input.audioWav, fragmentMaterialRegistryJson]);
+      else worker.postMessage(request, [fragmentMaterialRegistryJson]);
       if (input.signal?.aborted) onAbort();
     });
   } finally {

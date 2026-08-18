@@ -19,6 +19,11 @@ import {
   POIETRA_CANVAS_WORKER_VERSION,
 } from "./canvas-worker-protocol";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
+import {
+  EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+  encodeFragmentMaterialRegistryV1,
+  type FragmentMaterialRegistryV1,
+} from "./fragment-material-registry";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
@@ -98,6 +103,7 @@ export class CanvasTelemetryRenderError extends CanvasWorkerClientError {
 export type InstallCanvasSceneInputV1 = Readonly<{
   assetPayloads?: readonly CanvasPngAssetTransferV1[];
   canvas: HTMLCanvasElement;
+  fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   revision: string;
   snapshot: SceneIrBundleV1;
 }>;
@@ -105,6 +111,7 @@ export type InstallCanvasSceneInputV1 = Readonly<{
 export type ReplaceCanvasSceneInputV1 = Readonly<{
   assetPayloads?: readonly CanvasPngAssetTransferV1[];
   baseRevision: string;
+  fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   revision: string;
   snapshot: SceneIrBundleV1;
 }>;
@@ -352,10 +359,14 @@ export class PoietraCanvasWorkerClient {
       throw validationError("The target canvas cannot transfer control to a Worker.");
     }
     this.state = "installing";
+    let fragmentMaterialRegistryJson: ArrayBuffer;
     let snapshotJson: ArrayBuffer;
     let preparedAssets: Awaited<ReturnType<typeof prepareCanvasPngAssetTransfersV1>>;
     try {
       const snapshot = await verifySnapshot(input.snapshot);
+      fragmentMaterialRegistryJson = encodeFragmentMaterialRegistryV1(
+        input.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+      );
       snapshotJson = encodeSnapshot(input.revision, snapshot);
       preparedAssets = await prepareCanvasPngAssetTransfersV1({
         decodeDimensions: this.decodePngDimensions,
@@ -381,6 +392,7 @@ export class PoietraCanvasWorkerClient {
         canvas,
         assetPayloads: preparedAssets.transfers,
         ...(this.evidence ? { captureFrameEvidence: true } : {}),
+        fragmentMaterialRegistryJson,
         kind: "install-canvas",
         requestId: this.takeRequestId(),
         revision: input.revision,
@@ -399,6 +411,7 @@ export class PoietraCanvasWorkerClient {
     try {
       await this.dispatch(request, ["canvas-ready"], "install", [
         canvas,
+        fragmentMaterialRegistryJson,
         snapshotJson,
         ...preparedAssets.transfers.map((asset) => asset.bytes),
       ]);
@@ -424,10 +437,14 @@ export class PoietraCanvasWorkerClient {
       throw new CanvasWorkerClientError("invalid-state", "The replacement base revision is not installed.");
     }
     this.state = "replacing";
+    let fragmentMaterialRegistryJson: ArrayBuffer;
     let snapshotJson: ArrayBuffer;
     let preparedAssets: Awaited<ReturnType<typeof prepareCanvasPngAssetTransfersV1>>;
     try {
       const snapshot = await verifySnapshot(input.snapshot);
+      fragmentMaterialRegistryJson = encodeFragmentMaterialRegistryV1(
+        input.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+      );
       snapshotJson = encodeSnapshot(input.revision, snapshot);
       preparedAssets = await prepareCanvasPngAssetTransfersV1({
         decodeDimensions: this.decodePngDimensions,
@@ -445,6 +462,7 @@ export class PoietraCanvasWorkerClient {
       const parsed = parseWorkerRequest({
         assetPayloads: preparedAssets.transfers,
         baseRevision: input.baseRevision,
+        fragmentMaterialRegistryJson,
         kind: "replace-scene",
         requestId: this.takeRequestId(),
         revision: input.revision,
@@ -463,6 +481,7 @@ export class PoietraCanvasWorkerClient {
     );
     try {
       await this.dispatch(request, ["canvas-ready"], "replace", [
+        fragmentMaterialRegistryJson,
         snapshotJson,
         ...preparedAssets.transfers.map((asset) => asset.bytes),
       ]);
