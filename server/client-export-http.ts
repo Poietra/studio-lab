@@ -9,7 +9,7 @@ import {
 } from "../src/collaboration/client-export-http-contract";
 import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import { accountUserIdSchemaV1 } from "./accounts/account-domain";
-import { HttpError, readRawBody, sendJson } from "./http/json";
+import { HttpError, sendJson } from "./http/json";
 import { streamHttpMediaV1 } from "./http/media-stream";
 import { isVerifiedManimPrincipal, type VerifiedManimPrincipal } from "./manim-request-principal";
 import type { ClientExportPublicationV1 } from "./storage/client-export-contract";
@@ -24,12 +24,16 @@ const UUID_V1 = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS_V1 = 30_000;
 const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS_V1 = 120_000;
 
+const MAX_ACTIVE_CLIENT_EXPORT_FINALIZES = 2;
+const CLIENT_EXPORT_FINALIZE_MEMORY_COPIES = 2;
+
 /**
- * One 128 MiB upload buffer may be alive per finalize request, so acceptance
- * is serialized behind a bounded FIFO permit (the same discipline as the
- * verified render-artifact publisher's publication queue).
+ * One request body plus one verifier copy per active request. The reader
+ * below writes directly into one fixed-size Buffer, so it never retains a
+ * chunk list and a concatenated copy at the same time.
  */
-const MAX_QUEUED_FINALIZES_V1 = 16;
+export const MAX_CLIENT_EXPORT_FINALIZE_PROCESS_MEMORY_BYTES =
+  MAX_ACTIVE_CLIENT_EXPORT_FINALIZES * CLIENT_EXPORT_FINALIZE_MEMORY_COPIES * MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1;
 
 export type ClientExportHttpServiceV1 = Readonly<{
   publisher: Pick<ClientExportPublisherV1, "publish">;
@@ -172,48 +176,140 @@ function publicationViewV1(publication: ClientExportPublicationV1) {
   };
 }
 
-class FinalizeQueueV1 {
-  #active = false;
-  readonly #waiters: Array<() => void> = [];
+type FinalizeAdmissionResult =
+  | Readonly<{ kind: "admitted"; release: () => void }>
+  | Readonly<{ kind: "refused"; reason: "process-memory" | "process-saturated" | "tenant-busy" }>;
 
-  async acquire(signal?: AbortSignal): Promise<(() => void) | null> {
-    signal?.throwIfAborted();
-    if (this.#active) {
-      if (this.#waiters.length >= MAX_QUEUED_FINALIZES_V1) return null;
-      await new Promise<void>((resolve, reject) => {
-        let settled = false;
-        const ready = () => {
-          if (settled) return;
-          settled = true;
-          signal?.removeEventListener("abort", aborted);
-          resolve();
-        };
-        const aborted = () => {
-          if (settled) return;
-          settled = true;
-          const index = this.#waiters.indexOf(ready);
-          if (index >= 0) this.#waiters.splice(index, 1);
-          reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
-        };
-        this.#waiters.push(ready);
-        signal?.addEventListener("abort", aborted, { once: true });
-        if (signal?.aborted) aborted();
-      });
-    } else {
-      this.#active = true;
+/** Process-wide admission: one upload per tenant and two tenants at once. */
+export class ClientExportFinalizeAdmission {
+  readonly #activeTenants = new Set<string>();
+  readonly #maxActive: number;
+  readonly #maxMemoryBytes: number;
+  #reservedMemoryBytes = 0;
+
+  constructor(
+    maxActive = MAX_ACTIVE_CLIENT_EXPORT_FINALIZES,
+    maxMemoryBytes = MAX_CLIENT_EXPORT_FINALIZE_PROCESS_MEMORY_BYTES,
+  ) {
+    if (!Number.isSafeInteger(maxActive) || maxActive < 1) {
+      throw new RangeError("Client export finalize maxActive must be a positive integer.");
     }
+    if (!Number.isSafeInteger(maxMemoryBytes) || maxMemoryBytes < 1) {
+      throw new RangeError("Client export finalize maxMemoryBytes must be a positive integer.");
+    }
+    this.#maxActive = maxActive;
+    this.#maxMemoryBytes = maxMemoryBytes;
+  }
+
+  acquire(tenantId: string, contentLength: number): FinalizeAdmissionResult {
+    if (!tenantId) throw new TypeError("Client export finalize tenant identity is required.");
+    if (
+      !Number.isSafeInteger(contentLength) ||
+      contentLength < 0 ||
+      contentLength > MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1
+    ) {
+      throw new RangeError("Client export finalize content length is out of bounds.");
+    }
+    if (this.#activeTenants.has(tenantId)) return { kind: "refused", reason: "tenant-busy" };
+    if (this.#activeTenants.size >= this.#maxActive) return { kind: "refused", reason: "process-saturated" };
+    const reservedMemoryBytes = contentLength * CLIENT_EXPORT_FINALIZE_MEMORY_COPIES;
+    if (this.#reservedMemoryBytes + reservedMemoryBytes > this.#maxMemoryBytes) {
+      return { kind: "refused", reason: "process-memory" };
+    }
+    this.#activeTenants.add(tenantId);
+    this.#reservedMemoryBytes += reservedMemoryBytes;
     let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const next = this.#waiters.shift();
-      if (next) next();
-      else this.#active = false;
+    return {
+      kind: "admitted",
+      release: () => {
+        if (released) return;
+        released = true;
+        this.#activeTenants.delete(tenantId);
+        this.#reservedMemoryBytes -= reservedMemoryBytes;
+      },
     };
   }
 }
 
-const finalizeQueue = new FinalizeQueueV1();
+const finalizeAdmission = new ClientExportFinalizeAdmission();
+
+function finalizeContentLength(request: IncomingMessage) {
+  const value = request.headers["content-length"];
+  if (value === undefined) {
+    request.resume();
+    throw new HttpError("Client export finalize requires a bounded Content-Length header.", 411);
+  }
+  if (!/^\d+$/u.test(value)) {
+    request.resume();
+    throw new HttpError("Client export finalize Content-Length is invalid.", 400);
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed > MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1) {
+    request.resume();
+    throw new HttpError("Request body is too large.", 413);
+  }
+  return parsed;
+}
+
+/** Reads exactly Content-Length bytes into one allocation; no Buffer.concat copy. */
+function readFinalizeBody(request: IncomingMessage, contentLength: number, signal?: AbortSignal) {
+  return new Promise<Buffer>((resolveBody, rejectBody) => {
+    const body = Buffer.allocUnsafe(contentLength);
+    let offset = 0;
+    let settled = false;
+    const cleanup = () => {
+      request.removeListener("aborted", onAborted);
+      request.removeListener("close", onClose);
+      request.removeListener("data", onData);
+      request.removeListener("end", onEnd);
+      request.removeListener("error", onError);
+      signal?.removeEventListener("abort", onSignalAborted);
+    };
+    const rejectOnce = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rejectBody(error);
+    };
+    const onAborted = () => rejectOnce(new HttpError("Request body was interrupted.", 400));
+    const onClose = () => {
+      if (!request.complete) rejectOnce(new HttpError("Request body was interrupted.", 400));
+    };
+    const onData = (chunk: Buffer | string) => {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (offset + bytes.byteLength > contentLength) {
+        request.resume();
+        rejectOnce(new HttpError("Request body does not match Content-Length.", 400));
+        return;
+      }
+      bytes.copy(body, offset);
+      offset += bytes.byteLength;
+    };
+    const onEnd = () => {
+      cleanup();
+      if (settled) return;
+      if (offset !== contentLength) {
+        settled = true;
+        rejectBody(new HttpError("Request body does not match Content-Length.", 400));
+        return;
+      }
+      settled = true;
+      resolveBody(body);
+    };
+    const onError = () => rejectOnce(new HttpError("Request body could not be read.", 400));
+    const onSignalAborted = () => {
+      request.resume();
+      rejectOnce(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+    };
+    request.on("aborted", onAborted);
+    request.on("close", onClose);
+    request.on("data", onData);
+    request.on("end", onEnd);
+    request.on("error", onError);
+    signal?.addEventListener("abort", onSignalAborted, { once: true });
+    if (signal?.aborted) onSignalAborted();
+  });
+}
 
 async function finalizeExportV1(
   service: ClientExportHttpServiceV1,
@@ -225,14 +321,17 @@ async function finalizeExportV1(
 ) {
   const subjectId = requireAccountSubjectV1(principal, request);
   requireSameOriginFinalizeMutationV1(request, options.expectedMutationOrigin);
-  const release = await finalizeQueue.acquire(options.requestSignal);
-  if (!release) {
+  const contentLength = finalizeContentLength(request);
+  options.requestSignal?.throwIfAborted();
+  const admission = finalizeAdmission.acquire(principal.tenantId, contentLength);
+  if (admission.kind === "refused") {
     request.resume();
-    throw new HttpError("The bounded client export publication queue is full.", 503);
+    const reason = admission.reason === "tenant-busy" ? "tenant is busy" : "process capacity is exhausted";
+    throw new HttpError(`Client export finalize admission refused: ${reason}.`, 503);
   }
   try {
     options.requestSignal?.throwIfAborted();
-    const body = await readRawBody(request, MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1);
+    const body = await readFinalizeBody(request, contentLength, options.requestSignal);
     let metadata: ClientExportFinalizeMetadataV1;
     let video: Uint8Array;
     try {
@@ -274,7 +373,7 @@ async function finalizeExportV1(
     }
     sendJson(response, result.replayed ? 200 : 201, { ...publicationViewV1(publication), replayed: result.replayed });
   } finally {
-    release();
+    admission.release();
   }
 }
 

@@ -7,14 +7,17 @@ import {
   CLIENT_EXPORT_FINALIZE_MEDIA_TYPE_V1,
   type ClientExportFinalizeMetadataV1,
   encodeClientExportFinalizeBodyV1,
+  MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1,
 } from "../src/collaboration/client-export-http-contract";
 import {
+  ClientExportFinalizeAdmission,
   type ClientExportHttpServiceV1,
   handleClientExportRequest,
   isClientExportFinalizeRequest,
   isClientExportRequest,
   isClientExportVideoRequest,
   isTenantCellStorageLaneClientExportRequest,
+  MAX_CLIENT_EXPORT_FINALIZE_PROCESS_MEMORY_BYTES,
 } from "./client-export-http";
 import { authenticateManimPrincipal } from "./manim-request-principal";
 import type { ClientExportPublicationV1 } from "./storage/client-export-contract";
@@ -37,7 +40,7 @@ const ENCODER_EVIDENCE = {
 } as const;
 const servers: ReturnType<typeof createServer>[] = [];
 
-function publication(): ClientExportPublicationV1 {
+function publication(tenantId = TENANT): ClientExportPublicationV1 {
   return {
     artifact: {
       artifactId: "40000000-0000-4000-8000-000000000004",
@@ -46,7 +49,7 @@ function publication(): ClientExportPublicationV1 {
         contentDigest: CONTENT_DIGEST,
         etag: "etag-1",
         mediaType: "video/mp4",
-        objectKey: clientExportObjectKeyV1(TENANT, CONTENT_DIGEST, OBJECT_LOCATOR_TOKEN),
+        objectKey: clientExportObjectKeyV1(tenantId, CONTENT_DIGEST, OBJECT_LOCATOR_TOKEN),
         objectLocatorToken: OBJECT_LOCATOR_TOKEN,
       },
     },
@@ -66,7 +69,7 @@ function publication(): ClientExportPublicationV1 {
     projectId: PROJECT,
     publicationId: PUBLICATION_ID,
     publishedAt: new Date("2026-08-16T00:00:00.000Z"),
-    tenantId: TENANT,
+    tenantId,
   };
 }
 
@@ -101,18 +104,21 @@ function asset() {
   };
 }
 
-function service(overrides: Partial<Record<"publish" | "publication" | "publicationVideo", unknown>> = {}) {
+function service(
+  overrides: Partial<Record<"publish" | "publication" | "publicationVideo", unknown>> = {},
+  tenantId = TENANT,
+) {
   return {
     publisher: {
       publish: vi.fn(async () =>
-        "publish" in overrides ? overrides.publish : { publication: publication(), replayed: false },
+        "publish" in overrides ? overrides.publish : { publication: publication(tenantId), replayed: false },
       ),
     },
     reader: {
       publication: vi.fn(async () => ("publication" in overrides ? overrides.publication : publication())),
       publicationVideo: vi.fn(async () => ("publicationVideo" in overrides ? overrides.publicationVideo : asset())),
     },
-    tenantId: TENANT,
+    tenantId,
   } as unknown as ClientExportHttpServiceV1 & {
     publisher: { publish: ReturnType<typeof vi.fn> };
     reader: { publication: ReturnType<typeof vi.fn>; publicationVideo: ReturnType<typeof vi.fn> };
@@ -215,6 +221,34 @@ describe("client export route predicates", () => {
   });
 });
 
+describe("ClientExportFinalizeAdmission", () => {
+  it("admits two distinct tenants, refuses same-tenant overlap, and releases exactly once", () => {
+    const admission = new ClientExportFinalizeAdmission(2, 1_000);
+    const first = admission.acquire("tenant-a", 100);
+    expect(first.kind).toBe("admitted");
+    expect(admission.acquire("tenant-a", 100)).toEqual({ kind: "refused", reason: "tenant-busy" });
+    const second = admission.acquire("tenant-b", 100);
+    expect(second.kind).toBe("admitted");
+    expect(admission.acquire("tenant-c", 1)).toEqual({ kind: "refused", reason: "process-saturated" });
+    if (first.kind !== "admitted" || second.kind !== "admitted") throw new Error("unreachable");
+    first.release();
+    first.release();
+    expect(admission.acquire("tenant-c", 1).kind).toBe("admitted");
+    second.release();
+  });
+
+  it("accounts for the body and verifier copy before reading an upload", () => {
+    const admission = new ClientExportFinalizeAdmission(2, 100);
+    const first = admission.acquire("tenant-a", 40);
+    expect(first.kind).toBe("admitted");
+    expect(admission.acquire("tenant-b", 11)).toEqual({ kind: "refused", reason: "process-memory" });
+    if (first.kind !== "admitted") throw new Error("unreachable");
+    first.release();
+    expect(admission.acquire("tenant-b", 11).kind).toBe("admitted");
+    expect(MAX_CLIENT_EXPORT_FINALIZE_PROCESS_MEMORY_BYTES).toBe(4 * MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1);
+  });
+});
+
 describe("authenticated client export HTTP handler", () => {
   it("accepts a fresh finalize envelope with 201 and the publication view", async () => {
     const fake = service();
@@ -255,7 +289,7 @@ describe("authenticated client export HTTP handler", () => {
     expect(result.body).toMatchObject({ replayed: true });
   });
 
-  it("removes an aborted finalize waiter without occupying the publication queue", async () => {
+  it("does not let a slow tenant block a different tenant", async () => {
     let releaseFirst!: () => void;
     const firstMayFinish = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -273,37 +307,52 @@ describe("authenticated client export HTTP handler", () => {
     });
     await vi.waitFor(() => expect(first.publisher.publish).toHaveBeenCalledOnce());
 
-    const abortedServerRequest = new AbortController();
-    const abortedClientRequest = new AbortController();
-    const second = service();
-    const secondPort = await listen(second, {
-      expectedMutationOrigin: ORIGIN,
-      requestSignal: abortedServerRequest.signal,
-    });
+    const second = service({}, "tenant-b");
+    const secondPort = await listen(second, { expectedMutationOrigin: ORIGIN }, await principal(SUBJECT, "tenant-b"));
     const secondRequest = send(secondPort, `/api/projects/${PROJECT}/exports`, {
       body: encodeClientExportFinalizeBodyV1(metadata(), VIDEO),
       headers: finalizeHeaders(),
       method: "POST",
-      signal: abortedClientRequest.signal,
     });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(second.publisher.publish).not.toHaveBeenCalled();
-    abortedServerRequest.abort(new Error("request cancelled"));
-    abortedClientRequest.abort();
-    await expect(secondRequest).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(second.publisher.publish).toHaveBeenCalledOnce());
+    await expect(secondRequest).resolves.toMatchObject({ status: 201 });
+    releaseFirst();
+    await expect(firstRequest).resolves.toMatchObject({ status: 201 });
+  });
 
-    const third = service();
-    const thirdPort = await listen(third, { expectedMutationOrigin: ORIGIN });
-    const thirdRequest = send(thirdPort, `/api/projects/${PROJECT}/exports`, {
+  it("fails fast when the same tenant already has a finalize in flight", async () => {
+    let releaseFirst!: () => void;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const first = service();
+    vi.mocked(first.publisher.publish).mockImplementation(async () => {
+      await firstMayFinish;
+      return { publication: publication(), replayed: false };
+    });
+    const firstPort = await listen(first, { expectedMutationOrigin: ORIGIN });
+    const firstRequest = send(firstPort, `/api/projects/${PROJECT}/exports`, {
       body: encodeClientExportFinalizeBodyV1(metadata(), VIDEO),
       headers: finalizeHeaders(),
       method: "POST",
     });
-    releaseFirst();
+    await vi.waitFor(() => expect(first.publisher.publish).toHaveBeenCalledOnce());
 
+    const second = service();
+    const secondPort = await listen(second, { expectedMutationOrigin: ORIGIN });
+    await expect(
+      send(secondPort, `/api/projects/${PROJECT}/exports`, {
+        body: encodeClientExportFinalizeBodyV1(metadata(), VIDEO),
+        headers: finalizeHeaders(),
+        method: "POST",
+      }),
+    ).resolves.toMatchObject({
+      body: { error: "Client export finalize admission refused: tenant is busy." },
+      status: 503,
+    });
+    expect(second.publisher.publish).not.toHaveBeenCalled();
+    releaseFirst();
     await expect(firstRequest).resolves.toMatchObject({ status: 201 });
-    await vi.waitFor(() => expect(third.publisher.publish).toHaveBeenCalledOnce(), { timeout: 1_000 });
-    await expect(thirdRequest).resolves.toMatchObject({ status: 201 });
   });
 
   it("rejects a metadata project that does not match the path with 409", async () => {
