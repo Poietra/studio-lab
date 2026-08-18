@@ -487,7 +487,25 @@ describe("Scene authoring WASM adapter", () => {
       ],
       insertions: [],
       motions: [],
-      mutations: [],
+      mutations: [
+        {
+          entityId: "entity:arrow",
+          interval: { end: 0, start: 0 },
+          kind: "opacity",
+          operationId: "opacity:arrow",
+          transactionId: "opacity:arrow",
+          value: 0.4,
+        },
+        {
+          entityId: "entity:arrow",
+          from: 0,
+          interval: { end: 0, start: 0 },
+          kind: "rotation",
+          operationId: "rotation:arrow",
+          to: Math.PI / 6,
+          transactionId: "rotation:arrow",
+        },
+      ],
       projectedDuration: 2,
       removals: [],
     } as const;

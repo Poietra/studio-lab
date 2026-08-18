@@ -739,8 +739,13 @@ export function createDirectManipulationRotationProgram(
   if (!Number.isFinite(input.angleRadians)) throw new Error("Object rotation must be a finite angle.");
   const normalizedAngle = Math.atan2(Math.sin(input.angleRadians), Math.cos(input.angleRadians));
   if (Math.abs(normalizedAngle) <= 1e-12) throw new Error("Object rotation must change the current angle.");
-  if (input.start !== 0 || input.capturedPlayhead !== 0) {
-    throw new Error("Object rotation is currently available only at source time zero.");
+  if (
+    !Number.isFinite(input.start) ||
+    !Number.isFinite(input.capturedPlayhead) ||
+    input.start < 0 ||
+    input.start > input.scene.duration
+  ) {
+    throw new Error("Object rotation requires a valid source time inside the Scene.");
   }
   const sourceAnchor =
     Math.abs(input.start - input.capturedPlayhead) < 0.001
@@ -793,22 +798,28 @@ export function createDirectManipulationOpacityProgram(
   if (!Number.isFinite(input.opacity) || input.opacity < 0 || input.opacity > 1) {
     throw new Error("Object opacity must be a finite number from 0 to 1.");
   }
-  if (input.start !== 0 || input.capturedPlayhead !== 0) {
-    throw new Error("Object opacity is currently available only at source time zero.");
+  if (
+    !Number.isFinite(input.start) ||
+    !Number.isFinite(input.capturedPlayhead) ||
+    input.start < 0 ||
+    input.start > input.scene.duration
+  ) {
+    throw new Error("Object opacity requires a valid source time inside the Scene.");
   }
-  const resolution = resolveTimeAnchorOnce(
-    { kind: "playhead", referenceSeconds: input.capturedPlayhead },
-    {
-      capturedPlayhead: input.capturedPlayhead,
-      sceneDuration: input.scene.duration,
-    },
-  );
+  const sourceAnchor =
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute" as const, seconds: input.start };
+  const resolution = resolveTimeAnchorOnce(sourceAnchor, {
+    capturedPlayhead: input.capturedPlayhead,
+    sceneDuration: input.scene.duration,
+  });
   if (resolution.kind === "invalid") throw new Error(resolution.message);
   const operation: SceneEditOperation = {
     dependsOn: [],
     entityId: input.entityId,
     id: operationId(input.transactionId, "set-opacity"),
-    interval: { end: 0, start: 0 },
+    interval: { end: input.start, start: input.start },
     key: "appearance",
     kind: "SetProperty",
     provenance: provenance("direct-manipulation", ["opacity control", "absolute object opacity"]),
@@ -820,7 +831,7 @@ export function createDirectManipulationOpacityProgram(
       intentCount: 1,
       loweringStatus: "supported",
       operations: [operation],
-      provenance: provenance("direct-manipulation", ["exact Runtime Trace appearance constraint"]),
+      provenance: provenance("direct-manipulation", ["absolute static appearance constraint"]),
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
       transactionId: input.transactionId,

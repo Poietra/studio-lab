@@ -511,8 +511,8 @@ export function StudioInspector({
                       step="0.05"
                       title={
                         opacityAvailable
-                          ? "Set the source object's absolute opacity"
-                          : "Opacity requires a static updater-free Runtime Trace binding at t=0"
+                          ? "Set the object's absolute opacity"
+                          : "Opacity requires a Studio-created object or a static updater-free source binding"
                       }
                       type="number"
                     />
@@ -567,8 +567,8 @@ export function StudioInspector({
                       onClick={() => onEntityRotate(selectedEntity.id, (degrees * Math.PI) / 180)}
                       title={
                         rotationAvailable
-                          ? `Create a ${degrees > 0 ? "+" : ""}${degrees}° source rotation draft`
-                          : "Rotation requires an exact updater-free Runtime Trace binding at t=0"
+                          ? `Create a ${degrees > 0 ? "+" : ""}${degrees}° rotation draft`
+                          : "Rotation requires a Studio-created object without move, resize, scale, or motion edits, or an exact updater-free source binding"
                       }
                       type="button"
                     >

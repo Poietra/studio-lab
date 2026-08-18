@@ -212,6 +212,14 @@ function normalizedStudioCreationOperation(
       position: isPointValue(operation.value) ? operation.value : null,
     };
   }
+  if (operation.kind === "SetProperty" && operation.key === "appearance") {
+    return {
+      ...common,
+      alpha: typeof operation.value === "number" ? operation.value : null,
+      entityId: operation.entityId,
+      kind: "opacity",
+    };
+  }
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {
     return { ...common, entityId: operation.entityId, kind: "fade-in", persistent: operation.persistent };
   }
@@ -226,6 +234,17 @@ function normalizedStudioCreationOperation(
       from: typeof operation.from === "number" ? operation.from : null,
       kind: "uniform-scale",
       relativeFactor: operation.relativeFactor ?? null,
+      to: typeof operation.to === "number" ? operation.to : null,
+    };
+  }
+  if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
+    return {
+      ...common,
+      controlPresent: operation.control !== undefined,
+      entityId: operation.entityId,
+      from: typeof operation.from === "number" ? operation.from : null,
+      kind: "rotation",
+      relativeDelta: operation.relativeDelta ?? null,
       to: typeof operation.to === "number" ? operation.to : null,
     };
   }

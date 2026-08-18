@@ -771,6 +771,63 @@ describe("Manim render request lowering", () => {
     );
   });
 
+  it("routes created-object opacity and rotation through the same snapshot authorization", async () => {
+    const baseCreation = createCircleProgram("created-before-appearance");
+    const creation: CanonicalEditProgram = {
+      ...baseCreation,
+      operations: baseCreation.operations.map((operation) =>
+        operation.kind === "CreateEntity"
+          ? { ...operation, entity: { ...operation.entity, dimensions: { radius: 1 } } }
+          : operation,
+      ),
+    };
+    const createdEntityId = "tx:created-before-appearance/entity:circle";
+    const followup = (transactionId: string, operation: CanonicalEditOperation): CanonicalEditProgram => ({
+      anchor: creation.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId,
+      version: 1,
+    });
+    const opacity = followup("created-opacity", {
+      dependsOn: [],
+      entityId: createdEntityId,
+      id: "created-opacity/operation",
+      interval: { end: 5, start: 5 },
+      key: "appearance",
+      kind: "SetProperty",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      value: 0.4,
+    });
+    const rotation = followup("created-rotation", {
+      dependsOn: [],
+      easing: "smooth",
+      entityId: createdEntityId,
+      from: 0,
+      id: "created-rotation/operation",
+      interval: { end: 5, start: 5 },
+      key: "rotation",
+      kind: "AnimateProperty",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      relativeDelta: Math.PI / 6,
+      to: Math.PI / 6,
+    });
+    const programs = [creation, opacity, rotation];
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+
+    const result = await lower({ ...request(creation), programs }, sceneSource, async (input) => {
+      authorizations.push(input);
+    });
+
+    expect(authorizations[0]?.programs).toEqual(programs);
+    expect(result.lowered.source).toContain(".set_opacity(0.4)");
+    expect(result.lowered.source).toContain(".rotate(0.5236)");
+  });
+
   it("rejects a created entity plus an imported transform as an unsupported mixed family", async () => {
     const creation = createCircleProgram("created-with-imported-transform");
     const importedMove = staticRootMoveProgram("move-imported-after-create");
