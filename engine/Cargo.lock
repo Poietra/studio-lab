@@ -1072,6 +1072,7 @@ dependencies = [
 name = "poietra-render-wgpu"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "lyon_tessellation",
  "naga",
  "png",
@@ -1083,6 +1084,8 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.19",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "wgpu",
 ]
 
