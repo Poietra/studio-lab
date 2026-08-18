@@ -308,7 +308,7 @@ describe("Studio draft validation boundary", () => {
     ]);
   });
 
-  it("creates one finite rotation and rejects identity angles before validation", () => {
+  it("creates finite construction-time rotations and rejects identity angles before validation", () => {
     const validation = createDirectManipulationRotationProgram({
       angleRadians: Math.PI / 4,
       capturedPlayhead: 0,
@@ -344,7 +344,7 @@ describe("Studio draft validation boundary", () => {
       });
     expect(() => create(0)).toThrow(/must change the current angle/i);
     expect(() => create(2 * Math.PI)).toThrow(/must change the current angle/i);
-    expect(() =>
+    expect(
       createDirectManipulationRotationProgram({
         angleRadians: Math.PI / 4,
         capturedPlayhead: 5,
@@ -353,7 +353,10 @@ describe("Studio draft validation boundary", () => {
         start: 5,
         transactionId: "rotation-after-zero",
       }),
-    ).toThrow(/source time zero/i);
+    ).toMatchObject({
+      kind: "valid",
+      program: { operations: [{ interval: { end: 5, start: 5 } }] },
+    });
     expect(
       programExecutionCapabilities({
         ...validation.program,
@@ -362,7 +365,7 @@ describe("Studio draft validation boundary", () => {
           interval: { end: 5, start: 5 },
         })),
       }),
-    ).toMatchObject({ apply: "blocked", lowering: "illustrative" });
+    ).toMatchObject({ apply: "supported", lowering: "supported" });
   });
 
   it("creates one bounded initial opacity edit", () => {
@@ -398,7 +401,7 @@ describe("Studio draft validation boundary", () => {
         transactionId: "opacity-out-of-range",
       }),
     ).toThrow(/0 to 1/i);
-    expect(() =>
+    expect(
       createDirectManipulationOpacityProgram({
         capturedPlayhead: 5,
         entityId: "equation_1",
@@ -407,7 +410,10 @@ describe("Studio draft validation boundary", () => {
         start: 5,
         transactionId: "opacity-after-zero",
       }),
-    ).toThrow(/source time zero/i);
+    ).toMatchObject({
+      kind: "valid",
+      program: { operations: [{ interval: { end: 5, start: 5 } }] },
+    });
   });
 
   it("rejects a resize shape that does not match its target", () => {

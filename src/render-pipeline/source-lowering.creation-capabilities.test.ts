@@ -69,6 +69,64 @@ describe("Canonical EditProgram source lowering", () => {
     expect(imported?.runtimeSceneState.objectGraph.entities["tx:manual-shapes/entity:shape-3"]?.type).toBe("Line");
   });
 
+  it("lowers static opacity and rotation follow-ups onto one Studio-created variable", () => {
+    const entityId = "tx:created-appearance/entity:circle";
+    const create = canonicalProgram(
+      [
+        {
+          ...operationBase("create-circle", 7),
+          entity: {
+            dimensions: { radius: 1 },
+            id: entityId,
+            lifetime: { end: null, start: 7 },
+            type: "Circle",
+          },
+          kind: "CreateEntity",
+        },
+      ],
+      "created-appearance",
+    );
+    const opacity = canonicalProgram(
+      [
+        {
+          ...operationBase("set-created-opacity", 7),
+          entityId,
+          key: "appearance",
+          kind: "SetProperty",
+          value: 0.4,
+        },
+      ],
+      "created-opacity",
+    );
+    const rotation = canonicalProgram(
+      [
+        {
+          ...operationBase("rotate-created", 7),
+          easing: "smooth",
+          entityId,
+          from: 0,
+          key: "rotation",
+          kind: "AnimateProperty",
+          relativeDelta: Math.PI / 6,
+          to: Math.PI / 6,
+        },
+      ],
+      "created-rotation",
+    );
+
+    const lowered = lowerCanonicalProgramBatchSource(
+      source,
+      request(create, []),
+      [create, opacity, rotation].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.insertedCode).toContain("poietra_created_appearance_1 = Circle(radius=1)");
+    expect(lowered.insertedCode).toContain("poietra_created_appearance_1.set_opacity(0.4)");
+    expect(lowered.insertedCode).toContain("poietra_created_appearance_1.rotate(0.5236)");
+  });
+
   it("lowers a Scene duration extension to an explicit wait", () => {
     const wait: CanonicalEditOperation = {
       ...operationBase("extend-duration", 7, 10),

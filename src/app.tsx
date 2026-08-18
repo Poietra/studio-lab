@@ -1022,9 +1022,45 @@ export function App({
     const candidate = runtimeTraceEditCandidateFor(entityId);
     return candidate && Math.abs(candidate.sourceAnchor - sourceAnchor) < 0.0005 ? candidate : null;
   };
+  const studioCreationProjectionEntityFor = (entityId: string | null | undefined) =>
+    entityId == null
+      ? null
+      : (workspaceCreationProjection?.entities.find((entity) => entity.entityId === entityId) ?? null);
+  const studioCreationAppearanceAuthorityFor = (entityId: string | null | undefined) => {
+    const entity = studioCreationProjectionEntityFor(entityId);
+    if (!entity) return null;
+    const creationProgram = previewEditRecords.find(
+      ({ program }) => program.transactionId === entity.transactionId,
+    )?.program;
+    if (!creationProgram) return null;
+    const rotationBlocked = previewEditRecords.some(({ program }) =>
+      program.operations.some((operation) => {
+        if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entity.entityId);
+        if (!("entityId" in operation) || operation.entityId !== entity.entityId) return false;
+        if (
+          program.transactionId === entity.transactionId &&
+          operation.kind === "SetProperty" &&
+          operation.key === "position"
+        )
+          return false;
+        return (
+          operation.kind === "ResizeEntity" ||
+          (operation.kind === "SetProperty" && operation.key === "position") ||
+          (operation.kind === "AnimateProperty" && operation.key === "scale")
+        );
+      }),
+    );
+    return {
+      entity,
+      rotationAvailable: !rotationBlocked,
+      sourceAnchor: creationProgram.anchor.resolvedSeconds,
+    };
+  };
   const boundedRuntimeEditTargetIds = new Set(runtimeTraceEditCandidates.map(({ studioEntityId }) => studioEntityId));
   const boundedRuntimeMutationIsLocked = (entityId: string) =>
-    boundedRuntimeEditTargetIds.size > 0 && !boundedRuntimeEditTargetIds.has(entityId);
+    boundedRuntimeEditTargetIds.size > 0 &&
+    !boundedRuntimeEditTargetIds.has(entityId) &&
+    studioCreationProjectionEntityFor(entityId) === null;
   const {
     beginRequest: beginEditorRevisionRequest,
     blockDurationAuthority,
@@ -2939,9 +2975,14 @@ export function App({
 
   function rotateEntityFromInspector(entityId: string, angleRadians: number) {
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
     const authority = runtimeTraceProjectionAuthorityFor(entityId);
-    if (!authority?.capabilities.rotation) {
-      setDraftError("Rotation currently requires one exact updater-free Runtime Trace binding at source time zero.");
+    if (createdAuthority && !createdAuthority.rotationAvailable) {
+      setDraftError("Rotate this object before adding a move, resize, or scale edit.");
+      return false;
+    }
+    if (!createdAuthority && !authority?.capabilities.rotation) {
+      setDraftError("Rotation requires a Studio-created object or one exact updater-free Runtime Trace binding.");
       return false;
     }
     const gestureContext = directGestureContext();
@@ -2958,17 +2999,24 @@ export function App({
       sourcePrograms: gestureContext.sourcePrograms,
       targetEntityIds: [entityId],
     });
-    if (!anchor || anchor.sourceTime !== 0) return false;
+    if (
+      !anchor ||
+      (createdAuthority
+        ? Math.abs(anchor.sourceTime - createdAuthority.sourceAnchor) >= 0.0005
+        : anchor.sourceTime !== 0)
+    )
+      return false;
+    const sourceTime = createdAuthority?.sourceAnchor ?? 0;
     try {
       const validation = createDirectManipulationRotationProgram({
         angleRadians,
-        capturedPlayhead: 0,
+        capturedPlayhead: sourceTime,
         entityId,
-        scene: projectStudioPreviewRuntimeTraceValidationScene(sourceScene, authority),
-        start: 0,
+        scene: createdAuthority ? sourceScene : projectStudioPreviewRuntimeTraceValidationScene(sourceScene, authority),
+        start: sourceTime,
         transactionId: `studio-rotation-input-${crypto.randomUUID()}`,
       });
-      return acceptDirectManipulationDraft(validation, gestureContext, 0);
+      return acceptDirectManipulationDraft(validation, gestureContext, sourceTime);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The object could not be rotated.");
       return false;
@@ -2977,16 +3025,23 @@ export function App({
 
   function setEntityOpacityFromInspector(entityId: string, opacity: number) {
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
     const authority = runtimeTraceProjectionAuthorityFor(entityId);
-    if (!authority?.capabilities.paintOpacity || !("baseOpacity" in authority)) {
-      setDraftError("Opacity currently requires one exact updater-free Runtime Trace binding with static paint.");
+    if (!createdAuthority && (!authority?.capabilities.paintOpacity || !("baseOpacity" in authority))) {
+      setDraftError("Opacity requires a Studio-created object or one exact updater-free Runtime Trace binding.");
       return false;
     }
     if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
       setDraftError("Opacity must be a number from 0 to 1.");
       return false;
     }
-    if (authority.baseOpacity !== null && Math.abs(authority.baseOpacity - opacity) < 0.0005) return false;
+    const entity = editableEntities.find((candidate) => candidate.id === entityId);
+    const baseOpacity = createdAuthority
+      ? (entity?.opacity ?? null)
+      : authority && "baseOpacity" in authority
+        ? authority.baseOpacity
+        : null;
+    if (baseOpacity !== null && baseOpacity !== undefined && Math.abs(baseOpacity - opacity) < 0.0005) return false;
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return false;
     const sourceScene = projectRuntimeSceneToSourceTimeline(
@@ -3001,17 +3056,24 @@ export function App({
       sourcePrograms: gestureContext.sourcePrograms,
       targetEntityIds: [entityId],
     });
-    if (!anchor || anchor.sourceTime !== 0) return false;
+    if (
+      !anchor ||
+      (createdAuthority
+        ? Math.abs(anchor.sourceTime - createdAuthority.sourceAnchor) >= 0.0005
+        : anchor.sourceTime !== 0)
+    )
+      return false;
+    const sourceTime = createdAuthority?.sourceAnchor ?? 0;
     try {
       const validation = createDirectManipulationOpacityProgram({
-        capturedPlayhead: 0,
+        capturedPlayhead: sourceTime,
         entityId,
         opacity,
-        scene: projectStudioPreviewRuntimeTraceValidationScene(sourceScene, authority),
-        start: 0,
+        scene: createdAuthority ? sourceScene : projectStudioPreviewRuntimeTraceValidationScene(sourceScene, authority),
+        start: sourceTime,
         transactionId: `studio-opacity-input-${crypto.randomUUID()}`,
       });
-      return acceptDirectManipulationDraft(validation, gestureContext, 0);
+      return acceptDirectManipulationDraft(validation, gestureContext, sourceTime);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The object opacity could not be changed.");
       return false;
@@ -3351,6 +3413,10 @@ export function App({
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
   const selectedRuntimeTraceEditAuthority = runtimeTraceProjectionAuthorityFor(selectedEntity?.id);
   const selectedRuntimeTraceEditCapabilities = selectedRuntimeTraceEditAuthority?.capabilities ?? null;
+  const selectedStudioCreationAppearanceAuthority = studioCreationAppearanceAuthorityFor(selectedEntity?.id);
+  const selectedStudioCreationAppearanceAtAnchor =
+    selectedStudioCreationAppearanceAuthority !== null &&
+    Math.abs(sourceCurrentTime - selectedStudioCreationAppearanceAuthority.sourceAnchor) < 0.0005;
   const selectedOpacityAuthority =
     selectedRuntimeTraceEditAuthority &&
     selectedRuntimeTraceEditCapabilities?.paintOpacity &&
@@ -3858,9 +3924,17 @@ export function App({
               renderCandidateUnavailableReason={renderCandidateUnavailableReason}
               renderSession={activeProjectId ? (renderSessions[activeProjectId] ?? null) : null}
               replacingAppliedProgram={editingAppliedProgram !== null}
-              opacityAvailable={selectedOpacityAuthority !== null}
-              opacityValue={selectedOpacityAuthority?.baseOpacity ?? null}
-              rotationAvailable={selectedRuntimeTraceEditCapabilities?.rotation === true}
+              opacityAvailable={selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null}
+              opacityValue={
+                selectedStudioCreationAppearanceAtAnchor
+                  ? (selectedEntity?.opacity ?? null)
+                  : (selectedOpacityAuthority?.baseOpacity ?? null)
+              }
+              rotationAvailable={
+                (selectedStudioCreationAppearanceAtAnchor &&
+                  selectedStudioCreationAppearanceAuthority.rotationAvailable) ||
+                selectedRuntimeTraceEditCapabilities?.rotation === true
+              }
               selectedEntity={selectedEntity}
               sourceExport={
                 activeProjectId && activeScene

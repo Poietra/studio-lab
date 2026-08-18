@@ -99,8 +99,9 @@ function animatePropertyExecution(
     operation.key === "rotation" &&
     operation.control === undefined &&
     operation.relativeFactor === undefined &&
-    operation.interval.start === 0 &&
-    operation.interval.end === 0 &&
+    operation.interval.start === operation.interval.end &&
+    Number.isFinite(operation.interval.start) &&
+    operation.interval.start >= 0 &&
     operation.from === 0 &&
     finiteNonNoopRotationDelta(operation.relativeDelta) &&
     operation.to === operation.relativeDelta

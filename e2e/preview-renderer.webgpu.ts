@@ -129,6 +129,26 @@ async function waitForNewPresentedFrame(page: Page, previous: Readonly<{ packet:
   return retainedFrameIdentity(page);
 }
 
+async function waitForNewPresentedRevision(page: Page, previousRevision: string) {
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  await expect
+    .poll(
+      async () => {
+        const [phase, revision] = await Promise.all([
+          canvasRoot.getAttribute("data-preview-renderer"),
+          canvasRoot.getAttribute("data-preview-revision"),
+        ]);
+        return phase === "presented" && revision && revision !== previousRevision
+          ? "presented"
+          : JSON.stringify({ phase, revision });
+      },
+      { timeout: 30_000 },
+    )
+    .toBe("presented");
+  await expectPaintFreeInteractionOverlay(page);
+  return retainedFrameIdentity(page);
+}
+
 async function captureHostEvidence(
   page: Page,
   points: readonly Readonly<{ fractionX: number; fractionY: number }>[],
@@ -279,6 +299,103 @@ test("creates an Arrow through the canonical WebGPU preview", async ({ page }) =
   await expectPresented(page);
   await expect(arrow).toHaveCount(0);
   await expect(canvasRoot).toHaveAttribute("data-preview-revision", pristineFrame.revision);
+});
+
+test("applies created Rectangle opacity and rotation through the canonical WebGPU preview", async ({ page }) => {
+  let localExportPreflights = 0;
+  await page.route("**/api/manim/projects/preview-harness/export", async (route) => {
+    localExportPreflights += 1;
+    await route.fulfill({
+      body: "from manim import *\n",
+      headers: {
+        "content-disposition": 'attachment; filename="studio_mathtex.poietra.py"',
+        "content-type": "text/x-python; charset=utf-8",
+        "x-poietra-project-id": "preview-harness",
+      },
+      status: 200,
+    });
+  });
+  await page.goto(`/${MATHTEX_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  await page.getByLabel("Active imported Scene").selectOption({
+    label: "studio_mathtex.py · StudioMathTexPreview",
+  });
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expectPresented(page);
+  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
+
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const playhead = page.getByRole("slider", { name: "Scene playhead" });
+  await playhead.fill("0");
+  const pristineFrame = await retainedFrameIdentity(page);
+  await page.getByRole("button", { name: /Insert rectangle/ }).click();
+  await canvasRoot.click({ position: { x: 400, y: 250 } });
+  await waitForNewPresentedFrame(page, pristineFrame);
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+
+  await playhead.fill("0.4");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.4");
+  const rectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
+  await rectangle.click();
+  await expect(rectangle).toHaveAttribute("aria-pressed", "true");
+  const entityId = await rectangle.getAttribute("data-studio-entity");
+  if (!entityId) throw new Error("The Studio-created Rectangle has no canonical entity identity.");
+  const wrapper = page.locator(`[data-studio-entity-wrapper="${entityId}"]`);
+  const initialWidth = Number(await wrapper.getAttribute("data-studio-entity-width"));
+  const initialHeight = Number(await wrapper.getAttribute("data-studio-entity-height"));
+  expect(initialWidth).toBeGreaterThan(0);
+  expect(initialHeight).toBeGreaterThan(0);
+
+  const opacity = page.getByLabel("Opacity Rectangle");
+  await expect(opacity).toBeEnabled();
+  await expect(opacity).toHaveValue("1");
+  const beforeOpacity = await retainedFrameIdentity(page);
+  await opacity.fill("0.25");
+  await opacity.press("Enter");
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  const opacityFrame = await waitForNewPresentedRevision(page, beforeOpacity.revision);
+  expect(opacityFrame.revision).not.toBe(beforeOpacity.revision);
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  const opacityAppliedFrame = await waitForNewPresentedRevision(page, opacityFrame.revision);
+  await expect(opacity).toHaveValue("0.25");
+
+  const beforeRotation = opacityAppliedFrame;
+  const rotate = page.getByRole("button", {
+    name: "Rotate Rectangle counterclockwise by 15 degrees",
+  });
+  await expect(rotate).toBeEnabled();
+  await rotate.click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  const rotationFrame = await waitForNewPresentedRevision(page, beforeRotation.revision);
+  expect(rotationFrame.revision).not.toBe(beforeRotation.revision);
+  await expect
+    .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))
+    .toBeGreaterThan(initialWidth);
+  await expect
+    .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-height")))
+    .toBeGreaterThan(initialHeight);
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  const rotationAppliedFrame = await waitForNewPresentedRevision(page, rotationFrame.revision);
+  await expect(opacity).toHaveValue("0.25");
+  await playhead.fill("0.2");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.2");
+  await expect
+    .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))
+    .toBeCloseTo(initialWidth);
+  await expect
+    .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-height")))
+    .toBeCloseTo(initialHeight);
+  await playhead.fill("0.4");
+  await expect
+    .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-width")))
+    .toBeGreaterThan(initialWidth);
+  await expect(canvasRoot).toHaveAttribute("data-preview-revision", rotationAppliedFrame.revision);
+  expect(localExportPreflights).toBe(3);
 });
 
 test("presents exactly correlated WebGPU frames with a paint-free interaction overlay", async ({ page }) => {

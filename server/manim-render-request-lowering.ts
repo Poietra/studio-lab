@@ -84,6 +84,8 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
     return (
       operation.kind === "ResizeEntity" ||
       (operation.kind === "SetProperty" && operation.key === "position") ||
+      (operation.kind === "SetProperty" && operation.key === "appearance") ||
+      (operation.kind === "AnimateProperty" && operation.key === "rotation") ||
       (operation.kind === "AnimateProperty" && operation.key === "scale") ||
       (operation.kind === "ChangePresence" &&
         (operation.effect === "fade-in" || (operation.effect === "remove" && operation.persistent)))

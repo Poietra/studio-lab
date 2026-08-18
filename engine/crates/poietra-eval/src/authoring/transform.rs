@@ -216,6 +216,52 @@ pub(super) fn apply_world_axis_scale(
     };
 }
 
+pub(super) fn apply_world_rotation(
+    transform: &mut poietra_scene_ir::AffineTransformV1,
+    angle_radians: f64,
+    pivot: &PointV1,
+) {
+    let cosine = angle_radians.cos();
+    let sine = angle_radians.sin();
+    *transform = poietra_scene_ir::AffineTransformV1 {
+        m11: cosine * transform.m11 - sine * transform.m21,
+        m12: cosine * transform.m12 - sine * transform.m22,
+        m21: sine * transform.m11 + cosine * transform.m21,
+        m22: sine * transform.m12 + cosine * transform.m22,
+        tx: pivot.x + cosine * (transform.tx - pivot.x) - sine * (transform.ty - pivot.y),
+        ty: pivot.y + sine * (transform.tx - pivot.x) + cosine * (transform.ty - pivot.y),
+    };
+}
+
+#[allow(
+    clippy::float_cmp,
+    reason = "exact stored paint alpha determines whether the canonical static mutation changed state"
+)]
+pub(super) fn set_vector_paint_alpha(
+    appearance: &mut SceneAppearanceV1,
+    alpha: f64,
+) -> Option<bool> {
+    let SceneAppearanceV1::Vector { fill, stroke, .. } = appearance else {
+        return None;
+    };
+    if fill.is_none() && stroke.is_none() {
+        return None;
+    }
+    let changed = fill
+        .as_ref()
+        .is_some_and(|paint| paint.color.alpha != alpha)
+        || stroke
+            .as_ref()
+            .is_some_and(|paint| paint.color.alpha != alpha);
+    if let Some(fill) = fill {
+        fill.color.alpha = alpha;
+    }
+    if let Some(stroke) = stroke {
+        stroke.color.alpha = alpha;
+    }
+    Some(changed)
+}
+
 pub(super) fn has_animated_transform(scene: &poietra_scene_ir::SceneIrV1, entity_id: &str) -> bool {
     scene.animation_channels.iter().any(|channel| {
         matches!(
@@ -612,20 +658,7 @@ impl EngineSessionV1 {
             return Err(RotateSceneEntityError::TargetIsNotRoot(command.entity_id));
         }
 
-        let cosine = command.angle_radians.cos();
-        let sine = command.angle_radians.sin();
-        let transform = &target.transform;
-        target.transform = poietra_scene_ir::AffineTransformV1 {
-            m11: cosine * transform.m11 - sine * transform.m21,
-            m12: cosine * transform.m12 - sine * transform.m22,
-            m21: sine * transform.m11 + cosine * transform.m21,
-            m22: sine * transform.m12 + cosine * transform.m22,
-            tx: command.pivot.x + cosine * (transform.tx - command.pivot.x)
-                - sine * (transform.ty - command.pivot.y),
-            ty: command.pivot.y
-                + sine * (transform.tx - command.pivot.x)
-                + cosine * (transform.ty - command.pivot.y),
-        };
+        apply_world_rotation(&mut target.transform, command.angle_radians, &command.pivot);
         target.provenance_id.clone_from(&command.provenance.id);
         candidate.scene.provenance.push(command.provenance);
         candidate.scene.source = SceneSourceV1::StudioEditProgram {
@@ -950,21 +983,15 @@ impl EngineSessionV1 {
                     | SceneGeometryV1::Rectangle { .. }
                     | SceneGeometryV1::Line { .. }
                     | SceneGeometryV1::CubicPath { .. },
-                    SceneAppearanceV1::Vector { fill, stroke, .. },
-                ) if fill.is_some() || stroke.is_some() => {
-                    let fill_changed = fill
-                        .as_ref()
-                        .is_some_and(|paint| paint.color.alpha != command.alpha);
-                    let stroke_changed = stroke
-                        .as_ref()
-                        .is_some_and(|paint| paint.color.alpha != command.alpha);
-                    if let Some(fill) = fill {
-                        fill.color.alpha = command.alpha;
-                    }
-                    if let Some(stroke) = stroke {
-                        stroke.color.alpha = command.alpha;
-                    }
-                    if fill_changed || stroke_changed {
+                    appearance,
+                ) => {
+                    let changed =
+                        set_vector_paint_alpha(appearance, command.alpha).ok_or_else(|| {
+                            SetSubtreeVectorPaintAlphaError::UnsupportedSubtreeEntity(
+                                entity.id.clone(),
+                            )
+                        })?;
+                    if changed {
                         changed_entities += 1;
                         entity.provenance_id.clone_from(&command.provenance.id);
                     }

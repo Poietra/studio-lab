@@ -269,7 +269,9 @@ function creationEntityKind(type: string): StudioCreationProjectionV1["entities"
 
 function creationMutationKind(operation: SceneEditOperation): StudioCreationProjectionMutationV1["kind"] | null {
   if (operation.kind === "SetProperty" && operation.key === "position") return "position";
+  if (operation.kind === "SetProperty" && operation.key === "appearance") return "opacity";
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") return "fade-in";
+  if (operation.kind === "AnimateProperty" && operation.key === "rotation") return "rotation";
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
   if (operation.kind === "ResizeEntity") return "resize";
   return null;

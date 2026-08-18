@@ -947,9 +947,11 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
   }
   if (operation.kind === "SetProperty" && operation.key === "content" && contentTarget(operation.value)) return;
   if (operation.kind === "SetProperty" && operation.key === "appearance") {
+    if (options.generatedEntityIds?.has(operation.entityId)) return;
     throw new ProgramLoweringError("operation-unsupported", "Opacity requires the Runtime Trace source lowerer.");
   }
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
+    if (options.generatedEntityIds?.has(operation.entityId)) return;
     throw new ProgramLoweringError(
       "operation-unsupported",
       "Relative rotation requires the Runtime Trace source lowerer.",
@@ -1572,6 +1574,24 @@ export function lowerCanonicalProgramSource(
         }),
       );
       output.push(resizeExpression(variable, operation, frame, request.viewport, cameraCenter, false));
+    }
+    for (const operation of bucket) {
+      const variable = "entityId" in operation ? requireVariable(variableByEntity, operation.entityId) : null;
+      if (
+        variable &&
+        operation.kind === "SetProperty" &&
+        operation.key === "appearance" &&
+        typeof operation.value === "number"
+      ) {
+        output.push(`${variable}.set_opacity(${formatAmount(operation.value)})`);
+      } else if (
+        variable &&
+        operation.kind === "AnimateProperty" &&
+        operation.key === "rotation" &&
+        typeof operation.relativeDelta === "number"
+      ) {
+        output.push(`${variable}.rotate(${formatAmount(operation.relativeDelta)})`);
+      }
     }
 
     const boundaries = bucket.filter((operation) => operation.kind === "InsertSceneBoundary");
