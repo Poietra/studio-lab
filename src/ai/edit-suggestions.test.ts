@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { suggestEdit, type EditSuggestionRequest } from "./edit-suggestions";
+import { STUDIO_STYLE_PROFILE } from "../studio/style-profile";
+import { type EditSuggestionRequest, suggestEdit } from "./edit-suggestions";
 
 const request: EditSuggestionRequest = {
   clarification: null,
@@ -10,6 +11,7 @@ const request: EditSuggestionRequest = {
   scene: { id: "scene.py#Example", name: "Example", nextSceneId: null },
   sceneDuration: 10,
   selectedObjectIds: [],
+  styleProfile: STUDIO_STYLE_PROFILE,
 };
 
 afterEach(() => {
@@ -20,14 +22,20 @@ afterEach(() => {
 describe("Magic Edit API client contracts", () => {
   it("reports malformed JSON with the endpoint status", async () => {
     vi.stubEnv("VITE_POIETRA_AI_ENDPOINT", "/api/ai/edit-suggestions");
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("not-json", { status: 502 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("not-json", { status: 502 })),
+    );
 
     await expect(suggestEdit(request)).rejects.toThrow(/502.*malformed JSON/i);
   });
 
   it("normalizes an empty successful response as a contract error", async () => {
     vi.stubEnv("VITE_POIETRA_AI_ENDPOINT", "/api/ai/edit-suggestions");
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 200 })));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 200 })),
+    );
 
     await expect(suggestEdit(request)).rejects.toThrow(/invalid operation/i);
   });
@@ -46,11 +54,17 @@ describe("Magic Edit API client contracts", () => {
     const controller = new AbortController();
     const fetch = vi.fn(async (_url: string, init: RequestInit) => {
       expect(init.signal).toBe(controller.signal);
-      return new Response(JSON.stringify({
-        kind: "clarification",
-        message: "Which object should move?",
-        options: [],
-      }), { status: 200 });
+      expect(JSON.parse(String(init.body))).toMatchObject({
+        styleProfile: STUDIO_STYLE_PROFILE,
+      });
+      return new Response(
+        JSON.stringify({
+          kind: "clarification",
+          message: "Which object should move?",
+          options: [],
+        }),
+        { status: 200 },
+      );
     });
     vi.stubGlobal("fetch", fetch);
 

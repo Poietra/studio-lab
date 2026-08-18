@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { editSuggestionRequestSchema, parseEditSuggestionResult } from "./edit-suggestion-schema";
-import { createClarificationContextFingerprint } from "./clarification";
 import { STUDIO_FIXTURE_SCENE } from "../studio/fixture";
+import { STUDIO_STYLE_PROFILE } from "../studio/style-profile";
+import { createClarificationContextFingerprint } from "./clarification";
+import { editSuggestionRequestSchema, parseEditSuggestionResult } from "./edit-suggestion-schema";
 
 const options = [
   {
@@ -78,6 +79,7 @@ describe("bounded clarification context", () => {
       scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
       sceneDuration: 12,
       selectedObjectIds: ["equation_1"],
+      styleProfile: STUDIO_STYLE_PROFILE,
     });
     expect(parsed.success).toBe(true);
   });
@@ -96,6 +98,7 @@ describe("bounded clarification context", () => {
       scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
       sceneDuration: 12,
       selectedObjectIds: [],
+      styleProfile: STUDIO_STYLE_PROFILE,
     });
     expect(parsed.success).toBe(true);
   });
@@ -120,6 +123,7 @@ describe("bounded clarification context", () => {
       scene: { id: "scene.py#Current", name: "Current", nextSceneId: "scene.py#Next" },
       sceneDuration: 12,
       selectedObjectIds: [],
+      styleProfile: STUDIO_STYLE_PROFILE,
     });
     expect(parsed.success).toBe(true);
     expect(parsed.data?.clarification?.history).toHaveLength(1);
@@ -139,6 +143,7 @@ describe("bounded clarification context", () => {
       scene: { id: "scene.py#Current", name: "Current", nextSceneId: null },
       sceneDuration: 12,
       selectedObjectIds: [],
+      styleProfile: STUDIO_STYLE_PROFILE,
     });
     const result = parseEditSuggestionResult({
       kind: "clarification",

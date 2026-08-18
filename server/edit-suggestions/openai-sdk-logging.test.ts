@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
+import { STUDIO_STYLE_PROFILE } from "../../src/studio/style-profile";
 import { createOpenAiEditSuggestionGenerator } from "./openai-generator";
 
 const request: EditSuggestionRequest = {
@@ -11,6 +12,7 @@ const request: EditSuggestionRequest = {
   scene: { id: "scene.py#Scene", name: "Scene", nextSceneId: null },
   sceneDuration: 1,
   selectedObjectIds: [],
+  styleProfile: STUDIO_STYLE_PROFILE,
 };
 
 afterEach(() => {

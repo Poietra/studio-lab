@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ZodError } from "zod";
 
 import type { EditSuggestionRequest } from "../../src/ai/edit-suggestions";
+import { STUDIO_STYLE_PROFILE } from "../../src/studio/style-profile";
 import { createOpenAiEditSuggestionGenerator } from "./openai-generator";
 
 const openAiMock = vi.hoisted(() => {
@@ -33,6 +34,7 @@ const request: EditSuggestionRequest = {
   scene: { id: "SECRET_PATH.py#Scene", name: "Scene", nextSceneId: null },
   sceneDuration: 2,
   selectedObjectIds: [],
+  styleProfile: STUDIO_STYLE_PROFILE,
 };
 
 const clarification = {
@@ -77,6 +79,9 @@ describe("OpenAI edit suggestion generator privacy boundary", () => {
     const providerRequest = openAiMock.parse.mock.calls[0]?.[0];
     expect(providerRequest).toMatchObject({ model: "gpt-test", store: false });
     expect(providerRequest.input[0].content).toContain("SECRET_SOURCE_AND_PROMPT");
+    expect(JSON.parse(providerRequest.input[0].content)).toMatchObject({
+      styleProfile: STUDIO_STYLE_PROFILE,
+    });
     expect(result).toEqual({
       suggestion: clarification,
       telemetry: {

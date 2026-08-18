@@ -1,3 +1,4 @@
+import type { StyleProfile } from "../studio/style-profile";
 import { editSuggestionRequestSchema, parseEditSuggestionResult } from "./edit-suggestion-schema";
 
 export type SuggestionPoint = Readonly<{ x: number; y: number }>;
@@ -39,6 +40,7 @@ export type EditSuggestionRequest = Readonly<{
   }>;
   sceneDuration: number;
   selectedObjectIds: readonly string[];
+  styleProfile: StyleProfile;
 }>;
 
 export type ClarificationOption = Readonly<{

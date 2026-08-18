@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { STUDIO_STYLE_PROFILE } from "../studio/style-profile";
 import { editSuggestionRequestSchema, parseEditSuggestionResult } from "./edit-suggestion-schema";
 
 function remoteSuggestion(operation: unknown) {
@@ -107,6 +108,7 @@ describe("Magic Edit scale and delete contracts", () => {
       scene: { id: "scene.py#Example", name: "Example", nextSceneId: null },
       sceneDuration: 10,
       selectedObjectIds: ["known"],
+      styleProfile: STUDIO_STYLE_PROFILE,
     });
 
     expect(request.success).toBe(true);

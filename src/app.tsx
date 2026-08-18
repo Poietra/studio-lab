@@ -116,6 +116,7 @@ import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
+import { STUDIO_STYLE_PROFILE } from "./studio/style-profile";
 import {
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
@@ -1633,6 +1634,7 @@ export function App({
           },
           sceneDuration: draftSourceScene?.duration ?? draftBaseState.evaluatedScene.duration,
           selectedObjectIds,
+          styleProfile: STUDIO_STYLE_PROFILE,
         },
         { signal: controller.signal },
       );
