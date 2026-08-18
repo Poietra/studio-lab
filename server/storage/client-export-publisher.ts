@@ -265,24 +265,25 @@ export class ClientExportPublisherV1 {
     }
 
     let result: AcceptClientExportPublicationResultV1;
-    try {
-      result = await this.#options.publications.acceptPublication(
-        {
-          artifactId: randomUUID(),
-          createdBySubjectId: input.createdBySubjectId,
-          expirationMs: this.#options.artifactExpirationMs,
-          lineage,
-          projectId: input.projectId,
-          publicationId: input.publicationId,
-          receipt,
-          tenantId,
-        },
-        signal,
-      );
-    } catch (error) {
-      await this.#discard(receipt, input.publicationId);
-      throw error;
-    }
+    // A rejected database call can be an ambiguous commit: PostgreSQL may
+    // have accepted this exact receipt before the connection or request was
+    // lost. Therefore this call intentionally has no catch that deletes the
+    // object or releases its possibly settled reservation. A truly orphaned
+    // object is reclaimed by the storage-first sweep and an unsettled
+    // reservation expires naturally.
+    result = await this.#options.publications.acceptPublication(
+      {
+        artifactId: randomUUID(),
+        createdBySubjectId: input.createdBySubjectId,
+        expirationMs: this.#options.artifactExpirationMs,
+        lineage,
+        projectId: input.projectId,
+        publicationId: input.publicationId,
+        receipt,
+        tenantId,
+      },
+      signal,
+    );
 
     if (result.kind === "accepted" && !result.replayed) {
       return { publication: result.publication, replayed: false };

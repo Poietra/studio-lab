@@ -133,9 +133,12 @@ function harness(overrides: Overrides = {}) {
     ready: vi.fn(async () => true),
   } as unknown as ClientExportArtifactStoreV1;
   const publications = {
-    acceptPublication: vi.fn(async () =>
-      "accept" in overrides ? overrides.accept : { kind: "accepted", publication: publication(), replayed: false },
-    ),
+    acceptPublication: vi.fn(async () => {
+      if (overrides.accept instanceof Error) throw overrides.accept;
+      return "accept" in overrides
+        ? overrides.accept
+        : { kind: "accepted", publication: publication(), replayed: false };
+    }),
     readPublication: vi.fn(async () => overrides.read ?? null),
     ready: vi.fn(async () => true),
   } as unknown as ClientExportRepositoryV1;
@@ -342,6 +345,15 @@ describe("ClientExportPublisherV1", () => {
     expect(artifacts.deleteObject).not.toHaveBeenCalled();
     expect(metering.releasePublication).toHaveBeenCalledWith(TENANT, PUBLICATION_ID);
     expect(publications.acceptPublication).not.toHaveBeenCalled();
+  });
+
+  it("preserves the staged object and reservation when database acceptance has an ambiguous outcome", async () => {
+    const failure = new Error("connection lost after commit may have succeeded");
+    const { artifacts, metering, publisher } = harness({ accept: failure });
+
+    await expect(publisher.publish(input())).rejects.toBe(failure);
+    expect(artifacts.deleteObject).not.toHaveBeenCalled();
+    expect(metering.releasePublication).not.toHaveBeenCalled();
   });
 
   it("maps acceptance refusals to named statuses and discards the staged upload", async () => {
