@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
+import { BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM } from "./billing-entitlement-grant-schema";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 import { PostgresStripeBillingRepositoryV1 } from "./postgres-stripe-billing-repository";
 import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
@@ -174,15 +175,27 @@ function reconciliation(expectedReconcileGeneration = 0n) {
 }
 
 describe("PostgresStripeBillingRepositoryV1", () => {
-  it("requires the exact Stripe billing migration", async () => {
+  it("requires the exact Stripe billing and normalized entitlement migrations", async () => {
     const fixture = fakePool((text, values) => {
-      expect(text).toContain("version = 16");
+      expect(text).toContain("version IN (16, 32)");
       expect(values).toEqual([]);
-      return { rowCount: 1, rows: [{ checksum: STRIPE_BILLING_MIGRATION_V16_CHECKSUM, version: 16 }] };
+      return {
+        rowCount: 2,
+        rows: [
+          { checksum: STRIPE_BILLING_MIGRATION_V16_CHECKSUM, version: 16 },
+          { checksum: BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM, version: 32 },
+        ],
+      };
     });
+    const missingGrants = fakePool(() => ({
+      rowCount: 1,
+      rows: [{ checksum: STRIPE_BILLING_MIGRATION_V16_CHECKSUM, version: 16 }],
+    }));
     const repository = new PostgresStripeBillingRepositoryV1({ pool: fixture.pool });
+    const repositoryMissingGrants = new PostgresStripeBillingRepositoryV1({ pool: missingGrants.pool });
 
     await expect(repository.ready()).resolves.toBe(true);
+    await expect(repositoryMissingGrants.ready()).resolves.toBe(false);
   });
 
   it("persists and resolves initial Checkout correlation without a customer binding", async () => {
@@ -471,6 +484,8 @@ describe("PostgresStripeBillingRepositoryV1", () => {
       if (text.startsWith("INSERT INTO public.entitlement_snapshots")) {
         return { rowCount: 1, rows: [entitlementRow()] };
       }
+      if (text.startsWith("INSERT INTO public.entitlement_flow_grants")) return { rowCount: 2, rows: [] };
+      if (text.startsWith("INSERT INTO public.entitlement_stock_grants")) return { rowCount: 1, rows: [] };
       if (text.startsWith("UPDATE public.billing_accounts") && !text.includes("account\n")) {
         return { rowCount: 1, rows: [] };
       }

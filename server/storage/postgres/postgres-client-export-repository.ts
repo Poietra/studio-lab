@@ -199,7 +199,11 @@ export class PostgresClientExportRepositoryV1 implements ClientExportRepositoryV
 
   constructor(options: PostgresClientExportRepositoryOptionsV1) {
     const { metering, ...connection } = options;
-    if (!metering || typeof metering.settlePublicationWithClient !== "function") {
+    if (
+      !metering ||
+      typeof metering.releasePublicationStockWithClient !== "function" ||
+      typeof metering.settlePublicationWithClient !== "function"
+    ) {
       throw new TypeError("Client export publication metering is required.");
     }
     this.#metering = metering;
@@ -302,9 +306,9 @@ export class PostgresClientExportRepositoryV1 implements ClientExportRepositoryV
         return { kind: "refused", reason: "artifact-deleting" } as const;
       }
 
-      // Metering settlement joins this acceptance transaction. v1 wires the
-      // no-op port; #726 commits the export-publication flow reservation and
-      // inserts the byte stock allocation here, atomically with the rows below.
+      // Metering settlement joins this acceptance transaction. Production
+      // commits the flow reservation and retained-byte allocation atomically
+      // with the rows below; local export injects an explicit no-op port.
       const settlement = await this.#metering.settlePublicationWithClient(client, {
         byteSize: receipt.byteSize,
         operationId: publicationId,
@@ -519,8 +523,11 @@ export class PostgresClientExportRepositoryV1 implements ClientExportRepositoryV
         return null;
       }
 
-      const stored = await client.query<ArtifactRow & { publication_expires_at: Date | null }>(
-        `SELECT ${ARTIFACT_COLUMNS}, publication.expires_at AS publication_expires_at
+      const stored = await client.query<
+        ArtifactRow & { publication_expires_at: Date | null; publication_id: string | null }
+      >(
+        `SELECT ${ARTIFACT_COLUMNS}, publication.expires_at AS publication_expires_at,
+                publication.publication_id::text AS publication_id
            FROM public.client_export_artifacts artifact
            LEFT JOIN public.client_export_publications publication
              ON publication.tenant_id = artifact.tenant_id AND publication.artifact_id = artifact.artifact_id
@@ -543,6 +550,13 @@ export class PostgresClientExportRepositoryV1 implements ClientExportRepositoryV
           [tenant, artifactRow.publication_expires_at, graceMs, artifactRow.artifact_id],
         );
         if (eligible.rows[0]?.eligible !== true) return null;
+        if (artifactRow.publication_id !== null) {
+          await this.#metering.releasePublicationStockWithClient(
+            client,
+            tenant,
+            clientExportIdV1(artifactRow.publication_id, "Client export publication ID"),
+          );
+        }
         await client.query(
           "DELETE FROM public.client_export_publications WHERE tenant_id = $1 AND artifact_id = $2::uuid",
           [tenant, artifactRow.artifact_id],

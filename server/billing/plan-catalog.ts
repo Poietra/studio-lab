@@ -1,13 +1,34 @@
 import { z } from "zod";
 
-import { MAX_RENDER_JOB_LIMIT_V1 } from "./entitlement-repository";
+import { MAX_FLOW_UNIT_LIMIT_V1, MAX_RENDER_JOB_LIMIT_V1, MAX_STOCK_QUANTITY_V1 } from "./entitlement-repository";
 
 export const STRIPE_CHECKOUT_PLAN_KEYS_V1 = ["pro"] as const;
+
+// Billing v2 grant defaults for the closed `pro` plan. Each limit is a whole
+// unit count per usage period (one unit per admitted operation) except the
+// stock limit, which is exact retained published bytes with no period. A zero
+// disables the lane, mirroring `renderEnabled === (renderJobLimit > 0)`.
+export const DEFAULT_PRO_AI_SUGGESTION_LIMIT_V1 = 500;
+export const DEFAULT_PRO_EXPORT_PUBLICATION_LIMIT_V1 = 200;
+export const DEFAULT_PRO_PUBLISHED_ARTIFACT_BYTES_LIMIT_V1 = 10 * 1024 * 1024 * 1024;
 
 const stripePriceIdSchemaV1 = z.string().regex(/^price_[A-Za-z0-9_]{1,247}$/u);
 const planDefinitionSchemaV1 = z
   .object({
+    aiSuggestionLimit: z.number().int().min(0).max(MAX_FLOW_UNIT_LIMIT_V1).default(DEFAULT_PRO_AI_SUGGESTION_LIMIT_V1),
+    exportPublicationLimit: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_FLOW_UNIT_LIMIT_V1)
+      .default(DEFAULT_PRO_EXPORT_PUBLICATION_LIMIT_V1),
     planKey: z.literal("pro"),
+    publishedArtifactBytesLimit: z
+      .number()
+      .int()
+      .min(0)
+      .max(MAX_STOCK_QUANTITY_V1)
+      .default(DEFAULT_PRO_PUBLISHED_ARTIFACT_BYTES_LIMIT_V1),
     renderJobLimit: z.number().int().min(1).max(MAX_RENDER_JOB_LIMIT_V1),
     stripePriceId: stripePriceIdSchemaV1,
   })

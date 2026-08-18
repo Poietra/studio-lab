@@ -6,6 +6,7 @@ import { CLIENT_EXPORT_FINALIZE_MEDIA_TYPE_V1 } from "../src/collaboration/clien
 import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
 import { fastManimSnapshotSceneIdV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
+import type { EditSuggestionUsageMeterV1 } from "./edit-suggestions/usage-metering";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import {
   ACCOUNT_SESSION_COOKIE_NAME_V1,
@@ -43,6 +44,44 @@ function editSuggestionBody() {
     scene: { id: "SECRET_SOURCE_PATH.py#Scene", name: "Scene", nextSceneId: null },
     sceneDuration: 1,
     selectedObjectIds: [],
+  };
+}
+
+function productionUsageMeter(): EditSuggestionUsageMeterV1 {
+  const reservation = (tenantId: string, operationId: string, state: "committed" | "released" | "reserved") => {
+    const createdAt = new Date("2026-08-01T00:00:00.000Z");
+    const settledAt = state === "reserved" ? null : new Date("2026-08-01T00:00:01.000Z");
+    return {
+      createdAt,
+      expiresAt: new Date("2026-08-01T00:05:00.000Z"),
+      operationId,
+      operationKind: "ai-suggestion" as const,
+      settledAt,
+      snapshotId: "00000000-0000-4000-8000-000000000701",
+      sourceGeneration: 1n,
+      state,
+      tenantId,
+      updatedAt: settledAt ?? createdAt,
+      usagePeriodKey: "test:2026-08",
+      version: state === "reserved" ? 1n : 2n,
+    };
+  };
+  return {
+    commit: async (tenantId, operationId) => ({
+      kind: "settled",
+      replayed: false,
+      reservation: reservation(tenantId, operationId, "committed"),
+    }),
+    release: async (tenantId, operationId) => ({
+      kind: "settled",
+      replayed: false,
+      reservation: reservation(tenantId, operationId, "released"),
+    }),
+    reserve: async ({ operationId, tenantId }) => ({
+      kind: "reserved",
+      replayed: false,
+      reservation: reservation(tenantId, operationId, "reserved"),
+    }),
   };
 }
 
@@ -438,6 +477,17 @@ describe("standalone production Manim HTTP adapter", () => {
         runtime: { ...createRuntime(), ready: undefined } as never,
       }),
     ).rejects.toThrow(/runtime adapter is incomplete/i);
+  });
+
+  it("rejects a production AI adapter without durable usage metering", async () => {
+    await expect(
+      startProductionManimServer({
+        admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+        config: await startConfig(),
+        editSuggestions: { generator: { generate: async () => ({}) } } as never,
+        runtime: createRuntime(),
+      }),
+    ).rejects.toThrow(/edit-suggestion adapter is incomplete/i);
   });
 
   it("requires exactly one pinned runtime or dynamic runtime resolver", async () => {
@@ -1476,6 +1526,7 @@ describe("standalone production Manim HTTP adapter", () => {
             };
           },
         },
+        usageMeter: productionUsageMeter(),
       },
       logger,
       runtime: createRuntime(() => {
@@ -1546,6 +1597,7 @@ describe("standalone production Manim HTTP adapter", () => {
             throw new Error("must not run");
           },
         },
+        usageMeter: productionUsageMeter(),
       },
       runtime: createRuntime(),
     });

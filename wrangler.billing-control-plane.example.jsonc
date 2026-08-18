@@ -27,7 +27,13 @@
     "POIETRA_STRIPE_EXPECTED_MODE": "test",
     "POIETRA_STRIPE_PORTAL_CONFIGURATION_ID": "bpc_replace_with_fixed_portal_configuration",
     "POIETRA_STRIPE_PRO_PRICE_ID": "price_replace_with_test_mode_pro_price",
-    "POIETRA_STRIPE_PRO_RENDER_JOB_LIMIT": "1000"
+    "POIETRA_STRIPE_PRO_RENDER_JOB_LIMIT": "1000",
+    // Billing v2 grant limits (optional; omitting a var uses the plan-catalog
+    // default). Flow limits are whole operation units per usage period; the
+    // published-artifact-bytes limit is exact retained bytes with no period.
+    "POIETRA_STRIPE_PRO_AI_SUGGESTION_LIMIT": "500",
+    "POIETRA_STRIPE_PRO_EXPORT_PUBLICATION_LIMIT": "200",
+    "POIETRA_STRIPE_PRO_PUBLISHED_ARTIFACT_BYTES_LIMIT": "10737418240"
   },
   "secrets": {
     "required": ["POIETRA_STRIPE_SECRET_KEY", "POIETRA_STRIPE_WEBHOOK_SECRET"]

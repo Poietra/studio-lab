@@ -23,6 +23,7 @@ import {
   type EditSuggestionGenerationResult,
   type EditSuggestionGenerator,
 } from "./service";
+import type { EditSuggestionUsageMeterV1 } from "./usage-metering";
 
 const openAiParse = vi.hoisted(() => vi.fn());
 const openAiConstructed = vi.hoisted(() => vi.fn());
@@ -821,5 +822,171 @@ describe("edit suggestion API handler", () => {
       warn.mockRestore();
       rmSync(root, { force: true, recursive: true });
     }
+  });
+});
+
+describe("edit suggestion usage metering", () => {
+  const clarificationResult: EditSuggestionGenerationResult = {
+    suggestion: {
+      assumptions: [],
+      kind: "clarification",
+      message: "One more question",
+      operation: null,
+      options: [],
+      summary: "",
+    },
+    telemetry: { repairAttempted: false },
+  };
+
+  function committedReservation() {
+    return { kind: "settled", replayed: false, reservation: {} } as unknown as Awaited<
+      ReturnType<EditSuggestionUsageMeterV1["commit"]>
+    >;
+  }
+
+  function reservedResult() {
+    return { kind: "reserved", replayed: false, reservation: {} } as unknown as Awaited<
+      ReturnType<EditSuggestionUsageMeterV1["reserve"]>
+    >;
+  }
+
+  function meterFixture(overrides: Partial<Record<"commit" | "release" | "reserve", unknown>> = {}) {
+    const commit = vi.fn(async () => committedReservation());
+    const release = vi.fn(async () => committedReservation());
+    const reserve = vi.fn(async () => reservedResult());
+    const meter = { commit, release, reserve, ...overrides } as unknown as EditSuggestionUsageMeterV1;
+    return { commit, meter, release, reserve };
+  }
+
+  async function callMeteredHandler(meter: EditSuggestionUsageMeterV1, generate: EditSuggestionGenerator["generate"]) {
+    const events: string[] = [];
+    const handler = createEditSuggestionRequestHandler({
+      generator: () => ({
+        generate: async (request, signal) => {
+          events.push("dispatch");
+          return generate(request, signal);
+        },
+      }),
+      logger: createStructuredLogger({ sinks: [] }),
+      usageMeter: meter,
+    });
+    const result = await callHttpHandler(
+      (request, response) => handler(request, response, { principal: TEST_PRINCIPAL }),
+      requestBody(),
+    );
+    return { events, ...result };
+  }
+
+  it("reserves after admission and commits exactly at the provider dispatch", async () => {
+    const order: string[] = [];
+    const fixture = meterFixture({
+      commit: vi.fn(async () => {
+        order.push("commit");
+        return committedReservation();
+      }),
+      reserve: vi.fn(async () => {
+        order.push("reserve");
+        return reservedResult();
+      }),
+    });
+
+    const { events, response } = await callMeteredHandler(fixture.meter, async () => {
+      order.push("provider");
+      return clarificationResult;
+    });
+
+    expect(response.status).toBe(200);
+    expect(order).toEqual(["reserve", "commit", "provider"]);
+    expect(events).toEqual(["dispatch"]);
+    const reserveMock = fixture.meter.reserve as ReturnType<typeof vi.fn>;
+    expect(reserveMock).toHaveBeenCalledWith({
+      lifetimeMs: expect.any(Number),
+      operationId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
+      tenantId: TEST_PRINCIPAL.tenantId,
+    });
+    expect(fixture.release).not.toHaveBeenCalled();
+  });
+
+  it("keeps a dispatched unit committed even when no useful model response returns", async () => {
+    const fixture = meterFixture();
+
+    const { events, response } = await callMeteredHandler(fixture.meter, async () => {
+      throw new EditSuggestionGenerationError("provider exploded", 502);
+    });
+
+    expect(response.status).toBe(502);
+    expect(events).toEqual(["dispatch"]);
+    expect(fixture.commit).toHaveBeenCalledTimes(1);
+    expect(fixture.release).not.toHaveBeenCalled();
+  });
+
+  it("maps metering denials onto 402 and 429 without dispatching the provider", async () => {
+    for (const [reason, status, error] of [
+      ["quota-exhausted", 429, "The AI suggestion usage quota is exhausted."],
+      ["blocked", 402, "The organization does not have an active AI suggestion entitlement."],
+      ["operation-disabled", 402, "The organization does not have an active AI suggestion entitlement."],
+      ["unconfigured", 402, "The organization does not have an active AI suggestion entitlement."],
+    ] as const) {
+      const fixture = meterFixture({
+        reserve: vi.fn(async () => ({ kind: "denied", reason })),
+      });
+
+      const { events, response, result } = await callMeteredHandler(fixture.meter, async () => clarificationResult);
+
+      expect(response.status).toBe(status);
+      expect(result).toEqual({ error });
+      expect(events).toEqual([]);
+      expect(fixture.commit).not.toHaveBeenCalled();
+      expect(fixture.release).not.toHaveBeenCalled();
+    }
+  });
+
+  it("releases a reserved unit and dispatches nothing when the commitment fails", async () => {
+    const failures = [
+      vi.fn(async () => ({ kind: "missing" }) as unknown as ReturnType<typeof committedReservation>),
+      vi.fn(async () => {
+        throw new Error("billing storage unavailable");
+      }),
+    ];
+    for (const commit of failures) {
+      const fixture = meterFixture({ commit });
+
+      const { events, response } = await callMeteredHandler(fixture.meter, async () => clarificationResult);
+
+      expect(response.status).toBe(502);
+      expect(events).toEqual([]);
+      expect(fixture.release).toHaveBeenCalledTimes(1);
+      expect(fixture.release).toHaveBeenCalledWith(TEST_PRINCIPAL.tenantId, expect.any(String));
+    }
+  });
+
+  it("fails closed with 503 and frees the admission slot when metering storage is unavailable", async () => {
+    const fixture = meterFixture({
+      reserve: vi.fn(async () => {
+        throw new Error("billing storage unavailable");
+      }),
+    });
+
+    const { events, response, result } = await callMeteredHandler(fixture.meter, async () => clarificationResult);
+
+    expect(response.status).toBe(503);
+    expect(result).toEqual({ error: "Edit suggestion metering is unavailable." });
+    expect(events).toEqual([]);
+    expect(fixture.commit).not.toHaveBeenCalled();
+    expect(fixture.release).not.toHaveBeenCalled();
+  });
+
+  it("stays unmetered when no usage meter is injected", async () => {
+    const handler = createEditSuggestionRequestHandler({
+      generator: () => ({ generate: async () => clarificationResult }),
+      logger: createStructuredLogger({ sinks: [] }),
+    });
+
+    const result = await callHttpHandler(
+      (request, response) => handler(request, response, { principal: TEST_PRINCIPAL }),
+      requestBody(),
+    );
+
+    expect(result.response.status).toBe(200);
   });
 });

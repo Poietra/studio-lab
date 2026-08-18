@@ -943,7 +943,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         ],
       );
 
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 31 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 32 });
       await expect(repository.pendingDeletions(tenantId, 8)).resolves.toEqual([
         { deletionId, receipt: upgradedReceipt, tenantId },
       ]);
@@ -1522,7 +1522,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         cookie: ownerCookie,
         method: "POST",
       });
-      expect(exportResponse.status).toBe(200);
+      expect(exportResponse.status, exportResponse.body.toString("utf8")).toBe(200);
       expect(exportResponse.headers["content-disposition"]).toContain('filename="main.poietra.py"');
       expect(exportResponse.body.toString("utf8")).toContain("Circle(radius=1)");
       expect(exportResponse.body.toString("utf8")).toContain("FadeIn(");

@@ -31,7 +31,11 @@ export type CloudflareBillingControlPlaneEnvironmentV1 = Readonly<{
   POIETRA_PUBLIC_ORIGIN: string;
   POIETRA_STRIPE_EXPECTED_MODE: "live" | "test";
   POIETRA_STRIPE_PORTAL_CONFIGURATION_ID: string;
+  /** Optional billing v2 grant limits; omitted vars use the documented plan-catalog defaults. */
+  POIETRA_STRIPE_PRO_AI_SUGGESTION_LIMIT?: string;
+  POIETRA_STRIPE_PRO_EXPORT_PUBLICATION_LIMIT?: string;
   POIETRA_STRIPE_PRO_PRICE_ID: string;
+  POIETRA_STRIPE_PRO_PUBLISHED_ARTIFACT_BYTES_LIMIT?: string;
   POIETRA_STRIPE_PRO_RENDER_JOB_LIMIT: string;
   POIETRA_STRIPE_SECRET_KEY: string;
   POIETRA_STRIPE_WEBHOOK_SECRET: string;
@@ -153,8 +157,29 @@ function configuredEnvironment(environment: CloudflareBillingControlPlaneEnviron
   if (!/^\d+$/u.test(environment.POIETRA_STRIPE_PRO_RENDER_JOB_LIMIT) || !Number.isSafeInteger(renderJobLimit)) {
     throw new TypeError("Stripe Pro render limit is invalid.");
   }
+  const optionalLimit = (value: string | undefined, name: string) => {
+    if (value === undefined) return undefined;
+    const parsed = Number(value);
+    if (!/^\d+$/u.test(value) || !Number.isSafeInteger(parsed)) throw new TypeError(`${name} is invalid.`);
+    return parsed;
+  };
+  const aiSuggestionLimit = optionalLimit(
+    environment.POIETRA_STRIPE_PRO_AI_SUGGESTION_LIMIT,
+    "Stripe Pro AI-suggestion limit",
+  );
+  const exportPublicationLimit = optionalLimit(
+    environment.POIETRA_STRIPE_PRO_EXPORT_PUBLICATION_LIMIT,
+    "Stripe Pro export-publication limit",
+  );
+  const publishedArtifactBytesLimit = optionalLimit(
+    environment.POIETRA_STRIPE_PRO_PUBLISHED_ARTIFACT_BYTES_LIMIT,
+    "Stripe Pro published-artifact-bytes limit",
+  );
   const catalog = createStripeCheckoutPlanCatalogV1({
     pro: {
+      ...(aiSuggestionLimit === undefined ? {} : { aiSuggestionLimit }),
+      ...(exportPublicationLimit === undefined ? {} : { exportPublicationLimit }),
+      ...(publishedArtifactBytesLimit === undefined ? {} : { publishedArtifactBytesLimit }),
       renderJobLimit,
       stripePriceId: boundedString(environment.POIETRA_STRIPE_PRO_PRICE_ID, "Stripe Pro price ID", 255),
     },

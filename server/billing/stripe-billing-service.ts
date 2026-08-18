@@ -155,12 +155,26 @@ function entitlementAccess(
   currentEntitlement: EntitlementSnapshotV1 | null,
   currentSubscription: BillingSubscriptionV1 | null,
 ) {
+  // The plan-derived billing v2 grant limits ride beside the legacy render
+  // fields: they land on the normalized grant tables only and never change the
+  // v14 snapshot wire fields.
+  const grantedLimits = {
+    aiSuggestionLimit: plan.aiSuggestionLimit,
+    exportPublicationLimit: plan.exportPublicationLimit,
+    publishedArtifactBytesLimit: plan.publishedArtifactBytesLimit,
+  };
+  const blockedLimits = {
+    aiSuggestionLimit: 0,
+    exportPublicationLimit: 0,
+    publishedArtifactBytesLimit: 0,
+  };
   if (subscription.status === "active" || subscription.status === "trialing") {
     return {
       accessState: "active" as const,
       accessUntil: subscription.periodEnd,
       renderEnabled: true,
       renderJobLimit: plan.renderJobLimit,
+      ...grantedLimits,
     };
   }
   if (subscription.status === "past_due") {
@@ -175,6 +189,7 @@ function entitlementAccess(
           accessUntil: subscription.periodEnd,
           renderEnabled: false,
           renderJobLimit: 0,
+          ...blockedLimits,
         };
       }
       return {
@@ -182,6 +197,7 @@ function entitlementAccess(
         accessUntil: new Date(Math.min(subscription.periodEnd.getTime(), currentEntitlement.accessUntil.getTime())),
         renderEnabled: true,
         renderJobLimit: plan.renderJobLimit,
+        ...grantedLimits,
       };
     }
     const lowerBound = subscription.periodStart.getTime() + 1;
@@ -191,6 +207,7 @@ function entitlementAccess(
       accessUntil: new Date(Math.min(subscription.periodEnd.getTime(), graceDeadline)),
       renderEnabled: true,
       renderJobLimit: plan.renderJobLimit,
+      ...grantedLimits,
     };
   }
   return {
@@ -198,6 +215,7 @@ function entitlementAccess(
     accessUntil: subscription.periodEnd,
     renderEnabled: false,
     renderJobLimit: 0,
+    ...blockedLimits,
   };
 }
 

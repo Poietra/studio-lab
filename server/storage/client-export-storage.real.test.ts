@@ -131,6 +131,7 @@ function countingMetering() {
   const settlements: SettleClientExportPublicationInputV1[] = [];
   const metering: ClientExportPublicationMeteringV1 = {
     releasePublication: async () => undefined,
+    releasePublicationStockWithClient: async () => undefined,
     reservePublication: async () => ({ kind: "reserved", replayed: false }) as const,
     settlePublicationWithClient: async (_client, input) => {
       settlements.push(input);
@@ -305,6 +306,7 @@ describe.skipIf(!E2E_CONFIGURED)("durable client export publication storage", ()
       const denyingRepository = new PostgresClientExportRepositoryV1({
         metering: {
           releasePublication: async () => undefined,
+          releasePublicationStockWithClient: async () => undefined,
           reservePublication: async () => ({ kind: "reserved", replayed: false }) as const,
           settlePublicationWithClient: async () => ({ kind: "denied", reason: "stock-exhausted" }) as const,
         },
