@@ -40,6 +40,7 @@ import {
   replaceStudioEntityLifetimeProgram,
   type StudioEntityInput,
 } from "./studio/authoring-commands";
+import { canvasDragTargetEntityIds, toggleCanvasEntitySelection } from "./studio/canvas-selection";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } from "./studio/draft-validation";
 import {
@@ -205,6 +206,7 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
 
 type CanvasDragState = Readonly<{
   pointerId: number;
+  pressedEntityId: string;
   scale: Readonly<{ x: number; y: number }>;
   sourceAnchor: number | null;
   start: Readonly<{ x: number; y: number }>;
@@ -2606,16 +2608,17 @@ export function App({
           (!candidate.provisional || (candidate.transactionId && appliedTransactionIds.has(candidate.transactionId))),
       ),
     );
-    const targetEntityIds = boundedRuntimeEditTargetIds.has(entityId)
-      ? [entityId]
-      : selectedEditableIds.includes(entityId)
-        ? selectedEditableIds
-        : [entityId];
+    const targetEntityIds = canvasDragTargetEntityIds(
+      selectedEditableIds,
+      entityId,
+      boundedRuntimeEditTargetIds.has(entityId),
+    );
     event.currentTarget.setPointerCapture(event.pointerId);
     const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect();
     setSelectedObjectIds(targetEntityIds);
     canvasDrag.current = {
       pointerId: event.pointerId,
+      pressedEntityId: entityId,
       scale: {
         x: canvasBounds?.width ? STUDIO_VIEWPORT.width / canvasBounds.width : 1,
         y: canvasBounds?.height ? STUDIO_VIEWPORT.height / canvasBounds.height : 1,
@@ -2669,7 +2672,10 @@ export function App({
     if (!drag || drag.pointerId !== event.pointerId) return;
     canvasDrag.current = null;
     gesturePreviewStore.clear();
-    if (drag.sourceAnchor === null) return;
+    if (drag.sourceAnchor === null) {
+      setSelectedObjectIds([drag.pressedEntityId]);
+      return;
+    }
     if (!activeScene || !draftBaseState || !draftSourceScene) return;
     const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
     if (Math.hypot(delta.x, delta.y) < 1) return;
@@ -4266,7 +4272,11 @@ export function App({
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}
               onPresenceCursorChange={(cursor) => editorDocumentAuthority.updatePresence({ cursor })}
-              onSelectEntity={(entityId) => setSelectedObjectIds([entityId])}
+              onSelectEntity={(entityId, mode = "single") =>
+                setSelectedObjectIds((selection) =>
+                  mode === "toggle" ? toggleCanvasEntitySelection(selection, entityId) : [entityId],
+                )
+              }
               onTimeChange={(time) => {
                 setIsPlaying(false);
                 setCurrentTime(time);
