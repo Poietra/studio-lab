@@ -107,6 +107,20 @@ struct ExportVerifiedStructureV1 {
     sample_count: u64,
     sync_sample_count: u64,
     color: ExportVerifiedColorV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio: Option<ExportVerifiedAudioV1>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExportVerifiedAudioV1 {
+    channels: u8,
+    sample_rate: u32,
+    pre_skip: u16,
+    output_gain: i16,
+    sample_count: u64,
+    encoded_duration_samples: u64,
+    end_trim_samples: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -245,6 +259,15 @@ fn verified_structure(structure: &ExportMp4StructureV1) -> ExportVerifiedStructu
             matrix: structure.color.matrix,
             full_range: structure.color.full_range,
         },
+        audio: structure.audio.as_ref().map(|audio| ExportVerifiedAudioV1 {
+            channels: audio.channels,
+            sample_rate: audio.sample_rate,
+            pre_skip: audio.pre_skip,
+            output_gain: audio.output_gain,
+            sample_count: audio.sample_count,
+            encoded_duration_samples: audio.encoded_duration_samples,
+            end_trim_samples: audio.end_trim_samples,
+        }),
     }
 }
 
@@ -312,9 +335,9 @@ mod tests {
     use std::num::{NonZeroU16, NonZeroU32};
 
     use poietra_export_mux::{
-        ColorParametersV1, EncodedSampleV1, ExportMuxConfigV1, ExportMuxSessionV1,
-        MAX_PROVENANCE_BYTES_V1, MAX_VERIFIED_EXPORT_MP4_BYTES_V1, PROVENANCE_UUID_V1,
-        VideoParametersV1,
+        ColorParametersV1, EncodedAudioSampleV1, EncodedSampleV1, ExportMuxConfigV1,
+        ExportMuxSessionV1, MAX_PROVENANCE_BYTES_V1, MAX_VERIFIED_EXPORT_MP4_BYTES_V1,
+        OPUS_SAMPLE_RATE, OpusParametersV1, PROVENANCE_UUID_V1, VideoParametersV1,
     };
     use serde_json::Value;
 
@@ -384,6 +407,62 @@ mod tests {
         mux_export(854, 480, serde_json::to_vec(&fixture_provenance()).unwrap())
     }
 
+    fn valid_export_with_audio() -> Vec<u8> {
+        let provenance = serde_json::to_vec(&fixture_provenance()).unwrap();
+        let config = ExportMuxConfigV1 {
+            decoder_configuration: SYNTHETIC_AVCC.to_vec(),
+            video: VideoParametersV1 {
+                width_px: NonZeroU16::new(854).unwrap(),
+                height_px: NonZeroU16::new(480).unwrap(),
+                timescale: NonZeroU32::new(1_000_000).unwrap(),
+                frames_per_second: NonZeroU32::new(30).unwrap(),
+            },
+            color: ColorParametersV1 {
+                primaries: 1,
+                transfer: 13,
+                matrix: 1,
+                full_range: false,
+            },
+            provenance,
+            max_sample_count: NonZeroU32::new(16).unwrap(),
+        };
+        let mut session = ExportMuxSessionV1::begin_with_opus(
+            config,
+            OpusParametersV1 {
+                channels: 2,
+                sample_rate: OPUS_SAMPLE_RATE,
+                pre_skip: 312,
+                output_gain: -2,
+                channel_mapping_family: 0,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        for (payload, timestamp_us, duration_us, is_key) in [
+            (avcc_sample(0x65, 119), 0, 33_333, true),
+            (avcc_sample(0x41, 89), 33_333, 33_333, false),
+            (avcc_sample(0x65, 149), 66_666, 33_334, true),
+        ] {
+            session
+                .append_sample(EncodedSampleV1 {
+                    bytes: &payload,
+                    timestamp_us,
+                    duration_us,
+                    is_key,
+                })
+                .unwrap();
+        }
+        for packet in 0_u8..6 {
+            session
+                .append_audio_sample(EncodedAudioSampleV1 {
+                    bytes: &[0xF8, 0xFF, packet],
+                    duration_samples: NonZeroU32::new(960).unwrap(),
+                })
+                .unwrap();
+        }
+        session.finish().unwrap()
+    }
+
     fn response_value(mp4_bytes: &[u8]) -> Value {
         let response = verify_export_mp4_v1(mp4_bytes);
         assert!(response.len() <= MAX_EXPORT_VERIFY_RESPONSE_JSON_BYTES_V1);
@@ -440,9 +519,24 @@ mod tests {
         assert_eq!(structure["color"]["transfer"], 13);
         assert_eq!(structure["color"]["matrix"], 1);
         assert_eq!(structure["color"]["fullRange"], false);
+        assert!(structure.get("audio").is_none());
         let echoed: ExportProvenanceV1 =
             serde_json::from_value(value["result"]["provenance"].clone()).unwrap();
         assert_eq!(echoed, fixture_provenance());
+    }
+
+    #[test]
+    fn verified_response_reports_optional_opus_audio() {
+        let value = response_value(&valid_export_with_audio());
+        assert_eq!(value["result"]["kind"], "verified", "{value}");
+        let audio = &value["result"]["structure"]["audio"];
+        assert_eq!(audio["channels"], 2);
+        assert_eq!(audio["sampleRate"], 48_000);
+        assert_eq!(audio["preSkip"], 312);
+        assert_eq!(audio["outputGain"], -2);
+        assert_eq!(audio["sampleCount"], 6);
+        assert_eq!(audio["encodedDurationSamples"], 5_760);
+        assert_eq!(audio["endTrimSamples"], 648);
     }
 
     #[test]

@@ -4,6 +4,12 @@
 //! bounded playhead requests. The legacy sampling handle returns a `RenderPacket`;
 //! the canvas handle keeps that packet in Rust and returns presentation metadata.
 
+#[cfg(target_arch = "wasm32")]
+mod audio_encoder;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod audio_encoder_protocol;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod audio_wav;
 mod authoring;
 mod bounded_writer;
 #[cfg(target_arch = "wasm32")]
@@ -58,7 +64,7 @@ pub use protocol::{
 };
 
 #[cfg(target_arch = "wasm32")]
-pub use browser_export::export_scene_mp4_v1;
+pub use browser_export::{export_scene_mp4_v1, export_scene_mp4_with_wav_v1};
 #[cfg(target_arch = "wasm32")]
 pub use canvas::PoietraCanvasEngineV1;
 #[cfg(target_arch = "wasm32")]

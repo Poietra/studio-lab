@@ -5,8 +5,8 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 use poietra_eval::{EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1};
 use poietra_export_mux::{
-    ColorParametersV1, EncodedSampleV1, ExportMuxConfigV1, ExportMuxErrorV1, ExportMuxSessionV1,
-    VideoParametersV1,
+    ColorParametersV1, EncodedAudioSampleV1, EncodedSampleV1, ExportMuxConfigV1, ExportMuxErrorV1,
+    ExportMuxSessionV1, OPUS_SAMPLE_RATE, OpusParametersV1, VideoParametersV1,
 };
 use poietra_render_wgpu::{
     ExportFrameRequestV1, ExportFrameSequenceParamsV1, ExportFrameSequenceSessionV1,
@@ -18,6 +18,8 @@ use poietra_scene_ir::{
 use wasm_bindgen::prelude::*;
 
 use crate::POIETRA_ENGINE_ABI_VERSION;
+use crate::audio_encoder::{FinishedOpusOutput, encode_opus};
+use crate::audio_wav::{PcmWav, parse_pcm_wav};
 use crate::bounded_writer::BoundedWriter;
 use crate::browser_export_protocol::{
     BROWSER_EXPORT_CANCELLED_REASON_V1, BrowserExportProgressV1,
@@ -208,6 +210,61 @@ pub async fn export_scene_mp4_v1(
     asset_bytes: &js_sys::Array,
     progress: Option<js_sys::Function>,
 ) -> Result<js_sys::Uint8Array, JsValue> {
+    export_scene_mp4(
+        snapshot_json,
+        profile_json,
+        asset_metadata_json,
+        asset_bytes,
+        None,
+        progress,
+    )
+    .await
+}
+
+/// Exports the same canonical Scene as [`export_scene_mp4_v1`] with one
+/// local-only PCM WAV encoded to an Opus MP4 track. Invalid or unsupported
+/// WAV input is rejected explicitly; audio is never omitted silently.
+///
+/// # Errors
+///
+/// Returns a named `PoietraBrowserMp4ExportRefused` JavaScript error when
+/// WAV admission, Opus encoding, rendering, video encoding, or muxing fails.
+#[wasm_bindgen(js_name = exportSceneMp4WithWavV1)]
+pub async fn export_scene_mp4_with_wav_v1(
+    snapshot_json: &[u8],
+    profile_json: &[u8],
+    asset_metadata_json: &[u8],
+    asset_bytes: &js_sys::Array,
+    wav_bytes: &[u8],
+    progress: Option<js_sys::Function>,
+) -> Result<js_sys::Uint8Array, JsValue> {
+    export_scene_mp4(
+        snapshot_json,
+        profile_json,
+        asset_metadata_json,
+        asset_bytes,
+        Some(wav_bytes),
+        progress,
+    )
+    .await
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the composition stays linear so every fail-closed stage is visible in one place"
+)]
+async fn export_scene_mp4(
+    snapshot_json: &[u8],
+    profile_json: &[u8],
+    asset_metadata_json: &[u8],
+    asset_bytes: &js_sys::Array,
+    wav_bytes: Option<&[u8]>,
+    progress: Option<js_sys::Function>,
+) -> Result<js_sys::Uint8Array, JsValue> {
+    let wav = wav_bytes
+        .map(parse_pcm_wav)
+        .transpose()
+        .map_err(|error| refused(error.wire_name(), error))?;
     let bundle = parse_scene_ir_bundle_json_v1(snapshot_json)
         .map_err(|error| refused("invalid-scene", error))?;
     let profile = parse_export_profile_json_v1(profile_json)
@@ -319,12 +376,24 @@ pub async fn export_scene_mp4_v1(
     let encoded_output = video_encoder
         .take_finished_output()
         .map_err(|failure| refused(failure.reason.wire_name(), failure.message))?;
+    let audio_output = encode_audio(wav, frame_count, fps).await?;
     let color = color_parameters(&encoded_output.color_space)?;
-    let max_sample_count = NonZeroU32::new(
-        u32::try_from(frame_count)
-            .map_err(|_| refused("mux-failed", "frame count exceeds the MP4 sample bound"))?,
-    )
-    .ok_or_else(|| refused("mux-failed", "an empty Scene cannot be exported"))?;
+    let video_sample_count = u32::try_from(frame_count)
+        .map_err(|_| refused("mux-failed", "frame count exceeds the MP4 sample bound"))?;
+    let max_sample_count = audio_output
+        .as_ref()
+        .map_or(Ok(video_sample_count), |audio| {
+            u32::try_from(audio.chunks.len())
+                .map(|audio_count| video_sample_count.max(audio_count))
+                .map_err(|_| {
+                    refused(
+                        "mux-failed",
+                        "audio sample count exceeds the MP4 sample bound",
+                    )
+                })
+        })?;
+    let max_sample_count = NonZeroU32::new(max_sample_count)
+        .ok_or_else(|| refused("mux-failed", "an empty Scene cannot be exported"))?;
     let provenance = serde_json::to_vec(&ExportProvenanceV1 {
         engine_abi_version: POIETRA_ENGINE_ABI_VERSION,
         export_profile_hash: profile_hash,
@@ -347,21 +416,32 @@ pub async fn export_scene_mp4_v1(
     let frames_per_second =
         NonZeroU32::new(fps).ok_or_else(|| refused("invalid-profile", "frame rate is zero"))?;
     let sink = BoundedWriter::new(output_limit);
-    let mut mux = ExportMuxSessionV1::begin(
-        ExportMuxConfigV1 {
-            decoder_configuration: encoded_output.decoder_configuration,
-            video: VideoParametersV1 {
-                width_px,
-                height_px,
-                timescale,
-                frames_per_second,
-            },
-            color,
-            provenance,
-            max_sample_count,
+    let mux_config = ExportMuxConfigV1 {
+        decoder_configuration: encoded_output.decoder_configuration,
+        video: VideoParametersV1 {
+            width_px,
+            height_px,
+            timescale,
+            frames_per_second,
         },
-        sink,
-    )
+        color,
+        provenance,
+        max_sample_count,
+    };
+    let mut mux = match audio_output.as_ref() {
+        Some(audio) => ExportMuxSessionV1::begin_with_opus(
+            mux_config,
+            OpusParametersV1 {
+                channels: audio.channels,
+                sample_rate: OPUS_SAMPLE_RATE,
+                pre_skip: audio.pre_skip,
+                output_gain: audio.output_gain,
+                channel_mapping_family: audio.channel_mapping_family,
+            },
+            sink,
+        ),
+        None => ExportMuxSessionV1::begin(mux_config, sink),
+    }
     .map_err(mux_error)?;
     let mut previous_timestamp_microseconds = None;
     for (index, chunk) in encoded_output.chunks.iter().enumerate() {
@@ -389,6 +469,32 @@ pub async fn export_scene_mp4_v1(
         })
         .map_err(mux_error)?;
     }
+    if let Some(audio) = audio_output {
+        for chunk in audio.chunks {
+            mux.append_audio_sample(EncodedAudioSampleV1 {
+                bytes: &chunk.bytes,
+                duration_samples: chunk.duration_samples,
+            })
+            .map_err(mux_error)?;
+        }
+    }
     let sink = mux.finish().map_err(mux_error)?;
     Ok(js_sys::Uint8Array::from(sink.into_bytes().as_slice()))
+}
+
+async fn encode_audio(
+    wav: Option<PcmWav>,
+    frame_count: u64,
+    frames_per_second: u32,
+) -> Result<Option<FinishedOpusOutput>, JsValue> {
+    let Some(wav) = wav else {
+        return Ok(None);
+    };
+    let pcm = wav
+        .fit_to_video(frame_count, frames_per_second)
+        .map_err(|error| refused(error.wire_name(), error))?;
+    encode_opus(&pcm)
+        .await
+        .map(Some)
+        .map_err(|failure| refused(failure.reason.wire_name(), failure.message))
 }
