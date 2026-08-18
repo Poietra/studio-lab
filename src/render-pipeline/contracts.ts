@@ -278,10 +278,40 @@ export type RenderSourceActionCancellationView = Readonly<{
   session: RenderSessionView;
 }>;
 
+export type ManimSourceImportOutcome =
+  | Readonly<{
+      access: "read-only";
+      bindingId: string;
+      constructorPath: readonly string[];
+      kind: "source-preserved";
+      reason: "constructor-not-supported";
+      sourceLine: number;
+      sourceVariable: string;
+    }>
+  | Readonly<{
+      access: "read-only";
+      bindingId: string;
+      constructorPath: readonly string[] | null;
+      kind: "runtime-only";
+      reason: "dynamic-control-flow" | "runtime-constructor";
+      sourceLine: number;
+      sourceVariable: string;
+    }>
+  | Readonly<{
+      access: "read-only";
+      bindingId: string;
+      constructorPath: readonly string[] | null;
+      kind: "unsupported";
+      reason: "ambiguous-binding" | "source-analysis-unavailable" | "unsupported-binding-form";
+      sourceLine: number;
+      sourceVariable: string | null;
+    }>;
+
 export type ManimWorkspaceSource = Readonly<{
   path: string;
   scenes: readonly Readonly<{
     anchors: readonly number[];
+    importOutcomes: readonly ManimSourceImportOutcome[];
     nextSceneId: string | null;
     name: string;
     runtimeSceneState: RuntimeSceneState;
@@ -514,6 +544,46 @@ export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z
       z
         .object({
           anchors: z.array(finiteNumber.nonnegative()),
+          importOutcomes: z.array(
+            z.discriminatedUnion("kind", [
+              z
+                .object({
+                  access: z.literal("read-only"),
+                  bindingId: z.string().min(1),
+                  constructorPath: z.array(z.string().min(1)),
+                  kind: z.literal("source-preserved"),
+                  reason: z.literal("constructor-not-supported"),
+                  sourceLine: z.number().int().positive(),
+                  sourceVariable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+                })
+                .strict(),
+              z
+                .object({
+                  access: z.literal("read-only"),
+                  bindingId: z.string().min(1),
+                  constructorPath: z.array(z.string().min(1)).nullable(),
+                  kind: z.literal("runtime-only"),
+                  reason: z.enum(["dynamic-control-flow", "runtime-constructor"]),
+                  sourceLine: z.number().int().positive(),
+                  sourceVariable: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+                })
+                .strict(),
+              z
+                .object({
+                  access: z.literal("read-only"),
+                  bindingId: z.string().min(1),
+                  constructorPath: z.array(z.string().min(1)).nullable(),
+                  kind: z.literal("unsupported"),
+                  reason: z.enum(["ambiguous-binding", "source-analysis-unavailable", "unsupported-binding-form"]),
+                  sourceLine: z.number().int().positive(),
+                  sourceVariable: z
+                    .string()
+                    .regex(/^[A-Za-z_][A-Za-z0-9_]*$/)
+                    .nullable(),
+                })
+                .strict(),
+            ]),
+          ),
           name: manimSceneNameSchema,
           nextSceneId: z.string().nullable(),
           runtimeSceneState: runtimeSceneStateSchema,

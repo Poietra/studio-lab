@@ -47,6 +47,7 @@ export function projectPersistentRemoveFixture(program: SceneEdit, scene = STUDI
   return projectStudioWorkspace({
     activeScene: {
       anchors: [0, 5, 7],
+      importOutcomes: [],
       name: "GroupedEquation",
       nextSceneId: null,
       runtimeSceneState: scene,
