@@ -39,9 +39,9 @@ The importer is not complete merely because a Scene renders. Completion requires
 The first two gates currently pass only for the three committed accepted generic fixtures: `StaticSquare` has one
 accepted root, `FeynmanDiagram` has four, and `FourierSeriesSquareWave` has five. The seven official Scenes remain
 unmeasured on the current generic preview route, so these root totals do not mean that the importer is complete. The
-edit roundtrip gate is intentionally red:
-existing tests prove several lowerings and fresh validations, but none reimports every exported operation through the
-full static importer. The scoreboard records this as `0%`; it must not be rounded up from source-lowering coverage.
+edit roundtrip gate is still red. `StaticSquare` now reimports all four advertised operations through the full static
+importer, but three operation claims in the official corpus still lack that end-to-end proof. The scoreboard therefore
+records `57.14%`; source-lowering coverage alone must not be rounded up to completion.
 
 Adding a Scene or promoting a status requires an existing offline test in the gate command. External clones, a new
 producer, OCI execution, and a new Scene-specific production branch are outside this gate.
