@@ -15,6 +15,11 @@ use crate::{
 use poietra_scene_ir::{MAX_VIEWPORT_PIXELS_V1, RenderCompositingV1};
 use wgpu::util::DeviceExt;
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, JsValue};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+
 const VERTEX_STRIDE: wgpu::BufferAddress = VERTEX_ENCODED_SIZE_V1 as wgpu::BufferAddress;
 const RGBA8_BYTES_PER_SAMPLE_V1: u64 = 4;
 const PORTABLE_AA_SCALE_V1: u32 = 2;
@@ -392,6 +397,51 @@ fn create_project_fragment_material_pipeline_v1(
         multiview_mask: None,
         cache: None,
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn create_scoped_project_fragment_material_pipeline_v1(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    material: &FragmentMaterialSourceV1,
+) -> Result<wgpu::RenderPipeline, String> {
+    // wgpu 30's browser error converter panics on GPUInternalError. Keep the
+    // same raw WebGPU scope boundary used by the canvas runtime.
+    let raw_device: JsValue = device
+        .as_webgpu()
+        .ok_or_else(|| "WebGPU device handle is unavailable".to_owned())?
+        .clone()
+        .into();
+    let push = js_sys::Reflect::get(&raw_device, &JsValue::from_str("pushErrorScope"))
+        .and_then(JsCast::dyn_into::<js_sys::Function>)
+        .map_err(|error| format!("could not access WebGPU error scopes: {error:?}"))?;
+    let pop = js_sys::Reflect::get(&raw_device, &JsValue::from_str("popErrorScope"))
+        .and_then(JsCast::dyn_into::<js_sys::Function>)
+        .map_err(|error| format!("could not access WebGPU error scopes: {error:?}"))?;
+    push.call1(&raw_device, &JsValue::from_str("validation"))
+        .map_err(|error| format!("could not push WebGPU validation scope: {error:?}"))?;
+
+    let pipeline = create_project_fragment_material_pipeline_v1(
+        device,
+        bind_group_layout,
+        target_format,
+        material,
+    );
+    let promise = pop
+        .call0(&raw_device)
+        .and_then(JsCast::dyn_into::<js_sys::Promise>)
+        .map_err(|error| format!("could not pop WebGPU validation scope: {error:?}"))?;
+    let error = JsFuture::from(promise)
+        .await
+        .map_err(|error| format!("WebGPU validation scope promise rejected: {error:?}"))?;
+    if !error.is_null() && !error.is_undefined() {
+        return Err(js_sys::Reflect::get(&error, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .unwrap_or_else(|| format!("{error:?}")));
+    }
+    Ok(pipeline)
 }
 
 fn multisample_color_target_bytes_v1(
@@ -1083,20 +1133,37 @@ impl WgpuFillRendererV1 {
         validate_fragment_material_sources_v1(sources)?;
         let mut candidate = BTreeMap::new();
         for material in sources {
-            let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let pipeline = create_project_fragment_material_pipeline_v1(
+            #[cfg(not(target_arch = "wasm32"))]
+            let pipeline = {
+                let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let pipeline = create_project_fragment_material_pipeline_v1(
+                    device,
+                    &self.fragment_material_bind_group_layout,
+                    self.target_format,
+                    material,
+                );
+                if let Some(error) = validation_scope.pop().await {
+                    return Err(FragmentMaterialRegistryErrorV1::Compilation {
+                        message: error.to_string(),
+                        revision: material.revision,
+                        shader_id: material.shader_id.clone(),
+                    });
+                }
+                pipeline
+            };
+            #[cfg(target_arch = "wasm32")]
+            let pipeline = create_scoped_project_fragment_material_pipeline_v1(
                 device,
                 &self.fragment_material_bind_group_layout,
                 self.target_format,
                 material,
-            );
-            if let Some(error) = validation_scope.pop().await {
-                return Err(FragmentMaterialRegistryErrorV1::Compilation {
-                    message: error.to_string(),
-                    revision: material.revision,
-                    shader_id: material.shader_id.clone(),
-                });
-            }
+            )
+            .await
+            .map_err(|message| FragmentMaterialRegistryErrorV1::Compilation {
+                message,
+                revision: material.revision,
+                shader_id: material.shader_id.clone(),
+            })?;
             candidate.insert((material.shader_id.clone(), material.revision), pipeline);
         }
         self.project_fragment_material_pipelines = candidate;

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { expect, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
+import type { FragmentMaterialRegistryV1 } from "../src/engine/fragment-material-registry";
 
 const VIEWPORT = { heightPx: 90, widthPx: 160 } as const;
 const FPS = 2;
@@ -15,6 +16,21 @@ const FRAGMENT_EXPORT_FPS = 30;
 const FRAGMENT_EXPORT_DURATION = 0.2;
 const FRAGMENT_EXPORT_FRAME_COUNT = 6;
 const FRAGMENT_EXPORT_SAMPLE_FRAMES = [0, 3] as const;
+const IMPORTED_GLSL_SHADER_ID = "imported-glsl-parity";
+const IMPORTED_GLSL_SOURCE = `#version 450
+layout(location = 0) in vec4 base_color;
+layout(location = 1) in vec2 screen_position;
+layout(location = 0) out vec4 output_color;
+layout(set = 0, binding = 0, std140) uniform PoietraHost {
+    vec4 viewport_and_time;
+    vec4 parameters_0;
+    vec4 parameters_1;
+} host;
+
+void main() {
+    output_color = vec4(base_color.rgb * host.parameters_0.xyz, base_color.a);
+}
+`;
 
 type ExportReadbackProof = Readonly<{
   frameCount: number;
@@ -45,7 +61,14 @@ function expectPixelClose(actual: readonly (number | undefined)[], expected: rea
   });
 }
 
-function fragmentMaterialExportFixture(fixture: SceneIrBundleV1): SceneIrBundleV1 {
+function fragmentMaterialExportFixture(
+  fixture: SceneIrBundleV1,
+  fragmentMaterial: Readonly<{ parameters: readonly number[]; revision: number; shaderId: string }> = {
+    parameters: [0, 3, 0, 0.2],
+    revision: 1,
+    shaderId: "time-gradient",
+  },
+): SceneIrBundleV1 {
   const material = fixture.scene.entities.find((entity) => entity.id === "earlier");
   if (!material?.appearance?.fill || material.geometry?.kind !== "circle") {
     throw new Error("The shared Scene fixture lost its editable filled circle.");
@@ -67,13 +90,7 @@ function fragmentMaterialExportFixture(fixture: SceneIrBundleV1): SceneIrBundleV
             fill: {
               ...material.appearance.fill,
               color: { alpha: 1, blue: 1, green: 1, red: 1 },
-              fragmentMaterial: {
-                // Spatial frequency zero gives a flat center-safe sample. A temporal
-                // frequency of three moves frame 0 from mid-grey to near-white at frame 3.
-                parameters: [0, 3, 0, 0.2],
-                revision: 1,
-                shaderId: "time-gradient",
-              },
+              fragmentMaterial,
             },
           },
           geometry: { ...material.geometry, center: { x: 0, y: 0 }, radius: 3 },
@@ -283,4 +300,140 @@ test("decoded WebCodecs MP4 frames preserve the Rust time-gradient render", asyn
   for (const [index, expectedPixel] of expected.entries()) {
     expectPixelClose(proof.decoded[index] ?? [], expectedPixel, 4);
   }
+});
+
+test("imported GLSL stays pixel-equivalent between Preview and decoded WebCodecs MP4", async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Pick<
+    SceneIrBundleV1,
+    "assets" | "scene"
+  >;
+
+  await page.goto("/");
+  const canonicalWgsl = await page.evaluate(async (source) => {
+    const compiler = (await import(
+      /* @vite-ignore */ "/src/engine/fragment-material-glsl.ts"
+    )) as typeof import("../src/engine/fragment-material-glsl");
+    return compiler.compileFragmentMaterialGlsl({ entryPoint: "main", source });
+  }, IMPORTED_GLSL_SOURCE);
+  expect(canonicalWgsl).toContain("fn fs_main");
+  expect(canonicalWgsl).not.toContain("#version 450");
+
+  const fragmentMaterialRegistry = {
+    materials: [
+      {
+        revision: 1,
+        shaderId: IMPORTED_GLSL_SHADER_ID,
+        source: canonicalWgsl,
+      },
+    ],
+    schema: "poietra.fragment-material-registry",
+    version: 1,
+  } satisfies FragmentMaterialRegistryV1;
+  const snapshot = fragmentMaterialExportFixture(
+    { assets: fixture.assets, scene: fixture.scene },
+    {
+      parameters: [0.5, 0.25, 0.75, 0],
+      revision: 1,
+      shaderId: IMPORTED_GLSL_SHADER_ID,
+    },
+  );
+  const proof = await page.evaluate(
+    async ({ fps, fragmentMaterialRegistry, snapshot, viewport }) => {
+      const preview = (await import(
+        /* @vite-ignore */ "/src/engine/preview-renderer.ts"
+      )) as typeof import("../src/engine/preview-renderer");
+      const evidence = (await import(
+        /* @vite-ignore */ "/src/engine/canvas-worker-evidence.ts"
+      )) as typeof import("../src/engine/canvas-worker-evidence");
+      const browserExport = (await import(
+        /* @vite-ignore */ "/src/engine/browser-mp4-export.ts"
+      )) as typeof import("../src/engine/browser-mp4-export");
+      if (snapshot.scene.source.kind !== "studio-edit-program") {
+        throw new Error("The imported GLSL parity fixture lost its Studio revision.");
+      }
+
+      document.body.replaceChildren();
+      const previewCanvas = document.createElement("canvas");
+      previewCanvas.height = viewport.heightPx;
+      previewCanvas.width = viewport.widthPx;
+      document.body.append(previewCanvas);
+      const host = new preview.StudioPreviewRendererHost({
+        createRenderer: () =>
+          preview.createCanvasPreviewRendererV1({
+            evidence: evidence.createCanvasWorkerClientEvidenceAdapterV1(),
+            requestTimeoutMs: 30_000,
+          }),
+        onStateChange: () => undefined,
+      });
+      let previewPixel: readonly number[];
+      try {
+        const revision = snapshot.scene.source.revisionHash;
+        await host.install({ canvas: previewCanvas, fragmentMaterialRegistry, revision, snapshot });
+        host.requestFrame({ sampleTime: 0, viewport });
+        const deadline = performance.now() + 30_000;
+        while (host.state.phase !== "presented" || host.state.frame.revision !== revision) {
+          if (performance.now() >= deadline) throw new Error(`Preview failed: ${JSON.stringify(host.state)}`);
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+        previewPixel = (await host.captureEvidence([{ fractionX: 0.5, fractionY: 0.5 }])).samples[0] ?? [];
+      } finally {
+        host.dispose();
+      }
+
+      const outcome = await browserExport.runBrowserMp4ExportV1({
+        fragmentMaterialRegistry,
+        profile: browserExport.DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+        snapshot,
+      });
+      if (outcome.kind === "refused") {
+        return { kind: "refused" as const, message: outcome.message, reason: outcome.reason };
+      }
+      const url = URL.createObjectURL(outcome.mp4);
+      const video = document.createElement("video");
+      video.muted = true;
+      video.src = url;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          video.addEventListener("loadeddata", () => resolve(), { once: true });
+          video.addEventListener("error", () => reject(new Error("Chromium rejected the exported MP4.")), {
+            once: true,
+          });
+          video.load();
+        });
+        await new Promise<void>((resolve) => {
+          video.addEventListener("seeked", () => resolve(), { once: true });
+          video.currentTime = 0.1 / fps;
+        });
+        const decodedCanvas = document.createElement("canvas");
+        decodedCanvas.height = video.videoHeight;
+        decodedCanvas.width = video.videoWidth;
+        const context = decodedCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
+        if (!context) throw new Error("The decoded-frame canvas is unavailable.");
+        context.drawImage(video, 0, 0);
+        const decodedPixel = Array.from(
+          context.getImageData(Math.floor(video.videoWidth / 2), Math.floor(video.videoHeight / 2), 1, 1).data,
+        );
+        return { decodedPixel, kind: "decoded" as const, previewPixel };
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    },
+    {
+      fps: FRAGMENT_EXPORT_FPS,
+      fragmentMaterialRegistry,
+      snapshot,
+      viewport: FRAGMENT_READBACK_VIEWPORT,
+    },
+  );
+
+  test.skip(
+    proof.kind === "refused" && ["api-unavailable", "unsupported-codec"].includes(proof.reason),
+    proof.kind === "refused" ? `Chromium has no usable H.264 WebCodecs encoder: ${proof.message}` : undefined,
+  );
+  if (proof.kind === "refused") {
+    throw new Error(`Browser MP4 export refused with ${proof.reason}: ${proof.message}`);
+  }
+  expectPixelClose(proof.previewPixel, [188, 137, 225, 255], 4);
+  expectPixelClose(proof.decodedPixel, proof.previewPixel, 4);
 });
