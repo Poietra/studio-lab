@@ -106,7 +106,7 @@ describe("runBrowserMp4ExportV1", () => {
     const request = exportWorkerRequestV1Schema.parse(worker.posted[0]);
     if (request.kind !== "export-mp4") throw new Error("missing export request");
     expect(new Uint8Array(request.audioWav ?? new ArrayBuffer(0))).toEqual(new Uint8Array(audioWav));
-    expect(worker.transfers[0]).toEqual([audioWav]);
+    expect(worker.transfers[0]).toEqual([audioWav, request.fragmentMaterialRegistryJson]);
     worker.emitMessage({
       bytes: new Uint8Array([0, 0, 0, 8]).buffer,
       kind: "export-finished",

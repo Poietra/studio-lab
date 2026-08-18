@@ -12,6 +12,7 @@ import { renderViewportV1Schema } from "./render-packet";
 export const POIETRA_CANVAS_WORKER_VERSION = 1 as const;
 export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 4 as const;
 export const MAX_CANVAS_SNAPSHOT_JSON_BYTES = 8 * 1024 * 1024;
+export const MAX_CANVAS_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES = 144 * 1024;
 export const MAX_CANVAS_SAMPLE_JSON_BYTES = 256 * 1024;
 export const MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES = 16 * 1024;
 export const MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES = 32 * 1024;
@@ -56,6 +57,11 @@ const snapshotJsonSchema = z
   .refine((bytes) => bytes.byteLength <= MAX_CANVAS_SNAPSHOT_JSON_BYTES, {
     message: `Scene snapshot JSON accepts at most ${MAX_CANVAS_SNAPSHOT_JSON_BYTES} bytes.`,
   });
+const fragmentMaterialRegistryJsonSchema = z
+  .instanceof(ArrayBuffer)
+  .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= MAX_CANVAS_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES, {
+    message: `Fragment material registry JSON accepts 1 to ${MAX_CANVAS_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES} bytes.`,
+  });
 const offscreenCanvasSchema = z.custom<OffscreenCanvas>(isOffscreenCanvas, "Expected an OffscreenCanvas.");
 
 export const canvasWorkerRequestEnvelopeV1 = {
@@ -72,8 +78,9 @@ const installCanvasRequestV1Schema = z
     // Dev/test-only flag: asks a dev worker build to arm its frame-proof
     // channel. Production workers reject flagged installs as a bounded error.
     captureFrameEvidence: z.boolean().optional(),
-    kind: z.literal("install-canvas"),
     assetPayloads: canvasPngAssetTransfersV1Schema,
+    fragmentMaterialRegistryJson: fragmentMaterialRegistryJsonSchema.optional(),
+    kind: z.literal("install-canvas"),
     revision: revisionSchema,
     snapshotJson: snapshotJsonSchema,
     wasmModuleUrl: z.string().url().max(MAX_CANVAS_WASM_MODULE_URL_LENGTH),
@@ -85,6 +92,7 @@ const replaceSceneRequestV1Schema = z
     ...requestEnvelope,
     baseRevision: revisionSchema,
     assetPayloads: canvasPngAssetTransfersV1Schema,
+    fragmentMaterialRegistryJson: fragmentMaterialRegistryJsonSchema.optional(),
     kind: z.literal("replace-scene"),
     revision: revisionSchema,
     snapshotJson: snapshotJsonSchema,

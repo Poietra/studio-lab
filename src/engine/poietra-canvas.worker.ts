@@ -24,11 +24,19 @@ import {
 } from "./canvas-worker-protocol";
 
 const MAX_ERROR_MESSAGE_LENGTH = 4_096;
+const EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON = new TextEncoder().encode(
+  '{"materials":[],"schema":"poietra.fragment-material-registry","version":1}',
+);
 
 export type PoietraWasmCanvasEngineV1 = {
   generateThumbnail?: () => Promise<Uint8Array>;
   render: (requestJson: Uint8Array) => Promise<Uint8Array>;
-  replaceSnapshot: (snapshotJson: Uint8Array, assetMetadataJson: Uint8Array, assetBytes: Uint8Array[]) => void;
+  replaceSnapshot: (
+    snapshotJson: Uint8Array,
+    assetMetadataJson: Uint8Array,
+    assetBytes: Uint8Array[],
+    fragmentMaterialRegistryJson: Uint8Array,
+  ) => void | Promise<void>;
   // Telemetry-free modules remain supported. A module that exposes any
   // telemetry surface must complete the exact v4 handshake below; ABI3 is
   // intentionally rejected instead of being partially interpreted.
@@ -42,6 +50,7 @@ export type PoietraWasmCanvasEngineClassV1 = {
     assetMetadataJson: Uint8Array,
     assetBytes: Uint8Array[],
     canvas: OffscreenCanvas,
+    fragmentMaterialRegistryJson?: Uint8Array,
   ) => Promise<PoietraWasmCanvasEngineV1>;
   prototype: PoietraWasmCanvasEngineV1;
 };
@@ -257,7 +266,7 @@ export class PoietraCanvasWorkerRuntimeV1 {
       return;
     }
     if (request.kind === "replace-scene") {
-      this.replace(request);
+      await this.replace(request);
       return;
     }
     if (request.kind === "render-frame-telemetry") {
@@ -328,6 +337,9 @@ export class PoietraCanvasWorkerRuntimeV1 {
         assets.metadataJson,
         assets.bytes,
         request.canvas,
+        request.fragmentMaterialRegistryJson
+          ? new Uint8Array(request.fragmentMaterialRegistryJson)
+          : EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON,
       );
       this.currentRevision = request.revision;
     } catch (error) {
@@ -355,7 +367,7 @@ export class PoietraCanvasWorkerRuntimeV1 {
     });
   }
 
-  private replace(request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "replace-scene" }>>) {
+  private async replace(request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "replace-scene" }>>) {
     const correlation = correlationFromUnknown(request);
     if (!this.engine) {
       this.postMessage(errorResponse(correlation, "invalid-state", null, "No canvas Scene is installed."));
@@ -367,7 +379,14 @@ export class PoietraCanvasWorkerRuntimeV1 {
     }
     try {
       const assets = encodeCanvasPngAssetTransfersForWasmV1(request.assetPayloads);
-      this.engine.replaceSnapshot(new Uint8Array(request.snapshotJson), assets.metadataJson, assets.bytes);
+      await this.engine.replaceSnapshot(
+        new Uint8Array(request.snapshotJson),
+        assets.metadataJson,
+        assets.bytes,
+        request.fragmentMaterialRegistryJson
+          ? new Uint8Array(request.fragmentMaterialRegistryJson)
+          : EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON,
+      );
       this.currentRevision = request.revision;
     } catch (error) {
       // A rejected replace leaves both the Scene and the surface in their

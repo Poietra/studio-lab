@@ -3,9 +3,10 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use poietra_render_wgpu::{
-    PreparedFrameV1, PreparedGeometryCacheFrameStatsV1, PreparedGeometryCacheV1,
-    WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_with_cache_and_assets_v1,
-    render_thumbnail_png, tessellate_validated_frame_with_cache_and_assets_v1,
+    FragmentMaterialSourceV1, PreparedFrameV1, PreparedGeometryCacheFrameStatsV1,
+    PreparedGeometryCacheV1, WgpuPaintRendererV1, WgpuRenderTargetV1,
+    prepare_frame_with_cache_assets_and_fragment_materials_v1, render_thumbnail_png,
+    tessellate_validated_frame_with_cache_assets_and_fragment_materials_v1,
     validate_frame_packet_v1,
 };
 use poietra_scene_ir::{RenderDrawV1, ViewportV1, parse_scene_ir_bundle_json_v1};
@@ -30,6 +31,7 @@ use crate::canvas_telemetry::{
     finalize_surface_configuration_evidence, normalized_duration_ms, stage_phase_sample,
     telemetry_response as serialize_telemetry_response,
 };
+use crate::fragment_material_registry::parse_fragment_material_registry_v1;
 use crate::protocol::EngineWorkerSessionV1;
 
 const SNAPSHOT_REJECTED_ERROR_NAME: &str = "PoietraCanvasSnapshotRejected";
@@ -462,6 +464,7 @@ pub struct PoietraCanvasEngineV1 {
     // Checked count of surface reconfigurations within the frame being
     // rendered; `None` records an explicit counter overflow.
     frame_surface_configurations: Option<u32>,
+    fragment_material_sources: Vec<FragmentMaterialSourceV1>,
     memory_high_water: EngineMemoryHighWaterV1,
     // Kept before `device` so Drop unregisters the JS callback first.
     _uncaptured_error_listener: RawUncapturedErrorListenerV1,
@@ -513,6 +516,7 @@ impl PoietraCanvasEngineV1 {
         asset_metadata_json: &[u8],
         asset_bytes: js_sys::Array,
         canvas: OffscreenCanvas,
+        fragment_material_registry_json: &[u8],
     ) -> Result<PoietraCanvasEngineV1, JsValue> {
         let bundle = parse_scene_ir_bundle_json_v1(snapshot_json)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
@@ -523,7 +527,14 @@ impl PoietraCanvasEngineV1 {
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         let session = EngineWorkerSessionV1::from_bundle(bundle)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
-        let gpu = acquire_canvas_gpu_candidate(&canvas).await?;
+        let fragment_materials =
+            parse_fragment_material_registry_v1(fragment_material_registry_json)
+                .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error))?;
+        let mut gpu = acquire_canvas_gpu_candidate(&canvas).await?;
+        gpu.renderer
+            .replace_fragment_material_sources(&gpu.device, &fragment_materials)
+            .await
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
 
         Ok(Self {
             adapter_evidence: gpu.adapter_evidence,
@@ -531,6 +542,7 @@ impl PoietraCanvasEngineV1 {
             canvas,
             configured_viewport: None,
             frame_surface_configurations: Some(0),
+            fragment_material_sources: fragment_materials,
             memory_high_water: EngineMemoryHighWaterV1::default(),
             _uncaptured_error_listener: gpu.uncaptured_error_listener,
             device: gpu.device,
@@ -555,11 +567,12 @@ impl PoietraCanvasEngineV1 {
     ///
     /// Returns a JavaScript error and preserves the current snapshot on failure.
     #[wasm_bindgen(js_name = replaceSnapshot)]
-    pub fn replace_snapshot(
+    pub async fn replace_snapshot(
         &mut self,
         snapshot_json: &[u8],
         asset_metadata_json: &[u8],
         asset_bytes: js_sys::Array,
+        fragment_material_registry_json: &[u8],
     ) -> Result<(), JsValue> {
         let bundle = parse_scene_ir_bundle_json_v1(snapshot_json)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
@@ -569,12 +582,22 @@ impl PoietraCanvasEngineV1 {
             .asset_registry
             .prepare_candidate(&bundle.assets, asset_metadata_json, &copied_asset_bytes)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
+        let fragment_materials =
+            parse_fragment_material_registry_v1(fragment_material_registry_json)
+                .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error))?;
+        let mut candidate_renderer = WgpuPaintRendererV1::new(&self.device, self.view_format)
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
+        candidate_renderer
+            .replace_fragment_material_sources(&self.device, &fragment_materials)
+            .await
+            .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         self.session
             .replace_snapshot_bundle(bundle)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         self.asset_registry = candidate_registry;
+        self.fragment_material_sources = fragment_materials;
+        self.renderer = candidate_renderer;
         self.prepared_geometry_cache.clear();
-        self.renderer.clear_image_texture_cache();
         Ok(())
     }
 
@@ -634,10 +657,11 @@ impl PoietraCanvasEngineV1 {
                 );
             }
         }
-        let frame = match prepare_frame_with_cache_and_assets_v1(
+        let frame = match prepare_frame_with_cache_assets_and_fragment_materials_v1(
             &sampled.packet,
             &mut self.prepared_geometry_cache,
             &self.asset_registry,
+            &self.renderer,
         ) {
             Ok(frame) => frame,
             Err(error) => {
@@ -762,10 +786,11 @@ impl PoietraCanvasEngineV1 {
         );
 
         let tessellate_started = clock.now_ms();
-        let frame = match tessellate_validated_frame_with_cache_and_assets_v1(
+        let frame = match tessellate_validated_frame_with_cache_assets_and_fragment_materials_v1(
             validated,
             &mut self.prepared_geometry_cache,
             &self.asset_registry,
+            &self.renderer,
         ) {
             Ok(frame) => frame,
             Err(error) => {
@@ -921,7 +946,7 @@ impl PoietraCanvasEngineV1 {
     /// place so the caller can terminate fail-closed; Scene/revision and
     /// decoded PNG authorities are never moved or reconstructed.
     async fn recover_after_device_loss(&mut self) -> Result<(), RuntimeFailureV1> {
-        let gpu = acquire_canvas_gpu_candidate(&self.canvas)
+        let mut gpu = acquire_canvas_gpu_candidate(&self.canvas)
             .await
             .map_err(|error| RuntimeFailureV1 {
                 code: CanvasRenderErrorCodeV1::DeviceLost,
@@ -929,6 +954,13 @@ impl PoietraCanvasEngineV1 {
                     "WebGPU device recovery failed: {}",
                     js_error_message(&error)
                 ),
+            })?;
+        gpu.renderer
+            .replace_fragment_material_sources(&gpu.device, &self.fragment_material_sources)
+            .await
+            .map_err(|error| RuntimeFailureV1 {
+                code: CanvasRenderErrorCodeV1::DeviceLost,
+                message: format!("WebGPU fragment material recovery failed: {error}"),
             })?;
 
         // Drop device-bound dependants before replacing the old device. Any

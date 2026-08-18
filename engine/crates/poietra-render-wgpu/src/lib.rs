@@ -40,9 +40,11 @@ pub use export::{
     ExportSequenceFrameV1,
 };
 pub use gpu::{
-    CreateRendererErrorV1, MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1, RenderFrameErrorV1,
-    RenderStageEvidenceV1, RendererMemorySnapshotErrorV1, RendererMemorySnapshotV1,
-    WgpuFillRendererV1, WgpuRenderTargetV1,
+    CreateRendererErrorV1, FragmentMaterialRegistryErrorV1, FragmentMaterialSourceV1,
+    MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1, MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1,
+    MAX_PROJECT_FRAGMENT_MATERIALS_V1, RenderFrameErrorV1, RenderStageEvidenceV1,
+    RendererMemorySnapshotErrorV1, RendererMemorySnapshotV1, WgpuFillRendererV1,
+    WgpuRenderTargetV1,
 };
 pub use image_gpu::{
     ImageGpuUploadErrorV1, ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1,
@@ -51,17 +53,19 @@ pub use image_gpu::{
     MAX_RETAINED_IMAGE_TEXTURE_ENTRIES_V1, MAX_RETAINED_IMAGE_TEXTURE_GPU_BYTES_V1,
 };
 pub use prepare::{
-    DecodedPngAssetResolverV1, FLATTEN_TOLERANCE_PIXELS_V1,
+    DecodedPngAssetResolverV1, FLATTEN_TOLERANCE_PIXELS_V1, FragmentMaterialSupportV1,
     MAX_FRAGMENT_MATERIAL_DRAWS_PER_FRAME_V1, MAX_PREPARED_VERTICES_V1, OrderedDrawPlanV1,
     PrepareFrameErrorV1, PreparedDrawV1, PreparedFragmentMaterialV1, PreparedFrameV1,
     PreparedGeometryPlanV1, PreparedGeometryVertexV1, PreparedImageDrawV1, PreparedImageVertexV1,
     PreparedMaterialPlanV1, PreparedMaterialV1, PreparedRenderCommandV1,
     TIME_GRADIENT_SHADER_ID_V1, TIME_GRADIENT_SHADER_REVISION_V1, UnsupportedDrawReasonV1,
     ValidatedRenderPacketV1, prepare_frame_v1, prepare_frame_with_assets_v1,
-    prepare_frame_with_cache_and_assets_v1, prepare_frame_with_cache_v1,
+    prepare_frame_with_cache_and_assets_v1,
+    prepare_frame_with_cache_assets_and_fragment_materials_v1, prepare_frame_with_cache_v1,
     tessellate_validated_frame_v1, tessellate_validated_frame_with_assets_v1,
-    tessellate_validated_frame_with_cache_and_assets_v1, tessellate_validated_frame_with_cache_v1,
-    validate_frame_packet_v1,
+    tessellate_validated_frame_with_cache_and_assets_v1,
+    tessellate_validated_frame_with_cache_assets_and_fragment_materials_v1,
+    tessellate_validated_frame_with_cache_v1, validate_frame_packet_v1,
 };
 pub use thumbnail::{
     ENGINE_THUMBNAIL_HEIGHT_PX, ENGINE_THUMBNAIL_WIDTH_PX, MAX_ENGINE_THUMBNAIL_PNG_BYTES,

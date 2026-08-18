@@ -585,6 +585,63 @@ describe("StudioPreviewRendererHost", () => {
     expect(fixture.host.state).toMatchObject({ phase: "fallback", reason: "renderer-failed" });
   });
 
+  it("keeps the prior renderer available after an atomically rejected material registry", async () => {
+    const { fixture, snapshot } = await readyUpdateFixture();
+    const rejectedInput = await updateInput(snapshot, OTHER_REVISION, 3, []);
+    const repairedInput = await updateInput(snapshot, THIRD_REVISION, 3, []);
+    const rejected = fixture.host.update(rejectedInput.input);
+    const repaired = fixture.host.update(repairedInput.input);
+    await vi.waitFor(() => expect(fixture.replacements).toHaveLength(1));
+    fixture.replacements[0]?.deferred.reject(
+      new CanvasWorkerClientError("snapshot-rejected", "WGSL validation failed."),
+    );
+    await expect(rejected).rejects.toMatchObject({ code: "snapshot-rejected" });
+    expect(fixture.disposeCount).toBe(0);
+    expect(fixture.host.state).toEqual({
+      detail: "snapshot-rejected: WGSL validation failed.",
+      phase: "fallback",
+      reason: "renderer-failed",
+    });
+
+    await vi.waitFor(() => expect(fixture.replacements).toHaveLength(2));
+    expect(fixture.replacements[1]?.input.baseRevision).toBe(REVISION);
+    fixture.replacements[1]?.deferred.resolve();
+    await expect(repaired).resolves.toBeUndefined();
+    expect(fixture.disposeCount).toBe(0);
+  });
+
+  it("rolls an immediately queued removal back to the retained revision after WGSL rejection", async () => {
+    const { fixture, snapshot } = await readyUpdateFixture();
+    await requestAndPresent(fixture, 0, 1);
+    const rejectedInput = await updateInput(snapshot, OTHER_REVISION, 3, []);
+    const rollbackInput = await updateInput(snapshot, REVISION, snapshot.scene.duration, ["runtime:a"]);
+    const rejected = fixture.host.update(rejectedInput.input);
+    const rollback = fixture.host.update(rollbackInput.input);
+    await vi.waitFor(() => expect(fixture.replacements).toHaveLength(1));
+    fixture.replacements[0]?.deferred.reject(
+      new CanvasWorkerClientError("snapshot-rejected", "WGSL validation failed."),
+    );
+
+    await expect(rejected).rejects.toMatchObject({ code: "snapshot-rejected" });
+    await expect(rollback).resolves.toBeUndefined();
+    expect(fixture.replacements).toHaveLength(1);
+    expect(fixture.renders[1]?.input).toMatchObject({
+      interactionEntityIds: ["runtime:a"],
+      revision: REVISION,
+      sampleTime: 1,
+    });
+    await settlePresented(fixture, 1);
+    expect(fixture.host.state).toEqual({
+      frame: {
+        packetId: "canvas:2",
+        revision: REVISION,
+        sampleTime: 1,
+        viewport: VIEWPORT,
+      },
+      phase: "presented",
+    });
+  });
+
   it("treats an acknowledged update after disposal as inert lifecycle completion", async () => {
     const { fixture, snapshot } = await readyUpdateFixture();
     const revisionB = await updateInput(snapshot, OTHER_REVISION, 3, []);

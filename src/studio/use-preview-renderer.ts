@@ -5,6 +5,10 @@ import { MAX_CANVAS_INTERACTION_ENTITY_IDS } from "../engine/canvas-worker-proto
 import type { SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import {
+  EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+  type FragmentMaterialRegistryV1,
+} from "../engine/fragment-material-registry";
+import {
   compileMathTexOutlineV1,
   compileTextOutlineV1,
   type MathTexOutlineArtifactV1,
@@ -28,6 +32,7 @@ import {
   type ApplyStudioBoundEntityEditCompiler,
   type ApplyStudioCreationEditCompiler,
   type ApplyStudioCreationEditWireCommandV1,
+  type ApplyStudioFragmentMaterialsCompiler,
   type ApplyStudioMathTexTransformEditCompiler,
   type ApplyStudioMathTexTransformEditWireCommandV1,
   type ApplyStudioMotionEditCompiler,
@@ -35,6 +40,7 @@ import {
   type ApplyStudioTimelineEditWireCommandV1,
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
+  compileApplyStudioFragmentMaterials,
   compileApplyStudioMathTexTransformEdit,
   compileApplyStudioMotionEdit,
   compileApplyStudioTimelineEdit,
@@ -51,6 +57,10 @@ import {
   type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
+import {
+  EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
+  type SceneFragmentMaterialStateV1,
+} from "./fragment-material-authoring";
 import type {
   ProgramRecord,
   ProjectedEntity,
@@ -126,6 +136,7 @@ export type StudioPreviewRendererView = Readonly<{
   canonicalScene: Readonly<{
     assetPayloads: readonly CanvasPngAssetTransferV1[];
     bundle: SceneIrBundleV1;
+    fragmentMaterialRegistry: FragmentMaterialRegistryV1;
     sourceLineage: Readonly<{
       projectId: string;
       sceneId: string;
@@ -209,6 +220,7 @@ export type UseStudioPreviewRendererInput = Readonly<{
   context: StudioPreviewEditingContextV1 | null;
   frame: Readonly<{ height: number; width: number }>;
   provider: StudioPreviewSnapshotProviderV1 | null;
+  sceneFragmentMaterials?: SceneFragmentMaterialStateV1;
   retainedSourceDuration: number | null;
   sampleTime: number;
   sceneBoundaryActive: boolean;
@@ -231,6 +243,13 @@ export function claimStudioPreviewCanvasV1(canvas: object): boolean {
   return true;
 }
 
+/** Invalidates presentation/export synchronously while a changed material input recompiles. */
+export function correlateStudioPreviewFragmentMaterialInputV1<
+  T extends Readonly<{ fragmentMaterialInput?: SceneFragmentMaterialStateV1 }>,
+>(scene: T | null, currentInput: SceneFragmentMaterialStateV1): T | null {
+  return scene?.fragmentMaterialInput === currentInput ? scene : null;
+}
+
 type BoundHostStateV1 = Readonly<{
   binding: StudioPreviewHostBinding;
   host: StudioPreviewRendererHost;
@@ -243,6 +262,8 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   creationProjection?: StudioCreationProjectionV1;
   engineRevisionHash: string;
   frame: Readonly<{ height: number; width: number }>;
+  fragmentMaterialInput?: SceneFragmentMaterialStateV1;
+  fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   interactionEntityIds: readonly string[];
   mathTexTransformProjection?: StudioMathTexTransformProjectionV1;
   motionProjection?: StudioMotionProjectionV1;
@@ -257,7 +278,13 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
 
 type StudioPreviewCompilationStateV1 =
   | Readonly<{ phase: "inactive" }>
-  | Readonly<{ error: string; phase: "unsupported"; workingRevision: string; workspaceKey: string }>
+  | Readonly<{
+      error: string;
+      fragmentMaterialInput: SceneFragmentMaterialStateV1;
+      phase: "unsupported";
+      workingRevision: string;
+      workspaceKey: string;
+    }>
   | Readonly<{ phase: "ready"; scene: CompiledStudioPreviewSceneV1 }>;
 
 const INACTIVE_COMPILATION: StudioPreviewCompilationStateV1 = { phase: "inactive" };
@@ -619,7 +646,7 @@ function studioTimelineCommands(
   };
 }
 
-export async function compileStudioPreviewSceneV1(
+async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
   input: Readonly<{
     applyStaticRootTransformEditCompiler?: ApplyStaticRootTransformEditCompiler;
     applyStudioBoundEntityEditCompiler?: ApplyStudioBoundEntityEditCompiler;
@@ -1431,6 +1458,103 @@ export async function compileStudioPreviewSceneV1(
   };
 }
 
+function resolveFragmentMaterialSceneEntityIdV1(
+  studioEntityId: string,
+  scene: CompiledStudioPreviewSceneV1,
+  workingState: WorkingState,
+) {
+  const sourceIdentity = workingState.runtimeSceneState.objectGraph.entities[studioEntityId]?.sourceIdentity;
+  if (sourceIdentity?.kind === "known") {
+    return scene.snapshot.sourceRuntimeIdentity?.get(sourceIdentity.value)?.entityId ?? null;
+  }
+  return scene.bundle.scene.entities.some(({ id }) => id === studioEntityId) ? studioEntityId : null;
+}
+
+async function digestFragmentMaterialSceneRevisionV1(
+  baseRevision: string,
+  registry: FragmentMaterialRegistryV1,
+  assignments: readonly Readonly<{ entityId: string; material: unknown }>[],
+) {
+  const bytes = new TextEncoder().encode(
+    canonicalJsonV1(["poietra.studio-fragment-materials", baseRevision, registry, assignments]),
+  );
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function compileStudioPreviewSceneV1(
+  input: Parameters<typeof compileStudioPreviewSceneWithoutFragmentMaterialsV1>[0] &
+    Readonly<{
+      applyStudioFragmentMaterialsCompiler?: ApplyStudioFragmentMaterialsCompiler;
+      sceneFragmentMaterials?: SceneFragmentMaterialStateV1;
+    }>,
+): ReturnType<typeof compileStudioPreviewSceneWithoutFragmentMaterialsV1> {
+  const result = await compileStudioPreviewSceneWithoutFragmentMaterialsV1(input);
+  if (result.kind !== "compiled") return result;
+  const sceneMaterials = input.sceneFragmentMaterials ?? EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1;
+  const assignments = Object.entries(sceneMaterials.assignments);
+  if (assignments.length === 0) {
+    return {
+      kind: "compiled",
+      scene: {
+        ...result.scene,
+        fragmentMaterialInput: sceneMaterials,
+        fragmentMaterialRegistry: EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+      },
+    };
+  }
+  const resolvedAssignments: Array<{
+    entityId: string;
+    material: SceneFragmentMaterialStateV1["assignments"][string];
+  }> = [];
+  const resolvedIds = new Set<string>();
+  for (const [studioEntityId, material] of assignments) {
+    const entityId = resolveFragmentMaterialSceneEntityIdV1(studioEntityId, result.scene, input.workingState);
+    if (!entityId || resolvedIds.has(entityId)) {
+      return {
+        error: `Fragment material target ${studioEntityId} is not one unique rendered fill.`,
+        kind: "unsupported",
+      };
+    }
+    resolvedIds.add(entityId);
+    resolvedAssignments.push({ entityId, material });
+  }
+  const nextRevision = await digestFragmentMaterialSceneRevisionV1(
+    result.scene.engineRevisionHash,
+    sceneMaterials.registry,
+    resolvedAssignments,
+  );
+  try {
+    const bundle = await (input.applyStudioFragmentMaterialsCompiler ?? compileApplyStudioFragmentMaterials)(
+      result.scene.bundle,
+      {
+        assignments: resolvedAssignments,
+        expectedBaseRevision: result.scene.engineRevisionHash,
+        nextRevision,
+        schema: "poietra.apply-studio-fragment-materials",
+        version: 1,
+      },
+    );
+    return {
+      kind: "compiled",
+      scene: {
+        ...result.scene,
+        bundle,
+        engineRevisionHash: nextRevision,
+        fragmentMaterialInput: sceneMaterials,
+        fragmentMaterialRegistry: sceneMaterials.registry,
+      },
+    };
+  } catch (error) {
+    return {
+      error: `Rust core rejected the fragment material assignment: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+      kind: "unsupported",
+    };
+  }
+}
+
 export type StudioPreviewSnapshotMetadataStateV1 =
   | Readonly<{ phase: "inactive"; provider: null; snapshot: null; workspaceKey: null }>
   | Readonly<{ phase: "loading"; provider: StudioPreviewSnapshotProviderV1; snapshot: null; workspaceKey: string }>
@@ -1477,6 +1601,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     context,
     frame,
     provider,
+    sceneFragmentMaterials = EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
     retainedSourceDuration,
     sampleTime,
     sceneBoundaryActive,
@@ -1527,6 +1652,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     const controller = new AbortController();
     void compileStudioPreviewSceneV1({
       frame,
+      sceneFragmentMaterials,
       snapshot,
       workingState,
       workingRevision,
@@ -1537,13 +1663,20 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
         setCompilation(
           result.kind === "compiled"
             ? { phase: "ready", scene: result.scene }
-            : { error: result.error, phase: "unsupported", workingRevision, workspaceKey },
+            : {
+                error: result.error,
+                fragmentMaterialInput: sceneFragmentMaterials,
+                phase: "unsupported",
+                workingRevision,
+                workspaceKey,
+              },
         );
       },
       (error: unknown) => {
         if (controller.signal.aborted) return;
         setCompilation({
           error: error instanceof Error ? error.message : String(error),
+          fragmentMaterialInput: sceneFragmentMaterials,
           phase: "unsupported",
           workingRevision,
           workspaceKey,
@@ -1551,9 +1684,17 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       },
     );
     return () => controller.abort();
-  }, [context?.workingRevision, frame.height, frame.width, retainedSourceDuration, snapshot, workspaceKey]);
+  }, [
+    context?.workingRevision,
+    frame.height,
+    frame.width,
+    sceneFragmentMaterials,
+    retainedSourceDuration,
+    snapshot,
+    workspaceKey,
+  ]);
 
-  const currentCompiledScene =
+  const revisionCorrelatedCompiledScene =
     compilation.phase === "ready" &&
     compilation.scene.snapshot === snapshot &&
     compilation.scene.workspaceKey === workspaceKey &&
@@ -1562,10 +1703,15 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     compilation.scene.frame.width === frame.width
       ? compilation.scene
       : null;
+  const currentCompiledScene = correlateStudioPreviewFragmentMaterialInputV1(
+    revisionCorrelatedCompiledScene,
+    sceneFragmentMaterials,
+  );
   const compilationError =
     compilation.phase === "unsupported" &&
     compilation.workspaceKey === workspaceKey &&
-    compilation.workingRevision === context?.workingRevision
+    compilation.workingRevision === context?.workingRevision &&
+    compilation.fragmentMaterialInput === sceneFragmentMaterials
       ? compilation.error
       : null;
   const runtimeTraceSource = snapshot?.snapshot.scene.source;
@@ -1664,6 +1810,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     void nextHost.install({
       assetPayloads: snapshot.assetPayloads,
       canvas: canvasEl,
+      fragmentMaterialRegistry: installedScene.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
       interactionEntityIds: installedScene.interactionEntityIds,
       revision: installedScene.engineRevisionHash,
       snapshot: installedScene.bundle,
@@ -1694,6 +1841,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     void updateHost
       .update({
         assetPayloads: currentCompiledScene.snapshot.assetPayloads,
+        fragmentMaterialRegistry: currentCompiledScene.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
         interactionEntityIds: currentCompiledScene.interactionEntityIds,
         revision: currentCompiledScene.engineRevisionHash,
         snapshot: currentCompiledScene.bundle,
@@ -1823,6 +1971,8 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       ? {
           assetPayloads: presentedCompiledScene.snapshot.assetPayloads,
           bundle: presentedCompiledScene.bundle,
+          fragmentMaterialRegistry:
+            presentedCompiledScene.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
           sourceLineage: {
             projectId: presentedCompiledScene.snapshot.correlation.context.projectId,
             sceneId: presentedCompiledScene.snapshot.correlation.sceneId,

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { DEFAULT_BROWSER_MP4_EXPORT_PROFILE } from "../engine/browser-mp4-export";
 import type { SceneIrBundleV1 } from "../engine/contracts";
+import { EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1 } from "../engine/fragment-material-registry";
 import {
   captureStudioExportPublicationV1,
   prepareStudioExportPublicationV1,
@@ -26,6 +27,7 @@ function exportSource(overrides: Partial<StudioMp4ExportSourceV1["sourceLineage"
         source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: SCENE_REVISION },
       },
     } as unknown as SceneIrBundleV1,
+    fragmentMaterialRegistry: EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
     sourceLineage: {
       projectId: "project-a",
       sceneId: "scene:one",

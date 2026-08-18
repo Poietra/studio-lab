@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 mod bound_entity;
 mod creation;
+mod fragment_material;
 mod identity;
 mod math_tex_transform;
 mod motion;
@@ -30,6 +31,10 @@ pub use creation::{
     StudioCreationOperation, StudioCreationOperationKind, StudioCreationProjectedMutation,
     StudioCreationProjectedMutationKind, StudioCreationProjection, StudioProjectedCreationEntity,
     project_studio_creation_edits,
+};
+pub use fragment_material::{
+    ApplyStudioFragmentMaterialsCommand, ApplyStudioFragmentMaterialsError,
+    StudioFragmentMaterialAssignment,
 };
 pub use identity::{
     StaticRootMotionProjectionEntityIdentity, StaticRootTransformSourceBinding,

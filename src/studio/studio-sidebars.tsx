@@ -11,6 +11,7 @@ import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../rende
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { DraftInspector } from "./draft-inspector";
 import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
+import { FragmentMaterialEditor } from "./fragment-material-editor";
 import type { ManimWorkspaceScene } from "./imported-workspace";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { ProgramRecord, ProjectedEntity } from "./model";
@@ -413,6 +414,15 @@ export function StudioInspector({
   draftOperation,
   draftEdit,
   fillColorValue,
+  fragmentMaterial = {
+    active: false,
+    assigned: false,
+    available: false,
+    compileError: null,
+    onApply: () => undefined,
+    onRemove: () => undefined,
+    source: "",
+  },
   onApplyDraft,
   onDiscardDraft,
   onDraftOperationChange,
@@ -436,6 +446,7 @@ export function StudioInspector({
   selectedEntity,
   inspectorReturnFocus,
   sourceExport,
+  sourceExportBlocker = null,
   strokeColorValue,
   suggestion,
   workspace,
@@ -449,6 +460,15 @@ export function StudioInspector({
   draftOperation: EditSuggestionOperation | null;
   draftEdit: ProgramRecord | null;
   fillColorValue: string | null;
+  fragmentMaterial?: Readonly<{
+    active: boolean;
+    assigned: boolean;
+    available: boolean;
+    compileError: string | null;
+    onApply: (source: string) => void;
+    onRemove: () => void;
+    source: string;
+  }>;
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
@@ -472,6 +492,7 @@ export function StudioInspector({
   selectedEntity: ProjectedEntity | null;
   inspectorReturnFocus: InspectorEditField | null;
   sourceExport: OriginalManimSourceExportRequest | null;
+  sourceExportBlocker?: string | null;
   strokeColorValue: string | null;
   suggestion: EditSuggestion | null;
   workspace: ManimWorkspaceView | null;
@@ -695,6 +716,7 @@ export function StudioInspector({
               </p>
             </div>
           )}
+          <FragmentMaterialEditor {...fragmentMaterial} entityId={selectedEntity?.id ?? null} />
           {geometryUnknowns.length > 0 ? (
             <section
               className="mt-3 border border-amber-950 bg-amber-950/20 p-2"
@@ -750,6 +772,7 @@ export function StudioInspector({
         onSourceMutationPendingChange={onSourceMutationPendingChange}
         session={renderSession}
         sourceExport={sourceExport}
+        sourceExportBlocker={sourceExportBlocker}
         workspace={workspace}
       />
     </aside>

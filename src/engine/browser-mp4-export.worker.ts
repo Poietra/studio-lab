@@ -10,6 +10,7 @@ import {
   MAX_EXPORT_PROGRESS_JSON_BYTES,
   POIETRA_EXPORT_WORKER_VERSION,
 } from "./export-worker-protocol";
+import { POIETRA_ENGINE_ABI_VERSION } from "./poietra-wasm-module";
 
 /**
  * Dedicated-worker runtime for the composed browser MP4 export (#722, #723).
@@ -23,6 +24,9 @@ import {
  */
 
 const MAX_ERROR_MESSAGE_LENGTH = 4_096;
+const EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON = new TextEncoder().encode(
+  '{"materials":[],"schema":"poietra.fragment-material-registry","version":1}',
+);
 
 export type BrowserMp4ExportProgressCallbackV1 = (envelopeJson: Uint8Array) => boolean | undefined;
 
@@ -33,6 +37,7 @@ export type BrowserMp4ExportWasmBindingsV1 = Readonly<{
     assetMetadataJson: Uint8Array,
     assetBytes: Uint8Array[],
     progress?: BrowserMp4ExportProgressCallbackV1,
+    fragmentMaterialRegistryJson?: Uint8Array,
   ) => Promise<Uint8Array>;
   exportSceneMp4WithWavV1?: (
     snapshotJson: Uint8Array,
@@ -41,6 +46,7 @@ export type BrowserMp4ExportWasmBindingsV1 = Readonly<{
     assetBytes: Uint8Array[],
     wavBytes: Uint8Array,
     progress?: BrowserMp4ExportProgressCallbackV1,
+    fragmentMaterialRegistryJson?: Uint8Array,
   ) => Promise<Uint8Array>;
 }>;
 
@@ -69,6 +75,12 @@ export async function initializeBrowserMp4ExportBindingsV1(module: unknown): Pro
     throw new Error("The Poietra WASM module does not export its initializer.");
   }
   await module.default();
+  if (
+    typeof module.poietraEngineAbiVersion !== "function" ||
+    module.poietraEngineAbiVersion() !== POIETRA_ENGINE_ABI_VERSION
+  ) {
+    throw new Error(`The Poietra WASM module does not support engine ABI ${POIETRA_ENGINE_ABI_VERSION}.`);
+  }
   if (typeof module.exportSceneMp4V1 !== "function") {
     throw new Error("The Poietra WASM module does not expose browser MP4 export.");
   }
@@ -216,12 +228,11 @@ export class BrowserMp4ExportWorkerRuntimeV1 {
         }
         return active.cancelled ? false : undefined;
       };
-      const commonInputs = [
-        new Uint8Array(request.snapshotJson),
-        new Uint8Array(request.profileJson),
-        assets.metadataJson,
-        assets.bytes,
-      ] as const;
+      const snapshotJson = new Uint8Array(request.snapshotJson);
+      const profileJson = new Uint8Array(request.profileJson);
+      const fragmentMaterialRegistryJson = request.fragmentMaterialRegistryJson
+        ? new Uint8Array(request.fragmentMaterialRegistryJson)
+        : EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON;
       if (request.audioWav) {
         if (!bindings.exportSceneMp4WithWavV1) {
           this.postRefused(
@@ -231,9 +242,24 @@ export class BrowserMp4ExportWorkerRuntimeV1 {
           );
           return;
         }
-        output = await bindings.exportSceneMp4WithWavV1(...commonInputs, new Uint8Array(request.audioWav), progress);
+        output = await bindings.exportSceneMp4WithWavV1(
+          snapshotJson,
+          profileJson,
+          assets.metadataJson,
+          assets.bytes,
+          new Uint8Array(request.audioWav),
+          progress,
+          fragmentMaterialRegistryJson,
+        );
       } else {
-        output = await bindings.exportSceneMp4V1(...commonInputs, progress);
+        output = await bindings.exportSceneMp4V1(
+          snapshotJson,
+          profileJson,
+          assets.metadataJson,
+          assets.bytes,
+          progress,
+          fragmentMaterialRegistryJson,
+        );
       }
     } catch (error) {
       const refusal = exportRefusalFromError(error);

@@ -193,6 +193,7 @@ export function StudioExportControl({
       const outcome = await runBrowserMp4ExportV1({
         ...(capturedAudioFile ? { audioWav: await capturedAudioFile.arrayBuffer() } : {}),
         assetPayloads: capturedSource.assetPayloads,
+        fragmentMaterialRegistry: capturedSource.fragmentMaterialRegistry,
         onProgress: (progress) => {
           if (activeExport.current === controller) setRun({ kind: "running", progress });
         },

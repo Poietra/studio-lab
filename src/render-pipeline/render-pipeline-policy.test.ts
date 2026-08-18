@@ -106,6 +106,7 @@ function policy(
     candidate: target,
     candidateBlocker: target ? null : "Create a Canonical draft first.",
     candidateLifecycleBlocker: lifecycleBlocker,
+    globalExportBlocker: null,
     originalExportBlocker: null,
     renderCapability: { available: true, kind: "local-command", unavailableReason: null },
     session: rendered,
@@ -113,6 +114,23 @@ function policy(
 }
 
 describe("render pipeline lifecycle policy", () => {
+  it("keeps a global source-export refusal stronger than a current candidate", () => {
+    const target = candidate();
+    const refusal = "Project fragment materials cannot be exported to Manim source.";
+    const resolved = resolveRenderPipelinePolicy({
+      candidate: target,
+      candidateBlocker: null,
+      candidateLifecycleBlocker: null,
+      globalExportBlocker: refusal,
+      originalExportBlocker: null,
+      renderCapability: { available: true, kind: "local-command", unavailableReason: null },
+      session: null,
+    });
+    expect(resolved.exportBlocker).toBe(refusal);
+    expect(resolved.previewBlocker).toBeNull();
+    expect(resolved.commitBlocker).toBeNull();
+  });
+
   it("uses an exact Runtime Trace endpoint without claiming a source marker", () => {
     const withoutAuthority = candidate({ anchors: [] });
     const withAuthority = candidate({ anchors: [], sourceValidation: "runtime-trace" });

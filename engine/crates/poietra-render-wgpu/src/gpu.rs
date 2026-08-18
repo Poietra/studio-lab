@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::arena::GpuBufferArenaV1;
 use crate::image_gpu::{
     ImageFrameGpuV1, ImagePipelineV1, ImageTextureCacheV1, build_image_geometry_upload_plan_v1,
@@ -5,7 +8,7 @@ use crate::image_gpu::{
 };
 use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
-    GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1,
+    FragmentMaterialSupportV1, GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1,
     ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1, MANIM_CAIRO_SAMPLE_COUNT_V1,
     PreparedFrameV1, PreparedRenderCommandV1, build_gpu_upload_plan_v1,
 };
@@ -17,6 +20,8 @@ const RGBA8_BYTES_PER_SAMPLE_V1: u64 = 4;
 const PORTABLE_AA_SCALE_V1: u32 = 2;
 const FRAGMENT_MATERIAL_UNIFORM_FLOATS_V1: usize = 12;
 const FRAGMENT_MATERIAL_UNIFORM_BYTES_V1: u64 = 48;
+pub const MAX_PROJECT_FRAGMENT_MATERIALS_V1: usize = 8;
+pub const MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1: usize = 16 * 1024;
 
 /// Maximum logical bytes for either retained antialias color attachment under
 /// the Scene IR viewport-pixel limit.
@@ -333,6 +338,62 @@ fn create_fragment_material_pipeline_v1(
     (bind_group_layout, pipeline)
 }
 
+fn create_project_fragment_material_pipeline_v1(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    material: &FragmentMaterialSourceV1,
+) -> wgpu::RenderPipeline {
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("poietra project fragment material pipeline layout v1"),
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
+    });
+    let vertex_shader =
+        device.create_shader_module(wgpu::include_wgsl!("fragment_material_host_vertex.wgsl"));
+    let shader_label = format!(
+        "poietra project fragment material {}@{}",
+        material.shader_id, material.revision
+    );
+    let fragment_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(&shader_label),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&material.source)),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(&shader_label),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &vertex_shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: VERTEX_STRIDE,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &VERTEX_ATTRIBUTES,
+            })],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &fragment_shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(PREMULTIPLIED_ALPHA_BLEND),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 fn multisample_color_target_bytes_v1(
     width_px: u32,
     height_px: u32,
@@ -384,6 +445,94 @@ pub enum RenderFrameErrorV1 {
 pub enum CreateRendererErrorV1 {
     #[error("target format {format:?} is unsupported; expected RGBA8 or BGRA8 sRGB")]
     UnsupportedTargetFormat { format: wgpu::TextureFormat },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FragmentMaterialSourceV1 {
+    pub revision: u32,
+    pub shader_id: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum FragmentMaterialRegistryErrorV1 {
+    #[error("fragment material registry accepts at most {maximum} project materials")]
+    MaterialLimit { maximum: usize },
+    #[error("fragment material {shader_id}@{revision} is duplicated")]
+    Duplicate { revision: u32, shader_id: String },
+    #[error("fragment material {shader_id}@{revision} uses the reserved built-in identity")]
+    Reserved { revision: u32, shader_id: String },
+    #[error("fragment material shader ID must use 1 to 240 portable ASCII characters")]
+    InvalidShaderId,
+    #[error("fragment material revision must be positive")]
+    InvalidRevision,
+    #[error(
+        "fragment material {shader_id}@{revision} source must contain 1 to {maximum} UTF-8 bytes"
+    )]
+    SourceSize {
+        maximum: usize,
+        revision: u32,
+        shader_id: String,
+    },
+    #[error("fragment material {shader_id}@{revision} did not compile: {message}")]
+    Compilation {
+        message: String,
+        revision: u32,
+        shader_id: String,
+    },
+}
+
+fn portable_fragment_material_id(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    value.len() <= 240
+        && first.is_ascii_alphanumeric()
+        && bytes.all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'/' | b'-')
+        })
+}
+
+fn validate_fragment_material_sources_v1(
+    sources: &[FragmentMaterialSourceV1],
+) -> Result<(), FragmentMaterialRegistryErrorV1> {
+    if sources.len() > MAX_PROJECT_FRAGMENT_MATERIALS_V1 {
+        return Err(FragmentMaterialRegistryErrorV1::MaterialLimit {
+            maximum: MAX_PROJECT_FRAGMENT_MATERIALS_V1,
+        });
+    }
+    let mut identities = BTreeSet::new();
+    for material in sources {
+        if !portable_fragment_material_id(&material.shader_id) {
+            return Err(FragmentMaterialRegistryErrorV1::InvalidShaderId);
+        }
+        if material.revision == 0 {
+            return Err(FragmentMaterialRegistryErrorV1::InvalidRevision);
+        }
+        if material.shader_id == crate::TIME_GRADIENT_SHADER_ID_V1 {
+            return Err(FragmentMaterialRegistryErrorV1::Reserved {
+                revision: material.revision,
+                shader_id: material.shader_id.clone(),
+            });
+        }
+        if material.source.is_empty()
+            || material.source.len() > MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1
+        {
+            return Err(FragmentMaterialRegistryErrorV1::SourceSize {
+                maximum: MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
+                revision: material.revision,
+                shader_id: material.shader_id.clone(),
+            });
+        }
+        if !identities.insert((material.shader_id.clone(), material.revision)) {
+            return Err(FragmentMaterialRegistryErrorV1::Duplicate {
+                revision: material.revision,
+                shader_id: material.shader_id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// CPU-side stage evidence recorded while submitting one prepared frame.
@@ -576,6 +725,7 @@ fn record_ordered_draws_v1(
     pass: &mut wgpu::RenderPass<'_>,
     paint_pipeline: &wgpu::RenderPipeline,
     fragment_material_pipeline: &wgpu::RenderPipeline,
+    project_fragment_material_pipelines: &BTreeMap<(String, u32), wgpu::RenderPipeline>,
     fragment_material_frame: &FragmentMaterialFrameGpuV1,
     paint_buffers: Option<(&wgpu::Buffer, &wgpu::Buffer)>,
     image_pipeline: &ImagePipelineV1,
@@ -695,7 +845,24 @@ fn record_ordered_draws_v1(
                     .ok_or(GpuUploadPlanErrorV1::Inconsistent(
                         "fragment material command has no matching host ABI binding",
                     ))?;
-                pass.set_pipeline(fragment_material_pipeline);
+                let material = frame
+                    .material_for_draw(draw)
+                    .and_then(|material| material.fragment_material())
+                    .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                        "fragment material command references a solid material",
+                    ))?;
+                let pipeline = if material.shader_id() == crate::TIME_GRADIENT_SHADER_ID_V1
+                    && material.revision() == crate::TIME_GRADIENT_SHADER_REVISION_V1
+                {
+                    fragment_material_pipeline
+                } else {
+                    project_fragment_material_pipelines
+                        .get(&(material.shader_id().to_owned(), material.revision()))
+                        .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                            "prepared fragment material has no installed GPU pipeline",
+                        ))?
+                };
+                pass.set_pipeline(pipeline);
                 pass.set_vertex_buffer(0, vertex_buffer.slice(..));
                 pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 pass.set_bind_group(0, bind_group, &[]);
@@ -732,7 +899,18 @@ pub struct WgpuFillRendererV1 {
     portable_aa_bind_group_layout: wgpu::BindGroupLayout,
     portable_aa_pipeline: wgpu::RenderPipeline,
     portable_aa_target: Option<PortableAntialiasTargetV1>,
+    project_fragment_material_pipelines: BTreeMap<(String, u32), wgpu::RenderPipeline>,
     target_format: wgpu::TextureFormat,
+}
+
+impl FragmentMaterialSupportV1 for WgpuFillRendererV1 {
+    fn supports_fragment_material(&self, shader_id: &str, revision: u32) -> bool {
+        (shader_id == crate::TIME_GRADIENT_SHADER_ID_V1
+            && revision == crate::TIME_GRADIENT_SHADER_REVISION_V1)
+            || self
+                .project_fragment_material_pipelines
+                .contains_key(&(shader_id.to_owned(), revision))
+    }
 }
 
 /// Exact logical byte counts for GPU resources retained by one renderer.
@@ -886,8 +1064,43 @@ impl WgpuFillRendererV1 {
             portable_aa_bind_group_layout,
             portable_aa_pipeline,
             portable_aa_target: None,
+            project_fragment_material_pipelines: BTreeMap::new(),
             target_format,
         })
+    }
+
+    /// Compiles and atomically installs one bounded project-local fragment
+    /// registry. The existing registry remains active when any source fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the registry is invalid or a shader does not compile.
+    pub async fn replace_fragment_material_sources(
+        &mut self,
+        device: &wgpu::Device,
+        sources: &[FragmentMaterialSourceV1],
+    ) -> Result<(), FragmentMaterialRegistryErrorV1> {
+        validate_fragment_material_sources_v1(sources)?;
+        let mut candidate = BTreeMap::new();
+        for material in sources {
+            let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let pipeline = create_project_fragment_material_pipeline_v1(
+                device,
+                &self.fragment_material_bind_group_layout,
+                self.target_format,
+                material,
+            );
+            if let Some(error) = validation_scope.pop().await {
+                return Err(FragmentMaterialRegistryErrorV1::Compilation {
+                    message: error.to_string(),
+                    revision: material.revision,
+                    shader_id: material.shader_id.clone(),
+                });
+            }
+            candidate.insert((material.shader_id.clone(), material.revision), pipeline);
+        }
+        self.project_fragment_material_pipelines = candidate;
+        Ok(())
     }
 
     /// Drops all device-bound image resources. Future frames rebuild them
@@ -1199,6 +1412,7 @@ impl WgpuFillRendererV1 {
                     &mut pass,
                     paint_pipeline,
                     &self.fragment_material_pipeline,
+                    &self.project_fragment_material_pipelines,
                     fragment_material_frame
                         .as_ref()
                         .ok_or(GpuUploadPlanErrorV1::Inconsistent(
@@ -1313,5 +1527,17 @@ mod tests {
         );
         assert_eq!(portable_aa_extent_v1(4_097, 1, 8_192), None);
         assert_eq!(portable_aa_extent_v1(u32::MAX, 1, u32::MAX), None);
+    }
+
+    #[test]
+    fn reserves_the_builtin_shader_id_at_every_revision() {
+        assert!(matches!(
+            validate_fragment_material_sources_v1(&[FragmentMaterialSourceV1 {
+                revision: crate::TIME_GRADIENT_SHADER_REVISION_V1 + 1,
+                shader_id: crate::TIME_GRADIENT_SHADER_ID_V1.to_owned(),
+                source: "validity is checked after identity admission".to_owned(),
+            }]),
+            Err(FragmentMaterialRegistryErrorV1::Reserved { revision: 2, .. })
+        ));
     }
 }

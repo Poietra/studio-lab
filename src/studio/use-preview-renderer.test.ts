@@ -5,6 +5,7 @@ import { pngSnapshotBundleFixture } from "../../server/test-fixtures/fast-manim-
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
+import { STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "../engine/fragment-material-registry";
 import {
   type MathTexOutlineResponseV1,
   mathTexOutlineResponseV1Schema,
@@ -15,6 +16,7 @@ import type {
   ApplyStaticRootTransformEditCompiler,
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
+  ApplyStudioFragmentMaterialsWireCommandV1,
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditCompiler,
   ApplyStudioMotionEditWireCommandV1,
@@ -25,7 +27,7 @@ import type {
   StudioStaticRootMutationV1,
   StudioStaticRootProjectionV1,
 } from "../engine/scene-authoring";
-import { compileApplyStaticRootTransformEdit } from "../engine/scene-authoring";
+import { compileApplyStaticRootTransformEdit, compileApplyStudioFragmentMaterials } from "../engine/scene-authoring";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { importManimScene } from "../render-pipeline/source-import";
 import {
@@ -37,6 +39,12 @@ import {
 import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
 import { programRecord } from "./evaluator";
 import { createFixtureProposedState, validateMotionProgramFixture } from "./fixture";
+import {
+  assignStudioFragmentMaterialV1,
+  EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
+  EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
+  projectFragmentMaterialsForSceneV1,
+} from "./fragment-material-authoring";
 import { type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
 import type { CanonicalEditProgram } from "./operations";
 import {
@@ -57,6 +65,7 @@ import {
 import {
   claimStudioPreviewCanvasV1,
   compileStudioPreviewSceneV1,
+  correlateStudioPreviewFragmentMaterialInputV1,
   digestStudioPreviewSceneRevisionV1,
   projectStudioPreviewRuntimeTraceOpaqueSelectionEntities,
   type StudioPreviewSnapshotMetadataStateV1,
@@ -1135,6 +1144,75 @@ describe("studioPreviewInteractionAuthority", () => {
 });
 
 describe("compileStudioPreviewSceneV1", () => {
+  it("drops stale presentation authority synchronously while a new material input compiles", () => {
+    const previous = { fragmentMaterialInput: EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1 };
+    const next = projectFragmentMaterialsForSceneV1(
+      assignStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
+        entityId: "source:circle",
+        sceneId: "studio:circle-scene",
+        source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+      }),
+      "studio:circle-scene",
+    );
+
+    expect(correlateStudioPreviewFragmentMaterialInputV1(previous, next)).toBeNull();
+    const presented = { fragmentMaterialInput: next };
+    expect(correlateStudioPreviewFragmentMaterialInputV1(presented, next)).toBe(presented);
+  });
+
+  it("resolves a source-bound fragment material through verified runtime identity before a colliding Scene ID", async () => {
+    const base = await compilablePreviewInput();
+    const runtimeEntity = base.snapshot.snapshot.scene.entities[0];
+    if (!runtimeEntity) throw new Error("Expected the Circle preview entity.");
+    const collisionBundle = await parseVerifiedSceneIrBundleV1({
+      ...base.snapshot.snapshot,
+      scene: {
+        ...base.snapshot.snapshot.scene,
+        entities: [runtimeEntity, { ...runtimeEntity, id: "source:circle", sceneOrder: runtimeEntity.sceneOrder + 1 }],
+      },
+    });
+    const sceneFragmentMaterials = projectFragmentMaterialsForSceneV1(
+      assignStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
+        entityId: "source:circle",
+        sceneId: "studio:circle-scene",
+        source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+      }),
+      "studio:circle-scene",
+    );
+    const commands: ApplyStudioFragmentMaterialsWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioFragmentMaterialsCompiler: async (bundle, command) => {
+        commands.push(command);
+        return compileApplyStudioFragmentMaterials(bundle, command);
+      },
+      frame: { height: 9, width: 16 },
+      sceneFragmentMaterials,
+      snapshot: { ...base.snapshot, snapshot: collisionBundle },
+      workingState: base.proposedState.base,
+      workingRevision: PRISTINE_WORKING_REVISION,
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.assignments).toEqual([
+      expect.objectContaining({ entityId: "earlier", material: expect.objectContaining({ revision: 1 }) }),
+    ]);
+    expect(result.scene.fragmentMaterialInput).toBe(sceneFragmentMaterials);
+    expect(result.scene.fragmentMaterialRegistry).toBe(sceneFragmentMaterials.registry);
+    expect(result.scene.engineRevisionHash).not.toBe(base.snapshot.correlation.engineRevisionHash);
+    const assigned = result.scene.bundle.scene.entities.find(({ id }) => id === "earlier");
+    const collided = result.scene.bundle.scene.entities.find(({ id }) => id === "source:circle");
+    expect(assigned?.appearance.kind === "vector" ? assigned.appearance.fill?.fragmentMaterial : null).toMatchObject({
+      revision: 1,
+      shaderId: "project-studio-fragment",
+    });
+    expect(
+      collided?.appearance.kind === "vector" ? collided.appearance.fill?.fragmentMaterial : undefined,
+    ).toBeUndefined();
+  });
+
   it("rejects animated server-snapshot motion before invoking a core planner", async () => {
     const base = await compilablePreviewInput();
     const importedSource = base.snapshot.snapshot.scene.source;

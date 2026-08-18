@@ -142,6 +142,7 @@ export function resolveRenderPipelinePolicy(
     candidate: RenderProgramCandidate | null;
     candidateBlocker: string | null;
     candidateLifecycleBlocker: string | null;
+    globalExportBlocker: string | null;
     originalExportBlocker: string | null;
     renderCapability: ManimRenderCapability | null;
     session: RenderSessionView | null;
@@ -150,9 +151,9 @@ export function resolveRenderPipelinePolicy(
   const sessionMatchesCandidate = renderSessionMatchesCandidate(input.session, input.candidate);
   const previewBlocker =
     input.candidateLifecycleBlocker ?? input.candidateBlocker ?? renderCapabilityBlocker(input.renderCapability);
-  const exportBlocker = input.candidate
-    ? (input.candidateLifecycleBlocker ?? input.candidateBlocker)
-    : input.originalExportBlocker;
+  const exportBlocker =
+    input.globalExportBlocker ??
+    (input.candidate ? (input.candidateLifecycleBlocker ?? input.candidateBlocker) : input.originalExportBlocker);
   const commitBlocker = input.session?.canCommit
     ? (input.candidateLifecycleBlocker ??
       (!sessionMatchesCandidate

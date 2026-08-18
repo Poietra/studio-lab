@@ -33,6 +33,7 @@ use crate::export_encoder_protocol::{
     verify_export_chunk_timestamp_v1,
 };
 use crate::export_verify::ExportProvenanceV1;
+use crate::fragment_material_registry::parse_fragment_material_registry_v1;
 
 const BROWSER_EXPORT_REFUSED_ERROR_NAME: &str = "PoietraBrowserMp4ExportRefused";
 const MP4_TIMESCALE_V1: u32 = 1_000_000;
@@ -209,12 +210,14 @@ pub async fn export_scene_mp4_v1(
     asset_metadata_json: &[u8],
     asset_bytes: &js_sys::Array,
     progress: Option<js_sys::Function>,
+    fragment_material_registry_json: &[u8],
 ) -> Result<js_sys::Uint8Array, JsValue> {
     export_scene_mp4(
         snapshot_json,
         profile_json,
         asset_metadata_json,
         asset_bytes,
+        fragment_material_registry_json,
         None,
         progress,
     )
@@ -237,12 +240,14 @@ pub async fn export_scene_mp4_with_wav_v1(
     asset_bytes: &js_sys::Array,
     wav_bytes: &[u8],
     progress: Option<js_sys::Function>,
+    fragment_material_registry_json: &[u8],
 ) -> Result<js_sys::Uint8Array, JsValue> {
     export_scene_mp4(
         snapshot_json,
         profile_json,
         asset_metadata_json,
         asset_bytes,
+        fragment_material_registry_json,
         Some(wav_bytes),
         progress,
     )
@@ -258,6 +263,7 @@ async fn export_scene_mp4(
     profile_json: &[u8],
     asset_metadata_json: &[u8],
     asset_bytes: &js_sys::Array,
+    fragment_material_registry_json: &[u8],
     wav_bytes: Option<&[u8]>,
     progress: Option<js_sys::Function>,
 ) -> Result<js_sys::Uint8Array, JsValue> {
@@ -278,6 +284,8 @@ async fn export_scene_mp4(
             ),
         ));
     }
+    let fragment_materials = parse_fragment_material_registry_v1(fragment_material_registry_json)
+        .map_err(|error| refused("invalid-scene", error))?;
 
     let transferred =
         copy_asset_byte_arrays(asset_bytes).map_err(|error| refused("asset-rejected", error))?;
@@ -307,31 +315,34 @@ async fn export_scene_mp4(
         .map_err(|error| refused("gpu-unavailable", error))?;
 
     let fps = profile_fps(&profile);
-    let mut sequence = ExportFrameSequenceSessionV1::<EvaluationError, _>::new(
-        &device,
-        &queue,
-        evaluator.scene(),
-        ExportFrameSequenceParamsV1 {
-            fps,
-            height_px: profile.resolution.height_px(),
-            width_px: profile.resolution.width_px(),
-        },
-        &assets,
-        |request: ExportFrameRequestV1| {
-            let packet_id = format!("packet:browser-export-{}", request.frame_index);
-            // Export sampling fits the camera window to the closed ladder
-            // viewport (sub-pixel widening on the 854x480 rung, exactly like
-            // the legacy accepted Manim profile); the packet aspect gate
-            // itself stays strict for every consumer.
-            evaluator.sample_export_render_packet(SampleEngineSessionOptionsV1 {
-                evidence: &[],
-                packet_id: &packet_id,
-                sample_time: request.requested_time,
-                viewport: request.viewport,
-            })
-        },
-    )
-    .map_err(|error| refused("render-failed", error))?;
+    let mut sequence =
+        ExportFrameSequenceSessionV1::<EvaluationError, _>::new_with_fragment_material_sources(
+            &device,
+            &queue,
+            evaluator.scene(),
+            ExportFrameSequenceParamsV1 {
+                fps,
+                height_px: profile.resolution.height_px(),
+                width_px: profile.resolution.width_px(),
+            },
+            &assets,
+            |request: ExportFrameRequestV1| {
+                let packet_id = format!("packet:browser-export-{}", request.frame_index);
+                // Export sampling fits the camera window to the closed ladder
+                // viewport (sub-pixel widening on the 854x480 rung, exactly like
+                // the legacy accepted Manim profile); the packet aspect gate
+                // itself stays strict for every consumer.
+                evaluator.sample_export_render_packet(SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: &packet_id,
+                    sample_time: request.requested_time,
+                    viewport: request.viewport,
+                })
+            },
+            &fragment_materials,
+        )
+        .await
+        .map_err(|error| refused("render-failed", error))?;
     let frame_count = sequence.frame_count();
     let mut video_encoder = create_encoder(&profile).await.map_err(|failure| {
         refused(

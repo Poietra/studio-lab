@@ -106,6 +106,27 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
     expect(finished.transfer).toEqual([finished.response.bytes]);
   });
 
+  it("passes the project fragment registry unchanged into the video export entry", async () => {
+    const registry = encoder.encode(
+      JSON.stringify({
+        materials: [{ revision: 1, shaderId: "project-wave", source: "@fragment fn fs_main() {}" }],
+        schema: "poietra.fragment-material-registry",
+        version: 1,
+      }),
+    );
+    const videoOnly = vi.fn(
+      async (_snapshot, _profile, _metadata, _assets, _progress, fragmentMaterialRegistryJson) => {
+        expect(fragmentMaterialRegistryJson).toEqual(registry);
+        return new Uint8Array([1]);
+      },
+    );
+    const { runtime } = runtimeWith(videoOnly);
+
+    await runtime.accept(exportRequest({ fragmentMaterialRegistryJson: registry.buffer }));
+
+    expect(videoOnly).toHaveBeenCalledOnce();
+  });
+
   it("uses the audio export entry only when a WAV attachment is present", async () => {
     const videoOnly = vi.fn(async () => new Uint8Array([1]));
     const withWav = vi.fn(async (_snapshot, _profile, _metadata, _assets, wav: Uint8Array) => {
@@ -270,6 +291,7 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
     return {
       default: async () => undefined,
       exportSceneMp4V1: async () => new Uint8Array([1]),
+      poietraEngineAbiVersion: () => 28,
       ...overrides,
     };
   }
@@ -296,5 +318,11 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
     await expect(initializeBrowserMp4ExportBindingsV1(wasmModule({ exportSceneMp4V1: undefined }))).rejects.toThrow(
       /browser MP4 export/,
     );
+  });
+
+  it("rejects a stale engine ABI before calling an incompatible export signature", async () => {
+    await expect(
+      initializeBrowserMp4ExportBindingsV1(wasmModule({ poietraEngineAbiVersion: () => 27 })),
+    ).rejects.toThrow(/engine ABI 28/);
   });
 });

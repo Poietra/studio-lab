@@ -2,6 +2,7 @@ use poietra_eval::{
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
     ApplyStudioBoundEntityEditCommand, ApplyStudioBoundEntityEditError,
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError,
+    ApplyStudioFragmentMaterialsCommand, ApplyStudioFragmentMaterialsError,
     ApplyStudioMathTexTransformEditCommand, ApplyStudioMathTexTransformEditError,
     ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand,
     ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, ProjectStudioCreationEditError,
@@ -9,7 +10,7 @@ use poietra_eval::{
     StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
     StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
     StudioBoundEntityEditInput, StudioCreationEditInput, StudioCreationMathTexOutline,
-    StudioCreationTextOutline, StudioMathTexTransformEditInput,
+    StudioCreationTextOutline, StudioFragmentMaterialAssignment, StudioMathTexTransformEditInput,
     StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
     StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
     StudioMotionEditInput, StudioMotionEntityIdentity, StudioMotionProjectionBatch,
@@ -81,6 +82,12 @@ enum ProjectStudioMathTexTransformSchemaV1 {
 enum ApplyStudioBoundEntityEditSchemaV1 {
     #[serde(rename = "poietra.apply-studio-bound-entity-edit")]
     ApplyStudioBoundEntityEdit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ApplyStudioFragmentMaterialsSchemaV1 {
+    #[serde(rename = "poietra.apply-studio-fragment-materials")]
+    ApplyStudioFragmentMaterials,
 }
 
 #[derive(Debug, Deserialize)]
@@ -290,6 +297,28 @@ impl From<ApplyStudioBoundEntityEditCommandJsonV1> for ApplyStudioBoundEntityEdi
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyStudioFragmentMaterialsCommandJsonV1 {
+    assignments: Vec<StudioFragmentMaterialAssignment>,
+    expected_base_revision: String,
+    next_revision: String,
+    #[serde(rename = "schema")]
+    _schema: ApplyStudioFragmentMaterialsSchemaV1,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<ApplyStudioFragmentMaterialsCommandJsonV1> for ApplyStudioFragmentMaterialsCommand {
+    fn from(value: ApplyStudioFragmentMaterialsCommandJsonV1) -> Self {
+        Self {
+            assignments: value.assignments,
+            expected_base_revision: value.expected_base_revision,
+            next_revision: value.next_revision,
+        }
+    }
+}
+
 impl From<ApplyStudioMotionEditCommandJsonV1> for ApplyStudioMotionEditCommand {
     fn from(value: ApplyStudioMotionEditCommandJsonV1) -> Self {
         Self {
@@ -335,6 +364,8 @@ enum SceneAuthoringAdapterError {
     StudioCreationEdit(#[from] ApplyStudioCreationEditError),
     #[error(transparent)]
     StudioCreationProjection(#[from] ProjectStudioCreationEditError),
+    #[error(transparent)]
+    StudioFragmentMaterials(#[from] ApplyStudioFragmentMaterialsError),
     #[error(transparent)]
     StudioTimelineEdit(#[from] ApplyStudioTimelineEditError),
     #[error("the Scene authoring response could not be serialized: {0}")]
@@ -549,6 +580,21 @@ fn apply_studio_bound_entity_edit_json(
     studio_projection_response(&result)
 }
 
+fn apply_studio_fragment_materials_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ApplyStudioFragmentMaterialsCommandJsonV1 =
+        parse_scene_authoring_command_with_limit(
+            "Studio fragment materials",
+            command_json,
+            poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+        )?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.apply_studio_fragment_materials(command.into())?;
+    scene_authoring_response(&result)
+}
+
 /// Applies one complete normalized Studio creation edit through the shared core.
 ///
 /// # Errors
@@ -660,6 +706,22 @@ pub fn apply_studio_bound_entity_edit_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     apply_studio_bound_entity_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Assigns project-local fragment-material references through the shared core.
+///
+/// WGSL source remains in the renderer registry and never enters Scene IR.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, or target vector fill.
+#[wasm_bindgen(js_name = applyStudioFragmentMaterialsV1)]
+pub fn apply_studio_fragment_materials_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    apply_studio_fragment_materials_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 

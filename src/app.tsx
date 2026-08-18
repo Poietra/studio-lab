@@ -60,6 +60,15 @@ import {
   SOURCE_TIMING_LOADING_BLOCKER,
   WORKSPACE_REIMPORT_BLOCKER,
 } from "./studio/editor-revision-policy";
+import {
+  assignStudioFragmentMaterialV1,
+  EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
+  type ProjectFragmentMaterialStateV1,
+  projectFragmentMaterialSourceV1,
+  projectFragmentMaterialsForSceneV1,
+  removeStudioFragmentMaterialV1,
+  sceneHasFragmentMaterialAssignmentsV1,
+} from "./studio/fragment-material-authoring";
 import { importedWorkingState, projectVerifiedSourceDuration } from "./studio/imported-workspace";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./studio/inspector-edit";
 import {
@@ -411,6 +420,9 @@ export function App({
     resetPrograms,
   });
   const [renderSessions, setRenderSessions] = useState<Readonly<Record<string, RenderSessionView>>>({});
+  const [projectFragmentMaterials, setProjectFragmentMaterials] = useState<
+    Readonly<Record<string, ProjectFragmentMaterialStateV1>>
+  >({});
   const [draftApplyPending, setDraftApplyPending] = useState(false);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
@@ -464,6 +476,12 @@ export function App({
     const registeredProjectIds = new Set(projects.map((project) => project.id));
     pruneSessions(registeredProjectIds);
     setRenderSessions((current) => {
+      const next = Object.fromEntries(
+        Object.entries(current).filter(([projectId]) => registeredProjectIds.has(projectId)),
+      );
+      return Object.keys(next).length === Object.keys(current).length ? current : next;
+    });
+    setProjectFragmentMaterials((current) => {
       const next = Object.fromEntries(
         Object.entries(current).filter(([projectId]) => registeredProjectIds.has(projectId)),
       );
@@ -791,6 +809,13 @@ export function App({
           stagedEdits: editingAppliedProgram || !draftEdit ? [] : [draftEdit],
         })
       : null;
+  const activeProjectFragmentMaterials = activeProjectId
+    ? (projectFragmentMaterials[activeProjectId] ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1)
+    : EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
+  const activeSceneFragmentMaterials = useMemo(
+    () => projectFragmentMaterialsForSceneV1(activeProjectFragmentMaterials, activeScene?.sceneId ?? null),
+    [activeProjectFragmentMaterials, activeScene?.sceneId],
+  );
   const {
     activate: activatePreviewAuthority,
     activationAllowed: previewActivationAllowed,
@@ -801,6 +826,7 @@ export function App({
   } = useStudioPreviewAuthorityController({
     context: editorDocumentPresentationReady ? editorRevision.previewContext : null,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
+    sceneFragmentMaterials: activeSceneFragmentMaterials,
     retainedSourceDuration: editorRevision.retainedSourceDuration,
     sampleTime: currentTime,
     sceneBoundaryActive: importedSceneBoundaryActive,
@@ -3462,6 +3488,49 @@ export function App({
       : null;
 
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
+  const selectedFragmentMaterialAssigned = selectedEntity
+    ? activeSceneFragmentMaterials.assignments[selectedEntity.id] !== undefined
+    : false;
+  const selectedFragmentMaterialAvailable =
+    previewMutationAvailable &&
+    selectedEntity !== null &&
+    selectedEntity.geometry.style.kind === "known" &&
+    selectedEntity.geometry.style.value.fillColor !== undefined &&
+    selectedEntity.geometry.style.value.fillColor !== null;
+  const selectedFragmentMaterialCompileError =
+    selectedFragmentMaterialAssigned &&
+    previewRenderer?.state.phase === "fallback" &&
+    (previewRenderer.state.reason === "renderer-failed" ||
+      previewRenderer.state.reason === "install-failed" ||
+      previewRenderer.state.reason === "scene-unsupported")
+      ? previewRenderer.state.detail
+      : null;
+  const sourceFragmentMaterialExportBlocker = sceneHasFragmentMaterialAssignmentsV1(activeSceneFragmentMaterials)
+    ? "Manim .py export does not support project-local WGSL fragment materials. Remove them before exporting source."
+    : null;
+
+  function applySelectedFragmentMaterial(source: string) {
+    if (!activeProjectId || !activeScene || !selectedEntity || !selectedFragmentMaterialAvailable) return;
+    try {
+      const next = assignStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
+        entityId: selectedEntity.id,
+        sceneId: activeScene.sceneId,
+        source,
+      });
+      setProjectFragmentMaterials((current) => ({ ...current, [activeProjectId]: next }));
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The fragment material source is invalid.");
+    }
+  }
+
+  function removeSelectedFragmentMaterial() {
+    if (!activeProjectId || !activeScene || !selectedEntity) return;
+    const next = removeStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
+      entityId: selectedEntity.id,
+      sceneId: activeScene.sceneId,
+    });
+    setProjectFragmentMaterials((current) => ({ ...current, [activeProjectId]: next }));
+  }
   const selectedRuntimeTraceEditAuthority = runtimeTraceProjectionAuthorityFor(selectedEntity?.id);
   const selectedRuntimeTraceEditCapabilities = selectedRuntimeTraceEditAuthority?.capabilities ?? null;
   const selectedStudioCreationAppearanceAuthority = studioCreationAppearanceAuthorityFor(selectedEntity?.id);
@@ -3988,6 +4057,15 @@ export function App({
                   ? (selectedEntity.geometry.style.value.fillColor ?? null)
                   : null
               }
+              fragmentMaterial={{
+                active: selectedFragmentMaterialAssigned && previewRenderer?.state.phase === "presented",
+                assigned: selectedFragmentMaterialAssigned,
+                available: selectedFragmentMaterialAvailable,
+                compileError: selectedFragmentMaterialCompileError,
+                onApply: applySelectedFragmentMaterial,
+                onRemove: removeSelectedFragmentMaterial,
+                source: projectFragmentMaterialSourceV1(activeProjectFragmentMaterials),
+              }}
               opacityAvailable={selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null}
               opacityValue={
                 selectedStudioCreationAppearanceAtAnchor
@@ -4016,6 +4094,7 @@ export function App({
                     }
                   : null
               }
+              sourceExportBlocker={sourceFragmentMaterialExportBlocker}
               suggestion={suggestion}
               workspace={workspace}
             />
