@@ -459,7 +459,10 @@ export function StudioCanvas({
           ];
         })
       : [];
-  const compositeSelectionBounds = unionPreparedSelectionBounds(preparedSelectedGeometries, frame);
+  const compositeSelectionBounds =
+    preparedSelectedGeometries.length === selectedIds.size
+      ? unionPreparedSelectionBounds(preparedSelectedGeometries, frame)
+      : null;
   return (
     <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-4">
       <div
