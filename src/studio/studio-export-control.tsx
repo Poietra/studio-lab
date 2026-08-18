@@ -307,6 +307,7 @@ export function StudioExportControl({
       </button>
       <input
         accept=".wav,audio/wav,audio/x-wav"
+        aria-label="WAV audio file"
         className="sr-only"
         disabled={disabled || running || saving || publishing}
         onChange={(event) => selectAudio(event.currentTarget.files?.[0])}
