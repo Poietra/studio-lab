@@ -10,6 +10,7 @@ import {
   MAX_EXPORT_PROGRESS_JSON_BYTES,
   POIETRA_EXPORT_WORKER_VERSION,
 } from "./export-worker-protocol";
+import { POIETRA_ENGINE_ABI_VERSION } from "./poietra-wasm-module";
 
 /**
  * Dedicated-worker runtime for the composed browser MP4 export (#722, #723).
@@ -74,6 +75,12 @@ export async function initializeBrowserMp4ExportBindingsV1(module: unknown): Pro
     throw new Error("The Poietra WASM module does not export its initializer.");
   }
   await module.default();
+  if (
+    typeof module.poietraEngineAbiVersion !== "function" ||
+    module.poietraEngineAbiVersion() !== POIETRA_ENGINE_ABI_VERSION
+  ) {
+    throw new Error(`The Poietra WASM module does not support engine ABI ${POIETRA_ENGINE_ABI_VERSION}.`);
+  }
   if (typeof module.exportSceneMp4V1 !== "function") {
     throw new Error("The Poietra WASM module does not expose browser MP4 export.");
   }

@@ -2,12 +2,14 @@ import type { ClientExportFinalizeMetadataV1 } from "../collaboration/client-exp
 import type { CanvasPngAssetTransferV1 } from "../engine/canvas-png-assets";
 import type { SceneIrBundleV1 } from "../engine/contracts";
 import type { ExportProfileV1 } from "../engine/export-profile";
+import type { FragmentMaterialRegistryV1 } from "../engine/fragment-material-registry";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type { EditorDocumentExportLineageV1 } from "./use-editor-document-authority";
 
 export type StudioMp4ExportSourceV1 = Readonly<{
   assetPayloads: readonly CanvasPngAssetTransferV1[];
   bundle: SceneIrBundleV1;
+  fragmentMaterialRegistry: FragmentMaterialRegistryV1;
   /** Exact imported-source context that produced this presented Scene. */
   sourceLineage: Readonly<{
     projectId: string;

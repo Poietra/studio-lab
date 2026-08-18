@@ -1,3 +1,6 @@
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::arena::GpuBufferArenaV1;
 use crate::image_gpu::{
     ImageFrameGpuV1, ImagePipelineV1, ImageTextureCacheV1, build_image_geometry_upload_plan_v1,
@@ -507,9 +510,7 @@ fn validate_fragment_material_sources_v1(
         if material.revision == 0 {
             return Err(FragmentMaterialRegistryErrorV1::InvalidRevision);
         }
-        if material.shader_id == crate::TIME_GRADIENT_SHADER_ID_V1
-            && material.revision == crate::TIME_GRADIENT_SHADER_REVISION_V1
-        {
+        if material.shader_id == crate::TIME_GRADIENT_SHADER_ID_V1 {
             return Err(FragmentMaterialRegistryErrorV1::Reserved {
                 revision: material.revision,
                 shader_id: material.shader_id.clone(),
@@ -1070,6 +1071,10 @@ impl WgpuFillRendererV1 {
 
     /// Compiles and atomically installs one bounded project-local fragment
     /// registry. The existing registry remains active when any source fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the registry is invalid or a shader does not compile.
     pub async fn replace_fragment_material_sources(
         &mut self,
         device: &wgpu::Device,
@@ -1523,6 +1528,16 @@ mod tests {
         assert_eq!(portable_aa_extent_v1(4_097, 1, 8_192), None);
         assert_eq!(portable_aa_extent_v1(u32::MAX, 1, u32::MAX), None);
     }
+
+    #[test]
+    fn reserves_the_builtin_shader_id_at_every_revision() {
+        assert!(matches!(
+            validate_fragment_material_sources_v1(&[FragmentMaterialSourceV1 {
+                revision: crate::TIME_GRADIENT_SHADER_REVISION_V1 + 1,
+                shader_id: crate::TIME_GRADIENT_SHADER_ID_V1.to_owned(),
+                source: "validity is checked after identity admission".to_owned(),
+            }]),
+            Err(FragmentMaterialRegistryErrorV1::Reserved { revision: 2, .. })
+        ));
+    }
 }
-use std::borrow::Cow;
-use std::collections::{BTreeMap, BTreeSet};

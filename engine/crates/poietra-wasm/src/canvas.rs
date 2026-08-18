@@ -3,8 +3,8 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use poietra_render_wgpu::{
-    PreparedFrameV1, PreparedGeometryCacheFrameStatsV1, PreparedGeometryCacheV1,
-    WgpuPaintRendererV1, WgpuRenderTargetV1,
+    FragmentMaterialSourceV1, PreparedFrameV1, PreparedGeometryCacheFrameStatsV1,
+    PreparedGeometryCacheV1, WgpuPaintRendererV1, WgpuRenderTargetV1,
     prepare_frame_with_cache_assets_and_fragment_materials_v1, render_thumbnail_png,
     tessellate_validated_frame_with_cache_assets_and_fragment_materials_v1,
     validate_frame_packet_v1,
@@ -464,6 +464,7 @@ pub struct PoietraCanvasEngineV1 {
     // Checked count of surface reconfigurations within the frame being
     // rendered; `None` records an explicit counter overflow.
     frame_surface_configurations: Option<u32>,
+    fragment_material_sources: Vec<FragmentMaterialSourceV1>,
     memory_high_water: EngineMemoryHighWaterV1,
     // Kept before `device` so Drop unregisters the JS callback first.
     _uncaptured_error_listener: RawUncapturedErrorListenerV1,
@@ -541,6 +542,7 @@ impl PoietraCanvasEngineV1 {
             canvas,
             configured_viewport: None,
             frame_surface_configurations: Some(0),
+            fragment_material_sources: fragment_materials,
             memory_high_water: EngineMemoryHighWaterV1::default(),
             _uncaptured_error_listener: gpu.uncaptured_error_listener,
             device: gpu.device,
@@ -593,6 +595,7 @@ impl PoietraCanvasEngineV1 {
             .replace_snapshot_bundle(bundle)
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         self.asset_registry = candidate_registry;
+        self.fragment_material_sources = fragment_materials;
         self.renderer = candidate_renderer;
         self.prepared_geometry_cache.clear();
         Ok(())
@@ -943,7 +946,7 @@ impl PoietraCanvasEngineV1 {
     /// place so the caller can terminate fail-closed; Scene/revision and
     /// decoded PNG authorities are never moved or reconstructed.
     async fn recover_after_device_loss(&mut self) -> Result<(), RuntimeFailureV1> {
-        let gpu = acquire_canvas_gpu_candidate(&self.canvas)
+        let mut gpu = acquire_canvas_gpu_candidate(&self.canvas)
             .await
             .map_err(|error| RuntimeFailureV1 {
                 code: CanvasRenderErrorCodeV1::DeviceLost,
@@ -951,6 +954,13 @@ impl PoietraCanvasEngineV1 {
                     "WebGPU device recovery failed: {}",
                     js_error_message(&error)
                 ),
+            })?;
+        gpu.renderer
+            .replace_fragment_material_sources(&gpu.device, &self.fragment_material_sources)
+            .await
+            .map_err(|error| RuntimeFailureV1 {
+                code: CanvasRenderErrorCodeV1::DeviceLost,
+                message: format!("WebGPU fragment material recovery failed: {error}"),
             })?;
 
         // Drop device-bound dependants before replacing the old device. Any

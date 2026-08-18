@@ -41,8 +41,9 @@ use wasm_bindgen::prelude::*;
 
 pub use authoring::{
     apply_static_root_transform_edit_v1, apply_studio_bound_entity_edit_v1,
-    apply_studio_creation_edit_v1, apply_studio_math_tex_transform_edit_v1,
-    apply_studio_motion_edit_v1, apply_studio_timeline_edit_v1, project_studio_creation_edit_v1,
+    apply_studio_creation_edit_v1, apply_studio_fragment_materials_v1,
+    apply_studio_math_tex_transform_edit_v1, apply_studio_motion_edit_v1,
+    apply_studio_timeline_edit_v1, project_studio_creation_edit_v1,
     project_studio_math_tex_transform_v1, project_studio_motion_edit_v1,
     project_studio_timeline_v1,
 };

@@ -84,6 +84,26 @@ export type ApplyStudioBoundEntityEditCompiler = (
   snapshot: SceneIrBundleV1,
   command: ApplyStudioBoundEntityEditWireCommandV1,
 ) => Promise<StudioBoundEntityEditResultV1>;
+
+export type ApplyStudioFragmentMaterialsWireCommandV1 = Readonly<{
+  assignments: readonly Readonly<{
+    entityId: string;
+    material: Readonly<{
+      parameters: readonly number[];
+      revision: number;
+      shaderId: string;
+    }> | null;
+  }>[];
+  expectedBaseRevision: string;
+  nextRevision: string;
+  schema: "poietra.apply-studio-fragment-materials";
+  version: 1;
+}>;
+
+export type ApplyStudioFragmentMaterialsCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: ApplyStudioFragmentMaterialsWireCommandV1,
+) => Promise<SceneIrBundleV1>;
 type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" | "rectangle";
 type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StaticRootTransformOperation = Readonly<{
@@ -1003,6 +1023,10 @@ type ApplyStudioBoundEntityEditBindingsV1 = Readonly<{
   applyStudioBoundEntityEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type ApplyStudioFragmentMaterialsBindingsV1 = Readonly<{
+  applyStudioFragmentMaterialsV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type ApplyStaticRootTransformEditBindingsV1 = Readonly<{
   applyStaticRootTransformEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -1042,6 +1066,7 @@ type ApplyStudioMathTexTransformEditBindingsV1 = Readonly<{
 type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
   ApplyStudioBoundEntityEditBindingsV1 &
   ApplyStudioCreationEditBindingsV1 &
+  ApplyStudioFragmentMaterialsBindingsV1 &
   ApplyStudioMathTexTransformEditBindingsV1 &
   ApplyStudioMotionEditBindingsV1 &
   ApplyStudioTimelineEditBindingsV1 &
@@ -1060,6 +1085,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.applyStaticRootTransformEditV1 !== "function" ||
       typeof candidate.applyStudioBoundEntityEditV1 !== "function" ||
       typeof candidate.applyStudioCreationEditV1 !== "function" ||
+      typeof candidate.applyStudioFragmentMaterialsV1 !== "function" ||
       typeof candidate.applyStudioMathTexTransformEditV1 !== "function" ||
       typeof candidate.applyStudioMotionEditV1 !== "function" ||
       typeof candidate.applyStudioTimelineEditV1 !== "function" ||
@@ -1077,6 +1103,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
         candidate.applyStudioBoundEntityEditV1 as SceneAuthoringBindingsV1["applyStudioBoundEntityEditV1"],
       applyStudioCreationEditV1:
         candidate.applyStudioCreationEditV1 as SceneAuthoringBindingsV1["applyStudioCreationEditV1"],
+      applyStudioFragmentMaterialsV1:
+        candidate.applyStudioFragmentMaterialsV1 as SceneAuthoringBindingsV1["applyStudioFragmentMaterialsV1"],
       applyStudioMathTexTransformEditV1:
         candidate.applyStudioMathTexTransformEditV1 as SceneAuthoringBindingsV1["applyStudioMathTexTransformEditV1"],
       applyStudioMotionEditV1: candidate.applyStudioMotionEditV1 as SceneAuthoringBindingsV1["applyStudioMotionEditV1"],
@@ -1130,6 +1158,16 @@ export function createApplyStudioCreationEditCompiler(
   return async (snapshot, command) => {
     const bindings = await getBindings();
     return invokeStudioAuthoringEditCommand(snapshot, command, bindings.applyStudioCreationEditV1);
+  };
+}
+
+/** Assigns project-local fragment-material references through the canonical core. */
+export function createApplyStudioFragmentMaterialsCompiler(
+  getBindings: () => Promise<ApplyStudioFragmentMaterialsBindingsV1>,
+): ApplyStudioFragmentMaterialsCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStudioFragmentMaterialsV1);
   };
 }
 
@@ -1224,6 +1262,7 @@ export function createProjectStudioCreationCompiler(
 export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
 export const compileApplyStudioBoundEntityEdit = createApplyStudioBoundEntityEditCompiler(loadBindings);
 export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);
+export const compileApplyStudioFragmentMaterials = createApplyStudioFragmentMaterialsCompiler(loadBindings);
 export const compileApplyStudioMathTexTransformEdit = createApplyStudioMathTexTransformEditCompiler(loadBindings);
 export const compileApplyStudioMotionEdit = createApplyStudioMotionEditCompiler(loadBindings);
 export const compileApplyStudioTimelineEdit = createApplyStudioTimelineEditCompiler(loadBindings);

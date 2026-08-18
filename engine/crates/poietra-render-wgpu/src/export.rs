@@ -700,6 +700,10 @@ where
 
     /// Creates an export session using the exact project-local fragment
     /// registry shared with the interactive preview renderer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when export setup or any fragment material is invalid.
     pub async fn new_with_fragment_material_sources(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

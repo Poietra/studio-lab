@@ -1540,6 +1540,10 @@ pub fn prepare_frame_with_cache_and_assets_v1(
 
 /// Validates and prepares a packet against the exact application-owned
 /// fragment-material registry installed in the renderer.
+///
+/// # Errors
+///
+/// Returns an error when validation, material resolution, or preparation fails.
 pub fn prepare_frame_with_cache_assets_and_fragment_materials_v1(
     packet: &RenderPacketV1,
     cache: &mut PreparedGeometryCacheV1,
@@ -2753,6 +2757,10 @@ pub fn tessellate_validated_frame_with_cache_and_assets_v1(
 
 /// Tessellates a validated packet against the exact application-owned
 /// fragment-material registry while retaining geometry and decoded assets.
+///
+/// # Errors
+///
+/// Returns an error when material resolution or tessellation fails.
 pub fn tessellate_validated_frame_with_cache_assets_and_fragment_materials_v1(
     validated: ValidatedRenderPacketV1<'_>,
     cache: &mut PreparedGeometryCacheV1,

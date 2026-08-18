@@ -13,6 +13,7 @@ import {
 } from "./canvas-worker-client";
 import type { CanvasInteractionResultV1 } from "./canvas-worker-protocol";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
+import type { FragmentMaterialRegistryV1 } from "./fragment-material-registry";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 /**
@@ -80,6 +81,7 @@ export type InstallPreviewSnapshotInputV1 = Readonly<{
   assetPayloads?: readonly CanvasPngAssetTransferV1[];
   canvas: HTMLCanvasElement;
   interactionEntityIds?: readonly string[];
+  fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   revision: string;
   snapshot: SceneIrBundleV1;
 }>;
@@ -87,6 +89,7 @@ export type InstallPreviewSnapshotInputV1 = Readonly<{
 export type UpdatePreviewSnapshotInputV1 = Readonly<{
   assetPayloads?: readonly CanvasPngAssetTransferV1[];
   interactionEntityIds?: readonly string[];
+  fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   revision: string;
   snapshot: SceneIrBundleV1;
 }>;
@@ -150,6 +153,7 @@ export class StudioPreviewRendererHost {
   private staleSurface = false;
   private renderGeneration = 0;
   private renderer: PreviewRendererV1 | null = null;
+  private snapshotRejected = false;
   private revision: string | null = null;
   private updateGeneration = 0;
   private updateTail: Promise<void> = Promise.resolve();
@@ -181,6 +185,7 @@ export class StudioPreviewRendererHost {
       await this.renderer.installScene({
         assetPayloads: input.assetPayloads,
         canvas: input.canvas,
+        fragmentMaterialRegistry: input.fragmentMaterialRegistry,
         revision: input.revision,
         snapshot,
       });
@@ -211,7 +216,12 @@ export class StudioPreviewRendererHost {
       );
     }
     const baseRevision = this.queuedRevision ?? this.revision;
-    if (input.revision === baseRevision) {
+    const rollsBackRejectedCandidate =
+      this.phase === "ready" &&
+      this.snapshotRejected &&
+      input.revision === this.revision &&
+      input.revision === baseRevision;
+    if (input.revision === baseRevision && !rollsBackRejectedCandidate) {
       return Promise.reject(
         new CanvasWorkerClientError("invalid-input", "The preview Scene update revisions are not sequential."),
       );
@@ -234,6 +244,7 @@ export class StudioPreviewRendererHost {
     if (this.presented) this.staleSurface = true;
     this.presented = null;
     this.lastRenderError = null;
+    this.failure = null;
     this.phase = "updating";
     this.publish();
 
@@ -347,7 +358,16 @@ export class StudioPreviewRendererHost {
     if (this.phase === "disposed") {
       throw new CanvasWorkerClientError("disposed", "The preview renderer host was disposed.");
     }
-    if (this.phase === "failed" || !renderer || this.revision !== baseRevision) {
+    if (this.phase === "failed" || !renderer || this.revision === null) {
+      throw new CanvasWorkerClientError("invalid-state", "A prior preview Scene update did not commit.");
+    }
+    const effectiveBaseRevision =
+      this.revision === baseRevision
+        ? baseRevision
+        : this.snapshotRejected && this.phase === "ready"
+          ? this.revision
+          : null;
+    if (effectiveBaseRevision === null) {
       throw new CanvasWorkerClientError("invalid-state", "A prior preview Scene update did not commit.");
     }
     try {
@@ -359,22 +379,32 @@ export class StudioPreviewRendererHost {
         );
       }
       if (this.isDisposed() || this.renderer !== renderer) return;
-      await renderer.replaceScene({
-        assetPayloads: input.assetPayloads,
-        baseRevision,
-        revision: input.revision,
-        snapshot: next,
-      });
+      if (input.revision !== effectiveBaseRevision) {
+        await renderer.replaceScene({
+          assetPayloads: input.assetPayloads,
+          baseRevision: effectiveBaseRevision,
+          fragmentMaterialRegistry: input.fragmentMaterialRegistry,
+          revision: input.revision,
+          snapshot: next,
+        });
+      }
     } catch (error) {
       if (!this.isDisposed() && this.renderer === renderer) {
         const normalized =
           error instanceof CanvasWorkerClientError
             ? error
             : new CanvasWorkerClientError("internal-error", "The preview Scene update failed.", { cause: error });
-        this.phase = "failed";
         this.failure = { detail: errorDetail(normalized), reason: "renderer-failed" };
-        renderer.dispose();
-        this.renderer = null;
+        if (normalized.code === "snapshot-rejected") {
+          this.snapshotRejected = true;
+          this.phase = "ready";
+          if (generation === this.updateGeneration) this.queuedRevision = this.revision;
+        } else {
+          this.snapshotRejected = false;
+          this.phase = "failed";
+          renderer.dispose();
+          this.renderer = null;
+        }
         this.publish();
       }
       throw error;
@@ -383,11 +413,14 @@ export class StudioPreviewRendererHost {
 
     // These authorities advance only after the worker has acknowledged the
     // correlated atomic replacement.
+    this.failure = null;
+    this.snapshotRejected = false;
     this.revision = input.revision;
     this.duration = input.snapshot.scene.duration;
     this.interactionEntityIds = input.interactionEntityIds ?? [];
     if (generation !== this.updateGeneration) return;
 
+    this.queuedRevision = input.revision;
     this.phase = "ready";
     if (this.desired) this.renderDesired(this.desired, this.renderGeneration);
     this.publish();
@@ -544,6 +577,9 @@ export class StudioPreviewRendererHost {
     }
     if (this.phase !== "ready") {
       return { detail: null, phase: "fallback", reason: "installing" };
+    }
+    if (this.failure) {
+      return { detail: this.failure.detail, phase: "fallback", reason: this.failure.reason };
     }
     const desired = this.desired;
     if (!desired) return { detail: null, phase: "fallback", reason: "frame-pending" };

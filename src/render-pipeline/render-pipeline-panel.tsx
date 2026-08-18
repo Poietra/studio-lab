@@ -48,6 +48,7 @@ type RenderPipelinePanelProps = Readonly<{
   onSourceMutationPendingChange?: (projectId: string, pending: boolean) => void;
   session: RenderSessionView | null;
   sourceExport: OriginalManimSourceExportRequest | null;
+  sourceExportBlocker?: string | null;
   workspace: ManimWorkspaceView | null;
 }>;
 
@@ -98,6 +99,7 @@ export function RenderPipelinePanel({
   onSourceMutationPendingChange,
   session,
   sourceExport,
+  sourceExportBlocker = null,
   workspace,
 }: RenderPipelinePanelProps) {
   const [error, setError] = useState<string | null>(null);
@@ -242,6 +244,7 @@ export function RenderPipelinePanel({
     candidate,
     candidateBlocker,
     candidateLifecycleBlocker,
+    globalExportBlocker: sourceExportBlocker,
     originalExportBlocker,
     renderCapability: workspace?.renderCapability ?? null,
     session,
@@ -642,6 +645,8 @@ export function RenderPipelinePanel({
         </p>
       ) : null}
 
+      {sourceExportBlocker ? <p className="mt-3 text-pretty leading-5 text-amber-300">{sourceExportBlocker}</p> : null}
+
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         {session?.videoUrl ? (
           <a
@@ -656,6 +661,7 @@ export function RenderPipelinePanel({
           className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
           disabled={exportBlocker !== null || pendingAction !== null}
           onClick={() => void exportSource()}
+          title={exportBlocker ?? undefined}
           type="button"
         >
           {pendingAction === "export" ? "Exporting…" : "Export .py"}

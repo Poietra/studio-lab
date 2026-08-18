@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useSyncExternalStore } from "react";
+import type { SceneFragmentMaterialStateV1 } from "./fragment-material-authoring";
 import type { WorkingState } from "./model";
 import {
   createUnavailableStudioPreviewSnapshotProviderV1,
@@ -38,6 +39,7 @@ export type StudioPreviewAuthorityAction =
 type UseStudioPreviewAuthorityControllerInput = Readonly<{
   context: StudioPreviewEditingContextV1 | null;
   frame: Readonly<{ height: number; width: number }>;
+  sceneFragmentMaterials?: SceneFragmentMaterialStateV1;
   retainedSourceDuration: number | null;
   sampleTime: number;
   sceneBoundaryActive: boolean;
@@ -187,6 +189,7 @@ function activationIsAllowed() {
 export function useStudioPreviewAuthorityController({
   context,
   frame,
+  sceneFragmentMaterials,
   retainedSourceDuration,
   sampleTime,
   sceneBoundaryActive,
@@ -234,6 +237,7 @@ export function useStudioPreviewAuthorityController({
   const renderer = useStudioPreviewRenderer({
     context,
     frame,
+    sceneFragmentMaterials,
     provider,
     retainedSourceDuration,
     sampleTime,

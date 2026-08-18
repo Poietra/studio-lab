@@ -30,8 +30,7 @@ pub(crate) fn parse_fragment_material_registry_v1(
         || registry_json.len() > MAX_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES_V1
     {
         return Err(format!(
-            "fragment material registry JSON must contain 1 to {} bytes",
-            MAX_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES_V1
+            "fragment material registry JSON must contain 1 to {MAX_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES_V1} bytes"
         ));
     }
     let registry: FragmentMaterialRegistryJsonV1 = serde_json::from_slice(registry_json)
