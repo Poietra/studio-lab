@@ -125,6 +125,7 @@ import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
+import { rotationDeltaFromClientPoints } from "./studio/studio-viewport-geometry";
 import { STUDIO_STYLE_PROFILE } from "./studio/style-profile";
 import {
   createDirectManipulationColorProgram,
@@ -220,6 +221,12 @@ type CanvasShapeResizeState = CanvasResizeBase &
     shape: ShapeResizeKind;
   }>;
 type CanvasResizeState = CanvasScaleResizeState | CanvasShapeResizeState;
+type CanvasRotationState = Readonly<{
+  center: Point;
+  entityId: string;
+  pointerId: number;
+  start: Point;
+}>;
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
   if (window.poietraDesktop || navigator.userAgent.includes("Electron")) return "Electron";
@@ -440,6 +447,7 @@ export function App({
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
   const canvasResize = useRef<CanvasResizeState | null>(null);
+  const canvasRotation = useRef<CanvasRotationState | null>(null);
   const studioClipboard = useRef<readonly StudioEntityInput[]>([]);
   const pasteCount = useRef(0);
   const commandHandler = useRef<(command: StudioCommandId) => boolean>(() => false);
@@ -537,6 +545,7 @@ export function App({
     cancelSuggestionRequest();
     canvasDrag.current = null;
     canvasResize.current = null;
+    canvasRotation.current = null;
     const identity = activeProjectId
       ? {
           projectId: activeProjectId,
@@ -1366,7 +1375,9 @@ export function App({
       ? null
       : (runtimeTraceProjectionAuthorities.find(({ studioEntityId }) => studioEntityId === entityId) ?? null);
   const retainedRuntimeTraceGestureAuthorities =
-    gesturePreviewKind === "drag" || gesturePreviewKind === "scale" ? runtimeTraceProjectionAuthorities : [];
+    gesturePreviewKind === "drag" || gesturePreviewKind === "rotation" || gesturePreviewKind === "scale"
+      ? runtimeTraceProjectionAuthorities
+      : [];
   const presentedRuntimeTraceAuthorities =
     previewRenderer?.state.phase === "presented" && previewRenderer.runtimeTraceEditAnchor !== null
       ? runtimeTraceProjectionAuthorities
@@ -2478,7 +2489,7 @@ export function App({
   }
 
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
-    if (canvasDrag.current || canvasResize.current) return;
+    if (canvasDrag.current || canvasResize.current || canvasRotation.current) return;
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
@@ -2623,7 +2634,7 @@ export function App({
     direction: ResizeHandleDirection,
   ) {
     event.stopPropagation();
-    if (canvasDrag.current || canvasResize.current) return;
+    if (canvasDrag.current || canvasResize.current || canvasRotation.current) return;
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
@@ -2774,6 +2785,69 @@ export function App({
     if (canvasResize.current?.pointerId !== event.pointerId) return;
     canvasResize.current = null;
     gesturePreviewStore.clear();
+  }
+
+  function beginEntityRotation(event: PointerEvent<HTMLButtonElement>, entityId: string) {
+    event.stopPropagation();
+    if (canvasDrag.current || canvasResize.current || canvasRotation.current) return;
+    const wrapper = event.currentTarget.closest<HTMLElement>("[data-studio-entity-wrapper]");
+    const object = wrapper?.querySelector<HTMLElement>("[data-studio-entity]");
+    const bounds = object?.getBoundingClientRect();
+    if (!bounds) return;
+    canvasRotation.current = {
+      center: { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 },
+      entityId,
+      pointerId: event.pointerId,
+      start: { x: event.clientX, y: event.clientY },
+    };
+    setSelectedObjectIds([entityId]);
+    setIsPlaying(false);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function rotationGestureAngle(rotation: CanvasRotationState, event: PointerEvent<HTMLButtonElement>) {
+    return rotationDeltaFromClientPoints(
+      rotation.center,
+      rotation.start,
+      { x: event.clientX, y: event.clientY },
+      event.shiftKey ? Math.PI / 12 : null,
+    );
+  }
+
+  function moveEntityRotation(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const rotation = canvasRotation.current;
+    if (!rotation || rotation.pointerId !== event.pointerId) return;
+    gesturePreviewStore.setRotationPreview({
+      angleRadians: rotationGestureAngle(rotation, event),
+      entityId: rotation.entityId,
+    });
+  }
+
+  function finishEntityRotation(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const rotation = canvasRotation.current;
+    if (!rotation || rotation.pointerId !== event.pointerId) return;
+    canvasRotation.current = null;
+    const angleRadians = rotationGestureAngle(rotation, event);
+    gesturePreviewStore.clear();
+    if (Math.abs(angleRadians) < Math.PI / 360) return;
+    rotateEntityFromInspector(rotation.entityId, angleRadians);
+  }
+
+  function cancelEntityRotation(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (canvasRotation.current?.pointerId !== event.pointerId) return;
+    canvasRotation.current = null;
+    gesturePreviewStore.clear();
+  }
+
+  function nudgeEntityRotation(event: KeyboardEvent<HTMLButtonElement>, entityId: string) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const stepRadians = ((event.shiftKey ? 1 : 15) * Math.PI) / 180;
+    rotateEntityFromInspector(entityId, event.key === "ArrowLeft" ? stepRadians : -stepRadians);
   }
 
   function nudgeEntityResize(event: KeyboardEvent<HTMLButtonElement>, entityId: string, handle: ResizeHandleDirection) {
@@ -3559,6 +3633,13 @@ export function App({
   const selectedStudioCreationAppearanceAtAnchor =
     selectedStudioCreationAppearanceAuthority !== null &&
     Math.abs(sourceCurrentTime - selectedStudioCreationAppearanceAuthority.sourceAnchor) < 0.0005;
+  const rotationHandleEntityId =
+    selectedObjectIds.length === 1 &&
+    selectedEntity !== null &&
+    ((selectedStudioCreationAppearanceAtAnchor && selectedStudioCreationAppearanceAuthority.rotationAvailable) ||
+      selectedRuntimeTraceEditCapabilities?.rotation === true)
+      ? selectedEntity.id
+      : null;
   const selectedOpacityAuthority =
     selectedRuntimeTraceEditAuthority &&
     selectedRuntimeTraceEditCapabilities?.paintOpacity &&
@@ -3587,6 +3668,7 @@ export function App({
       suspendEditor();
       canvasDrag.current = null;
       canvasResize.current = null;
+      canvasRotation.current = null;
       gesturePreviewStore.clear();
       setInspectorReturnFocus(null);
       leaveWorkspace();
@@ -4016,6 +4098,11 @@ export function App({
               onEntityResizePointerDown={beginEntityResize}
               onEntityResizePointerMove={moveEntityResize}
               onEntityResizePointerUp={finishEntityResize}
+              onEntityRotationCancel={cancelEntityRotation}
+              onEntityRotationKeyDown={nudgeEntityRotation}
+              onEntityRotationPointerDown={beginEntityRotation}
+              onEntityRotationPointerMove={moveEntityRotation}
+              onEntityRotationPointerUp={finishEntityRotation}
               onInteractionModeChange={setInteractionMode}
               onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
               onInsertToolChange={setInsertTool}
@@ -4045,6 +4132,7 @@ export function App({
               presenceParticipants={editorDocumentAuthority.presenceParticipants}
               projection={projection}
               readOnly={boundary !== null || canvasInteractionLocked}
+              rotationHandleEntityId={rotationHandleEntityId}
               selectedIds={selectedSet}
             />
 

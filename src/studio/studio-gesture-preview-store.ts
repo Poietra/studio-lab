@@ -1,9 +1,15 @@
-import type { EntityDragPreview, EntityGeometryPreview, EntityScalePreview } from "./studio-viewport-geometry";
+import type {
+  EntityDragPreview,
+  EntityGeometryPreview,
+  EntityRotationPreview,
+  EntityScalePreview,
+} from "./studio-viewport-geometry";
 
 export type StudioGesturePreviewSnapshot = Readonly<{
   dragPreview: EntityDragPreview | null;
   geometryPreview: EntityGeometryPreview | null;
-  kind: "drag" | "geometry" | "idle" | "scale";
+  kind: "drag" | "geometry" | "idle" | "rotation" | "scale";
+  rotationPreview: EntityRotationPreview | null;
   scalePreview: EntityScalePreview | null;
 }>;
 
@@ -12,6 +18,7 @@ export type StudioGesturePreviewStore = Readonly<{
   getSnapshot: () => StudioGesturePreviewSnapshot;
   setDragPreview: (preview: EntityDragPreview) => void;
   setGeometryPreview: (preview: EntityGeometryPreview) => void;
+  setRotationPreview: (preview: EntityRotationPreview) => void;
   setScalePreview: (preview: EntityScalePreview) => void;
   subscribe: (listener: () => void) => () => void;
 }>;
@@ -20,6 +27,7 @@ const IDLE_SNAPSHOT: StudioGesturePreviewSnapshot = {
   dragPreview: null,
   geometryPreview: null,
   kind: "idle",
+  rotationPreview: null,
   scalePreview: null,
 };
 
@@ -56,6 +64,10 @@ function sameScalePreview(left: EntityScalePreview | null, right: EntityScalePre
   return left !== null && left.entityId === right.entityId && sameNumber(left.scale, right.scale);
 }
 
+function sameRotationPreview(left: EntityRotationPreview | null, right: EntityRotationPreview) {
+  return left !== null && left.entityId === right.entityId && sameNumber(left.angleRadians, right.angleRadians);
+}
+
 export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
   let snapshot = IDLE_SNAPSHOT;
   const listeners = new Set<() => void>();
@@ -75,15 +87,37 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
     },
     setDragPreview(preview) {
       if (snapshot.kind === "drag" && sameDragPreview(snapshot.dragPreview, preview)) return;
-      install({ dragPreview: preview, geometryPreview: null, kind: "drag", scalePreview: null });
+      install({ dragPreview: preview, geometryPreview: null, kind: "drag", rotationPreview: null, scalePreview: null });
     },
     setGeometryPreview(preview) {
       if (snapshot.kind === "geometry" && sameGeometryPreview(snapshot.geometryPreview, preview)) return;
-      install({ dragPreview: null, geometryPreview: preview, kind: "geometry", scalePreview: null });
+      install({
+        dragPreview: null,
+        geometryPreview: preview,
+        kind: "geometry",
+        rotationPreview: null,
+        scalePreview: null,
+      });
+    },
+    setRotationPreview(preview) {
+      if (snapshot.kind === "rotation" && sameRotationPreview(snapshot.rotationPreview, preview)) return;
+      install({
+        dragPreview: null,
+        geometryPreview: null,
+        kind: "rotation",
+        rotationPreview: preview,
+        scalePreview: null,
+      });
     },
     setScalePreview(preview) {
       if (snapshot.kind === "scale" && sameScalePreview(snapshot.scalePreview, preview)) return;
-      install({ dragPreview: null, geometryPreview: null, kind: "scale", scalePreview: preview });
+      install({
+        dragPreview: null,
+        geometryPreview: null,
+        kind: "scale",
+        rotationPreview: null,
+        scalePreview: preview,
+      });
     },
     subscribe(listener) {
       listeners.add(listener);

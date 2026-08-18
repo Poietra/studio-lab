@@ -8,13 +8,16 @@ import { recordStudioCommitProfile } from "./studio-render-profiler";
 import { StudioTimeline, type StudioTimelineProps } from "./studio-timeline";
 import { type StudioTool, StudioToolbar } from "./studio-toolbar";
 
-type StudioGestureCanvasBaseProps = Omit<StudioCanvasProps, "dragPreview" | "geometryPreview" | "scalePreview">;
+type StudioGestureCanvasBaseProps = Omit<
+  StudioCanvasProps,
+  "dragPreview" | "geometryPreview" | "rotationPreview" | "scalePreview"
+>;
 
 function StudioGestureCanvas({
   gesturePreviewStore,
   ...canvasProps
 }: Readonly<StudioGestureCanvasBaseProps & { gesturePreviewStore: StudioGesturePreviewStore }>) {
-  const { dragPreview, geometryPreview, scalePreview } = useSyncExternalStore(
+  const { dragPreview, geometryPreview, rotationPreview, scalePreview } = useSyncExternalStore(
     gesturePreviewStore.subscribe,
     gesturePreviewStore.getSnapshot,
     gesturePreviewStore.getSnapshot,
@@ -26,6 +29,7 @@ function StudioGestureCanvas({
         {...canvasProps}
         dragPreview={dragPreview}
         geometryPreview={geometryPreview}
+        rotationPreview={rotationPreview}
         scalePreview={scalePreview}
       />
     </Profiler>
@@ -35,7 +39,7 @@ function StudioGestureCanvas({
 export type StudioViewportProps = Readonly<
   Omit<
     StudioCanvasProps,
-    "cameraScale" | "dragPreview" | "geometryPreview" | "readOnly" | "sampleId" | "scalePreview"
+    "cameraScale" | "dragPreview" | "geometryPreview" | "readOnly" | "rotationPreview" | "sampleId" | "scalePreview"
   > &
     Omit<StudioTimelineProps, "events" | "objectTracks" | "readOnly"> & {
       className?: string;
@@ -86,6 +90,11 @@ export function StudioViewport({
   onEntityResizePointerDown,
   onEntityResizePointerMove,
   onEntityResizePointerUp,
+  onEntityRotationCancel,
+  onEntityRotationKeyDown,
+  onEntityRotationPointerDown,
+  onEntityRotationPointerMove,
+  onEntityRotationPointerUp,
   onInteractionModeChange,
   onInsertAtCenter,
   onInsertToolChange,
@@ -102,6 +111,7 @@ export function StudioViewport({
   previewPaintAvailable,
   projection,
   readOnly = false,
+  rotationHandleEntityId,
   selectedIds,
 }: StudioViewportProps) {
   return (
@@ -139,12 +149,18 @@ export function StudioViewport({
         onEntityResizePointerDown={onEntityResizePointerDown}
         onEntityResizePointerMove={onEntityResizePointerMove}
         onEntityResizePointerUp={onEntityResizePointerUp}
+        onEntityRotationCancel={onEntityRotationCancel}
+        onEntityRotationKeyDown={onEntityRotationKeyDown}
+        onEntityRotationPointerDown={onEntityRotationPointerDown}
+        onEntityRotationPointerMove={onEntityRotationPointerMove}
+        onEntityRotationPointerUp={onEntityRotationPointerUp}
         onMotionControlChange={onMotionControlChange}
         onPresenceCursorChange={onPresenceCursorChange}
         onSelectEntity={onSelectEntity}
         preview={preview}
         presenceParticipants={presenceParticipants}
         readOnly={readOnly}
+        rotationHandleEntityId={rotationHandleEntityId}
         sampleId={projection.canvas.sampleId}
         selectedIds={selectedIds}
       />
