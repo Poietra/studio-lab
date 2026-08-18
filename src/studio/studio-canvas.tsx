@@ -237,6 +237,20 @@ function EntityResizeHandles({
   });
 }
 
+const ROTATION_HANDLE_RADIUS_PX = 14;
+const ROTATION_HANDLE_CONNECTOR_PX = 28;
+
+/** Keeps both the disc and its connector anchored in screen space even
+ * though the selection bounds live below entity and camera scaling. */
+export function rotationHandleLayoutStyle(displayedScale: number, cameraScale: number) {
+  const inverseCompositeScale = inverseResizeHandleScale(displayedScale, cameraScale);
+  return {
+    scale: inverseCompositeScale,
+    top:
+      -ROTATION_HANDLE_RADIUS_PX - (ROTATION_HANDLE_RADIUS_PX + ROTATION_HANDLE_CONNECTOR_PX) * inverseCompositeScale,
+  };
+}
+
 function EntityRotationHandle({
   cameraScale,
   displayedScale,
@@ -260,7 +274,7 @@ function EntityRotationHandle({
     <button
       aria-keyshortcuts="ArrowLeft ArrowRight"
       aria-label={`Rotate ${entityLabel(entity)}`}
-      className="absolute -top-14 left-1/2 z-30 size-7 -translate-x-1/2 cursor-grab touch-none rounded-full border-2 border-sky-950 bg-sky-400 outline-none before:absolute before:left-1/2 before:top-full before:h-7 before:w-px before:-translate-x-1/2 before:bg-sky-400 active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-sky-300"
+      className="absolute left-1/2 z-30 size-7 -translate-x-1/2 cursor-grab touch-none rounded-full border-2 border-sky-950 bg-sky-400 outline-none before:absolute before:left-1/2 before:top-full before:h-7 before:w-px before:-translate-x-1/2 before:bg-sky-400 active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-sky-300"
       data-studio-rotation-handle={entity.id}
       onKeyDown={(event) => onKeyDown(event, entity.id)}
       onLostPointerCapture={onCancel}
@@ -268,7 +282,7 @@ function EntityRotationHandle({
       onPointerDown={(event) => onPointerDown(event, entity.id)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      style={{ scale: inverseResizeHandleScale(displayedScale, cameraScale) }}
+      style={rotationHandleLayoutStyle(displayedScale, cameraScale)}
       title="Drag to rotate · Left/Right rotate by 15° · Shift for 1°"
       type="button"
     >

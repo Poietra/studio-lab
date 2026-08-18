@@ -7,6 +7,7 @@ import type { ProjectedEntity } from "./model";
 import type { StudioPreviewRuntimeTraceEditCandidate } from "./preview-temporal-rebase";
 import {
   compensatePreparedGeometryForOverlayScales,
+  rotationHandleLayoutStyle,
   StudioCanvas,
   type StudioCanvasProps,
   verifiedPreviewGeometryForStudioEntity,
@@ -199,6 +200,24 @@ function previewView(
 }
 
 describe("StudioCanvas retained preview layer", () => {
+  it.each([
+    [0.5, -98, 2],
+    [1, -56, 1],
+    [2, -35, 0.5],
+  ])(
+    "keeps the rotation handle connector attached at composite scale %s",
+    (scale, expectedTop, expectedInverseScale) => {
+      const style = rotationHandleLayoutStyle(scale, 1);
+      const discRadius = 14;
+      const connectorLength = 28;
+      const discCenterFromBounds = scale * (style.top + discRadius);
+
+      expect(style.top).toBe(expectedTop);
+      expect(style.scale).toBe(expectedInverseScale);
+      expect(discCenterFromBounds + discRadius + connectorLength).toBeCloseTo(0);
+    },
+  );
+
   it("cancels overlay CSS scales so sampled runtime bounds are applied exactly once", () => {
     expect(
       compensatePreparedGeometryForOverlayScales(
