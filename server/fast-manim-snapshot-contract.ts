@@ -1065,7 +1065,12 @@ function assertCanonicalStaticProfileStroke(stroke: NonNullable<StaticProfileVec
   }
 }
 
-function assertStaticProfileEntity(entity: StaticProfileEntity, pathTrimTarget: boolean, roundoffScaleFloor = 1) {
+function assertStaticProfileEntity(
+  entity: StaticProfileEntity,
+  pathTrimTarget: boolean,
+  roundoffScaleFloor = 1,
+  pathMorphTarget = false,
+) {
   if (entity.appearance.kind !== "vector") {
     profileViolation("Static profile entities must use vector appearance.");
   }
@@ -1085,9 +1090,9 @@ function assertStaticProfileEntity(entity: StaticProfileEntity, pathTrimTarget: 
   }
   const subpath = geometry.path.subpaths[0]!;
   if (subpath.closed) {
-    if (pathTrimTarget) {
+    if (pathTrimTarget || (pathMorphTarget && stroke !== null)) {
       if (fill !== null || stroke === null) {
-        profileViolation("Dynamic path-trim closed cubic paths must be stroked without fill.");
+        profileViolation("Dynamic path-trim and stroked path-morph closed cubic paths must be stroked without fill.");
       }
       assertCanonicalStaticProfileStroke(stroke);
     } else {
@@ -1862,6 +1867,52 @@ function isCanonicalDynamicTimedStepV2(start: number, end: number) {
   return Number.isInteger(producerFrames) && producerFrames / FAST_MANIM_SNAPSHOT_FRAME_RATE_V2 === duration;
 }
 
+type DynamicProfileChannelV2 = SceneIrBundleV1["scene"]["animationChannels"][number];
+
+function isSingleDirectPathMorphCombinationV2(channels: readonly DynamicProfileChannelV2[]) {
+  if (
+    channels.some(
+      (channel) => channel.kind !== "opacity" && channel.kind !== "path-morph" && channel.kind !== "path-trim",
+    )
+  ) {
+    return false;
+  }
+  const morphs = channels.filter((channel) => channel.kind === "path-morph");
+  const opacityChannels = channels.filter((channel) => channel.kind === "opacity");
+  const pathTrimChannels = channels.filter((channel) => channel.kind === "path-trim");
+  if (morphs.length !== 1 || opacityChannels.length > 1 || pathTrimChannels.length > 1) return false;
+  const morph = morphs[0]!;
+  if (morph.keyframes.length !== 2) return false;
+  const morphStart = morph.keyframes[0]!.at;
+  const morphEnd = morph.keyframes[1]!.at;
+  const pathTrim = pathTrimChannels[0];
+  if (
+    pathTrim &&
+    (pathTrim.keyframes.length !== 2 ||
+      pathTrim.keyframes[0]!.value !== 0 ||
+      pathTrim.keyframes[1]!.value !== 1 ||
+      pathTrim.keyframes[1]!.at > morphStart)
+  ) {
+    return false;
+  }
+  const opacity = opacityChannels[0];
+  return !(
+    opacity &&
+    (opacity.keyframes.length !== 2 ||
+      opacity.keyframes[0]!.value !== 1 ||
+      opacity.keyframes[1]!.value !== 0 ||
+      morphEnd > opacity.keyframes[0]!.at)
+  );
+}
+
+function isDynamicProfileEasingV2(
+  easing: DynamicProfileChannelV2["keyframes"][number]["easingToNext"],
+  final: boolean,
+  allowManimSmooth: boolean,
+) {
+  return final ? easing === null : easing?.kind === "linear" || (allowManimSmooth && easing?.kind === "manim-smooth");
+}
+
 function assertDynamicProfileV2(
   scene: SceneIrBundleV1["scene"],
   staticEntityIds: ReadonlySet<string> = new Set<string>(),
@@ -1887,6 +1938,20 @@ function assertDynamicProfileV2(
   }
 
   const entityIndexes = new Map(scene.entities.map((entity, index) => [entity.id, index]));
+  const channelsByEntityIndex = new Map<number, DynamicProfileChannelV2[]>();
+  for (const channel of scene.animationChannels) {
+    if (!("entityId" in channel)) continue;
+    const entityIndex = entityIndexes.get(channel.entityId);
+    if (entityIndex === undefined) continue;
+    const channels = channelsByEntityIndex.get(entityIndex) ?? [];
+    channels.push(channel);
+    channelsByEntityIndex.set(entityIndex, channels);
+  }
+  const singleDirectPathMorphEntityIndexes = new Set(
+    [...channelsByEntityIndex]
+      .filter(([, channels]) => isSingleDirectPathMorphCombinationV2(channels))
+      .map(([entityIndex]) => entityIndex),
+  );
   let previousEntityIndex = -1;
   let previousKindOrder = -1;
   const channelKindsByEntity = new Map<number, Set<string>>();
@@ -1937,13 +2002,14 @@ function assertDynamicProfileV2(
     if (entityKinds.has("affine-transform") && entityKinds.has("path-trim")) {
       profileViolation("Dynamic profile V2 does not combine affine-transform and path-trim on one entity.");
     }
-    if (entityKinds.has("path-morph") && entityKinds.size > 1) {
+    if (entityKinds.has("path-morph") && entityKinds.size > 1 && !singleDirectPathMorphEntityIndexes.has(entityIndex)) {
       profileViolation("Dynamic profile V2 does not combine path-morph with another channel on one entity.");
     }
     if (entityKinds.has("motion-path") && entityKinds.size > 1) {
       profileViolation("Dynamic profile V2 does not combine motion-path with another channel on one entity.");
     }
     const entity = scene.entities[entityIndex]!;
+    const singleDirectPathMorph = singleDirectPathMorphEntityIndexes.has(entityIndex);
 
     if (channel.kind === "affine-transform") {
       if (
@@ -2110,8 +2176,10 @@ function assertDynamicProfileV2(
           profileViolation("Dynamic path-trim keyframes must use the producer's exact zero/one endpoints.");
         }
         const final = keyframeIndex === channel.keyframes.length - 1;
-        if ((!final && keyframe.easingToNext?.kind !== "linear") || (final && keyframe.easingToNext !== null)) {
-          profileViolation("Dynamic path-trim keyframes must use explicit linear easing and a null final easing.");
+        if (!isDynamicProfileEasingV2(keyframe.easingToNext, final, singleDirectPathMorph)) {
+          profileViolation(
+            "Dynamic path-trim keyframes must use linear easing, or Manim smooth alongside one direct Transform, and a null final easing.",
+          );
         }
       }
       if (values[0] === 0 && channel.keyframes[0]!.at !== lifetime.start) {
@@ -2197,8 +2265,10 @@ function assertDynamicProfileV2(
           );
         }
         const final = keyframeIndex === channel.keyframes.length - 1;
-        if ((!final && keyframe.easingToNext?.kind !== "linear") || (final && keyframe.easingToNext !== null)) {
-          profileViolation("Dynamic path-morph keyframes must use explicit linear easing and a null final easing.");
+        if (!isDynamicProfileEasingV2(keyframe.easingToNext, final, singleDirectPathMorph)) {
+          profileViolation(
+            "Dynamic path-morph keyframes must use linear easing, or Manim smooth for one direct Transform, and a null final easing.",
+          );
         }
         if (!staticProfilePathsHaveMatchingTopology(basePath, keyframe.value)) {
           profileViolation("Dynamic path-morph keyframes must preserve the entity's exact cubic topology.");
@@ -2254,8 +2324,10 @@ function assertDynamicProfileV2(
         profileViolation("Dynamic opacity keyframes must use the producer's exact zero/one Fade endpoints.");
       }
       const final = keyframeIndex === channel.keyframes.length - 1;
-      if ((!final && keyframe.easingToNext?.kind !== "linear") || (final && keyframe.easingToNext !== null)) {
-        profileViolation("Dynamic opacity keyframes must use explicit linear easing and a null final easing.");
+      if (!isDynamicProfileEasingV2(keyframe.easingToNext, final, singleDirectPathMorph)) {
+        profileViolation(
+          "Dynamic opacity keyframes must use linear easing, or Manim smooth alongside one direct Transform, and a null final easing.",
+        );
       }
     }
     if (values[0] === 0 && channel.keyframes[0]!.at !== lifetime.start) {
@@ -4183,6 +4255,9 @@ function assertFastManimSnapshotProfileV1(
   const pathTrimEntityIds = new Set(
     scene.animationChannels.filter((channel) => channel.kind === "path-trim").map((channel) => channel.entityId),
   );
+  const pathMorphEntityIds = new Set(
+    scene.animationChannels.filter((channel) => channel.kind === "path-morph").map((channel) => channel.entityId),
+  );
   const motionPathRoundoffScaleFloorByEntityId = new Map(
     scene.animationChannels
       .filter((channel) => channel.kind === "motion-path")
@@ -4233,6 +4308,7 @@ function assertFastManimSnapshotProfileV1(
           entity,
           pathTrimEntityIds.has(entity.id),
           motionPathRoundoffScaleFloorByEntityId.get(entity.id),
+          pathMorphEntityIds.has(entity.id),
         );
         break;
       case 3:
@@ -4256,6 +4332,7 @@ function assertFastManimSnapshotProfileV1(
             entity,
             pathTrimEntityIds.has(entity.id),
             motionPathRoundoffScaleFloorByEntityId.get(entity.id),
+            pathMorphEntityIds.has(entity.id),
           );
         }
         break;

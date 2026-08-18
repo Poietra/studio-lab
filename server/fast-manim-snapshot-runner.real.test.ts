@@ -89,6 +89,17 @@ class VariableWaitScene(Scene):
         self.wait(2.5, frozen_frame=True)
 `;
 
+const staticPrimitiveTransformSceneSource = `from manim import Circle, Create, FadeOut, Scene, Square, Transform, WHITE
+
+class StaticPrimitiveTransform(Scene):
+    def construct(self):
+        square = Square(side_length=2).set_fill(opacity=0).set_stroke(WHITE, width=4)
+        circle = Circle(radius=1).set_fill(opacity=0).set_stroke(WHITE, width=4)
+        self.play(Create(square))
+        self.play(Transform(square, circle), run_time=2)
+        self.play(FadeOut(square))
+`;
+
 const imageSceneSource = `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
 
 class ImageScene(Scene):
@@ -306,6 +317,42 @@ describe.skipIf(!officialV8SeamEnabled)("real fast-manim SquareToCircle V8 integ
 });
 
 describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration", () => {
+  it("auto-selects exact V2 evidence for one static primitive Transform", { timeout: 120_000 }, async () => {
+    const projectRoot = await temporaryProject("static-transform.py", staticPrimitiveTransformSceneSource);
+    const runner = createRealRunner(projectRoot, "auto");
+    const view = fastManimSnapshotRunViewV1Schema.parse(
+      await runner.run({
+        projectId: "default",
+        requestId: "real-snapshot-static-primitive-transform",
+        sceneName: "StaticPrimitiveTransform",
+        sourcePath: "static-transform.py",
+      }),
+    );
+    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
+      throw new Error(`Expected a verified V2 static primitive Transform, got ${JSON.stringify(view)}`);
+    }
+    const bundle = view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
+    const { scene } = bundle;
+    expect(scene.source).toMatchObject({ kind: "imported-manim-server-snapshot", snapshotVersion: 2 });
+    expect(scene.duration).toBe(4);
+    expect(scene.entities).toHaveLength(1);
+    expect(scene.requiredCapabilities).toEqual([
+      "cubic-path-geometry",
+      "opacity-animation",
+      "path-morph-animation",
+      "path-trim-animation",
+    ]);
+    expect(scene.animationChannels.map(({ kind }) => kind)).toEqual(["opacity", "path-trim", "path-morph"]);
+    const entity = scene.entities[0]!;
+    const morph = scene.animationChannels.find((channel) => channel.kind === "path-morph");
+    if (entity.geometry.kind !== "cubic-path" || !morph) throw new Error("Expected one cubic path morph entity.");
+    expect(entity.geometry.path.subpaths[0]?.segments).toHaveLength(8);
+    expect(morph.keyframes).toHaveLength(2);
+    expect(morph.keyframes[0]?.value).toEqual(entity.geometry.path);
+    expect(morph.keyframes[0]?.easingToNext).toEqual({ kind: "manim-smooth" });
+    expect(morph.keyframes[1]?.easingToNext).toBeNull();
+  });
+
   it("selects V3, V7, V8, V9, and V10 per Scene through one Studio runner", { timeout: 600_000 }, async () => {
     const projectRoot = await temporaryProject("mathtex.py", mathTexSceneSource);
     await mkdir(join(projectRoot, "example_scenes"));

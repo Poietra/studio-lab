@@ -558,6 +558,105 @@ async function dynamicPathMorphBundle(
   });
 }
 
+async function dynamicStaticPrimitiveTransformBundle(
+  options: Readonly<{
+    create?: boolean;
+    createEasing?: "linear" | "manim-smooth";
+    fadeOut?: boolean;
+    fadeOutEasing?: "linear" | "manim-smooth";
+    morphEasing?: "linear" | "manim-smooth";
+  }> = {},
+): Promise<SceneIrBundleV1> {
+  const create = options.create ?? true;
+  const fadeOut = options.fadeOut ?? true;
+  const bundle = await dynamicPathMorphBundle("one-transform");
+  const morph = structuredClone(bundle.scene.animationChannels[0]);
+  if (morph?.kind !== "path-morph") throw new Error("Expected the path-morph fixture channel.");
+  const morphStart = create ? 1 : 0;
+  const morphEnd = morphStart + 2;
+  const duration = morphEnd + (fadeOut ? 1 : 0);
+  morph.keyframes[0]!.at = morphStart;
+  morph.keyframes[0]!.easingToNext = { kind: options.morphEasing ?? "manim-smooth" };
+  morph.keyframes[1]!.at = morphEnd;
+
+  const sourceEntity = bundle.scene.entities[0]!;
+  const entity = {
+    ...sourceEntity,
+    appearance: {
+      ...sourceEntity.appearance,
+      fill: null,
+      stroke: {
+        cap: "butt" as const,
+        color: { alpha: 1, blue: 1, green: 1, red: 1 },
+        join: "miter" as const,
+        miterLimit: 10,
+        widthWorld: 0.05,
+      },
+    },
+    lifetimes: [{ end: duration, start: 0 }],
+  };
+  const channels: SceneIrBundleV1["scene"]["animationChannels"] = [];
+  const channelProvenance: SceneIrBundleV1["scene"]["provenance"] = [];
+  if (fadeOut) {
+    const provenanceId = fastManimSnapshotOpacityChannelProvenanceIdV2(expected.sceneId, 0);
+    channels.push({
+      entityId: entity.id,
+      id: fastManimSnapshotOpacityChannelIdV2(expected.sceneId, 0),
+      keyframes: [
+        { at: morphEnd, easingToNext: { kind: options.fadeOutEasing ?? "manim-smooth" }, value: 1 },
+        { at: duration, easingToNext: null, value: 0 },
+      ],
+      kind: "opacity",
+      provenanceId,
+    });
+    channelProvenance.push({
+      evidence: ["producer-authored opacity evidence must be normalized"],
+      id: provenanceId,
+      origin: "fast-manim-server-snapshot",
+    });
+  }
+  if (create) {
+    const provenanceId = fastManimSnapshotPathTrimChannelProvenanceIdV2(expected.sceneId, 0);
+    channels.push({
+      entityId: entity.id,
+      id: fastManimSnapshotPathTrimChannelIdV2(expected.sceneId, 0),
+      keyframes: [
+        { at: 0, easingToNext: { kind: options.createEasing ?? "manim-smooth" }, value: 0 },
+        { at: morphStart, easingToNext: null, value: 1 },
+      ],
+      kind: "path-trim",
+      parameterization: "uniform-cubic-parameter-v1",
+      provenanceId,
+    });
+    channelProvenance.push({
+      evidence: ["producer-authored path-trim evidence must be normalized"],
+      id: provenanceId,
+      origin: "fast-manim-server-snapshot",
+    });
+  }
+  channels.push(morph);
+  channelProvenance.push(bundle.scene.provenance.at(-1)!);
+
+  return sceneIrBundleV1Schema.parse({
+    ...bundle,
+    scene: {
+      ...bundle.scene,
+      animationChannels: channels,
+      duration,
+      entities: bundle.scene.entities.map((candidate, index) =>
+        index === 0 ? entity : { ...candidate, lifetimes: [{ end: duration, start: 0 }] },
+      ),
+      provenance: [...bundle.scene.provenance.slice(0, -1), ...channelProvenance],
+      requiredCapabilities: [
+        "cubic-path-geometry",
+        ...(fadeOut ? (["opacity-animation"] as const) : []),
+        "path-morph-animation",
+        ...(create ? (["path-trim-animation"] as const) : []),
+      ],
+    },
+  });
+}
+
 async function dynamicMotionPathBundle(): Promise<SceneIrBundleV1> {
   const base = await importedBundle();
   const duration = 4;
@@ -2045,6 +2144,73 @@ class ExampleScene(Scene):
         ),
       ).toBe(true);
       await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV2)).resolves.toEqual(sealed);
+    }
+  });
+
+  it.each([
+    ["Transform", { create: false, fadeOut: false }],
+    ["Create then Transform", { create: true, createEasing: "linear", fadeOut: false }],
+    ["Transform then FadeOut", { create: false, fadeOut: true, morphEasing: "linear" }],
+    [
+      "Create then Transform then FadeOut",
+      { create: true, createEasing: "manim-smooth", fadeOut: true, fadeOutEasing: "linear" },
+    ],
+  ] as const)("seals one exact static primitive %s timeline", async (_label, options) => {
+    const bundle = await dynamicStaticPrimitiveTransformBundle(options);
+    const sealed = await parseProducer(compiled(bundle), { ...expected, snapshotVersion: 2 });
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled static primitive Transform snapshot.");
+
+    expect(sealed.bundle.scene.entities).toEqual(bundle.scene.entities);
+    expect(sealed.bundle.scene.animationChannels).toEqual(bundle.scene.animationChannels);
+    expect(sealed.bundle.scene.animationChannels.map(({ kind }) => kind)).toEqual([
+      ...(options.fadeOut ? ["opacity" as const] : []),
+      ...(options.create ? ["path-trim" as const] : []),
+      "path-morph",
+    ]);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, { ...expected, snapshotVersion: 2 })).resolves.toEqual(
+      sealed,
+    );
+  });
+
+  it("rejects invalid scalar companions around a static primitive Transform", async () => {
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const overlapCreate = await dynamicStaticPrimitiveTransformBundle();
+    const trim = overlapCreate.scene.animationChannels.find((channel) => channel.kind === "path-trim");
+    if (!trim) throw new Error("Expected a path-trim companion.");
+    trim.keyframes[1]!.at += 1 / 60;
+
+    const overlapFade = await dynamicStaticPrimitiveTransformBundle();
+    const fade = overlapFade.scene.animationChannels.find((channel) => channel.kind === "opacity");
+    if (!fade) throw new Error("Expected an opacity companion.");
+    fade.keyframes[0]!.at -= 1 / 60;
+
+    const uncreate = await dynamicStaticPrimitiveTransformBundle();
+    const uncreateTrim = uncreate.scene.animationChannels.find((channel) => channel.kind === "path-trim");
+    if (!uncreateTrim) throw new Error("Expected a path-trim companion.");
+    uncreateTrim.keyframes[0]!.value = 1;
+    uncreateTrim.keyframes[1]!.value = 0;
+
+    const fadeIn = await dynamicStaticPrimitiveTransformBundle();
+    const fadeInOpacity = fadeIn.scene.animationChannels.find((channel) => channel.kind === "opacity");
+    if (!fadeInOpacity) throw new Error("Expected an opacity companion.");
+    fadeInOpacity.keyframes[0]!.value = 0;
+    fadeInOpacity.keyframes[1]!.value = 1;
+
+    for (const candidate of [overlapCreate, overlapFade, uncreate, fadeIn]) {
+      await expect(parseProducer(compiled(candidate), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
+    }
+  });
+
+  it("keeps Manim smooth restricted to one direct Transform timeline", async () => {
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const standaloneCreate = await dynamicPathTrimBundle([0, 1]);
+    standaloneCreate.scene.animationChannels[0]!.keyframes[0]!.easingToNext = { kind: "manim-smooth" };
+
+    const repeatedMorph = await dynamicPathMorphBundle("two-adjacent-transforms");
+    repeatedMorph.scene.animationChannels[0]!.keyframes[0]!.easingToNext = { kind: "manim-smooth" };
+
+    for (const candidate of [standaloneCreate, repeatedMorph]) {
+      await expect(parseProducer(compiled(candidate), expectedV2)).rejects.toMatchObject({ code: "profile-violation" });
     }
   });
 
