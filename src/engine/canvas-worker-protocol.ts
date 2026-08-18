@@ -16,6 +16,7 @@ export const MAX_CANVAS_SAMPLE_JSON_BYTES = 256 * 1024;
 export const MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES = 16 * 1024;
 export const MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES = 32 * 1024;
 export const MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES = 8 * 1024;
+export const MAX_CANVAS_THUMBNAIL_PNG_BYTES = 4 * 1024 * 1024;
 export const MAX_CANVAS_WASM_MODULE_URL_LENGTH = 2_048;
 export const MAX_CANVAS_INTERACTION_ENTITY_IDS = 128;
 
@@ -119,12 +120,21 @@ const collectAdapterEvidenceRequestV1Schema = z
   })
   .strict();
 
+const generateThumbnailRequestV1Schema = z
+  .object({
+    ...requestEnvelope,
+    kind: z.literal("generate-thumbnail"),
+    revision: revisionSchema,
+  })
+  .strict();
+
 export const canvasWorkerRequestV1Schema = z.discriminatedUnion("kind", [
   installCanvasRequestV1Schema,
   replaceSceneRequestV1Schema,
   renderFrameRequestV1Schema,
   renderFrameTelemetryRequestV1Schema,
   collectAdapterEvidenceRequestV1Schema,
+  generateThumbnailRequestV1Schema,
 ]);
 
 export const canvasEngineSampleRequestV1Schema = z
@@ -574,6 +584,7 @@ export const canvasWorkerErrorCodeV1Schema = z.union([
     "snapshot-rejected",
     "stale-revision",
     "telemetry-unavailable",
+    "thumbnail-failed",
     "wasm-load-failed",
   ]),
   canvasRenderErrorCodeV1Schema,
@@ -639,6 +650,16 @@ const adapterEvidenceResponseV1Schema = z
   })
   .strict();
 
+const thumbnailGeneratedResponseV1Schema = z
+  .object({
+    ...canvasWorkerResponseEnvelopeV1,
+    kind: z.literal("thumbnail-generated"),
+    png: z
+      .instanceof(ArrayBuffer)
+      .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= MAX_CANVAS_THUMBNAIL_PNG_BYTES),
+  })
+  .strict();
+
 /**
  * A telemetry render that failed inside the engine. Unlike the plain error
  * response, this dedicated envelope preserves the partial per-phase telemetry
@@ -670,6 +691,7 @@ export const canvasWorkerResponseV1Schema = z.discriminatedUnion("kind", [
   framePresentedResponseV1Schema,
   framePresentedTelemetryResponseV1Schema,
   frameTelemetryFailedResponseV1Schema,
+  thumbnailGeneratedResponseV1Schema,
 ]);
 
 export type CanvasAdapterEvidenceV1 = z.infer<typeof canvasAdapterEvidenceV1Schema>;

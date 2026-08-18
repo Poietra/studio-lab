@@ -157,6 +157,7 @@ function previewView(
 ): StudioPreviewRendererView {
   return {
     attachCanvas: vi.fn(),
+    generateThumbnail: vi.fn(),
     boundEntityProjection: null,
     cameraCenter: null,
     canonicalScene: null,

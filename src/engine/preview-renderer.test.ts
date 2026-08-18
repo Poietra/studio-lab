@@ -75,6 +75,7 @@ function createFixture() {
     dispose: () => {
       disposeCount += 1;
     },
+    generateThumbnail: () => Promise.resolve(new Uint8Array([1])),
     installScene: (input) => {
       installs.push(input);
       return install.promise;

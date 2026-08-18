@@ -113,6 +113,7 @@ import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-ex
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
+import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
 import {
@@ -3483,6 +3484,10 @@ export function App({
               />
             ) : null}
             <StudioExportControl exportSource={studioExportSource} publication={studioExportPublication} />
+            <StudioThumbnailControl
+              generate={studioExportSource && previewRenderer ? previewRenderer.generateThumbnail : null}
+              publication={studioExportPublication}
+            />
             <button
               className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
               disabled={

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CanvasPngAssetTransferV1 } from "../engine/canvas-png-assets";
-import type { CaptureCanvasFrameEvidenceInputV1 } from "../engine/canvas-worker-client";
+import { CanvasWorkerClientError, type CaptureCanvasFrameEvidenceInputV1 } from "../engine/canvas-worker-client";
 import { MAX_CANVAS_INTERACTION_ENTITY_IDS } from "../engine/canvas-worker-protocol";
 import type { SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
@@ -115,6 +115,8 @@ import {
 
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
+  /** Renders the exact currently presented Scene through the retained Rust/WGPU worker. */
+  generateThumbnail: () => Promise<Uint8Array<ArrayBuffer>>;
   /** Exact Rust-admitted Scene currently presented by the retained renderer. */
   canonicalScene: Readonly<{
     assetPayloads: readonly CanvasPngAssetTransferV1[];
@@ -1737,6 +1739,14 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   });
   return {
     attachCanvas,
+    generateThumbnail: () => {
+      if (!host || state.phase !== "presented") {
+        return Promise.reject(
+          new CanvasWorkerClientError("invalid-state", "No current Scene can produce a thumbnail."),
+        );
+      }
+      return host.generateThumbnail();
+    },
     boundEntityProjection: state.phase === "presented" ? (currentCompiledScene?.boundEntityProjection ?? null) : null,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     canonicalScene:

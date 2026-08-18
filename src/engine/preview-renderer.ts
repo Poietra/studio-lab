@@ -26,6 +26,7 @@ import { sceneIrSourceRevisionHash } from "./scene-ir";
 export type PreviewRendererV1 = Readonly<{
   captureFrameEvidence?: (input: CaptureCanvasFrameEvidenceInputV1) => Promise<CanvasFrameEvidenceResponseV1>;
   dispose: () => void;
+  generateThumbnail: (revision: string) => Promise<Uint8Array<ArrayBuffer>>;
   installScene: (input: InstallCanvasSceneInputV1) => Promise<void>;
   render: (input: RenderCanvasFrameInputV1) => Promise<PresentedCanvasFrameV1>;
   replaceScene: (input: ReplaceCanvasSceneInputV1) => Promise<void>;
@@ -298,6 +299,24 @@ export class StudioPreviewRendererHost {
       );
     }
     return evidence;
+  }
+
+  async generateThumbnail() {
+    const renderer = this.renderer;
+    const revision = this.revision;
+    if (this.phase !== "ready" || !renderer || revision === null || this.currentState.phase !== "presented") {
+      throw new CanvasWorkerClientError("invalid-state", "The preview host has no current presented Scene thumbnail.");
+    }
+    const png = await renderer.generateThumbnail(revision);
+    if (
+      this.phase !== "ready" ||
+      this.renderer !== renderer ||
+      this.revision !== revision ||
+      this.currentState.phase !== "presented"
+    ) {
+      throw new CanvasWorkerClientError("stale-response", "The preview Scene changed while generating its thumbnail.");
+    }
+    return png;
   }
 
   dispose() {

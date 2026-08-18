@@ -17,6 +17,7 @@ import {
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
   MAX_CANVAS_SAMPLE_JSON_BYTES,
   MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES,
+  MAX_CANVAS_THUMBNAIL_PNG_BYTES,
   normalizeCanvasInteractionEntityIdsV1,
   POIETRA_CANVAS_TELEMETRY_ABI_VERSION,
   POIETRA_CANVAS_WORKER_VERSION,
@@ -25,6 +26,7 @@ import {
 const MAX_ERROR_MESSAGE_LENGTH = 4_096;
 
 export type PoietraWasmCanvasEngineV1 = {
+  generateThumbnail?: () => Promise<Uint8Array>;
   render: (requestJson: Uint8Array) => Promise<Uint8Array>;
   replaceSnapshot: (snapshotJson: Uint8Array, assetMetadataJson: Uint8Array, assetBytes: Uint8Array[]) => void;
   // Telemetry-free modules remain supported. A module that exposes any
@@ -66,7 +68,7 @@ export type CanvasWorkerEvidenceSupportV1 = Readonly<{
 export type CanvasWorkerRuntimeOptionsV1 = Readonly<{
   evidence?: CanvasWorkerEvidenceSupportV1;
   loadWasm?: (moduleUrl: URL) => Promise<PoietraWasmCanvasEngineClassV1>;
-  postMessage: (response: CanvasWorkerResponseV1) => void;
+  postMessage: (response: CanvasWorkerResponseV1, transfer?: Transferable[]) => void;
   scopeUrl: string;
 }>;
 
@@ -203,7 +205,7 @@ function decodeAdapterEvidence(evidenceJson: Uint8Array) {
 
 export class PoietraCanvasWorkerRuntimeV1 {
   private readonly loadWasm: (moduleUrl: URL) => Promise<PoietraWasmCanvasEngineClassV1>;
-  private readonly postMessage: (response: CanvasWorkerResponseV1) => void;
+  private readonly postMessage: (response: CanvasWorkerResponseV1, transfer?: Transferable[]) => void;
   private readonly scopeUrl: URL;
   private readonly evidence: CanvasWorkerEvidenceSupportV1 | null;
   private currentRevision: string | null = null;
@@ -264,6 +266,10 @@ export class PoietraCanvasWorkerRuntimeV1 {
     }
     if (request.kind === "collect-adapter-evidence") {
       this.collectAdapterEvidence(request);
+      return;
+    }
+    if (request.kind === "generate-thumbnail") {
+      await this.generateThumbnail(request);
       return;
     }
     await this.render(request);
@@ -703,12 +709,55 @@ export class PoietraCanvasWorkerRuntimeV1 {
       version: POIETRA_CANVAS_WORKER_VERSION,
     });
   }
+
+  private async generateThumbnail(request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "generate-thumbnail" }>>) {
+    const correlation = correlationFromUnknown(request);
+    const engine = this.engine;
+    if (!engine) {
+      this.postMessage(errorResponse(correlation, "invalid-state", null, "No canvas Scene is installed."));
+      return;
+    }
+    if (request.revision !== this.currentRevision) {
+      this.postMessage(errorResponse(correlation, "stale-revision", null, "The thumbnail revision is stale."));
+      return;
+    }
+    if (typeof engine.generateThumbnail !== "function") {
+      this.postMessage(
+        errorResponse(correlation, "thumbnail-failed", null, "The loaded engine cannot generate thumbnails."),
+      );
+      return;
+    }
+    try {
+      const generated = await engine.generateThumbnail.call(engine);
+      if (
+        !(generated instanceof Uint8Array) ||
+        generated.byteLength < 1 ||
+        generated.byteLength > MAX_CANVAS_THUMBNAIL_PNG_BYTES
+      ) {
+        throw new TypeError("The engine returned an invalid thumbnail payload.");
+      }
+      const png = Uint8Array.from(generated).buffer;
+      this.postMessage(
+        {
+          kind: "thumbnail-generated",
+          png,
+          requestId: request.requestId,
+          revision: request.revision,
+          schema: "poietra.canvas-worker-response",
+          version: POIETRA_CANVAS_WORKER_VERSION,
+        },
+        [png],
+      );
+    } catch (error) {
+      this.postMessage(errorResponse(correlation, "thumbnail-failed", error, "The canonical thumbnail render failed."));
+    }
+  }
 }
 
 type WorkerScopeV1 = {
   addEventListener: (type: "message", listener: (event: MessageEvent<unknown>) => void) => void;
   location: Location;
-  postMessage: (response: CanvasWorkerResponseV1) => void;
+  postMessage: (response: CanvasWorkerResponseV1, transfer?: Transferable[]) => void;
   removeEventListener: (type: "message", listener: (event: MessageEvent<unknown>) => void) => void;
 };
 
@@ -735,7 +784,7 @@ export function registerPoietraCanvasWorkerScopeV1(
   if (activeScopeListener) scope.removeEventListener("message", activeScopeListener);
   const runtime = new PoietraCanvasWorkerRuntimeV1({
     evidence: options.evidence,
-    postMessage: (response) => scope.postMessage(response),
+    postMessage: (response, transfer) => scope.postMessage(response, transfer),
     scopeUrl: scope.location.href,
   });
   activeScopeListener = (event) => {
