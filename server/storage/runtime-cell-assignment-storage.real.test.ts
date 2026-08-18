@@ -147,7 +147,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL production runtime-cell composition",
     try {
       await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({
         applied: true,
-        version: 30,
+        version: 31,
       });
       const setup = await pool.connect();
       try {

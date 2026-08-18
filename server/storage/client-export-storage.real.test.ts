@@ -73,6 +73,7 @@ async function prepareStorage(pool: Pool) {
   await applyBundledDurableStorageMigrations(pool);
   const client = await pool.connect();
   try {
+    await client.query("BEGIN");
     await client.query("INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1), ($2) ON CONFLICT DO NOTHING", [
       TENANT_A,
       TENANT_B,
@@ -117,6 +118,10 @@ async function prepareStorage(pool: Pool) {
        ON CONFLICT DO NOTHING`,
       [TENANT_B, PROJECT, DOCUMENT_KEY_B, EPOCH_B],
     );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
   } finally {
     client.release();
   }
