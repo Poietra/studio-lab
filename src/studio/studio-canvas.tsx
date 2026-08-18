@@ -420,6 +420,7 @@ export function StudioCanvas({
             displayOnlyPreview ||
             selectionOnlyPreview ||
             insertTool === "select" ||
+            inlineTextEditor !== null ||
             boundaryActive ||
             isCanvasInteractionTarget(event.target)
           )

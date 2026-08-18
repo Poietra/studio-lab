@@ -75,6 +75,23 @@ function findEntityButton(tree: ReactNode, entityId: string): ReactElement<Recor
   return result;
 }
 
+function findCanvasSurface(tree: ReactNode): ReactElement<Record<string, unknown>> {
+  let result: ReactElement<Record<string, unknown>> | null = null;
+  const visit = (node: ReactNode) => {
+    Children.forEach(node, (child) => {
+      if (result || !isValidElement<Record<string, unknown>>(child)) return;
+      if (child.props["data-studio-canvas"] !== undefined) {
+        result = child;
+        return;
+      }
+      visit(child.props.children as ReactNode);
+    });
+  };
+  visit(tree);
+  if (!result) throw new Error("No Studio canvas surface exists.");
+  return result;
+}
+
 function baseProps(): StudioCanvasProps {
   return {
     appliedTransactionIds: new Set<string>(),
@@ -596,6 +613,35 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('aria-label="New text content"');
     expect(markup).toContain("sample</textarea>");
     expect(markup).not.toContain("data-studio-semantic-paint");
+  });
+
+  it("lets the active inline editor blur before another canvas placement", () => {
+    const onCanvasPlace = vi.fn();
+    const surface = findCanvasSurface(
+      StudioCanvas({
+        ...baseProps(),
+        entities: [],
+        inlineTextEditor: { initialValue: "draft", kind: "create", point: { x: 320, y: 180 } },
+        insertTool: "Text",
+        onCanvasPlace,
+        preview: previewView({
+          frame: {
+            packetId: "canvas:inline-text-blur",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        }),
+      }),
+    );
+    const pointerDown = surface.props.onPointerDown as
+      | ((event: Readonly<{ clientX: number; clientY: number; target: null }>) => void)
+      | undefined;
+
+    pointerDown?.({ clientX: 400, clientY: 200, target: null });
+
+    expect(onCanvasPlace).not.toHaveBeenCalled();
   });
 
   it("does not turn IME composition keys into inline Text commits", () => {
