@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { ClientExportHttpServiceV1 } from "./client-export-http";
+import type { ClientThumbnailHttpServiceV1 } from "./client-thumbnail-http";
 import { HttpError } from "./http/json";
 import type { ManimApi } from "./manim-api";
 import {
@@ -29,6 +30,8 @@ export type ProductionManimRuntimeAdapterV1 = Readonly<{
   api: ManimApi;
   /** Native client-export publication capability beside, not inside, the Manim runtime. */
   clientExports?: ClientExportHttpServiceV1;
+  /** Browser Rust/WGPU thumbnail publication capability beside the Manim runtime. */
+  clientThumbnails?: ClientThumbnailHttpServiceV1;
   close: () => Promise<void>;
   editorDocuments?: EditorDocumentRepositoryV1;
   editorReady?: (signal: AbortSignal) => Promise<boolean>;
@@ -215,6 +218,19 @@ function assertClientExportAdapter(runtime: ProductionManimRuntimeAdapterV1, exp
   }
 }
 
+function assertClientThumbnailAdapter(runtime: ProductionManimRuntimeAdapterV1, expectedTenantId: string) {
+  const candidate = runtime.clientThumbnails;
+  if (candidate === undefined) return;
+  if (
+    typeof candidate !== "object" ||
+    candidate === null ||
+    typeof candidate.publisher?.publish !== "function" ||
+    candidate.tenantId !== expectedTenantId
+  ) {
+    throw new TypeError("Production client thumbnail adapter is incomplete.");
+  }
+}
+
 export function assertProductionManimRuntimeAdapterV1(
   runtime: unknown,
   expectedTenantId?: string,
@@ -254,6 +270,7 @@ export function assertProductionManimRuntimeAdapterV1(
   }
   assertEditorAdapter(candidate);
   assertClientExportAdapter(candidate, parsedTenant.data);
+  assertClientThumbnailAdapter(candidate, parsedTenant.data);
 }
 
 function assertAssignmentSource(source: unknown): asserts source is ProductionRuntimeCellAssignmentSourceV1 {

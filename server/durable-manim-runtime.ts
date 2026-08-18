@@ -28,6 +28,7 @@ import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot, validateBrowserManimProjectImportV1 } from "./manim-workspace";
 import type { TenantCellRuntimeAdapterV1 } from "./production-runtime-cell";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
+import type { ClientThumbnailReaderV1 } from "./storage/client-thumbnail-reader";
 import { MIN_DURABLE_GC_GRACE_MS_V1 } from "./storage/durable-gc-core";
 import type { EditorDocumentOriginV1, EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 import {
@@ -66,6 +67,7 @@ export type DurableManimExecutionReadinessV1 = Readonly<{
 export type DurableManimRuntimeOptionsV1 = Readonly<{
   artifactReader?: Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">;
   blobs: SourceContentBlobStoreV1;
+  clientThumbnailReader?: Pick<ClientThumbnailReaderV1, "current" | "currentBytes" | "ready">;
   runtimeTraceEditVerifier?: Pick<ManimRuntimeTraceEditVerifier, "verify">;
   editorDocuments?: EditorDocumentRepositoryV1;
   execution?: DurableManimExecutionReadinessV1;
@@ -132,6 +134,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     | Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">
     | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
+  readonly #clientThumbnailReader: Pick<ClientThumbnailReaderV1, "current" | "currentBytes" | "ready"> | undefined;
   readonly #runtimeTraceEditVerifier: Pick<ManimRuntimeTraceEditVerifier, "verify"> | undefined;
   readonly editorDocuments: EditorDocumentRepositoryV1 | undefined;
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
@@ -158,6 +161,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     this.#repository = options.repository;
     this.#artifactReader = options.artifactReader;
     this.#blobs = options.blobs;
+    this.#clientThumbnailReader = options.clientThumbnailReader;
     this.#runtimeTraceEditVerifier = options.runtimeTraceEditVerifier;
     this.editorDocuments = options.editorDocuments;
     this.#execution = options.execution;
@@ -181,17 +185,33 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const [repositoryReady, blobsReady, artifactReaderReady, executionReady, rendersReady, snapshotsReady] =
-      await Promise.all([
-        this.#repository.ready(signal),
-        this.#blobs.ready(signal),
-        this.#artifactReader?.ready(signal) ?? Promise.resolve(true),
-        this.#execution?.ready(signal) ?? Promise.resolve(false),
-        this.#renders?.ready(signal) ?? Promise.resolve(true),
-        this.#snapshots?.ready(signal) ?? Promise.resolve(true),
-      ]);
+    const [
+      repositoryReady,
+      blobsReady,
+      artifactReaderReady,
+      clientThumbnailReaderReady,
+      executionReady,
+      rendersReady,
+      snapshotsReady,
+    ] = await Promise.all([
+      this.#repository.ready(signal),
+      this.#blobs.ready(signal),
+      this.#artifactReader?.ready(signal) ?? Promise.resolve(true),
+      this.#clientThumbnailReader?.ready(signal) ?? Promise.resolve(true),
+      this.#execution?.ready(signal) ?? Promise.resolve(false),
+      this.#renders?.ready(signal) ?? Promise.resolve(true),
+      this.#snapshots?.ready(signal) ?? Promise.resolve(true),
+    ]);
     signal?.throwIfAborted();
-    return repositoryReady && blobsReady && artifactReaderReady && executionReady && rendersReady && snapshotsReady;
+    return (
+      repositoryReady &&
+      blobsReady &&
+      artifactReaderReady &&
+      clientThumbnailReaderReady &&
+      executionReady &&
+      rendersReady &&
+      snapshotsReady
+    );
   }
 
   async workspaceReady(signal?: AbortSignal) {
@@ -248,6 +268,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       repositoryReady,
       blobsReady,
       artifactReaderReady,
+      clientThumbnailReaderReady,
       editorDocumentsReady,
       projectPngRepositoryReady,
       projectPngsReady,
@@ -256,6 +277,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       this.#repository.ready(signal),
       this.#blobs.ready(signal),
       this.#artifactReader?.ready(signal) ?? Promise.resolve(true),
+      this.#clientThumbnailReader?.ready(signal) ?? Promise.resolve(true),
       this.editorDocuments?.ready(signal) ?? Promise.resolve(true),
       this.#projectPngRepository?.ready(signal) ?? Promise.resolve(true),
       this.#projectPngs?.ready(signal) ?? Promise.resolve(true),
@@ -266,6 +288,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       repositoryReady &&
       blobsReady &&
       artifactReaderReady &&
+      clientThumbnailReaderReady &&
       editorDocumentsReady &&
       projectPngRepositoryReady &&
       projectPngsReady &&
@@ -589,6 +612,24 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async thumbnailStatus(projectId: string, signal?: AbortSignal) {
     await this.#repository.readProject(this.tenantId, projectId, signal);
+    if (this.#clientThumbnailReader) {
+      try {
+        const publication = await this.#clientThumbnailReader.current(projectId, signal);
+        return {
+          cachedSourceHash: null,
+          error: null,
+          generatedAt: publication.publishedAt.toISOString(),
+          imageKind: "rendered" as const,
+          projectId,
+          sceneName: null,
+          sourceHash: null,
+          sourcePath: null,
+          state: "current" as const,
+        };
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 404) throw error;
+      }
+    }
     if (!this.#artifactReader) return unavailableThumbnail(projectId);
     try {
       const asset = await this.#artifactReader.projectThumbnail(projectId, signal);
@@ -616,6 +657,19 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async thumbnail(projectId: string, signal?: AbortSignal): Promise<ThumbnailAsset> {
     await this.#repository.readProject(this.tenantId, projectId, signal);
+    if (this.#clientThumbnailReader) {
+      try {
+        return {
+          body: (await this.#clientThumbnailReader.currentBytes(projectId, signal)).bytes,
+          kind: "rendered",
+          mediaType: "image/png",
+          state: "current",
+          status: 200,
+        };
+      } catch (error) {
+        if (!(error instanceof HttpError) || error.status !== 404) throw error;
+      }
+    }
     if (!this.#artifactReader) throw new HttpError("A durable thumbnail has not been generated.", 404);
     return {
       body: await this.#artifactReader.projectThumbnailBytes(projectId, signal),

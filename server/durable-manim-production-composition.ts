@@ -35,10 +35,13 @@ import { createDurableClientExportGcWorkerV1 } from "./storage/client-export-gc"
 import type { ClientExportPublicationMeteringV1 } from "./storage/client-export-metering";
 import { ClientExportPublisherV1 } from "./storage/client-export-publisher";
 import { ClientExportReaderV1 } from "./storage/client-export-reader";
+import { ClientThumbnailPublisherV1 } from "./storage/client-thumbnail-publisher";
+import { ClientThumbnailReaderV1 } from "./storage/client-thumbnail-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifact-repository";
 import { PostgresBillingEntitlementRepositoryV1 } from "./storage/postgres/postgres-entitlement-repository";
 import { PostgresClientExportRepositoryV1 } from "./storage/postgres/postgres-client-export-repository";
+import { PostgresClientThumbnailRepositoryV1 } from "./storage/postgres/postgres-client-thumbnail-repository";
 import { PostgresEditorDocumentRepositoryV1 } from "./storage/postgres/postgres-editor-document-repository";
 import { PostgresProjectPngRepositoryV1 } from "./storage/postgres/postgres-project-png-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
@@ -60,6 +63,7 @@ import {
 } from "./storage/routed-source-png-store";
 import { S3ArtifactReaderV1 } from "./storage/s3/s3-artifact-reader";
 import { S3ClientExportArtifactStoreV1 } from "./storage/s3/s3-client-export-artifact-store";
+import { S3ClientThumbnailArtifactStoreV1 } from "./storage/s3/s3-client-thumbnail-artifact-store";
 import { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
 import { S3ImmutableRenderArtifactStoreV1 } from "./storage/s3/s3-immutable-render-artifact-store";
 import { S3ImmutableSnapshotArtifactStoreV1 } from "./storage/s3/s3-immutable-snapshot-artifact-store";
@@ -409,6 +413,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let projectPngRepository: PostgresProjectPngRepositoryV1 | undefined;
   let mediaRepository: PostgresArtifactRepositoryV1 | undefined;
   let clientExportRepository: PostgresClientExportRepositoryV1 | undefined;
+  let clientThumbnailRepository: PostgresClientThumbnailRepositoryV1 | undefined;
   let snapshotRepository: PostgresSnapshotPublicationRepositoryV1 | undefined;
   let immutableTransport: PrivateImmutableS3BucketTransportV1 | undefined;
   let legacyTransport: PrivateVersionedS3BucketTransportV1 | undefined;
@@ -420,6 +425,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let legacyArtifacts: S3SnapshotArtifactStoreV1 | undefined;
   let immutableMediaArtifacts: S3ImmutableRenderArtifactStoreV1 | undefined;
   let clientExportArtifacts: S3ClientExportArtifactStoreV1 | undefined;
+  let clientThumbnailArtifacts: S3ClientThumbnailArtifactStoreV1 | undefined;
   let legacyMediaArtifacts: S3ArtifactReaderV1 | undefined;
   let blobs: RoutedSourceContentBlobStoreV1 | undefined;
   let projectPngs: RoutedProjectPngBlobStoreV1 | undefined;
@@ -458,6 +464,10 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         statementTimeoutMs: options.database.statementTimeoutMs,
       });
     }
+    clientThumbnailRepository = new PostgresClientThumbnailRepositoryV1({
+      poolConfig: options.database.runtimePoolConfig,
+      statementTimeoutMs: options.database.statementTimeoutMs,
+    });
     snapshotRepository = new PostgresSnapshotPublicationRepositoryV1({
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
@@ -479,6 +489,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     immutableProjectPngs = new ImmutableS3ProjectPngStoreV1({ transport: immutableTransport });
     immutableArtifacts = new S3ImmutableSnapshotArtifactStoreV1({ transport: immutableTransport });
     immutableMediaArtifacts = new S3ImmutableRenderArtifactStoreV1({ transport: immutableTransport });
+    clientThumbnailArtifacts = new S3ClientThumbnailArtifactStoreV1({ transport: immutableTransport });
     if (options.clientExports) {
       clientExportArtifacts = new S3ClientExportArtifactStoreV1({ transport: immutableTransport });
     }
@@ -513,7 +524,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     return cleanupInOrderAndThrow(
       error,
       [
-        [mediaArtifacts, clientExportArtifacts, artifacts, projectPngs, blobs],
+        [mediaArtifacts, clientExportArtifacts, clientThumbnailArtifacts, artifacts, projectPngs, blobs],
         [
           immutableMediaArtifacts,
           legacyMediaArtifacts,
@@ -529,6 +540,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
           mediaRepository,
           clientExportRepository,
           billingEntitlementRepository,
+          clientThumbnailRepository,
           snapshotRepository,
           projectPngRepository,
           renderRepository,
@@ -546,6 +558,8 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let artifactReader: AuthorizedArtifactReaderV1 | undefined;
   let clientExportPublisher: ClientExportPublisherV1 | undefined;
   let clientExportReader: ClientExportReaderV1 | undefined;
+  let clientThumbnailPublisher: ClientThumbnailPublisherV1 | undefined;
+  let clientThumbnailReader: ClientThumbnailReaderV1 | undefined;
   let renderPublisher: VerifiedArtifactPublisherV1 | undefined;
   let renders: DurableManimRenderServiceV1 | undefined;
   let snapshotFactory: FastManimProductionSnapshotRunnerFactoryV1 | undefined;
@@ -611,6 +625,19 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         tenantId: options.tenantId,
       });
     }
+    if (!clientThumbnailRepository || !clientThumbnailArtifacts) {
+      throw new Error("Client thumbnail storage composition is unavailable.");
+    }
+    clientThumbnailPublisher = new ClientThumbnailPublisherV1({
+      artifacts: clientThumbnailArtifacts,
+      publications: clientThumbnailRepository,
+      tenantId: options.tenantId,
+    });
+    clientThumbnailReader = new ClientThumbnailReaderV1({
+      repository: clientThumbnailRepository,
+      store: clientThumbnailArtifacts,
+      tenantId: options.tenantId,
+    });
     renderPublisher = new VerifiedArtifactPublisherV1({
       artifactExpirationMs: options.renderArtifacts.artifactExpirationMs,
       artifacts: mediaArtifacts,
@@ -677,12 +704,13 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       error,
       [
         [renderWorker ?? renderExecutor, renders, snapshots ?? publisher, ...(snapshots ? [] : [snapshotFactory])],
-        [mediaArtifacts, clientExportArtifacts, artifacts, projectPngs, blobs],
+        [mediaArtifacts, clientExportArtifacts, clientThumbnailArtifacts, artifacts, projectPngs, blobs],
         [immutableTransport, legacyTransport],
         [
           mediaRepository,
           clientExportRepository,
           billingEntitlementRepository,
+          clientThumbnailRepository,
           snapshotRepository,
           projectPngRepository,
           renderRepository,
@@ -718,6 +746,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     runtime = new DurableManimRuntimeV1({
       artifactReader,
       blobs,
+      clientThumbnailReader,
       runtimeTraceEditVerifier,
       editorDocuments,
       execution: renderExecution,
@@ -737,12 +766,13 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       error,
       [
         runtime ? [runtime] : [renderExecution ?? renderWorker, renders, snapshots],
-        [mediaArtifacts, clientExportArtifacts, artifacts, projectPngs, blobs],
+        [mediaArtifacts, clientExportArtifacts, clientThumbnailArtifacts, artifacts, projectPngs, blobs],
         [immutableTransport, legacyTransport],
         [
           mediaRepository,
           clientExportRepository,
           billingEntitlementRepository,
+          clientThumbnailRepository,
           snapshotRepository,
           projectPngRepository,
           renderRepository,
@@ -890,11 +920,16 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
             },
           }
         : undefined;
+    if (!clientThumbnailPublisher || !clientThumbnailReader) {
+      throw new Error("Client thumbnail service composition is unavailable.");
+    }
+    const clientThumbnails = { publisher: clientThumbnailPublisher, tenantId: options.tenantId };
     const baseAdapter = createTenantCellProductionManimRuntimeAdapterV1(runtime, maintenance);
     const adapter = clientExports
       ? {
           ...baseAdapter,
           clientExports: clientExports.service,
+          clientThumbnails,
           async ready(readySignal: AbortSignal) {
             const [baseReadiness, clientExportsReady] = await Promise.all([
               baseAdapter.ready(readySignal),
@@ -911,12 +946,13 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
             return ready.every(Boolean);
           },
         }
-      : baseAdapter;
+      : { ...baseAdapter, clientThumbnails };
     return createProductionStorageOwnershipBoundaryV1(
       adapter,
       [
         mediaArtifacts,
         clientExportArtifacts,
+        clientThumbnailArtifacts,
         artifacts,
         projectPngs,
         blobs,
@@ -924,6 +960,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         mediaRepository,
         clientExportRepository,
         billingEntitlementRepository,
+        clientThumbnailRepository,
         snapshotRepository,
         renderRepository,
         editorDocuments,
@@ -947,6 +984,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         [
           mediaArtifacts,
           clientExportArtifacts,
+          clientThumbnailArtifacts,
           artifacts,
           projectPngs,
           blobs,
@@ -954,6 +992,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
           mediaRepository,
           clientExportRepository,
           billingEntitlementRepository,
+          clientThumbnailRepository,
           snapshotRepository,
           renderRepository,
           editorDocuments,
