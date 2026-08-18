@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 
-import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
+import { manimThumbnailStatusSchema, type ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditProgram } from "../src/studio/operations";
 import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
@@ -209,53 +209,64 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     await runtime.close();
   });
 
-  it("uses the browser Rust thumbnail head for both status and image before legacy render artifacts", async () => {
-    const browserBytes = Buffer.from("browser-rust-thumbnail");
-    const legacyThumbnail = vi.fn();
-    const legacyThumbnailBytes = vi.fn();
-    const publishedAt = new Date("2026-08-18T04:00:00.000Z");
-    const clientThumbnailReader = partial<ClientThumbnailReaderV1>({
-      current: async () =>
-        ({
-          publishedAt,
-        }) as Awaited<ReturnType<ClientThumbnailReaderV1["current"]>>,
-      currentBytes: async () =>
-        ({ bytes: browserBytes }) as Awaited<ReturnType<ClientThumbnailReaderV1["currentBytes"]>>,
-      ready: async () => true,
-    });
-    const runtime = new DurableManimRuntimeV1({
-      artifactReader: partial<AuthorizedArtifactReaderV1>({
-        close: async () => undefined,
-        projectThumbnail: legacyThumbnail,
-        projectThumbnailBytes: legacyThumbnailBytes,
+  it.each([
+    [true, "current"],
+    [false, "stale"],
+  ] as const)(
+    "uses the browser Rust thumbnail head before legacy render artifacts when current=%s",
+    async (current, expectedState) => {
+      const browserBytes = Buffer.from("browser-rust-thumbnail");
+      const legacyThumbnail = vi.fn();
+      const legacyThumbnailBytes = vi.fn();
+      const publishedAt = new Date("2026-08-18T04:00:00.000Z");
+      const clientThumbnailReader = partial<ClientThumbnailReaderV1>({
+        head: async () =>
+          ({
+            current,
+            publication: { publishedAt },
+          }) as Awaited<ReturnType<ClientThumbnailReaderV1["head"]>>,
+        headBytes: async () =>
+          ({ bytes: browserBytes, current, publication: { publishedAt } }) as Awaited<
+            ReturnType<ClientThumbnailReaderV1["headBytes"]>
+          >,
         ready: async () => true,
-      }),
-      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
-      clientThumbnailReader,
-      namespace: "browser-thumbnail-authority-test",
-      repository: partial<WorkspaceSourceRepositoryV1>({
-        close: async () => undefined,
-        readProject: async () => ({}) as never,
-        ready: async () => true,
-      }),
-      tenantId: "tenant-a",
-    });
+      });
+      const runtime = new DurableManimRuntimeV1({
+        artifactReader: partial<AuthorizedArtifactReaderV1>({
+          close: async () => undefined,
+          projectThumbnail: legacyThumbnail,
+          projectThumbnailBytes: legacyThumbnailBytes,
+          ready: async () => true,
+        }),
+        blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+        clientThumbnailReader,
+        namespace: "browser-thumbnail-authority-test",
+        repository: partial<WorkspaceSourceRepositoryV1>({
+          close: async () => undefined,
+          readProject: async () => ({}) as never,
+          ready: async () => true,
+        }),
+        tenantId: "tenant-a",
+      });
 
-    await expect(runtime.thumbnailStatus("project-a")).resolves.toMatchObject({
-      generatedAt: publishedAt.toISOString(),
-      imageKind: "rendered",
-      state: "current",
-    });
-    await expect(runtime.thumbnail("project-a")).resolves.toMatchObject({
-      body: browserBytes,
-      kind: "rendered",
-      mediaType: "image/png",
-      state: "current",
-    });
-    expect(legacyThumbnail).not.toHaveBeenCalled();
-    expect(legacyThumbnailBytes).not.toHaveBeenCalled();
-    await runtime.close();
-  });
+      const status = await runtime.thumbnailStatus("project-a");
+      expect(manimThumbnailStatusSchema.parse(status)).toMatchObject({
+        generatedAt: publishedAt.toISOString(),
+        imageLineage: "editor-document",
+        imageKind: "rendered",
+        state: expectedState,
+      });
+      await expect(runtime.thumbnail("project-a")).resolves.toMatchObject({
+        body: browserBytes,
+        kind: "rendered",
+        mediaType: "image/png",
+        state: expectedState,
+      });
+      expect(legacyThumbnail).not.toHaveBeenCalled();
+      expect(legacyThumbnailBytes).not.toHaveBeenCalled();
+      await runtime.close();
+    },
+  );
 
   it("keeps workspace inspection available when durable rendering is unavailable", async () => {
     const unavailable = workspaceRuntime({ executionReady: async () => false, renderReady: async () => true });

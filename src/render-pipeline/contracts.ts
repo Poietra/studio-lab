@@ -372,6 +372,7 @@ export type ManimThumbnailStatus = Readonly<{
   cachedSourceHash: string | null;
   error: string | null;
   generatedAt: string | null;
+  imageLineage?: "editor-document";
   imageKind: "empty" | "rendered" | "semantic";
   projectId: string;
   sceneName: string | null;
@@ -685,6 +686,7 @@ export const manimThumbnailStatusSchema: z.ZodType<ManimThumbnailStatus> = z
       .nullable(),
     error: z.string().max(500).nullable(),
     generatedAt: z.string().datetime().nullable(),
+    imageLineage: z.literal("editor-document").optional(),
     imageKind: z.enum(["empty", "rendered", "semantic"]),
     projectId: manimProjectIdSchema,
     sceneName: manimSceneNameSchema.nullable(),
@@ -701,6 +703,22 @@ export const manimThumbnailStatusSchema: z.ZodType<ManimThumbnailStatus> = z
     const hasTarget = targetFields.every((field) => field !== null);
     const hasPartialTarget = targetFields.some((field) => field !== null) && !hasTarget;
     const hasCachedImage = status.cachedSourceHash !== null || status.generatedAt !== null;
+    if (status.imageLineage === "editor-document") {
+      if (
+        hasTarget ||
+        status.cachedSourceHash !== null ||
+        status.generatedAt === null ||
+        status.imageKind !== "rendered" ||
+        status.error !== null ||
+        (status.state !== "current" && status.state !== "stale")
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "An Editor Document thumbnail must expose one rendered current or stale publication.",
+        });
+      }
+      return;
+    }
     if (hasPartialTarget) {
       context.addIssue({ code: "custom", message: "Thumbnail target fields must be all null or all present." });
     }

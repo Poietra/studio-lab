@@ -9,6 +9,7 @@ import {
   CLIENT_THUMBNAIL_PRODUCER_KIND_V1,
   CLIENT_THUMBNAIL_REPRESENTATIVE_FRAME_RULE_V1,
   CLIENT_THUMBNAIL_SCENE_CONTRACT_VERSION_V1,
+  type ClientThumbnailHeadV1,
   type ClientThumbnailPublicationV1,
   type ClientThumbnailRepositoryV1,
   clientThumbnailIdV1,
@@ -191,6 +192,7 @@ export class PostgresClientThumbnailRepositoryV1 implements ClientThumbnailRepos
         `SELECT revision::text AS revision
            FROM public.editor_documents
           WHERE tenant_id = $1 AND project_id = $2 AND document_key = $3 AND epoch = $4::uuid
+            AND sealed_at IS NULL
           FOR UPDATE`,
         [tenant, project, Buffer.from(lineage.documentKey, "hex"), lineage.documentEpoch],
       );
@@ -276,11 +278,16 @@ export class PostgresClientThumbnailRepositoryV1 implements ClientThumbnailRepos
     return result.rows[0] ? publicationFromRow(tenant, result.rows[0]) : null;
   }
 
-  async readCurrent(tenantValue: string, projectValue: string, signal?: AbortSignal) {
+  async readHead(
+    tenantValue: string,
+    projectValue: string,
+    signal?: AbortSignal,
+  ): Promise<ClientThumbnailHeadV1 | null> {
     const tenant = tenantIdV1(tenantValue);
     const project = projectIdV1(projectValue);
-    const result = await this.#connection.query<PublicationRow>(
-      `SELECT ${PUBLICATION_COLUMNS}
+    const result = await this.#connection.query<PublicationRow & { is_current: boolean }>(
+      `SELECT ${PUBLICATION_COLUMNS},
+              (document.sealed_at IS NULL AND document.revision = publication.document_revision) AS is_current
          FROM public.workspace_project_client_thumbnail_heads head
          JOIN public.workspace_projects project
            ON project.tenant_id = head.tenant_id AND project.project_id = head.project_id
@@ -290,11 +297,15 @@ export class PostgresClientThumbnailRepositoryV1 implements ClientThumbnailRepos
           AND publication.publication_id = head.publication_id
          JOIN public.client_thumbnail_artifacts artifact
            ON artifact.tenant_id = publication.tenant_id AND artifact.artifact_id = publication.artifact_id
+         JOIN public.editor_documents document
+           ON document.tenant_id = publication.tenant_id AND document.project_id = publication.project_id
+          AND document.document_key = publication.document_key AND document.epoch = publication.document_epoch
         WHERE head.tenant_id = $1 AND head.project_id = $2`,
       [tenant, project],
       signal,
     );
-    return result.rows[0] ? publicationFromRow(tenant, result.rows[0]) : null;
+    const row = result.rows[0];
+    return row ? { current: row.is_current, publication: publicationFromRow(tenant, row) } : null;
   }
 
   close() {

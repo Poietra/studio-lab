@@ -130,4 +130,26 @@ describe("ClientThumbnailPublisherV1", () => {
     await expect(publisher.publish(value)).resolves.toMatchObject({ replayed: true });
     expect(put).not.toHaveBeenCalled();
   });
+
+  it("deletes the unreferenced object after a named document refusal", async () => {
+    const value = input();
+    const storedReceipt = receipt(value);
+    const deleteObject = vi.fn(async () => undefined);
+    const publisher = new ClientThumbnailPublisherV1({
+      artifacts: partial<ClientThumbnailArtifactStoreV1>({
+        deleteObject,
+        put: async () => storedReceipt,
+        ready: async () => true,
+      }),
+      publications: partial<ClientThumbnailRepositoryV1>({
+        acceptPublication: async () => ({ kind: "refused", reason: "document-revision-mismatch" }),
+        readPublication: async () => null,
+        ready: async () => true,
+      }),
+      tenantId: TENANT,
+    });
+
+    await expect(publisher.publish(value)).rejects.toMatchObject({ status: 409 });
+    expect(deleteObject).toHaveBeenCalledWith(TENANT, storedReceipt);
+  });
 });

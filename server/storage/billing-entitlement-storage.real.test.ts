@@ -5,14 +5,14 @@ import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 
 import { MAX_USAGE_RESERVATION_LIFETIME_MS_V1 } from "../billing/entitlement-repository";
-import { createBillingClientExportPublicationMeteringV1 } from "./client-export-billing-metering";
-import { CLIENT_EXPORT_MEDIA_TYPE_V1, createClientExportArtifactLocatorV1 } from "./client-export-contract";
-import { createBillingEditSuggestionUsageMeterV1 } from "../edit-suggestions/usage-metering";
 import { FakeStripeBillingGatewayV1 } from "../billing/fake-stripe-gateway";
 import { createStripeCheckoutPlanCatalogV1 } from "../billing/plan-catalog";
 import { createStripeBillingServiceV1 } from "../billing/stripe-billing-service";
 import { STRIPE_API_VERSION_V1 } from "../billing/stripe-gateway";
+import { createBillingEditSuggestionUsageMeterV1 } from "../edit-suggestions/usage-metering";
 import { authenticateManimPrincipal } from "../manim-request-principal";
+import { createBillingClientExportPublicationMeteringV1 } from "./client-export-billing-metering";
+import { CLIENT_EXPORT_MEDIA_TYPE_V1, createClientExportArtifactLocatorV1 } from "./client-export-contract";
 import { applyBundledDurableStorageMigrations, applyBundledDurableStorageMigrationsThrough } from "./postgres/migrate";
 import { PostgresClientExportRepositoryV1 } from "./postgres/postgres-client-export-repository";
 import { PostgresBillingEntitlementRepositoryV1 } from "./postgres/postgres-entitlement-repository";
@@ -168,7 +168,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       // 2. v32 backfills exactly one render grant per snapshot BEFORE the
       //    operation-kind checks widen, and validates the legacy reservation
       //    against its exact grant.
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 32 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 33 });
       await expect(repository.ready()).resolves.toBe(true);
       await expect(
         pool.query<{ entitlement_generation: string; operation_kind: string; unit_limit: number }>(
@@ -621,7 +621,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       poolConfig: { connectionString: DATABASE_URL, max: 4 },
     });
     try {
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 32 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 33 });
       await createOrganizations(pool);
       await expect(repositoryA.ready()).resolves.toBe(true);
       await expect(repositoryB.ready()).resolves.toBe(true);
@@ -903,7 +903,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       webhookSigningSecret: STRIPE_WEBHOOK_SECRET,
     });
     try {
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 32 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 33 });
       await createStripeOrganization(pool);
       await expect(stripeRepository.ready()).resolves.toBe(true);
 

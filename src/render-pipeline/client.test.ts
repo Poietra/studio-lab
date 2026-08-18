@@ -518,6 +518,27 @@ describe("Manim API client contracts", () => {
     });
   });
 
+  it.each(["current", "stale"] as const)("accepts a %s Editor Document thumbnail publication", async (state) => {
+    const status = {
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: "2026-08-18T04:00:00.000Z",
+      imageKind: "rendered",
+      imageLineage: "editor-document",
+      projectId: "project-a",
+      sceneName: null,
+      sourceHash: null,
+      sourcePath: null,
+      state,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json(status)),
+    );
+
+    await expect(loadManimThumbnailStatus("project-a")).resolves.toEqual(status);
+  });
+
   it.each([
     {
       cachedSourceHash: "a".repeat(64),

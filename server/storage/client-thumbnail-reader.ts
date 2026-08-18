@@ -12,7 +12,7 @@ export type ClientThumbnailReaderOptionsV1 = Readonly<{
   tenantId: string;
 }>;
 
-/** Reads the current project thumbnail selected by the durable publication head. */
+/** Reads the project thumbnail selected by the durable publication head. */
 export class ClientThumbnailReaderV1 {
   readonly #options: ClientThumbnailReaderOptionsV1;
 
@@ -27,20 +27,23 @@ export class ClientThumbnailReaderV1 {
     return ready.every(Boolean);
   }
 
-  async current(projectId: string, signal?: AbortSignal) {
-    const publication = await this.#options.repository.readCurrent(this.#options.tenantId, projectId, signal);
-    if (!publication) throw new HttpError("A durable thumbnail has not been generated.", 404);
-    return assertClientThumbnailPublicationIdentityV1(publication, {
-      projectId,
-      tenantId: this.#options.tenantId,
-    });
+  async head(projectId: string, signal?: AbortSignal) {
+    const head = await this.#options.repository.readHead(this.#options.tenantId, projectId, signal);
+    if (!head) throw new HttpError("A durable thumbnail has not been generated.", 404);
+    return {
+      current: head.current,
+      publication: assertClientThumbnailPublicationIdentityV1(head.publication, {
+        projectId,
+        tenantId: this.#options.tenantId,
+      }),
+    } as const;
   }
 
-  async currentBytes(projectId: string, signal?: AbortSignal) {
-    const publication = await this.current(projectId, signal);
+  async headBytes(projectId: string, signal?: AbortSignal) {
+    const head = await this.head(projectId, signal);
     try {
-      const bytes = await this.#options.store.read(this.#options.tenantId, publication.artifact.receipt, signal);
-      return { bytes, publication } as const;
+      const bytes = await this.#options.store.read(this.#options.tenantId, head.publication.artifact.receipt, signal);
+      return { bytes, ...head } as const;
     } catch (error) {
       if (error instanceof ClientThumbnailReadErrorV1 && error.code === "missing") {
         throw new HttpError("A durable thumbnail has not been generated.", 404);

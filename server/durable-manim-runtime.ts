@@ -67,7 +67,7 @@ export type DurableManimExecutionReadinessV1 = Readonly<{
 export type DurableManimRuntimeOptionsV1 = Readonly<{
   artifactReader?: Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">;
   blobs: SourceContentBlobStoreV1;
-  clientThumbnailReader?: Pick<ClientThumbnailReaderV1, "current" | "currentBytes" | "ready">;
+  clientThumbnailReader?: Pick<ClientThumbnailReaderV1, "head" | "headBytes" | "ready">;
   runtimeTraceEditVerifier?: Pick<ManimRuntimeTraceEditVerifier, "verify">;
   editorDocuments?: EditorDocumentRepositoryV1;
   execution?: DurableManimExecutionReadinessV1;
@@ -134,7 +134,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     | Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">
     | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
-  readonly #clientThumbnailReader: Pick<ClientThumbnailReaderV1, "current" | "currentBytes" | "ready"> | undefined;
+  readonly #clientThumbnailReader: Pick<ClientThumbnailReaderV1, "head" | "headBytes" | "ready"> | undefined;
   readonly #runtimeTraceEditVerifier: Pick<ManimRuntimeTraceEditVerifier, "verify"> | undefined;
   readonly editorDocuments: EditorDocumentRepositoryV1 | undefined;
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
@@ -614,17 +614,19 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     await this.#repository.readProject(this.tenantId, projectId, signal);
     if (this.#clientThumbnailReader) {
       try {
-        const publication = await this.#clientThumbnailReader.current(projectId, signal);
+        const head = await this.#clientThumbnailReader.head(projectId, signal);
+        const publication = head.publication;
         return {
           cachedSourceHash: null,
           error: null,
           generatedAt: publication.publishedAt.toISOString(),
+          imageLineage: "editor-document" as const,
           imageKind: "rendered" as const,
           projectId,
           sceneName: null,
           sourceHash: null,
           sourcePath: null,
-          state: "current" as const,
+          state: head.current ? ("current" as const) : ("stale" as const),
         };
       } catch (error) {
         if (!(error instanceof HttpError) || error.status !== 404) throw error;
@@ -659,11 +661,12 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     await this.#repository.readProject(this.tenantId, projectId, signal);
     if (this.#clientThumbnailReader) {
       try {
+        const head = await this.#clientThumbnailReader.headBytes(projectId, signal);
         return {
-          body: (await this.#clientThumbnailReader.currentBytes(projectId, signal)).bytes,
+          body: head.bytes,
           kind: "rendered",
           mediaType: "image/png",
-          state: "current",
+          state: head.current ? "current" : "stale",
           status: 200,
         };
       } catch (error) {

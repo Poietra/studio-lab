@@ -171,6 +171,11 @@ export type ClientThumbnailPublicationV1 = Readonly<{
   tenantId: string;
 }>;
 
+export type ClientThumbnailHeadV1 = Readonly<{
+  current: boolean;
+  publication: ClientThumbnailPublicationV1;
+}>;
+
 export type AcceptClientThumbnailPublicationInputV1 = Readonly<{
   artifactId: string;
   createdBySubjectId: string;
@@ -213,7 +218,7 @@ export interface ClientThumbnailRepositoryV1 {
     signal?: AbortSignal,
   ): Promise<AcceptClientThumbnailPublicationResultV1>;
   close(): Promise<void>;
-  readCurrent(tenantId: string, projectId: string, signal?: AbortSignal): Promise<ClientThumbnailPublicationV1 | null>;
+  readHead(tenantId: string, projectId: string, signal?: AbortSignal): Promise<ClientThumbnailHeadV1 | null>;
   readPublication(
     tenantId: string,
     projectId: string,
