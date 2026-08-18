@@ -11,7 +11,7 @@ import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../rende
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { DraftInspector } from "./draft-inspector";
 import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
-import { FragmentMaterialEditor } from "./fragment-material-editor";
+import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragment-material-editor";
 import type { ManimWorkspaceScene } from "./imported-workspace";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { ProgramRecord, ProjectedEntity } from "./model";
@@ -416,12 +416,16 @@ export function StudioInspector({
   fillColorValue,
   fragmentMaterial = {
     active: false,
-    assigned: false,
+    assignedShaderId: null,
     available: false,
     compileError: null,
-    onApply: () => undefined,
-    onRemove: () => undefined,
-    source: "",
+    materials: [],
+    onAssign: () => undefined,
+    onCreate: () => null,
+    onDuplicate: () => null,
+    onRemoveAsset: () => undefined,
+    onRename: () => undefined,
+    onUpdateSource: () => undefined,
   },
   onApplyDraft,
   onDiscardDraft,
@@ -462,12 +466,16 @@ export function StudioInspector({
   fillColorValue: string | null;
   fragmentMaterial?: Readonly<{
     active: boolean;
-    assigned: boolean;
+    assignedShaderId: string | null;
     available: boolean;
     compileError: string | null;
-    onApply: (source: string) => void;
-    onRemove: () => void;
-    source: string;
+    materials: readonly FragmentMaterialEditorItem[];
+    onAssign: (shaderId: string | null) => void;
+    onCreate: (name: string) => string | null;
+    onDuplicate: (shaderId: string) => string | null;
+    onRemoveAsset: (shaderId: string) => void;
+    onRename: (shaderId: string, name: string) => void;
+    onUpdateSource: (shaderId: string, source: string) => void;
   }>;
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
@@ -716,7 +724,7 @@ export function StudioInspector({
               </p>
             </div>
           )}
-          <FragmentMaterialEditor {...fragmentMaterial} entityId={selectedEntity?.id ?? null} />
+          <FragmentMaterialEditor {...fragmentMaterial} />
           {geometryUnknowns.length > 0 ? (
             <section
               className="mt-3 border border-amber-950 bg-amber-950/20 p-2"
