@@ -30,7 +30,7 @@ export type SurfaceBounds = Readonly<{
 
 const ZERO_DELTA = { x: 0, y: 0 } as const;
 const CANVAS_INTERACTION_SELECTOR =
-  "[data-studio-entity], [data-motion-control], [data-studio-resize-handle], [data-studio-rotation-handle]";
+  "[data-studio-entity], [data-motion-control], [data-studio-resize-handle], [data-studio-rotation-handle], [data-studio-inline-text-editor]";
 
 export function entityDragDelta(preview: EntityDragPreview | null, entityId: string) {
   return preview?.entityIds.includes(entityId) ? preview.delta : ZERO_DELTA;

@@ -12,6 +12,11 @@ import {
   type StudioCanvasProps,
   verifiedPreviewGeometryForStudioEntity,
 } from "./studio-canvas";
+import {
+  StudioInlineTextEditor,
+  studioInlineTextBlurCommits,
+  studioInlineTextKeyAction,
+} from "./studio-inline-text-editor";
 import { StudioInspector } from "./studio-sidebars";
 import { createDirectManipulationPositionProgram } from "./suggestion-program";
 import type { StudioPreviewRendererView } from "./use-preview-renderer";
@@ -70,6 +75,23 @@ function findEntityButton(tree: ReactNode, entityId: string): ReactElement<Recor
   return result;
 }
 
+function findCanvasSurface(tree: ReactNode): ReactElement<Record<string, unknown>> {
+  let result: ReactElement<Record<string, unknown>> | null = null;
+  const visit = (node: ReactNode) => {
+    Children.forEach(node, (child) => {
+      if (result || !isValidElement<Record<string, unknown>>(child)) return;
+      if (child.props["data-studio-canvas"] !== undefined) {
+        result = child;
+        return;
+      }
+      visit(child.props.children as ReactNode);
+    });
+  };
+  visit(tree);
+  if (!result) throw new Error("No Studio canvas surface exists.");
+  return result;
+}
+
 function baseProps(): StudioCanvasProps {
   return {
     appliedTransactionIds: new Set<string>(),
@@ -81,6 +103,7 @@ function baseProps(): StudioCanvasProps {
     frame: { height: 8, width: 14.222 },
     geometryPreview: null,
     incomingSceneName: null,
+    inlineTextEditor: null,
     insertTool: "select",
     interactionMode: "position",
     motionPaths: [],
@@ -100,6 +123,9 @@ function baseProps(): StudioCanvasProps {
     onEntityRotationPointerDown: vi.fn(),
     onEntityRotationPointerMove: vi.fn(),
     onEntityRotationPointerUp: vi.fn(),
+    onEntityTextEdit: vi.fn(),
+    onInlineTextCancel: vi.fn(),
+    onInlineTextCommit: vi.fn(() => true),
     onMotionControlChange: vi.fn(),
     onSelectEntity: vi.fn(),
     readOnly: false,
@@ -496,6 +522,136 @@ describe("StudioCanvas retained preview layer", () => {
     );
     expect(markup).toMatch(/<button[^>]*style="height:10cqh;width:10cqw"/);
     expect(markup).not.toContain("data-studio-semantic-paint");
+  });
+
+  it("opens the shared inline editor from an editable Text hit target", () => {
+    const textEntity: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      content: { displayLines: ["sample"], text: "sample" },
+      type: "Text",
+    };
+    const onEntityTextEdit = vi.fn();
+    const props: StudioCanvasProps = {
+      ...baseProps(),
+      entities: [textEntity],
+      onEntityTextEdit,
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:inline-text",
+            revision: "a".repeat(64),
+            sampleTime: 1,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        new Map([["scene:runtime/entity:0", { dimensions: { height: 1, width: 2 }, position: { x: 320, y: 180 } }]]),
+        new Map([
+          [
+            "circle_1",
+            {
+              bindingId: `source-binding:${"b".repeat(64)}`,
+              entityId: "scene:runtime/entity:0",
+              sourceName: "circle_1",
+            },
+          ],
+        ]),
+      ),
+    };
+    const button = findEntityButton(StudioCanvas(props), textEntity.id);
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    const doubleClick = button.props.onDoubleClick as
+      | ((
+          event: Readonly<{
+            clientX: number;
+            clientY: number;
+            currentTarget: Readonly<{ closest: () => Readonly<{ getBoundingClientRect: () => DOMRect }> }>;
+            preventDefault: () => void;
+            stopPropagation: () => void;
+          }>,
+        ) => void)
+      | undefined;
+
+    doubleClick?.({
+      clientX: 320,
+      clientY: 180,
+      currentTarget: {
+        closest: () => ({
+          getBoundingClientRect: () => ({
+            bottom: 360,
+            height: 360,
+            left: 0,
+            right: 640,
+            top: 0,
+            width: 640,
+            x: 0,
+            y: 0,
+            toJSON: vi.fn(),
+          }),
+        }),
+      },
+      preventDefault,
+      stopPropagation,
+    });
+
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    expect(onEntityTextEdit).toHaveBeenCalledWith(textEntity.id, { x: 320, y: 180 });
+  });
+
+  it("renders DOM text only as a temporary editing overlay", () => {
+    const markup = renderToStaticMarkup(
+      <StudioInlineTextEditor
+        onCancel={vi.fn()}
+        onCommit={vi.fn(() => true)}
+        session={{ initialValue: "sample", kind: "create", point: { x: 320, y: 180 } }}
+      />,
+    );
+
+    expect(markup).toContain('data-studio-inline-text-editor="create"');
+    expect(markup).toContain('aria-label="New text content"');
+    expect(markup).toContain("sample</textarea>");
+    expect(markup).not.toContain("data-studio-semantic-paint");
+  });
+
+  it("lets the active inline editor blur before another canvas placement", () => {
+    const onCanvasPlace = vi.fn();
+    const surface = findCanvasSurface(
+      StudioCanvas({
+        ...baseProps(),
+        entities: [],
+        inlineTextEditor: { initialValue: "draft", kind: "create", point: { x: 320, y: 180 } },
+        insertTool: "Text",
+        onCanvasPlace,
+        preview: previewView({
+          frame: {
+            packetId: "canvas:inline-text-blur",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        }),
+      }),
+    );
+    const pointerDown = surface.props.onPointerDown as
+      | ((event: Readonly<{ clientX: number; clientY: number; target: null }>) => void)
+      | undefined;
+
+    pointerDown?.({ clientX: 400, clientY: 200, target: null });
+
+    expect(onCanvasPlace).not.toHaveBeenCalled();
+  });
+
+  it("does not turn IME composition keys into inline Text commits", () => {
+    expect(studioInlineTextKeyAction("Enter", true)).toBeNull();
+    expect(studioInlineTextKeyAction("Escape", true)).toBeNull();
+    expect(studioInlineTextKeyAction("Enter", false)).toBe("commit");
+    expect(studioInlineTextKeyAction("Escape", false)).toBe("cancel");
+    expect(studioInlineTextKeyAction("a", false)).toBeNull();
+    expect(studioInlineTextBlurCommits(true)).toBe(false);
+    expect(studioInlineTextBlurCommits(false)).toBe(true);
   });
 
   it("keeps a verified ImageMobject selectable and aspect-resizable without semantic dimensions", () => {

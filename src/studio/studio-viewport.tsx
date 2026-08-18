@@ -68,6 +68,7 @@ export function StudioViewport({
   frame,
   gesturePreviewStore,
   incomingSceneName,
+  inlineTextEditor,
   insertTool,
   insertValue,
   interactionMode,
@@ -95,6 +96,9 @@ export function StudioViewport({
   onEntityRotationPointerDown,
   onEntityRotationPointerMove,
   onEntityRotationPointerUp,
+  onEntityTextEdit,
+  onInlineTextCancel,
+  onInlineTextCommit,
   onInteractionModeChange,
   onInsertAtCenter,
   onInsertToolChange,
@@ -135,6 +139,7 @@ export function StudioViewport({
         frame={frame}
         gesturePreviewStore={gesturePreviewStore}
         incomingSceneName={incomingSceneName}
+        inlineTextEditor={inlineTextEditor}
         insertTool={insertTool}
         interactionMode={interactionMode}
         motionPaths={motionPaths}
@@ -154,6 +159,9 @@ export function StudioViewport({
         onEntityRotationPointerDown={onEntityRotationPointerDown}
         onEntityRotationPointerMove={onEntityRotationPointerMove}
         onEntityRotationPointerUp={onEntityRotationPointerUp}
+        onEntityTextEdit={onEntityTextEdit}
+        onInlineTextCancel={onInlineTextCancel}
+        onInlineTextCommit={onInlineTextCommit}
         onMotionControlChange={onMotionControlChange}
         onPresenceCursorChange={onPresenceCursorChange}
         onSelectEntity={onSelectEntity}
