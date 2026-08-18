@@ -627,7 +627,10 @@ export function createSceneDurationProgram(
   return validateAndScheduleProgram(program, input.scene);
 }
 
-export function duplicateEntityInput(entity: ProjectedEntity, offset = 20): StudioEntityInput | null {
+export function duplicateEntityInput(
+  entity: ProjectedEntity,
+  offset: number = STUDIO_STYLE_PROFILE.spacingUnitPx,
+): StudioEntityInput | null {
   if (!INSERT_ENTITY_TYPES.some((type) => type === entity.type)) return null;
   const knownDimensions = entity.geometry.dimensions.kind === "known" ? entity.geometry.dimensions.value : null;
   const dimensions =

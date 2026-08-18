@@ -22,6 +22,7 @@ import type { EntityDimensions, Point, RuntimeSceneState } from "./model";
 import { EDIT_OPERATION_VERSION, type OperationOrigin, operationId, provisionalEntityId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import { STUDIO_STYLE_PROFILE } from "./style-profile";
 import { resolveTimeAnchorOnce } from "./time";
 
 type CanonicalizationContext = Readonly<{
@@ -32,10 +33,10 @@ type CanonicalizationContext = Readonly<{
 }>;
 
 const placementOffsets = {
-  above: { x: 0, y: -70 },
-  below: { x: 0, y: 70 },
-  left: { x: -145, y: 0 },
-  right: { x: 145, y: 0 },
+  above: { x: 0, y: -STUDIO_STYLE_PROFILE.spacingUnitPx * 3 },
+  below: { x: 0, y: STUDIO_STYLE_PROFILE.spacingUnitPx * 3 },
+  left: { x: -STUDIO_STYLE_PROFILE.spacingUnitPx * 6, y: 0 },
+  right: { x: STUDIO_STYLE_PROFILE.spacingUnitPx * 6, y: 0 },
 } as const;
 
 function provenance(origin: OperationOrigin, evidence: readonly string[]) {
@@ -131,7 +132,10 @@ function equationOperations(
       key: "position",
       kind: "SetProperty",
       provenance: provenance(origin, [`${operation.placement} placement`, "visible preview default"]),
-      value: operation.placement === "right" ? { x: 480, y: 180 } : { x: 320, y: 180 },
+      value:
+        operation.placement === "right"
+          ? { x: 320 + STUDIO_STYLE_PROFILE.spacingUnitPx * 7, y: 180 }
+          : { x: 320, y: 180 },
     },
     {
       dependsOn: [positionId],

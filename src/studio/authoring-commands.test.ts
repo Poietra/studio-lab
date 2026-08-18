@@ -366,7 +366,10 @@ describe("manual Studio authoring commands", () => {
     const duplicate = duplicateEntityInput(equation);
     expect(duplicate).toEqual(
       expect.objectContaining({
-        position: { x: equation.position.x + 20, y: equation.position.y + 20 },
+        position: {
+          x: equation.position.x + STUDIO_STYLE_PROFILE.spacingUnitPx,
+          y: equation.position.y + STUDIO_STYLE_PROFILE.spacingUnitPx,
+        },
         type: "MathTex",
       }),
     );
