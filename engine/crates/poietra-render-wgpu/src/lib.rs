@@ -9,10 +9,11 @@
 //! premultiplied linear-light samples, and exact nearest/linear clamp filtering.
 //! Vector paints support the packet's explicit linear-light or Manim/Cairo sRGB
 //! compositing contract through paired sRGB and base-Unorm target pipelines.
-//! Linear-light paths and images draw directly into the single-sample target for
-//! portable browser/native output. Manim/Cairo vector frames use four-sample
-//! coverage and resolve into that target; image draws remain restricted to
-//! linear-light compositing.
+//! Linear-light paths and images draw into a two-times single-sample sRGB target
+//! and use an explicit four-texel linear-light resolve for portable
+//! browser/native antialiasing. Manim/Cairo vector frames use hardware
+//! four-sample coverage and resolve into the caller's target; image draws remain
+//! restricted to linear-light compositing.
 //! Preparation is independent of a GPU device and rejects the complete frame when
 //! any phase falls outside the bounded subset.
 

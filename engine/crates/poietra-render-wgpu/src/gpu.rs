@@ -13,7 +13,9 @@ use poietra_scene_ir::{MAX_VIEWPORT_PIXELS_V1, RenderCompositingV1};
 
 const VERTEX_STRIDE: wgpu::BufferAddress = VERTEX_ENCODED_SIZE_V1 as wgpu::BufferAddress;
 const RGBA8_BYTES_PER_SAMPLE_V1: u64 = 4;
-/// Maximum logical bytes for the retained four-sample color attachment under
+const PORTABLE_AA_SCALE_V1: u32 = 2;
+
+/// Maximum logical bytes for either retained antialias color attachment under
 /// the Scene IR viewport-pixel limit.
 pub const MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1: u64 =
     MAX_VIEWPORT_PIXELS_V1 * MANIM_CAIRO_SAMPLE_COUNT_V1 as u64 * RGBA8_BYTES_PER_SAMPLE_V1;
@@ -81,6 +83,38 @@ fn multisample_color_texture_descriptor_v1(
     }
 }
 
+fn portable_aa_texture_descriptor_v1(
+    format: wgpu::TextureFormat,
+    width_px: u32,
+    height_px: u32,
+) -> wgpu::TextureDescriptor<'static> {
+    wgpu::TextureDescriptor {
+        label: Some("poietra portable antialias target v1"),
+        size: wgpu::Extent3d {
+            depth_or_array_layers: 1,
+            height: height_px,
+            width: width_px,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    }
+}
+
+fn portable_aa_extent_v1(
+    width_px: u32,
+    height_px: u32,
+    maximum_dimension: u32,
+) -> Option<[u32; 2]> {
+    let width_px = width_px.checked_mul(PORTABLE_AA_SCALE_V1)?;
+    let height_px = height_px.checked_mul(PORTABLE_AA_SCALE_V1)?;
+    (width_px <= maximum_dimension && height_px <= maximum_dimension)
+        .then_some([width_px, height_px])
+}
+
 /// Target view plus caller-provided format and extent evidence. WGPU does not
 /// expose these properties from a `TextureView`, so the renderer verifies the
 /// evidence before uploading the frame.
@@ -130,6 +164,113 @@ impl MultisampleColorTargetV1 {
     }
 }
 
+#[derive(Debug)]
+struct PortableAntialiasTargetV1 {
+    format: wgpu::TextureFormat,
+    height_px: u32,
+    resolve_binding: wgpu::BindGroup,
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width_px: u32,
+}
+
+impl PortableAntialiasTargetV1 {
+    fn new(
+        device: &wgpu::Device,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        format: wgpu::TextureFormat,
+        width_px: u32,
+        height_px: u32,
+    ) -> Self {
+        let texture = device.create_texture(&portable_aa_texture_descriptor_v1(
+            format, width_px, height_px,
+        ));
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let resolve_binding = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("poietra portable antialias resolve binding v1"),
+            layout: bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
+        });
+        Self {
+            format,
+            height_px,
+            resolve_binding,
+            _texture: texture,
+            view,
+            width_px,
+        }
+    }
+
+    fn matches(&self, format: wgpu::TextureFormat, width_px: u32, height_px: u32) -> bool {
+        self.format == format && self.width_px == width_px && self.height_px == height_px
+    }
+
+    fn accounted_bytes(&self) -> Result<u64, RendererMemorySnapshotErrorV1> {
+        u64::from(self.width_px)
+            .checked_mul(u64::from(self.height_px))
+            .and_then(|pixels| pixels.checked_mul(RGBA8_BYTES_PER_SAMPLE_V1))
+            .ok_or(RendererMemorySnapshotErrorV1::MultisampleColorTargetByteAccounting)
+    }
+}
+
+fn create_portable_antialias_pipeline_v1(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("poietra portable antialias bind group layout v1"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                multisampled: false,
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        }],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("poietra portable antialias pipeline layout v1"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
+    });
+    let shader = device.create_shader_module(wgpu::include_wgsl!("portable_aa_resolve.wgsl"));
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("poietra portable antialias resolve pipeline v1"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (bind_group_layout, pipeline)
+}
+
 fn multisample_color_target_bytes_v1(
     width_px: u32,
     height_px: u32,
@@ -166,6 +307,14 @@ pub enum RenderFrameErrorV1 {
     },
     #[error("manim-cairo-srgb compositing does not support image draws")]
     ManimCairoSrgbImagesUnsupported,
+    #[error(
+        "portable antialias target {width_px}x{height_px} exceeds the device texture limit {maximum_dimension}"
+    )]
+    PortableAntialiasExtentUnsupported {
+        height_px: u32,
+        maximum_dimension: u32,
+        width_px: u32,
+    },
 }
 
 /// A target format cannot preserve the initial renderer's linear-light output.
@@ -380,14 +529,18 @@ pub struct WgpuFillRendererV1 {
     image_texture_cache: ImageTextureCacheV1,
     multisample_target: Option<MultisampleColorTargetV1>,
     pipeline: wgpu::RenderPipeline,
+    portable_aa_bind_group_layout: wgpu::BindGroupLayout,
+    portable_aa_pipeline: wgpu::RenderPipeline,
+    portable_aa_target: Option<PortableAntialiasTargetV1>,
     target_format: wgpu::TextureFormat,
 }
 
 /// Exact logical byte counts for GPU resources retained by one renderer.
 ///
 /// These values cover the grow-only vertex/index buffer arena, image textures
-/// retained by the bounded LRU, and the optional Manim/Cairo four-sample color
-/// attachment after that compositing profile has been rendered.
+/// retained by the bounded LRU, and the active antialias color attachment. That
+/// attachment is either the Manim/Cairo four-sample target or the linear-light
+/// two-times portable target.
 /// They intentionally exclude backend-owned pipeline/surface allocation
 /// overhead, so they are not a browser-process RSS claim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -403,6 +556,9 @@ impl RendererMemorySnapshotV1 {
         self.geometry_buffer_arena
     }
 
+    /// Logical bytes retained by the active antialias color attachment.
+    ///
+    /// The method keeps its historical name for API compatibility.
     #[must_use]
     pub const fn multisample_color_target_bytes(self) -> u64 {
         self.multisample_color_target
@@ -421,16 +577,16 @@ pub enum RendererMemorySnapshotErrorV1 {
     BufferArena(#[from] GpuBufferArenaErrorV1),
     #[error("retained image texture byte accounting is not representable as u64")]
     ImageTextureByteConversion,
-    #[error("multisample color-target byte accounting overflowed")]
+    #[error("antialias color-target byte accounting overflowed")]
     MultisampleColorTargetByteAccounting,
 }
 
 impl WgpuFillRendererV1 {
-    /// Creates a portable single-sample linear-light pipeline and a four-sample
-    /// Manim/Cairo pipeline for the sRGB view's base Unorm format. Both share
-    /// the retained geometry arena and image cache. Cairo frames lazily retain
-    /// and resolve a multisample attachment into the caller's target; linear
-    /// frames draw directly so browser/native sRGB output remains deterministic.
+    /// Creates a portable linear-light pipeline and a four-sample Manim/Cairo
+    /// pipeline for the sRGB view's base Unorm format. Both share the retained
+    /// geometry arena and image cache. Cairo frames lazily retain and resolve a
+    /// multisample attachment into the caller's target; linear frames render at
+    /// twice the target extent and explicitly average four linear-light samples.
     ///
     /// # Errors
     ///
@@ -464,6 +620,8 @@ impl WgpuFillRendererV1 {
                 format: target_format,
             },
         )?;
+        let (portable_aa_bind_group_layout, portable_aa_pipeline) =
+            create_portable_antialias_pipeline_v1(device, target_format);
         let shader = device.create_shader_module(wgpu::include_wgsl!("fill.wgsl"));
         let create_paint_pipeline = |label, format, sample_count| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -521,6 +679,9 @@ impl WgpuFillRendererV1 {
             image_texture_cache: ImageTextureCacheV1::with_limits(image_texture_cache_limits),
             multisample_target: None,
             pipeline,
+            portable_aa_bind_group_layout,
+            portable_aa_pipeline,
+            portable_aa_target: None,
             target_format,
         })
     }
@@ -550,7 +711,15 @@ impl WgpuFillRendererV1 {
                 .as_ref()
                 .map(MultisampleColorTargetV1::accounted_bytes)
                 .transpose()?
-                .unwrap_or(0),
+                .unwrap_or(0)
+                .checked_add(
+                    self.portable_aa_target
+                        .as_ref()
+                        .map(PortableAntialiasTargetV1::accounted_bytes)
+                        .transpose()?
+                        .unwrap_or(0),
+                )
+                .ok_or(RendererMemorySnapshotErrorV1::MultisampleColorTargetByteAccounting)?,
             retained_image_texture,
         })
     }
@@ -639,6 +808,7 @@ impl WgpuFillRendererV1 {
 
         let uses_multisample_target = paint_sample_count_v1(frame.compositing()) > 1;
         if uses_multisample_target {
+            self.portable_aa_target = None;
             let recreate_multisample_target =
                 self.multisample_target
                     .as_ref()
@@ -655,6 +825,37 @@ impl WgpuFillRendererV1 {
                     expected_target_format,
                     target.width_px,
                     target.height_px,
+                ));
+            }
+        } else {
+            self.multisample_target = None;
+            let maximum_dimension = device.limits().max_texture_dimension_2d;
+            let Some([supersample_width, supersample_height]) =
+                portable_aa_extent_v1(target.width_px, target.height_px, maximum_dimension)
+            else {
+                return Err(RenderFrameErrorV1::PortableAntialiasExtentUnsupported {
+                    height_px: target.height_px.saturating_mul(PORTABLE_AA_SCALE_V1),
+                    maximum_dimension,
+                    width_px: target.width_px.saturating_mul(PORTABLE_AA_SCALE_V1),
+                });
+            };
+            let recreate_portable_aa_target =
+                self.portable_aa_target
+                    .as_ref()
+                    .is_none_or(|portable_aa_target| {
+                        !portable_aa_target.matches(
+                            expected_target_format,
+                            supersample_width,
+                            supersample_height,
+                        )
+                    });
+            if recreate_portable_aa_target {
+                self.portable_aa_target = Some(PortableAntialiasTargetV1::new(
+                    device,
+                    &self.portable_aa_bind_group_layout,
+                    expected_target_format,
+                    supersample_width,
+                    supersample_height,
                 ));
             }
         }
@@ -738,7 +939,14 @@ impl WgpuFillRendererV1 {
                     .view;
                 (multisample_view, Some(target.view), wgpu::StoreOp::Discard)
             } else {
-                (target.view, None, wgpu::StoreOp::Store)
+                let portable_aa_view = &self
+                    .portable_aa_target
+                    .as_ref()
+                    .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                        "validated linear target extent did not retain a portable antialias attachment",
+                    ))?
+                    .view;
+                (portable_aa_view, None, wgpu::StoreOp::Store)
             };
             let attachments = [Some(wgpu::RenderPassColorAttachment {
                 view: render_view,
@@ -779,6 +987,33 @@ impl WgpuFillRendererV1 {
                 )?;
                 draw_record_ms = stage_elapsed(clock, draw_record_started);
             }
+        }
+        if !uses_multisample_target {
+            let portable_aa_target = self.portable_aa_target.as_ref().ok_or(
+                GpuUploadPlanErrorV1::Inconsistent(
+                    "validated linear target extent did not retain a portable antialias attachment",
+                ),
+            )?;
+            let attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: target.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("poietra portable antialias resolve pass v1"),
+                color_attachments: &attachments,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.portable_aa_pipeline);
+            pass.set_bind_group(0, &portable_aa_target.resolve_binding, &[]);
+            pass.draw(0..3, 0..1);
         }
         let command_buffer = encoder.finish();
         evidence.draw_record_ms = draw_record_ms;
@@ -843,5 +1078,15 @@ mod tests {
             paint_sample_count_v1(RenderCompositingV1::ManimCairoSrgb),
             4
         );
+    }
+
+    #[test]
+    fn portable_antialias_extent_is_bounded_by_the_device_limit() {
+        assert_eq!(
+            portable_aa_extent_v1(1_920, 1_080, 8_192),
+            Some([3_840, 2_160])
+        );
+        assert_eq!(portable_aa_extent_v1(4_097, 1, 8_192), None);
+        assert_eq!(portable_aa_extent_v1(u32::MAX, 1, u32::MAX), None);
     }
 }
