@@ -23,7 +23,6 @@ import {
   removeStudioFragmentMaterialV1,
   updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialParameterV1,
-  updateStudioFragmentMaterialSourceV1,
 } from "./fragment-material-authoring";
 import type { ProgramRecord } from "./model";
 import {
@@ -283,7 +282,7 @@ describe("durable editor session storage", () => {
     expect(store.restore(identity())).toEqual({ kind: "restored", snapshot: snapshot() });
   });
 
-  it("restores project WGSL and Scene-isolated assignments through the existing storage authority", () => {
+  it("restores preset parameters and Scene-isolated assignments through the existing storage authority", () => {
     const adapter = new MemoryAdapter();
     const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
     const sceneA = assignStudioFragmentMaterialV1(material.state, {
@@ -291,11 +290,7 @@ describe("durable editor session storage", () => {
       sceneId: "scene.py#SceneA",
       shaderId: material.shaderId,
     });
-    const edited = updateStudioFragmentMaterialSourceV1(sceneA, {
-      shaderId: material.shaderId,
-      source: `${STUDIO_WAVE_FRAGMENT_SOURCE_V1}\n// persisted edit`,
-    });
-    const sceneB = assignStudioFragmentMaterialV1(edited, {
+    const sceneB = assignStudioFragmentMaterialV1(sceneA, {
       entityId: "circle",
       sceneId: "scene.py#SceneB",
       shaderId: material.shaderId,
@@ -314,8 +309,8 @@ describe("durable editor session storage", () => {
 
     const reloaded = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
     expect(reloaded.registry.materials[0]).toMatchObject({
-      revision: 2,
-      source: expect.stringContaining("persisted edit"),
+      revision: 1,
+      source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
     });
     expect(projectFragmentMaterialsForSceneV1(reloaded, "scene.py#SceneA").assignments).toHaveProperty(
       "source:scene.py#SceneA:rectangle",
@@ -337,7 +332,7 @@ describe("durable editor session storage", () => {
     expect(new EditorSessionStore(adapter).saveProjectFragmentMaterials("project-a", withoutSceneA)).toBe(true);
     const reopened = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
     expect(projectFragmentMaterialsForSceneV1(reopened, "scene.py#SceneA").assignments).toEqual({});
-    expect(reopened.registry.materials[0]?.source).toContain("persisted edit");
+    expect(reopened.registry.materials[0]?.source).toBe(STUDIO_WAVE_FRAGMENT_SOURCE_V1);
   });
 
   it("restores a pre-named-material envelope without clearing other editor storage", () => {

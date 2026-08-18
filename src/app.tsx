@@ -3834,7 +3834,13 @@ export function App({
   }
 
   function updateSelectedFragmentMaterialParameter(name: string, value: number) {
-    if (!activeScene || !selectedFragmentMaterialEntity || !selectedFragmentMaterialAssignment) return;
+    if (
+      !activeScene ||
+      !selectedFragmentMaterialEntity ||
+      !selectedFragmentMaterialAssignment ||
+      !selectedFragmentMaterialAvailable
+    )
+      return;
     try {
       commitActiveProjectFragmentMaterials(
         updateStudioFragmentMaterialParameterV1(activeProjectFragmentMaterials, {

@@ -73,6 +73,30 @@ describe("project-local fragment material authoring", () => {
     expect(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1.registry.materials).toEqual([]);
   });
 
+  it("does not invent Wave parameter metadata while duplicating a schema-less material", () => {
+    const created = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
+    const custom = updateStudioFragmentMaterialSourceV1(created.state, {
+      shaderId: created.shaderId,
+      source: `${STUDIO_WAVE_FRAGMENT_SOURCE_V1}\n// custom`,
+    });
+    const legacyWave = updateStudioFragmentMaterialSourceV1(custom, {
+      shaderId: created.shaderId,
+      source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+    });
+
+    const duplicated = duplicateStudioFragmentMaterialV1(legacyWave, created.shaderId);
+
+    expect(legacyWave.parameterSchemasByShaderId).not.toHaveProperty(created.shaderId);
+    expect(duplicated.state.parameterSchemasByShaderId).not.toHaveProperty(duplicated.shaderId);
+    expect(
+      assignStudioFragmentMaterialV1(duplicated.state, {
+        entityId: "circle",
+        sceneId: "scene-a",
+        shaderId: duplicated.shaderId,
+      }).assignmentsByScene["scene-a"]?.circle?.parameters,
+    ).toEqual([0.35, 8]);
+  });
+
   it("creates, renames, duplicates, edits, and safely removes named materials", () => {
     const created = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
     expect(listStudioFragmentMaterialsV1(created.state)).toMatchObject([
@@ -102,6 +126,8 @@ describe("project-local fragment material authoring", () => {
     expect(edited.registry.materials[0]?.revision).toBe(2);
     expect(edited.assignmentsByScene["scene-a"]?.rectangle?.revision).toBe(2);
     expect(edited.namesByShaderId[created.shaderId]).toBe("Ocean wave");
+    expect(listStudioFragmentMaterialsV1(edited)[0]?.parameterSchema).toEqual([]);
+    expect(edited.assignmentsByScene["scene-a"]?.rectangle?.parameters).toEqual([0.35, 8]);
 
     const duplicated = duplicateStudioFragmentMaterialV1(edited, created.shaderId);
     expect(listStudioFragmentMaterialsV1(duplicated.state)).toMatchObject([
@@ -109,6 +135,14 @@ describe("project-local fragment material authoring", () => {
       { name: "Ocean wave copy", revision: 1, shaderId: duplicated.shaderId },
     ]);
     expect(duplicated.state.registry.materials[1]?.source).toContain("// edited");
+    expect(duplicated.state.parameterSchemasByShaderId).not.toHaveProperty(duplicated.shaderId);
+    expect(
+      assignStudioFragmentMaterialV1(duplicated.state, {
+        entityId: "duplicate",
+        sceneId: "scene-a",
+        shaderId: duplicated.shaderId,
+      }).assignmentsByScene["scene-a"]?.duplicate?.parameters,
+    ).toEqual([0.35, 8]);
 
     const unassigned = removeStudioFragmentMaterialV1(duplicated.state, {
       entityId: "rectangle",
@@ -195,6 +229,7 @@ describe("project-local fragment material authoring", () => {
     expect(listStudioFragmentMaterialsV1(imported)).toMatchObject([
       {
         glslSource: { entryPoint: "main", source: glsl },
+        parameterSchema: [],
         revision: 2,
         source: expect.stringContaining("fn fs_main"),
       },

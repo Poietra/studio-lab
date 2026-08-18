@@ -286,7 +286,7 @@ export function createStudioFragmentMaterialV1(
   input: Readonly<{
     glslSource?: StudioFragmentMaterialGlslSource;
     name: string;
-    parameterSchema?: StudioFragmentMaterialParameterSchemaV1;
+    parameterSchema?: StudioFragmentMaterialParameterSchemaV1 | null;
     source?: string;
   }>,
 ): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
@@ -295,6 +295,9 @@ export function createStudioFragmentMaterialV1(
   }
   const name = checkedMaterialName(state, input.name);
   const shaderId = nextMaterialShaderId(state);
+  const source = input.source ?? STUDIO_WAVE_FRAGMENT_SOURCE_V1;
+  const parameterSchema =
+    input.parameterSchema === undefined ? STUDIO_WAVE_FRAGMENT_PARAMETER_SCHEMA_V1 : input.parameterSchema;
   return {
     shaderId,
     state: parseProjectFragmentMaterialState({
@@ -303,16 +306,12 @@ export function createStudioFragmentMaterialV1(
         ? { ...state.glslSourcesByShaderId, [shaderId]: input.glslSource }
         : state.glslSourcesByShaderId,
       namesByShaderId: { ...state.namesByShaderId, [shaderId]: name },
-      parameterSchemasByShaderId: {
-        ...state.parameterSchemasByShaderId,
-        [shaderId]: input.parameterSchema ?? STUDIO_WAVE_FRAGMENT_PARAMETER_SCHEMA_V1,
-      },
+      parameterSchemasByShaderId: parameterSchema
+        ? { ...state.parameterSchemasByShaderId, [shaderId]: parameterSchema }
+        : state.parameterSchemasByShaderId,
       registry: {
         ...state.registry,
-        materials: [
-          ...state.registry.materials,
-          { revision: 1, shaderId, source: input.source ?? STUDIO_WAVE_FRAGMENT_SOURCE_V1 },
-        ],
+        materials: [...state.registry.materials, { revision: 1, shaderId, source }],
       },
     }),
   };
@@ -366,9 +365,10 @@ export function duplicateStudioFragmentMaterialV1(
 ): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
   const source = state.registry.materials.find((material) => material.shaderId === shaderId);
   if (!source) throw new Error("The material no longer exists.");
+  const parameterSchema = state.parameterSchemasByShaderId[shaderId];
   return createStudioFragmentMaterialV1(state, {
     name: uniqueDuplicateName(state, state.namesByShaderId[shaderId] ?? legacyMaterialName(shaderId)),
-    parameterSchema: state.parameterSchemasByShaderId[shaderId] ?? [],
+    parameterSchema: parameterSchema ?? null,
     ...(state.glslSourcesByShaderId[shaderId] ? { glslSource: state.glslSourcesByShaderId[shaderId] } : {}),
     source: source.source,
   });
@@ -445,11 +445,13 @@ export function updateStudioFragmentMaterialSourceV1(
   );
   const glslSourcesByShaderId = { ...state.glslSourcesByShaderId };
   delete glslSourcesByShaderId[input.shaderId];
+  const parameterSchemasByShaderId = { ...state.parameterSchemasByShaderId };
+  delete parameterSchemasByShaderId[input.shaderId];
   return parseProjectFragmentMaterialState({
     assignmentsByScene,
     glslSourcesByShaderId,
     namesByShaderId: state.namesByShaderId,
-    parameterSchemasByShaderId: state.parameterSchemasByShaderId,
+    parameterSchemasByShaderId,
     registry: {
       ...state.registry,
       materials: state.registry.materials.map((material) =>

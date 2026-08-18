@@ -114,6 +114,7 @@ export function FragmentMaterialEditor({
                     <input
                       aria-label={`${parameter.name} material parameter`}
                       className="mt-1 w-full accent-sky-500"
+                      disabled={!available}
                       max={parameter.range.max}
                       min={parameter.range.min}
                       onChange={(event) => onUpdateParameter(parameter.name, event.currentTarget.valueAsNumber)}
