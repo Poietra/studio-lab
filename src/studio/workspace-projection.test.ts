@@ -571,9 +571,9 @@ describe("Studio workspace projection", () => {
     }
   });
 
-  it("installs a Studio-created Line and its follow-up motion from the same Rust projection", () => {
+  it("installs a Studio-created Arrow and its follow-up motion from the same Rust projection", () => {
     const imported = workspaceScene("First", null);
-    const entityId = "tx:create/entity:line";
+    const entityId = "tx:create/entity:arrow";
     const creationProgram: CanonicalEditProgram = {
       anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
       intentCount: 3,
@@ -581,14 +581,14 @@ describe("Studio workspace projection", () => {
       operations: [
         {
           dependsOn: [],
-          entity: { id: entityId, lifetime: { end: null, start: 0 }, type: "Line" },
-          id: "create/line",
+          entity: { id: entityId, lifetime: { end: null, start: 0 }, type: "Arrow" },
+          id: "create/arrow",
           interval: { end: 0, start: 0 },
           kind: "CreateEntity",
           provenance: { evidence: [], origin: "studio-default" },
         },
         {
-          dependsOn: ["create/line"],
+          dependsOn: ["create/arrow"],
           entityId,
           id: "create/position",
           interval: { end: 0, start: 0 },
@@ -612,11 +612,11 @@ describe("Studio workspace projection", () => {
       requestedExecution: "sequence",
       schedule: {
         edges: [
-          { from: "create/line", reason: "explicit", to: "create/position" },
+          { from: "create/arrow", reason: "explicit", to: "create/position" },
           { from: "create/position", reason: "explicit", to: "create/fade" },
         ],
         mode: "sequence",
-        order: ["create/line", "create/position", "create/fade"],
+        order: ["create/arrow", "create/position", "create/fade"],
       },
       transactionId: "create",
       version: 1,
@@ -651,8 +651,8 @@ describe("Studio workspace projection", () => {
           entityId,
           initialDimensions: {},
           initialScale: 1,
-          kind: "line",
-          operationId: "create/line",
+          kind: "arrow",
+          operationId: "create/arrow",
           transactionId: creationProgram.transactionId,
         },
       ],
@@ -740,7 +740,7 @@ describe("Studio workspace projection", () => {
         baseDuration: imported.runtimeSceneState.duration,
         programs: [creationProgram, motionProgram, removeProgram],
       }).programs[0]?.operations[0],
-    ).toMatchObject({ entity: { dimensions: {}, kind: "line" }, kind: "create" });
+    ).toMatchObject({ entity: { dimensions: {}, kind: "arrow" }, kind: "create" });
     const projected = projectStudioWorkspace({
       activeScene: imported,
       appliedEdits: [

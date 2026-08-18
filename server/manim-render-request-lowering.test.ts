@@ -685,6 +685,26 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source).toContain("Circle(radius=1)");
   });
 
+  it("routes Arrow creation through snapshot authorization and Manim lowering", async () => {
+    const baseCreation = createCircleProgram("snapshot-created-arrow");
+    const creation: CanonicalEditProgram = {
+      ...baseCreation,
+      operations: baseCreation.operations.map((operation) =>
+        operation.kind === "CreateEntity"
+          ? { ...operation, entity: { ...operation.entity, dimensions: {}, type: "Arrow" } }
+          : operation,
+      ),
+    };
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+
+    const result = await lower(request(creation), sceneSource, async (input) => {
+      authorizations.push(input);
+    });
+
+    expect(authorizations[0]?.programs).toEqual([creation]);
+    expect(result.lowered.source).toContain("Arrow(LEFT, RIGHT, buff=0)");
+  });
+
   it("rejects dimensionless Circle creation without a Rust authorizer", async () => {
     const creation = createCircleProgram("legacy-dimensionless-circle");
     let authorizerCalls = 0;

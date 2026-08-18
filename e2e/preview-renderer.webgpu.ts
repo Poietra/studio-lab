@@ -239,6 +239,48 @@ test("presents Studio-created MathTex across undo and LaTeX commands", async ({ 
   await expectMathTexCanvasInk(page, fractionRevision ?? "", 0.5, String.raw`\frac{1}{2}`);
 });
 
+test("creates an Arrow through the canonical WebGPU preview", async ({ page }) => {
+  await page.goto(`/${MATHTEX_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  await page.getByLabel("Active imported Scene").selectOption({
+    label: "studio_mathtex.py · StudioMathTexPreview",
+  });
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expectPresented(page);
+  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
+  await page.getByRole("slider", { name: "Scene playhead" }).fill("0");
+  await expectPresented(page);
+
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const pristineFrame = await retainedFrameIdentity(page);
+  const insertArrow = page.getByRole("button", { name: /Insert arrow/ });
+  await insertArrow.click();
+  await expect(insertArrow).toHaveAttribute("aria-pressed", "true");
+  await canvasRoot.click({ position: { x: 400, y: 250 } });
+  const draftFrame = await waitForNewPresentedFrame(page, pristineFrame);
+  await page.getByRole("slider", { name: "Scene playhead" }).fill("0.2");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.2");
+
+  const arrow = page.getByRole("button", { name: "Move Arrow", exact: true });
+  await expect(arrow).toHaveCount(1);
+  const entityId = await arrow.getAttribute("data-studio-entity");
+  expect(entityId).toBeTruthy();
+  await expect(page.locator(`[data-studio-entity-wrapper="${entityId}"]`)).toHaveAttribute(
+    "data-studio-runtime-entity",
+    entityId ?? "",
+  );
+
+  await expect(page.getByRole("button", { name: "Apply program" })).toBeEnabled();
+  expect(draftFrame.revision).not.toBe(pristineFrame.revision);
+  await page.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await expectPresented(page);
+  await expect(arrow).toHaveCount(0);
+  await expect(canvasRoot).toHaveAttribute("data-preview-revision", pristineFrame.revision);
+});
+
 test("presents exactly correlated WebGPU frames with a paint-free interaction overlay", async ({ page }) => {
   await openHarnessWorkspace(page);
   await expectPresented(page);

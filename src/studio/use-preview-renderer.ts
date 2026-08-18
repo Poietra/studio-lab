@@ -362,6 +362,9 @@ export function studioPreviewInteractionAuthority(
   }
   if (source.kind !== "imported-manim-server-snapshot") return { kind: "interactive" };
   const identity = snapshot.sourceRuntimeIdentity;
+  if (identity?.size === 0 && snapshot.snapshot.scene.entities.length === 0) {
+    return { kind: "interactive" };
+  }
   if (!identity || identity.size === 0) {
     return { kind: "display-only", reason: "source-runtime-identity-unverified" };
   }
@@ -1769,7 +1772,10 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
           },
         }
       : null,
-    creationProjection: state.phase === "presented" ? (currentCompiledScene?.creationProjection ?? null) : null,
+    // The workspace needs the exact compiled projection to keep the canvas
+    // mounted while WebGPU presents this revision. Mutation remains gated by
+    // `state.phase === "presented"` in App; these values are not commit authority.
+    creationProjection: currentCompiledScene?.creationProjection ?? null,
     epoch,
     interactionGeometry,
     interactionAuthority,
@@ -1791,7 +1797,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       state.phase === "presented" ? (currentCompiledScene?.mathTexTransformProjection ?? null) : null,
     motionProjection: state.phase === "presented" ? (currentCompiledScene?.motionProjection ?? null) : null,
     persistentRemoveProjection: currentCompiledScene?.persistentRemoveProjection ?? null,
-    editAuthority: state.phase === "presented" ? (currentCompiledScene?.editAuthority ?? null) : null,
+    editAuthority: currentCompiledScene?.editAuthority ?? null,
     staticRootProjection: state.phase === "presented" ? (currentCompiledScene?.staticRootProjection ?? null) : null,
     timelineProjection: currentCompiledScene?.timelineProjection ?? null,
     verifiedSourceDuration,

@@ -965,6 +965,24 @@ describe("studioPreviewInteractionAuthority", () => {
     });
   });
 
+  it("allows the first Studio object in a verified empty server snapshot", async () => {
+    const { snapshot } = await linePreviewInput();
+    const empty = {
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: { ...snapshot.snapshot.scene, animationChannels: [], entities: [] },
+      },
+      sourceRuntimeIdentity: new Map(),
+    } as StudioVerifiedPreviewSnapshotV1;
+
+    expect(studioPreviewInteractionAuthority(empty, 0, [])).toEqual({ kind: "interactive" });
+    expect(studioPreviewInteractionAuthority({ ...empty, sourceRuntimeIdentity: null }, 0, [])).toEqual({
+      kind: "display-only",
+      reason: "source-runtime-identity-unverified",
+    });
+  });
+
   it("does not advertise mutations for an animated server snapshot the canonical compiler cannot edit", async () => {
     const { snapshot } = await compilablePreviewInput();
     const animated = {

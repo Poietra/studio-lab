@@ -74,6 +74,9 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
           dimensions.radius === undefined
         );
       }
+      if (type === "Arrow" || type === "Line") {
+        return dimensions?.radius === undefined && dimensions?.width === undefined && dimensions?.height === undefined;
+      }
       return type === "MathTex" && studioCreationMathTexParts(operation.entity.content) !== null;
     }
     if (operation.kind === "CreateMotion") return true;
