@@ -612,6 +612,57 @@ describe("Runtime Trace edit source lowering", () => {
     expect(derived.expectedAngleRadians).toBe(0.785398163397);
   });
 
+  it("round-trips every advertised StaticSquare edit through Python and the static importer", () => {
+    const cases = [
+      {
+        assertImported: (imported: NonNullable<ReturnType<typeof importManimScene>>) =>
+          expect(imported.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples.at(-1)?.value).toEqual({
+            x: 410,
+            y: 135,
+          }),
+        derive: (candidate: string) => deriveRuntimeTraceMoveSourceEditPlan(candidate, sceneName, sourcePath, "square"),
+        label: "move",
+        program: moveEditProgram(),
+      },
+      {
+        assertImported: (imported: NonNullable<ReturnType<typeof importManimScene>>) =>
+          expect(imported.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples.at(-1)?.value).toBe(1.5),
+        derive: (candidate: string) =>
+          deriveRuntimeTraceResizeSourceEditPlan(candidate, sceneName, sourcePath, "square"),
+        label: "uniform resize",
+        program: resizeEditProgram(),
+      },
+      {
+        assertImported: (imported: NonNullable<ReturnType<typeof importManimScene>>) =>
+          expect(imported.runtimeSceneState.propertyChannels[`${entityId}/rotation`]?.samples.at(-1)?.value).toBe(0.5),
+        derive: (candidate: string) =>
+          deriveRuntimeTraceRotationSourceEditPlan(candidate, sceneName, sourcePath, "square"),
+        label: "rotation",
+        program: rotationEditProgram(),
+      },
+      {
+        assertImported: (imported: NonNullable<ReturnType<typeof importManimScene>>) =>
+          expect(imported.runtimeSceneState.propertyChannels[`${entityId}/appearance`]?.samples.at(-1)?.value).toBe(
+            0.25,
+          ),
+        derive: (candidate: string) =>
+          deriveRuntimeTraceOpacitySourceEditPlan(candidate, sceneName, sourcePath, "square"),
+        label: "opacity",
+        program: opacityEditProgram(),
+      },
+    ];
+
+    for (const testCase of cases) {
+      const lowered = lower(source, request(source, testCase.program));
+      expect(lowered, testCase.label).not.toBeNull();
+      const imported = importManimScene(lowered!.source, sourcePath, sceneName, frame);
+      expect(imported, testCase.label).not.toBeNull();
+      expect(imported?.sourceVariables, testCase.label).toEqual({ [entityId]: "square" });
+      testCase.assertImported(imported!);
+      expect(testCase.derive(lowered!.source).baseSource, testCase.label).toBe(source);
+    }
+  });
+
   it("accepts a negative rotation and rejects no-op, non-finite, or unbounded angles", () => {
     expect(lower(source, request(source, rotationEditProgram(-0.5)))?.insertedCode).toBe("        square.rotate(-0.5)");
     expect(() => lower(source, request(source, rotationEditProgram(0)))).toThrow(/finite non-noop bounded angle/i);

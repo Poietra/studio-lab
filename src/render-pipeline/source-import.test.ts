@@ -620,6 +620,34 @@ class LiteralPositioned(Scene):
     );
   });
 
+  it("recovers direct literal rotation and opacity as static authoring channels", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class StaticAppearance(Scene):
+    def construct(self):
+        square = Square()
+        square.rotate(-0.5)
+        square.rotate(0.25)
+        square.set_opacity(0.4)
+        self.add(square)
+        self.wait(1)
+`,
+      "scene.py",
+      "StaticAppearance",
+    );
+    const entityId = "source:scene.py#StaticAppearance:square";
+
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/rotation`]?.samples).toEqual([
+      expect.objectContaining({ from: 0, relative: true, value: -0.5 }),
+      expect.objectContaining({ from: -0.5, relative: true, value: -0.25 }),
+    ]);
+    expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/appearance`]?.samples).toEqual([
+      expect.objectContaining({ value: 0.4 }),
+    ]);
+    expect(runtimeSceneStateSchema.parse(imported?.runtimeSceneState)).toEqual(imported?.runtimeSceneState);
+  });
+
   it.each([
     ["anchor before scale", "# poietra:anchor 0.000\n        equation.scale(2)"],
     ["no anchor", "equation.scale(2)"],
