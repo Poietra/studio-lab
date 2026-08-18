@@ -12,6 +12,7 @@ export default defineConfig({
   testDir: "./e2e",
   testMatch: [
     "account-invitation.production.ts",
+    "account-organization.production.ts",
     "account-session.production.ts",
     "editor-cloud-session.production.ts",
   ],

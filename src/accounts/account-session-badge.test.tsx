@@ -7,7 +7,7 @@ describe("AccountSessionBadge", () => {
   it("uses native account controls with the active organization selected", () => {
     const markup = renderToStaticMarkup(
       <AccountSessionBadge
-        actions={{ actionError: null, logout: vi.fn(), switchOrganization: vi.fn() }}
+        actions={{ actionError: null, logout: vi.fn(), refresh: vi.fn(), switchOrganization: vi.fn() }}
         session={{
           activeOrganization: { displayName: "Studio Team", id: "organization-b", role: "member" },
           organizationSwitch: null,
@@ -33,7 +33,7 @@ describe("AccountSessionBadge", () => {
   it("offers billing settings to an owner without putting provider identifiers in the UI", () => {
     const markup = renderToStaticMarkup(
       <AccountSessionBadge
-        actions={{ actionError: null, logout: vi.fn(), switchOrganization: vi.fn() }}
+        actions={{ actionError: null, logout: vi.fn(), refresh: vi.fn(), switchOrganization: vi.fn() }}
         session={{
           activeOrganization: { displayName: "Poietra", id: "organization-a", role: "owner" },
           organizationSwitch: null,
@@ -46,6 +46,8 @@ describe("AccountSessionBadge", () => {
 
     expect(markup).toContain(">Billing</button>");
     expect(markup).toContain(">Invite</button>");
+    expect(markup).toContain(">Members</button>");
+    expect(markup).toContain(">New organization</button>");
     expect(markup).toContain("Billing settings");
     expect(markup).not.toMatch(/customerId|priceId|configurationId|returnUrl/);
   });
@@ -53,7 +55,7 @@ describe("AccountSessionBadge", () => {
   it("disables every account navigation control while an Editor session transition is pending", () => {
     const markup = renderToStaticMarkup(
       <AccountSessionBadge
-        actions={{ actionError: null, logout: vi.fn(), switchOrganization: vi.fn() }}
+        actions={{ actionError: null, logout: vi.fn(), refresh: vi.fn(), switchOrganization: vi.fn() }}
         beforeExternalNavigation={vi.fn(async () => true)}
         disabled
         session={{
@@ -66,6 +68,6 @@ describe("AccountSessionBadge", () => {
       />,
     );
 
-    expect(markup.match(/disabled=""/g)).toHaveLength(4);
+    expect(markup.match(/disabled=""/g)).toHaveLength(6);
   });
 });

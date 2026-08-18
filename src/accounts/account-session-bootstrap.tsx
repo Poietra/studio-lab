@@ -23,6 +23,7 @@ type AccountBootstrapState =
 export type AccountSessionActionsV1 = Readonly<{
   actionError: string | null;
   logout: () => void;
+  refresh: () => void;
   switchOrganization: (organizationId: string) => void;
 }>;
 
@@ -300,7 +301,7 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
 
   if (state.phase === "ready") {
     const actions: AccountSessionActionsV1 | null = state.session
-      ? { actionError: state.actionError, logout, switchOrganization }
+      ? { actionError: state.actionError, logout, refresh: loadAuthoritativeSession, switchOrganization }
       : null;
     if (state.session && !accountSessionAllowsStudioV1(state.session)) {
       return (
