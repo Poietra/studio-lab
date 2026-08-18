@@ -13,6 +13,7 @@ describe("edit suggestion style instructions", () => {
     expect(EDIT_SUGGESTION_INSTRUCTIONS).not.toContain("create-explanation 1.0 second");
     expect(EDIT_SUGGESTION_INSTRUCTIONS).not.toContain("delete-objects 0.4 seconds");
     expect(EDIT_SUGGESTION_INSTRUCTIONS).not.toContain("otherwise use 1.5 seconds");
+    expect(EDIT_SUGGESTION_INSTRUCTIONS).not.toContain("otherwise use styleProfile.durationSeconds.deliberate");
     expect(EDIT_SUGGESTION_INSTRUCTIONS).not.toContain("defaults to one second");
     expect(EDIT_SUGGESTION_INSTRUCTIONS).not.toContain("Use smooth easing");
   });
