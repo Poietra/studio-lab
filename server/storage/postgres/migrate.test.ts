@@ -21,6 +21,7 @@ import {
   applyBundledDurableStorageMigrationsThrough,
   type applyBundledDurableStorageMigrationsV2,
   type applyBundledWorkspaceSourceMigrationV1,
+  applyClientExportPublicationMigrationV31,
   applyCollaborationAuthorizationMigrationV26,
   applyEditorDocumentMigrationV17,
   applyEditorDocumentOriginMigrationV30,
@@ -45,6 +46,8 @@ import {
   applyWorkspaceSourceMigrationV1,
   BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM,
   BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE,
+  CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_CHECKSUM,
+  CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE,
   COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM,
   COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE,
   durableStorageMigrationChecksum,
@@ -127,12 +130,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 30 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 31 });
     expect([...db.installed.keys()]).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 30 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 31 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -167,7 +170,8 @@ describe("durable storage migrations", () => {
     ).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(60);
+    expect(db.queries.filter(({ text }) => text === CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(62);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -240,12 +244,17 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 30,
     });
+    expect(db.queries.some(({ text }) => text === CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE)).toBe(false);
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 31)).resolves.toEqual({
+      applied: true,
+      version: 31,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 31)).rejects.toThrow(
-      /migration v31 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 32)).rejects.toThrow(
+      /migration v32 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -874,6 +883,28 @@ describe("durable storage migrations", () => {
     await expect(
       applyEditorDocumentOriginMigrationV30(db.pool, EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v29/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds the narrow client-export publication schema in v31", async () => {
+    expect(durableStorageMigrationChecksum(CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE)).toBe(
+      CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_CHECKSUM,
+    );
+    expect(CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE).toContain("CREATE TABLE public.client_export_artifacts");
+    expect(CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE).toContain("CREATE TABLE public.client_export_publications");
+    expect(CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE).toContain("PRIMARY KEY (tenant_id, publication_id)");
+    expect(CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE).toContain(
+      "REFERENCES public.editor_documents (tenant_id, project_id, document_key, epoch)",
+    );
+    expect(CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE).not.toContain("REFERENCES public.editor_edit_events");
+    expect(CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE).toContain("CREATE TABLE public.client_export_read_claims");
+    expect(CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE).toContain("CREATE TABLE public.client_export_deletions");
+    expect(CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE).toContain("An accepted client-export record is immutable.");
+
+    const db = database();
+    await expect(
+      applyClientExportPublicationMigrationV31(db.pool, CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v30/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 
