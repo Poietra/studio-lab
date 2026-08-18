@@ -20,13 +20,16 @@ function environment() {
   const start = limiter();
   const callback = limiter();
   const invitation = limiter();
+  const organization = limiter();
   return {
     callback,
     invitation,
+    organization,
     start,
     value: {
       HYPERDRIVE: { connectionString: "postgresql://user:password@database.example:5432/poietra" },
       INVITATION_MUTATION_RATE_LIMITER: invitation.binding,
+      ORGANIZATION_MUTATION_RATE_LIMITER: organization.binding,
       OIDC_CALLBACK_RATE_LIMITER: callback.binding,
       OIDC_START_RATE_LIMITER: start.binding,
       POIETRA_OIDC_CLIENT_AUTHENTICATION: "client_secret_post",

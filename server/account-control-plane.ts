@@ -6,6 +6,12 @@ import {
 import type { AccountInvitationRepositoryV1 } from "./accounts/account-invitation-repository";
 import { createAccountInvitationServiceV1 } from "./accounts/account-invitation-service";
 import {
+  ACCOUNT_ORGANIZATIONS_ROUTE_V1,
+  createAccountOrganizationFetchHandlerV1,
+  createAccountOrganizationFetchRequestGuardV1,
+} from "./accounts/account-organization-fetch";
+import type { AccountOrganizationRepositoryV1 } from "./accounts/account-organization-repository";
+import {
   ACCOUNT_MEMBERS_ROUTE_V1,
   createAccountMembershipFetchHandlerV1,
   createAccountMembershipFetchRequestGuardV1,
@@ -32,6 +38,7 @@ export type OidcAccountControlPlaneOptionsV1<Environment> = Readonly<{
   invitationRepository?: (environment: Environment) => AccountInvitationRepositoryV1;
   loginAttemptLifetimeMs?: number;
   oidc: OidcProviderConfigV1;
+  organizationRepository?: (environment: Environment) => AccountOrganizationRepositoryV1;
   /** Must create request-scoped storage; Cloudflare Hyperdrive connections cannot be held in global scope. */
   repository: (environment: Environment) => OidcLoginRepositoryV1;
   /** Separate session adapter keeps browser account access independent from OIDC provider availability. */
@@ -51,6 +58,7 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
   const sessionActionRequestGuard = createAccountSessionActionFetchRequestGuardV1(options.oidc.publicOrigin);
   const invitationRequestGuard = createAccountInvitationFetchRequestGuardV1(options.oidc.publicOrigin);
   const membershipRequestGuard = createAccountMembershipFetchRequestGuardV1(options.oidc.publicOrigin);
+  const organizationRequestGuard = createAccountOrganizationFetchRequestGuardV1(options.oidc.publicOrigin);
   const withService = async <T>(
     environment: Environment,
     operation: (service: ReturnType<typeof createOidcLoginServiceV1>) => Promise<T>,
@@ -97,9 +105,28 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
       else await repository.close();
     }
   };
+  const withOrganizationRepository = async <T>(
+    environment: Environment,
+    operation: (repository: AccountOrganizationRepositoryV1) => Promise<T>,
+  ) => {
+    if (!options.organizationRepository) throw new TypeError("Account organization storage is unavailable.");
+    const repository = options.organizationRepository(environment);
+    try {
+      return await operation(repository);
+    } finally {
+      await repository.close();
+    }
+  };
   return Object.freeze({
     fetch: (request: Request, environment: Environment) => {
       const pathname = new URL(request.url).pathname;
+      if (pathname === ACCOUNT_ORGANIZATIONS_ROUTE_V1) {
+        const rejected = organizationRequestGuard.reject(request);
+        if (rejected) return Promise.resolve(rejected);
+        return withOrganizationRepository(environment, (repository) =>
+          createAccountOrganizationFetchHandlerV1(repository, options.oidc.publicOrigin).fetch(request),
+        );
+      }
       if (pathname === ACCOUNT_INVITATIONS_ROUTE_V1 || pathname.startsWith(`${ACCOUNT_INVITATIONS_ROUTE_V1}/`)) {
         const rejected = invitationRequestGuard.reject(request);
         if (rejected) return Promise.resolve(rejected);
@@ -114,7 +141,7 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
           createAccountSessionFetchHandlerV1(repository, options.oidc.publicOrigin).fetch(request),
         );
       }
-      if (pathname === ACCOUNT_MEMBERS_ROUTE_V1) {
+      if (pathname === ACCOUNT_MEMBERS_ROUTE_V1 || pathname.startsWith(`${ACCOUNT_MEMBERS_ROUTE_V1}/`)) {
         const rejected = membershipRequestGuard.reject(request);
         if (rejected) return Promise.resolve(rejected);
         return withSessionRepository(environment, (repository) =>
@@ -141,6 +168,7 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
 
 export { ACCOUNT_INVITATIONS_ROUTE_V1 } from "./accounts/account-invitation-fetch";
 export { ACCOUNT_MEMBERS_ROUTE_V1 } from "./accounts/account-membership-fetch";
+export { ACCOUNT_ORGANIZATIONS_ROUTE_V1 } from "./accounts/account-organization-fetch";
 export { ACCOUNT_LOGOUT_ROUTE_V1, ACCOUNT_SESSION_ROUTE_V1 } from "./accounts/account-session-fetch";
 export {
   OIDC_LOGIN_BINDING_COOKIE_NAME_V1,
@@ -148,5 +176,6 @@ export {
   OIDC_LOGIN_START_ROUTE_V1,
 } from "./accounts/oidc-login-fetch";
 export { PostgresAccountInvitationRepositoryV1 } from "./storage/postgres/postgres-account-invitation-repository";
+export { PostgresAccountOrganizationRepositoryV1 } from "./storage/postgres/postgres-account-organization-repository";
 export { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
 export { PostgresOidcLoginRepositoryV1 } from "./storage/postgres/postgres-oidc-login-repository";

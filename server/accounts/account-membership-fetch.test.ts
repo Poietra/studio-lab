@@ -6,7 +6,10 @@ import {
   createAccountMembershipFetchRequestGuardV1,
 } from "./account-membership-fetch";
 import { ACCOUNT_SESSION_COOKIE_NAME_V1 } from "./account-session-cookie";
-import type { AccountMembershipViewRepositoryV1 } from "./account-session-repository";
+import type {
+  AccountMembershipMutationRepositoryV1,
+  AccountMembershipViewRepositoryV1,
+} from "./account-session-repository";
 
 const token = "A".repeat(43);
 const cookie = `${ACCOUNT_SESSION_COOKIE_NAME_V1}=${token}`;
@@ -26,12 +29,29 @@ function repository(
   },
 ) {
   const listActiveOrganizationMembers = vi.fn(async (_hash: Uint8Array, _signal?: AbortSignal) => result);
+  const mutateActiveOrganizationMember = vi.fn(
+    async (): Promise<
+      Awaited<ReturnType<AccountMembershipMutationRepositoryV1["mutateActiveOrganizationMember"]>>
+    > => ({
+      kind: "applied",
+      member: {
+        id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+        role: "admin",
+        status: "active",
+        version: 4,
+      },
+      mutationId: "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b",
+      replayed: false,
+    }),
+  );
   return {
     listActiveOrganizationMembers,
+    mutateActiveOrganizationMember,
     value: {
       close: vi.fn(async () => undefined),
       listActiveOrganizationMembers,
-    } satisfies AccountMembershipViewRepositoryV1,
+      mutateActiveOrganizationMember,
+    } satisfies AccountMembershipViewRepositoryV1 & AccountMembershipMutationRepositoryV1,
   };
 }
 
@@ -78,6 +98,37 @@ describe("account membership fetch boundary", () => {
     );
   });
 
+  it("changes or removes one member selected by the URL with an idempotency key", async () => {
+    const fixture = repository();
+    const handler = createAccountMembershipFetchHandlerV1(fixture.value, "https://studio.example");
+    const mutationId = "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b";
+    const memberId = "6b0cd2da-7b88-4542-87ea-e48e73b33df3";
+    const response = await handler.fetch(
+      new Request(`https://studio.example/api/account/members/${memberId}`, {
+        body: JSON.stringify({ action: "set-role", expectedVersion: 3, mutationId, role: "admin" }),
+        headers: {
+          "content-type": "application/json",
+          cookie,
+          origin: "https://studio.example",
+          "sec-fetch-site": "same-origin",
+        },
+        method: "PATCH",
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      member: { id: memberId, role: "admin", status: "active", version: 4 },
+      mutation: { mutationId, replayed: false },
+    });
+    expect(fixture.mutateActiveOrganizationMember).toHaveBeenCalledWith(
+      expect.any(Uint8Array),
+      memberId,
+      { action: "set-role", expectedVersion: 3, mutationId, role: "admin" },
+      expect.any(AbortSignal),
+    );
+  });
+
   it("keeps authentication, authorization, and storage failures distinct", async () => {
     const unauthenticated = createAccountMembershipFetchHandlerV1(repository().value, "https://studio.example");
     await expect(
@@ -93,6 +144,27 @@ describe("account membership fetch boundary", () => {
         handler.fetch(new Request("https://studio.example/api/account/members", { headers: { cookie } })),
       ).resolves.toMatchObject({ status });
     }
+
+    const forbiddenMutation = repository();
+    forbiddenMutation.mutateActiveOrganizationMember.mockResolvedValueOnce({ kind: "forbidden" });
+    await expect(
+      createAccountMembershipFetchHandlerV1(forbiddenMutation.value, "https://studio.example").fetch(
+        new Request("https://studio.example/api/account/members/6b0cd2da-7b88-4542-87ea-e48e73b33df3", {
+          body: JSON.stringify({
+            action: "remove",
+            expectedVersion: 3,
+            mutationId: "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b",
+          }),
+          headers: {
+            "content-type": "application/json",
+            cookie,
+            origin: "https://studio.example",
+            "sec-fetch-site": "same-origin",
+          },
+          method: "DELETE",
+        }),
+      ),
+    ).resolves.toMatchObject({ status: 403 });
 
     const billing = repository({
       actorRole: "billing",

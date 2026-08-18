@@ -8,6 +8,8 @@ import { Pool } from "pg";
 import type { Plugin } from "vite";
 import { createAccountInvitationFetchHandlerV1 } from "../server/accounts/account-invitation-fetch";
 import { createAccountInvitationServiceV1 } from "../server/accounts/account-invitation-service";
+import { createAccountMembershipFetchHandlerV1 } from "../server/accounts/account-membership-fetch";
+import { createAccountOrganizationFetchHandlerV1 } from "../server/accounts/account-organization-fetch";
 import { createAccountSessionIdentityAuthenticatorV1 } from "../server/accounts/account-session-authenticator";
 import {
   createAccountSessionActionFetchHandlerV1,
@@ -27,6 +29,7 @@ import { type ProductionManimServer, startProductionManimServer } from "../serve
 import { isNeutralTenantRouteAlias } from "../server/manim-render-http";
 import { applyBundledDurableStorageMigrations } from "../server/storage/postgres/migrate";
 import { PostgresAccountInvitationRepositoryV1 } from "../server/storage/postgres/postgres-account-invitation-repository";
+import { PostgresAccountOrganizationRepositoryV1 } from "../server/storage/postgres/postgres-account-organization-repository";
 import { PostgresAccountSessionRepositoryV1 } from "../server/storage/postgres/postgres-account-session-repository";
 import { PostgresEditorDocumentRepositoryV1 } from "../server/storage/postgres/postgres-editor-document-repository";
 import { PostgresOidcLoginRepositoryV1 } from "../server/storage/postgres/postgres-oidc-login-repository";
@@ -322,6 +325,9 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
       const invitationRepository = new PostgresAccountInvitationRepositoryV1({
         poolConfig: { connectionString: databaseUrl, max: 4 },
       });
+      const organizationRepository = new PostgresAccountOrganizationRepositoryV1({
+        poolConfig: { connectionString: databaseUrl, max: 4 },
+      });
       const membershipRepository = new PostgresOrganizationMembershipRepositoryV1({
         poolConfig: { connectionString: databaseUrl, max: 4 },
       });
@@ -337,6 +343,8 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
       const invitationService = createAccountInvitationServiceV1(invitationRepository);
       const loginHandler = createOidcLoginFetchHandlerV1(loginService, publicOrigin);
       const invitationHandler = createAccountInvitationFetchHandlerV1(invitationService, publicOrigin);
+      const membershipHandler = createAccountMembershipFetchHandlerV1(accountSessions, publicOrigin);
+      const organizationHandler = createAccountOrganizationFetchHandlerV1(organizationRepository, publicOrigin);
       const sessionHandler = createAccountSessionFetchHandlerV1(accountSessions, publicOrigin);
       const actionHandler = createAccountSessionActionFetchHandlerV1(accountSessions, publicOrigin);
       const editorDocuments = new PostgresEditorDocumentRepositoryV1({
@@ -426,6 +434,14 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
             await sendFetchResponse(await invitationHandler.fetch(fetchRequest(request, publicOrigin)), response);
             return;
           }
+          if (url.pathname === "/api/account/members" || url.pathname.startsWith("/api/account/members/")) {
+            await sendFetchResponse(await membershipHandler.fetch(fetchRequest(request, publicOrigin)), response);
+            return;
+          }
+          if (url.pathname === "/api/account/organizations") {
+            await sendFetchResponse(await organizationHandler.fetch(fetchRequest(request, publicOrigin)), response);
+            return;
+          }
           if (
             url.pathname.startsWith("/api/manim/") ||
             url.pathname.startsWith("/api/editor/") ||
@@ -453,6 +469,7 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
         void Promise.allSettled([
           loginService.close(),
           invitationService.close(),
+          organizationRepository.close(),
           productionServer.close(),
           evidencePool.end(),
         ]);
