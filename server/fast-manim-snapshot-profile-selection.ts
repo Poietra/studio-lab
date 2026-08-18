@@ -11,6 +11,7 @@ import {
 } from "../src/render-pipeline/manim-identity-contract";
 import {
   digestFastManimSnapshotRuntimeConfigV1,
+  FAST_MANIM_DYNAMIC_RUNTIME_CAPABILITIES,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
@@ -128,17 +129,19 @@ export function fastManimSnapshotRuntimeConfigForProfileV1(
       ...(capabilities ??
         (snapshotVersion === 4
           ? (["png-image"] as const)
-          : snapshotVersion === 8
-            ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8
-            : snapshotVersion === 9
-              ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9
-              : snapshotVersion === 10
-                ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10
-                : snapshotVersion === 11
-                  ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11
-                  : snapshotVersion === 12
-                    ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12
-                    : FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)),
+          : snapshotVersion === 2
+            ? FAST_MANIM_DYNAMIC_RUNTIME_CAPABILITIES
+            : snapshotVersion === 8
+              ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8
+              : snapshotVersion === 9
+                ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9
+                : snapshotVersion === 10
+                  ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10
+                  : snapshotVersion === 11
+                    ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11
+                    : snapshotVersion === 12
+                      ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12
+                      : FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)),
     ],
     frame,
     randomSeed: 0,

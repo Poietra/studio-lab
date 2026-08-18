@@ -1872,7 +1872,11 @@ type DynamicProfileChannelV2 = SceneIrBundleV1["scene"]["animationChannels"][num
 function isSingleDirectPathMorphCombinationV2(channels: readonly DynamicProfileChannelV2[]) {
   if (
     channels.some(
-      (channel) => channel.kind !== "opacity" && channel.kind !== "path-morph" && channel.kind !== "path-trim",
+      (channel) =>
+        channel.kind !== "opacity" &&
+        channel.kind !== "path-morph" &&
+        channel.kind !== "path-trim" &&
+        channel.kind !== "vector-appearance",
     )
   ) {
     return false;
@@ -1880,7 +1884,15 @@ function isSingleDirectPathMorphCombinationV2(channels: readonly DynamicProfileC
   const morphs = channels.filter((channel) => channel.kind === "path-morph");
   const opacityChannels = channels.filter((channel) => channel.kind === "opacity");
   const pathTrimChannels = channels.filter((channel) => channel.kind === "path-trim");
-  if (morphs.length !== 1 || opacityChannels.length > 1 || pathTrimChannels.length > 1) return false;
+  const appearanceChannels = channels.filter((channel) => channel.kind === "vector-appearance");
+  if (
+    morphs.length !== 1 ||
+    opacityChannels.length > 1 ||
+    pathTrimChannels.length > 1 ||
+    appearanceChannels.length > 1
+  ) {
+    return false;
+  }
   const morph = morphs[0]!;
   if (morph.keyframes.length !== 2) return false;
   const morphStart = morph.keyframes[0]!.at;
@@ -1896,12 +1908,23 @@ function isSingleDirectPathMorphCombinationV2(channels: readonly DynamicProfileC
     return false;
   }
   const opacity = opacityChannels[0];
-  return !(
+  if (
     opacity &&
     (opacity.keyframes.length !== 2 ||
       opacity.keyframes[0]!.value !== 1 ||
       opacity.keyframes[1]!.value !== 0 ||
       morphEnd > opacity.keyframes[0]!.at)
+  ) {
+    return false;
+  }
+  const appearance = appearanceChannels[0];
+  return (
+    !appearance ||
+    (appearance.keyframes.length === 2 &&
+      appearance.keyframes[0]!.at === morphStart &&
+      appearance.keyframes[1]!.at === morphEnd &&
+      canonicalJsonV1(appearance.keyframes[0]!.easingToNext) === canonicalJsonV1(morph.keyframes[0]!.easingToNext) &&
+      appearance.keyframes[1]!.easingToNext === null)
   );
 }
 
@@ -1965,10 +1988,11 @@ function assertDynamicProfileV2(
       channel.kind !== "motion-path" &&
       channel.kind !== "opacity" &&
       channel.kind !== "path-morph" &&
-      channel.kind !== "path-trim"
+      channel.kind !== "path-trim" &&
+      channel.kind !== "vector-appearance"
     ) {
       profileViolation(
-        "Dynamic profile V2 accepts only affine-transform, motion-path, opacity, path-morph, and path-trim animation channels.",
+        "Dynamic profile V2 accepts only affine-transform, motion-path, opacity, path-morph, path-trim, and vector-appearance animation channels.",
       );
     }
     if (staticEntityIds.has(channel.entityId)) {
@@ -1984,14 +2008,16 @@ function assertDynamicProfileV2(
             ? 2
             : channel.kind === "path-morph"
               ? 3
-              : 4;
+              : channel.kind === "vector-appearance"
+                ? 4
+                : 5;
     if (
       entityIndex === undefined ||
       entityIndex < previousEntityIndex ||
       (entityIndex === previousEntityIndex && kindOrder <= previousKindOrder)
     ) {
       profileViolation(
-        "Dynamic channels must follow entity sceneOrder, with affine-transform then opacity then path-trim then path-morph then motion-path, without duplicates.",
+        "Dynamic channels must follow entity sceneOrder, with affine-transform then opacity then path-trim then path-morph then vector-appearance then motion-path, without duplicates.",
       );
     }
     previousEntityIndex = entityIndex;
@@ -2296,6 +2322,63 @@ function assertDynamicProfileV2(
       if (!producerReachableShape) {
         profileViolation(
           "Dynamic path-morph channels must encode one Transform, two adjacent Transforms, or two Transforms separated by one hold.",
+        );
+      }
+      continue;
+    }
+
+    if (channel.kind === "vector-appearance") {
+      const morph = channelsByEntityIndex
+        .get(entityIndex)
+        ?.find(
+          (candidate): candidate is Extract<DynamicProfileChannelV2, { kind: "path-morph" }> =>
+            candidate.kind === "path-morph",
+        );
+      const [start, end] = channel.keyframes;
+      const vectorAppearance = entity.appearance.kind === "vector" ? entity.appearance : null;
+      if (
+        channel.id !== fastManimSnapshotVectorAppearanceChannelIdV8(scene.sceneId, entityIndex) ||
+        channel.provenanceId !== fastManimSnapshotVectorAppearanceChannelProvenanceIdV8(scene.sceneId, entityIndex)
+      ) {
+        profileViolation(
+          "Dynamic vector-appearance channel identifiers must derive from Scene identity and sceneOrder.",
+        );
+      }
+      if (
+        !morph ||
+        morph.keyframes.length !== 2 ||
+        channel.keyframes.length !== 2 ||
+        !start ||
+        !end ||
+        start.at !== morph.keyframes[0]!.at ||
+        end.at !== morph.keyframes[1]!.at ||
+        canonicalJsonV1(start.easingToNext) !== canonicalJsonV1(morph.keyframes[0]!.easingToNext) ||
+        end.easingToNext !== null
+      ) {
+        profileViolation("Dynamic vector appearance must pair exactly with one direct path-morph interval and easing.");
+      }
+      if (
+        !vectorAppearance ||
+        vectorAppearance.fill !== null ||
+        vectorAppearance.stroke === null ||
+        start.value.fill === null ||
+        start.value.stroke === null ||
+        end.value.fill === null ||
+        end.value.stroke === null ||
+        start.value.fill.color.alpha !== 0 ||
+        start.value.fill.fragmentMaterial !== undefined ||
+        end.value.fill.fragmentMaterial !== undefined ||
+        canonicalJsonV1(start.value.stroke) !== canonicalJsonV1(vectorAppearance.stroke) ||
+        start.value.fill.rule !== end.value.fill.rule ||
+        start.value.stroke.cap !== end.value.stroke.cap ||
+        start.value.stroke.join !== end.value.stroke.join ||
+        start.value.stroke.miterLimit !== end.value.stroke.miterLimit ||
+        start.value.stroke.widthWorld <= 0 ||
+        end.value.stroke.widthWorld <= 0 ||
+        canonicalJsonV1(start.value) === canonicalJsonV1(end.value)
+      ) {
+        profileViolation(
+          "Dynamic vector appearance requires one changed Manim-aligned transparent-fill source and bounded solid fill/stroke endpoints.",
         );
       }
       continue;
@@ -4233,6 +4316,9 @@ function assertFastManimSnapshotProfileV1(
           ...(scene.animationChannels.some((channel) => channel.kind === "path-trim")
             ? (["path-trim-animation"] as const)
             : []),
+          ...(scene.animationChannels.some((channel) => channel.kind === "vector-appearance")
+            ? (["vector-appearance-animation"] as const)
+            : []),
         ];
   if (
     scene.requiredCapabilities.length !== expectedCapabilities.length ||
@@ -4353,10 +4439,11 @@ function assertFastManimSnapshotProfileV1(
             channel.kind !== "motion-path" &&
             channel.kind !== "opacity" &&
             channel.kind !== "path-morph" &&
-            channel.kind !== "path-trim"
+            channel.kind !== "path-trim" &&
+            channel.kind !== "vector-appearance"
           ) {
             profileViolation(
-              "Snapshot animation profiles accept only affine-transform, motion-path, opacity, path-morph, and path-trim channels.",
+              "Snapshot animation profiles accept only affine-transform, motion-path, opacity, path-morph, path-trim, and vector-appearance channels.",
             );
           }
           const entityIndex = entityIndexById.get(channel.entityId);
@@ -4374,6 +4461,9 @@ function assertFastManimSnapshotProfileV1(
           }
           if (channel.kind === "path-morph") {
             return fastManimSnapshotPathMorphChannelProvenanceIdV2(sceneId, entityIndex);
+          }
+          if (channel.kind === "vector-appearance") {
+            return fastManimSnapshotVectorAppearanceChannelProvenanceIdV8(sceneId, entityIndex);
           }
           if (channel.kind === "path-trim") {
             return fastManimSnapshotPathTrimChannelProvenanceIdV2(sceneId, entityIndex);
@@ -4726,6 +4816,12 @@ export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1 = Object.freeze([
   "path-morph-animation",
   "path-trim-animation",
   "shape-primitives",
+] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
+
+/** Dynamic Transform Scenes can use the existing Rust-owned appearance channel. */
+export const FAST_MANIM_DYNAMIC_RUNTIME_CAPABILITIES = Object.freeze([
+  ...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
+  "vector-appearance-animation",
 ] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
 
 /**
