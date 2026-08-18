@@ -2278,7 +2278,7 @@ export function App({
     const copied = studioClipboard.current;
     if (copied.length === 0) return false;
     pasteCount.current += 1;
-    const offset = 20 * pasteCount.current;
+    const offset = STUDIO_STYLE_PROFILE.spacingUnitPx * pasteCount.current;
     return insertEntitiesAt(
       { x: 320, y: 180 },
       copied.map((entity) => ({

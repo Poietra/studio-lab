@@ -17,6 +17,7 @@ import {
   provisionalEntityId,
 } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
+import { STUDIO_STYLE_PROFILE } from "./style-profile";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 import { appendAppliedProgram, replaceAppliedProgram } from "./transactions";
 
@@ -919,7 +920,11 @@ describe("Studio semantic model", () => {
           }),
           kind: "CreateEntity",
         }),
-        expect.objectContaining({ key: "position", kind: "SetProperty", value: { x: 480, y: 180 } }),
+        expect.objectContaining({
+          key: "position",
+          kind: "SetProperty",
+          value: { x: 320 + STUDIO_STYLE_PROFILE.spacingUnitPx * 7, y: 180 },
+        }),
         expect.objectContaining({ effect: "fade-in", kind: "ChangePresence" }),
       ]),
     );
@@ -956,6 +961,7 @@ describe("Studio semantic model", () => {
       return;
     expect(relation.sourceEntityId).toBe(explanation.entity.id);
     expect(relation.targetEntityId).toBe(equation.entity.id);
+    expect(relation.offset).toEqual({ x: STUDIO_STYLE_PROFILE.spacingUnitPx * 6, y: 0 });
 
     expect(equation.entity.content).toEqual(expect.objectContaining({ displayLines: MAXWELL_TARGET.displayLines }));
     expect(explanation.entity.content).toEqual(expect.objectContaining({ text: operation.explanation.text }));

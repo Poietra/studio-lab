@@ -13,6 +13,7 @@ export const styleProfileSchema = z
     durationSeconds: durationScaleSchema,
     easing: z.literal("smooth"),
     id: z.string().min(1).max(80),
+    spacingUnitPx: z.number().int().positive(),
     version: z.literal(1),
   })
   .strict();
@@ -35,6 +36,7 @@ export const STUDIO_STYLE_PROFILE = {
   },
   easing: "smooth",
   id: "poietra-balanced",
+  spacingUnitPx: 24,
   version: 1,
 } as const satisfies StyleProfile;
 
