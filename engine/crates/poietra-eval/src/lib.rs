@@ -10,6 +10,7 @@ mod evaluator;
 mod retained_index;
 
 pub use authoring::{
+    ApplyStaticPrimitiveTransformCommand, ApplyStaticPrimitiveTransformError,
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
     ApplyStudioBoundEntityEditCommand, ApplyStudioBoundEntityEditError,
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError,
@@ -18,7 +19,8 @@ pub use authoring::{
     ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioPersistentRemoveError,
     ApplyStudioTimelineEditCommand, ApplyStudioTimelineEditError, CreateSceneEntitiesError,
     ProjectStudioCreationEditError, ProjectStudioMotionEditCommand, ProjectStudioMotionEditError,
-    SceneEditAnchorSource, SceneEditExecution, SceneEditScheduleMode,
+    SceneEditAnchorSource, SceneEditExecution, SceneEditScheduleMode, StaticPrimitiveGeometryFact,
+    StaticPrimitivePaintFact, StaticPrimitiveTransformFact,
     StaticRootMotionProjectionEntityIdentity, StaticRootTransformDimensions,
     StaticRootTransformEditInput, StaticRootTransformEntityKind, StaticRootTransformOperation,
     StaticRootTransformOperationKind, StaticRootTransformOrigin, StaticRootTransformSize,

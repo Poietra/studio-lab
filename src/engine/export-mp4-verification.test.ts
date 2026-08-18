@@ -57,7 +57,7 @@ describe("verifyExportMp4V1", () => {
     expect(result.structure.sampleCount).toBeGreaterThan(0);
     expect(result.structure.audio).toBeUndefined();
     expect(result.provenance).toEqual({
-      engineAbiVersion: 28,
+      engineAbiVersion: 29,
       exportProfileHash: "a".repeat(64),
       sceneId: "fixture-scene",
       sceneRevisionHash: "b".repeat(64),
@@ -112,13 +112,13 @@ describe("verifyExportMp4V1", () => {
 
   it("refuses provenance that claims a different engine ABI", async () => {
     const bytes = new Uint8Array(await readFile(FIXTURE_PATH));
-    const marker = new TextEncoder().encode('"engineAbiVersion":28');
+    const marker = new TextEncoder().encode('"engineAbiVersion":29');
     const markerIndex = bytes.findIndex((_, index) =>
       marker.every((byte, markerOffset) => bytes[index + markerOffset] === byte),
     );
     expect(markerIndex).toBeGreaterThan(0);
     const mutated = bytes.slice();
-    mutated[markerIndex + marker.length - 1] = "7".charCodeAt(0);
+    mutated[markerIndex + marker.length - 1] = "8".charCodeAt(0);
     const result = await verifyExportMp4V1(mutated);
     expect(result.kind).toBe("refused");
     if (result.kind !== "refused") return;

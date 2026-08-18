@@ -104,6 +104,45 @@ export type ApplyStudioFragmentMaterialsCompiler = (
   snapshot: SceneIrBundleV1,
   command: ApplyStudioFragmentMaterialsWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
+
+type StaticPrimitiveTransformGeometryV1 =
+  | Readonly<{ kind: "circle"; radius: number }>
+  | Readonly<{ height: number; kind: "rectangle"; width: number }>;
+type StaticPrimitiveTransformPaintV1 = Readonly<{
+  color?: string;
+  fillColor?: string;
+  strokeColor?: string;
+}>;
+export type ApplyStaticPrimitiveTransformWireCommandV1 = Readonly<{
+  expectedBaseRevision: string;
+  nextRevision: string;
+  schema: "poietra.apply-static-primitive-transform";
+  sourceRuntimeBindings: readonly Readonly<{
+    runtimeEntityId: string;
+    sourceIdentityKey: string;
+    sourceName: string;
+  }>[];
+  transform: Readonly<{
+    interval: Readonly<{ end: number; start: number }>;
+    sourceCenter: Readonly<{ x: number; y: number }>;
+    sourceEntityId: string;
+    sourceGeometry: StaticPrimitiveTransformGeometryV1;
+    sourceName: string;
+    sourcePaint: StaticPrimitiveTransformPaintV1;
+    sourceScale: number;
+    targetCenter: Readonly<{ x: number; y: number }>;
+    targetEntityId: string;
+    targetGeometry: StaticPrimitiveTransformGeometryV1;
+    targetName: string;
+    targetPaint: StaticPrimitiveTransformPaintV1;
+    targetScale: number;
+  }>;
+  version: 1;
+}>;
+export type ApplyStaticPrimitiveTransformCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: ApplyStaticPrimitiveTransformWireCommandV1,
+) => Promise<SceneIrBundleV1>;
 type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" | "rectangle";
 type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StaticRootTransformOperation = Readonly<{
@@ -1031,6 +1070,10 @@ type ApplyStaticRootTransformEditBindingsV1 = Readonly<{
   applyStaticRootTransformEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type ApplyStaticPrimitiveTransformBindingsV1 = Readonly<{
+  applyStaticPrimitiveTransformV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type ApplyStudioTimelineEditBindingsV1 = Readonly<{
   applyStudioTimelineEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -1063,7 +1106,8 @@ type ApplyStudioMathTexTransformEditBindingsV1 = Readonly<{
   applyStudioMathTexTransformEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
-type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
+type SceneAuthoringBindingsV1 = ApplyStaticPrimitiveTransformBindingsV1 &
+  ApplyStaticRootTransformEditBindingsV1 &
   ApplyStudioBoundEntityEditBindingsV1 &
   ApplyStudioCreationEditBindingsV1 &
   ApplyStudioFragmentMaterialsBindingsV1 &
@@ -1082,6 +1126,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
   const pending: Promise<SceneAuthoringBindingsV1> = (async () => {
     const candidate = await loadPoietraWasmModule();
     if (
+      typeof candidate.applyStaticPrimitiveTransformV1 !== "function" ||
       typeof candidate.applyStaticRootTransformEditV1 !== "function" ||
       typeof candidate.applyStudioBoundEntityEditV1 !== "function" ||
       typeof candidate.applyStudioCreationEditV1 !== "function" ||
@@ -1097,6 +1142,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       throw new Error("The Poietra WASM module does not export Scene authoring.");
     }
     return {
+      applyStaticPrimitiveTransformV1:
+        candidate.applyStaticPrimitiveTransformV1 as SceneAuthoringBindingsV1["applyStaticPrimitiveTransformV1"],
       applyStaticRootTransformEditV1:
         candidate.applyStaticRootTransformEditV1 as SceneAuthoringBindingsV1["applyStaticRootTransformEditV1"],
       applyStudioBoundEntityEditV1:
@@ -1121,6 +1168,16 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
   })();
   bindingsPromise = pending;
   return pending;
+}
+
+/** Compiles one bounded static primitive Transform through the canonical Rust core. */
+export function createApplyStaticPrimitiveTransformCompiler(
+  getBindings: () => Promise<ApplyStaticPrimitiveTransformBindingsV1>,
+): ApplyStaticPrimitiveTransformCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStaticPrimitiveTransformV1);
+  };
 }
 
 /** Applies the supported static imported-root edit subset through the canonical core. */
@@ -1259,6 +1316,7 @@ export function createProjectStudioCreationCompiler(
   };
 }
 
+export const compileApplyStaticPrimitiveTransform = createApplyStaticPrimitiveTransformCompiler(loadBindings);
 export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
 export const compileApplyStudioBoundEntityEdit = createApplyStudioBoundEntityEditCompiler(loadBindings);
 export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);

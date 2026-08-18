@@ -352,7 +352,7 @@ mod tests {
 
     fn fixture_provenance() -> ExportProvenanceV1 {
         ExportProvenanceV1 {
-            engine_abi_version: 28,
+            engine_abi_version: 29,
             export_profile_hash: "a".repeat(64),
             scene_id: "fixture-scene".to_owned(),
             scene_revision_hash: "b".repeat(64),
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn fixture_provenance_serializes_to_the_canonical_compact_json() {
         let expected = format!(
-            "{{\"engineAbiVersion\":28,\"exportProfileHash\":\"{}\",\
+            "{{\"engineAbiVersion\":29,\"exportProfileHash\":\"{}\",\
              \"sceneId\":\"fixture-scene\",\"sceneRevisionHash\":\"{}\"}}",
             "a".repeat(64),
             "b".repeat(64)
@@ -694,8 +694,8 @@ mod tests {
         empty_scene_id.scene_id.clear();
         let mut payloads = vec![
             b"not json".to_vec(),
-            br#"{"engineAbiVersion":27}"#.to_vec(),
-            br#"{"engineAbiVersion":27,"exportProfileHash":"a","sceneId":"s","sceneRevisionHash":"b","extra":1}"#.to_vec(),
+            br#"{"engineAbiVersion":28}"#.to_vec(),
+            br#"{"engineAbiVersion":28,"exportProfileHash":"a","sceneId":"s","sceneRevisionHash":"b","extra":1}"#.to_vec(),
         ];
         for provenance in [
             oversized_scene_id,

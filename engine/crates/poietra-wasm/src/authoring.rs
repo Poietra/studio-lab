@@ -1,4 +1,5 @@
 use poietra_eval::{
+    ApplyStaticPrimitiveTransformCommand, ApplyStaticPrimitiveTransformError,
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
     ApplyStudioBoundEntityEditCommand, ApplyStudioBoundEntityEditError,
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError,
@@ -6,17 +7,17 @@ use poietra_eval::{
     ApplyStudioMathTexTransformEditCommand, ApplyStudioMathTexTransformEditError,
     ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand,
     ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, ProjectStudioCreationEditError,
-    ProjectStudioMotionEditCommand, ProjectStudioMotionEditError, StaticRootTransformEditInput,
-    StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
-    StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
-    StudioBoundEntityEditInput, StudioCreationEditInput, StudioCreationMathTexOutline,
-    StudioCreationTextOutline, StudioFragmentMaterialAssignment, StudioMathTexTransformEditInput,
-    StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
-    StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
-    StudioMotionEditInput, StudioMotionEntityIdentity, StudioMotionProjectionBatch,
-    StudioMotionSourceBinding, StudioTimelineEditInput, project_studio_creation_edits,
-    project_studio_math_tex_transform_edits, project_studio_motion_edit,
-    project_studio_timeline_edits,
+    ProjectStudioMotionEditCommand, ProjectStudioMotionEditError, StaticPrimitiveTransformFact,
+    StaticRootTransformEditInput, StaticRootTransformSize, StaticRootTransformSourceBinding,
+    StaticRootTransformStudioEntity, StudioAuthoringEditResult, StudioAuthoringSize,
+    StudioBoundEntityEditCandidate, StudioBoundEntityEditInput, StudioCreationEditInput,
+    StudioCreationMathTexOutline, StudioCreationTextOutline, StudioFragmentMaterialAssignment,
+    StudioMathTexTransformEditInput, StudioMathTexTransformEntityIdentity,
+    StudioMathTexTransformOutline, StudioMathTexTransformProjectionEntityIdentity,
+    StudioMathTexTransformSourceBinding, StudioMotionEditInput, StudioMotionEntityIdentity,
+    StudioMotionProjectionBatch, StudioMotionSourceBinding, StudioTimelineEditInput,
+    project_studio_creation_edits, project_studio_math_tex_transform_edits,
+    project_studio_motion_edit, project_studio_timeline_edits,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -28,6 +29,36 @@ use wasm_bindgen::prelude::*;
 enum ApplyStaticRootTransformEditSchemaV1 {
     #[serde(rename = "poietra.apply-static-root-transform-edit")]
     ApplyStaticRootTransformEdit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ApplyStaticPrimitiveTransformSchemaV1 {
+    #[serde(rename = "poietra.apply-static-primitive-transform")]
+    ApplyStaticPrimitiveTransform,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyStaticPrimitiveTransformCommandJsonV1 {
+    expected_base_revision: String,
+    next_revision: String,
+    #[serde(rename = "schema")]
+    _schema: ApplyStaticPrimitiveTransformSchemaV1,
+    source_runtime_bindings: Vec<StaticRootTransformSourceBinding>,
+    transform: StaticPrimitiveTransformFact,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<ApplyStaticPrimitiveTransformCommandJsonV1> for ApplyStaticPrimitiveTransformCommand {
+    fn from(value: ApplyStaticPrimitiveTransformCommandJsonV1) -> Self {
+        Self {
+            expected_base_revision: value.expected_base_revision,
+            next_revision: value.next_revision,
+            source_runtime_bindings: value.source_runtime_bindings,
+            transform: value.transform,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -351,6 +382,8 @@ enum SceneAuthoringAdapterError {
     #[error("the Scene authoring snapshot could not create an Engine session: {0}")]
     Session(#[from] EvaluationError),
     #[error(transparent)]
+    StaticPrimitiveTransform(#[from] ApplyStaticPrimitiveTransformError),
+    #[error(transparent)]
     StudioMotionEdit(#[from] ApplyStudioMotionEditError),
     #[error(transparent)]
     StudioMotionProjection(#[from] ProjectStudioMotionEditError),
@@ -450,6 +483,21 @@ fn apply_static_root_transform_edit_json(
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.apply_static_root_transform_edit(command.into())?;
     studio_authoring_edit_response(&result)
+}
+
+fn apply_static_primitive_transform_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ApplyStaticPrimitiveTransformCommandJsonV1 =
+        parse_scene_authoring_command_with_limit(
+            "static primitive Transform",
+            command_json,
+            poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+        )?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.apply_static_primitive_transform(command.into())?;
+    scene_authoring_response(&result)
 }
 
 fn apply_studio_creation_edit_json(
@@ -606,6 +654,20 @@ pub fn apply_studio_creation_edit_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     apply_studio_creation_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Compiles one bounded static primitive `Transform(source, target)` into canonical Scene IR.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, open command, or authored result.
+#[wasm_bindgen(js_name = applyStaticPrimitiveTransformV1)]
+pub fn apply_static_primitive_transform_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    apply_static_primitive_transform_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -766,6 +828,31 @@ mod tests {
             serde_json::from_slice(&fixture_json()).expect("fixture must be JSON");
         fixture["scene"]["animationChannels"] = json!([]);
         fixture["scene"]["requiredCapabilities"] = json!(["shape-primitives"]);
+        fixture["scene"]["source"] = json!({
+            "kind": "imported-manim-server-snapshot",
+            "runtimeConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "snapshotHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "snapshotVersion": 1,
+            "sourceHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        });
+        serde_json::to_vec(&fixture).unwrap()
+    }
+
+    fn static_primitive_transform_fixture_json() -> Vec<u8> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../server/test-fixtures/fast-manim-static-bundle.json");
+        let mut fixture: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        fixture["scene"]["compositing"] = json!("linear-light");
+        fixture["scene"]["stateSampling"] = json!({
+            "frameRate": null,
+            "retainsTerminalState": false
+        });
+        fixture["scene"]["entities"] = json!([fixture["scene"]["entities"][0].clone()]);
+        fixture["scene"]["provenance"] = json!([
+            fixture["scene"]["provenance"][0].clone(),
+            fixture["scene"]["provenance"][1].clone()
+        ]);
         fixture["scene"]["source"] = json!({
             "kind": "imported-manim-server-snapshot",
             "runtimeConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -1145,6 +1232,36 @@ mod tests {
             }],
             "version": 1,
             "viewport": { "height": 360.0, "width": 640.0 }
+        }))
+        .unwrap()
+    }
+
+    fn static_primitive_transform_command_json() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "schema": "poietra.apply-static-primitive-transform",
+            "sourceRuntimeBindings": [{
+                "runtimeEntityId": "entity:0",
+                "sourceIdentityKey": "square",
+                "sourceName": "square"
+            }],
+            "transform": {
+                "interval": { "end": 0.75, "start": 0.25 },
+                "sourceCenter": { "x": 320.0, "y": 180.0 },
+                "sourceEntityId": "source:scene.py#StaticPrimitiveTransform:square",
+                "sourceGeometry": { "height": 2.0, "kind": "rectangle", "width": 2.0 },
+                "sourceName": "square",
+                "sourcePaint": {},
+                "sourceScale": 1.0,
+                "targetCenter": { "x": 320.0, "y": 180.0 },
+                "targetEntityId": "source:scene.py#StaticPrimitiveTransform:circle",
+                "targetGeometry": { "kind": "circle", "radius": 1.0 },
+                "targetName": "circle",
+                "targetPaint": {},
+                "targetScale": 1.0
+            },
+            "version": 1
         }))
         .unwrap()
     }
@@ -1660,6 +1777,64 @@ mod tests {
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         ));
+    }
+
+    #[test]
+    fn static_primitive_transform_adapter_returns_the_canonical_path_morph_bundle() {
+        let response = apply_static_primitive_transform_json(
+            &static_primitive_transform_fixture_json(),
+            &static_primitive_transform_command_json(),
+        )
+        .unwrap();
+        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let transformed = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "entity:0")
+            .unwrap();
+
+        assert!(matches!(
+            transformed.geometry,
+            SceneGeometryV1::CubicPath { .. }
+        ));
+        assert!(
+            bundle
+                .scene
+                .entities
+                .iter()
+                .all(|entity| entity.id != "circle")
+        );
+        assert!(
+            bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::PathMorph { entity_id, keyframes, .. }
+                if entity_id == "entity:0" && keyframes.len() == 2
+                ))
+        );
+        assert!(matches!(
+            bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. }
+                if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ));
+
+        let mut open_command: serde_json::Value =
+            serde_json::from_slice(&static_primitive_transform_command_json()).unwrap();
+        open_command["evaluatedGeometry"] = json!({});
+        let error = apply_static_primitive_transform_json(
+            &static_primitive_transform_fixture_json(),
+            &serde_json::to_vec(&open_command).unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `evaluatedGeometry`")
+        );
     }
 
     #[test]

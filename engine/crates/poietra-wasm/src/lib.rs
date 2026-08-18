@@ -40,10 +40,10 @@ mod protocol;
 use wasm_bindgen::prelude::*;
 
 pub use authoring::{
-    apply_static_root_transform_edit_v1, apply_studio_bound_entity_edit_v1,
-    apply_studio_creation_edit_v1, apply_studio_fragment_materials_v1,
-    apply_studio_math_tex_transform_edit_v1, apply_studio_motion_edit_v1,
-    apply_studio_timeline_edit_v1, project_studio_creation_edit_v1,
+    apply_static_primitive_transform_v1, apply_static_root_transform_edit_v1,
+    apply_studio_bound_entity_edit_v1, apply_studio_creation_edit_v1,
+    apply_studio_fragment_materials_v1, apply_studio_math_tex_transform_edit_v1,
+    apply_studio_motion_edit_v1, apply_studio_timeline_edit_v1, project_studio_creation_edit_v1,
     project_studio_math_tex_transform_v1, project_studio_motion_edit_v1,
     project_studio_timeline_v1,
 };
@@ -74,7 +74,7 @@ pub use canvas::PoietraCanvasEngineV1;
 pub use export_encoder::{PoietraExportEncoderSessionV1, probe_export_encoder_h264_v1};
 
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
-pub const POIETRA_ENGINE_ABI_VERSION: u32 = 28;
+pub const POIETRA_ENGINE_ABI_VERSION: u32 = 29;
 /// `OffscreenCanvas` render ABI version, independent of worker packet sampling.
 pub const POIETRA_CANVAS_ABI_VERSION: u32 = 6;
 
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn exported_abi_versions_are_explicit() {
-        assert_eq!(poietra_engine_abi_version(), 28);
+        assert_eq!(poietra_engine_abi_version(), 29);
         assert_eq!(poietra_canvas_abi_version(), 6);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
         assert_eq!(poietra_export_encoder_abi_version(), 1);

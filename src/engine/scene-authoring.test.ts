@@ -3,12 +3,14 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
+  type ApplyStaticPrimitiveTransformWireCommandV1,
   type ApplyStaticRootTransformEditWireCommandV1,
   type ApplyStudioBoundEntityEditWireCommandV1,
   type ApplyStudioCreationEditWireCommandV1,
   type ApplyStudioMathTexTransformEditWireCommandV1,
   type ApplyStudioMotionEditWireCommandV1,
   type ApplyStudioTimelineEditWireCommandV1,
+  createApplyStaticPrimitiveTransformCompiler,
   createApplyStaticRootTransformEditCompiler,
   createApplyStudioBoundEntityEditCompiler,
   createApplyStudioCreationEditCompiler,
@@ -23,6 +25,29 @@ import {
   type ProjectStudioMotionEditWireCommandV1,
   type ProjectStudioTimelineWireCommandV1,
 } from "./scene-authoring";
+
+const staticPrimitiveTransformCommand: ApplyStaticPrimitiveTransformWireCommandV1 = {
+  expectedBaseRevision: "a".repeat(64),
+  nextRevision: "7".repeat(64),
+  schema: "poietra.apply-static-primitive-transform",
+  sourceRuntimeBindings: [{ runtimeEntityId: "later", sourceIdentityKey: "square", sourceName: "square" }],
+  transform: {
+    interval: { end: 2, start: 1 },
+    sourceCenter: { x: 320, y: 180 },
+    sourceEntityId: "source:scene.py#StaticPrimitiveTransform:square",
+    sourceGeometry: { height: 2, kind: "rectangle", width: 2 },
+    sourceName: "square",
+    sourcePaint: {},
+    sourceScale: 1,
+    targetCenter: { x: 320, y: 180 },
+    targetEntityId: "source:scene.py#StaticPrimitiveTransform:circle",
+    targetGeometry: { kind: "circle", radius: 1 },
+    targetName: "circle",
+    targetPaint: {},
+    targetScale: 1,
+  },
+  version: 1,
+};
 
 const staticRootTransformEditCommand: ApplyStaticRootTransformEditWireCommandV1 = {
   expectedBaseRevision: "a".repeat(64),
@@ -364,6 +389,23 @@ async function fixtureBundle() {
 }
 
 describe("Scene authoring WASM adapter", () => {
+  it("forwards one static primitive Transform fact without reconstructing its semantics", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createApplyStaticPrimitiveTransformCompiler(async () => ({
+      applyStaticPrimitiveTransformV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    await expect(compile(bundle, staticPrimitiveTransformCommand)).resolves.toEqual(bundle);
+    expect(calls).toEqual([bundle, staticPrimitiveTransformCommand]);
+  });
+
   it("forwards complete static imported-root commands without reconstructing them", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];

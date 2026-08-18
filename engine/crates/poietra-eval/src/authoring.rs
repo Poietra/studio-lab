@@ -13,6 +13,7 @@ mod identity;
 mod math_tex_transform;
 mod motion;
 mod presence;
+mod static_primitive_transform;
 mod static_root;
 mod timeline;
 mod transform;
@@ -61,6 +62,10 @@ use motion::{
 pub use presence::{
     ApplyStudioPersistentRemoveError, StudioPersistentRemoveProjection,
     StudioPersistentRemoveProjectionEntry,
+};
+pub use static_primitive_transform::{
+    ApplyStaticPrimitiveTransformCommand, ApplyStaticPrimitiveTransformError,
+    StaticPrimitiveGeometryFact, StaticPrimitivePaintFact, StaticPrimitiveTransformFact,
 };
 use static_root::static_root_transform_edit_input_is_closed;
 pub use static_root::{
