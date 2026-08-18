@@ -5,10 +5,11 @@ use std::fmt;
 use crate::export_profile::ExportProfileV1;
 use crate::model::{
     AffineTransformV1, AnimationChannelV1, AssetManifestReferenceV1, AssetManifestV1,
-    AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1, ImageLocalRectV1, IntervalV1,
-    KeyframeV1, PointV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1,
-    RenderEmptyReasonV1, RenderPacketV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
-    SceneCapabilityV1, SceneGeometryV1, SceneIrV1, SceneSourceV1, StrokeStyleV1,
+    AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1, FragmentMaterialV1,
+    ImageLocalRectV1, IntervalV1, KeyframeV1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, PointV1,
+    RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketV1,
+    RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneGeometryV1,
+    SceneIrV1, SceneSourceV1, StrokeStyleV1,
 };
 
 pub const MAX_COORDINATE_V1: f64 = 1_000_000_000.0;
@@ -299,6 +300,35 @@ fn validate_color(color: &RgbaColorV1, path: &str, validator: &mut Validator) {
 
 fn validate_fill(fill: &FillStyleV1, path: &str, validator: &mut Validator) {
     validate_color(&fill.color, &format!("{path}.color"), validator);
+    if let Some(material) = &fill.fragment_material {
+        validate_fragment_material(material, &format!("{path}.fragmentMaterial"), validator);
+    }
+}
+
+fn validate_fragment_material(
+    material: &FragmentMaterialV1,
+    path: &str,
+    validator: &mut Validator,
+) {
+    validate_opaque_id(&material.shader_id, &format!("{path}.shaderId"), validator);
+    if material.revision == 0 {
+        validator.issue(format!("{path}.revision"), "must be positive");
+    }
+    if material.parameters.len() > MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 {
+        validator.issue(
+            format!("{path}.parameters"),
+            format!("accepts at most {MAX_FRAGMENT_MATERIAL_PARAMETERS_V1} scalar parameters"),
+        );
+    }
+    for (index, parameter) in material.parameters.iter().enumerate() {
+        let parameter_path = format!("{path}.parameters[{index}]");
+        validate_finite(*parameter, &parameter_path, validator);
+        if parameter.is_finite()
+            && (*parameter < f64::from(f32::MIN) || *parameter > f64::from(f32::MAX))
+        {
+            validator.issue(parameter_path, "must fit the finite f32 range");
+        }
+    }
 }
 
 fn validate_stroke_inner(
@@ -689,6 +719,18 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
             SceneGeometryV1::CubicPath { .. } => SceneCapabilityV1::CubicPathGeometry,
             _ => SceneCapabilityV1::ShapePrimitives,
         });
+        if matches!(
+            &entity.appearance,
+            SceneAppearanceV1::Vector {
+                fill: Some(FillStyleV1 {
+                    fragment_material: Some(_),
+                    ..
+                }),
+                ..
+            }
+        ) {
+            capabilities.insert(SceneCapabilityV1::FragmentMaterial);
+        }
     }
     for channel in &scene.animation_channels {
         capabilities.insert(match channel {
@@ -704,6 +746,17 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
                 SceneCapabilityV1::VectorAppearanceAnimation
             }
         });
+        if let AnimationChannelV1::VectorAppearance { keyframes, .. } = channel
+            && keyframes.iter().any(|keyframe| {
+                keyframe
+                    .value
+                    .fill
+                    .as_ref()
+                    .is_some_and(|fill| fill.fragment_material.is_some())
+            })
+        {
+            capabilities.insert(SceneCapabilityV1::FragmentMaterial);
+        }
     }
     capabilities.into_iter().collect()
 }
@@ -944,6 +997,23 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
             &format!("{path}.appearance"),
             &mut validator,
         );
+        if scene.compositing == RenderCompositingV1::ManimCairoSrgb
+            && matches!(
+                &entity.appearance,
+                SceneAppearanceV1::Vector {
+                    fill: Some(FillStyleV1 {
+                        fragment_material: Some(_),
+                        ..
+                    }),
+                    ..
+                }
+            )
+        {
+            validator.issue(
+                format!("{path}.appearance.fill.fragmentMaterial"),
+                "fragment materials require linear-light compositing",
+            );
+        }
         let appearance_matches_geometry = matches!(
             (&entity.geometry, &entity.appearance),
             (SceneGeometryV1::Group {}, SceneAppearanceV1::Group { .. })
@@ -1244,10 +1314,15 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                             format!("{path}.keyframes[0].value.fill"),
                             "vector-appearance cannot discard the entity base fill",
                         ),
-                        (Some(base_fill), Some(fill)) if base_fill.rule != fill.rule => validator.issue(
-                            format!("{path}.keyframes[0].value.fill.rule"),
-                            "vector-appearance cannot transition between fill rules",
-                        ),
+                        (Some(base_fill), Some(fill))
+                            if base_fill.rule != fill.rule
+                                || base_fill.fragment_material != fill.fragment_material =>
+                        {
+                            validator.issue(
+                                format!("{path}.keyframes[0].value.fill"),
+                                "vector-appearance cannot transition between fill rules or fragment materials",
+                            );
+                        }
                         (None, None | Some(_)) | (Some(_), Some(_)) => {}
                     }
                     match (base_stroke, &first.stroke) {
@@ -1304,11 +1379,12 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                                 );
                             } else if let (Some(fill), Some(first_fill)) =
                                 (&value.fill, &first.fill)
-                                && fill.rule != first_fill.rule
+                                && (fill.rule != first_fill.rule
+                                    || fill.fragment_material != first_fill.fragment_material)
                             {
                                 validator.issue(
-                                    format!("{value_path}.fill.rule"),
-                                    "vector-appearance cannot transition between fill rules",
+                                    format!("{value_path}.fill"),
+                                    "vector-appearance cannot transition between fill rules or fragment materials",
                                 );
                             }
                             if value.stroke.is_some() != first.stroke.is_some() {
@@ -1421,6 +1497,12 @@ fn required_render_capabilities(packet: &RenderPacketV1) -> Vec<RenderCapability
             RenderDrawV1::Path { fill, stroke, .. } => {
                 if fill.is_some() {
                     capabilities.insert(RenderCapabilityV1::CubicPathFill);
+                }
+                if fill
+                    .as_ref()
+                    .is_some_and(|fill| fill.fragment_material.is_some())
+                {
+                    capabilities.insert(RenderCapabilityV1::FragmentMaterial);
                 }
                 if stroke.is_some() {
                     capabilities.insert(RenderCapabilityV1::CubicPathStroke);
@@ -1569,6 +1651,14 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
                 ));
                 if let Some(fill) = fill {
                     validate_fill(fill, &format!("{path}.fill"), &mut validator);
+                    if packet.compositing == RenderCompositingV1::ManimCairoSrgb
+                        && fill.fragment_material.is_some()
+                    {
+                        validator.issue(
+                            format!("{path}.fill.fragmentMaterial"),
+                            "fragment materials require linear-light compositing",
+                        );
+                    }
                 }
                 if let Some(stroke) = stroke {
                     validate_stroke(stroke, &format!("{path}.stroke"), &mut validator);

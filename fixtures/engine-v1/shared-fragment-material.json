@@ -1,0 +1,18 @@
+{
+  "fill": {
+    "color": {
+      "alpha": 1.0,
+      "blue": 0.75,
+      "green": 0.5,
+      "red": 0.25
+    },
+    "fragmentMaterial": {
+      "parameters": [1.0, -2.0, 3.5],
+      "revision": 1,
+      "shaderId": "time-gradient"
+    },
+    "rule": "nonzero"
+  },
+  "renderCapability": "fragment-material",
+  "sceneCapability": "fragment-material"
+}

@@ -11,10 +11,10 @@ use lyon_tessellation::{
     StrokeOptions, StrokeTessellator, StrokeVertex, TessellationError, VertexId,
 };
 use poietra_scene_ir::{
-    AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, ImageLocalRectV1,
-    ImageSamplerV1, PointV1, RenderCameraV1, RenderCompositingV1, RenderDrawV1, RenderPacketV1,
-    RgbaColorV1, SceneGeometryV1, SceneIrV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
-    validate_render_packet_v1,
+    AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, FragmentMaterialV1,
+    ImageLocalRectV1, ImageSamplerV1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, PointV1, RenderCameraV1,
+    RenderCompositingV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneGeometryV1, SceneIrV1,
+    StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1, validate_render_packet_v1,
 };
 
 use crate::DecodedPngAssetV1;
@@ -24,6 +24,12 @@ use crate::cache::{CachedPhaseGeometryV1, PreparedGeometryCacheInputV1, Prepared
 pub const FLATTEN_TOLERANCE_PIXELS_V1: f64 = 0.25;
 /// Whole-frame vertex ceiling for the initial CPU tessellation slice.
 pub const MAX_PREPARED_VERTICES_V1: usize = 1_000_000;
+/// Maximum per-frame fragment-material draws for the one-buffer-per-draw MVP.
+pub const MAX_FRAGMENT_MATERIAL_DRAWS_PER_FRAME_V1: usize = 64;
+/// First host-admitted fragment material used by the bounded vertical slice.
+pub const TIME_GRADIENT_SHADER_ID_V1: &str = "time-gradient";
+/// Revision of [`TIME_GRADIENT_SHADER_ID_V1`] understood by this renderer.
+pub const TIME_GRADIENT_SHADER_REVISION_V1: u32 = 1;
 const MAX_FILL_SOURCE_CUBICS_PER_DRAW_V1: usize = 2_048;
 const MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1: usize = 32_768;
 const MAX_FILL_OUTPUT_VERTICES_PER_DRAW_V1: usize = 65_536;
@@ -43,6 +49,8 @@ pub enum UnsupportedDrawReasonV1 {
     ImageWithManimCairoSrgbCompositing,
     #[error("path draws must contain a solid fill or stroke")]
     MissingPaint,
+    #[error("fragment materials require linear-light compositing")]
+    FragmentMaterialWithManimCairoSrgbCompositing,
     #[error("the filled path is degenerate after bounded screen-space conversion")]
     DegenerateFill,
     #[error("the stroked path contains a degenerate cubic segment")]
@@ -117,6 +125,19 @@ pub enum PrepareFrameErrorV1 {
         "draw {draw_id} exceeded the adaptive tessellation subdivision depth of {maximum_depth}"
     )]
     TessellationDepthLimit { draw_id: String, maximum_depth: u8 },
+    #[error("draw {draw_id} references unsupported fragment material {shader_id}@{revision}")]
+    UnsupportedFragmentMaterial {
+        draw_id: String,
+        revision: u32,
+        shader_id: String,
+    },
+    #[error(
+        "draw {draw_id} exceeded the per-frame fragment material limit of {maximum_draws} draws"
+    )]
+    FragmentMaterialDrawLimit {
+        draw_id: String,
+        maximum_draws: usize,
+    },
 }
 
 /// Position-only prepared geometry. Material interleaving is deferred to the
@@ -142,11 +163,30 @@ impl PreparedGeometryVertexV1 {
 /// corresponding base Unorm view.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedMaterialV1 {
+    fragment_material: Option<PreparedFragmentMaterialV1>,
     premultiplied_linear_color: [f32; 4],
     premultiplied_srgb_color: [f32; 4],
 }
 
+/// Resolved fixed-ABI values for one host-admitted fragment material.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PreparedFragmentMaterialV1 {
+    parameters: [f32; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1],
+}
+
+impl PreparedFragmentMaterialV1 {
+    #[must_use]
+    pub const fn parameters(&self) -> &[f32; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1] {
+        &self.parameters
+    }
+}
+
 impl PreparedMaterialV1 {
+    #[must_use]
+    pub const fn fragment_material(&self) -> Option<&PreparedFragmentMaterialV1> {
+        self.fragment_material.as_ref()
+    }
+
     #[must_use]
     pub const fn premultiplied_linear_color(&self) -> [f32; 4] {
         self.premultiplied_linear_color
@@ -242,6 +282,7 @@ impl PreparedImageDrawV1 {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreparedRenderCommandV1 {
     Paint { draw_index: u32 },
+    FragmentMaterial { draw_index: u32 },
     Image { image_index: u32 },
 }
 
@@ -319,6 +360,7 @@ pub struct PreparedFrameV1 {
     geometry: PreparedGeometryPlanV1,
     materials: PreparedMaterialPlanV1,
     ordered_draws: OrderedDrawPlanV1,
+    sample_time: f32,
     scene_revision_hash: String,
     viewport: [u32; 2],
 }
@@ -367,6 +409,11 @@ impl PreparedFrameV1 {
     #[must_use]
     pub fn render_commands(&self) -> &[PreparedRenderCommandV1] {
         &self.ordered_draws.commands
+    }
+
+    #[must_use]
+    pub const fn sample_time(&self) -> f32 {
+        self.sample_time
     }
 
     #[must_use]
@@ -588,6 +635,7 @@ impl PreparedFrameV1 {
             materials: PreparedMaterialPlanV1 {
                 clear_color: [0.0, 0.0, 0.0, 1.0],
                 materials: vec![PreparedMaterialV1 {
+                    fragment_material: None,
                     premultiplied_linear_color: [0.5, 0.25, 0.0, 0.5],
                     premultiplied_srgb_color: [0.4, 0.3, 0.2, 0.5],
                 }],
@@ -603,6 +651,7 @@ impl PreparedFrameV1 {
                 }],
                 image_draws: Vec::new(),
             },
+            sample_time: 0.0,
             scene_revision_hash: "0000000000000000000000000000000000000000000000000000000000000000"
                 .to_owned(),
             viewport: [160, 90],
@@ -1458,13 +1507,44 @@ pub fn prepare_frame_with_cache_and_assets_v1(
 
 fn prepare_material(
     color: &RgbaColorV1,
+    fragment_material: Option<&FragmentMaterialV1>,
     opacity: f64,
     draw_id: &str,
 ) -> Result<PreparedMaterialV1, PrepareFrameErrorV1> {
     Ok(PreparedMaterialV1 {
+        fragment_material: fragment_material
+            .map(|material| prepare_fragment_material(material, draw_id))
+            .transpose()?,
         premultiplied_linear_color: premultiplied_linear_color(color, opacity, Some(draw_id))?,
         premultiplied_srgb_color: premultiplied_srgb_color(color, opacity, Some(draw_id))?,
     })
+}
+
+fn prepare_fragment_material(
+    material: &FragmentMaterialV1,
+    draw_id: &str,
+) -> Result<PreparedFragmentMaterialV1, PrepareFrameErrorV1> {
+    if material.shader_id != TIME_GRADIENT_SHADER_ID_V1
+        || material.revision != TIME_GRADIENT_SHADER_REVISION_V1
+    {
+        return Err(PrepareFrameErrorV1::UnsupportedFragmentMaterial {
+            draw_id: draw_id.to_owned(),
+            revision: material.revision,
+            shader_id: material.shader_id.clone(),
+        });
+    }
+    let mut parameters = [0.0; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1];
+    for (index, value) in material.parameters.iter().enumerate() {
+        let Some(parameter) = parameters.get_mut(index) else {
+            break;
+        };
+        *parameter = checked_f32(
+            *value,
+            Some(draw_id),
+            &format!("fragment material parameter {index}"),
+        )?;
+    }
+    Ok(PreparedFragmentMaterialV1 { parameters })
 }
 
 #[derive(Clone, Copy)]
@@ -2165,13 +2245,14 @@ impl PreparedFrameAccumulatorV1 {
         draw_id: &str,
         entity_id: &str,
         color: &RgbaColorV1,
+        fragment_material: Option<&FragmentMaterialV1>,
         opacity: f64,
         prepare_geometry: impl FnOnce(
             &mut Vec<PreparedGeometryVertexV1>,
             &mut Vec<u32>,
         ) -> Result<(), PrepareFrameErrorV1>,
     ) -> Result<(usize, usize), PrepareFrameErrorV1> {
-        let material = prepare_material(color, opacity, draw_id)?;
+        let material = prepare_material(color, fragment_material, opacity, draw_id)?;
         let index_start_len = self.indices.len();
         let vertex_start_len = self.vertices.len();
         let index_start =
@@ -2185,6 +2266,7 @@ impl PreparedFrameAccumulatorV1 {
         }
         let material_index =
             u32::try_from(self.materials.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        let uses_fragment_material = material.fragment_material.is_some();
         self.materials.push(material);
         let index_end =
             u32::try_from(self.indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
@@ -2197,9 +2279,12 @@ impl PreparedFrameAccumulatorV1 {
             material_index,
             vertex_range: vertex_start..vertex_end,
         });
-        self.commands.push(PreparedRenderCommandV1::Paint {
-            draw_index: u32::try_from(self.draws.len() - 1)
-                .map_err(|_| PrepareFrameErrorV1::IndexRange)?,
+        let draw_index =
+            u32::try_from(self.draws.len() - 1).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        self.commands.push(if uses_fragment_material {
+            PreparedRenderCommandV1::FragmentMaterial { draw_index }
+        } else {
+            PreparedRenderCommandV1::Paint { draw_index }
         });
         self.tessellation_calls = self
             .tessellation_calls
@@ -2234,6 +2319,7 @@ impl PreparedFrameAccumulatorV1 {
         draw_id: &str,
         entity_id: &str,
         color: &RgbaColorV1,
+        fragment_material: Option<&FragmentMaterialV1>,
         opacity: f64,
         geometry: &CachedPhaseGeometryV1,
     ) -> Result<(), PrepareFrameErrorV1> {
@@ -2247,7 +2333,7 @@ impl PreparedFrameAccumulatorV1 {
                 maximum_vertices: MAX_PREPARED_VERTICES_V1,
             });
         }
-        let material = prepare_material(color, opacity, draw_id)?;
+        let material = prepare_material(color, fragment_material, opacity, draw_id)?;
         let index_start =
             u32::try_from(self.indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
         let vertex_start =
@@ -2267,6 +2353,7 @@ impl PreparedFrameAccumulatorV1 {
         self.vertices.extend_from_slice(geometry.vertices());
         let material_index =
             u32::try_from(self.materials.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        let uses_fragment_material = material.fragment_material.is_some();
         self.materials.push(material);
         self.draws.push(PreparedDrawV1 {
             draw_id: draw_id.to_owned(),
@@ -2277,9 +2364,12 @@ impl PreparedFrameAccumulatorV1 {
             vertex_range: vertex_start
                 ..u32::try_from(vertex_end_len).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
         });
-        self.commands.push(PreparedRenderCommandV1::Paint {
-            draw_index: u32::try_from(self.draws.len() - 1)
-                .map_err(|_| PrepareFrameErrorV1::IndexRange)?,
+        let draw_index =
+            u32::try_from(self.draws.len() - 1).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        self.commands.push(if uses_fragment_material {
+            PreparedRenderCommandV1::FragmentMaterial { draw_index }
+        } else {
+            PreparedRenderCommandV1::Paint { draw_index }
         });
         Ok(())
     }
@@ -2348,6 +2438,7 @@ fn append_fill_phase_v1(
             input.cache.draw_id,
             input.entity_id,
             &fill.color,
+            fill.fragment_material.as_ref(),
             input.opacity,
             cached,
         );
@@ -2356,6 +2447,7 @@ fn append_fill_phase_v1(
         input.cache.draw_id,
         input.entity_id,
         &fill.color,
+        fill.fragment_material.as_ref(),
         input.opacity,
         |vertices, indices| {
             prepare_fill_geometry(
@@ -2409,6 +2501,7 @@ fn append_stroke_phase_v1(
             input.cache.draw_id,
             input.entity_id,
             &stroke.color,
+            None,
             input.opacity,
             cached,
         );
@@ -2417,6 +2510,7 @@ fn append_stroke_phase_v1(
         input.cache.draw_id,
         input.entity_id,
         &stroke.color,
+        None,
         input.opacity,
         |vertices, indices| {
             prepare_stroke_geometry(
@@ -2571,12 +2665,44 @@ pub fn tessellate_validated_frame_with_cache_and_assets_v1(
     tessellate_validated_frame_inner_v1(validated, Some(cache), Some(assets))
 }
 
+fn validate_fragment_material_frame_v1(packet: &RenderPacketV1) -> Result<(), PrepareFrameErrorV1> {
+    let mut material_draws = 0usize;
+    for draw in &packet.draws {
+        let RenderDrawV1::Path {
+            fill:
+                Some(FillStyleV1 {
+                    fragment_material: Some(_),
+                    ..
+                }),
+            ..
+        } = draw
+        else {
+            continue;
+        };
+        if packet.compositing == RenderCompositingV1::ManimCairoSrgb {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw.draw_id().to_owned(),
+                reason: UnsupportedDrawReasonV1::FragmentMaterialWithManimCairoSrgbCompositing,
+            });
+        }
+        material_draws += 1;
+        if material_draws > MAX_FRAGMENT_MATERIAL_DRAWS_PER_FRAME_V1 {
+            return Err(PrepareFrameErrorV1::FragmentMaterialDrawLimit {
+                draw_id: draw.draw_id().to_owned(),
+                maximum_draws: MAX_FRAGMENT_MATERIAL_DRAWS_PER_FRAME_V1,
+            });
+        }
+    }
+    Ok(())
+}
+
 fn tessellate_validated_frame_inner_v1(
     validated: ValidatedRenderPacketV1<'_>,
     mut cache: Option<&mut PreparedGeometryCacheV1>,
     assets: Option<&dyn DecodedPngAssetResolverV1>,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     let packet = validated.packet;
+    validate_fragment_material_frame_v1(packet)?;
     if packet.compositing == RenderCompositingV1::ManimCairoSrgb
         && let Some(draw) = packet
             .draws
@@ -2652,6 +2778,7 @@ fn tessellate_validated_frame_inner_v1(
             draws: prepared.draws,
             image_draws: prepared.image_draws,
         },
+        sample_time: checked_f32(packet.sample_time, None, "sample time")?,
         scene_revision_hash: packet.scene_revision_hash.clone(),
         viewport: [packet.viewport.width_px, packet.viewport.height_px],
     })
@@ -2672,7 +2799,7 @@ mod tests {
             green: 0.25,
             red: 0.5,
         };
-        let material = prepare_material(&color, 0.5, "draw:test").unwrap();
+        let material = prepare_material(&color, None, 0.5, "draw:test").unwrap();
         let alpha = 0.4;
 
         for (actual, expected) in material
@@ -2986,6 +3113,7 @@ mod tests {
                 green: 0.0,
                 red: 1.0,
             },
+            None,
             1.0,
             |vertices, indices| {
                 vertices.push(PreparedGeometryVertexV1 {

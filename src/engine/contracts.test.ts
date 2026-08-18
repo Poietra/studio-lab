@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -5,9 +6,12 @@ import {
   assetManifestV1Schema,
   countLoweredSceneGeometrySegmentsV1,
   digestAssetManifestV1,
+  fillStyleV1Schema,
   parseVerifiedSceneIrBundleV1,
+  renderCapabilityV1Schema,
   renderViewportV1Schema,
   type SceneIrV1,
+  sceneCapabilityV1Schema,
   sceneIrBundleV1Schema,
   sceneIrV1Schema,
 } from "./contracts";
@@ -162,6 +166,54 @@ function scene(assets: AssetManifestV1): SceneIrV1 {
 }
 
 describe("Poietra Engine v1 contracts", () => {
+  it("accepts the fragment material wire emitted by the Rust contract", async () => {
+    const fixture = JSON.parse(
+      await readFile(new URL("../../fixtures/engine-v1/shared-fragment-material.json", import.meta.url), "utf8"),
+    );
+
+    expect(fillStyleV1Schema.parse(fixture.fill)).toEqual(fixture.fill);
+    expect(sceneCapabilityV1Schema.parse(fixture.sceneCapability)).toBe("fragment-material");
+    expect(renderCapabilityV1Schema.parse(fixture.renderCapability)).toBe("fragment-material");
+  });
+
+  it("bounds fragment material identifiers, revisions, and f32 parameters", () => {
+    const valid = {
+      color: white,
+      fragmentMaterial: {
+        parameters: Array.from({ length: 8 }, (_, index) => index),
+        revision: 1,
+        shaderId: "time-gradient",
+      },
+      rule: "nonzero",
+    };
+
+    expect(fillStyleV1Schema.safeParse(valid).success).toBe(true);
+    expect(
+      fillStyleV1Schema.safeParse({
+        ...valid,
+        fragmentMaterial: { ...valid.fragmentMaterial, parameters: [...valid.fragmentMaterial.parameters, 8] },
+      }).success,
+    ).toBe(false);
+    expect(
+      fillStyleV1Schema.safeParse({
+        ...valid,
+        fragmentMaterial: { ...valid.fragmentMaterial, parameters: [Number.MAX_VALUE] },
+      }).success,
+    ).toBe(false);
+    expect(
+      fillStyleV1Schema.safeParse({
+        ...valid,
+        fragmentMaterial: { ...valid.fragmentMaterial, revision: 0 },
+      }).success,
+    ).toBe(false);
+    expect(
+      fillStyleV1Schema.safeParse({
+        ...valid,
+        fragmentMaterial: { ...valid.fragmentMaterial, shaderId: " time-gradient" },
+      }).success,
+    ).toBe(false);
+  });
+
   it("accepts and integrity-checks a complete Scene IR bundle", async () => {
     const assets = await manifest();
     const sceneIr = scene(assets);

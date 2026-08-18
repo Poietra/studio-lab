@@ -10,10 +10,13 @@ use crate::{
     PreparedFrameV1, PreparedRenderCommandV1, build_gpu_upload_plan_v1,
 };
 use poietra_scene_ir::{MAX_VIEWPORT_PIXELS_V1, RenderCompositingV1};
+use wgpu::util::DeviceExt;
 
 const VERTEX_STRIDE: wgpu::BufferAddress = VERTEX_ENCODED_SIZE_V1 as wgpu::BufferAddress;
 const RGBA8_BYTES_PER_SAMPLE_V1: u64 = 4;
 const PORTABLE_AA_SCALE_V1: u32 = 2;
+const FRAGMENT_MATERIAL_UNIFORM_FLOATS_V1: usize = 12;
+const FRAGMENT_MATERIAL_UNIFORM_BYTES_V1: u64 = 48;
 
 /// Maximum logical bytes for either retained antialias color attachment under
 /// the Scene IR viewport-pixel limit.
@@ -271,6 +274,65 @@ fn create_portable_antialias_pipeline_v1(
     (bind_group_layout, pipeline)
 }
 
+fn create_fragment_material_pipeline_v1(
+    device: &wgpu::Device,
+    target_format: wgpu::TextureFormat,
+) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("poietra fragment material host ABI layout v1"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: wgpu::BufferSize::new(FRAGMENT_MATERIAL_UNIFORM_BYTES_V1),
+            },
+            count: None,
+        }],
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("poietra fragment material pipeline layout v1"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
+    });
+    let shader = device.create_shader_module(wgpu::include_wgsl!("time_gradient.wgsl"));
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("poietra time-gradient fragment material pipeline v1"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: VERTEX_STRIDE,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &VERTEX_ATTRIBUTES,
+            })],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(PREMULTIPLIED_ALPHA_BLEND),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    (bind_group_layout, pipeline)
+}
+
 fn multisample_color_target_bytes_v1(
     width_px: u32,
     height_px: u32,
@@ -411,9 +473,110 @@ fn paint_buffers<'arena>(
         ))
 }
 
+#[derive(Debug)]
+struct FragmentMaterialFrameGpuV1 {
+    bind_groups: Vec<wgpu::BindGroup>,
+    draw_indices: Vec<u32>,
+    uniform_buffers: Vec<wgpu::Buffer>,
+}
+
+impl FragmentMaterialFrameGpuV1 {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "the fixed shader ABI exposes viewport dimensions as f32"
+    )]
+    fn prepare(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        frame: &PreparedFrameV1,
+    ) -> Result<Self, GpuUploadPlanErrorV1> {
+        let mut bind_groups = Vec::new();
+        let mut draw_indices = Vec::new();
+        let mut uniform_buffers = Vec::new();
+        for command in frame.render_commands() {
+            let PreparedRenderCommandV1::FragmentMaterial { draw_index } = *command else {
+                continue;
+            };
+            let draw = frame
+                .draws()
+                .get(usize::try_from(draw_index).map_err(|_| {
+                    GpuUploadPlanErrorV1::Inconsistent(
+                        "fragment material draw index does not fit usize",
+                    )
+                })?)
+                .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                    "fragment material command references an unknown draw",
+                ))?;
+            let material = frame
+                .material_for_draw(draw)
+                .and_then(|material| material.fragment_material())
+                .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                    "fragment material command references a solid material",
+                ))?;
+            let [width_px, height_px] = frame.viewport();
+            let mut values = [0.0_f32; FRAGMENT_MATERIAL_UNIFORM_FLOATS_V1];
+            values[0] = width_px as f32;
+            values[1] = height_px as f32;
+            values[2] = frame.sample_time();
+            values[4..].copy_from_slice(material.parameters());
+            let mut bytes = Vec::with_capacity(FRAGMENT_MATERIAL_UNIFORM_FLOATS_V1 * 4);
+            for value in values {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("poietra fragment material host ABI uniform v1"),
+                contents: &bytes,
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("poietra fragment material host ABI binding v1"),
+                layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: buffer.as_entire_binding(),
+                }],
+            });
+            uniform_buffers.push(buffer);
+            bind_groups.push(bind_group);
+            draw_indices.push(draw_index);
+        }
+        Ok(Self {
+            bind_groups,
+            draw_indices,
+            uniform_buffers,
+        })
+    }
+
+    fn bind_group(&self, index: usize, draw_index: u32) -> Option<&wgpu::BindGroup> {
+        (self.draw_indices.get(index) == Some(&draw_index))
+            .then(|| self.bind_groups.get(index))
+            .flatten()
+    }
+
+    fn buffer_creations(&self) -> Result<u32, GpuUploadPlanErrorV1> {
+        u32::try_from(self.uniform_buffers.len()).map_err(|_| {
+            GpuUploadPlanErrorV1::Inconsistent("fragment material buffer count exceeds u32")
+        })
+    }
+
+    fn upload_bytes(&self) -> Result<u64, GpuUploadPlanErrorV1> {
+        u64::try_from(self.uniform_buffers.len())
+            .ok()
+            .and_then(|count| count.checked_mul(FRAGMENT_MATERIAL_UNIFORM_BYTES_V1))
+            .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)
+    }
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "one ordered pass switches among solid, fragment-material, and image pipelines"
+)]
 fn record_ordered_draws_v1(
     pass: &mut wgpu::RenderPass<'_>,
     paint_pipeline: &wgpu::RenderPipeline,
+    fragment_material_pipeline: &wgpu::RenderPipeline,
+    fragment_material_frame: &FragmentMaterialFrameGpuV1,
     paint_buffers: Option<(&wgpu::Buffer, &wgpu::Buffer)>,
     image_pipeline: &ImagePipelineV1,
     image_texture_cache: &ImageTextureCacheV1,
@@ -422,6 +585,7 @@ fn record_ordered_draws_v1(
 ) -> Result<u64, GpuUploadPlanErrorV1> {
     let mut command_index = 0usize;
     let mut draw_calls = 0u64;
+    let mut fragment_material_index = 0usize;
     while let Some(command) = frame.render_commands().get(command_index) {
         match *command {
             PreparedRenderCommandV1::Paint { draw_index } => {
@@ -511,6 +675,40 @@ fn record_ordered_draws_v1(
                         ))?;
                 command_index += 1;
             }
+            PreparedRenderCommandV1::FragmentMaterial { draw_index } => {
+                let (vertex_buffer, index_buffer) =
+                    paint_buffers.ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                        "fragment material command has no staged path buffers",
+                    ))?;
+                let draw = frame
+                    .draws()
+                    .get(usize::try_from(draw_index).map_err(|_| {
+                        GpuUploadPlanErrorV1::Inconsistent(
+                            "fragment material draw index does not fit usize",
+                        )
+                    })?)
+                    .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                        "fragment material command references an unknown draw",
+                    ))?;
+                let bind_group = fragment_material_frame
+                    .bind_group(fragment_material_index, draw_index)
+                    .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                        "fragment material command has no matching host ABI binding",
+                    ))?;
+                pass.set_pipeline(fragment_material_pipeline);
+                pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+                pass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_bind_group(0, bind_group, &[]);
+                pass.draw_indexed(draw.index_range().clone(), 0, 0..1);
+                fragment_material_index += 1;
+                command_index += 1;
+                draw_calls =
+                    draw_calls
+                        .checked_add(1)
+                        .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                            "GPU draw-call count overflowed",
+                        ))?;
+            }
         }
     }
     Ok(draw_calls)
@@ -525,6 +723,8 @@ pub struct WgpuFillRendererV1 {
     arena: GpuBufferArenaV1,
     cairo_pipeline: wgpu::RenderPipeline,
     cairo_target_format: wgpu::TextureFormat,
+    fragment_material_bind_group_layout: wgpu::BindGroupLayout,
+    fragment_material_pipeline: wgpu::RenderPipeline,
     image_pipeline: ImagePipelineV1,
     image_texture_cache: ImageTextureCacheV1,
     multisample_target: Option<MultisampleColorTargetV1>,
@@ -622,6 +822,8 @@ impl WgpuFillRendererV1 {
         )?;
         let (portable_aa_bind_group_layout, portable_aa_pipeline) =
             create_portable_antialias_pipeline_v1(device, target_format);
+        let (fragment_material_bind_group_layout, fragment_material_pipeline) =
+            create_fragment_material_pipeline_v1(device, target_format);
         let shader = device.create_shader_module(wgpu::include_wgsl!("fill.wgsl"));
         let create_paint_pipeline = |label, format, sample_count| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -675,6 +877,8 @@ impl WgpuFillRendererV1 {
             arena: GpuBufferArenaV1::default(),
             cairo_pipeline,
             cairo_target_format,
+            fragment_material_bind_group_layout,
+            fragment_material_pipeline,
             image_pipeline: ImagePipelineV1::new(device, target_format),
             image_texture_cache: ImageTextureCacheV1::with_limits(image_texture_cache_limits),
             multisample_target: None,
@@ -862,6 +1066,7 @@ impl WgpuFillRendererV1 {
 
         let mut evidence = RenderStageEvidenceV1::empty();
         let has_geometry = !frame.indices().is_empty() || !frame.image_draws().is_empty();
+        let mut fragment_material_frame = None;
         let mut image_frame = None;
         if has_geometry {
             evidence.geometry_stages_executed = true;
@@ -905,6 +1110,20 @@ impl WgpuFillRendererV1 {
                     .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)?;
                 debug_assert!(arena_stats.capacity_bytes > 0);
             }
+            let prepared_fragment_material_frame = FragmentMaterialFrameGpuV1::prepare(
+                device,
+                &self.fragment_material_bind_group_layout,
+                frame,
+            )?;
+            evidence.buffer_creations = evidence
+                .buffer_creations
+                .checked_add(prepared_fragment_material_frame.buffer_creations()?)
+                .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)?;
+            evidence.upload_bytes = evidence
+                .upload_bytes
+                .checked_add(prepared_fragment_material_frame.upload_bytes()?)
+                .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)?;
+            fragment_material_frame = Some(prepared_fragment_material_frame);
             if let Some((image_upload, image_resources)) = image_upload.zip(image_resources) {
                 let uploaded = upload_image_frame_v1(device, queue, image_upload, image_resources)?;
                 evidence.buffer_creations = evidence
@@ -979,6 +1198,12 @@ impl WgpuFillRendererV1 {
                 evidence.draw_calls = record_ordered_draws_v1(
                     &mut pass,
                     paint_pipeline,
+                    &self.fragment_material_pipeline,
+                    fragment_material_frame
+                        .as_ref()
+                        .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                            "drawable frame has no fragment material binding plan",
+                        ))?,
                     paint_buffers(&self.arena, frame)?,
                     &self.image_pipeline,
                     &self.image_texture_cache,

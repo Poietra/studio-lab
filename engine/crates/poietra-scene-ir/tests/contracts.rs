@@ -109,6 +109,7 @@ fn filled_path_draw(paint_order: u32) -> RenderDrawV1 {
         entity_id: "path".to_owned(),
         fill: Some(FillStyleV1 {
             color: black(),
+            fragment_material: None,
             rule: FillRuleV1::NonZero,
         }),
         opacity: 1.0,
@@ -599,6 +600,106 @@ fn render_packet_enforces_draw_order_paint_and_capabilities() {
 }
 
 #[test]
+fn fragment_material_contract_is_bounded_and_linear_light_only() {
+    let material = FragmentMaterialV1 {
+        parameters: vec![2.0, 0.5, 0.25, 0.1],
+        revision: 1,
+        shader_id: "time-gradient".to_owned(),
+    };
+    let mut packet = empty_packet();
+    let mut draw = filled_path_draw(0);
+    let RenderDrawV1::Path {
+        fill: Some(fill), ..
+    } = &mut draw
+    else {
+        unreachable!()
+    };
+    fill.fragment_material = Some(material.clone());
+    packet.draws.push(draw);
+    packet.required_capabilities = vec![
+        RenderCapabilityV1::CubicPathFill,
+        RenderCapabilityV1::FragmentMaterial,
+    ];
+    validate_render_packet_v1(&packet).unwrap();
+    let wire = serde_json::to_value(&packet).unwrap();
+    assert_eq!(
+        wire["draws"][0]["fill"]["fragmentMaterial"]["shaderId"],
+        "time-gradient"
+    );
+
+    let mut too_many = packet.clone();
+    let RenderDrawV1::Path {
+        fill: Some(fill), ..
+    } = &mut too_many.draws[0]
+    else {
+        unreachable!()
+    };
+    fill.fragment_material.as_mut().unwrap().parameters =
+        vec![0.0; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 + 1];
+    assert!(
+        validate_render_packet_v1(&too_many)
+            .unwrap_err()
+            .contains_message("at most 8 scalar parameters")
+    );
+
+    let mut zero_revision = packet.clone();
+    let RenderDrawV1::Path {
+        fill: Some(fill), ..
+    } = &mut zero_revision.draws[0]
+    else {
+        unreachable!()
+    };
+    fill.fragment_material.as_mut().unwrap().revision = 0;
+    assert!(
+        validate_render_packet_v1(&zero_revision)
+            .unwrap_err()
+            .contains_message("must be positive")
+    );
+
+    let mut cairo = packet;
+    cairo.compositing = RenderCompositingV1::ManimCairoSrgb;
+    assert!(
+        validate_render_packet_v1(&cairo)
+            .unwrap_err()
+            .contains_message("fragment materials require linear-light compositing")
+    );
+}
+
+#[test]
+fn fragment_material_wire_fixture_is_emitted_by_the_rust_contract() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../fixtures/engine-v1/shared-fragment-material.json");
+    let fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path).expect("shared fixture must be readable"))
+            .expect("shared fixture must be JSON");
+    let fill = FillStyleV1 {
+        color: RgbaColorV1 {
+            alpha: 1.0,
+            blue: 0.75,
+            green: 0.5,
+            red: 0.25,
+        },
+        fragment_material: Some(FragmentMaterialV1 {
+            parameters: vec![1.0, -2.0, 3.5],
+            revision: 1,
+            shader_id: "time-gradient".to_owned(),
+        }),
+        rule: FillRuleV1::NonZero,
+    };
+    let rust_wire = json!({
+        "fill": serde_json::to_value(&fill).unwrap(),
+        "renderCapability": serde_json::to_value(RenderCapabilityV1::FragmentMaterial).unwrap(),
+        "sceneCapability": serde_json::to_value(SceneCapabilityV1::FragmentMaterial).unwrap(),
+    });
+
+    assert_eq!(fixture, rust_wire);
+    assert_eq!(
+        serde_json::from_value::<FillStyleV1>(fixture["fill"].clone()).unwrap(),
+        fill
+    );
+}
+
+#[test]
 fn representative_scene_semantics_are_fail_closed() {
     let scene = empty_scene();
     validate_scene_ir_v1(&scene).unwrap();
@@ -682,6 +783,7 @@ fn singular_affine_empty_draw_requires_a_singular_transform_and_matching_channel
         appearance: SceneAppearanceV1::Vector {
             fill: Some(FillStyleV1 {
                 color: black(),
+                fragment_material: None,
                 rule: FillRuleV1::NonZero,
             }),
             opacity: 1.0,

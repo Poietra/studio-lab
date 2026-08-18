@@ -1818,6 +1818,7 @@ fn append_created_entity(
         transparent.alpha = 0.0;
         *fill = Some(FillStyleV1 {
             color: transparent,
+            fragment_material: None,
             rule: FillRuleV1::NonZero,
         });
     }
@@ -1877,6 +1878,7 @@ fn append_created_entity(
             if let Some(color) = &entity.fill_color {
                 *fill = Some(FillStyleV1 {
                     color: color.clone(),
+                    fragment_material: None,
                     rule: FillRuleV1::NonZero,
                 });
             }

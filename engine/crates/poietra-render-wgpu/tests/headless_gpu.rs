@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use support::{
     PixelReference, PixelReferenceSet, empty_render_packet, generic_fill_fixture,
     generic_stroke_fixture, image_draw, sampled_packet, solid_rectangle_draw,
-    straight_stroke_packet, verified_rgba_png,
+    straight_stroke_packet, time_gradient_paint_order_packet, verified_rgba_png,
 };
 
 const BYTES_PER_PIXEL: u32 = 4;
@@ -1053,6 +1053,54 @@ fn renders_shared_fixture_with_fallback_adapter() {
         padded_bytes_per_row,
         &rgba,
         [extent.width, extent.height],
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn renders_solid_fragment_solid_in_order_and_samples_scene_time() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+
+    let (first_texture, first_extent) = render_packet(
+        &device,
+        &queue,
+        &mut renderer,
+        &time_gradient_paint_order_packet(0.0),
+    );
+    let (_, first) = readback_texture(&device, &queue, &first_texture, first_extent);
+    let (later_texture, later_extent) = render_packet(
+        &device,
+        &queue,
+        &mut renderer,
+        &time_gradient_paint_order_packet(0.25),
+    );
+    let (_, later) = readback_texture(&device, &queue, &later_texture, later_extent);
+
+    assert_eq!(pixel(&first, 32, 1, 1), [255, 0, 0, 255]);
+    assert_eq!(pixel(&later, 32, 1, 1), [255, 0, 0, 255]);
+    assert_eq!(pixel(&first, 32, 16, 8), [0, 0, 255, 255]);
+    assert_eq!(pixel(&later, 32, 16, 8), [0, 0, 255, 255]);
+    let first_material_pixel = pixel(&first, 32, 6, 4);
+    let later_material_pixel = pixel(&later, 32, 6, 4);
+    assert_ne!(first_material_pixel, later_material_pixel);
+    assert_eq!(first_material_pixel[0], first_material_pixel[1]);
+    assert_eq!(first_material_pixel[1], first_material_pixel[2]);
+    assert_eq!(later_material_pixel[0], later_material_pixel[1]);
+    assert_eq!(later_material_pixel[1], later_material_pixel[2]);
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
     );
 }
 

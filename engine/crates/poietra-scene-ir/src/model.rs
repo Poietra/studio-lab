@@ -268,10 +268,33 @@ pub enum FillRuleV1 {
     NonZero,
 }
 
+/// Maximum scalar parameters exposed to one fragment material.
+pub const MAX_FRAGMENT_MATERIAL_PARAMETERS_V1: usize = 8;
+
+/// Project-local reference to one host-admitted fragment material.
+///
+/// Scene IR carries no WGSL source. The renderer resolves `shader_id` and
+/// `revision` against its own bounded registry and exposes `parameters` through
+/// a fixed host ABI.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FragmentMaterialV1 {
+    pub parameters: Vec<f64>,
+    #[serde(deserialize_with = "deserialize_js_safe_u32")]
+    pub revision: u32,
+    pub shader_id: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FillStyleV1 {
     pub color: RgbaColorV1,
+    #[serde(
+        default,
+        rename = "fragmentMaterial",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fragment_material: Option<FragmentMaterialV1>,
     pub rule: FillRuleV1,
 }
 
@@ -716,6 +739,8 @@ pub enum SceneCapabilityV1 {
     CameraAnimation,
     #[serde(rename = "cubic-path-geometry")]
     CubicPathGeometry,
+    #[serde(rename = "fragment-material")]
+    FragmentMaterial,
     #[serde(rename = "logical-group")]
     LogicalGroup,
     #[serde(rename = "motion-path-animation")]
@@ -988,6 +1013,8 @@ pub enum RenderCapabilityV1 {
     CubicPathFill,
     #[serde(rename = "cubic-path-stroke")]
     CubicPathStroke,
+    #[serde(rename = "fragment-material")]
+    FragmentMaterial,
     #[serde(rename = "png-image")]
     PngImage,
 }

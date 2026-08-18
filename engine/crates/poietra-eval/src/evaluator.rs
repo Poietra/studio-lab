@@ -329,6 +329,7 @@ fn interpolate_vector_appearance(
         (None, None) => None,
         (Some(left), Some(right)) => Some(FillStyleV1 {
             color: interpolate_color(&left.color, &right.color, progress),
+            fragment_material: left.fragment_material.clone(),
             rule: left.rule,
         }),
         (None, Some(_)) | (Some(_), None) => {
@@ -637,6 +638,12 @@ fn render_capabilities(draws: &[RenderDrawV1]) -> Vec<RenderCapabilityV1> {
                 if fill.is_some() {
                     capabilities.insert(RenderCapabilityV1::CubicPathFill);
                 }
+                if fill
+                    .as_ref()
+                    .is_some_and(|fill| fill.fragment_material.is_some())
+                {
+                    capabilities.insert(RenderCapabilityV1::FragmentMaterial);
+                }
                 if stroke.is_some() {
                     capabilities.insert(RenderCapabilityV1::CubicPathStroke);
                 }
@@ -943,6 +950,7 @@ mod tests {
                 appearance: SceneAppearanceV1::Vector {
                     fill: Some(FillStyleV1 {
                         color: color(1.0, 0.0, 0.0, 1.0),
+                        fragment_material: None,
                         rule: FillRuleV1::NonZero,
                     }),
                     opacity: 1.0,
