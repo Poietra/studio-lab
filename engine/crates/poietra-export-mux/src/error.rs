@@ -13,6 +13,13 @@ pub enum ExportMuxErrorV1 {
         /// Parser diagnostic for the rejected bytes.
         detail: String,
     },
+    /// The requested Opus decoder configuration is outside the closed
+    /// mono/stereo 48 kHz mapping-family-zero lane.
+    #[error("Opus decoder configuration is unsupported: {detail}")]
+    UnsupportedOpusConfiguration {
+        /// Which fixed Opus constraint was violated.
+        detail: String,
+    },
     /// The provenance payload exceeds the v1 bound.
     #[error(
         "provenance payload is {actual_bytes} bytes; the v1 bound is {MAX_PROVENANCE_BYTES_V1}"
@@ -71,6 +78,13 @@ pub enum ExportMuxErrorV1 {
         /// The configured bound.
         max_sample_count: u32,
     },
+    /// An audio packet was supplied to a video-only session.
+    #[error("the mux session was not configured with an Opus track")]
+    AudioNotConfigured,
+    /// Audio has already started, so another video sample would break the
+    /// closed video-then-audio layout.
+    #[error("video samples cannot be appended after the first audio sample")]
+    VideoSampleAfterAudio,
     /// A sample carried no bytes.
     #[error("a sample must carry at least one byte")]
     EmptySample,
@@ -86,9 +100,27 @@ pub enum ExportMuxErrorV1 {
         /// The unrepresentable duration in media-timescale ticks.
         ticks: u64,
     },
+    /// The sum or conversion of Opus sample durations overflowed.
+    #[error("the Opus track duration exceeds the supported range")]
+    AudioDurationOverflow,
+    /// Encoded Opus media does not cover decoder priming plus the full video
+    /// presentation interval.
+    #[error(
+        "the Opus track has {available_samples} samples but needs at least \
+         {required_samples} to cover pre-skip and the video duration"
+    )]
+    AudioTooShort {
+        /// Total encoded Opus duration at 48 kHz.
+        available_samples: u64,
+        /// Pre-skip plus the video presentation duration at 48 kHz.
+        required_samples: u64,
+    },
     /// `finish` was called before any sample was appended.
     #[error("no samples were appended; an empty movie is not a valid export")]
     NoSamples,
+    /// An Opus track was configured but no packet was appended.
+    #[error("an Opus-enabled mux session requires at least one audio sample")]
+    NoAudioSamples,
     /// The container metadata could not be encoded.
     #[error("the container structure could not be encoded: {detail}")]
     ContainerEncoding {

@@ -1,16 +1,15 @@
 //! Progressive MP4 (ISO BMFF) muxing for Poietra's client-side export lane.
 //!
-//! This crate frames a sequence of already-encoded H.264 samples — as produced
-//! by a `WebCodecs` `VideoEncoder` in `avc` bitstream format — into an MP4 byte
-//! stream on a caller-provided [`std::io::Write`] sink. It never runs an
-//! encoder and never interprets media bytes; it only writes the container.
+//! This crate frames already-encoded H.264 samples and, optionally, raw Opus
+//! packets from `WebCodecs` into an MP4 byte stream on a caller-provided
+//! [`std::io::Write`] sink. It never runs an encoder or retains media bytes.
 //!
 //! # Container layout decision: `moov` placement (#720 / #693)
 //!
 //! The muxer emits, in a single forward pass:
 //!
 //! ```text
-//! ftyp | uuid (provenance) | mdat (sample 0) | mdat (sample 1) | ... | moov
+//! ftyp | uuid | video mdat... | optional audio mdat... | moov
 //! ```
 //!
 //! **Decision: media-first with `moov` at the end of the file.** The v1 use
@@ -53,6 +52,8 @@
 //!   whose 16-byte user type is the ASCII label [`PROVENANCE_UUID_V1`]
 //!   (`poietra-prov-v01`), so hex dumps identify it immediately. The payload
 //!   is opaque to this crate and bounded by [`MAX_PROVENANCE_BYTES_V1`].
+//! - Optional audio uses mono/stereo Opus at 48 kHz. One edit list trims
+//!   decoder pre-skip and encoded tail padding to the video duration.
 //!
 //! # Verification
 //!
@@ -73,10 +74,11 @@ mod verify;
 
 pub use error::ExportMuxErrorV1;
 pub use session::{
-    ColorParametersV1, EncodedSampleV1, ExportMuxConfigV1, ExportMuxSessionV1,
-    MAX_PROVENANCE_BYTES_V1, MAX_SAMPLE_TABLE_ENTRIES_V1, PROVENANCE_UUID_V1, VideoParametersV1,
+    ColorParametersV1, EncodedAudioSampleV1, EncodedSampleV1, ExportMuxConfigV1,
+    ExportMuxSessionV1, MAX_PROVENANCE_BYTES_V1, MAX_SAMPLE_TABLE_ENTRIES_V1, OPUS_SAMPLE_RATE,
+    OpusParametersV1, PROVENANCE_UUID_V1, VideoParametersV1,
 };
 pub use verify::{
     ExportMp4StructureV1, ExportMp4VerifyErrorV1, MAX_VERIFIED_EXPORT_MP4_BYTES_V1,
-    verify_export_mp4_v1,
+    OpusAudioStructureV1, verify_export_mp4_v1,
 };

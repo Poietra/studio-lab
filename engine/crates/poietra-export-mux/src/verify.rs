@@ -1,10 +1,13 @@
 use mp4_atom::{
-    Atom, Avc1, Codec, Colr, Decode, Encode, FourCC, Ftyp, Matrix, Moov, StscEntry, StszSamples,
-    Trak,
+    AnySampleGroupEntry, Atom, Avc1, Codec, Colr, Decode, Encode, FourCC, Ftyp, Matrix, Moov, Opus,
+    StscEntry, StszSamples, Trak,
 };
 
-use crate::MAX_SAMPLE_TABLE_ENTRIES_V1;
-use crate::session::{ColorParametersV1, MAX_PROVENANCE_BYTES_V1, PROVENANCE_UUID_V1};
+use crate::session::{
+    ColorParametersV1, MAX_PROVENANCE_BYTES_V1, OPUS_PACKET_DURATION_SAMPLES, OPUS_ROLL_DISTANCE,
+    PROVENANCE_UUID_V1, ROLL_GROUPING_TYPE,
+};
+use crate::{MAX_SAMPLE_TABLE_ENTRIES_V1, OPUS_SAMPLE_RATE};
 
 /// Upper bound for a candidate MP4 handed to [`verify_export_mp4_v1`], in
 /// bytes. It matches the 128 MiB output cap of the closed v1 export profile
@@ -53,6 +56,28 @@ pub struct ExportMp4StructureV1 {
     /// Opaque provenance payload of the labeled `uuid` box, without the
     /// 16-byte [`PROVENANCE_UUID_V1`] user type.
     pub provenance: Vec<u8>,
+    /// Optional Opus track structure. `None` preserves the video-only export
+    /// contract.
+    pub audio: Option<OpusAudioStructureV1>,
+}
+
+/// Measured structure of the optional, closed-profile Opus track.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpusAudioStructureV1 {
+    /// Mono or stereo output channel count.
+    pub channels: u8,
+    /// Fixed Opus clock, always 48 kHz.
+    pub sample_rate: u32,
+    /// Decoder priming samples skipped by the edit list.
+    pub pre_skip: u16,
+    /// Decoder output gain copied from `dOps`.
+    pub output_gain: i16,
+    /// Number of encoded Opus packets.
+    pub sample_count: u64,
+    /// Total encoded duration in 48 kHz samples.
+    pub encoded_duration_samples: u64,
+    /// Encoded tail removed so presentation ends with the video track.
+    pub end_trim_samples: u64,
 }
 
 /// A candidate client-export MP4 failed the v1 structural verification.
@@ -147,11 +172,11 @@ struct TopLevelAtomSpan {
     header_bytes: usize,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct SampleTableSummary {
     sample_count: u64,
     duration_ticks: u64,
-    frame_rate: u32,
+    media_indices: Vec<usize>,
 }
 
 /// Verifies that `bytes` are one complete MP4 exactly as
@@ -181,23 +206,52 @@ pub fn verify_export_mp4_v1(bytes: &[u8]) -> Result<ExportMp4StructureV1, Export
     let spans = decode_top_level_spans(bytes)?;
     let (provenance, media_spans, moov_span) = verify_layout(bytes, &spans)?;
     let moov = decode_moov(bytes, moov_span)?;
-    let (trak, avc1) = single_video_avc1(&moov)?;
+    let (trak, avc1) = video_avc1(&moov)?;
     let color = color_parameters(avc1)?;
     let (width_px, height_px) = verify_dimensions(trak, avc1)?;
-    let sample_tables = verify_sample_tables(trak, media_spans)?;
+    let mut claimed_media = vec![false; media_spans.len()];
+    let sample_tables = verify_sample_tables(trak, media_spans, &mut claimed_media)?;
+    if sample_tables.media_indices != (0..sample_tables.media_indices.len()).collect::<Vec<_>>() {
+        return Err(sample_table_mismatch(
+            "video mdat atoms are not the leading contiguous media group",
+        ));
+    }
+    let frame_rate = verify_timestamp_grid(
+        &trak.mdia.minf.stbl.stts.entries,
+        sample_tables.sample_count,
+    )?;
     let sync_sample_count = verify_sync_samples(trak, sample_tables.sample_count)?;
-    verify_avcc_samples(bytes, trak, avc1, media_spans)?;
+    let video_media: Vec<TopLevelAtomSpan> = sample_tables
+        .media_indices
+        .iter()
+        .map(|&index| media_spans[index])
+        .collect();
+    verify_avcc_samples(bytes, trak, avc1, &video_media)?;
     let (timescale, duration_ticks) = verify_durations(&moov, trak, sample_tables.duration_ticks)?;
+    let audio = verify_optional_opus(
+        &moov,
+        media_spans,
+        &mut claimed_media,
+        timescale,
+        duration_ticks,
+    )?;
+    if let Some(index) = claimed_media.iter().position(|claimed| !claimed) {
+        return Err(sample_table_mismatch(format!(
+            "mdat {} is not referenced by either track",
+            index + 1
+        )));
+    }
     Ok(ExportMp4StructureV1 {
         width_px,
         height_px,
         timescale,
-        frame_rate: sample_tables.frame_rate,
+        frame_rate,
         duration_ticks,
         sample_count: sample_tables.sample_count,
         sync_sample_count,
         color,
         provenance,
+        audio,
     })
 }
 
@@ -236,6 +290,7 @@ fn decode_top_level_spans(bytes: &[u8]) -> Result<Vec<TopLevelAtomSpan>, ExportM
     let mut spans = Vec::new();
     let atom_bound = usize::try_from(MAX_SAMPLE_TABLE_ENTRIES_V1)
         .unwrap_or(usize::MAX)
+        .saturating_mul(2)
         .saturating_add(3);
     while cursor < bytes.len() {
         let remaining = bytes.len() - cursor;
@@ -395,14 +450,17 @@ fn verify_layout<'a>(
     Ok((provenance.to_vec(), media, moov_span))
 }
 
-fn single_video_avc1(moov: &Moov) -> Result<(&Trak, &Avc1), ExportMp4VerifyErrorV1> {
-    if moov.trak.len() != 1 {
+fn video_avc1(moov: &Moov) -> Result<(&Trak, &Avc1), ExportMp4VerifyErrorV1> {
+    if !(1..=2).contains(&moov.trak.len()) {
         return Err(track_mismatch(format!(
-            "expected exactly one trak, found {}",
+            "expected one video track and at most one audio track, found {} tracks",
             moov.trak.len()
         )));
     }
     let trak = &moov.trak[0];
+    if trak.tkhd.track_id != 1 {
+        return Err(track_mismatch("the video track id is not 1"));
+    }
     if !trak.tkhd.enabled || !trak.tkhd.in_movie {
         return Err(track_mismatch("the sole video track is disabled"));
     }
@@ -470,6 +528,233 @@ fn single_video_avc1(moov: &Moov) -> Result<(&Trak, &Avc1), ExportMp4VerifyError
     Ok((trak, avc1))
 }
 
+fn verify_optional_opus(
+    moov: &Moov,
+    media_spans: &[TopLevelAtomSpan],
+    claimed_media: &mut [bool],
+    movie_timescale: u32,
+    movie_duration: u64,
+) -> Result<Option<OpusAudioStructureV1>, ExportMp4VerifyErrorV1> {
+    let Some(trak) = moov.trak.get(1) else {
+        if moov.mvhd.next_track_id != 2 {
+            return Err(track_mismatch(
+                "a video-only movie does not declare next track id 2",
+            ));
+        }
+        return Ok(None);
+    };
+    let opus = verify_opus_track_shape(moov, trak, movie_duration)?;
+    verify_opus_sample_entry(trak, opus)?;
+
+    let tables = verify_sample_tables(trak, media_spans, claimed_media)?;
+    verify_opus_roll_recovery(trak, tables.sample_count)?;
+    if trak.mdia.mdhd.timescale != OPUS_SAMPLE_RATE {
+        return Err(track_mismatch(format!(
+            "the Opus media timescale is {}, not {OPUS_SAMPLE_RATE}",
+            trak.mdia.mdhd.timescale
+        )));
+    }
+    if trak.mdia.mdhd.duration != tables.duration_ticks {
+        return Err(sample_table_mismatch(format!(
+            "Opus stts sums to {} samples but mdhd reports {}",
+            tables.duration_ticks, trak.mdia.mdhd.duration
+        )));
+    }
+
+    let Some(edits) = trak.edts.as_ref().and_then(|edts| edts.elst.as_ref()) else {
+        return Err(track_mismatch("the Opus priming edit list is missing"));
+    };
+    let [edit] = edits.entries.as_slice() else {
+        return Err(track_mismatch(
+            "the Opus track does not carry exactly one priming edit",
+        ));
+    };
+    if edit.segment_duration != movie_duration || edit.media_rate != 1i16.into() {
+        return Err(track_mismatch(
+            "the Opus edit does not cover the movie at normal playback rate",
+        ));
+    }
+    let pre_skip = u64::from(opus.dops.pre_skip);
+    if edit.media_time != Some(pre_skip) {
+        return Err(track_mismatch(
+            "the Opus edit media time does not equal dOps pre-skip",
+        ));
+    }
+    let presented_samples = scale_ceil(movie_duration, movie_timescale, OPUS_SAMPLE_RATE)?;
+    let required_samples = pre_skip
+        .checked_add(presented_samples)
+        .ok_or_else(|| track_mismatch("the Opus presentation duration overflowed"))?;
+    let end_trim_samples = tables
+        .duration_ticks
+        .checked_sub(required_samples)
+        .ok_or_else(|| {
+            track_mismatch("the Opus media is shorter than pre-skip plus the movie presentation")
+        })?;
+    Ok(Some(OpusAudioStructureV1 {
+        channels: opus.dops.output_channel_count,
+        sample_rate: OPUS_SAMPLE_RATE,
+        pre_skip: opus.dops.pre_skip,
+        output_gain: opus.dops.output_gain,
+        sample_count: tables.sample_count,
+        encoded_duration_samples: tables.duration_ticks,
+        end_trim_samples,
+    }))
+}
+
+fn verify_opus_roll_recovery(trak: &Trak, sample_count: u64) -> Result<(), ExportMp4VerifyErrorV1> {
+    let stbl = &trak.mdia.minf.stbl;
+    let expected_count = u32::try_from(sample_count)
+        .map_err(|_| sample_table_mismatch("the Opus sample count does not fit u32"))?;
+    let [timing] = stbl.stts.entries.as_slice() else {
+        return Err(track_mismatch(
+            "the Opus track does not have one canonical 20 ms timing entry",
+        ));
+    };
+    if timing.sample_count != expected_count || timing.sample_delta != OPUS_PACKET_DURATION_SAMPLES
+    {
+        return Err(track_mismatch(
+            "the Opus track does not use canonical 20 ms packets",
+        ));
+    }
+
+    let [description] = stbl.sgpd.as_slice() else {
+        return Err(track_mismatch(
+            "the Opus track does not have exactly one roll description",
+        ));
+    };
+    let [description_entry] = description.entries.as_slice() else {
+        return Err(track_mismatch(
+            "the Opus roll description does not have exactly one entry",
+        ));
+    };
+    if description.grouping_type != ROLL_GROUPING_TYPE
+        || description.default_length != Some(2)
+        || description.default_group_description_index.is_some()
+        || description.static_group_description
+        || description.static_mapping
+        || description.essential
+        || description_entry.description_length != Some(2)
+        || description_entry.entry
+            != AnySampleGroupEntry::UnknownGroupingType(
+                ROLL_GROUPING_TYPE,
+                OPUS_ROLL_DISTANCE.to_be_bytes().to_vec(),
+            )
+    {
+        return Err(track_mismatch(
+            "the Opus roll description is not the canonical recovery distance",
+        ));
+    }
+
+    let [mapping] = stbl.sbgp.as_slice() else {
+        return Err(track_mismatch(
+            "the Opus track does not have exactly one roll mapping",
+        ));
+    };
+    let [mapping_entry] = mapping.entries.as_slice() else {
+        return Err(track_mismatch(
+            "the Opus roll mapping does not have exactly one entry",
+        ));
+    };
+    if mapping.grouping_type != ROLL_GROUPING_TYPE
+        || mapping.grouping_type_parameter.is_some()
+        || mapping_entry.sample_count != expected_count
+        || mapping_entry.group_description_index != 1
+    {
+        return Err(track_mismatch(
+            "the Opus roll mapping does not cover every encoded packet",
+        ));
+    }
+    Ok(())
+}
+
+fn verify_opus_track_shape<'a>(
+    moov: &Moov,
+    trak: &'a Trak,
+    movie_duration: u64,
+) -> Result<&'a Opus, ExportMp4VerifyErrorV1> {
+    if moov.mvhd.next_track_id != 3 {
+        return Err(track_mismatch(
+            "an audio-enabled movie does not declare next track id 3",
+        ));
+    }
+    if trak.tkhd.track_id != 2
+        || !trak.tkhd.enabled
+        || !trak.tkhd.in_movie
+        || trak.tkhd.volume != 1u8.into()
+    {
+        return Err(track_mismatch(
+            "the Opus track is not enabled at full volume as track id 2",
+        ));
+    }
+    if trak.tkhd.size_is_aspect_ratio
+        || trak.tkhd.matrix != Matrix::default()
+        || trak.tkhd.width != 0u16.into()
+        || trak.tkhd.height != 0u16.into()
+    {
+        return Err(track_mismatch(
+            "the Opus track carries non-audio display geometry",
+        ));
+    }
+    if trak.tkhd.duration != movie_duration {
+        return Err(track_mismatch(format!(
+            "the Opus track duration {} does not match the movie duration {movie_duration}",
+            trak.tkhd.duration
+        )));
+    }
+    if trak.mdia.hdlr.handler != b"soun".into()
+        || trak.mdia.minf.smhd.is_none()
+        || trak.mdia.minf.vmhd.is_some()
+    {
+        return Err(track_mismatch(
+            "the Opus track does not carry the required soun/smhd media shape",
+        ));
+    }
+    if trak.mdia.minf.stbl.ctts.is_some() || trak.mdia.minf.stbl.stss.is_some() {
+        return Err(track_mismatch(
+            "the Opus track carries unsupported composition or sync tables",
+        ));
+    }
+    let codecs = &trak.mdia.minf.stbl.stsd.codecs;
+    let [Codec::Opus(opus)] = codecs.as_slice() else {
+        return Err(track_mismatch(
+            "the second track does not have exactly one Opus sample entry",
+        ));
+    };
+    Ok(opus)
+}
+
+fn verify_opus_sample_entry(trak: &Trak, opus: &Opus) -> Result<(), ExportMp4VerifyErrorV1> {
+    let channels = opus.dops.output_channel_count;
+    if !matches!(channels, 1 | 2)
+        || opus.audio.channel_count != u16::from(channels)
+        || opus.audio.sample_rate != 48_000u16.into()
+        || opus.audio.sample_size != 16
+        || opus.dops.input_sample_rate != OPUS_SAMPLE_RATE
+    {
+        return Err(track_mismatch(
+            "the Opus/dOps entry is not mono or stereo at 48 kHz",
+        ));
+    }
+    if opus.audio.data_reference_index != 1 {
+        return Err(track_mismatch(
+            "the Opus sample entry does not use data reference 1",
+        ));
+    }
+    let data_references = &trak.mdia.minf.dinf.dref.urls;
+    if data_references.len() != 1 || !data_references[0].location.is_empty() {
+        return Err(track_mismatch(
+            "the Opus samples use an external data reference",
+        ));
+    }
+    Ok(())
+}
+
+fn scale_ceil(value: u64, from: u32, to: u32) -> Result<u64, ExportMp4VerifyErrorV1> {
+    let numerator = u128::from(value) * u128::from(to);
+    let scaled = numerator.div_ceil(u128::from(from));
+    u64::try_from(scaled).map_err(|_| track_mismatch("a track duration does not fit u64"))
+}
+
 fn color_parameters(avc1: &Avc1) -> Result<ColorParametersV1, ExportMp4VerifyErrorV1> {
     match avc1.colr {
         Some(Colr::Nclx {
@@ -530,9 +815,26 @@ fn verify_sync_samples(trak: &Trak, sample_count: u64) -> Result<u64, ExportMp4V
     Ok(count_u64(stss.entries.len()))
 }
 
+fn media_span_index(
+    media_spans: &[TopLevelAtomSpan],
+    payload_offset: u64,
+    sample_number: usize,
+) -> Result<usize, ExportMp4VerifyErrorV1> {
+    let payload_offset = usize::try_from(payload_offset)
+        .map_err(|_| sample_table_mismatch("a chunk offset is not addressable"))?;
+    media_spans
+        .binary_search_by_key(&payload_offset, |span| span.payload_start)
+        .map_err(|_| {
+            sample_table_mismatch(format!(
+                "sample {sample_number} points to byte {payload_offset}, which is not an mdat payload start"
+            ))
+        })
+}
+
 fn verify_sample_tables(
     trak: &Trak,
     media_spans: &[TopLevelAtomSpan],
+    claimed_media: &mut [bool],
 ) -> Result<SampleTableSummary, ExportMp4VerifyErrorV1> {
     let stbl = &trak.mdia.minf.stbl;
     let stsz_count = match &stbl.stsz.samples {
@@ -573,14 +875,12 @@ fn verify_sample_tables(
             .checked_add(entry_duration)
             .ok_or_else(|| sample_table_mismatch("stts duration overflowed"))?;
     }
-    let mdat_count = count_u64(media_spans.len());
-    if stsz_count != chunk_count || stsz_count != stts_count || stsz_count != mdat_count {
+    if stsz_count != chunk_count || stsz_count != stts_count {
         return Err(sample_table_mismatch(format!(
             "stsz lists {stsz_count} samples, the chunk offsets list {chunk_count}, \
-             stts sums to {stts_count}, and {mdat_count} mdat atoms are present"
+             and stts sums to {stts_count}"
         )));
     }
-    let frame_rate = verify_timestamp_grid(&stbl.stts.entries, stsz_count)?;
     let one_sample_per_chunk = [StscEntry {
         first_chunk: 1,
         samples_per_chunk: 1,
@@ -591,7 +891,24 @@ fn verify_sample_tables(
             "stsc does not describe exactly one sample per chunk",
         ));
     }
-    for (index, span) in media_spans.iter().enumerate() {
+    let mut media_indices = Vec::with_capacity(chunk_offsets.len());
+    for (index, &payload_offset) in chunk_offsets.iter().enumerate() {
+        let span_index = media_span_index(media_spans, payload_offset, index + 1)?;
+        if claimed_media.get(span_index).copied() != Some(false) {
+            return Err(sample_table_mismatch(format!(
+                "mdat {} is referenced more than once",
+                span_index + 1
+            )));
+        }
+        if media_indices
+            .last()
+            .is_some_and(|previous| *previous >= span_index)
+        {
+            return Err(sample_table_mismatch(
+                "a track's mdat offsets are not in forward file order",
+            ));
+        }
+        let span = &media_spans[span_index];
         let payload_size = span.box_end - span.payload_start;
         let table_size = match &stbl.stsz.samples {
             StszSamples::Different { sizes } => sizes[index],
@@ -603,20 +920,13 @@ fn verify_sample_tables(
                 index + 1
             )));
         }
-        let payload_offset = u64::try_from(span.payload_start)
-            .map_err(|_| sample_table_mismatch("an mdat payload offset does not fit u64"))?;
-        if chunk_offsets[index] != payload_offset {
-            return Err(sample_table_mismatch(format!(
-                "sample {} starts at byte {payload_offset} but the chunk table reports {}",
-                index + 1,
-                chunk_offsets[index]
-            )));
-        }
+        claimed_media[span_index] = true;
+        media_indices.push(span_index);
     }
     Ok(SampleTableSummary {
         sample_count: stsz_count,
         duration_ticks: stts_duration,
-        frame_rate,
+        media_indices,
     })
 }
 
@@ -770,7 +1080,8 @@ mod tests {
 
     use super::*;
     use crate::session::{
-        EncodedSampleV1, ExportMuxConfigV1, ExportMuxSessionV1, VideoParametersV1,
+        EncodedAudioSampleV1, EncodedSampleV1, ExportMuxConfigV1, ExportMuxSessionV1,
+        OpusParametersV1, VideoParametersV1,
     };
 
     const TEST_PROVENANCE: &[u8] = b"scene-revision=0123abcd;engine=0.1.0";
@@ -859,6 +1170,52 @@ mod tests {
         session.finish().unwrap()
     }
 
+    fn mux_three_samples_with_opus(channels: u8) -> Vec<u8> {
+        let mut session = ExportMuxSessionV1::begin_with_opus(
+            config(854, 480),
+            OpusParametersV1 {
+                channels,
+                sample_rate: OPUS_SAMPLE_RATE,
+                pre_skip: 312,
+                output_gain: -12,
+                channel_mapping_family: 0,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+        for (index, (payload, is_key)) in [
+            (avcc_sample(0x65, 119), true),
+            (avcc_sample(0x41, 89), false),
+            (avcc_sample(0x65, 149), true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let index = u64::try_from(index).unwrap();
+            let timestamp_us = index * 1_000_000 / 30;
+            let next_timestamp_us = (index + 1) * 1_000_000 / 30;
+            session
+                .append_sample(EncodedSampleV1 {
+                    bytes: &payload,
+                    timestamp_us,
+                    duration_us: next_timestamp_us - timestamp_us,
+                    is_key,
+                })
+                .unwrap();
+        }
+        for payload in [
+            [0x48; 12], [0x49; 12], [0x4a; 12], [0x4b; 12], [0x4c; 12], [0x4d; 12],
+        ] {
+            session
+                .append_audio_sample(EncodedAudioSampleV1 {
+                    bytes: &payload,
+                    duration_samples: NonZeroU32::new(960).unwrap(),
+                })
+                .unwrap();
+        }
+        session.finish().unwrap()
+    }
+
     fn decode_atoms(bytes: &[u8]) -> Vec<Any> {
         let mut buf: &[u8] = bytes;
         let mut atoms = Vec::new();
@@ -922,8 +1279,108 @@ mod tests {
                     full_range: false,
                 },
                 provenance: TEST_PROVENANCE.to_vec(),
+                audio: None,
             }
         );
+    }
+
+    #[test]
+    fn accepts_exactly_one_optional_mono_or_stereo_opus_track() {
+        for channels in [1, 2] {
+            let structure = verify_export_mp4_v1(&mux_three_samples_with_opus(channels)).unwrap();
+            assert_eq!(structure.sample_count, 3);
+            assert_eq!(structure.duration_ticks, 100_000);
+            assert_eq!(
+                structure.audio,
+                Some(OpusAudioStructureV1 {
+                    channels,
+                    sample_rate: OPUS_SAMPLE_RATE,
+                    pre_skip: 312,
+                    output_gain: -12,
+                    sample_count: 6,
+                    encoded_duration_samples: 5_760,
+                    end_trim_samples: 648,
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_corrupt_opus_track_shape_and_priming_edit() {
+        let valid = mux_three_samples_with_opus(2);
+        let wrong_rate = rewrite_moov(&valid, |moov| {
+            let Codec::Opus(opus) = &mut moov.trak[1].mdia.minf.stbl.stsd.codecs[0] else {
+                panic!("second track must be Opus");
+            };
+            opus.dops.input_sample_rate = 44_100;
+        });
+        let wrong_pre_skip = rewrite_moov(&valid, |moov| {
+            moov.trak[1]
+                .edts
+                .as_mut()
+                .unwrap()
+                .elst
+                .as_mut()
+                .unwrap()
+                .entries[0]
+                .media_time = Some(0);
+        });
+        let muted = rewrite_moov(&valid, |moov| {
+            moov.trak[1].tkhd.volume = 0u8.into();
+        });
+        for bytes in [wrong_rate, wrong_pre_skip, muted] {
+            assert!(matches!(
+                verify_export_mp4_v1(&bytes).unwrap_err(),
+                ExportMp4VerifyErrorV1::TrackMismatch { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_missing_or_corrupt_opus_roll_recovery_groups() {
+        let valid = mux_three_samples_with_opus(2);
+        let missing_mapping = rewrite_moov(&valid, |moov| {
+            moov.trak[1].mdia.minf.stbl.sbgp.clear();
+        });
+        let wrong_distance = rewrite_moov(&valid, |moov| {
+            let AnySampleGroupEntry::UnknownGroupingType(_, bytes) =
+                &mut moov.trak[1].mdia.minf.stbl.sgpd[0].entries[0].entry
+            else {
+                panic!("the muxer must write an opaque roll distance");
+            };
+            *bytes = (-3_i16).to_be_bytes().to_vec();
+        });
+        for bytes in [missing_mapping, wrong_distance] {
+            assert!(matches!(
+                verify_export_mp4_v1(&bytes).unwrap_err(),
+                ExportMp4VerifyErrorV1::TrackMismatch { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_offsets_wrong_audio_sizes_and_unreferenced_mdat() {
+        let valid = mux_three_samples_with_opus(1);
+        let duplicate_offset = rewrite_moov(&valid, |moov| {
+            let video_offset = moov.trak[0].mdia.minf.stbl.stco.as_ref().unwrap().entries[0];
+            moov.trak[1].mdia.minf.stbl.stco.as_mut().unwrap().entries[0] = video_offset;
+        });
+        let wrong_size = rewrite_moov(&valid, |moov| {
+            let StszSamples::Different { sizes } = &mut moov.trak[1].mdia.minf.stbl.stsz.samples
+            else {
+                panic!("the muxer writes per-sample sizes");
+            };
+            sizes[0] += 1;
+        });
+        let unreferenced = rewrite(&valid, |atoms| {
+            atoms.insert(atoms.len() - 1, Any::Mdat(Mdat { data: vec![0xaa] }));
+        });
+        for bytes in [duplicate_offset, wrong_size, unreferenced] {
+            assert!(matches!(
+                verify_export_mp4_v1(&bytes).unwrap_err(),
+                ExportMp4VerifyErrorV1::SampleTableMismatch { .. }
+            ));
+        }
     }
 
     #[test]
