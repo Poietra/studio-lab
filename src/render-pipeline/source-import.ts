@@ -1294,6 +1294,63 @@ function durationFrom(statement: string, fallback = 1) {
   return match ? (unsignedNumberLiteral(match[1]) ?? fallback) : fallback;
 }
 
+const STATIC_PRIMITIVE_UNIT_DURATION_ANIMATIONS = new Set(["Create", "FadeIn", "FadeOut", "Transform"]);
+
+function staticPrimitiveClosedPlayDuration(statement: string): number | null {
+  const trimmed = statement.trim();
+  const playOpening = trimmed.match(/^self\.play\s*\(/)?.[0].lastIndexOf("(") ?? -1;
+  if (playOpening < 0) return null;
+  const playClosing = matchingCallEnd(trimmed, playOpening);
+  if (playClosing === null || trimmed.slice(playClosing + 1).trim() !== "") return null;
+  const animations: string[] = [];
+  let explicitDuration: number | undefined;
+  for (const argument of splitTopLevelArguments(trimmed.slice(playOpening + 1, playClosing))) {
+    const keyword = argument.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]+)$/);
+    if (!keyword) {
+      animations.push(argument.trim());
+      continue;
+    }
+    if (keyword[1] !== "run_time") continue;
+    if (explicitDuration !== undefined) return null;
+    const duration = unsignedNumberLiteral(keyword[2]);
+    if (duration === null) return null;
+    explicitDuration = duration;
+  }
+  if (animations.length === 0) return null;
+  if (explicitDuration !== undefined) return explicitDuration;
+  const allUseKnownDefaults = animations.every((animation) => {
+    const opening = animation.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[0].lastIndexOf("(") ?? -1;
+    const animationName = animation.match(/^([A-Za-z_][A-Za-z0-9_]*)/)?.[1];
+    if (opening < 0 || !animationName || !STATIC_PRIMITIVE_UNIT_DURATION_ANIMATIONS.has(animationName)) {
+      return false;
+    }
+    const closing = matchingCallEnd(animation, opening);
+    if (closing === null || animation.slice(closing + 1).trim() !== "") return false;
+    const analysis = analyzePythonSource(animation);
+    if (!analysis.valid) return false;
+    const structuralSource = analysis.lines.map((line) => line.code).join("\n");
+    return !/\brun_time\s*=|\.\s*set_run_time\s*\(/.test(structuralSource);
+  });
+  return allUseKnownDefaults ? 1 : null;
+}
+
+function staticPrimitiveStatementHasUnmodeledSceneTiming(statement: string) {
+  const analysis = analyzePythonSource(statement);
+  if (!analysis.valid) return true;
+  const structuralSource = analysis.lines.map((line) => line.code).join("\n");
+  const selfReferences = [...structuralSource.matchAll(/\bself\b/g)].length;
+  if (selfReferences === 0) return false;
+  const trimmed = structuralSource.trim();
+  if (selfReferences !== 1) return true;
+  if (/^self\.(?:play|wait)\(/s.test(trimmed)) return false;
+  if (/^self\.clear\(\s*\)$/s.test(trimmed)) return false;
+  const membership = trimmed.match(/^self\.(?:add|remove)\((.*)\)$/s);
+  return !(
+    membership &&
+    splitTopLevelArguments(membership[1]).every((argument) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(argument.trim()))
+  );
+}
+
 function directStaticPrimitiveTransformVariables(
   statement: string,
 ): Readonly<{ sourceName: string; targetName: string }> | null {
@@ -1311,7 +1368,7 @@ function directStaticPrimitiveTransformVariables(
       continue;
     }
     if (keyword[1] === "run_time" && unsignedNumberLiteral(keyword[2]) !== null) continue;
-    if (keyword[1] === "rate_func" && ["smooth", "smoothstep"].includes(keyword[2].trim())) continue;
+    if (keyword[1] === "rate_func" && keyword[2].trim() === "smooth") continue;
     return null;
   }
   if (animations.length !== 1) return null;
@@ -1354,7 +1411,7 @@ function staticPrimitiveGeometryFact(entity: MutableEntity): StaticPrimitiveTran
 }
 
 const STATIC_PRIMITIVE_SUFFIX_METHODS = new Set(["scale", "set_color", "set_fill", "set_stroke"]);
-const STATIC_PRIMITIVE_DIRECT_METHODS = new Set([...STATIC_PRIMITIVE_SUFFIX_METHODS, "get_center", "move_to", "shift"]);
+const STATIC_PRIMITIVE_DIRECT_METHODS = new Set([...STATIC_PRIMITIVE_SUFFIX_METHODS, "get_center", "move_to"]);
 
 function staticPrimitivePaintMethodIsClosed(method: Readonly<{ argumentsSource: string; name: string }>) {
   const argumentsList = splitTopLevelArguments(method.argumentsSource);
@@ -1413,20 +1470,35 @@ function staticPrimitiveStatementBlocksFact(
   transform: Readonly<{ sourceName: string; targetName: string }> | null,
 ) {
   const variable = entity.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const referencesVariable = referencedPresenceVariables(statement.text, new Set([entity.sourceVariable])).has(
+    entity.sourceVariable,
+  );
+  if (!referencesVariable || statement.text === entity.initialization) return false;
   const directSuffix = statement.text.match(new RegExp(`^\\s*${variable}(\\s*\\.[\\s\\S]*)$`))?.[1];
   if (directSuffix) {
     const methods = chainedMethods(directSuffix);
     return (
       methods === null ||
+      methods.length !== 1 ||
       methods.some((method) => !staticPrimitiveMethodIsClosed(method, STATIC_PRIMITIVE_DIRECT_METHODS))
     );
   }
-  if (!statement.text.trimStart().startsWith("self.play(")) return false;
   if (transform && (transform.sourceName === entity.sourceVariable || transform.targetName === entity.sourceVariable)) {
     return false;
   }
   if (directPresenceAnimationAction(statement.text, entity.sourceVariable) !== null) return false;
-  return referencedPresenceVariables(statement.text, new Set([entity.sourceVariable])).has(entity.sourceVariable);
+  const membership = statement.text.trim().match(/^self\.(?:add|remove)\s*\(([\s\S]*)\)$/);
+  if (
+    membership &&
+    splitTopLevelArguments(membership[1]).every((argument) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(argument.trim()))
+  ) {
+    return false;
+  }
+  const moveToVariable = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*move_to\s*\(/s)?.[1];
+  if (moveToVariable && directCenterMoveToSource(statement.text, moveToVariable) === entity.sourceVariable) {
+    return false;
+  }
+  return true;
 }
 
 function staticPrimitiveTransformFact(
@@ -2260,6 +2332,7 @@ export function importManimScene(
   const scaleSamples = new Map<string, PropertyChannelSample[]>();
   const staticPrimitiveTransformCandidates: StaticPrimitiveTransformSourceFactV1[] = [];
   let staticPrimitiveTransformCallCount = 0;
+  let staticPrimitiveTimingKnown = true;
   const staticPrimitiveTransformBlockedEntities = new Set(
     mutableEntities.flatMap((entity) => (staticPrimitiveInitializationIsClosed(entity) ? [] : [entity.sourceVariable])),
   );
@@ -2312,6 +2385,9 @@ export function importManimScene(
       continue;
     }
     if (insideIncomingEvents) continue;
+    if (staticPrimitiveStatementHasUnmodeledSceneTiming(statement.text)) {
+      staticPrimitiveTimingKnown = false;
+    }
     const sourceAnchor = statement.text.match(ANCHOR_PATTERN)?.[1];
     if (sourceAnchor) {
       cursor = Number(sourceAnchor);
@@ -2359,6 +2435,9 @@ export function importManimScene(
       if (style) entity.style = style;
     }
     const wait = waitDuration(statement.text);
+    if (/^self\s*\.\s*wait\s*\(/s.test(statement.text) && wait === null) {
+      staticPrimitiveTimingKnown = false;
+    }
     if (wait !== null) {
       events.push({
         id: `import:${sceneId}:wait:${statement.line}`,
@@ -2651,10 +2730,12 @@ export function importManimScene(
       continue;
     }
     if (!statement.text.startsWith("self.play(")) continue;
-    const duration = durationFrom(statement.text);
+    const staticPrimitivePlayDuration = staticPrimitiveClosedPlayDuration(statement.text);
+    if (staticPrimitivePlayDuration === null) staticPrimitiveTimingKnown = false;
+    const duration = staticPrimitivePlayDuration ?? durationFrom(statement.text);
     const sourceMotionEasing = motionEasingFrom(statement.text);
     const interval = { end: cursor + duration, start: cursor };
-    if (staticPrimitiveTransformVariables) {
+    if (staticPrimitiveTransformVariables && staticPrimitiveTimingKnown) {
       const fact = staticPrimitiveTransformFact(
         byVariable,
         interval,
@@ -3074,7 +3155,12 @@ export function importManimScene(
     sourceHash: hashSource(source),
     sourceVariables: Object.fromEntries(mutableEntities.map((entity) => [entity.id, entity.sourceVariable])),
     staticPrimitiveTransforms:
-      staticPrimitiveTransformCallCount === 1 && staticPrimitiveTransformCandidates.length === 1
+      staticPrimitiveTimingKnown &&
+      staticPrimitiveTransformCallCount === 1 &&
+      staticPrimitiveTransformCandidates.length === 1 &&
+      !staticPrimitiveTransformBlockedEntities.has(staticPrimitiveTransformCandidates[0]!.sourceName) &&
+      !staticPrimitiveTransformBlockedEntities.has(staticPrimitiveTransformCandidates[0]!.targetName) &&
+      byVariable.get(staticPrimitiveTransformCandidates[0]!.targetName)?.lifetimes.length === 0
         ? staticPrimitiveTransformCandidates
         : [],
     staticSemanticState,

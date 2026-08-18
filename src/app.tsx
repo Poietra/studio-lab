@@ -182,6 +182,7 @@ import {
 
 type Shell = "Browser" | "Electron" | "Tauri";
 const loadMotionFeatures = () => import("./lib/motion-features").then((module) => module.default);
+const EMPTY_STATIC_PRIMITIVE_TRANSFORMS = [] as const;
 const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>> = {
   ArrowDown: { x: 0, y: 2 },
   ArrowLeft: { x: -2, y: 0 },
@@ -845,7 +846,7 @@ export function App({
     sampleTime: currentTime,
     sceneBoundaryActive: importedSceneBoundaryActive,
     sourceEvents: projectedActiveScene?.runtimeSceneState.eventTrack.events ?? [],
-    staticPrimitiveTransforms: projectedActiveScene?.staticPrimitiveTransforms ?? [],
+    staticPrimitiveTransforms: projectedActiveScene?.staticPrimitiveTransforms ?? EMPTY_STATIC_PRIMITIVE_TRANSFORMS,
     workingState: previewWorkingState,
   });
   const studioExportSource = previewRenderer?.canonicalScene ?? null;

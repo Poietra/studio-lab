@@ -106,6 +106,7 @@ class StaticPrimitiveTransform(Scene):
     def construct(self):
         square = Square(side_length=2)
         circle = Circle(radius=1)
+        circle.move_to(square.get_center())
         self.play(Create(square))
         self.play(Transform(square, circle), run_time=2)
         self.play(FadeOut(square))
@@ -139,17 +140,22 @@ class StaticPrimitiveTransform(Scene):
     ).toEqual([]);
   });
 
-  it("withholds primitive Transform facts when appearance, geometry, or the Transform set is open", () => {
-    const scene = (setup: string, before = "", after = "") =>
+  it("withholds primitive Transform facts when source semantics or timing are open", () => {
+    const scene = (
+      setup: string,
+      before = "",
+      after = "",
+      transform = "        self.play(Transform(square, circle))",
+    ) =>
       importManimScene(
-        `from manim import Circle, Create, RED, Rotate, Scene, Square, Transform
+        `from manim import Circle, Create, RED, RIGHT, Rotate, Scene, smoothstep, Square, Transform, Write
 
 class OpenPrimitiveTransform(Scene):
     def construct(self):
 ${setup}
         self.play(Create(square))
 ${before}
-        self.play(Transform(square, circle))
+${transform}
 ${after}
 `,
         "scene.py",
@@ -166,6 +172,53 @@ ${after}
     ).toEqual([]);
     expect(
       scene("        square = Square()\n        circle = Circle()", "        self.play(Rotate(square))")
+        ?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene("        square = Square()\n        circle = Circle()", "        mutate(square)")
+        ?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene("        square = Square()\n        circle = Circle()", "        configure(circle)")
+        ?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene("        square = Square()\n        circle = Circle()", "        circle.shift(RIGHT)")
+        ?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene("        square = Square()\n        circle = Circle()", "        circle.set_color(RED).scale(2)")
+        ?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene(
+        "        square = Square()\n        circle = Circle()",
+        "",
+        "",
+        "        self.play(Transform(square, circle), rate_func=smoothstep)",
+      )?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene(
+        "        duration = 2\n        square = Square()\n        circle = Circle()\n        other = Square()",
+        "        self.play(Create(other), run_time=duration)",
+      )?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene("        duration = 2\n        square = Square()\n        circle = Circle()", "        self.wait(duration)")
+        ?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene(
+        "        square = Square()\n        circle = Circle()\n        long_tex = Square()",
+        "        self.play(Write(long_tex))",
+      )?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene("        square = Square()\n        circle = Circle()", "        delay(self)")?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene("        square = Square()\n        circle = Circle()", "", "        self.play(Create(circle))")
         ?.staticPrimitiveTransforms,
     ).toEqual([]);
     expect(
