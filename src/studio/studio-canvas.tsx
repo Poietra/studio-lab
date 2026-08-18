@@ -22,8 +22,10 @@ import {
   clientPointToViewport,
   type EntityDragPreview,
   type EntityGeometryPreview,
+  type EntityRotationPreview,
   type EntityScalePreview,
   entityDragDelta,
+  entityPreviewRotation,
   entityPreviewScale,
   type InteractionMode,
   isCanvasInteractionTarget,
@@ -64,12 +66,19 @@ export type StudioCanvasProps = Readonly<{
   ) => void;
   onEntityResizePointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityRotationCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityRotationKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
+  onEntityRotationPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
+  onEntityRotationPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityRotationPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
   onPresenceCursorChange?: (cursor: Readonly<{ x: number; y: number }> | null) => void;
   onSelectEntity: (entityId: string) => void;
   presenceParticipants?: readonly StudioPresenceParticipantV1[];
   preview?: StudioPreviewRendererView | null;
   readOnly: boolean;
+  rotationHandleEntityId: string | null;
+  rotationPreview: EntityRotationPreview | null;
   sampleId: string;
   scalePreview: EntityScalePreview | null;
   selectedIds: ReadonlySet<string>;
@@ -228,6 +237,62 @@ function EntityResizeHandles({
   });
 }
 
+const ROTATION_HANDLE_RADIUS_PX = 14;
+const ROTATION_HANDLE_CONNECTOR_PX = 28;
+
+/** Keeps both the disc and its connector anchored in screen space even
+ * though the selection bounds live below entity and camera scaling. */
+export function rotationHandleLayoutStyle(displayedScale: number, cameraScale: number) {
+  const inverseCompositeScale = inverseResizeHandleScale(displayedScale, cameraScale);
+  return {
+    scale: inverseCompositeScale,
+    top:
+      -ROTATION_HANDLE_RADIUS_PX - (ROTATION_HANDLE_RADIUS_PX + ROTATION_HANDLE_CONNECTOR_PX) * inverseCompositeScale,
+  };
+}
+
+function EntityRotationHandle({
+  cameraScale,
+  displayedScale,
+  entity,
+  onCancel,
+  onKeyDown,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+}: Readonly<{
+  cameraScale: number;
+  displayedScale: number;
+  entity: ProjectedEntity;
+  onCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
+  onPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
+  onPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+}>) {
+  return (
+    <button
+      aria-keyshortcuts="ArrowLeft ArrowRight"
+      aria-label={`Rotate ${entityLabel(entity)}`}
+      className="absolute left-1/2 z-30 size-7 -translate-x-1/2 cursor-grab touch-none rounded-full border-2 border-sky-950 bg-sky-400 outline-none before:absolute before:left-1/2 before:top-full before:h-7 before:w-px before:-translate-x-1/2 before:bg-sky-400 active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-sky-300"
+      data-studio-rotation-handle={entity.id}
+      onKeyDown={(event) => onKeyDown(event, entity.id)}
+      onLostPointerCapture={onCancel}
+      onPointerCancel={onCancel}
+      onPointerDown={(event) => onPointerDown(event, entity.id)}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      style={rotationHandleLayoutStyle(displayedScale, cameraScale)}
+      title="Drag to rotate · Left/Right rotate by 15° · Shift for 1°"
+      type="button"
+    >
+      <span aria-hidden="true" className="text-sm leading-none text-sky-950">
+        ↻
+      </span>
+    </button>
+  );
+}
+
 export function StudioCanvas({
   appliedTransactionIds,
   boundaryActive,
@@ -252,12 +317,19 @@ export function StudioCanvas({
   onEntityResizePointerDown,
   onEntityResizePointerMove,
   onEntityResizePointerUp,
+  onEntityRotationCancel,
+  onEntityRotationKeyDown,
+  onEntityRotationPointerDown,
+  onEntityRotationPointerMove,
+  onEntityRotationPointerUp,
   onMotionControlChange,
   onPresenceCursorChange = () => undefined,
   onSelectEntity,
   preview = null,
   presenceParticipants = [],
   readOnly,
+  rotationHandleEntityId,
+  rotationPreview,
   sampleId,
   scalePreview,
   selectedIds,
@@ -435,6 +507,7 @@ export function StudioCanvas({
             const moveLocked = selectionLocked;
             const localDelta = entityDragDelta(dragPreview, entity.id);
             const displayedScale = entityPreviewScale(scalePreview, entity);
+            const displayedRotation = entityPreviewRotation(rotationPreview, entity.id);
             const compensatedRuntimeGeometry = runtimeGeometry
               ? compensatePreparedGeometryForOverlayScales(runtimeGeometry, cameraScale, entity.scale)
               : null;
@@ -487,7 +560,11 @@ export function StudioCanvas({
                 key={entity.id}
                 style={{ ...viewportPositionStyle(position), touchAction: "none" }}
               >
-                <div className="relative origin-center" style={{ scale: displayedScale }}>
+                <div
+                  className="relative origin-center"
+                  data-studio-selection-bounds={selected ? entity.id : undefined}
+                  style={{ rotate: `${-displayedRotation}rad`, scale: displayedScale }}
+                >
                   <button
                     aria-label={`Move ${entityLabel(entity)}`}
                     aria-pressed={selected}
@@ -553,6 +630,18 @@ export function StudioCanvas({
                       onPointerMove={onEntityResizePointerMove}
                       onPointerUp={onEntityResizePointerUp}
                       shape={shapeResizeAvailable ? shape : null}
+                    />
+                  ) : null}
+                  {selected && selectedIds.size === 1 && !mutationLocked && rotationHandleEntityId === entity.id ? (
+                    <EntityRotationHandle
+                      cameraScale={cameraScale}
+                      displayedScale={displayedScale}
+                      entity={entity}
+                      onCancel={onEntityRotationCancel}
+                      onKeyDown={onEntityRotationKeyDown}
+                      onPointerDown={onEntityRotationPointerDown}
+                      onPointerMove={onEntityRotationPointerMove}
+                      onPointerUp={onEntityRotationPointerUp}
                     />
                   ) : null}
                   {remoteSelectorOrdinals.length > 0 ? (

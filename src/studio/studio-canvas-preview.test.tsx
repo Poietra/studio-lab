@@ -7,6 +7,7 @@ import type { ProjectedEntity } from "./model";
 import type { StudioPreviewRuntimeTraceEditCandidate } from "./preview-temporal-rebase";
 import {
   compensatePreparedGeometryForOverlayScales,
+  rotationHandleLayoutStyle,
   StudioCanvas,
   type StudioCanvasProps,
   verifiedPreviewGeometryForStudioEntity,
@@ -94,9 +95,16 @@ function baseProps(): StudioCanvasProps {
     onEntityResizePointerDown: vi.fn(),
     onEntityResizePointerMove: vi.fn(),
     onEntityResizePointerUp: vi.fn(),
+    onEntityRotationCancel: vi.fn(),
+    onEntityRotationKeyDown: vi.fn(),
+    onEntityRotationPointerDown: vi.fn(),
+    onEntityRotationPointerMove: vi.fn(),
+    onEntityRotationPointerUp: vi.fn(),
     onMotionControlChange: vi.fn(),
     onSelectEntity: vi.fn(),
     readOnly: false,
+    rotationHandleEntityId: null,
+    rotationPreview: null,
     sampleId: "sample-1",
     scalePreview: null,
     selectedIds: new Set<string>(),
@@ -192,6 +200,24 @@ function previewView(
 }
 
 describe("StudioCanvas retained preview layer", () => {
+  it.each([
+    [0.5, -98, 2],
+    [1, -56, 1],
+    [2, -35, 0.5],
+  ])(
+    "keeps the rotation handle connector attached at composite scale %s",
+    (scale, expectedTop, expectedInverseScale) => {
+      const style = rotationHandleLayoutStyle(scale, 1);
+      const discRadius = 14;
+      const connectorLength = 28;
+      const discCenterFromBounds = scale * (style.top + discRadius);
+
+      expect(style.top).toBe(expectedTop);
+      expect(style.scale).toBe(expectedInverseScale);
+      expect(discCenterFromBounds + discRadius + connectorLength).toBeCloseTo(0);
+    },
+  );
+
   it("cancels overlay CSS scales so sampled runtime bounds are applied exactly once", () => {
     expect(
       compensatePreparedGeometryForOverlayScales(
@@ -520,6 +546,44 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain("height:12.5cqh;width:14.0627");
     expect(markup).toContain('aria-label="Resize image from bottom-right corner"');
     expect(markup.match(/data-studio-resize-handle="entity:image"/g)).toHaveLength(1);
+  });
+
+  it("places the rotation handle on the same prepared selection bounds and previews its canonical angle", () => {
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:rotation-handle",
+              revision: "a".repeat(64),
+              sampleTime: 0,
+              viewport: { heightPx: 360, widthPx: 640 },
+            },
+            phase: "presented",
+          },
+          new Map([["scene:circle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 320, y: 180 } }]]),
+          new Map([
+            [
+              "circle_1",
+              {
+                bindingId: `source-binding:${"a".repeat(64)}`,
+                entityId: "scene:circle/entity:0",
+                sourceName: "circle_1",
+              },
+            ],
+          ]),
+        )}
+        rotationHandleEntityId={CIRCLE_ENTITY.id}
+        rotationPreview={{ angleRadians: Math.PI / 4, entityId: CIRCLE_ENTITY.id }}
+        selectedIds={new Set([CIRCLE_ENTITY.id])}
+      />,
+    );
+
+    expect(markup).toContain(`data-studio-selection-bounds="${CIRCLE_ENTITY.id}"`);
+    expect(markup).toContain(`data-studio-rotation-handle="${CIRCLE_ENTITY.id}"`);
+    expect(markup).toContain('aria-label="Rotate circle_1"');
+    expect(markup).toContain(`rotate:${-Math.PI / 4}rad`);
   });
 
   it("selects only the three LineJoints leaves without starting a source rewrite gesture", () => {

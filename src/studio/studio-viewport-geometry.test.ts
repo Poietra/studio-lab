@@ -4,6 +4,7 @@ import {
   clientDeltaToViewport,
   clientPointToViewport,
   isCanvasInteractionTarget,
+  rotationDeltaFromClientPoints,
   viewportPositionStyle,
   viewportScaleForBounds,
 } from "./studio-viewport-geometry";
@@ -24,6 +25,15 @@ describe("viewport coordinate projection", () => {
       top: "75%",
     });
   });
+
+  it("converts clockwise client-space pointer motion into a negative Manim angle and supports snapping", () => {
+    const center = { x: 100, y: 100 };
+    const top = { x: 100, y: 50 };
+    const right = { x: 150, y: 100 };
+
+    expect(rotationDeltaFromClientPoints(center, top, right)).toBeCloseTo(-Math.PI / 2);
+    expect(rotationDeltaFromClientPoints(center, top, { x: 125, y: 50 }, Math.PI / 12)).toBeCloseTo(-Math.PI / 6);
+  });
 });
 
 describe("canvas hit testing", () => {
@@ -32,7 +42,7 @@ describe("canvas hit testing", () => {
 
     expect(isCanvasInteractionTarget({ closest })).toBe(true);
     expect(closest).toHaveBeenCalledWith(
-      "[data-studio-entity], [data-motion-control], [data-studio-resize-handle]",
+      "[data-studio-entity], [data-motion-control], [data-studio-resize-handle], [data-studio-rotation-handle]",
     );
     expect(isCanvasInteractionTarget(null)).toBe(false);
     expect(isCanvasInteractionTarget({ closest: () => null })).toBe(false);

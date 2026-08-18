@@ -11,6 +11,10 @@ export type EntityScalePreview = Readonly<{
   entityId: string;
   scale: number;
 }>;
+export type EntityRotationPreview = Readonly<{
+  angleRadians: number;
+  entityId: string;
+}>;
 export type EntityGeometryPreview = Readonly<{
   dimensions: EntityDimensions;
   entityId: string;
@@ -25,7 +29,8 @@ export type SurfaceBounds = Readonly<{
 }>;
 
 const ZERO_DELTA = { x: 0, y: 0 } as const;
-const CANVAS_INTERACTION_SELECTOR = "[data-studio-entity], [data-motion-control], [data-studio-resize-handle]";
+const CANVAS_INTERACTION_SELECTOR =
+  "[data-studio-entity], [data-motion-control], [data-studio-resize-handle], [data-studio-rotation-handle]";
 
 export function entityDragDelta(preview: EntityDragPreview | null, entityId: string) {
   return preview?.entityIds.includes(entityId) ? preview.delta : ZERO_DELTA;
@@ -36,6 +41,25 @@ export function entityPreviewScale(
   entity: Readonly<Pick<ProjectedEntity, "id" | "scale">>,
 ) {
   return preview?.entityId === entity.id ? preview.scale : entity.scale;
+}
+
+export function entityPreviewRotation(preview: EntityRotationPreview | null, entityId: string) {
+  return preview?.entityId === entityId ? preview.angleRadians : 0;
+}
+
+/** Returns a Manim-compatible counter-clockwise angle from client-space
+ * pointers, whose positive Y axis points down. */
+export function rotationDeltaFromClientPoints(
+  center: Point,
+  start: Point,
+  current: Point,
+  snapRadians: number | null = null,
+) {
+  const startAngle = Math.atan2(start.y - center.y, start.x - center.x);
+  const currentAngle = Math.atan2(current.y - center.y, current.x - center.x);
+  const counterClockwiseDelta = -Math.atan2(Math.sin(currentAngle - startAngle), Math.cos(currentAngle - startAngle));
+  if (snapRadians === null || !Number.isFinite(snapRadians) || snapRadians <= 0) return counterClockwiseDelta;
+  return Math.round(counterClockwiseDelta / snapRadians) * snapRadians;
 }
 
 export function clientPointToViewport(bounds: SurfaceBounds, clientPoint: Point): Point {

@@ -11,6 +11,7 @@ describe("Studio gesture preview store", () => {
       dragPreview: null,
       geometryPreview: null,
       kind: "idle",
+      rotationPreview: null,
       scalePreview: null,
     });
     expect(store.getSnapshot()).toBe(initial);
@@ -31,6 +32,7 @@ describe("Studio gesture preview store", () => {
       dragPreview: { delta: { x: 12, y: -4 }, entityIds: ["entity:a", "entity:b"] },
       geometryPreview: null,
       kind: "drag",
+      rotationPreview: null,
       scalePreview: null,
     });
     expect(listener).toHaveBeenCalledTimes(1);
@@ -70,6 +72,7 @@ describe("Studio gesture preview store", () => {
       dragPreview: null,
       geometryPreview: null,
       kind: "scale",
+      rotationPreview: null,
       scalePreview: { entityId: "entity:rectangle", scale: 1.5 },
     });
     expect(listener).toHaveBeenCalledTimes(2);
@@ -77,6 +80,24 @@ describe("Studio gesture preview store", () => {
     store.setScalePreview({ entityId: "entity:rectangle", scale: 1.5 });
     expect(store.getSnapshot()).toBe(scale);
     expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("publishes canonical rotation preview angles without retaining stale resize state", () => {
+    const store = createStudioGesturePreviewStore();
+    store.setScalePreview({ entityId: "entity:circle", scale: 2 });
+    store.setRotationPreview({ angleRadians: Math.PI / 4, entityId: "entity:circle" });
+    const rotation = store.getSnapshot();
+
+    expect(rotation).toEqual({
+      dragPreview: null,
+      geometryPreview: null,
+      kind: "rotation",
+      rotationPreview: { angleRadians: Math.PI / 4, entityId: "entity:circle" },
+      scalePreview: null,
+    });
+
+    store.setRotationPreview({ angleRadians: Math.PI / 4, entityId: "entity:circle" });
+    expect(store.getSnapshot()).toBe(rotation);
   });
 
   it("clears an active preview once and stops notifying unsubscribed listeners", () => {
