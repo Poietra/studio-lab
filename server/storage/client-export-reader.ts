@@ -74,7 +74,9 @@ export class ClientExportReaderV1 {
     signal?: AbortSignal,
   ): Promise<ClientExportPublicationV1> {
     const publication = await this.#repository.readPublication(this.#tenantId, projectId, publicationId, signal);
-    if (!publication) throw new HttpError("Client export publication not found.", 404);
+    if (!publication || publication.expiresAt.getTime() <= Date.now()) {
+      throw new HttpError("Client export publication not found.", 404);
+    }
     return assertClientExportPublicationIdentityV1(publication, { projectId, tenantId: this.#tenantId });
   }
 
