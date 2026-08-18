@@ -423,6 +423,7 @@ export function StudioInspector({
     onAssign: () => undefined,
     onCreate: () => null,
     onDuplicate: () => null,
+    onImportGlsl: async () => undefined,
     onRemoveAsset: () => undefined,
     onRename: () => undefined,
     onUpdateSource: () => undefined,
@@ -473,6 +474,7 @@ export function StudioInspector({
     onAssign: (shaderId: string | null) => void;
     onCreate: (name: string) => string | null;
     onDuplicate: (shaderId: string) => string | null;
+    onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
     onRemoveAsset: (shaderId: string) => void;
     onRename: (shaderId: string, name: string) => void;
     onUpdateSource: (shaderId: string, source: string) => void;

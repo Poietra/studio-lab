@@ -15,6 +15,7 @@ describe("FragmentMaterialEditor", () => {
         materials={[
           {
             assignmentCount: 2,
+            glslSource: null,
             name: "Ocean wave",
             revision: 3,
             shaderId: "project-material-1",
@@ -22,6 +23,7 @@ describe("FragmentMaterialEditor", () => {
           },
           {
             assignmentCount: 0,
+            glslSource: { entryPoint: "main", source: "#version 450\nvoid main() {}" },
             name: "Warm glow",
             revision: 1,
             shaderId: "project-material-2",
@@ -31,6 +33,7 @@ describe("FragmentMaterialEditor", () => {
         onAssign={vi.fn()}
         onCreate={vi.fn(() => null)}
         onDuplicate={vi.fn(() => null)}
+        onImportGlsl={vi.fn(async () => undefined)}
         onRemoveAsset={vi.fn()}
         onRename={vi.fn()}
         onUpdateSource={vi.fn()}
@@ -44,6 +47,9 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain("Assigned to 2 object(s). Unassign all uses before deleting.");
     expect(markup).toContain("Unassign this material from 2 object(s) before deleting it.");
     expect(markup).toContain('aria-label="Fragment material WGSL source"');
+    expect(markup).toContain("Import Vulkan GLSL 450");
+    expect(markup).toContain('aria-label="Vulkan GLSL fragment source"');
+    expect(markup).toContain("#version 450");
   });
 
   it("shows an active Scene material failure while the selected object is unassigned", () => {
@@ -56,6 +62,7 @@ describe("FragmentMaterialEditor", () => {
         materials={[
           {
             assignmentCount: 1,
+            glslSource: null,
             name: "Broken wave",
             revision: 2,
             shaderId: "project-material-1",
@@ -65,6 +72,7 @@ describe("FragmentMaterialEditor", () => {
         onAssign={vi.fn()}
         onCreate={vi.fn(() => null)}
         onDuplicate={vi.fn(() => null)}
+        onImportGlsl={vi.fn(async () => undefined)}
         onRemoveAsset={vi.fn()}
         onRename={vi.fn()}
         onUpdateSource={vi.fn()}

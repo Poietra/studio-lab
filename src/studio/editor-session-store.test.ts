@@ -21,6 +21,7 @@ import {
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   projectFragmentMaterialsForSceneV1,
   removeStudioFragmentMaterialV1,
+  updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialSourceV1,
 } from "./fragment-material-authoring";
 import type { ProgramRecord } from "./model";
@@ -362,6 +363,23 @@ describe("durable editor session storage", () => {
       shaderId: "project-studio-fragment",
     });
     expect(adapter.value).toContain("namesByShaderId");
+  });
+
+  it("restores editable GLSL while persisting canonical WGSL in the material registry", () => {
+    const adapter = new MemoryAdapter();
+    const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "GLSL" });
+    const source = "#version 450\nvoid main() {}";
+    const imported = updateStudioFragmentMaterialFromGlslV1(material.state, {
+      entryPoint: "main",
+      shaderId: material.shaderId,
+      source,
+      wgsl: "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
+    });
+    expect(new EditorSessionStore(adapter).saveProjectFragmentMaterials("project-a", imported)).toBe(true);
+
+    const restored = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
+    expect(restored.glslSourcesByShaderId[material.shaderId]).toEqual({ entryPoint: "main", source });
+    expect(restored.registry.materials[0]?.source).toContain("fn fs_main");
   });
 
   it("separates cloud management from exact migrated-entry deletion", () => {

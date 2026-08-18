@@ -27,6 +27,7 @@ poietra-export-mux = { path = "crates/poietra-export-mux" }
 poietra-mathtex-outline = { path = "crates/poietra-mathtex-outline" }
 pyo3 = { version = "=0.28.3", features = ["abi3-py310"] }
 lyon_tessellation = "=1.0.20"
+naga = { version = "=30.0.0", features = ["glsl-in", "wgsl-in", "wgsl-out"] }
 kurbo = "=0.13.1"
 mp4-atom = "=0.15.0"
 png = "=0.18.1"

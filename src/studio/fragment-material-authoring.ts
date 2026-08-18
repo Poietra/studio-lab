@@ -4,6 +4,7 @@ import {
   type FragmentMaterialRegistryV1,
   type FragmentMaterialSourceV1,
   fragmentMaterialRegistryV1Schema,
+  MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
   MAX_PROJECT_FRAGMENT_MATERIALS_V1,
   PROJECT_FRAGMENT_SHADER_ID_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
@@ -24,11 +25,21 @@ export type SceneFragmentMaterialStateV1 = Readonly<{
 
 export type ProjectFragmentMaterialStateV1 = Readonly<{
   assignmentsByScene: Readonly<Record<string, Readonly<Record<string, StudioFragmentMaterialReferenceV1>>>>;
+  glslSourcesByShaderId: Readonly<Record<string, StudioFragmentMaterialGlslSource>>;
   namesByShaderId: Readonly<Record<string, string>>;
   registry: FragmentMaterialRegistryV1;
 }>;
 
-export type StudioNamedFragmentMaterialV1 = FragmentMaterialSourceV1 & Readonly<{ name: string }>;
+export type StudioFragmentMaterialGlslSource = Readonly<{
+  entryPoint: "main";
+  source: string;
+}>;
+
+export type StudioNamedFragmentMaterialV1 = FragmentMaterialSourceV1 &
+  Readonly<{
+    glslSource: StudioFragmentMaterialGlslSource | null;
+    name: string;
+  }>;
 
 const fragmentMaterialNameSchema = z
   .string()
@@ -37,9 +48,23 @@ const fragmentMaterialNameSchema = z
   .refine((name) => name === name.trim(), "Material names must not have surrounding whitespace.")
   .refine((name) => !/[\u0000-\u001f\u007f]/.test(name), "Material names must not contain control characters.");
 
+const fragmentMaterialGlslSourceSchema = z
+  .object({
+    entryPoint: z.literal("main"),
+    source: z
+      .string()
+      .min(1)
+      .refine(
+        (source) => new TextEncoder().encode(source).byteLength <= MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
+        `GLSL source accepts at most ${MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1} UTF-8 bytes.`,
+      ),
+  })
+  .strict();
+
 const rawProjectFragmentMaterialStateSchema = z
   .object({
     assignmentsByScene: z.record(sourceIdentityV1Schema, z.record(sourceIdentityV1Schema, fragmentMaterialV1Schema)),
+    glslSourcesByShaderId: z.record(opaqueIdV1Schema, fragmentMaterialGlslSourceSchema).optional(),
     namesByShaderId: z.record(opaqueIdV1Schema, fragmentMaterialNameSchema).optional(),
     registry: fragmentMaterialRegistryV1Schema,
   })
@@ -53,6 +78,7 @@ export const projectFragmentMaterialStateV1Schema = rawProjectFragmentMaterialSt
   .transform(
     (state): ProjectFragmentMaterialStateV1 => ({
       ...state,
+      glslSourcesByShaderId: state.glslSourcesByShaderId ?? {},
       namesByShaderId: Object.fromEntries(
         state.registry.materials.map((material) => [
           material.shaderId,
@@ -76,6 +102,15 @@ export const projectFragmentMaterialStateV1Schema = rawProjectFragmentMaterialSt
       }
       shaderIds.add(material.shaderId);
     }
+    for (const shaderId of Object.keys(state.glslSourcesByShaderId)) {
+      if (!shaderIds.has(shaderId)) {
+        context.addIssue({
+          code: "custom",
+          message: "GLSL authoring source must belong to an existing project material.",
+          path: ["glslSourcesByShaderId", shaderId],
+        });
+      }
+    }
     for (const [sceneId, assignments] of Object.entries(state.assignmentsByScene)) {
       for (const [entityId, assignment] of Object.entries(assignments)) {
         if (!availableMaterials.has(`${assignment.shaderId}\0${assignment.revision}`)) {
@@ -91,6 +126,7 @@ export const projectFragmentMaterialStateV1Schema = rawProjectFragmentMaterialSt
 
 export const EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1: ProjectFragmentMaterialStateV1 = Object.freeze({
   assignmentsByScene: Object.freeze({}),
+  glslSourcesByShaderId: Object.freeze({}),
   namesByShaderId: Object.freeze({}),
   registry: EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
 });
@@ -132,13 +168,14 @@ export function listStudioFragmentMaterialsV1(
 ): readonly StudioNamedFragmentMaterialV1[] {
   return state.registry.materials.map((material) => ({
     ...material,
+    glslSource: state.glslSourcesByShaderId[material.shaderId] ?? null,
     name: state.namesByShaderId[material.shaderId] ?? legacyMaterialName(material.shaderId),
   }));
 }
 
 export function createStudioFragmentMaterialV1(
   state: ProjectFragmentMaterialStateV1,
-  input: Readonly<{ name: string; source?: string }>,
+  input: Readonly<{ glslSource?: StudioFragmentMaterialGlslSource; name: string; source?: string }>,
 ): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
   if (state.registry.materials.length >= MAX_PROJECT_FRAGMENT_MATERIALS_V1) {
     throw new Error(`A project accepts at most ${MAX_PROJECT_FRAGMENT_MATERIALS_V1} materials.`);
@@ -149,6 +186,9 @@ export function createStudioFragmentMaterialV1(
     shaderId,
     state: parseProjectFragmentMaterialState({
       assignmentsByScene: state.assignmentsByScene,
+      glslSourcesByShaderId: input.glslSource
+        ? { ...state.glslSourcesByShaderId, [shaderId]: input.glslSource }
+        : state.glslSourcesByShaderId,
       namesByShaderId: { ...state.namesByShaderId, [shaderId]: name },
       registry: {
         ...state.registry,
@@ -192,6 +232,7 @@ export function duplicateStudioFragmentMaterialV1(
   if (!source) throw new Error("The material no longer exists.");
   return createStudioFragmentMaterialV1(state, {
     name: uniqueDuplicateName(state, state.namesByShaderId[shaderId] ?? legacyMaterialName(shaderId)),
+    ...(state.glslSourcesByShaderId[shaderId] ? { glslSource: state.glslSourcesByShaderId[shaderId] } : {}),
     source: source.source,
   });
 }
@@ -219,10 +260,13 @@ export function removeStudioFragmentMaterialAssetV1(
   if (assignmentCount > 0) return { assignmentCount, kind: "in-use" };
   const namesByShaderId = { ...state.namesByShaderId };
   delete namesByShaderId[shaderId];
+  const glslSourcesByShaderId = { ...state.glslSourcesByShaderId };
+  delete glslSourcesByShaderId[shaderId];
   return {
     kind: "removed",
     state: parseProjectFragmentMaterialState({
       assignmentsByScene: state.assignmentsByScene,
+      glslSourcesByShaderId,
       namesByShaderId,
       registry: {
         ...state.registry,
@@ -238,7 +282,15 @@ export function updateStudioFragmentMaterialSourceV1(
 ): ProjectFragmentMaterialStateV1 {
   const activeMaterial = state.registry.materials.find(({ shaderId }) => shaderId === input.shaderId);
   if (!activeMaterial) throw new Error("The material no longer exists.");
-  if (activeMaterial.source === input.source) return state;
+  if (activeMaterial.source === input.source) {
+    if (!(input.shaderId in state.glslSourcesByShaderId)) return state;
+    const glslSourcesByShaderId = { ...state.glslSourcesByShaderId };
+    delete glslSourcesByShaderId[input.shaderId];
+    return parseProjectFragmentMaterialState({
+      ...state,
+      glslSourcesByShaderId,
+    });
+  }
   const revision = activeMaterial.revision + 1;
   const assignmentsByScene = Object.fromEntries(
     Object.entries(state.assignmentsByScene).map(([sceneId, assignments]) => [
@@ -251,14 +303,58 @@ export function updateStudioFragmentMaterialSourceV1(
       ),
     ]),
   );
+  const glslSourcesByShaderId = { ...state.glslSourcesByShaderId };
+  delete glslSourcesByShaderId[input.shaderId];
   return parseProjectFragmentMaterialState({
     assignmentsByScene,
+    glslSourcesByShaderId,
     namesByShaderId: state.namesByShaderId,
     registry: {
       ...state.registry,
       materials: state.registry.materials.map((material) =>
         material.shaderId === input.shaderId ? { ...material, revision, source: input.source } : material,
       ),
+    },
+  });
+}
+
+export function updateStudioFragmentMaterialFromGlslV1(
+  state: ProjectFragmentMaterialStateV1,
+  input: Readonly<{
+    entryPoint: "main";
+    shaderId: string;
+    source: string;
+    wgsl: string;
+  }>,
+): ProjectFragmentMaterialStateV1 {
+  const activeMaterial = state.registry.materials.find(({ shaderId }) => shaderId === input.shaderId);
+  if (!activeMaterial) throw new Error("The material no longer exists.");
+  const currentGlsl = state.glslSourcesByShaderId[input.shaderId];
+  if (
+    activeMaterial.source === input.wgsl &&
+    currentGlsl?.entryPoint === input.entryPoint &&
+    currentGlsl.source === input.source
+  ) {
+    return state;
+  }
+  if (activeMaterial.source === input.wgsl) {
+    return parseProjectFragmentMaterialState({
+      ...state,
+      glslSourcesByShaderId: {
+        ...state.glslSourcesByShaderId,
+        [input.shaderId]: { entryPoint: input.entryPoint, source: input.source },
+      },
+    });
+  }
+  const updated = updateStudioFragmentMaterialSourceV1(state, {
+    shaderId: input.shaderId,
+    source: input.wgsl,
+  });
+  return parseProjectFragmentMaterialState({
+    ...updated,
+    glslSourcesByShaderId: {
+      ...updated.glslSourcesByShaderId,
+      [input.shaderId]: { entryPoint: input.entryPoint, source: input.source },
     },
   });
 }
@@ -280,6 +376,7 @@ export function assignStudioFragmentMaterialV1(
   };
   return parseProjectFragmentMaterialState({
     assignmentsByScene,
+    glslSourcesByShaderId: state.glslSourcesByShaderId,
     namesByShaderId: state.namesByShaderId,
     registry: state.registry,
   });
@@ -296,6 +393,7 @@ export function removeStudioFragmentMaterialV1(
   else assignmentsByScene[input.sceneId] = sceneAssignments;
   return {
     assignmentsByScene,
+    glslSourcesByShaderId: state.glslSourcesByShaderId,
     namesByShaderId: state.namesByShaderId,
     registry: state.registry,
   };

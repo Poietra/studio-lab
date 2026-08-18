@@ -7,6 +7,7 @@ rust-version = "1.92"
 
 [dependencies]
 lyon_tessellation.workspace = true
+naga.workspace = true
 png.workspace = true
 poietra-scene-ir.workspace = true
 sha2.workspace = true
