@@ -9,12 +9,13 @@ use poietra_eval::{
     StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
     StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
     StudioBoundEntityEditInput, StudioCreationEditInput, StudioCreationMathTexOutline,
-    StudioMathTexTransformEditInput, StudioMathTexTransformEntityIdentity,
-    StudioMathTexTransformOutline, StudioMathTexTransformProjectionEntityIdentity,
-    StudioMathTexTransformSourceBinding, StudioMotionEditInput, StudioMotionEntityIdentity,
-    StudioMotionProjectionBatch, StudioMotionSourceBinding, StudioTimelineEditInput,
-    project_studio_creation_edits, project_studio_math_tex_transform_edits,
-    project_studio_motion_edit, project_studio_timeline_edits,
+    StudioCreationTextOutline, StudioMathTexTransformEditInput,
+    StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
+    StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
+    StudioMotionEditInput, StudioMotionEntityIdentity, StudioMotionProjectionBatch,
+    StudioMotionSourceBinding, StudioTimelineEditInput, project_studio_creation_edits,
+    project_studio_math_tex_transform_edits, project_studio_motion_edit,
+    project_studio_timeline_edits,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -121,6 +122,8 @@ struct ApplyStudioCreationEditCommandJsonV1 {
     expected_base_revision: String,
     frame: StudioAuthoringSize,
     math_tex_outlines: Vec<StudioCreationMathTexOutline>,
+    #[serde(default)]
+    text_outlines: Vec<StudioCreationTextOutline>,
     next_revision: String,
     programs: Vec<StudioCreationEditInput>,
     #[serde(rename = "schema")]
@@ -147,6 +150,7 @@ impl From<ApplyStudioCreationEditCommandJsonV1> for ApplyStudioCreationEditComma
             expected_base_revision: value.expected_base_revision,
             frame: value.frame,
             math_tex_outlines: value.math_tex_outlines,
+            text_outlines: value.text_outlines,
             next_revision: value.next_revision,
             programs: value.programs,
             viewport: value.viewport,
@@ -1643,6 +1647,58 @@ mod tests {
             bundle.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ));
+    }
+
+    #[test]
+    fn studio_creation_adapter_defaults_text_outlines_for_legacy_commands() {
+        let command: ApplyStudioCreationEditCommandJsonV1 =
+            serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
+        let command: ApplyStudioCreationEditCommand = command.into();
+
+        assert!(command.text_outlines.is_empty());
+    }
+
+    #[test]
+    fn studio_creation_adapter_forwards_text_outlines_to_the_core() {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
+        command["programs"].as_array_mut().unwrap().truncate(1);
+        let entity = &mut command["programs"][0]["operations"][0]["entity"];
+        entity["dimensions"] = json!({});
+        entity["kind"] = json!("text");
+        entity["text"] = json!("Hello");
+        let outline_fixture: serde_json::Value =
+            serde_json::from_slice(&static_math_tex_fixture_json()).unwrap();
+        command["textOutlines"] = json!([{
+            "entityId": "tx:create/entity:rectangle",
+            "path": outline_fixture["scene"]["entities"][0]["geometry"]["path"],
+            "text": "Hello"
+        }]);
+
+        let response = apply_studio_creation_edit_json(
+            &fixture_json(),
+            &serde_json::to_vec(&command).unwrap(),
+        )
+        .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let bundle =
+            parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                .unwrap();
+        let created = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "tx:create/entity:rectangle")
+            .unwrap();
+
+        assert_eq!(
+            response["creationProjection"]["entities"][0]["text"],
+            "Hello"
+        );
+        assert!(matches!(
+            created.geometry,
+            SceneGeometryV1::CubicPath { .. }
         ));
     }
 

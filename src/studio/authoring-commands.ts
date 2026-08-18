@@ -1,3 +1,4 @@
+import { studioCreationText } from "./editable-content";
 import {
   importedLifetimeEditEvidence,
   MIN_OBJECT_LIFETIME_SECONDS,
@@ -118,6 +119,9 @@ export function createStudioEntitiesProgram(
   const origin = input.origin ?? "studio-default";
   const entityIds: string[] = [];
   const operations = input.entities.flatMap((entity, index): readonly SceneEditOperation[] => {
+    if (entity.type === "Text" && !studioCreationText(entity.content)) {
+      throw new Error("Text creation accepts one non-blank printable ASCII line of at most 256 characters.");
+    }
     const entityId = provisionalEntityId(input.transactionId, `insert-${index}`);
     const createId = operationId(input.transactionId, `create-${index}`);
     const positionId = operationId(input.transactionId, `position-${index}`);
@@ -657,7 +661,11 @@ export function defaultEntityContent(type: InsertEntityType, value: string): Ent
   const normalized = value.trim();
   if (type === "Text") {
     const text = normalized || "Text";
-    return { displayLines: [text], label: text, text };
+    const content = { displayLines: [text], label: text, text } as const;
+    if (!studioCreationText(content)) {
+      throw new Error("Text creation accepts one non-blank printable ASCII line of at most 256 characters.");
+    }
+    return content;
   }
   if (type === "MathTex") {
     const tex = normalized || "x";

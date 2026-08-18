@@ -94,6 +94,7 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
             kind: "line",
             lifetimeEnd: null,
             lifetimeStart: 0.5,
+            text: null,
             texParts: null,
           },
           id: "create-line",
@@ -129,6 +130,7 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
     },
   ],
   schema: "poietra.apply-studio-creation-edit",
+  textOutlines: [],
   version: 1,
   viewport: { height: 360, width: 640 },
 };

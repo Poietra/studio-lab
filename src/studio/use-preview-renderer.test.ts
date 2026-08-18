@@ -5,7 +5,12 @@ import { pngSnapshotBundleFixture } from "../../server/test-fixtures/fast-manim-
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
-import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
+import {
+  type MathTexOutlineResponseV1,
+  mathTexOutlineResponseV1Schema,
+  type TextOutlineResponseV1,
+  textOutlineResponseV1Schema,
+} from "../engine/mathtex-outline";
 import type {
   ApplyStaticRootTransformEditCompiler,
   ApplyStaticRootTransformEditWireCommandV1,
@@ -101,6 +106,21 @@ function compiledMathTexResponse(
       toolchainDigest: digests.toolchain ?? HASH_C,
     },
     schema: "poietra.mathtex-outline-response",
+    version: 1,
+  });
+}
+
+function compiledTextResponse(): TextOutlineResponseV1 {
+  const mathTex = compiledMathTexResponse().result;
+  if (mathTex.kind !== "compiled") throw new Error("The shared outline fixture must compile.");
+  return textOutlineResponseV1Schema.parse({
+    result: {
+      bounds: mathTex.bounds,
+      fillRule: "nonzero",
+      kind: "compiled",
+      path: mathTex.path,
+    },
+    schema: "poietra.text-outline-response",
     version: 1,
   });
 }
@@ -2270,43 +2290,144 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.creationProjection).toEqual(creationProjection);
   });
 
-  it("fails closed when Rust omits the complete Studio creation projection", async () => {
+  it("attaches a compiled Text outline to the normalized Rust command", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
+    const text = "Hello Text";
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 0.5,
       entities: [
         {
-          content: { displayLines: ["hello"], text: "hello" },
+          content: { displayLines: [text], text },
           position: { x: 320, y: 180 },
           type: "Text",
         },
       ],
       scene: proposedState.base.runtimeSceneState,
-      transactionId: "unsupported-text",
+      transactionId: "normalized-text",
     });
-    expect(creation.validation.kind).toBe("valid");
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const createOperation = creation.validation.program.operations.find(({ kind }) => kind === "CreateEntity");
+    const positionOperation = creation.validation.program.operations.find(
+      (operation) => operation.kind === "SetProperty" && operation.key === "position",
+    );
+    const fadeOperation = creation.validation.program.operations.find(
+      (operation) => operation.kind === "ChangePresence" && operation.effect === "fade-in",
+    );
+    if (
+      createOperation?.kind !== "CreateEntity" ||
+      positionOperation?.kind !== "SetProperty" ||
+      !isPointValue(positionOperation.value) ||
+      fadeOperation?.kind !== "ChangePresence"
+    ) {
+      throw new Error("Text creation fixture is malformed.");
+    }
+    const creationProjection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: {
+            end: proposedState.base.runtimeSceneState.duration + 0.4,
+            start: createOperation.entity.lifetime.start,
+          },
+          entityId: creation.entityIds[0]!,
+          initialDimensions: {},
+          initialScale: 1,
+          kind: "text",
+          operationId: createOperation.id,
+          text,
+          transactionId: creation.validation.program.transactionId,
+        },
+      ],
+      insertions: [{ at: 0.5, duration: 0.4, transactionId: creation.validation.program.transactionId }],
+      motions: [],
+      mutations: [
+        {
+          entityId: creation.entityIds[0]!,
+          interval: positionOperation.interval,
+          kind: "position",
+          operationId: positionOperation.id,
+          transactionId: creation.validation.program.transactionId,
+          value: positionOperation.value,
+        },
+        {
+          entityId: creation.entityIds[0]!,
+          from: 0,
+          interval: fadeOperation.interval,
+          kind: "fade-in",
+          operationId: fadeOperation.id,
+          to: 1,
+          transactionId: creation.validation.program.transactionId,
+        },
+      ],
+      projectedDuration: proposedState.base.runtimeSceneState.duration + 0.4,
+      removals: [],
+    };
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
+    const compilerInputs: string[] = [];
+    const outline = compiledTextResponse();
 
     const result = await compileStudioPreviewSceneV1({
       applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
-        return unchangedAuthoringResult(bundle);
+        return { ...unchangedAuthoringResult(bundle), creationProjection };
       },
       frame: { height: 9, width: 16 },
       snapshot,
+      textOutlineCompiler: async (input) => {
+        compilerInputs.push(input);
+        return outline;
+      },
       workingState: {
         ...proposedState.base,
         appliedEdits: [programRecord(creation.validation.program, creation.validation)],
       },
-      workingRevision: "studio-working-v1:unsupported-text",
+      workingRevision: "studio-working-v1:normalized-text",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
 
+    expect(result.kind).toBe("compiled");
+    expect(compilerInputs).toEqual([text]);
     expect(commands).toHaveLength(1);
+    const compiled = outline.result;
+    if (compiled.kind !== "compiled") throw new Error("Text test outline must compile.");
+    expect(commands[0]?.textOutlines).toEqual([{ entityId: creation.entityIds[0], path: compiled.path, text }]);
     expect(commands[0]?.programs[0]?.operations[0]).toMatchObject({
-      entity: { id: creation.entityIds[0], kind: "other" },
+      entity: { id: creation.entityIds[0], kind: "text", text, texParts: null },
       kind: "create",
     });
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.creationProjection).toEqual(creationProjection);
+  });
+
+  it("fails closed when Rust omits the complete Studio Text creation projection", async () => {
+    const { proposedState, snapshot } = await compilablePreviewInput();
+    const text = "Hello Text";
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0.5,
+      entities: [
+        {
+          content: { displayLines: [text], text },
+          position: { x: 320, y: 180 },
+          type: "Text",
+        },
+      ],
+      scene: proposedState.base.runtimeSceneState,
+      transactionId: "missing-text-projection",
+    });
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioCreationEditCompiler: async (bundle) => unchangedAuthoringResult(bundle),
+      frame: { height: 9, width: 16 },
+      snapshot,
+      textOutlineCompiler: async () => compiledTextResponse(),
+      workingState: {
+        ...proposedState.base,
+        appliedEdits: [programRecord(creation.validation.program, creation.validation)],
+      },
+      workingRevision: "studio-working-v1:missing-text-projection",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+
     expect(result).toEqual({
       error: "Rust core returned an uncorrelated Studio creation projection.",
       kind: "unsupported",

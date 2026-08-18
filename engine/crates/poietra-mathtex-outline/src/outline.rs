@@ -374,20 +374,15 @@ impl OutlineCollector {
             return Err(OutlineFailureV1::Invalid);
         }
         let glyph_scale = scale / units_per_em;
-        let mut builder = GlyphOutlineBuilder::new(Affine::new(glyph_scale, glyph_scale, x, -y));
-        let has_outline = face.outline_glyph(glyph_id, &mut builder).is_some();
-        if !has_outline {
+        let Some(subpaths) =
+            glyph_outline_subpaths(&face, glyph_id, glyph_scale, glyph_scale, x, -y)?
+        else {
             return if character.is_whitespace() {
                 Ok(())
             } else {
                 Err(OutlineFailureV1::UnsupportedFrameItem)
             };
-        }
-        let mut subpaths = builder.finish()?;
-        if subpaths.is_empty() {
-            return Err(OutlineFailureV1::Invalid);
-        }
-        orient_contour_group_clockwise(&mut subpaths);
+        };
         self.push_subpaths(subpaths)
     }
 
@@ -760,18 +755,34 @@ fn reverse_subpath(subpath: &mut CubicSubpathV1) {
     subpath.segments = reversed;
 }
 
-fn extract_normalized_outline_evidence_v1(
-    display_list: &DisplayList,
-) -> Result<(CubicPathV1, MathTexOutlineBoundsV1, f64), OutlineFailureV1> {
-    let mut collector = OutlineCollector::default();
-    collector.visit_display_list(display_list)?;
-    if collector.subpaths.is_empty() {
+pub(crate) fn glyph_outline_subpaths(
+    face: &ttf_parser::Face<'_>,
+    glyph_id: ttf_parser::GlyphId,
+    scale_x: f64,
+    scale_y: f64,
+    translate_x: f64,
+    translate_y: f64,
+) -> Result<Option<Vec<CubicSubpathV1>>, OutlineFailureV1> {
+    let mut builder =
+        GlyphOutlineBuilder::new(Affine::new(scale_x, scale_y, translate_x, translate_y));
+    if face.outline_glyph(glyph_id, &mut builder).is_none() {
+        return Ok(None);
+    }
+    let mut subpaths = builder.finish()?;
+    if subpaths.is_empty() {
         return Err(OutlineFailureV1::Invalid);
     }
+    orient_contour_group_clockwise(&mut subpaths);
+    Ok(Some(subpaths))
+}
 
-    let mut path = CubicPathV1 {
-        subpaths: collector.subpaths,
-    };
+fn normalize_outline_subpaths_with_evidence(
+    subpaths: Vec<CubicSubpathV1>,
+) -> Result<(CubicPathV1, MathTexOutlineBoundsV1, f64, f64), OutlineFailureV1> {
+    if subpaths.is_empty() {
+        return Err(OutlineFailureV1::Invalid);
+    }
+    let mut path = CubicPathV1 { subpaths };
     let raw_bounds = tight_bounds(&path).ok_or(OutlineFailureV1::Invalid)?;
     let height = raw_bounds.top - raw_bounds.bottom;
     if !height.is_finite() || height <= MIN_INK_HEIGHT_V1 {
@@ -779,8 +790,6 @@ fn extract_normalized_outline_evidence_v1(
     }
     let center_x = raw_bounds.left.midpoint(raw_bounds.right);
     let center_y = raw_bounds.bottom.midpoint(raw_bounds.top);
-    let raw_baseline_y = -display_list.height;
-    let baseline_y = quantize((raw_baseline_y - center_y) / height)?;
 
     for subpath in &mut path.subpaths {
         normalize_point(&mut subpath.start, center_x, center_y, height)?;
@@ -799,6 +808,29 @@ fn extract_normalized_outline_evidence_v1(
     {
         return Err(OutlineFailureV1::Invalid);
     }
+    Ok((path, bounds, center_y, height))
+}
+
+pub(crate) fn normalize_outline_subpaths(
+    subpaths: Vec<CubicSubpathV1>,
+) -> Result<(CubicPathV1, MathTexOutlineBoundsV1), OutlineFailureV1> {
+    let (path, bounds, _, _) = normalize_outline_subpaths_with_evidence(subpaths)?;
+    Ok((path, bounds))
+}
+
+fn extract_normalized_outline_evidence_v1(
+    display_list: &DisplayList,
+) -> Result<(CubicPathV1, MathTexOutlineBoundsV1, f64), OutlineFailureV1> {
+    let mut collector = OutlineCollector::default();
+    collector.visit_display_list(display_list)?;
+    if collector.subpaths.is_empty() {
+        return Err(OutlineFailureV1::Invalid);
+    }
+
+    let raw_baseline_y = -display_list.height;
+    let (path, bounds, center_y, height) =
+        normalize_outline_subpaths_with_evidence(collector.subpaths)?;
+    let baseline_y = quantize((raw_baseline_y - center_y) / height)?;
     Ok((path, bounds, baseline_y))
 }
 

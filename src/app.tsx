@@ -2020,26 +2020,26 @@ export function App({
     const sourceScene = previousInsertion
       ? projectRuntimeSceneToSourceTimeline(proposedState.evaluatedScene, precedingPrograms)
       : draftSourceScene;
-    const inputs =
-      entities ??
-      (insertTool === "select"
-        ? []
-        : [
-            {
-              content: defaultEntityContent(insertTool, insertValue),
-              position: point,
-              type: insertTool,
-            },
-          ]);
-    if (inputs.length === 0) return false;
-    const anchor = manualAuthoringAnchor({
-      action: "inserting an object",
-      requireAlignedPlayhead: false,
-      scene: sourceScene,
-      sourcePrograms: precedingPrograms,
-    });
-    if (!anchor) return false;
     try {
+      const inputs =
+        entities ??
+        (insertTool === "select"
+          ? []
+          : [
+              {
+                content: defaultEntityContent(insertTool, insertValue),
+                position: point,
+                type: insertTool,
+              },
+            ]);
+      if (inputs.length === 0) return false;
+      const anchor = manualAuthoringAnchor({
+        action: "inserting an object",
+        requireAlignedPlayhead: false,
+        scene: sourceScene,
+        sourcePrograms: precedingPrograms,
+      });
+      if (!anchor) return false;
       const result = createStudioEntitiesProgram({
         capturedPlayhead: anchor.sourceTime,
         entities: inputs,

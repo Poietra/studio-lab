@@ -1,4 +1,4 @@
-import { canonicalEditableContent } from "./editable-content";
+import { canonicalEditableContent, studioCreationText } from "./editable-content";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type { EntityDimensions, PropertyChannel, RuntimeSceneState } from "./model";
 import type { ChannelAccess, SceneEditValidationIssue } from "./operations";
@@ -69,9 +69,10 @@ function createEntityExecution(
   const { content, type } = operation.entity;
   const hasMathTexContent =
     type === "MathTex" && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
-  const isBuiltIn = type === "Text" || ["Arrow", "Circle", "Line", "Rectangle", "Square"].includes(type);
+  const hasTextContent = type === "Text" && studioCreationText(content) !== null;
+  const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "Square"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
-  if (hasMathTexContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
+  if (hasMathTexContent || hasTextContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
   return previewOnlyExecution(`CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`);
 }
 
@@ -455,6 +456,15 @@ export const OPERATION_REGISTRY = {
           code: "schema-invalid",
           field: "entity.dimensions",
           message: `CreateEntity dimensions do not match ${operation.entity.type}.`,
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (operation.entity.type === "Text" && !studioCreationText(operation.entity.content)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "entity.content",
+          message: "Text creation accepts one non-blank printable ASCII line of at most 256 characters.",
           operationId: operation.id,
           severity: "error",
         });

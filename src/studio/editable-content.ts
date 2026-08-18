@@ -8,6 +8,8 @@ const CONTENT_KEYS = new Set(["displayLines", "label", "texParts", "text"]);
 const MAX_CONTENT_LENGTH = 2_000;
 const MAX_DISPLAY_LINES = 2_000;
 const MAX_MATHTEX_PARTS = 16;
+export const STUDIO_CREATION_TEXT_MAX_LENGTH = 256;
+const STUDIO_CREATION_TEXT_PATTERN = /^[\x20-\x7e]+$/u;
 
 /**
  * Accepts only the exact, round-trippable content shape used by Inspector edits.
@@ -50,4 +52,16 @@ export function canonicalEditableContent(value: unknown, type: EditableContentTy
       return null;
   }
   return value as EntityContent;
+}
+
+/** The intentionally small Text subset shared by browser outlining, Rust creation, and Python export. */
+export function studioCreationText(value: unknown): string | null {
+  const content = canonicalEditableContent(value, "Text");
+  const text = content?.text;
+  return text &&
+    text.length <= STUDIO_CREATION_TEXT_MAX_LENGTH &&
+    text.trim().length > 0 &&
+    STUDIO_CREATION_TEXT_PATTERN.test(text)
+    ? text
+    : null;
 }

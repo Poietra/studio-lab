@@ -121,6 +121,26 @@ describe("manual Studio authoring commands", () => {
     expect(create.entity.content).toEqual(defaultEntityContent("Text", "before"));
   });
 
+  it.each(["line\nbreak", "こんにちは", "x".repeat(257)])(
+    "rejects Text creation outside the bounded printable-ASCII contract: %s",
+    (text) => {
+      expect(() =>
+        createStudioEntitiesProgram({
+          capturedPlayhead: 1,
+          entities: [
+            {
+              content: { displayLines: [text], text },
+              position: { x: 200, y: 120 },
+              type: "Text",
+            },
+          ],
+          scene: STUDIO_FIXTURE_SCENE,
+          transactionId: "invalid-text-source",
+        }),
+      ).toThrow("one non-blank printable ASCII line of at most 256 characters");
+    },
+  );
+
   it("combines Inspector position and shape dimensions into the existing ResizeEntity operation", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 5,

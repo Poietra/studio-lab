@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { parseVerifiedSceneIrBundleV1, sceneIrSourceRevisionHash } from "../src/engine/contracts";
-import { compileMathTexOutlineV1 } from "../src/engine/mathtex-outline";
+import { compileMathTexOutlineV1, compileTextOutlineV1 } from "../src/engine/mathtex-outline";
 import {
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
@@ -18,6 +18,7 @@ import {
   isExactStudioMotionProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
+  studioCreationTextContent,
   studioMathTexTransformStudioEntities,
   studioMotionStudioEntities,
 } from "../src/studio/scene-authoring-wire";
@@ -79,29 +80,56 @@ export async function authorizeSnapshotProgramWithSnapshot(
   );
   if (hasStudioCreation) {
     const mathTexOutlines = [];
+    const textOutlines = [];
     for (const program of input.programs) {
       for (const operation of program.operations) {
-        if (operation.kind !== "CreateEntity" || operation.entity.type !== "MathTex") continue;
-        const texParts = studioCreationMathTexParts(operation.entity.content);
-        if (!texParts) {
-          throw new HttpError("Studio-created MathTex requires canonical non-empty TeX parts.", 400);
-        }
-        let response;
-        try {
-          response = await compileMathTexOutlineV1(texParts);
-        } catch {
-          throw new HttpError("The server MathTex outline compiler is unavailable.", 503);
-        }
-        if (response.result.kind === "unsupported") {
-          if (response.result.code === "internal-failure") {
-            throw new HttpError("The server MathTex outline compiler failed.", 500);
+        if (operation.kind !== "CreateEntity") continue;
+        if (operation.entity.type === "MathTex") {
+          const texParts = studioCreationMathTexParts(operation.entity.content);
+          if (!texParts) {
+            throw new HttpError("Studio-created MathTex requires canonical non-empty TeX parts.", 400);
           }
-          throw new HttpError(
-            `Studio-created MathTex is unsupported (${response.result.code}): ${response.result.message}`,
-            400,
-          );
+          let response;
+          try {
+            response = await compileMathTexOutlineV1(texParts);
+          } catch {
+            throw new HttpError("The server MathTex outline compiler is unavailable.", 503);
+          }
+          if (response.result.kind === "unsupported") {
+            if (response.result.code === "internal-failure") {
+              throw new HttpError("The server MathTex outline compiler failed.", 500);
+            }
+            throw new HttpError(
+              `Studio-created MathTex is unsupported (${response.result.code}): ${response.result.message}`,
+              400,
+            );
+          }
+          mathTexOutlines.push({ entityId: operation.entity.id, path: response.result.path, texParts });
+        } else if (operation.entity.type === "Text") {
+          const text = studioCreationTextContent(operation.entity.content);
+          if (!text) {
+            throw new HttpError(
+              "Studio-created Text requires one printable ASCII line of at most 256 characters.",
+              400,
+            );
+          }
+          let response;
+          try {
+            response = await compileTextOutlineV1(text);
+          } catch {
+            throw new HttpError("The server Text outline compiler is unavailable.", 503);
+          }
+          if (response.result.kind === "unsupported") {
+            if (response.result.code === "internal-failure") {
+              throw new HttpError("The server Text outline compiler failed.", 500);
+            }
+            throw new HttpError(
+              `Studio-created Text is unsupported (${response.result.code}): ${response.result.message}`,
+              400,
+            );
+          }
+          textOutlines.push({ entityId: operation.entity.id, path: response.result.path, text });
         }
-        mathTexOutlines.push({ entityId: operation.entity.id, path: response.result.path, texParts });
       }
     }
     await compileApplyStudioCreationEdit(
@@ -112,6 +140,7 @@ export async function authorizeSnapshotProgramWithSnapshot(
         mathTexOutlines,
         nextRevision,
         programs: input.programs,
+        textOutlines,
         viewport: input.request.viewport,
       }),
     );
