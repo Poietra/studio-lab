@@ -93,6 +93,9 @@ function meteringDenied(reason: "blocked" | "operation-settled" | "quota-exhaust
 }
 
 function acceptanceRefused(result: Extract<AcceptClientExportPublicationResultV1, { kind: "refused" }>): never {
+  if (result.reason === "artifact-deleting") {
+    throw new HttpError("The staged client export is no longer available; retry the publication.", 409);
+  }
   if (result.reason === "document-not-found") {
     throw new HttpError("The export lineage document was not found.", 404);
   }

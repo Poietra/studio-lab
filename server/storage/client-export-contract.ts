@@ -304,7 +304,7 @@ export type AcceptClientExportPublicationResultV1 =
   | Readonly<{ kind: "conflict"; reason: "payload-mismatch" }>
   | Readonly<{
       kind: "refused";
-      reason: "document-not-found" | "quota-exhausted" | "revision-ahead";
+      reason: "artifact-deleting" | "document-not-found" | "quota-exhausted" | "revision-ahead";
     }>;
 
 /**

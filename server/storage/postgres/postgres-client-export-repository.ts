@@ -288,6 +288,20 @@ export class PostgresClientExportRepositoryV1 implements ClientExportRepositoryV
         return { kind: "refused", reason: "revision-ahead" } as const;
       }
 
+      // Serialize publication against storage-first GC. A tombstone may have
+      // been queued while this freshly staged object was not yet registered;
+      // once that happens, accepting its receipt would create a publication
+      // whose bytes are already being deleted.
+      await this.#lockArtifact(client, tenant, receipt);
+      const deleting = await client.query(
+        `SELECT 1 FROM public.client_export_deletions
+          WHERE tenant_id = $1 AND object_key = $2 AND object_generation = $3::uuid`,
+        [tenant, receipt.objectKey, receipt.objectLocatorToken],
+      );
+      if (deleting.rows.length !== 0) {
+        return { kind: "refused", reason: "artifact-deleting" } as const;
+      }
+
       // Metering settlement joins this acceptance transaction. v1 wires the
       // no-op port; #726 commits the export-publication flow reservation and
       // inserts the byte stock allocation here, atomically with the rows below.
@@ -301,7 +315,6 @@ export class PostgresClientExportRepositoryV1 implements ClientExportRepositoryV
         return { kind: "refused", reason: "quota-exhausted" } as const;
       }
 
-      await this.#lockArtifact(client, tenant, receipt);
       await client.query(
         `INSERT INTO public.client_export_artifacts
            (tenant_id, artifact_id, artifact_kind, media_type, content_digest, byte_size,

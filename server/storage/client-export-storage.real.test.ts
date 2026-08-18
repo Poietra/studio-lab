@@ -504,6 +504,26 @@ describe.skipIf(!E2E_CONFIGURED)("durable client export publication storage", ()
     });
     try {
       await prepareStorage(pool);
+      const deletingVideo = video(10);
+      const deletingReceipt = await store.put(TENANT_A, {
+        byteSize: deletingVideo.bytes.byteLength,
+        bytes: deletingVideo.bytes,
+        contentDigest: deletingVideo.contentDigest,
+      });
+      expect(await repository.queueDeletion(TENANT_A, deletingReceipt, 1)).not.toBeNull();
+      await expect(
+        repository.acceptPublication({
+          artifactId: randomUUID(),
+          createdBySubjectId: USER_A,
+          expirationMs: 60_000,
+          lineage: lineage(),
+          projectId: PROJECT,
+          publicationId: randomUUID(),
+          receipt: deletingReceipt,
+          tenantId: TENANT_A,
+        }),
+      ).resolves.toEqual({ kind: "refused", reason: "artifact-deleting" });
+
       const uploaded = video(9);
       const receipt = await store.put(TENANT_A, {
         byteSize: uploaded.bytes.byteLength,

@@ -358,6 +358,7 @@ describe("ClientExportPublisherV1", () => {
 
   it("maps acceptance refusals to named statuses and discards the staged upload", async () => {
     for (const [reason, status, message] of [
+      ["artifact-deleting", 409, "The staged client export is no longer available; retry the publication."],
       ["document-not-found", 404, "The export lineage document was not found."],
       ["revision-ahead", 409, "The export lineage revision is ahead of the document."],
       ["quota-exhausted", 429, "The client export publication quota is exhausted."],
