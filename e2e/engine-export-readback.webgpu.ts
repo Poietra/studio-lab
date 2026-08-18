@@ -434,6 +434,6 @@ test("imported GLSL stays pixel-equivalent between Preview and decoded WebCodecs
   if (proof.kind === "refused") {
     throw new Error(`Browser MP4 export refused with ${proof.reason}: ${proof.message}`);
   }
-  expect(proof.previewPixel[3]).toBe(255);
+  expectPixelClose(proof.previewPixel, [188, 137, 225, 255], 4);
   expectPixelClose(proof.decodedPixel, proof.previewPixel, 4);
 });
