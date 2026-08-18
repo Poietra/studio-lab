@@ -8,6 +8,7 @@ import {
   PROJECT_FRAGMENT_SHADER_ID_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "../engine/fragment-material-registry";
+import type { PreviewRendererHostStateV1 } from "../engine/preview-renderer";
 import { fragmentMaterialV1Schema, opaqueIdV1Schema, sourceIdentityV1Schema } from "../engine/primitives";
 
 export type StudioFragmentMaterialReferenceV1 = Readonly<{
@@ -325,4 +326,16 @@ export function projectFragmentMaterialsForSceneV1(
 
 export function sceneHasFragmentMaterialAssignmentsV1(state: SceneFragmentMaterialStateV1) {
   return Object.keys(state.assignments).length > 0;
+}
+
+export function studioFragmentMaterialCompileErrorV1(
+  state: SceneFragmentMaterialStateV1,
+  rendererState: PreviewRendererHostStateV1 | null | undefined,
+) {
+  if (!sceneHasFragmentMaterialAssignmentsV1(state) || rendererState?.phase !== "fallback") return null;
+  return rendererState.reason === "renderer-failed" ||
+    rendererState.reason === "install-failed" ||
+    rendererState.reason === "scene-unsupported"
+    ? rendererState.detail
+    : null;
 }

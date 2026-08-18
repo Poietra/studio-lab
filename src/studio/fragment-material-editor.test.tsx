@@ -45,4 +45,33 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain("Unassign this material from 2 object(s) before deleting it.");
     expect(markup).toContain('aria-label="Fragment material WGSL source"');
   });
+
+  it("shows an active Scene material failure while the selected object is unassigned", () => {
+    const markup = renderToStaticMarkup(
+      <FragmentMaterialEditor
+        active={false}
+        assignedShaderId={null}
+        available
+        compileError="WGSL compilation failed"
+        materials={[
+          {
+            assignmentCount: 1,
+            name: "Broken wave",
+            revision: 2,
+            shaderId: "project-material-1",
+            source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+          },
+        ]}
+        onAssign={vi.fn()}
+        onCreate={vi.fn(() => null)}
+        onDuplicate={vi.fn(() => null)}
+        onRemoveAsset={vi.fn()}
+        onRename={vi.fn()}
+        onUpdateSource={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain("Rejected");
+    expect(markup).toContain("WGSL compilation failed");
+  });
 });

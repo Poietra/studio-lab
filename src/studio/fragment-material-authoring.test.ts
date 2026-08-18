@@ -12,6 +12,7 @@ import {
   removeStudioFragmentMaterialV1,
   renameStudioFragmentMaterialV1,
   sceneHasFragmentMaterialAssignmentsV1,
+  studioFragmentMaterialCompileErrorV1,
   updateStudioFragmentMaterialSourceV1,
 } from "./fragment-material-authoring";
 
@@ -101,5 +102,27 @@ describe("project-local fragment material authoring", () => {
       assignments: {},
       registry: { materials: [], schema: "poietra.fragment-material-registry", version: 1 },
     });
+  });
+
+  it("reports active Scene material compilation failure independently of the selected object", () => {
+    const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
+    const assigned = assignStudioFragmentMaterialV1(material.state, {
+      entityId: "object-a",
+      sceneId: "scene-a",
+      shaderId: material.shaderId,
+    });
+    const activeScene = projectFragmentMaterialsForSceneV1(assigned, "scene-a");
+    const emptyScene = projectFragmentMaterialsForSceneV1(assigned, "scene-b");
+    const failure = { detail: "WGSL compilation failed", phase: "fallback", reason: "install-failed" } as const;
+
+    expect(studioFragmentMaterialCompileErrorV1(activeScene, failure)).toBe("WGSL compilation failed");
+    expect(studioFragmentMaterialCompileErrorV1(emptyScene, failure)).toBeNull();
+    expect(
+      studioFragmentMaterialCompileErrorV1(activeScene, {
+        detail: "still compiling",
+        phase: "fallback",
+        reason: "installing",
+      }),
+    ).toBeNull();
   });
 });

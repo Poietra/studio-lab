@@ -73,6 +73,7 @@ import {
   renameStudioFragmentMaterialV1,
   sceneHasFragmentMaterialAssignmentsV1,
   studioFragmentMaterialAssignmentCountV1,
+  studioFragmentMaterialCompileErrorV1,
   updateStudioFragmentMaterialSourceV1,
 } from "./studio/fragment-material-authoring";
 import { importedWorkingState, projectVerifiedSourceDuration } from "./studio/imported-workspace";
@@ -3601,15 +3602,12 @@ export function App({
     selectedFragmentMaterialEntity.geometry.style.kind === "known" &&
     selectedFragmentMaterialEntity.geometry.style.value.fillColor !== undefined &&
     selectedFragmentMaterialEntity.geometry.style.value.fillColor !== null;
-  const selectedFragmentMaterialCompileError =
-    selectedFragmentMaterialAssigned &&
-    previewRenderer?.state.phase === "fallback" &&
-    (previewRenderer.state.reason === "renderer-failed" ||
-      previewRenderer.state.reason === "install-failed" ||
-      previewRenderer.state.reason === "scene-unsupported")
-      ? previewRenderer.state.detail
-      : null;
-  const sourceFragmentMaterialExportBlocker = sceneHasFragmentMaterialAssignmentsV1(activeSceneFragmentMaterials)
+  const activeSceneHasFragmentMaterialAssignments = sceneHasFragmentMaterialAssignmentsV1(activeSceneFragmentMaterials);
+  const activeSceneFragmentMaterialCompileError = studioFragmentMaterialCompileErrorV1(
+    activeSceneFragmentMaterials,
+    previewRenderer?.state,
+  );
+  const sourceFragmentMaterialExportBlocker = activeSceneHasFragmentMaterialAssignments
     ? "Manim .py export does not support project-local WGSL fragment materials. Remove them before exporting source."
     : null;
 
@@ -4246,7 +4244,7 @@ export function App({
                 active: selectedFragmentMaterialAssigned && previewRenderer?.state.phase === "presented",
                 assignedShaderId: selectedFragmentMaterialAssignment?.shaderId ?? null,
                 available: selectedFragmentMaterialAvailable,
-                compileError: selectedFragmentMaterialCompileError,
+                compileError: activeSceneFragmentMaterialCompileError,
                 materials: activeProjectNamedFragmentMaterials,
                 onAssign: assignSelectedFragmentMaterial,
                 onCreate: createFragmentMaterial,
