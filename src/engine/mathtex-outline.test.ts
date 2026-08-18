@@ -33,10 +33,16 @@ describe("MathTex outline WASM initialization", () => {
 describe("plain Text outline input", () => {
   it("accepts bounded Japanese multiline text and canonicalizes CRLF", () => {
     expect(canonicalTextOutlineInputV1("日本語で動画を作る\r\nこんにちは")).toBe("日本語で動画を作る\nこんにちは");
+    expect(canonicalTextOutlineInputV1("supplementary: 🚀")).toBe("supplementary: 🚀");
   });
 
-  it.each(["tab\tcharacter", ["a", "b", "c", "d", "e", "f", "g", "h", "i"].join("\n"), "a".repeat(129)])(
-    "rejects text outside the bounded multiline contract: %s",
-    (text) => expect(canonicalTextOutlineInputV1(text)).toBeNull(),
+  it.each([
+    "tab\tcharacter",
+    ["a", "b", "c", "d", "e", "f", "g", "h", "i"].join("\n"),
+    "a".repeat(129),
+    String.fromCharCode(0xd800),
+    String.fromCharCode(0xdc00),
+  ])("rejects text outside the bounded multiline contract: %s", (text) =>
+    expect(canonicalTextOutlineInputV1(text)).toBeNull(),
   );
 });

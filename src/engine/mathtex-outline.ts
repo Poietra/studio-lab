@@ -101,6 +101,20 @@ export type MathTexOutlineArtifactV1 = z.infer<typeof mathTexOutlineArtifactV1Sc
 export type MathTexOutlineResponseV1 = z.infer<typeof mathTexOutlineResponseV1Schema>;
 export type MathTexOutlineCompilerV1 = (texParts: readonly string[]) => Promise<MathTexOutlineResponseV1>;
 
+function hasUnpairedUtf16Surrogate(text: string) {
+  for (let index = 0; index < text.length; index += 1) {
+    const codeUnit = text.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (!Number.isInteger(next) || next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const textOutlineContentV1Schema = z
   .string()
   .transform((text) => text.replaceAll("\r\n", "\n"))
@@ -109,6 +123,9 @@ const textOutlineContentV1Schema = z
     const lines = text.split("\n");
     if (text.length === 0 || text.trim().length === 0) {
       context.addIssue({ code: "custom", message: "Text must contain visible content." });
+    }
+    if (hasUnpairedUtf16Surrogate(text)) {
+      context.addIssue({ code: "custom", message: "Text must contain valid Unicode scalar values." });
     }
     if (scalars.length > MAX_TEXT_OUTLINE_SCALARS) {
       context.addIssue({ code: "custom", message: "Text accepts at most 256 Unicode scalars." });

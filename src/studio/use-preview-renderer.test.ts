@@ -2592,7 +2592,36 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
-        return { ...unchangedAuthoringResult(bundle), creationProjection };
+        const sourceEntity = bundle.scene.entities[0];
+        const compiled = outline.result;
+        if (!sourceEntity || compiled.kind !== "compiled") throw new Error("Text preview fixture is malformed.");
+        const textEntity = {
+          ...sourceEntity,
+          appearance: {
+            fill: { color: { alpha: 1, blue: 1, green: 1, red: 1 }, rule: "nonzero" as const },
+            kind: "vector" as const,
+            opacity: 1,
+            stroke: null,
+          },
+          geometry: { kind: "cubic-path" as const, path: compiled.path },
+          id: creation.entityIds[0]!,
+          lifetimes: [creationProjection.entities[0]!.createdLifetime],
+          sceneOrder: bundle.scene.entities.length,
+        };
+        return {
+          ...unchangedAuthoringResult({
+            ...bundle,
+            scene: {
+              ...bundle.scene,
+              duration: creationProjection.projectedDuration,
+              entities: [...bundle.scene.entities, textEntity],
+              requiredCapabilities: [
+                ...new Set([...bundle.scene.requiredCapabilities, "cubic-path-geometry" as const]),
+              ],
+            },
+          }),
+          creationProjection,
+        };
       },
       frame: { height: 9, width: 16 },
       snapshot,
@@ -2620,6 +2649,10 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(result.scene.creationProjection).toEqual(creationProjection);
+    expect(result.scene.bundle.scene.entities.find(({ id }) => id === creation.entityIds[0])?.geometry).toEqual({
+      kind: "cubic-path",
+      path: compiled.path,
+    });
   });
 
   it("fails closed when Rust omits the complete Studio Text creation projection", async () => {

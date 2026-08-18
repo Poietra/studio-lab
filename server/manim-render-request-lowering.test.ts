@@ -758,7 +758,7 @@ describe("Manim render request lowering", () => {
               ...operation,
               entity: {
                 ...operation.entity,
-                content: { displayLines: ["two lines"], label: "two lines", text: "two\nlines" },
+                content: { displayLines: ["two\tlines"], label: "two lines", text: "two\tlines" },
                 type: "Text",
               },
             }

@@ -157,6 +157,31 @@ describe("Canonical EditProgram source lowering", () => {
     });
   });
 
+  it.each(["こんにちは", "two\nlines"])(
+    "rejects Text Python export that would diverge from the preview: %s",
+    (text) => {
+      const create = canonicalProgram(
+        [
+          {
+            ...operationBase("create-unicode-text", 7),
+            entity: {
+              content: { displayLines: text.split("\n"), text },
+              id: "tx:unicode-text/entity:label",
+              lifetime: { end: null, start: 7 },
+              type: "Text",
+            },
+            kind: "CreateEntity",
+          },
+        ],
+        "unicode-text",
+      );
+
+      expect(() =>
+        lowerCanonicalProgramSource(source, request(create, []), { height: 8, width: 14.222 }, null),
+      ).toThrow(/Python export would not preserve it faithfully/i);
+    },
+  );
+
   it("lowers Studio-created shape colors in operation order with the current opacity", () => {
     const entityId = "tx:created-colors/entity:circle";
     const create = canonicalProgram(

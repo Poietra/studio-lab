@@ -726,6 +726,17 @@ function variableAllocator(source: string, transactionId: string, additionalRese
   };
 }
 
+function manimTextConstructor(text: string, options: Readonly<{ unitHeight?: boolean }> = {}) {
+  if (/[^\u0020-\u007e]/u.test(text)) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Manim .py export does not yet preserve Unicode or multiline Text faithfully. Preview and MP4 export support this text, but Python export would not preserve it faithfully.",
+    );
+  }
+  if (!options.unitHeight) return `Text(${JSON.stringify(text)})`;
+  return `Text(${JSON.stringify(text)}, font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)`;
+}
+
 function entityConstructor(operation: CreateEntityOperation) {
   const { content, dimensions, type } = operation.entity;
   if (type === "MathTex") {
@@ -740,7 +751,7 @@ function entityConstructor(operation: CreateEntityOperation) {
   }
   if (type === "Text") {
     const text = content?.text ?? content?.displayLines.join(" ") ?? "";
-    return `Text(${JSON.stringify(text)}, font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)`;
+    return manimTextConstructor(text, { unitHeight: true });
   }
   const shapeConstructor = {
     Arrow: "Arrow(LEFT, RIGHT, buff=0)",
@@ -818,7 +829,7 @@ function contentTarget(value: unknown): Readonly<{
   const content = canonicalEditableContent(value, type);
   if (!content) return null;
   if (type === "Text" && content.text !== undefined) {
-    return { content, constructor: `Text(${JSON.stringify(content.text)})`, type: "Text" };
+    return { content, constructor: manimTextConstructor(content.text), type: "Text" };
   }
   if (!content.texParts) return null;
   return {
@@ -1495,7 +1506,7 @@ export function lowerCanonicalProgramSource(
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
         const target =
           operation.targetType === "Text"
-            ? `Text(${JSON.stringify(operation.replacement.text ?? operation.replacement.displayLines.join(" "))})`
+            ? manimTextConstructor(operation.replacement.text ?? operation.replacement.displayLines.join(" "))
             : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
         output.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: targetVariable })}`);
         output.push(`${targetVariable} = ${target}`);

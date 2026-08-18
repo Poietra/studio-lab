@@ -30,7 +30,8 @@ vi.mock("../src/engine/contracts", async (importOriginal) => {
   };
 });
 
-vi.mock("../src/engine/mathtex-outline", () => ({
+vi.mock("../src/engine/mathtex-outline", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/engine/mathtex-outline")>()),
   compileMathTexOutlineV1: compilers.outline,
 }));
 
