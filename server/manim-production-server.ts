@@ -5,6 +5,7 @@ import { isIP } from "node:net";
 import { z } from "zod";
 
 import { MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1 } from "../src/collaboration/client-export-http-contract";
+import { MAX_CLIENT_THUMBNAIL_FINALIZE_BODY_BYTES_V1 } from "../src/collaboration/client-thumbnail-http-contract";
 import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
 import {
   normalizeOrganizationSelectorHeaderV1,
@@ -350,7 +351,9 @@ function validateTransportRequest(
   const pathname = new URL(request.url, config.publicOrigin).pathname;
   const maxBodyBytes = isClientExportFinalizeRequest(request.method, pathname)
     ? MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1
-    : config.limits.maxBodyBytes;
+    : isClientThumbnailPublicationRequest(request.method, pathname)
+      ? MAX_CLIENT_THUMBNAIL_FINALIZE_BODY_BYTES_V1
+      : config.limits.maxBodyBytes;
   if (
     contentLength !== undefined &&
     (!/^\d+$/.test(contentLength) || !Number.isSafeInteger(parsedContentLength) || parsedContentLength > maxBodyBytes)

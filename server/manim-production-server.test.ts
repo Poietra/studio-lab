@@ -3,10 +3,14 @@ import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CLIENT_EXPORT_FINALIZE_MEDIA_TYPE_V1 } from "../src/collaboration/client-export-http-contract";
+import {
+  CLIENT_THUMBNAIL_FINALIZE_MEDIA_TYPE_V1,
+  encodeClientThumbnailFinalizeBodyV1,
+} from "../src/collaboration/client-thumbnail-http-contract";
 import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
+import type { EditSuggestionUsageMeterV1 } from "./edit-suggestions/usage-metering";
 import { fastManimSnapshotSceneIdV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
-import type { EditSuggestionUsageMeterV1 } from "./edit-suggestions/usage-metering";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import {
   ACCOUNT_SESSION_COOKIE_NAME_V1,
@@ -154,7 +158,7 @@ function send(
   server: ProductionManimServer,
   path: string,
   options: Readonly<{
-    body?: string;
+    body?: string | Uint8Array;
     chunked?: boolean;
     headers?: Readonly<Record<string, string | string[]>>;
     method?: string;
@@ -163,12 +167,13 @@ function send(
   return new Promise<Readonly<{ body: string; headers: NodeJS.Dict<string | string[]>; status: number }>>(
     (resolveResponse, rejectResponse) => {
       const body = options.body ?? "";
+      const bodyByteLength = typeof body === "string" ? Buffer.byteLength(body) : body.byteLength;
       const request = createRequest(
         {
           headers: {
             connection: "close",
             host: new URL(server.config.publicOrigin).host,
-            ...(body && !options.chunked ? { "content-length": Buffer.byteLength(body) } : {}),
+            ...(bodyByteLength > 0 && !options.chunked ? { "content-length": bodyByteLength } : {}),
             ...(options.chunked ? { "transfer-encoding": "chunked" } : {}),
             ...options.headers,
           },
@@ -1699,13 +1704,48 @@ describe("standalone production Manim HTTP adapter", () => {
     ).toMatchObject({ status: 413 });
   });
 
-  it("widens the transport ceiling only for storage-gated client export finalization", async () => {
+  it("widens the transport ceiling only for storage-gated client artifact finalization", async () => {
     const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
     let storageAvailable = true;
     const storageReadiness = vi.fn(async () => storageAvailable);
     const publish = vi.fn(async () => {
       throw new Error("invalid framing must not publish");
     });
+    const thumbnailBytes = Buffer.alloc(24);
+    thumbnailBytes.set(Buffer.from("89504e470d0a1a0a", "hex"));
+    thumbnailBytes.writeUInt32BE(854, 16);
+    thumbnailBytes.writeUInt32BE(480, 20);
+    const thumbnailDigest = "a".repeat(64);
+    const publishThumbnail = vi.fn(async () => ({
+      publication: {
+        artifact: {
+          artifactId: "20000000-0000-4000-8000-000000000002",
+          receipt: {
+            byteSize: thumbnailBytes.byteLength,
+            contentDigest: thumbnailDigest,
+            etag: '"thumbnail"',
+            mediaType: "image/png" as const,
+            objectKey: `tenants/tenant-a/client-thumbnails/image/${thumbnailDigest}/g/50000000-0000-4000-8000-000000000005`,
+            objectLocatorToken: "50000000-0000-4000-8000-000000000005",
+          },
+        },
+        createdBySubjectId: "10000000-0000-4000-8000-000000000001",
+        lineage: {
+          documentEpoch: "30000000-0000-4000-8000-000000000003",
+          documentKey: "b".repeat(64),
+          documentRevision: 0n,
+          producerKind: "browser-wasm-wgpu" as const,
+          representativeFrameRule: "last-representable-in-duration" as const,
+          sceneContractVersion: 1 as const,
+          sceneRevisionHash: "c".repeat(64),
+        },
+        projectId: "project-a",
+        publicationId: "40000000-0000-4000-8000-000000000004",
+        publishedAt: new Date("2026-08-18T00:00:00.000Z"),
+        tenantId: "tenant-a",
+      },
+      replayed: false,
+    }));
     const baseRuntime = createRuntime(() => false);
     const runtime: TenantCellRuntimeAdapterV1 = {
       ...baseRuntime,
@@ -1721,6 +1761,7 @@ describe("standalone production Manim HTTP adapter", () => {
         },
         tenantId: "tenant-a",
       },
+      clientThumbnails: { publisher: { publish: publishThumbnail }, tenantId: "tenant-a" },
       ready: fullReadiness,
       tenantCellStorageReady: storageReadiness,
     };
@@ -1752,6 +1793,48 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(fullReadiness).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
 
+    const widenedThumbnail = await send(server, "/api/projects/project-a/thumbnails", {
+      body: "x".repeat(2_048),
+      headers: {
+        "content-type": CLIENT_THUMBNAIL_FINALIZE_MEDIA_TYPE_V1,
+        origin: "https://studio.example",
+      },
+      method: "POST",
+    });
+    expect(widenedThumbnail).toMatchObject({ status: 400 });
+    expect(storageReadiness).toHaveBeenCalledTimes(2);
+    expect(publishThumbnail).not.toHaveBeenCalled();
+
+    const thumbnailMetadata = {
+      byteSize: thumbnailBytes.byteLength,
+      contentDigest: thumbnailDigest,
+      documentEpoch: "30000000-0000-4000-8000-000000000003",
+      documentKey: "b".repeat(64),
+      documentRevision: "0",
+      producerKind: "browser-wasm-wgpu" as const,
+      projectId: "project-a",
+      publicationId: "40000000-0000-4000-8000-000000000004",
+      representativeFrameRule: "last-representable-in-duration" as const,
+      sceneContractVersion: 1 as const,
+      sceneRevisionHash: "c".repeat(64),
+      schema: "poietra.client-thumbnail-finalize" as const,
+      version: 1 as const,
+    };
+    const publishedThumbnail = await send(server, "/api/projects/project-a/thumbnails", {
+      body: encodeClientThumbnailFinalizeBodyV1(thumbnailMetadata, thumbnailBytes),
+      headers: {
+        "content-type": CLIENT_THUMBNAIL_FINALIZE_MEDIA_TYPE_V1,
+        origin: "https://studio.example",
+      },
+      method: "POST",
+    });
+    expect(publishedThumbnail.status).toBe(201);
+    expect(JSON.parse(publishedThumbnail.body)).toMatchObject({
+      imagePath: "/api/projects/project-a/thumbnail",
+      replayed: false,
+    });
+    expect(publishThumbnail).toHaveBeenCalledOnce();
+
     expect(
       await send(server, "/api/manim/renders/deadbeef/cancel", {
         body: JSON.stringify({ padding: "x".repeat(1_024) }),
@@ -1768,7 +1851,7 @@ describe("standalone production Manim HTTP adapter", () => {
         method: "POST",
       }),
     ).toMatchObject({ status: 503 });
-    expect(storageReadiness).toHaveBeenCalledTimes(2);
+    expect(storageReadiness).toHaveBeenCalledTimes(4);
   });
 
   it("logs a stable route template without query values or resource identifiers", async () => {
