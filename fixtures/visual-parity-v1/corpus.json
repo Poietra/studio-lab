@@ -218,13 +218,13 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
+          "sha256": "4c1e9d141a1177c6b826fadcfd27210a637c2223c190f855e53e523551a2e71f"
         }
       },
       "sample": {
         "id": "create-midpoint",
         "sampleTime": 0.5,
-        "semanticDigest": "52ff334baaa31dd518c3310e5d9d4e0b5dc993fb8b9c5d01f84bab89c1d85d11",
+        "semanticDigest": "11f552e315738e1792a97e900d7f283a8172085ddaff32bc13973781f2005a67",
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
@@ -236,13 +236,13 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
+          "sha256": "4c1e9d141a1177c6b826fadcfd27210a637c2223c190f855e53e523551a2e71f"
         }
       },
       "sample": {
         "id": "square",
         "sampleTime": 1,
-        "semanticDigest": "1f3964983f864af023b7f8753debeedb1050cce981fff45f9dbfa657581f1554",
+        "semanticDigest": "4713e36861ab25f709da96b271c3ad14f110bfbe4d5be94749d226c89c2bb8d6",
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
@@ -254,13 +254,13 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
+          "sha256": "4c1e9d141a1177c6b826fadcfd27210a637c2223c190f855e53e523551a2e71f"
         }
       },
       "sample": {
         "id": "analytic-winding-root",
         "sampleTime": 1.5119159473817447,
-        "semanticDigest": "202f38ab181c09c8b9ebe5a2cb4eed0b7cdf2ed7be84fe453df5efb6661db0f3",
+        "semanticDigest": "00699c9dc4ac1335814dbc57259528ca67d16c9fa2b221c80c1564a2fc8a81b8",
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
@@ -272,13 +272,13 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
+          "sha256": "4c1e9d141a1177c6b826fadcfd27210a637c2223c190f855e53e523551a2e71f"
         }
       },
       "sample": {
         "id": "circle",
         "sampleTime": 2,
-        "semanticDigest": "641817594b8a9e6c6af8e1c9c7bbc2499740672ba11d96971cc4055269b8a470",
+        "semanticDigest": "2038f0233dcbc29e7e917c18207c7a4c43f6de5c03932ec0ec143de9bf76a7d3",
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
@@ -290,13 +290,13 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
+          "sha256": "4c1e9d141a1177c6b826fadcfd27210a637c2223c190f855e53e523551a2e71f"
         }
       },
       "sample": {
         "id": "fade-midpoint",
         "sampleTime": 2.5,
-        "semanticDigest": "2489a3989fd4a1a86a971c2f0f7510475e316f965093013bd0a92bcffe7ceddf",
+        "semanticDigest": "27ffbf86fa8c8cd8c1796c5b9e1a6191124fdd031d61e6ad3849c75c2f124e39",
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null

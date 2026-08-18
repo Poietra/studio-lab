@@ -36,14 +36,19 @@ The importer is not complete merely because a Scene renders. Completion requires
 - missing visible roots in an accepted generic preview: `0`; and
 - claimed edit operations with export, reimport, and fresh validation: `100%`.
 
-The first two gates currently pass for four committed accepted fixtures: official `WriteStuff` has two accepted
-source-visible roots, `StaticSquare` has one, `FeynmanDiagram` has four, and `FourierSeriesSquareWave` has five. The
-other six official Scenes remain unmeasured on the current generic preview route, so these 12 roots do not mean that
-the importer is complete. `WriteStuff` reuses the checked 61-entity V12 Scene IR and its existing WGPU parity as real
-glyph geometry. The generic verified-snapshot selection policy admits `example_text` and `example_tex` from verified
-source/runtime identity, while the source-lifecycle-free `group` layout helper is explicitly not a visible selector.
-No new WriteStuff dispatch is added. Its static importer duration is 3 seconds while the runtime fixture is 4 seconds,
-so the measured preview remains selection-only and no edit or export claim is promoted.
+The first two gates currently pass for five committed accepted fixtures: official `SquareToCircle` has one accepted
+source-visible root, official `WriteStuff` has two, `StaticSquare` has one, `FeynmanDiagram` has four, and
+`FourierSeriesSquareWave` has five. The other five official Scenes remain unmeasured on the current generic preview
+route, so these 13 roots do not claim support for those Scenes. `SquareToCircle` is pinned to the exact full
+`example_scenes/basic.py` bytes and source/runtime identity, then server-sealed into the same Scene IR used by the
+existing WGPU and browser export paths. Its sole `square` root is selectable, but the animated snapshot remains
+read-only and does not authorize `.py` mutation. No new profile dispatch is added.
+
+`WriteStuff` reuses the checked 61-entity V12 Scene IR and its existing WGPU parity as real glyph geometry. The generic
+verified-snapshot selection policy admits `example_text` and `example_tex` from verified source/runtime identity,
+while the source-lifecycle-free `group` layout helper is explicitly not a visible selector. No new WriteStuff dispatch
+is added. Its static importer duration is 3 seconds while the runtime fixture is 4 seconds, so the measured preview
+remains selection-only and no edit or export claim is promoted.
 
 The edit roundtrip gate is green: `StaticSquare` reimports all four advertised operations through the full static
 importer, and the three claimed official-corpus edits (`OpeningManim` move, `WarpSquare` move, and `UpdatersExample`

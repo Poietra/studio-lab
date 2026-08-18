@@ -7,6 +7,7 @@
   },
   "evidenceTests": [
     "scripts/generic-importability-manifest.test.ts",
+    "scripts/square-to-circle-v8-engine-fixture.test.ts",
     "src/render-pipeline/source-analysis.test.ts",
     "src/render-pipeline/source-import.test.ts",
     "src/render-pipeline/source-lowering.generic-runtime-trace-v3.test.ts",
@@ -43,33 +44,53 @@
       "id": "official-square-to-circle",
       "sceneName": "SquareToCircle",
       "sourcePath": "example_scenes/basic.py",
-      "fixturePaths": ["fixtures/real-preview-harness/example_scenes/basic.py"],
-      "rootCoverage": { "status": "unmeasured" },
+      "fixturePaths": [
+        "fixtures/real-preview-harness/example_scenes/basic.py",
+        "fixtures/engine-v1/real-square-to-circle-v8.json",
+        "server/test-fixtures/fast-manim-square-to-circle-official-v8-combined.json"
+      ],
+      "rootCoverage": {
+        "status": "pass",
+        "fixturePath": "server/test-fixtures/fast-manim-square-to-circle-official-v8-combined.json",
+        "expected": 1,
+        "accepted": 1,
+        "missing": 0,
+        "silentOmissions": 0
+      },
       "stages": {
         "discovery": "pass",
-        "preview": "unmeasured",
+        "preview": "pass",
         "binding": "pass",
-        "selection": "unmeasured",
+        "selection": "pass",
         "edit": {
-          "move": "unmeasured",
-          "uniform-resize": "unmeasured",
-          "rotation": "unmeasured",
-          "opacity": "unmeasured"
+          "move": "fail",
+          "uniform-resize": "fail",
+          "rotation": "fail",
+          "opacity": "fail"
         },
-        "py-export": "unmeasured",
-        "reimport": "unmeasured",
-        "fresh-validation": "unmeasured"
+        "py-export": "fail",
+        "reimport": "fail",
+        "fresh-validation": "fail"
+      },
+      "failures": {
+        "edit.move": "read-only",
+        "edit.uniform-resize": "read-only",
+        "edit.rotation": "read-only",
+        "edit.opacity": "read-only",
+        "py-export": "read-only",
+        "reimport": "read-only",
+        "fresh-validation": "read-only"
       },
       "notes": {
-        "preview": "Only the old sealed snapshot profile is pinned offline.",
-        "selection": "No current generic selection assertion.",
-        "edit.move": "Not exercised through the current generic route.",
-        "edit.uniform-resize": "Not exercised through the current generic route.",
-        "edit.rotation": "Not exercised through the current generic route.",
-        "edit.opacity": "Not exercised through the current generic route.",
-        "py-export": "No current generic edit is claimed.",
-        "reimport": "No current generic edit is claimed.",
-        "fresh-validation": "No current generic edit is claimed."
+        "preview": "The exact full-source producer artifact supplies one source-bound square with Create, PathMorph, VectorAppearance, and FadeOut through the existing verified-snapshot route.",
+        "selection": "The sole mapped lifecycle root is selectable from verified source/runtime identity without advertising mutation authority.",
+        "edit.move": "The verified animated snapshot is selection-only and does not authorize source rewriting.",
+        "edit.uniform-resize": "The verified animated snapshot is selection-only and does not authorize source rewriting.",
+        "edit.rotation": "The verified animated snapshot is selection-only and does not authorize source rewriting.",
+        "edit.opacity": "The verified animated snapshot is selection-only and does not authorize source rewriting.",
+        "py-export": "No source edit is authorized.",
+        "reimport": "No source edit is authorized.",
+        "fresh-validation": "No source edit is authorized."
       }
     },
     {

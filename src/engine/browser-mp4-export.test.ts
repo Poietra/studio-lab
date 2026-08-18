@@ -40,8 +40,8 @@ class FakeWorker {
   }
 }
 
-async function fixtureBundle(): Promise<SceneIrBundleV1> {
-  const url = new URL("../../fixtures/engine-v1/shared-circle-opacity.json", import.meta.url);
+async function fixtureBundle(fileName = "shared-circle-opacity.json"): Promise<SceneIrBundleV1> {
+  const url = new URL(`../../fixtures/engine-v1/${fileName}`, import.meta.url);
   const fixture = JSON.parse(await readFile(url, "utf8")) as Readonly<{ assets: unknown; scene: unknown }>;
   return sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
 }
@@ -63,6 +63,28 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("runBrowserMp4ExportV1", () => {
+  it("hands the exact official SquareToCircle Scene IR to the WebCodecs worker", async () => {
+    const bundle = await fixtureBundle("real-square-to-circle-v8.json");
+    const worker = new FakeWorker();
+    const outcomePromise = runBrowserMp4ExportV1({
+      profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+      snapshot: bundle,
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    const request = exportWorkerRequestV1Schema.parse(worker.posted[0]);
+    if (request.kind !== "export-mp4") throw new Error("missing export request");
+    expect(JSON.parse(new TextDecoder().decode(request.snapshotJson))).toEqual(bundle);
+    worker.emitMessage({
+      bytes: new Uint8Array([0, 0, 0, 8]).buffer,
+      kind: "export-finished",
+      requestId: request.requestId,
+      schema: "poietra.export-worker-response",
+      version: 1,
+    } satisfies ExportWorkerResponseV1);
+    await expect(outcomePromise).resolves.toMatchObject({ kind: "exported" });
+  });
+
   it("relays bounded progress and resolves the finished Blob", async () => {
     const bundle = await fixtureBundle();
     const worker = new FakeWorker();

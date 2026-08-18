@@ -339,13 +339,16 @@ const REAL_SQUARE_TO_CIRCLE_V8_FIXTURE_ID: &str = "eng-v1-real-square-to-circle-
 const REAL_SQUARE_TO_CIRCLE_V8_FIXTURE_PATH: &str =
     "fixtures/engine-v1/real-square-to-circle-v8.json";
 const REAL_SQUARE_TO_CIRCLE_V8_SOURCE_PATH: &str =
-    "fixtures/real-preview-harness/scene_square_to_circle.py";
+    "fixtures/real-preview-harness/example_scenes/basic.py";
 const REAL_SQUARE_TO_CIRCLE_V8_SOURCE_SHA256: &str =
-    "ef874f1ab5899aadf870956ec71ce71653d373366b23e40c2ee8b070ad193c40";
-const REAL_SQUARE_TO_CIRCLE_V8_ENGINE_COMMIT: &str = "1f195ba48d4e2ea92dd45b3cac4928342da320c9";
-const REAL_SQUARE_TO_CIRCLE_V8_FAST_MANIM_COMMIT: &str = "a1e886fb854268ad7d06b00168f9a5ce3339857d";
+    "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const REAL_SQUARE_TO_CIRCLE_V8_ENGINE_COMMIT: &str = "2e63bbd550f794ec7d728c4e409145c61e1795d2";
+const REAL_SQUARE_TO_CIRCLE_V8_FAST_MANIM_COMMIT: &str = "5db5254b61b20359878b7b331c63ceadb6580e4b";
+const REAL_SQUARE_TO_CIRCLE_V8_FAST_MANIM_TREE: &str = "13d985d0b8d5e5ffafdddc3a7351bf0e838c17fa";
+const REAL_SQUARE_TO_CIRCLE_V8_PRODUCER_SNAPSHOT_DIGEST: &str =
+    "d7f519604785d29aca32d1af0f18eefc0906d707616d5be46bbcbeafbaf2e797";
 const REAL_SQUARE_TO_CIRCLE_V8_SNAPSHOT_HASH: &str =
-    "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2";
+    "4c1e9d141a1177c6b826fadcfd27210a637c2223c190f855e53e523551a2e71f";
 const REAL_SQUARE_TO_CIRCLE_V8_SAMPLES: [(&str, &str, f64); 5] = [
     (
         "real-square-to-circle-v8--create-midpoint",
@@ -2463,6 +2466,17 @@ fn renders_real_square_to_circle_v8_samples_with_fallback_adapter() {
     assert_eq!(
         fixture.producer_reference.fast_manim_commit,
         REAL_SQUARE_TO_CIRCLE_V8_FAST_MANIM_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_tree.as_deref(),
+        Some(REAL_SQUARE_TO_CIRCLE_V8_FAST_MANIM_TREE)
+    );
+    assert_eq!(
+        fixture
+            .producer_reference
+            .producer_snapshot_digest
+            .as_deref(),
+        Some(REAL_SQUARE_TO_CIRCLE_V8_PRODUCER_SNAPSHOT_DIGEST)
     );
     assert_eq!(
         fixture.producer_reference.snapshot_hash,
