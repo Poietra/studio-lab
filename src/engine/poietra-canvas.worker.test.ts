@@ -1231,12 +1231,12 @@ describe("Poietra canvas WASM binding handshake", () => {
     }
   }
 
-  it("accepts only canvas ABI v5 with the complete class shape", async () => {
+  it("accepts only canvas ABI v6 with the complete class shape", async () => {
     const initialize = vi.fn(async () => undefined);
     await expect(
       initializePoietraCanvasBindingsV1({
         default: initialize,
-        poietraCanvasAbiVersion: () => 5,
+        poietraCanvasAbiVersion: () => 6,
         PoietraCanvasEngineV1: Engine,
       }),
     ).resolves.toBe(Engine);
@@ -1250,11 +1250,11 @@ describe("Poietra canvas WASM binding handshake", () => {
         poietraCanvasAbiVersion: () => 1,
         PoietraCanvasEngineV1: Engine,
       }),
-    ).rejects.toThrow(/ABI version 5/i);
+    ).rejects.toThrow(/ABI version 6/i);
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 5,
+        poietraCanvasAbiVersion: () => 6,
         PoietraCanvasEngineV1: class Incomplete {},
       }),
     ).rejects.toThrow(/PoietraCanvasEngineV1/i);
@@ -1273,7 +1273,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 5,
+        poietraCanvasAbiVersion: () => 6,
         poietraCanvasTelemetryAbiVersion: () => 4,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
@@ -1283,7 +1283,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 5,
+        poietraCanvasAbiVersion: () => 6,
         poietraCanvasTelemetryAbiVersion: () => 3,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
@@ -1293,7 +1293,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 5,
+        poietraCanvasAbiVersion: () => 6,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
     ).rejects.toThrow(/telemetry ABI version 4/i);
@@ -1307,7 +1307,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 5,
+        poietraCanvasAbiVersion: () => 6,
         poietraCanvasTelemetryAbiVersion: () => 4,
         PoietraCanvasEngineV1: PartialTelemetryEngine,
       }),
@@ -1317,7 +1317,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 5,
+        poietraCanvasAbiVersion: () => 6,
         PoietraCanvasEngineV1: Engine,
       }),
     ).resolves.toBe(Engine);

@@ -247,8 +247,9 @@ and return only the sampled `RenderPacket`; immutable Scene and manifest data ar
 not cloned across the worker boundary on every frame. Build the web-target package
 with the repository script:
 
-Canvas ABI v5 accepts complete Scene snapshots and transferable,
-manifest-verified PNG assets during atomic install/replacement. The page client
+Canvas ABI v6 accepts complete Scene snapshots, transferable manifest-verified
+PNG assets, and the project fragment-material registry during atomic
+install/replacement. The page client
 supplies the installed base revision and candidate revision; the Worker rejects a
 stale base, and Rust validates and indexes the complete candidate before swapping
 it into `EngineSessionV1`. The client advances its revision only after the
