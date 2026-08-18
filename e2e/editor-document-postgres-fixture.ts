@@ -38,6 +38,13 @@ export async function cleanupAccountEditorDocumentFixtureV1(pool: Pool, fixture:
     // The production ledger is deliberately append-only. This dedicated E2E
     // database uses replica mode only while deleting the fixture's exact keys.
     await client.query("SET LOCAL session_replication_role = replica");
+    await client.query("DELETE FROM public.account_membership_mutations WHERE organization_id = ANY($1::text[])", [
+      fixtureOrganizationIds(fixture),
+    ]);
+    await client.query(
+      "DELETE FROM public.account_organization_bootstrap_mutations WHERE organization_id = ANY($1::text[])",
+      [fixtureOrganizationIds(fixture)],
+    );
     await client.query(
       `DELETE FROM public.oidc_login_attempts attempt
         WHERE attempt.invitation_token_digest IN (

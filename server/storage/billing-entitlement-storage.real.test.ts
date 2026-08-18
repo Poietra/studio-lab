@@ -168,7 +168,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       // 2. v32 backfills exactly one render grant per snapshot BEFORE the
       //    operation-kind checks widen, and validates the legacy reservation
       //    against its exact grant.
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 33 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 34 });
       await expect(repository.ready()).resolves.toBe(true);
       await expect(
         pool.query<{ entitlement_generation: string; operation_kind: string; unit_limit: number }>(
@@ -621,7 +621,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       poolConfig: { connectionString: DATABASE_URL, max: 4 },
     });
     try {
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 33 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 34 });
       await createOrganizations(pool);
       await expect(repositoryA.ready()).resolves.toBe(true);
       await expect(repositoryB.ready()).resolves.toBe(true);
@@ -903,7 +903,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       webhookSigningSecret: STRIPE_WEBHOOK_SECRET,
     });
     try {
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 33 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 34 });
       await createStripeOrganization(pool);
       await expect(stripeRepository.ready()).resolves.toBe(true);
 

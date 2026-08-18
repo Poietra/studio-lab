@@ -82,6 +82,20 @@ returns 303 and binds only the token digest to the one-time login attempt while
 the browser receives the existing HttpOnly binding cookie. Raw invitation
 tokens must not be placed in URLs, browser storage, logs, or telemetry.
 
+Authenticated users create an Organization through same-origin
+`POST /api/account/organizations`. Migration v34 creates the workspace tenant,
+Organization, first owner membership, active-session selection, and immutable
+mutation record in one transaction. Exact retries return the recorded result.
+Owners and admins manage the selected Organization through
+`PATCH|DELETE /api/account/members/:id`; owners may manage every role, while
+admins may manage only member and billing access and cannot grant owner or
+admin. Changing the current actor's own role or membership is a separate
+self-service use case and is rejected; removing another member revokes sessions
+that still select that Organization. The
+existing deferred database constraint and the API both reject an operation
+that would remove the last active owner. Every accepted role change or removal
+is replay-safe and recorded once in the v34 mutation ledger.
+
 OIDC discovery is lazy and caches only a successful configuration. The edge
 login routes can therefore return 503 during an IdP outage without entering a
 tenant cell or making existing PostgreSQL-backed sessions unavailable. Issuer,
@@ -101,7 +115,8 @@ sessions remain idempotent. These account-session routes stay available during
 an IdP outage. General self-signup remains a later #309 slice; an invitation is
 not a self-signup credential and cannot choose its tenant or role. Cloudflare
 Worker/BFF deployment must rate-limit `/auth/oidc/start`,
-`/auth/oidc/callback`, and invitation create/revoke mutations at the edge; an
+`/auth/oidc/callback`, Organization/member mutations, and invitation
+create/revoke mutations at the edge; an
 in-process per-isolate limiter is not a meaningful abuse boundary. The
 Cloudflare counters are PoP-local and eventually consistent, so the serialized
 PostgreSQL pending and issuance-window quota remains the durable authority. A
@@ -129,12 +144,12 @@ Authentication must use a dedicated Hyperdrive configuration created or
 updated with `--caching-disabled`; stale reads are not acceptable for sessions,
 memberships, invitations, or one-time login state. Apply the bundled catalog
 with `pnpm storage:migrate` before deploying this Worker; it must reach at least
-v28 because account-session reads and organization switches use
-`account_organization_switch_mutations`. The invitation repository additionally
+v34 because Organization bootstrap and membership mutations use their durable
+mutation ledgers. The invitation repository additionally
 requires the exact v24 quota migration, while the OIDC repository requires the
 exact v22 invitation migration. The Worker routes must remain limited to the same-origin
 `/auth/oidc/*` path and the exact `/api/account/session`,
-`/api/account/members`, `/api/account/logout`, and
+`/api/account/members[/<id>]`, `/api/account/organizations`, `/api/account/logout`, and
 `/api/account/invitations[/<id>]` paths, with
 `workers_dev` and preview URLs off.
 Set those security-critical routes to fail closed in Cloudflare before promotion.
@@ -145,8 +160,9 @@ not attach raw Worker Tail, Logpush, request-body logging, or request-URL loggin
 to this Worker; zone Logpush must omit full request URIs for these routes. Use a
 sentinel callback and invitation to verify that code, state, nonce, cookies,
 invitation tokens, and secrets do not appear in production logs. The Worker
-limits OIDC start, OIDC callback, invitation creation, and invitation revocation
-independently before it opens PostgreSQL storage; missing bindings, invalid
+limits OIDC start, OIDC callback, Organization/member mutations, invitation
+creation, and invitation revocation independently before it opens PostgreSQL
+storage; missing bindings, invalid
 configuration, rate-limit errors, and missing Cloudflare client IPs fail closed
 with a generic 503.
 

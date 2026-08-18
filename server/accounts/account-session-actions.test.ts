@@ -32,6 +32,7 @@ function fixture() {
       kind: "listed" as const,
       members: [],
     })),
+    mutateActiveOrganizationMember: vi.fn(async () => ({ kind: "forbidden" as const })),
     resolveAccountSession: vi.fn(async () => account),
     revokeAccountSession: vi.fn(async () => undefined),
     switchActiveOrganization: vi.fn(async () => ({ account, kind: "updated" as const, mutation })),

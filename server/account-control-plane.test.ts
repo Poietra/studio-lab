@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOidcAccountControlPlaneV1 } from "./account-control-plane";
 import type { AccountInvitationRepositoryV1 } from "./accounts/account-invitation-repository";
+import type { AccountOrganizationRepositoryV1 } from "./accounts/account-organization-repository";
 import type { AccountSessionControlRepositoryV1 } from "./accounts/account-session-repository";
 import type { OidcLoginRepositoryV1 } from "./accounts/oidc-login-repository";
 
@@ -45,6 +46,7 @@ function sessionRepository() {
         },
       ],
     })),
+    mutateActiveOrganizationMember: vi.fn(async () => ({ kind: "forbidden" as const })),
     revokeAccountSession: vi.fn(async () => undefined),
     resolveAccountSession: vi.fn(async () => account),
     switchActiveOrganization: vi.fn(async () => ({ account, kind: "updated" as const, mutation })),
@@ -63,10 +65,27 @@ function invitationRepository() {
   return { close, value };
 }
 
+function organizationRepository() {
+  const close = vi.fn(async () => undefined);
+  const value: AccountOrganizationRepositoryV1 = {
+    close,
+    createOrganization: vi.fn(async (input) => ({
+      kind: "applied" as const,
+      mutationId: input.mutationId,
+      organization: { displayName: input.displayName, id: input.organizationId, role: "owner" as const },
+      replayed: false,
+      version: input.expectedVersion + 1,
+    })),
+    ready: vi.fn(async () => true),
+  };
+  return { close, value };
+}
+
 describe("OIDC account control-plane composition", () => {
   it("creates and closes request-scoped storage only for accepted routes", async () => {
     const created: ReturnType<typeof repository>[] = [];
     const invitationCreated: ReturnType<typeof invitationRepository>[] = [];
+    const organizationCreated: ReturnType<typeof organizationRepository>[] = [];
     const sessionCreated: ReturnType<typeof sessionRepository>[] = [];
     const controlPlane = createOidcAccountControlPlaneV1({
       invitationRepository: (environment: { hyperdrive: string }) => {
@@ -80,6 +99,12 @@ describe("OIDC account control-plane composition", () => {
         clientSecret: "secret",
         issuer: "https://identity.example",
         publicOrigin: "https://studio.example",
+      },
+      organizationRepository: (environment: { hyperdrive: string }) => {
+        expect(environment).toEqual({ hyperdrive: "request-scoped" });
+        const next = organizationRepository();
+        organizationCreated.push(next);
+        return next.value;
       },
       repository: (environment: { hyperdrive: string }) => {
         expect(environment).toEqual({ hyperdrive: "request-scoped" });
@@ -172,14 +197,35 @@ describe("OIDC account control-plane composition", () => {
         environment,
       ),
     ).resolves.toMatchObject({ status: 403 });
+    await expect(
+      controlPlane.fetch(
+        new Request("https://studio.example/api/account/organizations", {
+          body: JSON.stringify({
+            displayName: "Research Team",
+            expectedVersion: 4,
+            mutationId: "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b",
+            organizationId: "research-team",
+          }),
+          headers: {
+            "content-type": "application/json",
+            cookie: `__Host-poietra_session=${token}`,
+            origin: "https://studio.example",
+          },
+          method: "POST",
+        }),
+        environment,
+      ),
+    ).resolves.toMatchObject({ status: 201 });
 
     expect(created).toHaveLength(2);
     expect(invitationCreated).toHaveLength(1);
+    expect(organizationCreated).toHaveLength(1);
     expect(sessionCreated).toHaveLength(4);
     expect(created[0]?.value.ready).toHaveBeenCalledOnce();
     expect(created[1]?.value.consumeLoginAttempt).toHaveBeenCalledOnce();
     expect(created.map(({ close }) => close.mock.calls.length)).toEqual([1, 1]);
     expect(invitationCreated[0]?.close).toHaveBeenCalledOnce();
+    expect(organizationCreated[0]?.close).toHaveBeenCalledOnce();
     expect(sessionCreated.map(({ close }) => close.mock.calls.length)).toEqual([1, 1, 1, 1]);
   });
 

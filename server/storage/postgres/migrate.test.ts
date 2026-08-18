@@ -8,6 +8,8 @@ import {
   ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE,
+  ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_SOURCE,
+  ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM,
   ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM,
   ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE,
   ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM,
@@ -15,6 +17,7 @@ import {
   applyAccountInvitationMigrationV22,
   applyAccountInvitationQuotaMigrationV24,
   applyAccountOrganizationMigrationV11,
+  applyAccountOrganizationLifecycleMigrationV34,
   applyAccountOrganizationSwitchMutationMigrationV28,
   applyAccountSessionMigrationV12,
   applyBillingEntitlementGrantMigrationV32,
@@ -136,13 +139,13 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 33 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 34 });
     expect([...db.installed.keys()]).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
-      32, 33,
+      32, 33, 34,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 33 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 34 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -180,7 +183,10 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === CLIENT_THUMBNAIL_PUBLICATION_MIGRATION_V33_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(66);
+    expect(db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_SOURCE)).toHaveLength(
+      1,
+    );
+    expect(db.release).toHaveBeenCalledTimes(68);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -268,12 +274,17 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 33,
     });
+    expect(db.queries.some(({ text }) => text === ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_SOURCE)).toBe(false);
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 34)).resolves.toEqual({
+      applied: true,
+      version: 34,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 34)).rejects.toThrow(
-      /migration v34 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 35)).rejects.toThrow(
+      /migration v35 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -370,6 +381,20 @@ describe("durable storage migrations", () => {
   it("pins the account and organization migration checksum", () => {
     expect(durableStorageMigrationChecksum(ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE)).toBe(
       ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
+    );
+  });
+
+  it("pins the organization lifecycle ledger and preserves the v11 last-owner guard", async () => {
+    const source = ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_SOURCE;
+    expect(durableStorageMigrationChecksum(source)).toBe(ACCOUNT_ORGANIZATION_LIFECYCLE_MIGRATION_V34_CHECKSUM);
+    expect(source).toContain("CREATE TABLE public.account_organization_bootstrap_mutations");
+    expect(source).toContain("CREATE TABLE public.account_membership_mutations");
+    expect(source).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(source).not.toContain("require_organization_active_owner_v34");
+
+    const db = database();
+    await expect(applyAccountOrganizationLifecycleMigrationV34(db.pool, source)).rejects.toThrow(
+      /requires durable storage migrations v1 through v33/i,
     );
   });
 

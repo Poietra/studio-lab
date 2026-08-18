@@ -687,6 +687,7 @@ export function App({
         logout: () => {
           void runAfterEditorSessionFlush(accountActions.logout, "account");
         },
+        refresh: accountActions.refresh,
         switchOrganization: (organizationId) => {
           void runAfterEditorSessionFlush(() => accountActions.switchOrganization(organizationId), "account");
         },
