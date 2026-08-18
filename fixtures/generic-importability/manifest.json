@@ -1,0 +1,341 @@
+{
+  "schema": "poietra.generic-importability-scoreboard",
+  "completion": {
+    "acceptedVisibleRootMissing": { "met": true, "observed": 0, "required": 0 },
+    "claimedEditRoundtripPercent": { "met": false, "observed": 0, "required": 100 },
+    "silentOmissions": { "met": true, "observed": 0, "required": 0 }
+  },
+  "evidenceTests": [
+    "scripts/generic-importability-manifest.test.ts",
+    "src/render-pipeline/source-analysis.test.ts",
+    "src/render-pipeline/source-import.test.ts",
+    "src/render-pipeline/source-lowering.generic-runtime-trace-v3.test.ts",
+    "src/studio/studio-canvas-preview.test.tsx",
+    "server/fast-manim-runtime-trace-v3-result-contract.test.ts",
+    "server/manim-render-request-lowering.test.ts"
+  ],
+  "cases": [
+    {
+      "id": "official-opening-manim",
+      "sceneName": "OpeningManim",
+      "sourcePath": "example_scenes/basic.py",
+      "fixturePaths": ["fixtures/real-preview-harness/example_scenes/basic.py"],
+      "rootCoverage": { "status": "unmeasured" },
+      "stages": {
+        "discovery": "pass",
+        "preview": "unmeasured",
+        "binding": "pass",
+        "selection": "unmeasured",
+        "edit": { "move": "pass", "uniform-resize": "unmeasured", "rotation": "unmeasured", "opacity": "unmeasured" },
+        "py-export": "pass",
+        "reimport": "unmeasured",
+        "fresh-validation": "unmeasured"
+      },
+      "notes": {
+        "preview": "Old Scene-specific evidence is not current generic evidence.",
+        "selection": "No exact offline selection assertion.",
+        "edit.uniform-resize": "Not exercised for this Scene.",
+        "edit.rotation": "Not exercised for this Scene.",
+        "edit.opacity": "Not exercised for this Scene.",
+        "reimport": "Exported source is not reimported by an existing test.",
+        "fresh-validation": "No exact offline candidate validation."
+      }
+    },
+    {
+      "id": "official-square-to-circle",
+      "sceneName": "SquareToCircle",
+      "sourcePath": "example_scenes/basic.py",
+      "fixturePaths": ["fixtures/real-preview-harness/example_scenes/basic.py"],
+      "rootCoverage": { "status": "unmeasured" },
+      "stages": {
+        "discovery": "pass",
+        "preview": "unmeasured",
+        "binding": "pass",
+        "selection": "unmeasured",
+        "edit": {
+          "move": "unmeasured",
+          "uniform-resize": "unmeasured",
+          "rotation": "unmeasured",
+          "opacity": "unmeasured"
+        },
+        "py-export": "unmeasured",
+        "reimport": "unmeasured",
+        "fresh-validation": "unmeasured"
+      },
+      "notes": {
+        "preview": "Only the old sealed snapshot profile is pinned offline.",
+        "selection": "No current generic selection assertion.",
+        "edit.move": "Not exercised through the current generic route.",
+        "edit.uniform-resize": "Not exercised through the current generic route.",
+        "edit.rotation": "Not exercised through the current generic route.",
+        "edit.opacity": "Not exercised through the current generic route.",
+        "py-export": "No current generic edit is claimed.",
+        "reimport": "No current generic edit is claimed.",
+        "fresh-validation": "No current generic edit is claimed."
+      }
+    },
+    {
+      "id": "official-warp-square",
+      "sceneName": "WarpSquare",
+      "sourcePath": "example_scenes/basic.py",
+      "fixturePaths": ["fixtures/real-preview-harness/example_scenes/basic.py"],
+      "rootCoverage": { "status": "unmeasured" },
+      "stages": {
+        "discovery": "pass",
+        "preview": "unmeasured",
+        "binding": "pass",
+        "selection": "unmeasured",
+        "edit": { "move": "pass", "uniform-resize": "unmeasured", "rotation": "unmeasured", "opacity": "unmeasured" },
+        "py-export": "pass",
+        "reimport": "unmeasured",
+        "fresh-validation": "unmeasured"
+      },
+      "notes": {
+        "preview": "Old Scene-specific evidence is not current generic evidence.",
+        "selection": "No exact offline selection assertion.",
+        "edit.uniform-resize": "Not exercised for this Scene.",
+        "edit.rotation": "Not exercised for this Scene.",
+        "edit.opacity": "Not exercised for this Scene.",
+        "reimport": "Exported source is not reimported by an existing test.",
+        "fresh-validation": "No exact offline candidate validation."
+      }
+    },
+    {
+      "id": "official-write-stuff",
+      "sceneName": "WriteStuff",
+      "sourcePath": "example_scenes/basic.py",
+      "fixturePaths": ["fixtures/real-preview-harness/example_scenes/basic.py"],
+      "rootCoverage": { "status": "unmeasured" },
+      "stages": {
+        "discovery": "pass",
+        "preview": "unmeasured",
+        "binding": "pass",
+        "selection": "unmeasured",
+        "edit": {
+          "move": "unmeasured",
+          "uniform-resize": "unmeasured",
+          "rotation": "unmeasured",
+          "opacity": "unmeasured"
+        },
+        "py-export": "unmeasured",
+        "reimport": "unmeasured",
+        "fresh-validation": "unmeasured"
+      },
+      "notes": {
+        "preview": "Old Scene-specific evidence is not current generic evidence.",
+        "selection": "No current generic selection assertion.",
+        "edit.move": "Not exercised through the current generic route.",
+        "edit.uniform-resize": "Not exercised through the current generic route.",
+        "edit.rotation": "Not exercised through the current generic route.",
+        "edit.opacity": "Not exercised through the current generic route.",
+        "py-export": "No current generic edit is claimed.",
+        "reimport": "No current generic edit is claimed.",
+        "fresh-validation": "No current generic edit is claimed."
+      }
+    },
+    {
+      "id": "official-updaters-example",
+      "sceneName": "UpdatersExample",
+      "sourcePath": "example_scenes/basic.py",
+      "fixturePaths": ["fixtures/real-preview-harness/example_scenes/basic.py"],
+      "rootCoverage": { "status": "unmeasured" },
+      "stages": {
+        "discovery": "pass",
+        "preview": "unmeasured",
+        "binding": "pass",
+        "selection": "unmeasured",
+        "edit": { "move": "unmeasured", "uniform-resize": "pass", "rotation": "unmeasured", "opacity": "unmeasured" },
+        "py-export": "pass",
+        "reimport": "unmeasured",
+        "fresh-validation": "unmeasured"
+      },
+      "notes": {
+        "preview": "Old updater Runtime Trace is not current generic preview evidence.",
+        "selection": "No exact offline selection assertion.",
+        "edit.move": "Not exercised for this Scene.",
+        "edit.rotation": "Not exercised for this Scene.",
+        "edit.opacity": "Not exercised for this Scene.",
+        "reimport": "Exported source is not reimported by an existing test.",
+        "fresh-validation": "No exact offline candidate validation."
+      }
+    },
+    {
+      "id": "official-spiral-in",
+      "sceneName": "SpiralInExample",
+      "sourcePath": "example_scenes/basic.py",
+      "fixturePaths": ["fixtures/real-preview-harness/example_scenes/basic.py"],
+      "rootCoverage": { "status": "unmeasured" },
+      "stages": {
+        "discovery": "pass",
+        "preview": "unmeasured",
+        "binding": "pass",
+        "selection": "unmeasured",
+        "edit": {
+          "move": "unmeasured",
+          "uniform-resize": "unmeasured",
+          "rotation": "unmeasured",
+          "opacity": "unmeasured"
+        },
+        "py-export": "unmeasured",
+        "reimport": "unmeasured",
+        "fresh-validation": "unmeasured"
+      },
+      "notes": {
+        "preview": "Old Scene-specific evidence is not current generic evidence.",
+        "selection": "No current generic selection assertion.",
+        "edit.move": "Not exercised through the current generic route.",
+        "edit.uniform-resize": "Not exercised through the current generic route.",
+        "edit.rotation": "Not exercised through the current generic route.",
+        "edit.opacity": "Not exercised through the current generic route.",
+        "py-export": "No current generic edit is claimed.",
+        "reimport": "No current generic edit is claimed.",
+        "fresh-validation": "No current generic edit is claimed."
+      }
+    },
+    {
+      "id": "official-line-joints",
+      "sceneName": "LineJoints",
+      "sourcePath": "example_scenes/basic.py",
+      "fixturePaths": ["fixtures/real-preview-harness/example_scenes/basic.py"],
+      "rootCoverage": { "status": "unmeasured" },
+      "stages": {
+        "discovery": "pass",
+        "preview": "unmeasured",
+        "binding": "pass",
+        "selection": "pass",
+        "edit": { "move": "fail", "uniform-resize": "fail", "rotation": "fail", "opacity": "fail" },
+        "py-export": "fail",
+        "reimport": "fail",
+        "fresh-validation": "fail"
+      },
+      "failures": {
+        "edit.move": "read-only",
+        "edit.uniform-resize": "read-only",
+        "edit.rotation": "read-only",
+        "edit.opacity": "read-only",
+        "py-export": "read-only",
+        "reimport": "read-only",
+        "fresh-validation": "read-only"
+      },
+      "notes": {
+        "preview": "Old Scene-specific evidence is not current generic evidence.",
+        "edit.move": "Selectable leaves deliberately do not start source rewriting.",
+        "edit.uniform-resize": "Selectable leaves deliberately do not start source rewriting.",
+        "edit.rotation": "Selectable leaves deliberately do not start source rewriting.",
+        "edit.opacity": "Selectable leaves deliberately do not start source rewriting.",
+        "py-export": "No source edit is authorized.",
+        "reimport": "No source edit is authorized.",
+        "fresh-validation": "No source edit is authorized."
+      }
+    },
+    {
+      "id": "generic-static-square",
+      "sceneName": "StaticSquare",
+      "sourcePath": "scenes/staticsquare.py",
+      "fixturePaths": [
+        "fixtures/real-preview-harness/scene_runtime_trace_v3.py",
+        "server/test-fixtures/fast-manim-runtime-trace-v3-generic.json"
+      ],
+      "rootCoverage": {
+        "status": "pass",
+        "fixturePath": "server/test-fixtures/fast-manim-runtime-trace-v3-generic.json",
+        "expected": 1,
+        "accepted": 1,
+        "missing": 0,
+        "silentOmissions": 0
+      },
+      "stages": {
+        "discovery": "pass",
+        "preview": "pass",
+        "binding": "pass",
+        "selection": "pass",
+        "edit": { "move": "pass", "uniform-resize": "pass", "rotation": "pass", "opacity": "pass" },
+        "py-export": "pass",
+        "reimport": "unmeasured",
+        "fresh-validation": "pass"
+      },
+      "notes": {
+        "reimport": "Existing tests re-derive validation facts but do not run the static importer on every exported operation."
+      }
+    },
+    {
+      "id": "generic-feynman-diagram",
+      "sceneName": "FeynmanDiagram",
+      "sourcePath": "legacy/Math-To-Manim/examples/physics/quantum/Hunyuan-T1QED.py",
+      "fixturePaths": ["fixtures/feynman-diagram-v3-runtime-trace-v1/baseline.json"],
+      "rootCoverage": {
+        "status": "pass",
+        "fixturePath": "fixtures/feynman-diagram-v3-runtime-trace-v1/baseline.json",
+        "expected": 4,
+        "accepted": 4,
+        "missing": 0,
+        "silentOmissions": 0
+      },
+      "stages": {
+        "discovery": "pass",
+        "preview": "pass",
+        "binding": "pass",
+        "selection": "unmeasured",
+        "edit": { "move": "unmeasured", "uniform-resize": "unmeasured", "rotation": "fail", "opacity": "fail" },
+        "py-export": "unmeasured",
+        "reimport": "unmeasured",
+        "fresh-validation": "unmeasured"
+      },
+      "failures": { "edit.rotation": "unsupported", "edit.opacity": "unsupported" },
+      "notes": {
+        "selection": "The fixture proves four eligible roots but not exact Studio selection offline.",
+        "edit.move": "Source-eligible, but no existing offline test exports an edited Feynman source.",
+        "edit.uniform-resize": "Source-eligible, but no existing offline test exports an edited Feynman source.",
+        "edit.rotation": "The committed capability contract exposes only move and uniform resize.",
+        "edit.opacity": "The committed capability contract exposes only move and uniform resize.",
+        "py-export": "No exact-scene generic edit is claimed.",
+        "reimport": "No exact-scene generic edit is claimed.",
+        "fresh-validation": "No exact-scene generic edit is claimed."
+      }
+    },
+    {
+      "id": "generic-fourier-series-square-wave",
+      "sceneName": "FourierSeriesSquareWave",
+      "sourcePath": "legacy/Math-To-Manim/examples/mathematics/trigonometry/TrigInference.py",
+      "fixturePaths": ["fixtures/fourier-v3-runtime-trace-v1/baseline.json"],
+      "rootCoverage": {
+        "status": "pass",
+        "fixturePath": "fixtures/fourier-v3-runtime-trace-v1/baseline.json",
+        "expected": 5,
+        "accepted": 5,
+        "missing": 0,
+        "silentOmissions": 0
+      },
+      "stages": {
+        "discovery": "pass",
+        "preview": "pass",
+        "binding": "pass",
+        "selection": "fail",
+        "edit": { "move": "fail", "uniform-resize": "fail", "rotation": "fail", "opacity": "fail" },
+        "py-export": "fail",
+        "reimport": "fail",
+        "fresh-validation": "fail"
+      },
+      "failures": {
+        "selection": "read-only",
+        "edit.move": "read-only",
+        "edit.uniform-resize": "read-only",
+        "edit.rotation": "read-only",
+        "edit.opacity": "read-only",
+        "py-export": "read-only",
+        "reimport": "read-only",
+        "fresh-validation": "read-only"
+      },
+      "notes": {
+        "selection": "All five committed bindings have updaterStatus conflict.",
+        "edit.move": "Updater conflicts make the Scene preview-only.",
+        "edit.uniform-resize": "Updater conflicts make the Scene preview-only.",
+        "edit.rotation": "Updater conflicts make the Scene preview-only.",
+        "edit.opacity": "Updater conflicts make the Scene preview-only.",
+        "py-export": "No source edit is authorized.",
+        "reimport": "No source edit is authorized.",
+        "fresh-validation": "No source edit is authorized."
+      }
+    }
+  ]
+}
