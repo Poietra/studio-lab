@@ -5,7 +5,6 @@ import { pngSnapshotBundleFixture } from "../../server/test-fixtures/fast-manim-
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
-import { STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "../engine/fragment-material-registry";
 import {
   type MathTexOutlineResponseV1,
   mathTexOutlineResponseV1Schema,
@@ -41,6 +40,7 @@ import { programRecord } from "./evaluator";
 import { createFixtureProposedState, validateMotionProgramFixture } from "./fixture";
 import {
   assignStudioFragmentMaterialV1,
+  createStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
   projectFragmentMaterialsForSceneV1,
@@ -1146,11 +1146,12 @@ describe("studioPreviewInteractionAuthority", () => {
 describe("compileStudioPreviewSceneV1", () => {
   it("drops stale presentation authority synchronously while a new material input compiles", () => {
     const previous = { fragmentMaterialInput: EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1 };
+    const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
     const next = projectFragmentMaterialsForSceneV1(
-      assignStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
+      assignStudioFragmentMaterialV1(material.state, {
         entityId: "source:circle",
         sceneId: "studio:circle-scene",
-        source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+        shaderId: material.shaderId,
       }),
       "studio:circle-scene",
     );
@@ -1171,11 +1172,12 @@ describe("compileStudioPreviewSceneV1", () => {
         entities: [runtimeEntity, { ...runtimeEntity, id: "source:circle", sceneOrder: runtimeEntity.sceneOrder + 1 }],
       },
     });
+    const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
     const sceneFragmentMaterials = projectFragmentMaterialsForSceneV1(
-      assignStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
+      assignStudioFragmentMaterialV1(material.state, {
         entityId: "source:circle",
         sceneId: "studio:circle-scene",
-        source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+        shaderId: material.shaderId,
       }),
       "studio:circle-scene",
     );
@@ -1206,11 +1208,62 @@ describe("compileStudioPreviewSceneV1", () => {
     const collided = result.scene.bundle.scene.entities.find(({ id }) => id === "source:circle");
     expect(assigned?.appearance.kind === "vector" ? assigned.appearance.fill?.fragmentMaterial : null).toMatchObject({
       revision: 1,
-      shaderId: "project-studio-fragment",
+      shaderId: material.shaderId,
     });
     expect(
       collided?.appearance.kind === "vector" ? collided.appearance.fill?.fragmentMaterial : undefined,
     ).toBeUndefined();
+  });
+
+  it("sends two selected material references and their exact registry through one core compile", async () => {
+    const base = await compilablePreviewInput();
+    const runtimeEntity = base.snapshot.snapshot.scene.entities[0];
+    if (!runtimeEntity) throw new Error("Expected the Circle preview entity.");
+    const bundle = await parseVerifiedSceneIrBundleV1({
+      ...base.snapshot.snapshot,
+      scene: {
+        ...base.snapshot.snapshot.scene,
+        entities: [runtimeEntity, { ...runtimeEntity, id: "later", sceneOrder: runtimeEntity.sceneOrder + 1 }],
+      },
+    });
+    const first = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "First" });
+    const second = createStudioFragmentMaterialV1(first.state, { name: "Second" });
+    const firstAssigned = assignStudioFragmentMaterialV1(second.state, {
+      entityId: "source:circle",
+      sceneId: "studio:circle-scene",
+      shaderId: first.shaderId,
+    });
+    const bothAssigned = assignStudioFragmentMaterialV1(firstAssigned, {
+      entityId: "later",
+      sceneId: "studio:circle-scene",
+      shaderId: second.shaderId,
+    });
+    const sceneFragmentMaterials = projectFragmentMaterialsForSceneV1(bothAssigned, "studio:circle-scene");
+    const commands: ApplyStudioFragmentMaterialsWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioFragmentMaterialsCompiler: async (candidate, command) => {
+        commands.push(command);
+        return compileApplyStudioFragmentMaterials(candidate, command);
+      },
+      frame: { height: 9, width: 16 },
+      sceneFragmentMaterials,
+      snapshot: { ...base.snapshot, snapshot: bundle },
+      workingState: base.proposedState.base,
+      workingRevision: PRISTINE_WORKING_REVISION,
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands[0]?.assignments).toEqual([
+      expect.objectContaining({ entityId: "earlier", material: expect.objectContaining({ shaderId: first.shaderId }) }),
+      expect.objectContaining({ entityId: "later", material: expect.objectContaining({ shaderId: second.shaderId }) }),
+    ]);
+    expect(result.scene.fragmentMaterialRegistry).toEqual(sceneFragmentMaterials.registry);
+    expect(result.scene.fragmentMaterialRegistry?.materials.map(({ shaderId }) => shaderId)).toEqual([
+      first.shaderId,
+      second.shaderId,
+    ]);
   });
 
   it("rejects animated server-snapshot motion before invoking a core planner", async () => {

@@ -3,57 +3,101 @@ import { describe, expect, it } from "vitest";
 import { STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "../engine/fragment-material-registry";
 import {
   assignStudioFragmentMaterialV1,
+  createStudioFragmentMaterialV1,
+  duplicateStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
+  listStudioFragmentMaterialsV1,
   projectFragmentMaterialsForSceneV1,
+  removeStudioFragmentMaterialAssetV1,
   removeStudioFragmentMaterialV1,
+  renameStudioFragmentMaterialV1,
   sceneHasFragmentMaterialAssignmentsV1,
+  updateStudioFragmentMaterialSourceV1,
 } from "./fragment-material-authoring";
 
 describe("project-local fragment material authoring", () => {
-  it("assigns and removes one entity without mutating the prior project state", () => {
-    const assigned = assignStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
+  it("creates, renames, duplicates, edits, and safely removes named materials", () => {
+    const created = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
+    expect(listStudioFragmentMaterialsV1(created.state)).toMatchObject([
+      { name: "Wave", revision: 1, shaderId: created.shaderId },
+    ]);
+
+    const assigned = assignStudioFragmentMaterialV1(created.state, {
       entityId: "rectangle",
       sceneId: "scene-a",
-      source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+      shaderId: created.shaderId,
     });
     expect(sceneHasFragmentMaterialAssignmentsV1(projectFragmentMaterialsForSceneV1(assigned, "scene-a"))).toBe(true);
     expect(assigned.assignmentsByScene["scene-a"]?.rectangle).toMatchObject({
-      shaderId: "project-studio-fragment",
+      revision: 1,
+      shaderId: created.shaderId,
     });
-    expect(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1.assignmentsByScene).toEqual({});
+    expect(removeStudioFragmentMaterialAssetV1(assigned, created.shaderId)).toEqual({
+      assignmentCount: 1,
+      kind: "in-use",
+    });
 
-    const edited = assignStudioFragmentMaterialV1(assigned, {
-      entityId: "circle",
-      sceneId: "scene-b",
+    const renamed = renameStudioFragmentMaterialV1(assigned, { name: "Ocean wave", shaderId: created.shaderId });
+    const edited = updateStudioFragmentMaterialSourceV1(renamed, {
+      shaderId: created.shaderId,
       source: `${STUDIO_WAVE_FRAGMENT_SOURCE_V1}\n// edited`,
     });
     expect(edited.registry.materials[0]?.revision).toBe(2);
     expect(edited.assignmentsByScene["scene-a"]?.rectangle?.revision).toBe(2);
-    expect(edited.assignmentsByScene["scene-b"]?.circle?.revision).toBe(2);
-    expect(projectFragmentMaterialsForSceneV1(edited, "scene-b").assignments.circle).toBeDefined();
-    expect(projectFragmentMaterialsForSceneV1(edited, "scene-a").assignments.circle).toBeUndefined();
+    expect(edited.namesByShaderId[created.shaderId]).toBe("Ocean wave");
 
-    const removed = removeStudioFragmentMaterialV1(assigned, { entityId: "rectangle", sceneId: "scene-a" });
-    expect(sceneHasFragmentMaterialAssignmentsV1(projectFragmentMaterialsForSceneV1(removed, "scene-a"))).toBe(false);
-    expect(removed.registry.materials[0]?.source).toBe(STUDIO_WAVE_FRAGMENT_SOURCE_V1);
+    const duplicated = duplicateStudioFragmentMaterialV1(edited, created.shaderId);
+    expect(listStudioFragmentMaterialsV1(duplicated.state)).toMatchObject([
+      { name: "Ocean wave", revision: 2, shaderId: created.shaderId },
+      { name: "Ocean wave copy", revision: 1, shaderId: duplicated.shaderId },
+    ]);
+    expect(duplicated.state.registry.materials[1]?.source).toContain("// edited");
 
-    const reassigned = assignStudioFragmentMaterialV1(removed, {
-      entityId: "circle",
+    const unassigned = removeStudioFragmentMaterialV1(duplicated.state, {
+      entityId: "rectangle",
       sceneId: "scene-a",
-      source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
     });
-    expect(reassigned.registry.materials[0]?.revision).toBe(1);
+    const removed = removeStudioFragmentMaterialAssetV1(unassigned, created.shaderId);
+    expect(removed.kind).toBe("removed");
+    if (removed.kind !== "removed") throw new Error("Expected the unused material to be removed.");
+    expect(listStudioFragmentMaterialsV1(removed.state)).toMatchObject([{ shaderId: duplicated.shaderId }]);
   });
 
-  it("does not leak assignments when the active scene changes", () => {
-    const assigned = assignStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
-      entityId: "shared-studio-id",
+  it("updates only one material family and projects both referenced sources without leaking across Scenes", () => {
+    const first = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "First" });
+    const second = createStudioFragmentMaterialV1(first.state, { name: "Second" });
+    const sceneA = assignStudioFragmentMaterialV1(second.state, {
+      entityId: "rectangle",
       sceneId: "scene-a",
-      source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+      shaderId: first.shaderId,
+    });
+    const sceneAWithSecond = assignStudioFragmentMaterialV1(sceneA, {
+      entityId: "circle",
+      sceneId: "scene-a",
+      shaderId: second.shaderId,
+    });
+    const sceneB = assignStudioFragmentMaterialV1(sceneAWithSecond, {
+      entityId: "rectangle",
+      sceneId: "scene-b",
+      shaderId: first.shaderId,
+    });
+    const edited = updateStudioFragmentMaterialSourceV1(sceneB, {
+      shaderId: first.shaderId,
+      source: `${STUDIO_WAVE_FRAGMENT_SOURCE_V1}\n// first edited`,
     });
 
-    expect(projectFragmentMaterialsForSceneV1(assigned, "scene-a").assignments).toHaveProperty("shared-studio-id");
-    expect(projectFragmentMaterialsForSceneV1(assigned, "scene-b")).toEqual({
+    const projectedA = projectFragmentMaterialsForSceneV1(edited, "scene-a");
+    expect(projectedA.assignments.rectangle).toMatchObject({ revision: 2, shaderId: first.shaderId });
+    expect(projectedA.assignments.circle).toMatchObject({ revision: 1, shaderId: second.shaderId });
+    expect(projectedA.registry.materials.map(({ revision, shaderId }) => ({ revision, shaderId }))).toEqual([
+      { revision: 2, shaderId: first.shaderId },
+      { revision: 1, shaderId: second.shaderId },
+    ]);
+    expect(projectFragmentMaterialsForSceneV1(edited, "scene-b").assignments.rectangle).toMatchObject({
+      revision: 2,
+      shaderId: first.shaderId,
+    });
+    expect(projectFragmentMaterialsForSceneV1(edited, "scene-c")).toEqual({
       assignments: {},
       registry: { materials: [], schema: "poietra.fragment-material-registry", version: 1 },
     });

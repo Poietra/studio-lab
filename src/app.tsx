@@ -62,12 +62,18 @@ import {
 } from "./studio/editor-revision-policy";
 import {
   assignStudioFragmentMaterialV1,
+  createStudioFragmentMaterialV1,
+  duplicateStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
+  listStudioFragmentMaterialsV1,
   type ProjectFragmentMaterialStateV1,
-  projectFragmentMaterialSourceV1,
   projectFragmentMaterialsForSceneV1,
+  removeStudioFragmentMaterialAssetV1,
   removeStudioFragmentMaterialV1,
+  renameStudioFragmentMaterialV1,
   sceneHasFragmentMaterialAssignmentsV1,
+  studioFragmentMaterialAssignmentCountV1,
+  updateStudioFragmentMaterialSourceV1,
 } from "./studio/fragment-material-authoring";
 import { importedWorkingState, projectVerifiedSourceDuration } from "./studio/imported-workspace";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./studio/inspector-edit";
@@ -835,6 +841,14 @@ export function App({
   const activeProjectFragmentMaterials = activeProjectId
     ? (projectFragmentMaterials[activeProjectId] ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1)
     : EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
+  const activeProjectNamedFragmentMaterials = useMemo(
+    () =>
+      listStudioFragmentMaterialsV1(activeProjectFragmentMaterials).map((material) => ({
+        ...material,
+        assignmentCount: studioFragmentMaterialAssignmentCountV1(activeProjectFragmentMaterials, material.shaderId),
+      })),
+    [activeProjectFragmentMaterials],
+  );
   const activeSceneFragmentMaterials = useMemo(
     () => projectFragmentMaterialsForSceneV1(activeProjectFragmentMaterials, activeScene?.sceneId ?? null),
     [activeProjectFragmentMaterials, activeScene?.sceneId],
@@ -3576,15 +3590,17 @@ export function App({
       : null;
 
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
-  const selectedFragmentMaterialAssigned = selectedEntity
-    ? activeSceneFragmentMaterials.assignments[selectedEntity.id] !== undefined
-    : false;
+  const selectedFragmentMaterialEntity = selectedSet.size === 1 ? selectedEntity : null;
+  const selectedFragmentMaterialAssignment = selectedFragmentMaterialEntity
+    ? (activeSceneFragmentMaterials.assignments[selectedFragmentMaterialEntity.id] ?? null)
+    : null;
+  const selectedFragmentMaterialAssigned = selectedFragmentMaterialAssignment !== null;
   const selectedFragmentMaterialAvailable =
     previewMutationAvailable &&
-    selectedEntity !== null &&
-    selectedEntity.geometry.style.kind === "known" &&
-    selectedEntity.geometry.style.value.fillColor !== undefined &&
-    selectedEntity.geometry.style.value.fillColor !== null;
+    selectedFragmentMaterialEntity !== null &&
+    selectedFragmentMaterialEntity.geometry.style.kind === "known" &&
+    selectedFragmentMaterialEntity.geometry.style.value.fillColor !== undefined &&
+    selectedFragmentMaterialEntity.geometry.style.value.fillColor !== null;
   const selectedFragmentMaterialCompileError =
     selectedFragmentMaterialAssigned &&
     previewRenderer?.state.phase === "fallback" &&
@@ -3597,35 +3613,88 @@ export function App({
     ? "Manim .py export does not support project-local WGSL fragment materials. Remove them before exporting source."
     : null;
 
-  function applySelectedFragmentMaterial(source: string) {
-    if (!activeProjectId || !activeScene || !selectedEntity || !selectedFragmentMaterialAvailable) return;
+  function commitActiveProjectFragmentMaterials(next: ProjectFragmentMaterialStateV1) {
+    if (!activeProjectId) return false;
+    if (!saveProjectFragmentMaterials(activeProjectId, next)) {
+      setDraftError("The project fragment materials could not be saved.");
+      return false;
+    }
+    setProjectFragmentMaterials((current) => ({ ...current, [activeProjectId]: next }));
+    return true;
+  }
+
+  function createFragmentMaterial(name: string) {
     try {
-      const next = assignStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
-        entityId: selectedEntity.id,
-        sceneId: activeScene.sceneId,
-        source,
-      });
-      if (!saveProjectFragmentMaterials(activeProjectId, next)) {
-        setDraftError("The project fragment material could not be saved.");
+      const created = createStudioFragmentMaterialV1(activeProjectFragmentMaterials, { name });
+      return commitActiveProjectFragmentMaterials(created.state) ? created.shaderId : null;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material could not be created.");
+      return null;
+    }
+  }
+
+  function duplicateFragmentMaterial(shaderId: string) {
+    try {
+      const duplicated = duplicateStudioFragmentMaterialV1(activeProjectFragmentMaterials, shaderId);
+      return commitActiveProjectFragmentMaterials(duplicated.state) ? duplicated.shaderId : null;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material could not be duplicated.");
+      return null;
+    }
+  }
+
+  function renameFragmentMaterial(shaderId: string, name: string) {
+    try {
+      commitActiveProjectFragmentMaterials(
+        renameStudioFragmentMaterialV1(activeProjectFragmentMaterials, { name, shaderId }),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material could not be renamed.");
+    }
+  }
+
+  function removeFragmentMaterialAsset(shaderId: string) {
+    try {
+      const result = removeStudioFragmentMaterialAssetV1(activeProjectFragmentMaterials, shaderId);
+      if (result.kind === "in-use") {
+        setDraftError(`Unassign this material from ${result.assignmentCount} object(s) before deleting it.`);
         return;
       }
-      setProjectFragmentMaterials((current) => ({ ...current, [activeProjectId]: next }));
+      commitActiveProjectFragmentMaterials(result.state);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material could not be deleted.");
+    }
+  }
+
+  function updateFragmentMaterialSource(shaderId: string, source: string) {
+    try {
+      commitActiveProjectFragmentMaterials(
+        updateStudioFragmentMaterialSourceV1(activeProjectFragmentMaterials, { shaderId, source }),
+      );
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The fragment material source is invalid.");
     }
   }
 
-  function removeSelectedFragmentMaterial() {
-    if (!activeProjectId || !activeScene || !selectedEntity) return;
-    const next = removeStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
-      entityId: selectedEntity.id,
-      sceneId: activeScene.sceneId,
-    });
-    if (!saveProjectFragmentMaterials(activeProjectId, next)) {
-      setDraftError("The project fragment material could not be saved.");
+  function assignSelectedFragmentMaterial(shaderId: string | null) {
+    if (!activeScene || !selectedFragmentMaterialEntity || (shaderId !== null && !selectedFragmentMaterialAvailable)) {
       return;
     }
-    setProjectFragmentMaterials((current) => ({ ...current, [activeProjectId]: next }));
+    try {
+      const next = shaderId
+        ? assignStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
+            entityId: selectedFragmentMaterialEntity.id,
+            sceneId: activeScene.sceneId,
+            shaderId,
+          })
+        : removeStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
+            entityId: selectedFragmentMaterialEntity.id,
+            sceneId: activeScene.sceneId,
+          });
+      commitActiveProjectFragmentMaterials(next);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material assignment could not be updated.");
+    }
   }
   const selectedRuntimeTraceEditAuthority = runtimeTraceProjectionAuthorityFor(selectedEntity?.id);
   const selectedRuntimeTraceEditCapabilities = selectedRuntimeTraceEditAuthority?.capabilities ?? null;
@@ -4175,12 +4244,16 @@ export function App({
               }
               fragmentMaterial={{
                 active: selectedFragmentMaterialAssigned && previewRenderer?.state.phase === "presented",
-                assigned: selectedFragmentMaterialAssigned,
+                assignedShaderId: selectedFragmentMaterialAssignment?.shaderId ?? null,
                 available: selectedFragmentMaterialAvailable,
                 compileError: selectedFragmentMaterialCompileError,
-                onApply: applySelectedFragmentMaterial,
-                onRemove: removeSelectedFragmentMaterial,
-                source: projectFragmentMaterialSourceV1(activeProjectFragmentMaterials),
+                materials: activeProjectNamedFragmentMaterials,
+                onAssign: assignSelectedFragmentMaterial,
+                onCreate: createFragmentMaterial,
+                onDuplicate: duplicateFragmentMaterial,
+                onRemoveAsset: removeFragmentMaterialAsset,
+                onRename: renameFragmentMaterial,
+                onUpdateSource: updateFragmentMaterialSource,
               }}
               opacityAvailable={selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null}
               opacityValue={

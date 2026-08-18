@@ -17,9 +17,11 @@ import {
 } from "./editor-session-store";
 import {
   assignStudioFragmentMaterialV1,
+  createStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   projectFragmentMaterialsForSceneV1,
   removeStudioFragmentMaterialV1,
+  updateStudioFragmentMaterialSourceV1,
 } from "./fragment-material-authoring";
 import type { ProgramRecord } from "./model";
 import {
@@ -75,6 +77,11 @@ function identity(
   projectId = "project-a",
 ): EditorSessionIdentity {
   return { projectId, sceneId, sourceHash };
+}
+
+function assignedFragmentMaterials(sceneId: string, entityId: string) {
+  const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
+  return assignStudioFragmentMaterialV1(material.state, { entityId, sceneId, shaderId: material.shaderId });
 }
 
 function record(transactionId: string) {
@@ -276,15 +283,20 @@ describe("durable editor session storage", () => {
 
   it("restores project WGSL and Scene-isolated assignments through the existing storage authority", () => {
     const adapter = new MemoryAdapter();
-    const sceneA = assignStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
+    const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
+    const sceneA = assignStudioFragmentMaterialV1(material.state, {
       entityId: "source:scene.py#SceneA:rectangle",
       sceneId: "scene.py#SceneA",
-      source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+      shaderId: material.shaderId,
     });
-    const authored = assignStudioFragmentMaterialV1(sceneA, {
+    const edited = updateStudioFragmentMaterialSourceV1(sceneA, {
+      shaderId: material.shaderId,
+      source: `${STUDIO_WAVE_FRAGMENT_SOURCE_V1}\n// persisted edit`,
+    });
+    const authored = assignStudioFragmentMaterialV1(edited, {
       entityId: "circle",
       sceneId: "scene.py#SceneB",
-      source: `${STUDIO_WAVE_FRAGMENT_SOURCE_V1}\n// persisted edit`,
+      shaderId: material.shaderId,
     });
     expect(new EditorSessionStore(adapter).saveProjectFragmentMaterials("project-a", authored)).toBe(true);
     expect(JSON.parse(adapter.value!)).toMatchObject({
@@ -311,6 +323,45 @@ describe("durable editor session storage", () => {
     const reopened = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
     expect(projectFragmentMaterialsForSceneV1(reopened, "scene.py#SceneA").assignments).toEqual({});
     expect(reopened.registry.materials[0]?.source).toContain("persisted edit");
+  });
+
+  it("restores a pre-named-material envelope without clearing other editor storage", () => {
+    const adapter = new MemoryAdapter(
+      JSON.stringify({
+        entries: [],
+        fragmentMaterials: {
+          "project-a": {
+            sourceLanguage: "wgsl",
+            state: {
+              assignmentsByScene: {
+                "scene.py#SceneA": {
+                  circle: { parameters: [0.35, 8], revision: 1, shaderId: "project-studio-fragment" },
+                },
+              },
+              registry: {
+                materials: [
+                  {
+                    revision: 1,
+                    shaderId: "project-studio-fragment",
+                    source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+                  },
+                ],
+                schema: "poietra.fragment-material-registry",
+                version: 1,
+              },
+            },
+          },
+        },
+        version: EDITOR_SESSION_STORAGE_VERSION,
+      }),
+    );
+
+    const restored = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
+    expect(restored.namesByShaderId).toEqual({ "project-studio-fragment": "Wave material" });
+    expect(projectFragmentMaterialsForSceneV1(restored, "scene.py#SceneA").assignments.circle).toMatchObject({
+      shaderId: "project-studio-fragment",
+    });
+    expect(adapter.value).toContain("namesByShaderId");
   });
 
   it("separates cloud management from exact migrated-entry deletion", () => {
@@ -519,14 +570,7 @@ describe("durable editor session storage", () => {
     store.save(identity("a.py#Scene"), snapshot());
     store.save(identity("b.py#Scene", "b".repeat(64)), snapshot());
     store.save(identity("other.py#Scene", "c".repeat(64), "project-b"), snapshot());
-    store.saveProjectFragmentMaterials(
-      "project-a",
-      assignStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
-        entityId: "circle",
-        sceneId: "scene-a",
-        source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
-      }),
-    );
+    store.saveProjectFragmentMaterials("project-a", assignedFragmentMaterials("scene-a", "circle"));
 
     store.clearProject("project-a");
 
@@ -546,14 +590,7 @@ describe("durable editor session storage", () => {
       store.save(identity(`scene-${index}.py#Scene`, `${index.toString(16).padStart(64, "0")}`), snapshot());
     }
     store.save(identity("other.py#Scene", "f".repeat(64), "project-b"), snapshot());
-    store.saveProjectFragmentMaterials(
-      "project-b",
-      assignStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
-        entityId: "circle",
-        sceneId: "scene-b",
-        source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
-      }),
-    );
+    store.saveProjectFragmentMaterials("project-b", assignedFragmentMaterials("scene-b", "circle"));
     store.pruneProjects(new Set(["project-a"]));
 
     const envelope = JSON.parse(adapter.value!) as { entries: readonly unknown[]; version: number };
