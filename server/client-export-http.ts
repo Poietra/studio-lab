@@ -176,11 +176,28 @@ class FinalizeQueueV1 {
   #active = false;
   readonly #waiters: Array<() => void> = [];
 
-  async acquire(): Promise<(() => void) | null> {
+  async acquire(signal?: AbortSignal): Promise<(() => void) | null> {
+    signal?.throwIfAborted();
     if (this.#active) {
       if (this.#waiters.length >= MAX_QUEUED_FINALIZES_V1) return null;
-      await new Promise<void>((resolve) => {
-        this.#waiters.push(resolve);
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const ready = () => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener("abort", aborted);
+          resolve();
+        };
+        const aborted = () => {
+          if (settled) return;
+          settled = true;
+          const index = this.#waiters.indexOf(ready);
+          if (index >= 0) this.#waiters.splice(index, 1);
+          reject(signal?.reason ?? new DOMException("The operation was aborted.", "AbortError"));
+        };
+        this.#waiters.push(ready);
+        signal?.addEventListener("abort", aborted, { once: true });
+        if (signal?.aborted) aborted();
       });
     } else {
       this.#active = true;
@@ -208,12 +225,13 @@ async function finalizeExportV1(
 ) {
   const subjectId = requireAccountSubjectV1(principal, request);
   requireSameOriginFinalizeMutationV1(request, options.expectedMutationOrigin);
-  const release = await finalizeQueue.acquire();
+  const release = await finalizeQueue.acquire(options.requestSignal);
   if (!release) {
     request.resume();
     throw new HttpError("The bounded client export publication queue is full.", 503);
   }
   try {
+    options.requestSignal?.throwIfAborted();
     const body = await readRawBody(request, MAX_CLIENT_EXPORT_FINALIZE_BODY_BYTES_V1);
     let metadata: ClientExportFinalizeMetadataV1;
     let video: Uint8Array;

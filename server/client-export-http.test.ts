@@ -145,12 +145,18 @@ async function listen(
 async function send(
   port: number,
   path: string,
-  options: Readonly<{ body?: Uint8Array; headers?: Record<string, string>; method?: string }> = {},
+  options: Readonly<{
+    body?: Uint8Array;
+    headers?: Record<string, string>;
+    method?: string;
+    signal?: AbortSignal;
+  }> = {},
 ) {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     ...(options.body === undefined ? {} : { body: options.body.slice().buffer }),
     headers: options.headers,
     method: options.method ?? "GET",
+    signal: options.signal,
   });
   const raw = new Uint8Array(await response.arrayBuffer());
   let body: unknown = null;
@@ -240,6 +246,57 @@ describe("authenticated client export HTTP handler", () => {
     });
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ replayed: true });
+  });
+
+  it("removes an aborted finalize waiter without occupying the publication queue", async () => {
+    let releaseFirst!: () => void;
+    const firstMayFinish = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const first = service();
+    vi.mocked(first.publisher.publish).mockImplementation(async () => {
+      await firstMayFinish;
+      return { publication: publication(), replayed: false };
+    });
+    const firstPort = await listen(first, { expectedMutationOrigin: ORIGIN });
+    const firstRequest = send(firstPort, `/api/projects/${PROJECT}/exports`, {
+      body: encodeClientExportFinalizeBodyV1(metadata(), VIDEO),
+      headers: finalizeHeaders(),
+      method: "POST",
+    });
+    await vi.waitFor(() => expect(first.publisher.publish).toHaveBeenCalledOnce());
+
+    const abortedServerRequest = new AbortController();
+    const abortedClientRequest = new AbortController();
+    const second = service();
+    const secondPort = await listen(second, {
+      expectedMutationOrigin: ORIGIN,
+      requestSignal: abortedServerRequest.signal,
+    });
+    const secondRequest = send(secondPort, `/api/projects/${PROJECT}/exports`, {
+      body: encodeClientExportFinalizeBodyV1(metadata(), VIDEO),
+      headers: finalizeHeaders(),
+      method: "POST",
+      signal: abortedClientRequest.signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(second.publisher.publish).not.toHaveBeenCalled();
+    abortedServerRequest.abort(new Error("request cancelled"));
+    abortedClientRequest.abort();
+    await expect(secondRequest).rejects.toMatchObject({ name: "AbortError" });
+
+    const third = service();
+    const thirdPort = await listen(third, { expectedMutationOrigin: ORIGIN });
+    const thirdRequest = send(thirdPort, `/api/projects/${PROJECT}/exports`, {
+      body: encodeClientExportFinalizeBodyV1(metadata(), VIDEO),
+      headers: finalizeHeaders(),
+      method: "POST",
+    });
+    releaseFirst();
+
+    await expect(firstRequest).resolves.toMatchObject({ status: 201 });
+    await vi.waitFor(() => expect(third.publisher.publish).toHaveBeenCalledOnce(), { timeout: 1_000 });
+    await expect(thirdRequest).resolves.toMatchObject({ status: 201 });
   });
 
   it("rejects a metadata project that does not match the path with 409", async () => {
