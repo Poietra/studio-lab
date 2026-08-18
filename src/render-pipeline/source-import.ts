@@ -22,7 +22,7 @@ import {
 import type { ManimSourceImportOutcome } from "./contracts";
 import { referencedPythonReferences } from "./python-reference-analysis";
 import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment } from "./python-source-analysis";
-import { studioSourceAnalysisProviderV1 } from "./source-analysis";
+import { SourceAnalysisError, type StudioSourceAnalysisV1, studioSourceAnalysisProviderV1 } from "./source-analysis";
 
 export type ImportedManimEntity = Readonly<{
   id: string;
@@ -100,6 +100,8 @@ export type SourceStatement = Readonly<{
   line: number;
   text: string;
 }>;
+
+type CanonicalImportStatement = SourceStatement & Readonly<{ statementId: string | null }>;
 
 const CLASS_PATTERN = /^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*Scene[^)]*)\)\s*:/;
 const ASSIGNMENT_PREFIX_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
@@ -343,6 +345,35 @@ export function findSourceSceneBlock(source: string, sceneName: string, sourcePa
   return matches[0] ?? null;
 }
 
+function canonicalImportAnalysis(source: string, sourcePath: string, sceneName: string) {
+  try {
+    const analysis = studioSourceAnalysisProviderV1.analyze({
+      expectedSourceHash: hashSource(source),
+      sceneName,
+      sourcePath,
+      sourceText: source,
+    });
+    return analysis.scene.baseExpressions.some(({ text }) =>
+      /(?:^|\.)(?:Scene|[A-Za-z_][A-Za-z0-9_]*Scene)$/.test(text.trim()),
+    )
+      ? analysis
+      : null;
+  } catch (error) {
+    if (!(error instanceof SourceAnalysisError)) throw error;
+    if (error.code === "ambiguous-scene") {
+      const matches = findSceneBlocks(source).filter((block) => block.name === sceneName);
+      if (matches.length > 1) {
+        throw new AmbiguousSourceSceneError(
+          sourcePath,
+          sceneName,
+          matches.map((block) => block.classLine),
+        );
+      }
+    }
+    return null;
+  }
+}
+
 export type SourceSceneComment = Readonly<{
   line: number;
   text: string;
@@ -417,6 +448,36 @@ function collectStatements(block: SourceSceneBlock): readonly SourceStatement[] 
   }
   if (current) statements.push({ line: currentLine, text: current });
   return statements;
+}
+
+function canonicalImportStatements(
+  source: string,
+  analysis: StudioSourceAnalysisV1,
+): readonly CanonicalImportStatement[] {
+  const statements: CanonicalImportStatement[] = analysis.scene.statements.map((statement) => ({
+    line: statement.line - 1,
+    statementId: statement.id,
+    text: statement.text,
+  }));
+  const directIndentation = analysis.scene.statements[0]?.indentation;
+  if (directIndentation === undefined) return statements;
+  const lexical = analyzePythonSource(source);
+  if (!lexical.valid) return statements;
+  const startLine = analysis.scene.construct.span.startLine - 1;
+  const endLine = analysis.scene.construct.span.endLine - 1;
+  const comments = lexical.lines.flatMap((line, index): readonly CanonicalImportStatement[] => {
+    if (
+      index <= startLine ||
+      index > endLine ||
+      !isStandalonePythonComment(line) ||
+      line.comment === null ||
+      line.raw.slice(0, line.comment.column) !== directIndentation
+    ) {
+      return [];
+    }
+    return [{ line: index, statementId: null, text: line.comment.text }];
+  });
+  return [...statements, ...comments].sort((left, right) => left.line - right.line);
 }
 
 /**
@@ -1621,34 +1682,9 @@ export function isSimpleShiftAnimationStatement(statement: string, sourceVariabl
 }
 
 function omittedBindingImportOutcomes(
-  source: string,
-  sourcePath: string,
-  sceneName: string,
-  block: SourceSceneBlock,
+  analysis: StudioSourceAnalysisV1,
   importedVariables: ReadonlySet<string>,
 ): readonly ManimSourceImportOutcome[] {
-  let analysis: ReturnType<typeof studioSourceAnalysisProviderV1.analyze>;
-  try {
-    analysis = studioSourceAnalysisProviderV1.analyze({
-      expectedSourceHash: hashSource(source),
-      sceneName,
-      sourcePath,
-      sourceText: source,
-    });
-  } catch {
-    return [
-      {
-        access: "read-only",
-        bindingId: `source-analysis-unavailable:${sourcePath}#${sceneName}`,
-        constructorPath: null,
-        kind: "unsupported",
-        reason: "source-analysis-unavailable",
-        sourceLine: block.classLine + 1,
-        sourceVariable: null,
-      },
-    ];
-  }
-
   const constructBindings = analysis.bindings.filter(
     (binding) => binding.kind === "assignment" && binding.scopeId === analysis.scene.construct.scopeId,
   );
@@ -1737,6 +1773,37 @@ function omittedBindingImportOutcomes(
   });
 }
 
+function canonicalImportedBinding(
+  analysis: StudioSourceAnalysisV1,
+  statement: CanonicalImportStatement,
+  sourceVariable: string,
+  type: string,
+) {
+  if (statement.statementId === null) return null;
+  const matches = analysis.bindings.filter(
+    (binding) =>
+      binding.kind === "assignment" &&
+      binding.scopeId === analysis.scene.construct.scopeId &&
+      binding.statementId === statement.statementId &&
+      binding.name === sourceVariable,
+  );
+  if (matches.length !== 1) return null;
+  const binding = matches[0]!;
+  const constructorOccurrences = analysis.bindings.filter(
+    (candidate) =>
+      candidate.kind === "assignment" &&
+      candidate.scopeId === analysis.scene.construct.scopeId &&
+      candidate.name === sourceVariable &&
+      candidate.constructorCall !== null,
+  );
+  return constructorOccurrences.length === 1 &&
+    binding.controlPath.length === 0 &&
+    binding.constructorCall?.path.length === 1 &&
+    binding.constructorCall.path[0] === type
+    ? binding
+    : null;
+}
+
 function appendChannelSample(
   channelSamples: Map<string, PropertyChannelSample[]>,
   entityId: string,
@@ -1774,9 +1841,9 @@ export function importManimScene(
   sceneName: string,
   frame: Readonly<{ height: number; width: number }> = { height: 8, width: 14.222 },
 ): ImportedManimScene | null {
-  const block = findSourceSceneBlock(source, sceneName, sourcePath);
-  if (!block) return null;
-  const collectedStatements = collectStatements(block);
+  const analysis = canonicalImportAnalysis(source, sourcePath, sceneName);
+  if (!analysis) return null;
+  const collectedStatements = canonicalImportStatements(source, analysis);
   const returnIndex = collectedStatements.findIndex((statement) => /^return\b/.test(statement.text));
   const statements = returnIndex < 0 ? collectedStatements : collectedStatements.slice(0, returnIndex + 1);
   const sourceAnchors = statements.flatMap((statement, index) => {
@@ -1806,6 +1873,8 @@ export function importManimScene(
     const assignment = parseEntityAssignment(statement.text);
     if (!assignment) return;
     const { argumentsSource, sourceVariable, suffix, type } = assignment;
+    const binding = canonicalImportedBinding(analysis, statement, sourceVariable, type);
+    if (!binding) return;
     const markedIdentity = markerIdentity(statements, index, sourceVariable);
     if (sourceVariable.startsWith("poietra_") && !markedIdentity) return;
     const approximatePosition = defaultPosition(mutableEntities.length);
@@ -1826,7 +1895,7 @@ export function importManimScene(
       relation: relationFrom(statement.text),
       scale: initialScale.value,
       scaleKnowledge: initialScale.knowledge,
-      sourceLine: statement.line,
+      sourceLine: binding.span.startLine - 1,
       sourceVariable,
       style: styleFrom(argumentsSource, suffix),
       type,
@@ -2620,10 +2689,7 @@ export function importManimScene(
     )
     .map((entity) => entity.sourceVariable);
   const importOutcomes = omittedBindingImportOutcomes(
-    source,
-    sourcePath,
-    sceneName,
-    block,
+    analysis,
     new Set(mutableEntities.map((entity) => entity.sourceVariable)),
   );
   return {
