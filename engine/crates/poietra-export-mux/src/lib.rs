@@ -54,6 +54,13 @@
 //!   (`poietra-prov-v01`), so hex dumps identify it immediately. The payload
 //!   is opaque to this crate and bounded by [`MAX_PROVENANCE_BYTES_V1`].
 //!
+//! # Verification
+//!
+//! [`verify_export_mp4_v1`] validates the closed container shape emitted by
+//! this muxer and returns measured structure plus the opaque provenance. It
+//! rejects any disagreement between media payloads, sample tables, timing,
+//! and headers.
+//!
 //! # Portability
 //!
 //! The core path makes no filesystem or platform assumption: the crate
@@ -62,9 +69,14 @@
 
 mod error;
 mod session;
+mod verify;
 
 pub use error::ExportMuxErrorV1;
 pub use session::{
     ColorParametersV1, EncodedSampleV1, ExportMuxConfigV1, ExportMuxSessionV1,
     MAX_PROVENANCE_BYTES_V1, MAX_SAMPLE_TABLE_ENTRIES_V1, PROVENANCE_UUID_V1, VideoParametersV1,
+};
+pub use verify::{
+    ExportMp4StructureV1, ExportMp4VerifyErrorV1, MAX_VERIFIED_EXPORT_MP4_BYTES_V1,
+    verify_export_mp4_v1,
 };
