@@ -50,5 +50,7 @@ importer, and the three claimed official-corpus edits (`OpeningManim` move, `War
 uniform resize) now reimport and independently re-derive their emitted Python. The scoreboard therefore records all
 seven claimed operation roundtrips, or `100%`.
 
-Adding a Scene or promoting a status requires an existing offline test in the gate command. External clones, a new
-producer, OCI execution, and a new Scene-specific production branch are outside this gate.
+Adding a Scene or promoting a status requires an existing offline test in the gate command. A measured official root
+fixture must carry the exact full-source path and content hash; a standalone extracted Scene is not evidence for the
+official multi-Scene source. External clones, a new producer, OCI execution, and a new Scene-specific production
+branch are outside this gate.
