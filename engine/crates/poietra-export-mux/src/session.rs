@@ -3,9 +3,10 @@ use std::io::Write;
 use std::num::{NonZeroU16, NonZeroU32};
 
 use mp4_atom::{
-    Any, Atom, Avc1, Avcc, Co64, Codec, Colr, Dinf, Dref, Encode, FourCC, Ftyp, Hdlr, Header, Mdat,
-    Mdhd, Mdia, Minf, Moov, Mvhd, Stbl, Stco, Stsc, StscEntry, Stsd, Stss, Stsz, StszSamples, Stts,
-    SttsEntry, Tkhd, Trak, Url, Visual, Vmhd,
+    Any, AnySampleGroupEntry, Atom, Audio, Avc1, Avcc, Co64, Codec, Colr, Dinf, Dops, Dref, Edts,
+    Elst, ElstEntry, Encode, FourCC, Ftyp, Hdlr, Header, Mdat, Mdhd, Mdia, Minf, Moov, Mvhd, Opus,
+    Sbgp, SbgpEntry, Sgpd, SgpdEntry, Smhd, Stbl, Stco, Stsc, StscEntry, Stsd, Stss, Stsz,
+    StszSamples, Stts, SttsEntry, Tkhd, Trak, Url, Visual, Vmhd,
 };
 
 use crate::ExportMuxErrorV1;
@@ -29,6 +30,12 @@ pub const MAX_PROVENANCE_BYTES_V1: usize = 64 * 1024;
 pub const MAX_SAMPLE_TABLE_ENTRIES_V1: u32 = 1_048_576;
 
 const MICROSECONDS_PER_SECOND: u128 = 1_000_000;
+
+/// The fixed Opus clock used by `WebCodecs` and the MP4 Opus sample entry.
+pub const OPUS_SAMPLE_RATE: u32 = 48_000;
+pub(crate) const OPUS_PACKET_DURATION_SAMPLES: u32 = 960;
+pub(crate) const OPUS_ROLL_DISTANCE: i16 = -4;
+pub(crate) const ROLL_GROUPING_TYPE: FourCC = FourCC::new(b"roll");
 
 /// Frame geometry and timing declared for the single video track.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +105,33 @@ pub struct EncodedSampleV1<'a> {
     pub is_key: bool,
 }
 
+/// Decoder configuration for the optional Opus track.
+///
+/// This lane deliberately supports only the universally interoperable
+/// mono/stereo, 48 kHz, mapping-family-zero profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpusParametersV1 {
+    /// Output channel count. Must be one or two.
+    pub channels: u8,
+    /// Opus input clock. Must be exactly [`OPUS_SAMPLE_RATE`].
+    pub sample_rate: u32,
+    /// Decoder priming samples removed at presentation time.
+    pub pre_skip: u16,
+    /// Decoder output gain in Q7.8 dB, copied to `dOps`.
+    pub output_gain: i16,
+    /// Must be zero for the supported mono/stereo mapping.
+    pub channel_mapping_family: u8,
+}
+
+/// One raw Opus packet handed to the optional audio track.
+#[derive(Debug, Clone, Copy)]
+pub struct EncodedAudioSampleV1<'a> {
+    /// Raw Opus packet bytes, without Ogg framing.
+    pub bytes: &'a [u8],
+    /// Decoded packet duration at 48 kHz.
+    pub duration_samples: NonZeroU32,
+}
+
 struct SampleRecord {
     offset: u64,
     size: u32,
@@ -108,6 +142,19 @@ struct SampleRecord {
 struct LastSample {
     timestamp_us: u64,
     duration_us: u64,
+}
+
+struct OpusState {
+    parameters: OpusParametersV1,
+    sample_entry: Opus,
+    samples: Vec<AudioSampleRecord>,
+    duration_samples: u64,
+}
+
+struct AudioSampleRecord {
+    offset: u64,
+    size: u32,
+    duration_samples: u32,
 }
 
 /// A single-track progressive-MP4 mux session over a forward-only sink.
@@ -125,6 +172,8 @@ pub struct ExportMuxSessionV1<W> {
     position: u64,
     samples: Vec<SampleRecord>,
     last_sample: Option<LastSample>,
+    opus: Option<OpusState>,
+    audio_started: bool,
 }
 
 impl<W> fmt::Debug for ExportMuxSessionV1<W> {
@@ -133,6 +182,10 @@ impl<W> fmt::Debug for ExportMuxSessionV1<W> {
             .field("timescale", &self.timescale)
             .field("max_sample_count", &self.max_sample_count)
             .field("sample_count", &self.samples.len())
+            .field(
+                "audio_sample_count",
+                &self.opus.as_ref().map_or(0, |opus| opus.samples.len()),
+            )
             .field("position", &self.position)
             .finish_non_exhaustive()
     }
@@ -149,6 +202,33 @@ impl<W: Write> ExportMuxSessionV1<W> {
     /// or [`ExportMuxErrorV1::SampleBoundTooLarge`] when a bound is
     /// exceeded, and [`ExportMuxErrorV1::Io`] when the sink rejects a write.
     pub fn begin(config: ExportMuxConfigV1, sink: W) -> Result<Self, ExportMuxErrorV1> {
+        Self::begin_inner(config, None, sink)
+    }
+
+    /// Starts a session with one AVC video track and one Opus audio track.
+    ///
+    /// Video samples must be appended first. Once
+    /// [`append_audio_sample`](Self::append_audio_sample) is called, further
+    /// video samples are rejected so the forward-only output remains grouped
+    /// as video `mdat`s followed by audio `mdat`s.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed configuration, bound, container, or sink error.
+    pub fn begin_with_opus(
+        config: ExportMuxConfigV1,
+        opus: OpusParametersV1,
+        sink: W,
+    ) -> Result<Self, ExportMuxErrorV1> {
+        validate_opus_parameters(opus)?;
+        Self::begin_inner(config, Some(opus), sink)
+    }
+
+    fn begin_inner(
+        config: ExportMuxConfigV1,
+        opus: Option<OpusParametersV1>,
+        sink: W,
+    ) -> Result<Self, ExportMuxErrorV1> {
         let ExportMuxConfigV1 {
             decoder_configuration,
             video,
@@ -214,6 +294,13 @@ impl<W: Write> ExportMuxSessionV1<W> {
             position: 0,
             samples: Vec::with_capacity(capacity),
             last_sample: None,
+            opus: opus.map(|parameters| OpusState {
+                parameters,
+                sample_entry: opus_sample_entry(parameters),
+                samples: Vec::with_capacity(capacity),
+                duration_samples: 0,
+            }),
+            audio_started: false,
         };
         session.write_atom_bytes(&encode_atom(&ftyp)?)?;
         session.write_atom_bytes(&encode_atom(&provenance_atom)?)?;
@@ -235,6 +322,9 @@ impl<W: Write> ExportMuxSessionV1<W> {
     /// [`ExportMuxErrorV1::TimestampOverflow`] for unrepresentable samples,
     /// and [`ExportMuxErrorV1::Io`] when the sink rejects a write.
     pub fn append_sample(&mut self, sample: EncodedSampleV1<'_>) -> Result<(), ExportMuxErrorV1> {
+        if self.audio_started {
+            return Err(ExportMuxErrorV1::VideoSampleAfterAudio);
+        }
         let count = u32::try_from(self.samples.len()).map_err(|_| {
             ExportMuxErrorV1::SampleCountExceeded {
                 max_sample_count: self.max_sample_count,
@@ -303,6 +393,80 @@ impl<W: Write> ExportMuxSessionV1<W> {
         Ok(())
     }
 
+    /// Streams one raw Opus packet after the video samples.
+    ///
+    /// Packet durations are expressed directly in the fixed 48 kHz Opus
+    /// clock. Samples are contiguous; this deliberately does not introduce a
+    /// second timestamp or gap model.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed state, bound, sample, overflow, container, or sink
+    /// error.
+    pub fn append_audio_sample(
+        &mut self,
+        sample: EncodedAudioSampleV1<'_>,
+    ) -> Result<(), ExportMuxErrorV1> {
+        let Some(opus) = self.opus.as_ref() else {
+            return Err(ExportMuxErrorV1::AudioNotConfigured);
+        };
+        if self.samples.is_empty() {
+            return Err(ExportMuxErrorV1::NoSamples);
+        }
+        let count = u32::try_from(opus.samples.len()).unwrap_or(u32::MAX);
+        if count >= self.max_sample_count {
+            return Err(ExportMuxErrorV1::SampleCountExceeded {
+                max_sample_count: self.max_sample_count,
+            });
+        }
+        if sample.bytes.is_empty() {
+            return Err(ExportMuxErrorV1::EmptySample);
+        }
+        let size =
+            u32::try_from(sample.bytes.len()).map_err(|_| ExportMuxErrorV1::SampleTooLarge {
+                actual_bytes: sample.bytes.len(),
+            })?;
+        let duration_samples = sample.duration_samples.get();
+        if duration_samples != OPUS_PACKET_DURATION_SAMPLES {
+            return Err(ExportMuxErrorV1::UnsupportedOpusConfiguration {
+                detail: format!(
+                    "packet duration {duration_samples} is not the required 20 ms / {OPUS_PACKET_DURATION_SAMPLES} samples"
+                ),
+            });
+        }
+        let next_duration = opus
+            .duration_samples
+            .checked_add(u64::from(duration_samples))
+            .ok_or(ExportMuxErrorV1::AudioDurationOverflow)?;
+
+        let header = Header {
+            kind: Mdat::KIND,
+            size: Some(sample.bytes.len()),
+        };
+        let header_bytes = encode_atom(&header)?;
+        let offset = self
+            .position
+            .checked_add(byte_len(&header_bytes)?)
+            .ok_or(ExportMuxErrorV1::OutputPositionOverflow)?;
+
+        self.audio_started = true;
+        self.write_atom_bytes(&header_bytes)?;
+        self.sink.write_all(sample.bytes)?;
+        self.position = offset
+            .checked_add(u64::from(size))
+            .ok_or(ExportMuxErrorV1::OutputPositionOverflow)?;
+        let Some(opus) = self.opus.as_mut() else {
+            return Err(ExportMuxErrorV1::AudioNotConfigured);
+        };
+        opus.samples.push(AudioSampleRecord {
+            offset,
+            size,
+            duration_samples,
+        });
+        opus.duration_samples = next_duration;
+        Ok(())
+    }
+
     /// Writes the trailing `moov` box, flushes the sink, and returns it.
     ///
     /// # Errors
@@ -340,40 +504,23 @@ impl<W: Write> ExportMuxSessionV1<W> {
 
         let sizes: Vec<u32> = self.samples.iter().map(|record| record.size).collect();
         let offsets: Vec<u64> = self.samples.iter().map(|record| record.offset).collect();
-        let (stco, co64) = match offsets
-            .iter()
-            .map(|&offset| u32::try_from(offset))
-            .collect::<Result<Vec<u32>, _>>()
-        {
-            Ok(entries) => (Some(Stco { entries }), None),
-            Err(_) => (None, Some(Co64 { entries: offsets })),
-        };
-
         let width = self.avc1.visual.width;
         let height = self.avc1.visual.height;
-        let stbl = Stbl {
-            stsd: Stsd {
-                codecs: vec![Codec::Avc1(self.avc1)],
-            },
-            stts: Stts {
-                entries: stts_entries,
-            },
-            stss: Some(Stss {
+        let stbl = sample_table(
+            Codec::Avc1(self.avc1),
+            sizes,
+            offsets,
+            stts_entries,
+            Some(Stss {
                 entries: sync_sample_indices,
             }),
-            stsc: Stsc {
-                entries: vec![StscEntry {
-                    first_chunk: 1,
-                    samples_per_chunk: 1,
-                    sample_description_index: 1,
-                }],
-            },
-            stsz: Stsz {
-                samples: StszSamples::Different { sizes },
-            },
-            stco,
-            co64,
-            ..Stbl::default()
+        );
+        let audio_track = match self.opus.take() {
+            Some(opus) if opus.samples.is_empty() => {
+                return Err(ExportMuxErrorV1::NoAudioSamples);
+            }
+            Some(opus) => Some(build_opus_track(opus, self.timescale, duration_ticks)?),
+            None => None,
         };
         let moov_bytes = encode_atom(&build_moov(
             self.timescale,
@@ -381,6 +528,7 @@ impl<W: Write> ExportMuxSessionV1<W> {
             width,
             height,
             stbl,
+            audio_track,
         ))?;
         self.sink.write_all(&moov_bytes)?;
         self.sink.flush()?;
@@ -415,8 +563,15 @@ impl<W: Write> ExportMuxSessionV1<W> {
     }
 }
 
-fn build_moov(timescale: u32, duration_ticks: u64, width: u16, height: u16, stbl: Stbl) -> Moov {
-    Moov {
+fn build_moov(
+    timescale: u32,
+    duration_ticks: u64,
+    width: u16,
+    height: u16,
+    stbl: Stbl,
+    audio_track: Option<Trak>,
+) -> Moov {
+    let mut moov = Moov {
         mvhd: Mvhd {
             timescale,
             duration: duration_ticks,
@@ -460,7 +615,200 @@ fn build_moov(timescale: u32, duration_ticks: u64, width: u16, height: u16, stbl
             ..Trak::default()
         }],
         ..Moov::default()
+    };
+    if let Some(audio_track) = audio_track {
+        moov.mvhd.next_track_id = 3;
+        moov.trak.push(audio_track);
     }
+    moov
+}
+
+fn validate_opus_parameters(opus: OpusParametersV1) -> Result<(), ExportMuxErrorV1> {
+    if !matches!(opus.channels, 1 | 2) {
+        return Err(ExportMuxErrorV1::UnsupportedOpusConfiguration {
+            detail: format!("channel count {} is not mono or stereo", opus.channels),
+        });
+    }
+    if opus.sample_rate != OPUS_SAMPLE_RATE {
+        return Err(ExportMuxErrorV1::UnsupportedOpusConfiguration {
+            detail: format!(
+                "sample rate {} Hz is not the required {OPUS_SAMPLE_RATE} Hz",
+                opus.sample_rate
+            ),
+        });
+    }
+    if opus.channel_mapping_family != 0 {
+        return Err(ExportMuxErrorV1::UnsupportedOpusConfiguration {
+            detail: "only channel mapping family 0 is supported".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn opus_sample_entry(parameters: OpusParametersV1) -> Opus {
+    Opus {
+        audio: Audio {
+            data_reference_index: 1,
+            channel_count: u16::from(parameters.channels),
+            sample_size: 16,
+            sample_rate: 48_000u16.into(),
+        },
+        dops: Dops {
+            output_channel_count: parameters.channels,
+            pre_skip: parameters.pre_skip,
+            input_sample_rate: parameters.sample_rate,
+            output_gain: parameters.output_gain,
+        },
+        btrt: None,
+    }
+}
+
+fn build_opus_track(
+    opus: OpusState,
+    movie_timescale: u32,
+    movie_duration: u64,
+) -> Result<Trak, ExportMuxErrorV1> {
+    let audible_samples = scale_ceil(movie_duration, movie_timescale, OPUS_SAMPLE_RATE)?;
+    let required_samples = audible_samples
+        .checked_add(u64::from(opus.parameters.pre_skip))
+        .ok_or(ExportMuxErrorV1::AudioDurationOverflow)?;
+    if opus.duration_samples < required_samples {
+        return Err(ExportMuxErrorV1::AudioTooShort {
+            available_samples: opus.duration_samples,
+            required_samples,
+        });
+    }
+
+    let stts_entries = opus.samples.iter().fold(Vec::new(), |mut entries, sample| {
+        push_stts_delta(&mut entries, sample.duration_samples);
+        entries
+    });
+    let mut stbl = sample_table(
+        Codec::Opus(opus.sample_entry),
+        opus.samples
+            .iter()
+            .map(|sample| sample.size)
+            .collect::<Vec<_>>(),
+        opus.samples
+            .iter()
+            .map(|sample| sample.offset)
+            .collect::<Vec<_>>(),
+        stts_entries,
+        None,
+    );
+    let sample_count =
+        u32::try_from(opus.samples.len()).map_err(|_| ExportMuxErrorV1::AudioDurationOverflow)?;
+    stbl.sgpd = vec![Sgpd {
+        grouping_type: ROLL_GROUPING_TYPE,
+        default_length: Some(2),
+        default_group_description_index: None,
+        static_group_description: false,
+        static_mapping: false,
+        essential: false,
+        entries: vec![SgpdEntry {
+            description_length: Some(2),
+            entry: AnySampleGroupEntry::UnknownGroupingType(
+                ROLL_GROUPING_TYPE,
+                OPUS_ROLL_DISTANCE.to_be_bytes().to_vec(),
+            ),
+        }],
+    }];
+    stbl.sbgp = vec![Sbgp {
+        grouping_type: ROLL_GROUPING_TYPE,
+        grouping_type_parameter: None,
+        entries: vec![SbgpEntry {
+            sample_count,
+            group_description_index: 1,
+        }],
+    }];
+    Ok(Trak {
+        tkhd: Tkhd {
+            track_id: 2,
+            duration: movie_duration,
+            enabled: true,
+            in_movie: true,
+            volume: 1u8.into(),
+            ..Tkhd::default()
+        },
+        edts: Some(Edts {
+            elst: Some(Elst {
+                entries: vec![ElstEntry {
+                    segment_duration: movie_duration,
+                    media_time: Some(u64::from(opus.parameters.pre_skip)),
+                    media_rate: 1i16.into(),
+                }],
+            }),
+        }),
+        mdia: Mdia {
+            mdhd: Mdhd {
+                timescale: OPUS_SAMPLE_RATE,
+                duration: opus.duration_samples,
+                language: "und".into(),
+                ..Mdhd::default()
+            },
+            hdlr: Hdlr {
+                handler: b"soun".into(),
+                name: "Poietra Export Audio".into(),
+            },
+            minf: Minf {
+                smhd: Some(Smhd::default()),
+                dinf: Dinf {
+                    dref: Dref {
+                        urls: vec![Url::default()],
+                    },
+                },
+                stbl,
+                ..Minf::default()
+            },
+        },
+        ..Trak::default()
+    })
+}
+
+fn sample_table(
+    codec: Codec,
+    sizes: Vec<u32>,
+    offsets: Vec<u64>,
+    stts_entries: Vec<SttsEntry>,
+    stss: Option<Stss>,
+) -> Stbl {
+    let (stco, co64) = match offsets
+        .iter()
+        .copied()
+        .map(u32::try_from)
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(entries) => (Some(Stco { entries }), None),
+        Err(_) => (None, Some(Co64 { entries: offsets })),
+    };
+    Stbl {
+        stsd: Stsd {
+            codecs: vec![codec],
+        },
+        stts: Stts {
+            entries: stts_entries,
+        },
+        stss,
+        stsc: Stsc {
+            entries: vec![StscEntry {
+                first_chunk: 1,
+                samples_per_chunk: 1,
+                sample_description_index: 1,
+            }],
+        },
+        stsz: Stsz {
+            samples: StszSamples::Different { sizes },
+        },
+        stco,
+        co64,
+        ..Stbl::default()
+    }
+}
+
+fn scale_ceil(value: u64, from: u32, to: u32) -> Result<u64, ExportMuxErrorV1> {
+    let numerator = u128::from(value) * u128::from(to);
+    let scaled = numerator.div_ceil(u128::from(from));
+    u64::try_from(scaled).map_err(|_| ExportMuxErrorV1::AudioDurationOverflow)
 }
 
 fn byte_len(bytes: &[u8]) -> Result<u64, ExportMuxErrorV1> {
@@ -604,6 +952,41 @@ mod tests {
         (session.finish().unwrap(), payloads)
     }
 
+    fn opus_parameters(channels: u8) -> OpusParametersV1 {
+        OpusParametersV1 {
+            channels,
+            sample_rate: OPUS_SAMPLE_RATE,
+            pre_skip: 312,
+            output_gain: -12,
+            channel_mapping_family: 0,
+        }
+    }
+
+    fn mux_three_samples_with_opus(channels: u8) -> Vec<u8> {
+        let payloads = [vec![0x11; 120], vec![0x22; 90], vec![0x33; 150]];
+        let mut session =
+            ExportMuxSessionV1::begin_with_opus(config(16), opus_parameters(channels), Vec::new())
+                .unwrap();
+        session
+            .append_sample(sample(&payloads[0], 0, 33_333, true))
+            .unwrap();
+        session
+            .append_sample(sample(&payloads[1], 33_333, 33_334, false))
+            .unwrap();
+        session
+            .append_sample(sample(&payloads[2], 66_667, 33_333, true))
+            .unwrap();
+        for byte in 0x48..0x4e {
+            session
+                .append_audio_sample(EncodedAudioSampleV1 {
+                    bytes: &[byte; 12],
+                    duration_samples: NonZeroU32::new(960).unwrap(),
+                })
+                .unwrap();
+        }
+        session.finish().unwrap()
+    }
+
     #[test]
     fn muxes_the_documented_top_level_layout() {
         let (output, payloads) = mux_three_samples();
@@ -680,6 +1063,162 @@ mod tests {
                 full_range_flag: false,
             })
         );
+    }
+
+    #[test]
+    fn muxes_mono_and_stereo_opus_after_video_with_priming_and_end_trim() {
+        for channels in [1, 2] {
+            let output = mux_three_samples_with_opus(channels);
+            let atoms = decode_all(&output);
+            assert_eq!(atoms.len(), 12, "ftyp, uuid, 3 video, 6 audio, moov");
+            let Some(Any::Moov(moov)) = atoms.last() else {
+                panic!("missing moov");
+            };
+            assert_eq!(moov.mvhd.duration, 100_000);
+            assert_eq!(moov.mvhd.next_track_id, 3);
+            assert_eq!(moov.trak.len(), 2);
+
+            let audio = &moov.trak[1];
+            assert_eq!(audio.tkhd.track_id, 2);
+            assert_eq!(audio.tkhd.duration, 100_000);
+            assert_eq!(audio.mdia.mdhd.timescale, OPUS_SAMPLE_RATE);
+            assert_eq!(audio.mdia.mdhd.duration, 5_760);
+            assert_eq!(audio.mdia.hdlr.handler, b"soun".into());
+            assert!(audio.mdia.minf.smhd.is_some());
+            let edits = &audio.edts.as_ref().unwrap().elst.as_ref().unwrap().entries;
+            assert_eq!(edits.len(), 1);
+            assert_eq!(edits[0].segment_duration, 100_000);
+            assert_eq!(edits[0].media_time, Some(312));
+            let Codec::Opus(opus) = &audio.mdia.minf.stbl.stsd.codecs[0] else {
+                panic!("audio sample entry must be Opus");
+            };
+            assert_eq!(opus.audio.channel_count, u16::from(channels));
+            assert_eq!(opus.audio.sample_rate.integer(), 48_000);
+            assert_eq!(opus.dops.output_channel_count, channels);
+            assert_eq!(opus.dops.pre_skip, 312);
+            assert_eq!(opus.dops.output_gain, -12);
+            assert_eq!(audio.mdia.minf.stbl.stts.entries[0].sample_count, 6);
+            assert_eq!(audio.mdia.minf.stbl.stts.entries[0].sample_delta, 960);
+            assert_eq!(
+                audio.mdia.minf.stbl.sgpd,
+                vec![Sgpd {
+                    grouping_type: ROLL_GROUPING_TYPE,
+                    default_length: Some(2),
+                    default_group_description_index: None,
+                    static_group_description: false,
+                    static_mapping: false,
+                    essential: false,
+                    entries: vec![SgpdEntry {
+                        description_length: Some(2),
+                        entry: AnySampleGroupEntry::UnknownGroupingType(
+                            ROLL_GROUPING_TYPE,
+                            OPUS_ROLL_DISTANCE.to_be_bytes().to_vec(),
+                        ),
+                    }],
+                }]
+            );
+            assert_eq!(
+                audio.mdia.minf.stbl.sbgp,
+                vec![Sbgp {
+                    grouping_type: ROLL_GROUPING_TYPE,
+                    grouping_type_parameter: None,
+                    entries: vec![SbgpEntry {
+                        sample_count: 6,
+                        group_description_index: 1,
+                    }],
+                }]
+            );
+        }
+    }
+
+    #[test]
+    fn opus_enabled_session_requires_audio_and_enough_duration() {
+        let mut no_audio =
+            ExportMuxSessionV1::begin_with_opus(config(16), opus_parameters(1), Vec::new())
+                .unwrap();
+        no_audio
+            .append_sample(sample(&[1], 0, 100_000, true))
+            .unwrap();
+        assert!(matches!(
+            no_audio.finish(),
+            Err(ExportMuxErrorV1::NoAudioSamples)
+        ));
+
+        let mut short_audio =
+            ExportMuxSessionV1::begin_with_opus(config(16), opus_parameters(1), Vec::new())
+                .unwrap();
+        short_audio
+            .append_sample(sample(&[1], 0, 100_000, true))
+            .unwrap();
+        for byte in 0x48..0x4d {
+            short_audio
+                .append_audio_sample(EncodedAudioSampleV1 {
+                    bytes: &[byte],
+                    duration_samples: NonZeroU32::new(960).unwrap(),
+                })
+                .unwrap();
+        }
+        assert!(matches!(
+            short_audio.finish(),
+            Err(ExportMuxErrorV1::AudioTooShort {
+                available_samples: 4_800,
+                required_samples: 5_112,
+            })
+        ));
+    }
+
+    #[test]
+    fn opus_layout_rejects_video_after_audio_and_invalid_configuration() {
+        for invalid in [
+            OpusParametersV1 {
+                channels: 3,
+                ..opus_parameters(1)
+            },
+            OpusParametersV1 {
+                sample_rate: 44_100,
+                ..opus_parameters(1)
+            },
+            OpusParametersV1 {
+                channel_mapping_family: 1,
+                ..opus_parameters(1)
+            },
+        ] {
+            assert!(matches!(
+                ExportMuxSessionV1::begin_with_opus(config(16), invalid, Vec::new()),
+                Err(ExportMuxErrorV1::UnsupportedOpusConfiguration { .. })
+            ));
+        }
+
+        let mut session =
+            ExportMuxSessionV1::begin_with_opus(config(16), opus_parameters(2), Vec::new())
+                .unwrap();
+        assert!(matches!(
+            session.append_audio_sample(EncodedAudioSampleV1 {
+                bytes: &[0x48],
+                duration_samples: NonZeroU32::new(5_760).unwrap(),
+            }),
+            Err(ExportMuxErrorV1::NoSamples)
+        ));
+        session
+            .append_sample(sample(&[1], 0, 100_000, true))
+            .unwrap();
+        assert!(matches!(
+            session.append_audio_sample(EncodedAudioSampleV1 {
+                bytes: &[0x48],
+                duration_samples: NonZeroU32::new(1_920).unwrap(),
+            }),
+            Err(ExportMuxErrorV1::UnsupportedOpusConfiguration { .. })
+        ));
+        session
+            .append_audio_sample(EncodedAudioSampleV1 {
+                bytes: &[0x48],
+                duration_samples: NonZeroU32::new(960).unwrap(),
+            })
+            .unwrap();
+        assert!(matches!(
+            session.append_sample(sample(&[2], 100_000, 100_000, false)),
+            Err(ExportMuxErrorV1::VideoSampleAfterAudio)
+        ));
     }
 
     #[test]
