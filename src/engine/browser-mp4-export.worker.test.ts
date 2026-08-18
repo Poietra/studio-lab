@@ -50,10 +50,13 @@ function cancelRequest(requestId = 7) {
   } satisfies ExportWorkerRequestV1;
 }
 
-function runtimeWith(exportSceneMp4V1: BrowserMp4ExportWasmBindingsV1["exportSceneMp4V1"]) {
+function runtimeWith(
+  exportSceneMp4V1: BrowserMp4ExportWasmBindingsV1["exportSceneMp4V1"],
+  exportSceneMp4WithWavV1?: BrowserMp4ExportWasmBindingsV1["exportSceneMp4WithWavV1"],
+) {
   const posted: { response: ExportWorkerResponseV1; transfer?: readonly ArrayBuffer[] }[] = [];
   const runtime = new BrowserMp4ExportWorkerRuntimeV1({
-    loadWasm: async () => ({ exportSceneMp4V1 }),
+    loadWasm: async () => ({ exportSceneMp4V1, ...(exportSceneMp4WithWavV1 ? { exportSceneMp4WithWavV1 } : {}) }),
     postMessage: (response, transfer) => posted.push({ response, ...(transfer ? { transfer } : {}) }),
     scopeUrl: SCOPE_URL,
   });
@@ -101,6 +104,28 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
     if (finished?.response.kind !== "export-finished") throw new Error("missing finished response");
     expect(new Uint8Array(finished.response.bytes)).toEqual(output);
     expect(finished.transfer).toEqual([finished.response.bytes]);
+  });
+
+  it("uses the audio export entry only when a WAV attachment is present", async () => {
+    const videoOnly = vi.fn(async () => new Uint8Array([1]));
+    const withWav = vi.fn(async (_snapshot, _profile, _metadata, _assets, wav: Uint8Array) => {
+      expect(wav).toEqual(new Uint8Array([0x52, 0x49, 0x46, 0x46]));
+      return new Uint8Array([1, 2, 3]);
+    });
+    const { posted, runtime } = runtimeWith(videoOnly, withWav);
+    await runtime.accept(exportRequest({ audioWav: new Uint8Array([0x52, 0x49, 0x46, 0x46]).buffer }));
+    expect(videoOnly).not.toHaveBeenCalled();
+    expect(withWav).toHaveBeenCalledOnce();
+    expect(posted.at(-1)?.response.kind).toBe("export-finished");
+  });
+
+  it("refuses audio explicitly when the loaded engine lacks the WAV entry", async () => {
+    const videoOnly = vi.fn(async () => new Uint8Array([1]));
+    const { posted, runtime } = runtimeWith(videoOnly);
+    await runtime.accept(exportRequest({ audioWav: new Uint8Array([1]).buffer }));
+    expect(videoOnly).not.toHaveBeenCalled();
+    expect(posted).toHaveLength(1);
+    expect(posted[0]?.response).toMatchObject({ kind: "export-refused", reason: "api-unavailable" });
   });
 
   it("relays a malformed progress envelope as nothing, never as a crash", async () => {
@@ -252,6 +277,13 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
   it("admits a module implementing the export entry", async () => {
     const bindings = await initializeBrowserMp4ExportBindingsV1(wasmModule());
     expect(typeof bindings.exportSceneMp4V1).toBe("function");
+  });
+
+  it("exposes the optional WAV export entry when the module implements it", async () => {
+    const bindings = await initializeBrowserMp4ExportBindingsV1(
+      wasmModule({ exportSceneMp4WithWavV1: async () => new Uint8Array([2]) }),
+    );
+    expect(typeof bindings.exportSceneMp4WithWavV1).toBe("function");
   });
 
   it("rejects a module without the initializer", async () => {

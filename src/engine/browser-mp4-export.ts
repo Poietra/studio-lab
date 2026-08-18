@@ -12,6 +12,7 @@ import {
   type ExportRefusalReasonV1,
   type ExportWorkerRequestV1,
   exportWorkerResponseV1Schema,
+  MAX_EXPORT_WAV_BYTES,
 } from "./export-worker-protocol";
 
 export const DEFAULT_BROWSER_MP4_EXPORT_PROFILE: ExportProfileV1 = parseExportProfileV1({
@@ -33,6 +34,8 @@ export class BrowserMp4ExportRefused extends Error {
 }
 
 export type BrowserMp4ExportInput = Readonly<{
+  /** Optional local WAV attachment. It is transferred to, validated, and encoded in the worker. */
+  audioWav?: ArrayBuffer;
   assetPayloads?: readonly CanvasPngAssetTransferV1[];
   /** Bounded per-frame progress reports from the Rust export loop (#723). */
   onProgress?: (progress: ExportProgressV1) => void;
@@ -75,7 +78,11 @@ export async function runBrowserMp4ExportV1(input: BrowserMp4ExportInput): Promi
   const snapshotJson = encoder.encode(JSON.stringify(snapshot)).buffer;
   const profileJson = encoder.encode(canonicalExportProfileV1(profile)).buffer;
   const requestId = 1;
+  if (input.audioWav && (input.audioWav.byteLength === 0 || input.audioWav.byteLength > MAX_EXPORT_WAV_BYTES)) {
+    throw new BrowserMp4ExportRefused(`The WAV attachment must be between 1 byte and ${MAX_EXPORT_WAV_BYTES} bytes.`);
+  }
   const request: ExportWorkerRequestV1 = {
+    ...(input.audioWav ? { audioWav: input.audioWav } : {}),
     assetPayloads: [...(input.assetPayloads ?? [])],
     kind: "export-mp4",
     profileJson,
@@ -134,7 +141,9 @@ export async function runBrowserMp4ExportV1(input: BrowserMp4ExportInput): Promi
         }
         resolve({ kind: "exported", mp4: new Blob([response.bytes], { type: "video/mp4" }) });
       });
-      worker.postMessage(request);
+      // Transfer the potentially large WAV without a second main-thread copy.
+      if (input.audioWav) worker.postMessage(request, [input.audioWav]);
+      else worker.postMessage(request);
       if (input.signal?.aborted) onAbort();
     });
   } finally {

@@ -34,6 +34,14 @@ export type BrowserMp4ExportWasmBindingsV1 = Readonly<{
     assetBytes: Uint8Array[],
     progress?: BrowserMp4ExportProgressCallbackV1,
   ) => Promise<Uint8Array>;
+  exportSceneMp4WithWavV1?: (
+    snapshotJson: Uint8Array,
+    profileJson: Uint8Array,
+    assetMetadataJson: Uint8Array,
+    assetBytes: Uint8Array[],
+    wavBytes: Uint8Array,
+    progress?: BrowserMp4ExportProgressCallbackV1,
+  ) => Promise<Uint8Array>;
 }>;
 
 export type BrowserMp4ExportWorkerRuntimeOptionsV1 = Readonly<{
@@ -65,7 +73,16 @@ export async function initializeBrowserMp4ExportBindingsV1(module: unknown): Pro
     throw new Error("The Poietra WASM module does not expose browser MP4 export.");
   }
   const exportSceneMp4V1 = module.exportSceneMp4V1 as BrowserMp4ExportWasmBindingsV1["exportSceneMp4V1"];
-  return { exportSceneMp4V1: (...inputs) => exportSceneMp4V1.call(module, ...inputs) };
+  const exportSceneMp4WithWavV1 =
+    typeof module.exportSceneMp4WithWavV1 === "function"
+      ? (module.exportSceneMp4WithWavV1 as NonNullable<BrowserMp4ExportWasmBindingsV1["exportSceneMp4WithWavV1"]>)
+      : null;
+  return {
+    exportSceneMp4V1: (...inputs) => exportSceneMp4V1.call(module, ...inputs),
+    ...(exportSceneMp4WithWavV1
+      ? { exportSceneMp4WithWavV1: (...inputs) => exportSceneMp4WithWavV1.call(module, ...inputs) }
+      : {}),
+  };
 }
 
 async function loadBrowserMp4ExportWasm(moduleUrl: URL) {
@@ -183,28 +200,41 @@ export class BrowserMp4ExportWorkerRuntimeV1 {
     const assets = encodeCanvasPngAssetTransfersForWasmV1(request.assetPayloads);
     let output: Uint8Array;
     try {
-      output = await bindings.exportSceneMp4V1(
+      const progress = (envelopeJson: Uint8Array) => {
+        try {
+          const envelope = decodeProgressEnvelope(envelopeJson);
+          this.post({
+            kind: "export-progress",
+            progress: envelope.result,
+            requestId: request.requestId,
+            schema: "poietra.export-worker-response",
+            version: POIETRA_EXPORT_WORKER_VERSION,
+          });
+        } catch {
+          // A malformed progress envelope never crashes the run; the export
+          // outcome itself stays authoritative.
+        }
+        return active.cancelled ? false : undefined;
+      };
+      const commonInputs = [
         new Uint8Array(request.snapshotJson),
         new Uint8Array(request.profileJson),
         assets.metadataJson,
         assets.bytes,
-        (envelopeJson) => {
-          try {
-            const envelope = decodeProgressEnvelope(envelopeJson);
-            this.post({
-              kind: "export-progress",
-              progress: envelope.result,
-              requestId: request.requestId,
-              schema: "poietra.export-worker-response",
-              version: POIETRA_EXPORT_WORKER_VERSION,
-            });
-          } catch {
-            // A malformed progress envelope never crashes the run; the export
-            // outcome itself stays authoritative.
-          }
-          return active.cancelled ? false : undefined;
-        },
-      );
+      ] as const;
+      if (request.audioWav) {
+        if (!bindings.exportSceneMp4WithWavV1) {
+          this.postRefused(
+            request.requestId,
+            "api-unavailable",
+            "This Poietra engine build does not support WAV audio export.",
+          );
+          return;
+        }
+        output = await bindings.exportSceneMp4WithWavV1(...commonInputs, new Uint8Array(request.audioWav), progress);
+      } else {
+        output = await bindings.exportSceneMp4V1(...commonInputs, progress);
+      }
     } catch (error) {
       const refusal = exportRefusalFromError(error);
       if (refusal) {

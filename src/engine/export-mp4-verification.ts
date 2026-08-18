@@ -24,8 +24,21 @@ const exportMp4ColorSchemaV1 = z
   })
   .strict();
 
+const exportMp4AudioSchemaV1 = z
+  .object({
+    channels: z.union([z.literal(1), z.literal(2)]),
+    encodedDurationSamples: z.number().int().nonnegative(),
+    endTrimSamples: z.number().int().nonnegative(),
+    outputGain: z.number().int().min(-32_768).max(32_767),
+    preSkip: z.number().int().min(0).max(65_535),
+    sampleCount: z.number().int().positive(),
+    sampleRate: z.literal(48_000),
+  })
+  .strict();
+
 const exportMp4StructureSchemaV1 = z
   .object({
+    audio: exportMp4AudioSchemaV1.optional(),
     color: exportMp4ColorSchemaV1,
     durationTicks: z.number().int().min(0),
     frameRate: z.union([z.literal(30), z.literal(60)]),

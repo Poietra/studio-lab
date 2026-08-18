@@ -6,6 +6,7 @@ import {
   exportRefusalFromError,
   exportWorkerRequestV1Schema,
   exportWorkerResponseV1Schema,
+  MAX_EXPORT_WAV_BYTES,
 } from "./export-worker-protocol";
 
 const PROGRESS_RESULT = {
@@ -82,6 +83,24 @@ describe("export worker messages", () => {
         version: 1,
       }).kind,
     ).toBe("export-cancel");
+  });
+
+  it("admits one bounded WAV attachment and rejects empty or oversized audio", () => {
+    const base = {
+      assetPayloads: [],
+      kind: "export-mp4",
+      profileJson: new ArrayBuffer(8),
+      requestId: 1,
+      schema: "poietra.export-worker-request",
+      snapshotJson: new ArrayBuffer(8),
+      version: 1,
+      wasmModuleUrl: "https://studio.example/engine-wasm/poietra_wasm.js",
+    } as const;
+    expect(exportWorkerRequestV1Schema.safeParse({ ...base, audioWav: new ArrayBuffer(44) }).success).toBe(true);
+    expect(exportWorkerRequestV1Schema.safeParse({ ...base, audioWav: new ArrayBuffer(0) }).success).toBe(false);
+    expect(
+      exportWorkerRequestV1Schema.safeParse({ ...base, audioWav: new ArrayBuffer(MAX_EXPORT_WAV_BYTES + 1) }).success,
+    ).toBe(false);
   });
 
   it("rejects requests without a request identity", () => {
@@ -163,6 +182,20 @@ describe("exportRefusalFromError", () => {
     const gpu = new Error("gpu-unavailable: no WebGPU adapter for offscreen export");
     gpu.name = "PoietraBrowserMp4ExportRefused";
     expect(exportRefusalFromError(gpu)?.reason).toBe("gpu-unavailable");
+  });
+
+  it.each([
+    "invalid-wav",
+    "unsupported-wav-bit-depth",
+    "unsupported-wav-channels",
+    "unsupported-wav-container",
+    "unsupported-wav-format",
+    "unsupported-wav-sample-rate",
+    "wav-too-large",
+  ] as const)("preserves the actionable %s audio refusal", (reason) => {
+    const error = new Error(`${reason}: rejected WAV fixture`);
+    error.name = "PoietraBrowserMp4ExportRefused";
+    expect(exportRefusalFromError(error)?.reason).toBe(reason);
   });
 
   it("keeps an unknown prefix as invalid-request without inventing a reason", () => {

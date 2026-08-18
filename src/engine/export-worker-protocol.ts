@@ -21,6 +21,9 @@ export const POIETRA_EXPORT_WORKER_VERSION = 1 as const;
 /** Mirror of Rust `MAX_BROWSER_EXPORT_PROGRESS_JSON_BYTES_V1`. */
 export const MAX_EXPORT_PROGRESS_JSON_BYTES = 16 * 1024;
 
+/** Largest local WAV attachment accepted by the browser export worker. */
+export const MAX_EXPORT_WAV_BYTES = 64 * 1024 * 1024;
+
 /** Mirror of the Rust rejection error name (`PoietraBrowserMp4ExportRefused`). */
 export const BROWSER_EXPORT_REFUSED_ERROR_NAME = "PoietraBrowserMp4ExportRefused";
 
@@ -44,6 +47,7 @@ export const EXPORT_REFUSAL_REASONS = [
   "invalid-request",
   "invalid-scene",
   "invalid-timestamp",
+  "invalid-wav",
   "mux-failed",
   "no-chunk",
   "no-decoder-config",
@@ -57,6 +61,12 @@ export const EXPORT_REFUSAL_REASONS = [
   "session-closed",
   "timeout",
   "unsupported-codec",
+  "unsupported-wav-bit-depth",
+  "unsupported-wav-channels",
+  "unsupported-wav-container",
+  "unsupported-wav-format",
+  "unsupported-wav-sample-rate",
+  "wav-too-large",
 ] as const;
 
 export const exportRefusalReasonV1Schema = z.enum(EXPORT_REFUSAL_REASONS);
@@ -102,6 +112,10 @@ const responseEnvelope = {
 const exportMp4RequestV1Schema = z
   .object({
     ...requestEnvelope,
+    audioWav: z
+      .instanceof(ArrayBuffer)
+      .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= MAX_EXPORT_WAV_BYTES)
+      .optional(),
     assetPayloads: canvasPngAssetTransfersV1Schema,
     kind: z.literal("export-mp4"),
     profileJson: z.instanceof(ArrayBuffer),
