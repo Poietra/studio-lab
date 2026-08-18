@@ -307,6 +307,33 @@ export type ManimSourceImportOutcome =
       sourceVariable: string | null;
     }>;
 
+export type StaticPrimitiveTransformGeometryV1 =
+  | Readonly<{ kind: "circle"; radius: number }>
+  | Readonly<{ height: number; kind: "rectangle"; width: number }>;
+
+export type StaticPrimitiveTransformPaintV1 = Readonly<{
+  color?: string;
+  fillColor?: string;
+  strokeColor?: string;
+}>;
+
+/** Bounded source facts only; Rust remains the transform-semantic authority. */
+export type StaticPrimitiveTransformSourceFactV1 = Readonly<{
+  interval: Readonly<{ end: number; start: number }>;
+  sourceCenter: Readonly<{ x: number; y: number }>;
+  sourceEntityId: string;
+  sourceGeometry: StaticPrimitiveTransformGeometryV1;
+  sourceName: string;
+  sourcePaint: StaticPrimitiveTransformPaintV1;
+  sourceScale: number;
+  targetCenter: Readonly<{ x: number; y: number }>;
+  targetEntityId: string;
+  targetGeometry: StaticPrimitiveTransformGeometryV1;
+  targetName: string;
+  targetPaint: StaticPrimitiveTransformPaintV1;
+  targetScale: number;
+}>;
+
 export type ManimWorkspaceSource = Readonly<{
   path: string;
   scenes: readonly Readonly<{
@@ -318,6 +345,7 @@ export type ManimWorkspaceSource = Readonly<{
     sceneId: string;
     sourceHash: string;
     sourceVariables: Readonly<Record<string, string>>;
+    staticPrimitiveTransforms?: readonly StaticPrimitiveTransformSourceFactV1[];
     staticSemanticState: StaticSemanticState;
   }>[];
 }>;
@@ -537,6 +565,35 @@ export const renderSourceActionCancellationViewSchema: z.ZodType<RenderSourceAct
   })
   .strict();
 
+const staticPrimitiveTransformGeometryV1Schema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("circle"), radius: finiteNumber.positive() }).strict(),
+  z.object({ height: finiteNumber.positive(), kind: z.literal("rectangle"), width: finiteNumber.positive() }).strict(),
+]);
+const staticPrimitiveTransformPaintV1Schema = z
+  .object({
+    color: z.string().min(1).max(128).optional(),
+    fillColor: z.string().min(1).max(128).optional(),
+    strokeColor: z.string().min(1).max(128).optional(),
+  })
+  .strict();
+const staticPrimitiveTransformSourceFactV1Schema: z.ZodType<StaticPrimitiveTransformSourceFactV1> = z
+  .object({
+    interval: z.object({ end: finiteNumber.nonnegative(), start: finiteNumber.nonnegative() }).strict(),
+    sourceCenter: enginePointV1Schema,
+    sourceEntityId: z.string().min(1).max(240),
+    sourceGeometry: staticPrimitiveTransformGeometryV1Schema,
+    sourceName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    sourcePaint: staticPrimitiveTransformPaintV1Schema,
+    sourceScale: finiteNumber.positive(),
+    targetCenter: enginePointV1Schema,
+    targetEntityId: z.string().min(1).max(240),
+    targetGeometry: staticPrimitiveTransformGeometryV1Schema,
+    targetName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
+    targetPaint: staticPrimitiveTransformPaintV1Schema,
+    targetScale: finiteNumber.positive(),
+  })
+  .strict();
+
 export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z
   .object({
     path: manimSourcePathSchema,
@@ -590,6 +647,7 @@ export const manimWorkspaceSourceSchema: z.ZodType<ManimWorkspaceSource> = z
           sceneId: z.string(),
           sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
           sourceVariables: z.record(z.string(), z.string()),
+          staticPrimitiveTransforms: z.array(staticPrimitiveTransformSourceFactV1Schema).max(1).optional(),
           staticSemanticState: staticSemanticStateSchema,
         })
         .strict(),

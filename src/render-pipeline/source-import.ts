@@ -19,7 +19,11 @@ import {
   type StaticSemanticState,
   type TimelineEvent,
 } from "../studio/model";
-import type { ManimSourceImportOutcome } from "./contracts";
+import type {
+  ManimSourceImportOutcome,
+  StaticPrimitiveTransformGeometryV1,
+  StaticPrimitiveTransformSourceFactV1,
+} from "./contracts";
 import { referencedPythonReferences } from "./python-reference-analysis";
 import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment } from "./python-source-analysis";
 import { SourceAnalysisError, type StudioSourceAnalysisV1, studioSourceAnalysisProviderV1 } from "./source-analysis";
@@ -49,6 +53,7 @@ export type ImportedManimScene = Readonly<{
   sceneId: string;
   sourceHash: string;
   sourceVariables: Readonly<Record<string, string>>;
+  staticPrimitiveTransforms: readonly StaticPrimitiveTransformSourceFactV1[];
   staticSemanticState: StaticSemanticState;
 }>;
 
@@ -1289,6 +1294,188 @@ function durationFrom(statement: string, fallback = 1) {
   return match ? (unsignedNumberLiteral(match[1]) ?? fallback) : fallback;
 }
 
+function directStaticPrimitiveTransformVariables(
+  statement: string,
+): Readonly<{ sourceName: string; targetName: string }> | null {
+  const trimmed = statement.trim();
+  const playOpening = trimmed.match(/^self\.play\s*\(/)?.[0].lastIndexOf("(") ?? -1;
+  if (playOpening < 0) return null;
+  const playClosing = matchingCallEnd(trimmed, playOpening);
+  if (playClosing === null || trimmed.slice(playClosing + 1).trim() !== "") return null;
+  const playArguments = splitTopLevelArguments(trimmed.slice(playOpening + 1, playClosing));
+  const animations: string[] = [];
+  for (const argument of playArguments) {
+    const keyword = argument.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([\s\S]+)$/);
+    if (!keyword) {
+      animations.push(argument);
+      continue;
+    }
+    if (keyword[1] === "run_time" && unsignedNumberLiteral(keyword[2]) !== null) continue;
+    if (keyword[1] === "rate_func" && ["smooth", "smoothstep"].includes(keyword[2].trim())) continue;
+    return null;
+  }
+  if (animations.length !== 1) return null;
+  const animation = animations[0]!.trim();
+  const transformOpening = animation.match(/^Transform\s*\(/)?.[0].lastIndexOf("(") ?? -1;
+  if (transformOpening < 0) return null;
+  const transformClosing = matchingCallEnd(animation, transformOpening);
+  if (transformClosing === null || animation.slice(transformClosing + 1).trim() !== "") return null;
+  const transformArguments = splitTopLevelArguments(animation.slice(transformOpening + 1, transformClosing));
+  if (
+    transformArguments.length !== 2 ||
+    transformArguments.some((argument) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(argument.trim()))
+  ) {
+    return null;
+  }
+  return {
+    sourceName: transformArguments[0]!.trim(),
+    targetName: transformArguments[1]!.trim(),
+  };
+}
+
+function staticPrimitiveGeometryFact(entity: MutableEntity): StaticPrimitiveTransformGeometryV1 | null {
+  if (entity.dimensions.kind !== "known") return null;
+  if (entity.type === "Circle") {
+    const { radius } = entity.dimensions.value;
+    return radius !== undefined && Number.isFinite(radius) && radius > 0 ? { kind: "circle", radius } : null;
+  }
+  if (entity.type === "Rectangle" || entity.type === "Square") {
+    const { height, width } = entity.dimensions.value;
+    return height !== undefined &&
+      width !== undefined &&
+      Number.isFinite(height) &&
+      height > 0 &&
+      Number.isFinite(width) &&
+      width > 0
+      ? { height, kind: "rectangle", width }
+      : null;
+  }
+  return null;
+}
+
+const STATIC_PRIMITIVE_SUFFIX_METHODS = new Set(["scale", "set_color", "set_fill", "set_stroke"]);
+const STATIC_PRIMITIVE_DIRECT_METHODS = new Set([...STATIC_PRIMITIVE_SUFFIX_METHODS, "get_center", "move_to", "shift"]);
+
+function staticPrimitivePaintMethodIsClosed(method: Readonly<{ argumentsSource: string; name: string }>) {
+  const argumentsList = splitTopLevelArguments(method.argumentsSource);
+  const positional = argumentsList.filter((argument) => !/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(argument));
+  const keywords = argumentsList.flatMap((argument) => {
+    const match = argument.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+    return match ? [match[1]] : [];
+  });
+  const color = paintColorArgument(method.argumentsSource);
+  return (
+    positional.length <= 1 &&
+    keywords.length === new Set(keywords).size &&
+    keywords.every((keyword) => keyword === "color") &&
+    color.kind !== "unknown"
+  );
+}
+
+function staticPrimitiveMethodIsClosed(
+  method: Readonly<{ argumentsSource: string; name: string }>,
+  allowed: ReadonlySet<string>,
+) {
+  if (!allowed.has(method.name)) return false;
+  if (method.name === "scale") return positiveNumberLiteral(method.argumentsSource) !== null;
+  if (method.name === "set_color" || method.name === "set_fill" || method.name === "set_stroke") {
+    return staticPrimitivePaintMethodIsClosed(method);
+  }
+  return true;
+}
+
+function staticPrimitiveInitializationIsClosed(entity: MutableEntity) {
+  const assignment = parseEntityAssignment(entity.initialization);
+  if (!assignment || !["Circle", "Rectangle", "Square"].includes(assignment.type)) return false;
+  const argumentsList = splitTopLevelArguments(assignment.argumentsSource);
+  const positional = argumentsList.filter((argument) => !/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(argument));
+  const keywords = argumentsList.flatMap((argument) => {
+    const match = argument.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=/);
+    return match ? [match[1]] : [];
+  });
+  const geometryKeywords =
+    assignment.type === "Circle" ? ["radius"] : assignment.type === "Square" ? ["side_length"] : ["height", "width"];
+  const allowedKeywords = new Set([...geometryKeywords, "color", "fill_color", "stroke_color"]);
+  const maximumPositional = assignment.type === "Rectangle" ? 2 : 1;
+  const methods = chainedMethods(assignment.suffix);
+  return (
+    positional.length <= maximumPositional &&
+    keywords.length === new Set(keywords).size &&
+    keywords.every((keyword) => allowedKeywords.has(keyword)) &&
+    methods !== null &&
+    methods.every((method) => staticPrimitiveMethodIsClosed(method, STATIC_PRIMITIVE_SUFFIX_METHODS))
+  );
+}
+
+function staticPrimitiveStatementBlocksFact(
+  entity: MutableEntity,
+  statement: CanonicalImportStatement,
+  transform: Readonly<{ sourceName: string; targetName: string }> | null,
+) {
+  const variable = entity.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const directSuffix = statement.text.match(new RegExp(`^\\s*${variable}(\\s*\\.[\\s\\S]*)$`))?.[1];
+  if (directSuffix) {
+    const methods = chainedMethods(directSuffix);
+    return (
+      methods === null ||
+      methods.some((method) => !staticPrimitiveMethodIsClosed(method, STATIC_PRIMITIVE_DIRECT_METHODS))
+    );
+  }
+  if (!statement.text.trimStart().startsWith("self.play(")) return false;
+  if (transform && (transform.sourceName === entity.sourceVariable || transform.targetName === entity.sourceVariable)) {
+    return false;
+  }
+  if (directPresenceAnimationAction(statement.text, entity.sourceVariable) !== null) return false;
+  return referencedPresenceVariables(statement.text, new Set([entity.sourceVariable])).has(entity.sourceVariable);
+}
+
+function staticPrimitiveTransformFact(
+  entities: ReadonlyMap<string, MutableEntity>,
+  interval: Interval,
+  placementOrOrientationBlocked: ReadonlySet<string>,
+  variables: Readonly<{ sourceName: string; targetName: string }>,
+): StaticPrimitiveTransformSourceFactV1 | null {
+  const source = entities.get(variables.sourceName);
+  const target = entities.get(variables.targetName);
+  if (
+    !source ||
+    !target ||
+    source === target ||
+    placementOrOrientationBlocked.has(source.sourceVariable) ||
+    placementOrOrientationBlocked.has(target.sourceVariable) ||
+    source.positionKnowledge.kind !== "known" ||
+    target.positionKnowledge.kind !== "known" ||
+    source.scaleKnowledge.kind !== "known" ||
+    target.scaleKnowledge.kind !== "known" ||
+    source.style.kind !== "known" ||
+    target.style.kind !== "known" ||
+    !source.lifetimes.some(
+      (lifetime) => lifetime.start <= interval.start && (lifetime.end === null || lifetime.end >= interval.end),
+    ) ||
+    target.lifetimes.length > 0
+  ) {
+    return null;
+  }
+  const sourceGeometry = staticPrimitiveGeometryFact(source);
+  const targetGeometry = staticPrimitiveGeometryFact(target);
+  if (!sourceGeometry || !targetGeometry || sourceGeometry.kind === targetGeometry.kind) return null;
+  return {
+    interval,
+    sourceCenter: source.positionKnowledge.value,
+    sourceEntityId: source.id,
+    sourceGeometry,
+    sourceName: source.sourceVariable,
+    sourcePaint: { ...source.style.value },
+    sourceScale: source.scaleKnowledge.value,
+    targetCenter: target.positionKnowledge.value,
+    targetEntityId: target.id,
+    targetGeometry,
+    targetName: target.sourceVariable,
+    targetPaint: { ...target.style.value },
+    targetScale: target.scaleKnowledge.value,
+  };
+}
+
 function topLevelPlayKeywordIdentifier(statement: string, keyword: string): string | null | undefined {
   const call = statement.match(/^self\.play\s*\(/);
   if (!call) return undefined;
@@ -2071,6 +2258,11 @@ export function importManimScene(
     ]),
   );
   const scaleSamples = new Map<string, PropertyChannelSample[]>();
+  const staticPrimitiveTransformCandidates: StaticPrimitiveTransformSourceFactV1[] = [];
+  let staticPrimitiveTransformCallCount = 0;
+  const staticPrimitiveTransformBlockedEntities = new Set(
+    mutableEntities.flatMap((entity) => (staticPrimitiveInitializationIsClosed(entity) ? [] : [entity.sourceVariable])),
+  );
   for (const entity of mutableEntities) {
     if (entity.content) {
       contentSamples.set(entity.id, [
@@ -2155,6 +2347,13 @@ export function importManimScene(
       continue;
     }
     const callPaths = statement.statementId ? (callPathsByStatementId.get(statement.statementId) ?? []) : [];
+    staticPrimitiveTransformCallCount += callPaths.filter((path) => path?.at(-1) === "Transform").length;
+    const staticPrimitiveTransformVariables = directStaticPrimitiveTransformVariables(statement.text);
+    for (const entity of mutableEntities) {
+      if (staticPrimitiveStatementBlocksFact(entity, statement, staticPrimitiveTransformVariables)) {
+        staticPrimitiveTransformBlockedEntities.add(entity.sourceVariable);
+      }
+    }
     for (const entity of mutableEntities) {
       const style = styleFromStatement(entity.style, statement, entity.sourceVariable, callPaths);
       if (style) entity.style = style;
@@ -2455,6 +2654,15 @@ export function importManimScene(
     const duration = durationFrom(statement.text);
     const sourceMotionEasing = motionEasingFrom(statement.text);
     const interval = { end: cursor + duration, start: cursor };
+    if (staticPrimitiveTransformVariables) {
+      const fact = staticPrimitiveTransformFact(
+        byVariable,
+        interval,
+        staticPrimitiveTransformBlockedEntities,
+        staticPrimitiveTransformVariables,
+      );
+      if (fact) staticPrimitiveTransformCandidates.push(fact);
+    }
     const motionMarker = markerBefore(statements, statementIndex, MOTION_MARKER_PATTERN);
     const scaleMarker = markerBefore(statements, statementIndex, SCALE_MARKER_PATTERN);
     const dimensionsMarker = markerBefore(statements, statementIndex, DIMENSIONS_MARKER_PATTERN);
@@ -2865,6 +3073,10 @@ export function importManimScene(
     sceneId,
     sourceHash: hashSource(source),
     sourceVariables: Object.fromEntries(mutableEntities.map((entity) => [entity.id, entity.sourceVariable])),
+    staticPrimitiveTransforms:
+      staticPrimitiveTransformCallCount === 1 && staticPrimitiveTransformCandidates.length === 1
+        ? staticPrimitiveTransformCandidates
+        : [],
     staticSemanticState,
   };
 }

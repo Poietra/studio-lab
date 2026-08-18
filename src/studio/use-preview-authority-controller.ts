@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useSyncExternalStore } from "react";
+import type { StaticPrimitiveTransformSourceFactV1 } from "../render-pipeline/contracts";
 import type { SceneFragmentMaterialStateV1 } from "./fragment-material-authoring";
 import type { WorkingState } from "./model";
 import {
@@ -44,6 +45,7 @@ type UseStudioPreviewAuthorityControllerInput = Readonly<{
   sampleTime: number;
   sceneBoundaryActive: boolean;
   sourceEvents: WorkingState["runtimeSceneState"]["eventTrack"]["events"];
+  staticPrimitiveTransforms: readonly StaticPrimitiveTransformSourceFactV1[];
   workingState: WorkingState | null;
 }>;
 
@@ -194,6 +196,7 @@ export function useStudioPreviewAuthorityController({
   sampleTime,
   sceneBoundaryActive,
   sourceEvents,
+  staticPrimitiveTransforms,
   workingState,
 }: UseStudioPreviewAuthorityControllerInput): StudioPreviewAuthorityControllerView {
   const browserSearch = useSyncExternalStore(subscribeBrowserSearch, currentBrowserSearch, serverBrowserSearch);
@@ -243,6 +246,7 @@ export function useStudioPreviewAuthorityController({
     sampleTime,
     sceneBoundaryActive,
     sourceEvents,
+    staticPrimitiveTransforms,
     workingState,
   });
   const allowed = activationIsAllowed();

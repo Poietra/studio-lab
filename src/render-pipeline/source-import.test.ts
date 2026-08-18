@@ -95,6 +95,86 @@ describe("conservative Manim source import", () => {
       value: { fillColor: "PINK" },
     });
     expect(imported?.runtimeSceneState.propertyChannels[`${circleId}/appearance`]).toBeUndefined();
+    expect(imported?.staticPrimitiveTransforms).toEqual([]);
+  });
+
+  it("extracts one bounded same-paint primitive Transform without changing the TypeScript scene model", () => {
+    const imported = importManimScene(
+      `from manim import Circle, Create, FadeOut, Scene, Square, Transform
+
+class StaticPrimitiveTransform(Scene):
+    def construct(self):
+        square = Square(side_length=2)
+        circle = Circle(radius=1)
+        self.play(Create(square))
+        self.play(Transform(square, circle), run_time=2)
+        self.play(FadeOut(square))
+`,
+      "scene.py",
+      "StaticPrimitiveTransform",
+    );
+
+    expect(imported?.staticPrimitiveTransforms).toEqual([
+      {
+        interval: { end: 3, start: 1 },
+        sourceCenter: { x: 320, y: 180 },
+        sourceEntityId: "source:scene.py#StaticPrimitiveTransform:square",
+        sourceGeometry: { height: 2, kind: "rectangle", width: 2 },
+        sourceName: "square",
+        sourcePaint: {},
+        sourceScale: 1,
+        targetCenter: { x: 320, y: 180 },
+        targetEntityId: "source:scene.py#StaticPrimitiveTransform:circle",
+        targetGeometry: { kind: "circle", radius: 1 },
+        targetName: "circle",
+        targetPaint: {},
+        targetScale: 1,
+      },
+    ]);
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:scene.py#StaticPrimitiveTransform:square"]?.type,
+    ).toBe("Square");
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:scene.py#StaticPrimitiveTransform:circle"]?.lifetime,
+    ).toEqual([]);
+  });
+
+  it("withholds primitive Transform facts when appearance, geometry, or the Transform set is open", () => {
+    const scene = (setup: string, before = "", after = "") =>
+      importManimScene(
+        `from manim import Circle, Create, RED, Rotate, Scene, Square, Transform
+
+class OpenPrimitiveTransform(Scene):
+    def construct(self):
+${setup}
+        self.play(Create(square))
+${before}
+        self.play(Transform(square, circle))
+${after}
+`,
+        "scene.py",
+        "OpenPrimitiveTransform",
+      );
+
+    expect(
+      scene(
+        "        square = Square(fill_color=RED, fill_opacity=1)\n        circle = Circle(fill_color=RED, fill_opacity=0.25)",
+      )?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene("        square = Square()\n        circle = Circle().round_corners(0.1)")?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene("        square = Square()\n        circle = Circle()", "        self.play(Rotate(square))")
+        ?.staticPrimitiveTransforms,
+    ).toEqual([]);
+    expect(
+      scene(
+        "        square = Square()\n        circle = Circle()",
+        "",
+        "        self.play(Transform(square.copy(), circle))",
+      )?.staticPrimitiveTransforms,
+    ).toEqual([]);
   });
 
   it("classifies only direct ImageMobject assignment paths without comment or string false positives", () => {

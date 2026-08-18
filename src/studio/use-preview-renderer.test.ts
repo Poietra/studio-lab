@@ -13,6 +13,7 @@ import {
   textOutlineResponseV1Schema,
 } from "../engine/mathtex-outline";
 import type {
+  ApplyStaticPrimitiveTransformWireCommandV1,
   ApplyStaticRootTransformEditCompiler,
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
@@ -27,7 +28,11 @@ import type {
   StudioStaticRootMutationV1,
   StudioStaticRootProjectionV1,
 } from "../engine/scene-authoring";
-import { compileApplyStaticRootTransformEdit, compileApplyStudioFragmentMaterials } from "../engine/scene-authoring";
+import {
+  compileApplyStaticPrimitiveTransform,
+  compileApplyStaticRootTransformEdit,
+  compileApplyStudioFragmentMaterials,
+} from "../engine/scene-authoring";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { importManimScene } from "../render-pipeline/source-import";
 import {
@@ -1490,6 +1495,55 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.engineRevisionHash).toBe(snapshot.correlation.engineRevisionHash);
     expect(result.scene.bundle.scene.entities[0]?.geometry.kind).toBe("line");
     expect(result.scene.interactionEntityIds).toEqual(["runtime-line"]);
+  });
+
+  it("installs the Rust-authored primitive Transform bundle as the canonical preview and export Scene", async () => {
+    const fixture = await verifiedStaticPrimitivePreviewInput("Rectangle");
+    const commands: ApplyStaticPrimitiveTransformWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticPrimitiveTransformCompiler: async (snapshot, command) => {
+        commands.push(command);
+        return compileApplyStaticPrimitiveTransform(snapshot, command);
+      },
+      frame: { height: 9, width: 16 },
+      snapshot: fixture.snapshot,
+      staticPrimitiveTransforms: [
+        {
+          interval: { end: 1.5, start: 0.5 },
+          sourceCenter: fixture.position,
+          sourceEntityId: "source:circle",
+          sourceGeometry: { height: 1, kind: "rectangle", width: 2 },
+          sourceName: "circle",
+          sourcePaint: {},
+          sourceScale: 1,
+          targetCenter: fixture.position,
+          targetEntityId: "source:target-circle",
+          targetGeometry: { kind: "circle", radius: 0.5 },
+          targetName: "target_circle",
+          targetPaint: {},
+          targetScale: 1,
+        },
+      ],
+      workingState: fixture.workingBase,
+      workingRevision: PRISTINE_WORKING_REVISION,
+      workspaceKey: fixture.workspaceKey,
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      expectedBaseRevision: HASH_C,
+      schema: "poietra.apply-static-primitive-transform",
+      sourceRuntimeBindings: [{ runtimeEntityId: "earlier", sourceIdentityKey: "circle", sourceName: "circle" }],
+      transform: { sourceName: "circle", targetName: "target_circle" },
+      version: 1,
+    });
+    expect(commands[0]?.nextRevision).toBe(result.scene.engineRevisionHash);
+    expect(result.scene.bundle.scene.source.kind).toBe("studio-edit-program");
+    expect(result.scene.bundle.scene.animationChannels).toEqual([
+      expect.objectContaining({ entityId: "earlier", kind: "path-morph" }),
+    ]);
   });
 
   it("passes one complete normalized Studio timeline edit to Rust", async () => {

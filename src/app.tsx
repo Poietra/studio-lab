@@ -845,6 +845,7 @@ export function App({
     sampleTime: currentTime,
     sceneBoundaryActive: importedSceneBoundaryActive,
     sourceEvents: projectedActiveScene?.runtimeSceneState.eventTrack.events ?? [],
+    staticPrimitiveTransforms: projectedActiveScene?.staticPrimitiveTransforms ?? [],
     workingState: previewWorkingState,
   });
   const studioExportSource = previewRenderer?.canonicalScene ?? null;

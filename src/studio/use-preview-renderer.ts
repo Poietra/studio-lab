@@ -27,6 +27,7 @@ import {
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
 import {
+  type ApplyStaticPrimitiveTransformCompiler,
   type ApplyStaticRootTransformEditCompiler,
   type ApplyStaticRootTransformEditWireCommandV1,
   type ApplyStudioBoundEntityEditCompiler,
@@ -39,6 +40,7 @@ import {
   type ApplyStudioTimelineEditCompiler,
   type ApplyStudioTimelineEditWireCommandV1,
   compileApplyStaticRootTransformEdit,
+  compileApplyStaticPrimitiveTransform,
   compileApplyStudioCreationEdit,
   compileApplyStudioFragmentMaterials,
   compileApplyStudioMathTexTransformEdit,
@@ -56,6 +58,7 @@ import {
   type StudioStaticRootProjectionV1,
   type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
+import type { StaticPrimitiveTransformSourceFactV1 } from "../render-pipeline/contracts";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import {
   EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
@@ -225,6 +228,7 @@ export type UseStudioPreviewRendererInput = Readonly<{
   sampleTime: number;
   sceneBoundaryActive: boolean;
   sourceEvents: RuntimeSceneState["eventTrack"]["events"];
+  staticPrimitiveTransforms: readonly StaticPrimitiveTransformSourceFactV1[];
   workingState: WorkingState | null;
 }>;
 
@@ -648,6 +652,7 @@ function studioTimelineCommands(
 
 async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
   input: Readonly<{
+    applyStaticPrimitiveTransformCompiler?: ApplyStaticPrimitiveTransformCompiler;
     applyStaticRootTransformEditCompiler?: ApplyStaticRootTransformEditCompiler;
     applyStudioBoundEntityEditCompiler?: ApplyStudioBoundEntityEditCompiler;
     applyStudioCreationEditCompiler?: ApplyStudioCreationEditCompiler;
@@ -659,6 +664,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
     projectStudioMotionCompiler?: ProjectStudioMotionCompiler;
     projectStudioTimelineCompiler?: ProjectStudioTimelineCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
+    staticPrimitiveTransforms?: readonly StaticPrimitiveTransformSourceFactV1[];
     textOutlineCompiler?: TextOutlineCompilerV1;
     workingState: WorkingState;
     workingRevision: string;
@@ -668,6 +674,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
   Readonly<{ error: string; kind: "unsupported" }> | Readonly<{ kind: "compiled"; scene: CompiledStudioPreviewSceneV1 }>
 > {
   const sourceEdits = sourceEditRecords(input.workingState);
+  const staticPrimitiveTransforms = input.staticPrimitiveTransforms ?? [];
   if (Math.abs(input.workingState.runtimeSceneState.duration - input.snapshot.duration) >= 0.0005) {
     return {
       error: "Studio source state is not correlated with the verified imported Scene timing.",
@@ -681,6 +688,66 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
     const { correlation, snapshot } = input.snapshot;
     if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
       return { error: "The base verified preview has inconsistent revision evidence.", kind: "unsupported" };
+    }
+    if (staticPrimitiveTransforms.length === 1) {
+      if (snapshot.scene.source.kind !== "imported-manim-server-snapshot") {
+        return {
+          error: "Static primitive Transform compilation requires one server-verified static Scene snapshot.",
+          kind: "unsupported",
+        };
+      }
+      const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+        frame: input.frame,
+        snapshot: input.snapshot,
+        workingRevision: input.workingRevision,
+        workspaceKey: input.workspaceKey,
+      });
+      try {
+        const bundle = await (input.applyStaticPrimitiveTransformCompiler ?? compileApplyStaticPrimitiveTransform)(
+          snapshot,
+          {
+            expectedBaseRevision: correlation.engineRevisionHash,
+            nextRevision: engineRevisionHash,
+            schema: "poietra.apply-static-primitive-transform",
+            sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
+              ([sourceIdentityKey, { entityId, sourceName }]) => ({
+                runtimeEntityId: entityId,
+                sourceIdentityKey,
+                sourceName,
+              }),
+            ),
+            transform: staticPrimitiveTransforms[0],
+            version: 1,
+          },
+        );
+        return {
+          kind: "compiled",
+          scene: {
+            bundle,
+            engineRevisionHash,
+            frame: { ...input.frame },
+            interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+              input.snapshot.sourceRuntimeIdentity,
+              studioPreviewInteractionAuthority(
+                input.snapshot,
+                0,
+                input.workingState.runtimeSceneState.eventTrack.events,
+              ),
+              bundle.scene.entities,
+            ),
+            snapshot: input.snapshot,
+            workingRevision: input.workingRevision,
+            workspaceKey: input.workspaceKey,
+          },
+        };
+      } catch (error) {
+        return {
+          error: `Rust core rejected the static primitive Transform: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          kind: "unsupported",
+        };
+      }
     }
     return {
       kind: "compiled",
@@ -697,6 +764,12 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
         workingRevision: input.workingRevision,
         workspaceKey: input.workspaceKey,
       },
+    };
+  }
+  if (staticPrimitiveTransforms.length > 0) {
+    return {
+      error: "Editing a statically compiled primitive Transform requires canonical base/edit composition support.",
+      kind: "unsupported",
     };
   }
   const sourceProgramBatch = sourceEdits.map(({ program }) => program);
@@ -1606,6 +1679,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     sampleTime,
     sceneBoundaryActive,
     sourceEvents,
+    staticPrimitiveTransforms,
     workingState,
   } = input;
   const [bound, setBound] = useState<BoundHostStateV1 | null>(null);
@@ -1654,6 +1728,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       frame,
       sceneFragmentMaterials,
       snapshot,
+      staticPrimitiveTransforms,
       workingState,
       workingRevision,
       workspaceKey,
@@ -1691,6 +1766,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     sceneFragmentMaterials,
     retainedSourceDuration,
     snapshot,
+    staticPrimitiveTransforms,
     workspaceKey,
   ]);
 

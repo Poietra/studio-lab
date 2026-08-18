@@ -95,6 +95,7 @@ export function importSourceSnapshot(
         sceneId: scene.sceneId,
         sourceHash: scene.sourceHash,
         sourceVariables: scene.sourceVariables,
+        staticPrimitiveTransforms: scene.staticPrimitiveTransforms,
         staticSemanticState: scene.staticSemanticState,
       })),
     },
