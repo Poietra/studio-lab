@@ -416,17 +416,20 @@ export function StudioInspector({
   fillColorValue,
   fragmentMaterial = {
     active: false,
+    assignedParameters: null,
     assignedShaderId: null,
     available: false,
     compileError: null,
     materials: [],
     onAssign: () => undefined,
     onCreate: () => null,
+    onCreatePreset: () => null,
     onDuplicate: () => null,
     onImportGlsl: async () => undefined,
     onRemoveAsset: () => undefined,
     onRename: () => undefined,
     onUpdateSource: () => undefined,
+    onUpdateParameter: () => undefined,
   },
   onApplyDraft,
   onDiscardDraft,
@@ -467,17 +470,20 @@ export function StudioInspector({
   fillColorValue: string | null;
   fragmentMaterial?: Readonly<{
     active: boolean;
+    assignedParameters: readonly number[] | null;
     assignedShaderId: string | null;
     available: boolean;
     compileError: string | null;
     materials: readonly FragmentMaterialEditorItem[];
     onAssign: (shaderId: string | null) => void;
     onCreate: (name: string) => string | null;
+    onCreatePreset: () => string | null;
     onDuplicate: (shaderId: string) => string | null;
     onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
     onRemoveAsset: (shaderId: string) => void;
     onRename: (shaderId: string, name: string) => void;
     onUpdateSource: (shaderId: string, source: string) => void;
+    onUpdateParameter: (name: string, value: number) => void;
   }>;
   onApplyDraft: () => void;
   onDiscardDraft: () => void;

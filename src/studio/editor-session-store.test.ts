@@ -22,6 +22,7 @@ import {
   projectFragmentMaterialsForSceneV1,
   removeStudioFragmentMaterialV1,
   updateStudioFragmentMaterialFromGlslV1,
+  updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
 } from "./fragment-material-authoring";
 import type { ProgramRecord } from "./model";
@@ -294,10 +295,16 @@ describe("durable editor session storage", () => {
       shaderId: material.shaderId,
       source: `${STUDIO_WAVE_FRAGMENT_SOURCE_V1}\n// persisted edit`,
     });
-    const authored = assignStudioFragmentMaterialV1(edited, {
+    const sceneB = assignStudioFragmentMaterialV1(edited, {
       entityId: "circle",
       sceneId: "scene.py#SceneB",
       shaderId: material.shaderId,
+    });
+    const authored = updateStudioFragmentMaterialParameterV1(sceneB, {
+      entityId: "circle",
+      name: "Speed",
+      sceneId: "scene.py#SceneB",
+      value: 1.25,
     });
     expect(new EditorSessionStore(adapter).saveProjectFragmentMaterials("project-a", authored)).toBe(true);
     expect(JSON.parse(adapter.value!)).toMatchObject({
@@ -315,6 +322,13 @@ describe("durable editor session storage", () => {
     );
     expect(projectFragmentMaterialsForSceneV1(reloaded, "scene.py#SceneA").assignments).not.toHaveProperty("circle");
     expect(projectFragmentMaterialsForSceneV1(reloaded, "scene.py#SceneB").assignments).toHaveProperty("circle");
+    expect(reloaded.parameterSchemasByShaderId[material.shaderId]).toMatchObject([
+      { name: "Speed", type: "f32" },
+      { name: "Bands", type: "f32" },
+    ]);
+    expect(projectFragmentMaterialsForSceneV1(reloaded, "scene.py#SceneB").assignments.circle?.parameters).toEqual([
+      1.25, 8,
+    ]);
 
     const withoutSceneA = removeStudioFragmentMaterialV1(reloaded, {
       entityId: "source:scene.py#SceneA:rectangle",

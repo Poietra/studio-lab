@@ -4,6 +4,7 @@ import { STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "../engine/fragment-material-regi
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
+  createStudioWaveFragmentMaterialPresetV1,
   duplicateStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   listStudioFragmentMaterialsV1,
@@ -14,10 +15,64 @@ import {
   sceneHasFragmentMaterialAssignmentsV1,
   studioFragmentMaterialCompileErrorV1,
   updateStudioFragmentMaterialFromGlslV1,
+  updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
 } from "./fragment-material-authoring";
 
 describe("project-local fragment material authoring", () => {
+  it("creates the Wave preset and updates one object's bounded parameters without changing another object", () => {
+    const preset = createStudioWaveFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
+    expect(listStudioFragmentMaterialsV1(preset.state)).toMatchObject([
+      {
+        name: "Wave",
+        parameterSchema: [
+          { default: 0.35, name: "Speed", range: { max: 2, min: -2, step: 0.05 }, type: "f32" },
+          { default: 8, name: "Bands", range: { max: 24, min: 1, step: 1 }, type: "f32" },
+        ],
+      },
+    ]);
+    const first = assignStudioFragmentMaterialV1(preset.state, {
+      entityId: "circle",
+      sceneId: "scene-a",
+      shaderId: preset.shaderId,
+    });
+    const both = assignStudioFragmentMaterialV1(first, {
+      entityId: "rectangle",
+      sceneId: "scene-a",
+      shaderId: preset.shaderId,
+    });
+    expect(both.assignmentsByScene["scene-a"]?.circle?.parameters).toEqual([0.35, 8]);
+
+    const changed = updateStudioFragmentMaterialParameterV1(both, {
+      entityId: "circle",
+      name: "Bands",
+      sceneId: "scene-a",
+      value: 13,
+    });
+    expect(changed.assignmentsByScene["scene-a"]?.circle?.parameters).toEqual([0.35, 13]);
+    expect(changed.assignmentsByScene["scene-a"]?.rectangle?.parameters).toEqual([0.35, 8]);
+    expect(projectFragmentMaterialsForSceneV1(changed, "scene-a").assignments.circle?.parameters).toEqual([0.35, 13]);
+    expect(() =>
+      updateStudioFragmentMaterialParameterV1(changed, {
+        entityId: "circle",
+        name: "Bands",
+        sceneId: "scene-a",
+        value: 25,
+      }),
+    ).toThrow("Bands must be between 1 and 24");
+    expect(changed.assignmentsByScene["scene-a"]?.circle?.parameters).toEqual([0.35, 13]);
+  });
+
+  it("rejects invalid authoring schemas before they can replace project state", () => {
+    expect(() =>
+      createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
+        name: "Invalid preset",
+        parameterSchema: [{ default: 2, name: "Strength", range: { max: 1, min: 0, step: 0.1 }, type: "f32" }],
+      }),
+    ).toThrow("Parameter default must be inside its range");
+    expect(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1.registry.materials).toEqual([]);
+  });
+
   it("creates, renames, duplicates, edits, and safely removes named materials", () => {
     const created = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
     expect(listStudioFragmentMaterialsV1(created.state)).toMatchObject([
