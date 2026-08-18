@@ -10,7 +10,7 @@ import type {
   StudioStaticRootProjectionV1,
   StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
-import { canonicalEditableContent } from "./editable-content";
+import { canonicalEditableContent, studioCreationText } from "./editable-content";
 import { insertSceneTime, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import {
@@ -264,6 +264,7 @@ function creationEntityKind(type: string): StudioCreationProjectionV1["entities"
   if (type === "Line") return "line";
   if (type === "MathTex") return "math-tex";
   if (type === "Rectangle") return "rectangle";
+  if (type === "Text") return "text";
   return null;
 }
 
@@ -350,6 +351,10 @@ function correlateCreationProjection(
       operation?.kind === "CreateEntity" && operation.entity.type === "MathTex"
         ? canonicalEditableContent(operation.entity.content, "MathTex")?.texParts
         : undefined;
+    const expectedText =
+      operation?.kind === "CreateEntity" && operation.entity.type === "Text"
+        ? (studioCreationText(operation.entity.content) ?? undefined)
+        : undefined;
     if (
       !expected ||
       operation?.kind !== "CreateEntity" ||
@@ -361,7 +366,8 @@ function correlateCreationProjection(
       seenEntityOperationIds.has(entity.operationId) ||
       (expectedTexParts
         ? !entity.texParts || !sameStrings(entity.texParts, expectedTexParts)
-        : entity.texParts !== undefined)
+        : entity.texParts !== undefined) ||
+      entity.text !== expectedText
     ) {
       throw new TypeError(`Created entity ${entity.operationId} is not correlated with the Rust projection.`);
     }

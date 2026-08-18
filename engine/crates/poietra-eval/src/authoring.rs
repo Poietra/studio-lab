@@ -194,6 +194,7 @@ pub enum StudioAuthoringEntityKind {
     MathTex,
     Other,
     Rectangle,
+    Text,
 }
 
 pub type StaticRootTransformEntityKind = StudioAuthoringEntityKind;
@@ -226,6 +227,14 @@ pub struct StudioCreationMathTexOutline {
     pub entity_id: String,
     pub path: CubicPathV1,
     pub tex_parts: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioCreationTextOutline {
+    pub entity_id: String,
+    pub path: CubicPathV1,
+    pub text: String,
 }
 
 fn close_transform_baseline_value(left: f64, right: f64) -> bool {

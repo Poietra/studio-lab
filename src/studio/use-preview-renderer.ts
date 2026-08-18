@@ -6,10 +6,14 @@ import type { SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import {
   compileMathTexOutlineV1,
+  compileTextOutlineV1,
   type MathTexOutlineArtifactV1,
   type MathTexOutlineCompilerV1,
   type MathTexOutlineResponseV1,
   mathTexOutlineResponseV1Schema,
+  type TextOutlineArtifactV1,
+  type TextOutlineCompilerV1,
+  textOutlineResponseV1Schema,
 } from "../engine/mathtex-outline";
 import {
   createCanvasPreviewRendererV1,
@@ -99,6 +103,7 @@ import {
   isExactStudioMotionProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
+  studioCreationTextContent,
   studioMathTexTransformStudioEntities,
   studioMotionProjectionBatchKind,
   studioMotionStudioEntities,
@@ -458,6 +463,7 @@ export async function digestStudioPreviewSceneRevisionV1(
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlines?: Readonly<Record<string, MathTexOutlineArtifactV1>>;
     snapshot: StudioVerifiedPreviewSnapshotV1;
+    textOutlines?: Readonly<Record<string, TextOutlineArtifactV1>>;
     workingRevision: string;
     workspaceKey: string;
   }>,
@@ -494,6 +500,9 @@ export async function digestStudioPreviewSceneRevisionV1(
         outline.bounds,
         outline.path,
       ]),
+    Object.entries(input.textOutlines ?? {})
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([entityId, outline]) => [entityId, outline.bounds, outline.fillRule, outline.path]),
   ];
   const bytes = new TextEncoder().encode(canonicalJsonV1(revisionBasis));
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
@@ -613,6 +622,7 @@ export async function compileStudioPreviewSceneV1(
     projectStudioMotionCompiler?: ProjectStudioMotionCompiler;
     projectStudioTimelineCompiler?: ProjectStudioTimelineCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
+    textOutlineCompiler?: TextOutlineCompilerV1;
     workingState: WorkingState;
     workingRevision: string;
     workspaceKey: string;
@@ -670,12 +680,24 @@ export async function compileStudioPreviewSceneV1(
     if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
       return { error: "Studio creation requires an exactly correlated base snapshot.", kind: "unsupported" };
     }
-    const outlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
+    const mathTexOutlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
+    const textOutlineInputs: Array<Readonly<{ entityId: string; text: string }>> = [];
     for (const { program } of sourceEdits) {
       for (const operation of program.operations) {
-        if (operation.kind !== "CreateEntity" || operation.entity.type !== "MathTex") continue;
-        const texParts = studioCreationMathTexParts(operation.entity.content);
-        if (texParts) outlineInputs.push({ entityId: operation.entity.id, texParts });
+        if (operation.kind !== "CreateEntity") continue;
+        if (operation.entity.type === "MathTex") {
+          const texParts = studioCreationMathTexParts(operation.entity.content);
+          if (texParts) mathTexOutlineInputs.push({ entityId: operation.entity.id, texParts });
+        } else if (operation.entity.type === "Text") {
+          const text = studioCreationTextContent(operation.entity.content);
+          if (!text) {
+            return {
+              error: `Text entity ${operation.entity.id} must contain one printable ASCII line of at most 256 characters.`,
+              kind: "unsupported",
+            };
+          }
+          textOutlineInputs.push({ entityId: operation.entity.id, text });
+        }
       }
     }
     const mathTexOutlines: ApplyStudioCreationEditWireCommandV1["mathTexOutlines"][number][] = [];
@@ -683,7 +705,7 @@ export async function compileStudioPreviewSceneV1(
     try {
       const compiler = input.mathTexOutlineCompiler ?? compileMathTexOutlineV1;
       const responses = await Promise.all(
-        outlineInputs.map(async ({ entityId, texParts }) => ({
+        mathTexOutlineInputs.map(async ({ entityId, texParts }) => ({
           entityId,
           response: mathTexOutlineResponseV1Schema.parse(await compiler(texParts)),
           texParts,
@@ -705,10 +727,38 @@ export async function compileStudioPreviewSceneV1(
         kind: "unsupported",
       };
     }
+    const textOutlines: ApplyStudioCreationEditWireCommandV1["textOutlines"][number][] = [];
+    const textOutlineDigestMap: Record<string, TextOutlineArtifactV1> = {};
+    try {
+      const compiler = input.textOutlineCompiler ?? compileTextOutlineV1;
+      const responses = await Promise.all(
+        textOutlineInputs.map(async ({ entityId, text }) => ({
+          entityId,
+          response: textOutlineResponseV1Schema.parse(await compiler(text)),
+          text,
+        })),
+      );
+      for (const { entityId, response, text } of responses) {
+        if (response.result.kind === "unsupported") {
+          return {
+            error: `Text entity ${entityId} is unsupported (${response.result.code}): ${response.result.message}`,
+            kind: "unsupported",
+          };
+        }
+        textOutlines.push({ entityId, path: response.result.path, text });
+        textOutlineDigestMap[entityId] = response.result;
+      }
+    } catch (error) {
+      return {
+        error: `Text outline compilation failed: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       mathTexOutlines: mathTexOutlineDigestMap,
       snapshot: input.snapshot,
+      textOutlines: textOutlineDigestMap,
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
@@ -718,6 +768,7 @@ export async function compileStudioPreviewSceneV1(
       mathTexOutlines,
       nextRevision: engineRevisionHash,
       programs: sourceEdits.map(({ program }) => program),
+      textOutlines,
       viewport: STUDIO_VIEWPORT,
     });
     try {

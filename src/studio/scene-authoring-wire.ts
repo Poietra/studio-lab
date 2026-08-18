@@ -8,7 +8,7 @@ import type {
   ProjectStudioMotionEditWireCommandV1,
   StudioMathTexContentV1,
 } from "../engine/scene-authoring";
-import { canonicalEditableContent } from "./editable-content";
+import { canonicalEditableContent, studioCreationText } from "./editable-content";
 import type { RuntimeSceneState } from "./model";
 import { isPointValue } from "./property-sampling";
 import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "./scene-edit-contract";
@@ -22,8 +22,14 @@ type StaticRootTransformCommandInput = Omit<
     programs: readonly SceneEdit[];
   }>;
 
-type StudioCreationCommandInput = Omit<ApplyStudioCreationEditWireCommandV1, "programs" | "schema" | "version"> &
-  Readonly<{ programs: readonly SceneEdit[] }>;
+type StudioCreationCommandInput = Omit<
+  ApplyStudioCreationEditWireCommandV1,
+  "programs" | "schema" | "textOutlines" | "version"
+> &
+  Readonly<{
+    programs: readonly SceneEdit[];
+    textOutlines?: ApplyStudioCreationEditWireCommandV1["textOutlines"];
+  }>;
 
 type StudioMotionCommandInput = Omit<ApplyStudioMotionEditWireCommandV1, "programs" | "schema" | "version"> &
   Readonly<{ programs: readonly SceneEdit[] }>;
@@ -167,6 +173,10 @@ export function studioCreationMathTexParts(value: unknown): readonly string[] | 
   return canonicalEditableContent(value, "MathTex")?.texParts ?? null;
 }
 
+export function studioCreationTextContent(value: unknown): string | null {
+  return studioCreationText(value);
+}
+
 function normalizedStudioCreationOperation(
   operation: SceneEditOperation,
 ): ApplyStudioCreationEditWireCommandV1["programs"][number]["operations"][number] {
@@ -196,9 +206,12 @@ function normalizedStudioCreationOperation(
                     ? "math-tex"
                     : type === "Rectangle"
                       ? "rectangle"
-                      : "other",
+                      : type === "Text"
+                        ? "text"
+                        : "other",
         lifetimeEnd: operation.entity.lifetime.end,
         lifetimeStart: operation.entity.lifetime.start,
+        text: type === "Text" ? studioCreationTextContent(operation.entity.content) : null,
         texParts: type === "MathTex" ? studioCreationMathTexParts(operation.entity.content) : null,
       },
       kind: "create",
@@ -293,6 +306,7 @@ export function buildStudioCreationEditCommand(
       operations: program.operations.map(normalizedStudioCreationOperation),
     })),
     schema: "poietra.apply-studio-creation-edit",
+    textOutlines: input.textOutlines ?? [],
     version: 1,
   };
 }

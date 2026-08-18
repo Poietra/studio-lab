@@ -208,17 +208,23 @@ function isRedDominant([red, green, blue]: RgbaPixel) {
   return red > 48 && red > green * 1.8 && red > blue * 1.8;
 }
 
-async function expectMathTexCanvasInk(page: Page, revision: string, sampleTime: number, label: string) {
+async function expectOutlinedEntityCanvasInk(
+  page: Page,
+  revision: string,
+  sampleTime: number,
+  label: string,
+  kind: "MathTex" | "Text" = "MathTex",
+) {
   const canvasRoot = page.locator("[data-studio-canvas]");
-  const mathTexEntity = page.getByRole("button", { name: `Move ${label}`, exact: true });
-  await expect(mathTexEntity).toBeVisible();
-  const [canvasBox, mathTexBox, packetId] = await Promise.all([
+  const outlinedEntity = page.getByRole("button", { name: `Move ${label}`, exact: true });
+  await expect(outlinedEntity).toBeVisible();
+  const [canvasBox, outlinedBox, packetId] = await Promise.all([
     canvasRoot.boundingBox(),
-    mathTexEntity.boundingBox(),
+    outlinedEntity.boundingBox(),
     canvasRoot.getAttribute("data-preview-packet-id"),
   ]);
-  if (!canvasBox || !mathTexBox || !packetId) {
-    throw new Error("The presented MathTex or its correlated canvas evidence is unavailable.");
+  if (!canvasBox || !outlinedBox || !packetId) {
+    throw new Error(`The presented ${kind} or its correlated canvas evidence is unavailable.`);
   }
 
   const background = await captureHostEvidence(page, [{ fractionX: 0.03, fractionY: 0.05 }]);
@@ -230,14 +236,14 @@ async function expectMathTexCanvasInk(page: Page, revision: string, sampleTime: 
 
   const points = Array.from({ length: 12 }, (_, row) =>
     Array.from({ length: 24 }, (_, column) => ({
-      fractionX: (mathTexBox.x + ((column + 0.5) / 24) * mathTexBox.width - canvasBox.x) / canvasBox.width,
-      fractionY: (mathTexBox.y + ((row + 0.5) / 12) * mathTexBox.height - canvasBox.y) / canvasBox.height,
+      fractionX: (outlinedBox.x + ((column + 0.5) / 24) * outlinedBox.width - canvasBox.x) / canvasBox.width,
+      fractionY: (outlinedBox.y + ((row + 0.5) / 12) * outlinedBox.height - canvasBox.y) / canvasBox.height,
     })),
   ).flat();
   let foundInk = false;
   for (let offset = 0; offset < points.length; offset += 16) {
     const evidence = await captureHostEvidence(page, points.slice(offset, offset + 16));
-    if (!evidence) throw new Error("The preview frame evidence channel disappeared while sampling MathTex.");
+    if (!evidence) throw new Error(`The preview frame evidence channel disappeared while sampling ${kind}.`);
     expect(evidence.packetId).toBe(packetId);
     expect(evidence.revision).toBe(revision);
     expect(evidence.sampleTime).toBe(sampleTime);
@@ -279,7 +285,7 @@ test("presents Studio-created MathTex across undo and LaTeX commands", async ({ 
   const firstRevision = await canvasRoot.getAttribute("data-preview-revision");
   expect(firstRevision).toMatch(/^[0-9a-f]{64}$/);
   expect(firstRevision).not.toBe(MATHTEX_FIXTURE_ENGINE_REVISION);
-  await expectMathTexCanvasInk(page, firstRevision ?? "", 0.5, "E = mc^2");
+  await expectOutlinedEntityCanvasInk(page, firstRevision ?? "", 0.5, "E = mc^2");
 
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.getByRole("button", { name: "Move E = mc^2", exact: true })).toHaveCount(0);
@@ -298,7 +304,88 @@ test("presents Studio-created MathTex across undo and LaTeX commands", async ({ 
   const fractionRevision = await canvasRoot.getAttribute("data-preview-revision");
   expect(fractionRevision).toMatch(/^[0-9a-f]{64}$/);
   expect(fractionRevision).not.toBe(MATHTEX_FIXTURE_ENGINE_REVISION);
-  await expectMathTexCanvasInk(page, fractionRevision ?? "", 0.5, String.raw`\frac{1}{2}`);
+  await expectOutlinedEntityCanvasInk(page, fractionRevision ?? "", 0.5, String.raw`\frac{1}{2}`);
+});
+
+test("creates, scrubs, and exports plain Text through the canonical WebGPU preview", async ({ page }) => {
+  const text = "Hello WASM";
+  const textConstructor = `Text(${JSON.stringify(text)}, font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)`;
+  const exportedSource = [
+    "from manim import *",
+    "",
+    "class StudioMathTexPreview(Scene):",
+    "    def construct(self):",
+    `        label = ${textConstructor}`,
+    "        label.move_to(ORIGIN)",
+    "        self.play(FadeIn(label))",
+    "",
+  ].join("\n");
+  let exportRequests = 0;
+  await page.route("**/api/manim/projects/preview-harness/export", async (route) => {
+    exportRequests += 1;
+    await route.fulfill({
+      body: exportedSource,
+      headers: {
+        "content-disposition": 'attachment; filename="studio_mathtex.poietra.py"',
+        "content-type": "text/x-python; charset=utf-8",
+        "x-poietra-project-id": "preview-harness",
+      },
+      status: 200,
+    });
+  });
+  await page.goto(`/${MATHTEX_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  await page.getByLabel("Active imported Scene").selectOption({
+    label: "studio_mathtex.py · StudioMathTexPreview",
+  });
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expectPresented(page);
+  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
+
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const playhead = page.getByRole("slider", { name: "Scene playhead" });
+  await playhead.fill("0");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0");
+  const pristineFrame = await retainedFrameIdentity(page);
+  await page.getByRole("button", { name: /Insert text/ }).click();
+  await page.getByRole("textbox", { name: "Text content" }).fill(text);
+  const canvasBounds = await canvasRoot.boundingBox();
+  if (!canvasBounds) throw new Error("The Studio canvas is unavailable for Text placement.");
+  await canvasRoot.click({ position: { x: canvasBounds.width / 2, y: canvasBounds.height / 2 } });
+  const draftFrame = await waitForNewPresentedFrame(page, pristineFrame);
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  const appliedFrame = await waitForNewPresentedRevision(page, draftFrame.revision);
+
+  await playhead.fill("0");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0");
+  const fadeStart = await captureHostEvidence(page, [{ fractionX: 0.5, fractionY: 0.5 }]);
+  if (!fadeStart) throw new Error("The preview frame evidence channel is not exposed.");
+  expect(fadeStart.revision).toBe(appliedFrame.revision);
+  expect(fadeStart.sampleTime).toBe(0);
+  expectPixelNear(fadeStart.samples[0], [0, 0, 0, 255]);
+
+  await playhead.fill("0.2");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.2");
+  await expectOutlinedEntityCanvasInk(page, appliedFrame.revision, 0.2, text, "Text");
+
+  await playhead.fill("0.9");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.9");
+  await expectOutlinedEntityCanvasInk(page, appliedFrame.revision, 0.9, text, "Text");
+
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export .py" }).click();
+  const download = await downloadPromise;
+  const path = await download.path();
+  if (!path) throw new Error("Chromium did not retain the exported Text source.");
+  const source = await readFile(path, "utf8");
+  expect(source).toContain(textConstructor);
+  expect(source).toContain(".move_to(");
+  expect(source).toContain("FadeIn(");
+  expect(exportRequests).toBe(2);
 });
 
 test("creates an Arrow through the canonical WebGPU preview", async ({ page }) => {

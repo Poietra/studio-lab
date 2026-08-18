@@ -16,6 +16,7 @@ import {
   isExactStudioMathTexTransformProgramBatch,
   isExactStudioMotionProgramBatch,
   studioCreationMathTexParts,
+  studioCreationTextContent,
 } from "../src/studio/scene-authoring-wire";
 import { isCanonicalRgbHex, type SceneEdit } from "../src/studio/scene-edit-contract";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "../src/studio/timeline-projection";
@@ -78,6 +79,14 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
       }
       if (type === "Arrow" || type === "Line") {
         return dimensions?.radius === undefined && dimensions?.width === undefined && dimensions?.height === undefined;
+      }
+      if (type === "Text") {
+        return (
+          dimensions?.radius === undefined &&
+          dimensions?.width === undefined &&
+          dimensions?.height === undefined &&
+          studioCreationTextContent(operation.entity.content) !== null
+        );
       }
       return type === "MathTex" && studioCreationMathTexParts(operation.entity.content) !== null;
     }

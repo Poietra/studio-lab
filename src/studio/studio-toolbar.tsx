@@ -1,6 +1,7 @@
 import { cn } from "../lib/cn";
 import type { InsertEntityType } from "./authoring-commands";
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
+import { STUDIO_CREATION_TEXT_MAX_LENGTH } from "./editable-content";
 import { markStudioRenderBoundary } from "./studio-render-profiler";
 
 export type StudioTool = "select" | InsertEntityType;
@@ -83,8 +84,11 @@ export function StudioToolbar({
             <input
               autoComplete="off"
               className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-sky-500"
+              maxLength={tool === "Text" ? STUDIO_CREATION_TEXT_MAX_LENGTH : undefined}
               onChange={(event) => onInsertValueChange(event.currentTarget.value)}
+              pattern={tool === "Text" ? "[ -~]{1,256}" : undefined}
               placeholder={tool === "Text" ? "Type text" : String.raw`e.g. E = mc^2`}
+              title={tool === "Text" ? "Text accepts one printable ASCII line of at most 256 characters" : undefined}
               value={insertValue}
               disabled={!authoringAvailable}
             />

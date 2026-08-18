@@ -15,7 +15,14 @@ function creationProgram(type: string): SceneEdit {
     operations: [
       {
         dependsOn: [],
-        entity: { id: `entity:${type}`, lifetime: { end: null, start: 0 }, type },
+        entity: {
+          ...(type === "Text"
+            ? { content: { displayLines: ["Hello Text"], label: "Hello Text", text: "Hello Text" } }
+            : {}),
+          id: `entity:${type}`,
+          lifetime: { end: null, start: 0 },
+          type,
+        },
         id: `create:${type}`,
         interval: { end: 0, start: 0 },
         kind: "CreateEntity",
@@ -66,10 +73,13 @@ describe("Studio creation wire", () => {
     expect(projection.programs[0]?.operations[0]).toMatchObject({ entity: { kind: "arrow" }, kind: "create" });
   });
 
-  it("keeps unsupported Text creation on the explicit other fallback", () => {
+  it("normalizes bounded Text as a first-class creation kind", () => {
     const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs: [creationProgram("Text")] });
 
-    expect(command.programs[0]?.operations[0]).toMatchObject({ entity: { kind: "other" }, kind: "create" });
+    expect(command.programs[0]?.operations[0]).toMatchObject({
+      entity: { kind: "text", text: "Hello Text", texParts: null },
+      kind: "create",
+    });
   });
 
   it("normalizes created-object opacity and relative rotation without interpreting them in TypeScript", () => {

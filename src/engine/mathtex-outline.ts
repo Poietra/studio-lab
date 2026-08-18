@@ -2,12 +2,14 @@ import { z } from "zod";
 import { coordinateV1Schema, countCubicPathSegments, cubicPathV1Schema, sha256V1Schema } from "./primitives";
 
 export const POIETRA_MATHTEX_OUTLINE_ABI_VERSION = 1 as const;
+export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 1 as const;
 const MAX_MATHTEX_PARTS = 16;
 const MAX_MATHTEX_CONTENT_LENGTH = 2_000;
 const MAX_MATHTEX_REQUEST_JSON_BYTES = 16 * 1024;
 const MAX_MATHTEX_RESPONSE_JSON_BYTES = 1024 * 1024;
 const MAX_MATHTEX_OUTLINE_SEGMENTS = 2_048;
 const MATHTEX_NORMALIZATION_TOLERANCE = 0.000_002;
+const MAX_TEXT_OUTLINE_SEGMENTS = 2_048;
 
 const mathTexOutlineRequestV1Schema = z
   .object({
@@ -96,10 +98,85 @@ export type MathTexOutlineArtifactV1 = z.infer<typeof mathTexOutlineArtifactV1Sc
 export type MathTexOutlineResponseV1 = z.infer<typeof mathTexOutlineResponseV1Schema>;
 export type MathTexOutlineCompilerV1 = (texParts: readonly string[]) => Promise<MathTexOutlineResponseV1>;
 
+const textOutlineRequestV1Schema = z
+  .object({
+    schema: z.literal("poietra.text-outline-request"),
+    text: z
+      .string()
+      .min(1)
+      .max(256)
+      .regex(/^[\x20-\x7e]+$/u),
+    version: z.literal(1),
+  })
+  .strict();
+
+export const textOutlineArtifactV1Schema = z
+  .object({
+    bounds: z
+      .object({
+        bottom: coordinateV1Schema,
+        left: coordinateV1Schema,
+        right: coordinateV1Schema,
+        top: coordinateV1Schema,
+      })
+      .strict()
+      .refine(({ bottom, left, right, top }) => right > left && top > bottom, "Text ink bounds must be positive."),
+    fillRule: z.literal("nonzero"),
+    kind: z.literal("compiled"),
+    path: cubicPathV1Schema,
+  })
+  .strict()
+  .superRefine(({ bounds, path }, context) => {
+    if (countCubicPathSegments(path) > MAX_TEXT_OUTLINE_SEGMENTS) {
+      context.addIssue({ code: "custom", message: "Text outlines accept at most 2,048 cubic segments." });
+    }
+    if (path.subpaths.some(({ closed }) => !closed)) {
+      context.addIssue({ code: "custom", message: "Text outline contours must be closed." });
+    }
+    if (
+      Math.abs(bounds.top - bounds.bottom - 1) > MATHTEX_NORMALIZATION_TOLERANCE ||
+      Math.abs(bounds.left + bounds.right) > MATHTEX_NORMALIZATION_TOLERANCE ||
+      Math.abs(bounds.bottom + bounds.top) > MATHTEX_NORMALIZATION_TOLERANCE
+    ) {
+      context.addIssue({ code: "custom", message: "Text outline bounds must use canonical centered unit height." });
+    }
+  });
+
+const textOutlineUnsupportedV1Schema = z
+  .object({
+    code: z.enum([
+      "character-unsupported",
+      "glyph-missing",
+      "internal-failure",
+      "invalid-request",
+      "outline-invalid",
+      "outline-limit-exceeded",
+      "request-too-large",
+      "response-too-large",
+    ]),
+    kind: z.literal("unsupported"),
+    message: z.string().min(1).max(512),
+  })
+  .strict();
+
+export const textOutlineResponseV1Schema = z
+  .object({
+    result: z.discriminatedUnion("kind", [textOutlineArtifactV1Schema, textOutlineUnsupportedV1Schema]),
+    schema: z.literal("poietra.text-outline-response"),
+    version: z.literal(1),
+  })
+  .strict();
+
+export type TextOutlineArtifactV1 = z.infer<typeof textOutlineArtifactV1Schema>;
+export type TextOutlineResponseV1 = z.infer<typeof textOutlineResponseV1Schema>;
+export type TextOutlineCompilerV1 = (text: string) => Promise<TextOutlineResponseV1>;
+
 type PoietraMathTexOutlineWasmModuleV1 = Readonly<{
   compileMathTexOutlineV1: (requestJson: Uint8Array) => Uint8Array;
+  compileTextOutlineV1?: (requestJson: Uint8Array) => Uint8Array;
   default: (input?: unknown) => Promise<unknown>;
   poietraMathTexOutlineAbiVersion: () => number;
+  poietraTextOutlineAbiVersion?: () => number;
 }>;
 
 function browserModuleUrl() {
@@ -191,6 +268,27 @@ function parseBoundedResponse(responseJson: Uint8Array): MathTexOutlineResponseV
   return parsed.data;
 }
 
+function parseBoundedTextResponse(responseJson: Uint8Array): TextOutlineResponseV1 {
+  if (
+    !(responseJson instanceof Uint8Array) ||
+    responseJson.byteLength === 0 ||
+    responseJson.byteLength > MAX_MATHTEX_RESPONSE_JSON_BYTES
+  ) {
+    throw new Error("The Text outline module returned an invalid or oversized response.");
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(responseJson));
+  } catch (cause) {
+    throw new Error("The Text outline module returned malformed UTF-8 JSON.", { cause });
+  }
+  const parsed = textOutlineResponseV1Schema.safeParse(decoded);
+  if (!parsed.success) {
+    throw new Error("The Text outline module violated the v1 response contract.", { cause: parsed.error });
+  }
+  return parsed.data;
+}
+
 export const compileMathTexOutlineV1: MathTexOutlineCompilerV1 = async (texParts) => {
   const request = mathTexOutlineRequestV1Schema.parse({
     schema: "poietra.mathtex-outline-request",
@@ -203,4 +301,25 @@ export const compileMathTexOutlineV1: MathTexOutlineCompilerV1 = async (texParts
   }
   const bindings = await loadPoietraMathTexOutlineBindingsV1();
   return parseBoundedResponse(bindings.compileMathTexOutlineV1(requestJson));
+};
+
+export const compileTextOutlineV1: TextOutlineCompilerV1 = async (text) => {
+  const request = textOutlineRequestV1Schema.parse({
+    schema: "poietra.text-outline-request",
+    text,
+    version: 1,
+  });
+  const requestJson = new TextEncoder().encode(JSON.stringify(request));
+  if (requestJson.byteLength > MAX_MATHTEX_REQUEST_JSON_BYTES) {
+    throw new Error("The Text outline request is oversized.");
+  }
+  const bindings = await loadPoietraMathTexOutlineBindingsV1();
+  if (
+    typeof bindings.poietraTextOutlineAbiVersion !== "function" ||
+    bindings.poietraTextOutlineAbiVersion() !== POIETRA_TEXT_OUTLINE_ABI_VERSION ||
+    typeof bindings.compileTextOutlineV1 !== "function"
+  ) {
+    throw new Error(`The Text outline module does not implement ABI version ${POIETRA_TEXT_OUTLINE_ABI_VERSION}.`);
+  }
+  return parseBoundedTextResponse(bindings.compileTextOutlineV1(requestJson));
 };

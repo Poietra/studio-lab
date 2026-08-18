@@ -127,6 +127,36 @@ describe("Canonical EditProgram source lowering", () => {
     expect(lowered.insertedCode).toContain("poietra_created_appearance_1.rotate(0.5236)");
   });
 
+  it("lowers Studio-created Text with the preview font and unit-height contract", () => {
+    const entityId = "tx:created-text/entity:label";
+    const create = canonicalProgram(
+      [
+        {
+          ...operationBase("create-text", 7),
+          entity: {
+            content: { displayLines: ["Hello, Poietra!"], text: "Hello, Poietra!" },
+            id: entityId,
+            lifetime: { end: null, start: 7 },
+            type: "Text",
+          },
+          kind: "CreateEntity",
+        },
+      ],
+      "created-text",
+    );
+
+    const lowered = lowerCanonicalProgramSource(source, request(create, []), { height: 8, width: 14.222 }, null);
+
+    expect(lowered.insertedCode).toContain(
+      'Text("Hello, Poietra!", font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)',
+    );
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
+      content: { text: "Hello, Poietra!" },
+      type: "Text",
+    });
+  });
+
   it("lowers Studio-created shape colors in operation order with the current opacity", () => {
     const entityId = "tx:created-colors/entity:circle";
     const create = canonicalProgram(

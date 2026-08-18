@@ -718,8 +718,8 @@ describe("Manim render request lowering", () => {
     expect(authorizerCalls).toBe(0);
   });
 
-  it("rejects Text creation without a Rust authorizer", async () => {
-    const circleCreation = createCircleProgram("legacy-text-creation");
+  it("routes canonical Text creation through snapshot authorization and Manim lowering", async () => {
+    const circleCreation = createCircleProgram("text-creation");
     const creation: CanonicalEditProgram = {
       ...circleCreation,
       operations: circleCreation.operations.map((operation) =>
@@ -729,6 +729,36 @@ describe("Manim render request lowering", () => {
               entity: {
                 ...operation.entity,
                 content: { displayLines: ["Hello"], label: "Hello", text: "Hello" },
+                type: "Text",
+              },
+            }
+          : operation,
+      ),
+    };
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+
+    const result = await lower(request(creation), sceneSource, async (input) => {
+      authorizations.push(input);
+    });
+
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual([creation]);
+    expect(result.lowered.source).toContain(
+      'Text("Hello", font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)',
+    );
+  });
+
+  it("rejects non-canonical Text creation before snapshot authorization", async () => {
+    const circleCreation = createCircleProgram("invalid-text-creation");
+    const creation: CanonicalEditProgram = {
+      ...circleCreation,
+      operations: circleCreation.operations.map((operation) =>
+        operation.kind === "CreateEntity"
+          ? {
+              ...operation,
+              entity: {
+                ...operation.entity,
+                content: { displayLines: ["two lines"], label: "two lines", text: "two\nlines" },
                 type: "Text",
               },
             }

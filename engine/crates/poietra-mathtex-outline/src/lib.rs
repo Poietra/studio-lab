@@ -1,14 +1,16 @@
-//! Hermetic, bounded MathTex-to-cubic-outline compilation for Poietra Studio.
+//! Hermetic, bounded text-to-cubic-outline compilation for Poietra Studio.
 //!
 //! The v1 surface accepts a bounded, versioned `MathTex` subset through `RaTeX`.
 //! It embeds the required `KaTeX` fonts, exposes no filesystem or network loader, and returns
 //! renderer-native cubic paths instead of SVG or executable markup.
+//! A sibling plain-text surface uses one embedded `DejaVu Sans Regular` face.
 
 mod compile;
 mod digest;
 mod fonts;
 mod outline;
 mod segmented;
+mod text;
 
 use poietra_scene_ir::{CubicPathV1, FillRuleV1};
 use serde::{Deserialize, Serialize};
@@ -27,6 +29,12 @@ pub use segmented::{
     SegmentedTexPaintMatchV1, SegmentedTexPaintSpanV1, SegmentedTexSourceCorrelationV1,
     SegmentedTexSourceKindV1, SegmentedTexWriteEntityStateV1, SegmentedTexWritePlanV1,
     SegmentedTexWriteSampleV1, compile_segmented_tex_outline_v1, evaluate_segmented_tex_write_v1,
+};
+pub use text::{
+    MAX_TEXT_CHARACTERS_V1, TEXT_OUTLINE_REQUEST_SCHEMA_V1, TEXT_OUTLINE_RESPONSE_SCHEMA_V1,
+    TEXT_OUTLINE_VERSION_V1, TextOutlineArtifactV1, TextOutlineBoundsV1,
+    TextOutlineRequestSchemaV1, TextOutlineRequestV1, TextOutlineResultV1,
+    TextOutlineUnsupportedCodeV1, TextOutlineUnsupportedV1, compile_text_outline_v1,
 };
 
 /// Exact request schema literal accepted by the v1 compiler.

@@ -740,7 +740,7 @@ function entityConstructor(operation: CreateEntityOperation) {
   }
   if (type === "Text") {
     const text = content?.text ?? content?.displayLines.join(" ") ?? "";
-    return `Text(${JSON.stringify(text)})`;
+    return `Text(${JSON.stringify(text)}, font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)`;
   }
   const shapeConstructor = {
     Arrow: "Arrow(LEFT, RIGHT, buff=0)",
