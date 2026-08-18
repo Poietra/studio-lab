@@ -1145,6 +1145,69 @@ fn renders_manim_cairo_srgb_overlap_on_a_non_black_background() {
     );
 }
 
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn portable_antialias_resolve_averages_premultiplied_linear_samples() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let mut packet = empty_render_packet(
+        ViewportV1 {
+            height_px: 1,
+            width_px: 1,
+        },
+        RenderCameraV1 {
+            bottom: -1.0,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            kind: RenderCameraKindV1::Orthographic2d,
+            left: -1.0,
+            right: 1.0,
+            top: 1.0,
+        },
+    );
+    packet.draws = vec![solid_rectangle_draw(
+        "draw:half-pixel",
+        "entity:half-pixel",
+        &ImageLocalRectV1 {
+            bottom: -1.0,
+            left: -1.0,
+            right: 0.0,
+            top: 1.0,
+        },
+        RgbaColorV1 {
+            alpha: 1.0,
+            blue: 1.0,
+            green: 1.0,
+            red: 1.0,
+        },
+        1.0,
+        0,
+    )];
+    packet.required_capabilities = vec![RenderCapabilityV1::CubicPathFill];
+
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+    let (texture, extent) = render_packet(&device, &queue, &mut renderer, &packet);
+    assert_eq!(
+        renderer
+            .memory_snapshot()
+            .unwrap()
+            .multisample_color_target_bytes(),
+        16
+    );
+    let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+
+    // Two white and two black supersamples average to 0.5 in linear light,
+    // which encodes to sRGB 188. Averaging stored sRGB bytes would yield 128.
+    assert_pixel_close(pixel(&rgba, 1, 0, 0), [188, 188, 188, 255], [1, 1, 1, 0]);
+}
+
 fn dynamic_fixture() -> (DynamicFixture, SceneIrBundleV1) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../fixtures/engine-v1/dynamic-affine-camera.json");
