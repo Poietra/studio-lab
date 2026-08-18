@@ -306,12 +306,13 @@ function FragmentMaterialGlslImporter({
             return;
           }
           void file
-            .text()
+            .arrayBuffer()
+            .then((bytes) => new TextDecoder("utf-8", { fatal: true }).decode(bytes))
             .then((value) => {
               setSource(value);
               setError(null);
             })
-            .catch(() => setError("The GLSL file could not be read."));
+            .catch(() => setError("The GLSL file must be readable UTF-8 text."));
         }}
         type="file"
       />

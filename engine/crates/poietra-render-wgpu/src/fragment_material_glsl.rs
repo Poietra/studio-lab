@@ -1,6 +1,6 @@
 use naga::{
-    AddressSpace, Binding, BuiltIn, Handle, Module, Scalar, ScalarKind, ShaderStage, Type,
-    TypeInner, VectorSize,
+    AddressSpace, Binding, BuiltIn, Handle, Interpolation, Module, Sampling, Scalar, ScalarKind,
+    ShaderStage, Type, TypeInner, VectorSize,
     back::wgsl,
     front::glsl,
     valid::{Capabilities, ValidationFlags, Validator},
@@ -69,6 +69,19 @@ fn interface_members<'a>(
     }
 }
 
+fn host_location_binding(binding: Option<&Binding>, expected_location: u32) -> bool {
+    matches!(
+        binding,
+        Some(Binding::Location {
+            location,
+            interpolation: Some(Interpolation::Perspective),
+            sampling: Some(Sampling::Center),
+            blend_src: None,
+            per_primitive: false,
+        }) if *location == expected_location
+    )
+}
+
 fn validate_fragment_interface(
     source: &str,
     module: &Module,
@@ -96,20 +109,22 @@ fn validate_fragment_interface(
     let location_zero = inputs
         .iter()
         .filter(|(binding, ty)| {
-            matches!(binding, Some(Binding::Location { location: 0, .. }))
-                && f32_vector(module, *ty, VectorSize::Quad)
+            host_location_binding(*binding, 0) && f32_vector(module, *ty, VectorSize::Quad)
         })
         .count();
     let location_one = inputs
         .iter()
         .filter(|(binding, ty)| {
-            matches!(binding, Some(Binding::Location { location: 1, .. }))
-                && f32_vector(module, *ty, VectorSize::Bi)
+            host_location_binding(*binding, 1) && f32_vector(module, *ty, VectorSize::Bi)
         })
         .count();
     let inputs_supported = inputs.iter().all(|(binding, ty)| match binding {
-        Some(Binding::Location { location: 0, .. }) => f32_vector(module, *ty, VectorSize::Quad),
-        Some(Binding::Location { location: 1, .. }) => f32_vector(module, *ty, VectorSize::Bi),
+        Some(Binding::Location { location: 0, .. }) => {
+            host_location_binding(*binding, 0) && f32_vector(module, *ty, VectorSize::Quad)
+        }
+        Some(Binding::Location { location: 1, .. }) => {
+            host_location_binding(*binding, 1) && f32_vector(module, *ty, VectorSize::Bi)
+        }
         Some(Binding::BuiltIn(BuiltIn::Position { .. })) => {
             f32_vector(module, *ty, VectorSize::Quad)
         }
@@ -130,7 +145,7 @@ fn validate_fragment_interface(
     };
     let outputs = interface_members(module, result.ty, result.binding.as_ref());
     if outputs.len() != 1
-        || !matches!(outputs[0].0, Some(Binding::Location { location: 0, .. }))
+        || !host_location_binding(outputs[0].0, 0)
         || !f32_vector(module, outputs[0].1, VectorSize::Quad)
     {
         return Err(FragmentMaterialGlslError::first(
@@ -371,5 +386,19 @@ void main() {
             .to_string();
         assert!(diagnostic.starts_with("line 1, column 1:"), "{diagnostic}");
         assert!(diagnostic.contains("fragment inputs"), "{diagnostic}");
+    }
+
+    #[test]
+    fn rejects_interpolation_that_cannot_link_to_the_host_vertex_stage() {
+        for qualifier in ["flat ", "noperspective ", "smooth centroid "] {
+            let source = SUPPORTED.replace(
+                "layout(location = 0) in vec4 base_color;",
+                &format!("layout(location = 0) {qualifier}in vec4 base_color;"),
+            );
+            let diagnostic = compile_fragment_material_glsl(&source, "main")
+                .expect_err(qualifier)
+                .to_string();
+            assert!(diagnostic.contains("fragment inputs"), "{diagnostic}");
+        }
     }
 }

@@ -3689,14 +3689,17 @@ export function App({
     ? "Manim .py export does not support project-local WGSL fragment materials. Remove them before exporting source."
     : null;
 
-  function commitActiveProjectFragmentMaterials(next: ProjectFragmentMaterialStateV1) {
-    if (!activeProjectId) return false;
-    if (!saveProjectFragmentMaterials(activeProjectId, next)) {
+  function commitProjectFragmentMaterials(projectId: string, next: ProjectFragmentMaterialStateV1) {
+    if (!saveProjectFragmentMaterials(projectId, next)) {
       setDraftError("The project fragment materials could not be saved.");
       return false;
     }
-    setProjectFragmentMaterials((current) => ({ ...current, [activeProjectId]: next }));
+    setProjectFragmentMaterials((current) => ({ ...current, [projectId]: next }));
     return true;
+  }
+
+  function commitActiveProjectFragmentMaterials(next: ProjectFragmentMaterialStateV1) {
+    return activeProjectId ? commitProjectFragmentMaterials(activeProjectId, next) : false;
   }
 
   function createFragmentMaterial(name: string) {
@@ -3753,13 +3756,32 @@ export function App({
   }
 
   async function importFragmentMaterialGlsl(shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) {
+    if (!activeProjectId) throw new Error("No project is open.");
+    const projectId = activeProjectId;
+    const expectedMaterial = activeProjectFragmentMaterials.registry.materials.find(
+      (material) => material.shaderId === shaderId,
+    );
+    if (!expectedMaterial) throw new Error("The material no longer exists.");
+    const expectedGlsl = activeProjectFragmentMaterials.glslSourcesByShaderId[shaderId] ?? null;
     const wgsl = await compileFragmentMaterialGlsl(input);
-    const next = updateStudioFragmentMaterialFromGlslV1(activeProjectFragmentMaterials, {
+    const current = loadProjectFragmentMaterials(projectId) ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
+    const currentMaterial = current.registry.materials.find((material) => material.shaderId === shaderId);
+    const currentGlsl = current.glslSourcesByShaderId[shaderId] ?? null;
+    if (
+      !currentMaterial ||
+      currentMaterial.revision !== expectedMaterial.revision ||
+      currentMaterial.source !== expectedMaterial.source ||
+      currentGlsl?.entryPoint !== expectedGlsl?.entryPoint ||
+      currentGlsl?.source !== expectedGlsl?.source
+    ) {
+      throw new Error("The material changed while GLSL was compiling. Review the latest source and try again.");
+    }
+    const next = updateStudioFragmentMaterialFromGlslV1(current, {
       ...input,
       shaderId,
       wgsl,
     });
-    if (!commitActiveProjectFragmentMaterials(next)) {
+    if (!commitProjectFragmentMaterials(projectId, next)) {
       throw new Error("The compiled GLSL material could not be saved.");
     }
   }

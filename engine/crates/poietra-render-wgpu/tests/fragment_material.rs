@@ -5,7 +5,8 @@ use poietra_render_wgpu::{
     DecodedPngAssetResolverV1, FragmentMaterialRegistryErrorV1, FragmentMaterialSourceV1,
     FragmentMaterialSupportV1, MAX_FRAGMENT_MATERIAL_DRAWS_PER_FRAME_V1, PrepareFrameErrorV1,
     PreparedGeometryCacheV1, PreparedRenderCommandV1, TIME_GRADIENT_SHADER_ID_V1,
-    TIME_GRADIENT_SHADER_REVISION_V1, WgpuFillRendererV1, WgpuRenderTargetV1, prepare_frame_v1,
+    TIME_GRADIENT_SHADER_REVISION_V1, WgpuFillRendererV1, WgpuRenderTargetV1,
+    compile_fragment_material_glsl, prepare_frame_v1,
     prepare_frame_with_cache_assets_and_fragment_materials_v1,
 };
 use poietra_scene_ir::{FragmentMaterialV1, RenderCapabilityV1, RenderDrawV1};
@@ -122,18 +123,15 @@ impl DecodedPngAssetResolverV1 for NoAssets {
 
 #[test]
 #[ignore = "requires a native software WGPU adapter; the dedicated GPU lane runs this proof"]
-fn custom_wgsl_renders_and_invalid_replacement_preserves_the_active_registry() {
+fn compiled_glsl_renders_and_invalid_replacement_preserves_the_active_registry() {
     const SHADER_ID: &str = "project-custom-proof";
-    const SOURCE: &str = r"
-struct FragmentInput {
-    @builtin(position) position: vec4<f32>,
-    @location(0) base_color: vec4<f32>,
-    @location(1) screen_position: vec2<f32>,
-};
+    const SOURCE: &str = r"#version 450
+layout(location = 0) in vec4 base_color;
+layout(location = 1) in vec2 screen_position;
+layout(location = 0) out vec4 output_color;
 
-@fragment
-fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
-    return vec4<f32>(input.base_color.rgb * vec3<f32>(0.5, 1.0, 0.75), input.base_color.a);
+void main() {
+    output_color = vec4(base_color.rgb * vec3(0.5, 1.0, 0.75), base_color.a);
 }
 ";
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -154,12 +152,14 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     .expect("the fallback adapter must create a proof device");
     let format = wgpu::TextureFormat::Rgba8UnormSrgb;
     let mut renderer = WgpuFillRendererV1::new(&device, format).unwrap();
+    let wgsl = compile_fragment_material_glsl(SOURCE, "main")
+        .expect("the supported GLSL fixture must compile to the host ABI");
     pollster::block_on(renderer.replace_fragment_material_sources(
         &device,
         &[FragmentMaterialSourceV1 {
             revision: 1,
             shader_id: SHADER_ID.to_owned(),
-            source: SOURCE.to_owned(),
+            source: wgsl,
         }],
     ))
     .expect("the custom fragment source must compile");

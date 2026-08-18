@@ -158,8 +158,18 @@ describe("project-local fragment material authoring", () => {
 
     const editedAsWgsl = updateStudioFragmentMaterialSourceV1(imported, {
       shaderId: created.shaderId,
-      source: "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(0.5); }",
+      source: imported.registry.materials[0]?.source ?? "",
     });
     expect(editedAsWgsl.glslSourcesByShaderId).not.toHaveProperty(created.shaderId);
+    expect(editedAsWgsl.registry.materials[0]?.revision).toBe(2);
+
+    expect(
+      updateStudioFragmentMaterialFromGlslV1(imported, {
+        entryPoint: "main",
+        shaderId: created.shaderId,
+        source: glsl,
+        wgsl: imported.registry.materials[0]?.source ?? "",
+      }),
+    ).toBe(imported);
   });
 });

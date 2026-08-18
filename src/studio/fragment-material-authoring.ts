@@ -282,7 +282,15 @@ export function updateStudioFragmentMaterialSourceV1(
 ): ProjectFragmentMaterialStateV1 {
   const activeMaterial = state.registry.materials.find(({ shaderId }) => shaderId === input.shaderId);
   if (!activeMaterial) throw new Error("The material no longer exists.");
-  if (activeMaterial.source === input.source && !(input.shaderId in state.glslSourcesByShaderId)) return state;
+  if (activeMaterial.source === input.source) {
+    if (!(input.shaderId in state.glslSourcesByShaderId)) return state;
+    const glslSourcesByShaderId = { ...state.glslSourcesByShaderId };
+    delete glslSourcesByShaderId[input.shaderId];
+    return parseProjectFragmentMaterialState({
+      ...state,
+      glslSourcesByShaderId,
+    });
+  }
   const revision = activeMaterial.revision + 1;
   const assignmentsByScene = Object.fromEntries(
     Object.entries(state.assignmentsByScene).map(([sceneId, assignments]) => [
@@ -319,6 +327,25 @@ export function updateStudioFragmentMaterialFromGlslV1(
     wgsl: string;
   }>,
 ): ProjectFragmentMaterialStateV1 {
+  const activeMaterial = state.registry.materials.find(({ shaderId }) => shaderId === input.shaderId);
+  if (!activeMaterial) throw new Error("The material no longer exists.");
+  const currentGlsl = state.glslSourcesByShaderId[input.shaderId];
+  if (
+    activeMaterial.source === input.wgsl &&
+    currentGlsl?.entryPoint === input.entryPoint &&
+    currentGlsl.source === input.source
+  ) {
+    return state;
+  }
+  if (activeMaterial.source === input.wgsl) {
+    return parseProjectFragmentMaterialState({
+      ...state,
+      glslSourcesByShaderId: {
+        ...state.glslSourcesByShaderId,
+        [input.shaderId]: { entryPoint: input.entryPoint, source: input.source },
+      },
+    });
+  }
   const updated = updateStudioFragmentMaterialSourceV1(state, {
     shaderId: input.shaderId,
     source: input.wgsl,
