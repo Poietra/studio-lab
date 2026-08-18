@@ -1,12 +1,20 @@
 import { readFile } from "node:fs/promises";
 
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
+import type { SceneIrBundleV1 } from "../src/engine/contracts";
 
 const VIEWPORT = { heightPx: 90, widthPx: 160 } as const;
 const FPS = 2;
 /** `ceil(duration 2 s * 2 fps)` uniform-grid frames at 0, 0.5, 1.0, 1.5 s. */
 const EXPECTED_FRAME_COUNT = 4;
 const FRAME_BYTES = VIEWPORT.widthPx * VIEWPORT.heightPx * 4;
+
+const FRAGMENT_EXPORT_VIEWPORT = { heightPx: 480, widthPx: 854 } as const;
+const FRAGMENT_READBACK_VIEWPORT = { heightPx: 90, widthPx: 160 } as const;
+const FRAGMENT_EXPORT_FPS = 30;
+const FRAGMENT_EXPORT_DURATION = 0.2;
+const FRAGMENT_EXPORT_FRAME_COUNT = 6;
+const FRAGMENT_EXPORT_SAMPLE_FRAMES = [0, 3] as const;
 
 type ExportReadbackProof = Readonly<{
   frameCount: number;
@@ -19,22 +27,74 @@ function pixelAt(rgba: readonly number[], frame: number, x: number, y: number) {
   return [rgba[offset], rgba[offset + 1], rgba[offset + 2], rgba[offset + 3]] as const;
 }
 
+function pixelAtViewport(
+  rgba: readonly number[],
+  frame: number,
+  x: number,
+  y: number,
+  viewport: Readonly<{ heightPx: number; widthPx: number }>,
+) {
+  const frameBytes = viewport.widthPx * viewport.heightPx * 4;
+  const offset = frame * frameBytes + (y * viewport.widthPx + x) * 4;
+  return [rgba[offset], rgba[offset + 1], rgba[offset + 2], rgba[offset + 3]] as const;
+}
+
 function expectPixelClose(actual: readonly (number | undefined)[], expected: readonly number[], tolerance: number) {
   expected.forEach((component, index) => {
     expect(Math.abs((actual[index] ?? -1) - component)).toBeLessThanOrEqual(tolerance);
   });
 }
 
-test("proves the async offscreen export readback sequence in the browser WebGPU runtime", async ({ page }) => {
-  test.setTimeout(120_000);
-  const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Readonly<{
-    assets: unknown;
-    scene: unknown;
-  }>;
-  const bundle = { assets: fixture.assets, scene: fixture.scene } as const;
+function fragmentMaterialExportFixture(fixture: SceneIrBundleV1): SceneIrBundleV1 {
+  const material = fixture.scene.entities.find((entity) => entity.id === "earlier");
+  if (!material?.appearance?.fill || material.geometry?.kind !== "circle") {
+    throw new Error("The shared Scene fixture lost its editable filled circle.");
+  }
+  if (fixture.scene.source.kind !== "studio-edit-program") {
+    throw new Error("The shared Scene fixture lost its authored revision source.");
+  }
+  return {
+    assets: fixture.assets,
+    scene: {
+      ...fixture.scene,
+      animationChannels: [],
+      duration: FRAGMENT_EXPORT_DURATION,
+      entities: [
+        {
+          ...material,
+          appearance: {
+            ...material.appearance,
+            fill: {
+              ...material.appearance.fill,
+              color: { alpha: 1, blue: 1, green: 1, red: 1 },
+              fragmentMaterial: {
+                // Spatial frequency zero gives a flat center-safe sample. A temporal
+                // frequency of three moves frame 0 from mid-grey to near-white at frame 3.
+                parameters: [0, 3, 0, 0.2],
+                revision: 1,
+                shaderId: "time-gradient",
+              },
+            },
+          },
+          geometry: { ...material.geometry, center: { x: 0, y: 0 }, radius: 3 },
+          id: "time-gradient",
+          lifetimes: [{ end: FRAGMENT_EXPORT_DURATION, start: 0 }],
+        },
+      ],
+      requiredCapabilities: ["fragment-material", "shape-primitives"],
+      sceneId: "fixture:fragment-material-export",
+      source: { ...fixture.scene.source, revisionHash: "f".repeat(64) },
+    },
+  };
+}
 
-  await page.goto("/");
-  const proof = (await page.evaluate(
+async function renderExportReadback(
+  page: Page,
+  snapshot: SceneIrBundleV1,
+  viewport: Readonly<{ heightPx: number; widthPx: number }>,
+  fps: number,
+): Promise<ExportReadbackProof> {
+  return page.evaluate(
     async ({ fps, snapshot, viewport }) => {
       const worker = new Worker("/e2e/export-readback.worker.ts", { type: "module" });
       const done = new Promise<{ frameCount?: number; kind: string; message?: string; rgba?: ArrayBuffer }>(
@@ -58,8 +118,7 @@ test("proves the async offscreen export readback sequence in the browser WebGPU 
         },
         [snapshotJson],
       );
-      const result = await done;
-      worker.terminate();
+      const result = await done.finally(() => worker.terminate());
       if (result.kind !== "export-readback-proof" || !result.rgba || result.frameCount === undefined) {
         throw new Error(`The export readback proof failed: ${result.message ?? JSON.stringify(result)}`);
       }
@@ -69,8 +128,20 @@ test("proves the async offscreen export readback sequence in the browser WebGPU 
         rgba: Array.from(new Uint8Array(result.rgba)),
       };
     },
-    { fps: FPS, snapshot: bundle, viewport: VIEWPORT },
-  )) as ExportReadbackProof;
+    { fps, snapshot, viewport },
+  );
+}
+
+test("proves the async offscreen export readback sequence in the browser WebGPU runtime", async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Pick<
+    SceneIrBundleV1,
+    "assets" | "scene"
+  >;
+  const bundle = { assets: fixture.assets, scene: fixture.scene };
+
+  await page.goto("/");
+  const proof = await renderExportReadback(page, bundle, VIEWPORT, FPS);
 
   expect(proof.kind).toBe("export-readback-proof");
   expect(proof.frameCount).toBe(EXPECTED_FRAME_COUNT);
@@ -88,4 +159,128 @@ test("proves the async offscreen export readback sequence in the browser WebGPU 
   expectPixelClose(pixelAt(proof.rgba, 0, 70, 45), [0, 0, 0, 255], 0);
   expectPixelClose(pixelAt(proof.rgba, 2, 70, 45), [188, 0, 0, 255], 3);
   expectPixelClose(pixelAt(proof.rgba, 3, 70, 45), [237, 0, 0, 255], 3);
+});
+
+test("decoded WebCodecs MP4 frames preserve the Rust time-gradient render", async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Pick<
+    SceneIrBundleV1,
+    "assets" | "scene"
+  >;
+  const snapshot = fragmentMaterialExportFixture({ assets: fixture.assets, scene: fixture.scene });
+
+  await page.goto("/");
+  // The exact 16:9 proof viewport avoids the 854 px export rung's intentional
+  // camera widening. This material is spatially uniform, so its center pixel
+  // remains the same expected Rust output at either viewport.
+  const readback = await renderExportReadback(page, snapshot, FRAGMENT_READBACK_VIEWPORT, FRAGMENT_EXPORT_FPS);
+  expect(readback.frameCount).toBe(FRAGMENT_EXPORT_FRAME_COUNT);
+  const expected = FRAGMENT_EXPORT_SAMPLE_FRAMES.map((frameIndex) =>
+    pixelAtViewport(
+      readback.rgba,
+      frameIndex,
+      Math.floor(FRAGMENT_READBACK_VIEWPORT.widthPx / 2),
+      Math.floor(FRAGMENT_READBACK_VIEWPORT.heightPx / 2),
+      FRAGMENT_READBACK_VIEWPORT,
+    ),
+  );
+  const proof = await page.evaluate(
+    async ({ exportViewport, fps, sampleFrames, snapshot }) => {
+      const browserExport = (await import(
+        /* @vite-ignore */ "/src/engine/browser-mp4-export.ts"
+      )) as typeof import("../src/engine/browser-mp4-export");
+      const outcome = await browserExport.runBrowserMp4ExportV1({
+        profile: browserExport.DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+        snapshot,
+      });
+      if (outcome.kind === "refused") {
+        return { kind: "refused" as const, message: outcome.message, reason: outcome.reason };
+      }
+
+      const url = URL.createObjectURL(outcome.mp4);
+      const video = document.createElement("video");
+      video.muted = true;
+      video.preload = "auto";
+      video.src = url;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error("The exported MP4 did not become decodable.")), 15_000);
+          video.addEventListener(
+            "loadeddata",
+            () => {
+              clearTimeout(timeout);
+              resolve();
+            },
+            { once: true },
+          );
+          video.addEventListener(
+            "error",
+            () => {
+              clearTimeout(timeout);
+              reject(new Error(video.error?.message || "Chromium rejected the exported MP4."));
+            },
+            { once: true },
+          );
+          video.load();
+        });
+        if (video.videoWidth !== exportViewport.widthPx || video.videoHeight !== exportViewport.heightPx) {
+          throw new Error(`Decoded MP4 dimensions were ${video.videoWidth}x${video.videoHeight}.`);
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+        if (!context) throw new Error("The decoded-frame canvas is unavailable.");
+
+        const decoded = [];
+        for (const frameIndex of sampleFrames) {
+          const targetTime = (frameIndex + 0.1) / fps;
+          await new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error(`MP4 seek to frame ${frameIndex} timed out.`)), 15_000);
+            const onSeeked = () => {
+              clearTimeout(timeout);
+              resolve();
+            };
+            video.addEventListener("seeked", onSeeked, { once: true });
+            video.currentTime = targetTime;
+          });
+          context.drawImage(video, 0, 0);
+          decoded.push(
+            Array.from(
+              context.getImageData(
+                Math.floor(exportViewport.widthPx / 2),
+                Math.floor(exportViewport.heightPx / 2),
+                1,
+                1,
+              ).data,
+            ),
+          );
+        }
+        return { decoded, kind: "decoded" as const };
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    },
+    {
+      exportViewport: FRAGMENT_EXPORT_VIEWPORT,
+      fps: FRAGMENT_EXPORT_FPS,
+      sampleFrames: FRAGMENT_EXPORT_SAMPLE_FRAMES,
+      snapshot,
+    },
+  );
+
+  test.skip(
+    proof.kind === "refused" && ["api-unavailable", "unsupported-codec"].includes(proof.reason),
+    proof.kind === "refused" ? `Chromium has no usable H.264 WebCodecs encoder: ${proof.message}` : undefined,
+  );
+  if (proof.kind === "refused") {
+    throw new Error(`Browser MP4 export refused with ${proof.reason}: ${proof.message}`);
+  }
+  expect(expected).toHaveLength(2);
+  expect(proof.decoded).toHaveLength(2);
+  expect(Math.abs((expected[1]?.[0] ?? 0) - (expected[0]?.[0] ?? 0))).toBeGreaterThan(32);
+  expect(Math.abs((proof.decoded[1]?.[0] ?? 0) - (proof.decoded[0]?.[0] ?? 0))).toBeGreaterThan(32);
+  for (const [index, expectedPixel] of expected.entries()) {
+    expectPixelClose(proof.decoded[index] ?? [], expectedPixel, 4);
+  }
 });
