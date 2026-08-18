@@ -39,7 +39,7 @@ class Second(Scene):
 `;
 
 describe("conservative Manim source import", () => {
-  it("retains the official WriteStuff Tex roots without treating style-map strings as content", async () => {
+  it("admits exactly the two visible official WriteStuff roots and keeps its layout helper non-visible", async () => {
     const officialSource = await readFile(
       new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
       "utf8",
@@ -52,9 +52,33 @@ describe("conservative Manim source import", () => {
       "source:example_scenes/basic.py#WriteStuff:example_tex": "example_tex",
       "source:example_scenes/basic.py#WriteStuff:group": "group",
     });
+    expect(imported?.importOutcomes).toEqual([]);
+    expect(imported?.runtimeSceneState.duration).toBe(3);
+    expect(imported?.initialVisibleSourceVariables).toEqual(["example_text"]);
+    expect(
+      Object.values(imported?.runtimeSceneState.objectGraph.entities ?? {})
+        .filter(({ lifetime }) => lifetime.length > 0)
+        .map(({ sourceIdentity }) => (sourceIdentity.kind === "known" ? sourceIdentity.value : null)),
+    ).toEqual(["example_text", "example_tex"]);
+    expect(imported?.runtimeSceneState.objectGraph.entities[textId]?.lifetime).toEqual([{ end: 3, start: 0 }]);
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:example_scenes/basic.py#WriteStuff:example_tex"]
+        ?.lifetime,
+    ).toEqual([{ end: 3, start: 1 }]);
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:example_scenes/basic.py#WriteStuff:group"]?.lifetime,
+    ).toEqual([]);
     expect(imported?.runtimeSceneState.objectGraph.entities[textId]?.content?.texParts).toEqual([
       "This is a some text",
     ]);
+    for (const sourceVariable of ["example_text", "example_tex"] as const) {
+      const geometry =
+        imported?.runtimeSceneState.objectGraph.entities[`source:example_scenes/basic.py#WriteStuff:${sourceVariable}`]
+          ?.geometry;
+      expect(geometry?.dimensions).toMatchObject({ kind: "unknown", reason: expect.stringMatching(/VGroup/) });
+      expect(geometry?.position).toMatchObject({ kind: "unknown", reason: expect.stringMatching(/VGroup/) });
+      expect(geometry?.scale).toMatchObject({ kind: "unknown", reason: expect.stringMatching(/VGroup/) });
+    }
     expect(imported?.contentReplacementSafety).not.toHaveProperty("example_text");
   });
 

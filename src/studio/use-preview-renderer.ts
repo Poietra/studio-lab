@@ -193,12 +193,12 @@ export type StudioPreviewInteractionAuthority =
     }>
   | Readonly<{
       kind: "selection-only";
-      reason: "runtime-trace-preview-only";
+      reason: "runtime-trace-preview-only" | "source-edit-unsupported";
       verifiedRuntimeEntityIds: readonly string[];
     }>
   | Readonly<{
       kind: "selection-only";
-      reason: "source-edit-anchor-unavailable" | "source-edit-unsupported";
+      reason: "source-edit-anchor-unavailable";
     }>
   | Readonly<{
       kind: "display-only";
@@ -373,10 +373,18 @@ export function studioPreviewInteractionAuthority(
   if (!identity || identity.size === 0) {
     return { kind: "display-only", reason: "source-runtime-identity-unverified" };
   }
-  if (snapshot.snapshot.scene.animationChannels.length > 0) {
-    return { kind: "selection-only", reason: "source-edit-unsupported" };
-  }
   const entityById = new Map(snapshot.snapshot.scene.entities.map((entity) => [entity.id, entity] as const));
+  if (snapshot.snapshot.scene.animationChannels.length > 0) {
+    const verifiedRuntimeEntityIds = [...identity.values()].flatMap(({ entityId }) => {
+      const entity = entityById.get(entityId);
+      return entity && (entity.geometry.kind !== "group" || entity.parentId !== null) ? [entityId] : [];
+    });
+    return {
+      kind: "selection-only",
+      reason: "source-edit-unsupported",
+      verifiedRuntimeEntityIds,
+    };
+  }
   const hasOnlyEditableRoots = [...identity.values()].every(({ entityId }) => {
     const entity = entityById.get(entityId);
     return entity?.parentId === null && entity.geometry.kind !== "group";
@@ -404,7 +412,9 @@ export function studioPreviewInteractionEntityIdsV1(
   const runtimeTraceSelection =
     (authority.kind === "selection-only" && authority.reason === "runtime-trace-preview-only") ||
     authority.kind === "bounded-interactive";
-  const verifiedRuntimeEntityIds = new Set(runtimeTraceSelection ? authority.verifiedRuntimeEntityIds : []);
+  const verifiedSelection =
+    runtimeTraceSelection || (authority.kind === "selection-only" && authority.reason === "source-edit-unsupported");
+  const verifiedRuntimeEntityIds = new Set(verifiedSelection ? authority.verifiedRuntimeEntityIds : []);
   const genericRuntimeTraceRootIds = new Set(
     [...identity.values()]
       .filter(({ runtimeTraceEvidence }) => runtimeTraceEvidence !== undefined)
@@ -429,7 +439,7 @@ export function studioPreviewInteractionEntityIdsV1(
   const entityIds: string[] = [];
   const seen = new Set<string>();
   for (const mapping of identity.values()) {
-    if (runtimeTraceSelection && !verifiedRuntimeEntityIds.has(mapping.entityId)) continue;
+    if (verifiedSelection && !verifiedRuntimeEntityIds.has(mapping.entityId)) continue;
     if (
       seen.has(mapping.entityId) ||
       !sourceIdentityV1Schema.safeParse(mapping.entityId).success ||

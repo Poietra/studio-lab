@@ -100,33 +100,53 @@
       "id": "official-write-stuff",
       "sceneName": "WriteStuff",
       "sourcePath": "example_scenes/basic.py",
-      "fixturePaths": ["fixtures/real-preview-harness/example_scenes/basic.py"],
-      "rootCoverage": { "status": "unmeasured" },
+      "fixturePaths": [
+        "fixtures/real-preview-harness/example_scenes/basic.py",
+        "fixtures/engine-v1/real-write-stuff-v12.json",
+        "server/test-fixtures/fast-manim-write-stuff-v12-combined.json"
+      ],
+      "rootCoverage": {
+        "status": "pass",
+        "fixturePath": "server/test-fixtures/fast-manim-write-stuff-v12-combined.json",
+        "expected": 2,
+        "accepted": 2,
+        "missing": 0,
+        "silentOmissions": 0
+      },
       "stages": {
         "discovery": "pass",
-        "preview": "unmeasured",
+        "preview": "pass",
         "binding": "pass",
-        "selection": "unmeasured",
+        "selection": "pass",
         "edit": {
-          "move": "unmeasured",
-          "uniform-resize": "unmeasured",
-          "rotation": "unmeasured",
-          "opacity": "unmeasured"
+          "move": "fail",
+          "uniform-resize": "fail",
+          "rotation": "fail",
+          "opacity": "fail"
         },
-        "py-export": "unmeasured",
-        "reimport": "unmeasured",
-        "fresh-validation": "unmeasured"
+        "py-export": "fail",
+        "reimport": "fail",
+        "fresh-validation": "fail"
+      },
+      "failures": {
+        "edit.move": "read-only",
+        "edit.uniform-resize": "read-only",
+        "edit.rotation": "read-only",
+        "edit.opacity": "read-only",
+        "py-export": "read-only",
+        "reimport": "read-only",
+        "fresh-validation": "read-only"
       },
       "notes": {
-        "preview": "Old Scene-specific evidence is not current generic evidence.",
-        "selection": "No current generic selection assertion.",
-        "edit.move": "Not exercised through the current generic route.",
-        "edit.uniform-resize": "Not exercised through the current generic route.",
-        "edit.rotation": "Not exercised through the current generic route.",
-        "edit.opacity": "Not exercised through the current generic route.",
-        "py-export": "No current generic edit is claimed.",
-        "reimport": "No current generic edit is claimed.",
-        "fresh-validation": "No current generic edit is claimed."
+        "preview": "The checked V12 Scene IR supplies glyph geometry; generic verified-snapshot selection admits exactly the two visible identity roots without new production profile dispatch.",
+        "selection": "Both source-visible Tex roots receive Rust-prepared interaction geometry; the layout-only group has no source lifecycle and no selector.",
+        "edit.move": "Static import projects 3 seconds while the runtime fixture lasts 4 seconds, so no exact generic edit anchor is claimed.",
+        "edit.uniform-resize": "Static import projects 3 seconds while the runtime fixture lasts 4 seconds, so no exact generic edit anchor is claimed.",
+        "edit.rotation": "Static import projects 3 seconds while the runtime fixture lasts 4 seconds, so no exact generic edit anchor is claimed.",
+        "edit.opacity": "Static import projects 3 seconds while the runtime fixture lasts 4 seconds, so no exact generic edit anchor is claimed.",
+        "py-export": "Selection-only verified server roots do not authorize source rewriting.",
+        "reimport": "No source edit is authorized.",
+        "fresh-validation": "No source edit is authorized."
       }
     },
     {

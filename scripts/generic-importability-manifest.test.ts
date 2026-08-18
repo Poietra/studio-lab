@@ -57,12 +57,29 @@ describe("generic Manim importability scoreboard", () => {
       }
       if (entry.rootCoverage.status === "unmeasured") continue;
       const fixture = JSON.parse(await readFile(join(root, entry.rootCoverage.fixturePath), "utf8")) as {
-        roots: readonly unknown[];
+        evidence?: {
+          records?: readonly {
+            bindings?: readonly unknown[];
+            lifecycle?: readonly unknown[];
+            status?: string;
+          }[];
+          sceneName?: string;
+        };
+        roots?: readonly unknown[];
         scene?: { className?: string };
         sceneName?: string;
       };
-      expect(fixture.scene?.className ?? fixture.sceneName).toBe(entry.sceneName);
-      expect(fixture.roots).toHaveLength(entry.rootCoverage.expected);
+      const roots =
+        fixture.roots ??
+        fixture.evidence?.records?.filter(
+          (record) =>
+            record.status === "mapped" &&
+            record.bindings?.length === 1 &&
+            record.lifecycle !== undefined &&
+            record.lifecycle.length > 0,
+        );
+      expect(fixture.scene?.className ?? fixture.sceneName ?? fixture.evidence?.sceneName).toBe(entry.sceneName);
+      expect(roots).toHaveLength(entry.rootCoverage.expected);
     }
   });
 });

@@ -36,13 +36,19 @@ The importer is not complete merely because a Scene renders. Completion requires
 - missing visible roots in an accepted generic preview: `0`; and
 - claimed edit operations with export, reimport, and fresh validation: `100%`.
 
-The first two gates currently pass only for the three committed accepted generic fixtures: `StaticSquare` has one
-accepted root, `FeynmanDiagram` has four, and `FourierSeriesSquareWave` has five. The seven official Scenes remain
-unmeasured on the current generic preview route, so these root totals do not mean that the importer is complete. The
-edit roundtrip gate is green: `StaticSquare` reimports all four advertised operations through the full static importer,
-and the three claimed official-corpus edits (`OpeningManim` move, `WarpSquare` move, and `UpdatersExample` uniform
-resize) now reimport and independently re-derive their emitted Python. The scoreboard therefore records all seven
-claimed operation roundtrips, or `100%`.
+The first two gates currently pass for four committed accepted fixtures: official `WriteStuff` has two accepted
+source-visible roots, `StaticSquare` has one, `FeynmanDiagram` has four, and `FourierSeriesSquareWave` has five. The
+other six official Scenes remain unmeasured on the current generic preview route, so these 12 roots do not mean that
+the importer is complete. `WriteStuff` reuses the checked 61-entity V12 Scene IR and its existing WGPU parity as real
+glyph geometry. The generic verified-snapshot selection policy admits `example_text` and `example_tex` from verified
+source/runtime identity, while the source-lifecycle-free `group` layout helper is explicitly not a visible selector.
+No new WriteStuff dispatch is added. Its static importer duration is 3 seconds while the runtime fixture is 4 seconds,
+so the measured preview remains selection-only and no edit or export claim is promoted.
+
+The edit roundtrip gate is green: `StaticSquare` reimports all four advertised operations through the full static
+importer, and the three claimed official-corpus edits (`OpeningManim` move, `WarpSquare` move, and `UpdatersExample`
+uniform resize) now reimport and independently re-derive their emitted Python. The scoreboard therefore records all
+seven claimed operation roundtrips, or `100%`.
 
 Adding a Scene or promoting a status requires an existing offline test in the gate command. External clones, a new
 producer, OCI execution, and a new Scene-specific production branch are outside this gate.
