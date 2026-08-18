@@ -19,6 +19,7 @@ import {
 import { EditSuggestionAdmissionController } from "./edit-suggestions/admission";
 import { createEditSuggestionRequestHandler, EDIT_SUGGESTION_ROUTE } from "./edit-suggestions/handler";
 import type { EditSuggestionGenerator } from "./edit-suggestions/service";
+import type { EditSuggestionUsageMeterV1 } from "./edit-suggestions/usage-metering";
 import { handleEditorDocumentRequest, isEditorDocumentRequest } from "./editor-document-http";
 import { HttpError, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
@@ -239,6 +240,8 @@ export type ProductionEditSuggestionAdapterV1 = Readonly<{
   admission?: EditSuggestionAdmissionController;
   generationTimeoutMs?: number;
   generator: EditSuggestionGenerator;
+  /** Production AI requests must cross durable ai-suggestion flow metering. */
+  usageMeter: EditSuggestionUsageMeterV1;
 }>;
 
 export type ProductionManimServer = Readonly<{
@@ -451,7 +454,12 @@ export async function startProductionManimServer(
       options.editSuggestions.generator === null ||
       typeof options.editSuggestions.generator.generate !== "function" ||
       (options.editSuggestions.admission !== undefined &&
-        !(options.editSuggestions.admission instanceof EditSuggestionAdmissionController)))
+        !(options.editSuggestions.admission instanceof EditSuggestionAdmissionController)) ||
+      typeof options.editSuggestions.usageMeter !== "object" ||
+      options.editSuggestions.usageMeter === null ||
+      typeof options.editSuggestions.usageMeter.commit !== "function" ||
+      typeof options.editSuggestions.usageMeter.release !== "function" ||
+      typeof options.editSuggestions.usageMeter.reserve !== "function")
   ) {
     throw new TypeError("Production edit-suggestion adapter is incomplete.");
   }
@@ -462,6 +470,7 @@ export async function startProductionManimServer(
         generationTimeoutMs: options.editSuggestions.generationTimeoutMs,
         generator: () => options.editSuggestions!.generator,
         logger: logger.child({ component: "edit-suggestions-api" }),
+        usageMeter: options.editSuggestions.usageMeter,
       })
     : null;
   const trustedProxyAddresses = new Set(config.trustedProxyAddresses);

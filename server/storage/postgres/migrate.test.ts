@@ -17,6 +17,7 @@ import {
   applyAccountOrganizationMigrationV11,
   applyAccountOrganizationSwitchMutationMigrationV28,
   applyAccountSessionMigrationV12,
+  applyBillingEntitlementGrantMigrationV32,
   applyBundledDurableStorageMigrations,
   applyBundledDurableStorageMigrationsThrough,
   type applyBundledDurableStorageMigrationsV2,
@@ -44,6 +45,8 @@ import {
   applySnapshotRuntimeConfigHeadMigrationV25,
   applySnapshotRuntimeDigestMigrationV10,
   applyWorkspaceSourceMigrationV1,
+  BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM,
+  BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_SOURCE,
   BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM,
   BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE,
   CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_CHECKSUM,
@@ -130,12 +133,13 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 31 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 32 });
     expect([...db.installed.keys()]).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31,
+      32,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 31 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 32 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -171,7 +175,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(62);
+    expect(db.queries.filter(({ text }) => text === BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(64);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -249,12 +254,17 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 31,
     });
+    expect(db.queries.some(({ text }) => text === BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_SOURCE)).toBe(false);
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 32)).resolves.toEqual({
+      applied: true,
+      version: 32,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 32)).rejects.toThrow(
-      /migration v32 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 33)).rejects.toThrow(
+      /migration v33 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -905,6 +915,70 @@ describe("durable storage migrations", () => {
     await expect(
       applyClientExportPublicationMigrationV31(db.pool, CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v30/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("normalizes entitlement grants, backfills render before widening kinds, and adds stock allocations in v32", async () => {
+    const source = BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_SOURCE;
+    expect(durableStorageMigrationChecksum(source)).toBe(BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM);
+    expect(source).toContain("CREATE TABLE public.entitlement_flow_grants");
+    expect(source).toContain("CREATE TABLE public.entitlement_stock_grants");
+    expect(source).toContain("CREATE TABLE public.stock_allocations");
+    // New surfaces use the entitlementGeneration name; only compatibility
+    // references to the frozen v14 unique constraints keep source_generation.
+    expect(source).toContain("entitlement_generation bigint NOT NULL CHECK (entitlement_generation > 0)");
+    expect(source).toContain(
+      "REFERENCES public.entitlement_snapshots (tenant_id, snapshot_id, source_generation, usage_period_key)",
+    );
+    expect(source).toContain("operation_kind IN ('render', 'ai-suggestion', 'export-publication')");
+    expect(source).toContain("unit_limit integer NOT NULL CHECK (unit_limit BETWEEN 0 AND 1000000)");
+    expect(source).toContain("resource_kind text NOT NULL CHECK (resource_kind = 'published-artifact-bytes')");
+    expect(source).toContain("quantity_limit bigint NOT NULL CHECK (quantity_limit BETWEEN 0 AND 9007199254740991)");
+    expect(source).toContain("A render flow grant must mirror its snapshot render job limit.");
+    expect(source).toContain("Entitlement flow grants are append-only.");
+    expect(source).toContain("Entitlement stock grants are append-only.");
+
+    // Stock is a period-free ledger: no usage period key and no cached total.
+    // Released audit rows outlive publication metadata, so the integration is
+    // transactional rather than a publication foreign key.
+    expect(source).toContain("PRIMARY KEY (tenant_id, resource_kind, publication_id)");
+    expect(source).toContain("quantity bigint NOT NULL CHECK (quantity BETWEEN 1 AND 9007199254740991)");
+    expect(source).toContain("CREATE INDEX stock_allocations_unreleased_v32");
+    expect(source).toContain("WHERE released_at IS NULL");
+    expect(source).toContain("Stock allocations are released, never deleted.");
+    expect(source).toContain("A released stock allocation is immutable.");
+    expect(source).not.toContain("REFERENCES public.client_export_publications");
+    expect(source).toContain("CREATE CONSTRAINT TRIGGER stock_allocations_publication_v32");
+    expect(source).toContain("CREATE CONSTRAINT TRIGGER client_export_publications_stock_release_v32");
+    expect(source).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(source).toContain("An unreleased stock allocation requires its tenant publication.");
+    expect(source).toContain("must release retained stock before deletion.");
+    expect(source).not.toContain("used_quantity");
+    const stockAllocationsTable = source.slice(
+      source.indexOf("CREATE TABLE public.stock_allocations"),
+      source.indexOf("CREATE INDEX stock_allocations_unreleased_v32"),
+    );
+    expect(stockAllocationsTable).not.toContain("usage_period_key");
+
+    // ADR 0005 migration order: every v14 snapshot gains its render grant
+    // BEFORE the reservation/event operation-kind checks widen.
+    const backfillAt = source.indexOf("INSERT INTO public.entitlement_flow_grants");
+    const widenReservationsAt = source.indexOf("usage_reservations_operation_kind_closed_v32");
+    const widenEventsAt = source.indexOf("usage_events_operation_kind_closed_v32");
+    expect(backfillAt).toBeGreaterThan(0);
+    expect(backfillAt).toBeLessThan(widenReservationsAt);
+    expect(backfillAt).toBeLessThan(widenEventsAt);
+    expect(source).toContain("DROP CONSTRAINT usage_reservations_operation_kind_check");
+    expect(source).toContain("DROP CONSTRAINT usage_events_operation_kind_check");
+    expect(source).toContain("CREATE TRIGGER entitlement_snapshots_mirror_render_grant_v32");
+    expect(source).toContain("ADD CONSTRAINT usage_reservations_flow_grant_v32");
+    // The v15 render-session trigger stays render-only in the legacy lane.
+    expect(source).not.toContain("render_sessions");
+
+    const db = database();
+    await expect(applyBillingEntitlementGrantMigrationV32(db.pool, source)).rejects.toThrow(
+      /requires durable storage migrations v1 through v31/i,
+    );
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 

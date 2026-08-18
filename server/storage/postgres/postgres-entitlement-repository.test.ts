@@ -5,9 +5,13 @@ import {
   type ApplyEntitlementSnapshotInputV1,
   MAX_USAGE_RESERVATION_LIFETIME_MS_V1,
 } from "../../billing/entitlement-repository";
+import { BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM } from "./billing-entitlement-grant-schema";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import {
+  allocateStockWithClientV1,
   PostgresBillingEntitlementRepositoryV1,
+  releaseStockWithClientV1,
+  reserveFlowUsageWithClientV1,
   reserveRenderUsageWithClientV1,
   settleRenderUsageWithClientV1,
 } from "./postgres-entitlement-repository";
@@ -107,14 +111,28 @@ function reservationRow(state: "reserved" | "committed" | "released" = "reserved
 }
 
 describe("PostgresBillingEntitlementRepositoryV1", () => {
-  it("requires the exact billing migration checksum", async () => {
+  it("requires the exact billing and entitlement-grant migration checksums", async () => {
     const valid = fakePool(() => ({
+      rowCount: 2,
+      rows: [
+        { checksum: BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM, version: 14 },
+        { checksum: BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM, version: 32 },
+      ],
+    }));
+    const missingGrants = fakePool(() => ({
       rowCount: 1,
       rows: [{ checksum: BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM, version: 14 }],
     }));
-    const invalid = fakePool(() => ({ rowCount: 1, rows: [{ checksum: "wrong", version: 14 }] }));
+    const invalid = fakePool(() => ({
+      rowCount: 2,
+      rows: [
+        { checksum: "wrong", version: 14 },
+        { checksum: BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM, version: 32 },
+      ],
+    }));
 
     await expect(new PostgresBillingEntitlementRepositoryV1({ pool: valid.pool }).ready()).resolves.toBe(true);
+    await expect(new PostgresBillingEntitlementRepositoryV1({ pool: missingGrants.pool }).ready()).resolves.toBe(false);
     await expect(new PostgresBillingEntitlementRepositoryV1({ pool: invalid.pool }).ready()).resolves.toBe(false);
   });
 
@@ -140,9 +158,9 @@ describe("PostgresBillingEntitlementRepositoryV1", () => {
     expect(fixture.pool.connect).not.toHaveBeenCalled();
   });
 
-  it("creates and locks the account before appending the initial snapshot and advancing its head", async () => {
+  it("creates and locks the account before appending the initial snapshot, its grants, and the head", async () => {
     const actions: string[] = [];
-    const fixture = fakePool((text) => {
+    const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.organizations")) return { rowCount: 1, rows: [{ tenant_id: TENANT }] };
       if (text.startsWith("INSERT INTO public.billing_accounts")) {
         actions.push("create-account");
@@ -157,6 +175,21 @@ describe("PostgresBillingEntitlementRepositoryV1", () => {
         actions.push("append-snapshot");
         return { rowCount: 1, rows: [snapshotRow()] };
       }
+      if (text.startsWith("INSERT INTO public.entitlement_flow_grants")) {
+        actions.push("append-flow-grants");
+        // The render grant is mirrored from the snapshot by the v32 trigger.
+        expect(text).toContain("'ai-suggestion'");
+        expect(text).toContain("'export-publication'");
+        expect(text).not.toContain("'render'");
+        expect(values.slice(-2)).toEqual([7, 3]);
+        return { rowCount: 2, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.entitlement_stock_grants")) {
+        actions.push("append-stock-grant");
+        expect(text).toContain("'published-artifact-bytes'");
+        expect(values.at(-1)).toBe(1_024);
+        return { rowCount: 1, rows: [] };
+      }
       if (text.startsWith("UPDATE public.billing_accounts")) {
         actions.push("advance-head");
         return { rowCount: 1, rows: [] };
@@ -165,11 +198,22 @@ describe("PostgresBillingEntitlementRepositoryV1", () => {
     });
     const repository = new PostgresBillingEntitlementRepositoryV1({ pool: fixture.pool });
 
-    await expect(repository.applySnapshot(snapshotInput())).resolves.toMatchObject({
+    await expect(
+      repository.applySnapshot(
+        snapshotInput({ aiSuggestionLimit: 7, exportPublicationLimit: 3, publishedArtifactBytesLimit: 1_024 }),
+      ),
+    ).resolves.toMatchObject({
       kind: "applied",
       snapshot: { snapshotId: SNAPSHOT_ID, sourceGeneration: 1n },
     });
-    expect(actions).toEqual(["create-account", "lock-account", "append-snapshot", "advance-head"]);
+    expect(actions).toEqual([
+      "create-account",
+      "lock-account",
+      "append-snapshot",
+      "append-flow-grants",
+      "append-stock-grant",
+      "advance-head",
+    ]);
   });
 
   it("classifies a stale snapshot CAS without appending data", async () => {
@@ -212,6 +256,9 @@ describe("billing usage transaction helpers", () => {
         if (text.includes("FROM public.usage_reservations") && text.includes("operation_id")) {
           return { rowCount: 0, rows: [] };
         }
+        if (text.includes("FROM public.entitlement_flow_grants")) {
+          return { rowCount: 1, rows: [{ unit_limit: testCase.current?.render_job_limit ?? 0 }] };
+        }
         if (text.startsWith("WITH expired AS")) return { rowCount: 0, rows: [] };
         if (text.includes("count(*)::text AS consumed")) return { rowCount: 1, rows: [{ consumed: "1" }] };
         throw new Error(`Unexpected query: ${text}`);
@@ -224,6 +271,211 @@ describe("billing usage transaction helpers", () => {
           tenantId: TENANT,
         }),
       ).resolves.toEqual({ kind: "denied", reason: testCase.reason });
+    }
+  });
+
+  it("denies a flow kind whose snapshot carries no grant and counts quota per operation kind", async () => {
+    const withoutGrant = fakeClient((text) => {
+      if (text.includes("FROM public.billing_accounts")) return { rowCount: 1, rows: [snapshotRow()] };
+      if (text.includes("FROM public.usage_reservations") && text.includes("operation_id")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("FROM public.entitlement_flow_grants")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    await expect(
+      reserveFlowUsageWithClientV1(withoutGrant.client, {
+        lifetimeMs: 1_000,
+        operationId: OPERATION_ID,
+        operationKind: "ai-suggestion",
+        tenantId: TENANT,
+      }),
+    ).resolves.toEqual({ kind: "denied", reason: "operation-disabled" });
+
+    const partitioned = fakeClient((text, values) => {
+      if (text.includes("FROM public.billing_accounts")) return { rowCount: 1, rows: [snapshotRow()] };
+      if (text.includes("FROM public.usage_reservations") && text.includes("operation_id")) {
+        expect(values[1]).toBe("ai-suggestion");
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("FROM public.entitlement_flow_grants")) {
+        expect(values).toEqual([TENANT, SNAPSHOT_ID, "1", "ai-suggestion", "2026-08"]);
+        return { rowCount: 1, rows: [{ unit_limit: 2 }] };
+      }
+      if (text.startsWith("WITH expired AS")) {
+        expect(values).toEqual([TENANT, "ai-suggestion", "2026-08"]);
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("count(*)::text AS consumed")) {
+        expect(values).toEqual([TENANT, "ai-suggestion", "2026-08"]);
+        return { rowCount: 1, rows: [{ consumed: "1" }] };
+      }
+      if (text.startsWith("WITH reservation_clock AS")) {
+        expect(values[1]).toBe("ai-suggestion");
+        return { rowCount: 1, rows: [reservationRow("reserved", { operation_kind: "ai-suggestion" })] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    await expect(
+      reserveFlowUsageWithClientV1(partitioned.client, {
+        lifetimeMs: 1_000,
+        operationId: OPERATION_ID,
+        operationKind: "ai-suggestion",
+        tenantId: TENANT,
+      }),
+    ).resolves.toMatchObject({
+      kind: "reserved",
+      replayed: false,
+      reservation: { operationKind: "ai-suggestion" },
+    });
+  });
+
+  it("admits stock by summing unreleased allocations under the account lock and rejects over-limit growth", async () => {
+    const queries: string[] = [];
+    const overLimit = fakeClient((text, values) => {
+      queries.push(text);
+      if (text.includes("FROM public.billing_accounts")) {
+        expect(text).toContain("FOR UPDATE OF account");
+        return { rowCount: 1, rows: [snapshotRow()] };
+      }
+      if (text.includes("FROM public.stock_allocations") && text.includes("publication_id = $3::uuid")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("FROM public.entitlement_stock_grants")) {
+        expect(values).toEqual([TENANT, SNAPSHOT_ID, "1", "published-artifact-bytes"]);
+        return { rowCount: 1, rows: [{ quantity_limit: "1000" }] };
+      }
+      if (text.includes("COALESCE(sum(allocation.quantity), 0)")) {
+        expect(text).toContain("released_at IS NULL");
+        return { rowCount: 1, rows: [{ allocated: "600" }] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+
+    await expect(
+      allocateStockWithClientV1(overLimit.client, {
+        publicationId: OPERATION_ID,
+        quantity: 500,
+        resourceKind: "published-artifact-bytes",
+        tenantId: TENANT,
+      }),
+    ).resolves.toEqual({ kind: "denied", reason: "quota-exhausted" });
+    expect(queries.some((text) => text.startsWith("INSERT INTO public.stock_allocations"))).toBe(false);
+
+    const admitted = fakeClient((text) => {
+      if (text.includes("FROM public.billing_accounts")) return { rowCount: 1, rows: [snapshotRow()] };
+      if (text.includes("FROM public.stock_allocations") && text.includes("publication_id = $3::uuid")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("FROM public.entitlement_stock_grants")) {
+        return { rowCount: 1, rows: [{ quantity_limit: "1000" }] };
+      }
+      if (text.includes("COALESCE(sum(allocation.quantity), 0)")) return { rowCount: 1, rows: [{ allocated: "600" }] };
+      if (text.startsWith("INSERT INTO public.stock_allocations")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              allocated_at: CREATED_AT,
+              publication_id: OPERATION_ID,
+              quantity: "400",
+              released_at: null,
+              resource_kind: "published-artifact-bytes",
+              tenant_id: TENANT,
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    await expect(
+      allocateStockWithClientV1(admitted.client, {
+        publicationId: OPERATION_ID,
+        quantity: 400,
+        resourceKind: "published-artifact-bytes",
+        tenantId: TENANT,
+      }),
+    ).resolves.toMatchObject({ allocation: { quantity: 400, releasedAt: null }, kind: "allocated", replayed: false });
+  });
+
+  it.each([
+    ["access has expired", { access_expired: true }],
+    ["period has not started", { period_inactive: true }],
+  ] as const)("denies new stock when entitlement %s under the billing-account lock", async (_condition, flags) => {
+    const queries: string[] = [];
+    const expired = fakeClient((text) => {
+      queries.push(text);
+      if (text.includes("FROM public.billing_accounts")) {
+        expect(text).toContain("access_until <= clock_timestamp() AS access_expired");
+        expect(text).toContain("clock_timestamp() < snapshot.period_start AS period_inactive");
+        expect(text).toContain("FOR UPDATE OF account");
+        return { rowCount: 1, rows: [snapshotRow(flags)] };
+      }
+      if (text.includes("FROM public.stock_allocations") && text.includes("publication_id = $3::uuid")) {
+        return { rowCount: 0, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+
+    await expect(
+      allocateStockWithClientV1(expired.client, {
+        publicationId: OPERATION_ID,
+        quantity: 1,
+        resourceKind: "published-artifact-bytes",
+        tenantId: TENANT,
+      }),
+    ).resolves.toEqual({ kind: "denied", reason: "expired" });
+    expect(queries.some((text) => text.includes("FROM public.entitlement_stock_grants"))).toBe(false);
+    expect(queries.some((text) => text.includes("COALESCE(sum(allocation.quantity), 0)"))).toBe(false);
+  });
+
+  it("releases a stock allocation once and replays the release idempotently", async () => {
+    const released = new Date(CREATED_AT.getTime() + 1_000);
+    for (const [existingReleasedAt, replayed] of [
+      [null, false],
+      [released, true],
+    ] as const) {
+      const fixture = fakeClient((text) => {
+        if (text.includes("FROM public.stock_allocations")) {
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                allocated_at: CREATED_AT,
+                publication_id: OPERATION_ID,
+                quantity: "400",
+                released_at: existingReleasedAt,
+                resource_kind: "published-artifact-bytes",
+                tenant_id: TENANT,
+              },
+            ],
+          };
+        }
+        if (text.startsWith("UPDATE public.stock_allocations")) {
+          expect(existingReleasedAt).toBeNull();
+          return {
+            rowCount: 1,
+            rows: [
+              {
+                allocated_at: CREATED_AT,
+                publication_id: OPERATION_ID,
+                quantity: "400",
+                released_at: released,
+                resource_kind: "published-artifact-bytes",
+                tenant_id: TENANT,
+              },
+            ],
+          };
+        }
+        throw new Error(`Unexpected query: ${text}`);
+      });
+      await expect(
+        releaseStockWithClientV1(fixture.client, {
+          publicationId: OPERATION_ID,
+          resourceKind: "published-artifact-bytes",
+          tenantId: TENANT,
+        }),
+      ).resolves.toMatchObject({ allocation: { releasedAt: released }, kind: "released", replayed });
     }
   });
 
@@ -257,12 +509,16 @@ describe("billing usage transaction helpers", () => {
       if (text.includes("FROM public.usage_reservations") && text.includes("operation_id")) {
         return { rowCount: 0, rows: [] };
       }
+      if (text.includes("FROM public.entitlement_flow_grants")) {
+        expect(values).toEqual([TENANT, SNAPSHOT_ID, "1", "render", "2026-08"]);
+        return { rowCount: 1, rows: [{ unit_limit: 1 }] };
+      }
       if (text.startsWith("WITH expired AS")) {
         expect(text).not.toContain("ON CONFLICT");
         return { rowCount: 0, rows: [] };
       }
       if (text.includes("count(*)::text AS consumed")) {
-        expect(values).toEqual([TENANT, "2026-08"]);
+        expect(values).toEqual([TENANT, "render", "2026-08"]);
         return { rowCount: 1, rows: [{ consumed: "0" }] };
       }
       if (text.startsWith("WITH reservation_clock AS")) {

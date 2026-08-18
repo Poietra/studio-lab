@@ -6,6 +6,7 @@ import { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-
 import { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 import { ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM } from "./account-organization-switch-mutation-schema";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
+import { BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM } from "./billing-entitlement-grant-schema";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_CHECKSUM } from "./client-export-publication-schema";
 import { COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM } from "./collaboration-authorization-schema";
@@ -46,6 +47,7 @@ import accountOrganizationSwitchMutationSqlV28 from "./migrations/0028_account_o
 import runtimeCellAssignmentSqlV29 from "./migrations/0029_runtime_cell_assignments.sql?raw";
 import editorDocumentOriginSqlV30 from "./migrations/0030_editor_document_origins.sql?raw";
 import clientExportPublicationSqlV31 from "./migrations/0031_client_export_publications.sql?raw";
+import billingEntitlementGrantSqlV32 from "./migrations/0032_billing_entitlement_grants.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -69,6 +71,7 @@ export { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM } from "./account-organization-switch-mutation-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
+export { BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM } from "./billing-entitlement-grant-schema";
 export { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 export { CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_CHECKSUM } from "./client-export-publication-schema";
 export { COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM } from "./collaboration-authorization-schema";
@@ -146,6 +149,7 @@ export const ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE = account
 export const RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE = runtimeCellAssignmentSqlV29;
 export const EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_SOURCE = editorDocumentOriginSqlV30;
 export const CLIENT_EXPORT_PUBLICATION_MIGRATION_V31_SOURCE = clientExportPublicationSqlV31;
+export const BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_SOURCE = billingEntitlementGrantSqlV32;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -472,6 +476,17 @@ const clientExportPublicationMigrationV31: DurableStorageMigration<31> = Object.
   version: 31,
 });
 
+const billingEntitlementGrantMigrationV32: DurableStorageMigration<32> = Object.freeze({
+  checksum: BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM,
+  checksumMismatch: "The billing entitlement-grant migration checksum is invalid.",
+  installedMismatch: "The installed billing entitlement-grant schema does not match migration v32.",
+  missingPrerequisite: "Billing entitlement-grant migration v32 requires durable storage migrations v1 through v31.",
+  prerequisiteMismatch:
+    "Billing entitlement-grant migration v32 requires exact durable storage migrations v1 through v31.",
+  source: BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_SOURCE,
+  version: 32,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -504,6 +519,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   runtimeCellAssignmentMigrationV29,
   editorDocumentOriginMigrationV30,
   clientExportPublicationMigrationV31,
+  billingEntitlementGrantMigrationV32,
 ]);
 
 /**
@@ -806,6 +822,10 @@ export function applyEditorDocumentOriginMigrationV30(pool: Pool, source: string
 
 export function applyClientExportPublicationMigrationV31(pool: Pool, source: string) {
   return applyMigration(pool, { ...clientExportPublicationMigrationV31, source }, bundledMigrationsBefore(31));
+}
+
+export function applyBillingEntitlementGrantMigrationV32(pool: Pool, source: string) {
+  return applyMigration(pool, { ...billingEntitlementGrantMigrationV32, source }, bundledMigrationsBefore(32));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

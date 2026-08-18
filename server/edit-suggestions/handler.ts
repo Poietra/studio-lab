@@ -3,6 +3,10 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { z } from "zod";
 import { editSuggestionRequestSchema, modelSuggestionSchema } from "../../src/ai/edit-suggestion-schema";
+import {
+  MAX_USAGE_RESERVATION_LIFETIME_MS_V1,
+  MIN_USAGE_RESERVATION_LIFETIME_MS_V1,
+} from "../billing/entitlement-repository";
 import { HttpError, readJsonBody, sendJson } from "../http/json";
 import type { StructuredLogger } from "../logging/structured-logger";
 import { isVerifiedManimPrincipal, type VerifiedManimPrincipal } from "../manim-request-principal";
@@ -12,6 +16,7 @@ import {
   type EditSuggestionGenerationReservation,
 } from "./admission";
 import { EditSuggestionGenerationError, type EditSuggestionGenerator } from "./service";
+import type { EditSuggestionUsageMeterV1 } from "./usage-metering";
 
 export const EDIT_SUGGESTION_ROUTE = "/api/ai/edit-suggestions";
 
@@ -35,6 +40,8 @@ export type EditSuggestionHandlerOptions = Readonly<{
   logger: StructuredLogger;
   now?: () => number;
   requestId?: () => string;
+  /** Durable ai-suggestion metering; production injects it, local paths stay unmetered. */
+  usageMeter?: EditSuggestionUsageMeterV1;
 }>;
 
 function generationFailureStatus(error: EditSuggestionGenerationError) {
@@ -192,6 +199,11 @@ export function createEditSuggestionRequestHandler(
   }
   const now = options.now ?? Date.now;
   const pendingGenerations = new Set<Promise<unknown>>();
+  const usageMeter = options.usageMeter ?? null;
+  const meterLifetimeMs = Math.min(
+    MAX_USAGE_RESERVATION_LIFETIME_MS_V1,
+    Math.max(MIN_USAGE_RESERVATION_LIFETIME_MS_V1, generationTimeoutMs + 60_000),
+  );
 
   return async (request, response, policy) => {
     const requestId = boundedRequestId((options.requestId ?? randomUUID)());
@@ -201,6 +213,19 @@ export function createEditSuggestionRequestHandler(
     const requestAbort = new AbortController();
     let generationStarted = false;
     let generationTimedOut = false;
+    let meterOperationId: string | null = null;
+    let meterSettled = false;
+    const releaseMeterOnce = async () => {
+      if (!usageMeter || meterOperationId === null || meterSettled) return;
+      meterSettled = true;
+      const operationId = meterOperationId;
+      try {
+        await usageMeter.release(policy.principal.tenantId, operationId);
+      } catch {
+        // The bounded reservation lifetime is the durable release backstop.
+        logger.warn("usage.release_failed");
+      }
+    };
     const abortFromParent = () => requestAbort.abort(policy.requestSignal?.reason);
     const abortFromRequest = () => requestAbort.abort(new Error("The client request was interrupted."));
     const abortOnClosedResponse = () => {
@@ -278,6 +303,36 @@ export function createEditSuggestionRequestHandler(
         return;
       }
 
+      if (usageMeter) {
+        const operationId = randomUUID();
+        let reserved: Awaited<ReturnType<EditSuggestionUsageMeterV1["reserve"]>>;
+        try {
+          reserved = await usageMeter.reserve({
+            lifetimeMs: meterLifetimeMs,
+            operationId,
+            tenantId: policy.principal.tenantId,
+          });
+        } catch {
+          admitted.reservation.release();
+          logger.error("usage.reserve_failed");
+          respond(503, { error: "Edit suggestion metering is unavailable." });
+          return;
+        }
+        if (reserved.kind !== "reserved") {
+          admitted.reservation.release();
+          logger.warn("usage.denied", { reason: reserved.reason });
+          if (reserved.reason === "quota-exhausted") {
+            respond(429, { error: "The AI suggestion usage quota is exhausted." });
+          } else if (reserved.reason === "operation-settled") {
+            respond(409, { error: "That AI suggestion operation is already settled." });
+          } else {
+            respond(402, { error: "The organization does not have an active AI suggestion entitlement." });
+          }
+          return;
+        }
+        meterOperationId = operationId;
+      }
+
       const timeout = setTimeout(() => {
         generationTimedOut = true;
         requestAbort.abort(new Error("The edit-suggestion generation deadline expired."));
@@ -287,9 +342,28 @@ export function createEditSuggestionRequestHandler(
       try {
         generationStarted = true;
         logger.info("model.requested");
-        const running = trackGeneration(pendingGenerations, admitted.reservation, () => {
+        const running = trackGeneration(pendingGenerations, admitted.reservation, async () => {
           if (requestAbort.signal.aborted) {
+            await releaseMeterOnce();
             throw requestAbort.signal.reason ?? new Error("The edit-suggestion generation was aborted.");
+          }
+          if (usageMeter && meterOperationId !== null) {
+            // The provider dispatch below is the billable cost point: the unit
+            // commits before the request leaves the process, whether or not a
+            // useful model response returns; failing to commit dispatches
+            // nothing and releases the reservation.
+            let committed: Awaited<ReturnType<EditSuggestionUsageMeterV1["commit"]>>;
+            try {
+              committed = await usageMeter.commit(policy.principal.tenantId, meterOperationId);
+            } catch {
+              await releaseMeterOnce();
+              throw new EditSuggestionGenerationError("The edit-suggestion usage commitment failed.", 502);
+            }
+            if (committed.kind !== "settled") {
+              await releaseMeterOnce();
+              throw new EditSuggestionGenerationError("The edit-suggestion usage commitment failed.", 502);
+            }
+            meterSettled = true;
           }
           return generator.generate(parsed.data, requestAbort.signal);
         });
@@ -343,6 +417,9 @@ export function createEditSuggestionRequestHandler(
         },
       });
     } catch (error) {
+      // Once the tracked generation starts it owns the metering settlement;
+      // any earlier failure is a pre-dispatch rejection and releases the unit.
+      if (!generationStarted) await releaseMeterOnce();
       if (requestAbort.signal.aborted) {
         if (generationTimedOut && !response.destroyed && !response.writableEnded) {
           respond(504, { error: "Edit suggestion generation timed out." });

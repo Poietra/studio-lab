@@ -160,6 +160,7 @@ function harness(overrides: Overrides = {}) {
   } as unknown as ClientExportRepositoryV1;
   const metering: ClientExportPublicationMeteringV1 = {
     releasePublication: vi.fn(async () => undefined),
+    releasePublicationStockWithClient: vi.fn(async () => undefined),
     reservePublication: vi.fn(async () =>
       "reserve" in overrides ? (overrides.reserve as never) : ({ kind: "reserved", replayed: false } as const),
     ),

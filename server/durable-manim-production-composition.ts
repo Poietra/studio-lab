@@ -30,12 +30,14 @@ import {
   type ProductionRuntimeCellAssignmentV1,
 } from "./production-runtime-cell";
 import { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
+import { createBillingClientExportPublicationMeteringV1 } from "./storage/client-export-billing-metering";
 import { createDurableClientExportGcWorkerV1 } from "./storage/client-export-gc";
-import { createUnmeteredClientExportPublicationMeteringV1 } from "./storage/client-export-metering";
+import type { ClientExportPublicationMeteringV1 } from "./storage/client-export-metering";
 import { ClientExportPublisherV1 } from "./storage/client-export-publisher";
 import { ClientExportReaderV1 } from "./storage/client-export-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifact-repository";
+import { PostgresBillingEntitlementRepositoryV1 } from "./storage/postgres/postgres-entitlement-repository";
 import { PostgresClientExportRepositoryV1 } from "./storage/postgres/postgres-client-export-repository";
 import { PostgresEditorDocumentRepositoryV1 } from "./storage/postgres/postgres-editor-document-repository";
 import { PostgresProjectPngRepositoryV1 } from "./storage/postgres/postgres-project-png-repository";
@@ -399,7 +401,8 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   await migrate(options.database);
   signal?.throwIfAborted();
 
-  const clientExportMetering = options.clientExports ? createUnmeteredClientExportPublicationMeteringV1() : undefined;
+  let clientExportMetering: ClientExportPublicationMeteringV1 | undefined;
+  let billingEntitlementRepository: PostgresBillingEntitlementRepositoryV1 | undefined;
   let repository: PostgresWorkspaceSourceRepositoryV1 | undefined;
   let editorDocuments: PostgresEditorDocumentRepositoryV1 | undefined;
   let renderRepository: PostgresRenderSessionRepositoryV1 | undefined;
@@ -443,7 +446,12 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       poolConfig: options.database.runtimePoolConfig,
       statementTimeoutMs: options.database.statementTimeoutMs,
     });
-    if (clientExportMetering) {
+    if (options.clientExports) {
+      billingEntitlementRepository = new PostgresBillingEntitlementRepositoryV1({
+        poolConfig: options.database.runtimePoolConfig,
+        statementTimeoutMs: options.database.statementTimeoutMs,
+      });
+      clientExportMetering = createBillingClientExportPublicationMeteringV1(billingEntitlementRepository);
       clientExportRepository = new PostgresClientExportRepositoryV1({
         metering: clientExportMetering,
         poolConfig: options.database.runtimePoolConfig,
@@ -520,6 +528,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         [
           mediaRepository,
           clientExportRepository,
+          billingEntitlementRepository,
           snapshotRepository,
           projectPngRepository,
           renderRepository,
@@ -673,6 +682,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         [
           mediaRepository,
           clientExportRepository,
+          billingEntitlementRepository,
           snapshotRepository,
           projectPngRepository,
           renderRepository,
@@ -732,6 +742,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         [
           mediaRepository,
           clientExportRepository,
+          billingEntitlementRepository,
           snapshotRepository,
           projectPngRepository,
           renderRepository,
@@ -912,6 +923,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
         projectPngRepository,
         mediaRepository,
         clientExportRepository,
+        billingEntitlementRepository,
         snapshotRepository,
         renderRepository,
         editorDocuments,
@@ -941,6 +953,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
           projectPngRepository,
           mediaRepository,
           clientExportRepository,
+          billingEntitlementRepository,
           snapshotRepository,
           renderRepository,
           editorDocuments,

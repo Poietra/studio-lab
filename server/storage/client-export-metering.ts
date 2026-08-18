@@ -8,15 +8,10 @@ import type { PoolClient } from "pg";
  * that inserts the artifact and publication rows. `operationId` is the
  * `publicationId`, so reserve and settle are naturally replay-safe.
  *
- * v1 wires the no-op implementation below: local client export is free and the
- * `export-publication` operation kind does not exist yet. #726 (billing v2)
- * replaces it with the real `EntitlementFlowGrant` reservation
- * (operation kind `export-publication`, one unit) plus the
- * `StockAllocation` byte admission under the tenant billing-account lock;
- * `settlePublicationWithClient` receives the transaction client precisely so
- * that implementation can commit the flow reservation and insert the stock
- * allocation atomically with the publication. Replay detection runs BEFORE
- * settlement, so an accepted retry never reaches this port twice.
+ * Production wires an `export-publication` flow grant plus retained-byte stock
+ * admission. Local export uses the unmetered implementation below. Replay
+ * detection runs before settlement, so an accepted retry never reaches this
+ * port twice.
  */
 export type ReserveClientExportPublicationInputV1 = Readonly<{
   lifetimeMs: number;
@@ -50,17 +45,16 @@ export interface ClientExportPublicationMeteringV1 {
     input: ReserveClientExportPublicationInputV1,
     signal?: AbortSignal,
   ): Promise<ReserveClientExportPublicationResultV1>;
-  /**
-   * Settles the reservation (and, under #726, inserts the byte stock
-   * allocation) inside the caller's acceptance transaction.
-   */
+  /** Releases retained-byte stock inside the transaction that queues publication deletion. */
+  releasePublicationStockWithClient(client: PoolClient, tenantId: string, publicationId: string): Promise<void>;
+  /** Settles the reservation and stock allocation inside the acceptance transaction. */
   settlePublicationWithClient(
     client: PoolClient,
     input: SettleClientExportPublicationInputV1,
   ): Promise<SettleClientExportPublicationResultV1>;
 }
 
-/** v1 no-op wiring: client-export publication is admitted without metering until #726 lands billing v2. */
+/** Explicit local-only wiring: client-export publication is admitted without billing metering. */
 export function createUnmeteredClientExportPublicationMeteringV1(): ClientExportPublicationMeteringV1 {
   return {
     async releasePublication() {
@@ -68,6 +62,9 @@ export function createUnmeteredClientExportPublicationMeteringV1(): ClientExport
     },
     async reservePublication() {
       return { kind: "reserved", replayed: false } as const;
+    },
+    async releasePublicationStockWithClient() {
+      // No stock allocation exists in the unmetered lane.
     },
     async settlePublicationWithClient() {
       return { kind: "settled", replayed: false } as const;

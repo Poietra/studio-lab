@@ -357,8 +357,8 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
       expect(await applyBundledDurableStorageMigrationsThrough(setup, 17)).toEqual({ applied: true, version: 17 });
       await seedEditorFixture(setup);
       const legacy = await seedCompatibleLegacyEditorV17(setup);
-      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: true, version: 31 });
-      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: false, version: 31 });
+      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: true, version: 32 });
+      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: false, version: 32 });
       await expectImportedOriginBackfilledV30(setup);
       await expectOriginSourceBindingEnforced(setup);
       await expectCompatibleLegacyEditorUpgradedV18(setup, legacy);

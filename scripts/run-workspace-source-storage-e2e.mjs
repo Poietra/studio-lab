@@ -77,6 +77,7 @@ const STORAGE_SUITES = [
     id: "billing-entitlement",
     objectStorage: false,
     titles: [
+      "backfills render grants before widening kinds, meters ai-suggestion flow, and admits stock under the billing lock",
       "atomically reserves one render quota, replays safely, preserves period usage, and isolates tenants",
       "reconciles Stripe state into render admission atomically and replays duplicate delivery",
     ],

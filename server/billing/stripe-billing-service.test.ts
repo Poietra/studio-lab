@@ -3,7 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import { authenticateManimPrincipal } from "../manim-request-principal";
 import type { EntitlementSnapshotV1 } from "./entitlement-repository";
 import { FakeStripeBillingGatewayV1 } from "./fake-stripe-gateway";
-import { createStripeCheckoutPlanCatalogV1 } from "./plan-catalog";
+import {
+  createStripeCheckoutPlanCatalogV1,
+  DEFAULT_PRO_AI_SUGGESTION_LIMIT_V1,
+  DEFAULT_PRO_EXPORT_PUBLICATION_LIMIT_V1,
+  DEFAULT_PRO_PUBLISHED_ARTIFACT_BYTES_LIMIT_V1,
+} from "./plan-catalog";
 import type {
   BillingCheckoutAttemptV1,
   BillingSubscriptionV1,
@@ -859,6 +864,42 @@ describe("Stripe billing service", () => {
     expect(fixture.repository.state.entitlement).toMatchObject({
       accessState: "blocked",
       renderEnabled: false,
+      renderJobLimit: 0,
+    });
+  });
+
+  it("builds the applied entitlement with plan-derived billing v2 grant limits", async () => {
+    const fixture = serviceFixture();
+    const { attempt } = await startCheckout(fixture);
+
+    await fixture.service.acceptWebhook(
+      await signedWebhook({ attemptId: attempt.attemptId, eventId: "evt_grant_limits" }),
+    );
+
+    const [input] = vi.mocked(fixture.repository.repository.reconcileSubscription).mock.calls.at(-1) ?? [];
+    expect(input?.entitlement).toMatchObject({
+      aiSuggestionLimit: DEFAULT_PRO_AI_SUGGESTION_LIMIT_V1,
+      exportPublicationLimit: DEFAULT_PRO_EXPORT_PUBLICATION_LIMIT_V1,
+      publishedArtifactBytesLimit: DEFAULT_PRO_PUBLISHED_ARTIFACT_BYTES_LIMIT_V1,
+      renderEnabled: true,
+      renderJobLimit: 100,
+    });
+  });
+
+  it("zeroes every billing v2 grant limit on a blocked entitlement", async () => {
+    const fixture = serviceFixture({ canonical: canonicalSubscription({ status: "unpaid" }) });
+    const { attempt } = await startCheckout(fixture);
+
+    await fixture.service.acceptWebhook(
+      await signedWebhook({ attemptId: attempt.attemptId, eventId: "evt_grant_limits_blocked" }),
+    );
+
+    const [input] = vi.mocked(fixture.repository.repository.reconcileSubscription).mock.calls.at(-1) ?? [];
+    expect(input?.entitlement).toMatchObject({
+      accessState: "blocked",
+      aiSuggestionLimit: 0,
+      exportPublicationLimit: 0,
+      publishedArtifactBytesLimit: 0,
       renderJobLimit: 0,
     });
   });

@@ -29,6 +29,7 @@ import {
   type StripeEventInboxEntryV1,
 } from "../../billing/stripe-billing-repository";
 import { applyEntitlementSnapshotWithClientV1 } from "./postgres-entitlement-repository";
+import { BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM } from "./billing-entitlement-grant-schema";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 
@@ -346,15 +347,17 @@ export class PostgresStripeBillingRepositoryV1 implements StripeBillingRepositor
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version = 16",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (16, 32) ORDER BY version",
         [],
         signal,
       );
       signal?.throwIfAborted();
       return (
-        result.rowCount === 1 &&
+        result.rowCount === 2 &&
         result.rows[0]?.version === 16 &&
-        result.rows[0]?.checksum === STRIPE_BILLING_MIGRATION_V16_CHECKSUM
+        result.rows[0]?.checksum === STRIPE_BILLING_MIGRATION_V16_CHECKSUM &&
+        result.rows[1]?.version === 32 &&
+        result.rows[1]?.checksum === BILLING_ENTITLEMENT_GRANT_MIGRATION_V32_CHECKSUM
       );
     } catch {
       signal?.throwIfAborted();
