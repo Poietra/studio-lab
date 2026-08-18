@@ -835,9 +835,12 @@ function positiveNumberLiteral(source: string) {
 
 const BOUNDED_STATIC_NUMBER_LITERAL =
   "-?(?:(?:\\d(?:_?\\d)*)\\.(?:\\d(?:_?\\d)*)?|\\.(?:\\d(?:_?\\d)*)|(?:\\d(?:_?\\d)*))(?:[eE][+-]?\\d(?:_?\\d)*)?";
+const BOUNDED_STATIC_NUMBER_LITERAL_PATTERN = new RegExp(`^${BOUNDED_STATIC_NUMBER_LITERAL}$`);
 
 function boundedStaticNumberLiteral(source: string) {
-  const value = Number(source.replaceAll("_", ""));
+  const literal = source.trim();
+  if (!BOUNDED_STATIC_NUMBER_LITERAL_PATTERN.test(literal)) return null;
+  const value = Number(literal.replaceAll("_", ""));
   return Number.isFinite(value) && Math.abs(value) <= MAX_COORDINATE && !Object.is(value, -0) ? value : null;
 }
 
@@ -1968,7 +1971,15 @@ export function importManimScene(
   const events: TimelineEvent[] = [];
   const dimensionsSamples = new Map<string, PropertyChannelSample[]>();
   const contentSamples = new Map<string, PropertyChannelSample[]>();
+  const appearanceSamples = new Map<string, PropertyChannelSample[]>();
   const positionSamples = new Map<string, PropertyChannelSample[]>();
+  const rotationSamples = new Map<string, PropertyChannelSample[]>();
+  const rotationKnown = new Map(
+    mutableEntities.map((entity) => [
+      entity.id,
+      !suffixRotates(parseEntityAssignment(entity.initialization)?.suffix ?? ""),
+    ]),
+  );
   const scaleSamples = new Map<string, PropertyChannelSample[]>();
   for (const entity of mutableEntities) {
     if (entity.content) {
@@ -2195,7 +2206,34 @@ export function importManimScene(
     const directResizeVariable = statement.text.match(
       new RegExp(`^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*\\.\\s*(?:${DIMENSION_MUTATING_METHOD_PATTERN})\\s*\\(`, "s"),
     )?.[1];
-    const directRotateVariable = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*rotate\s*\(/s)?.[1];
+    const directRotate = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*rotate\s*\((.*)\)\s*$/s);
+    const directRotateVariable = directRotate?.[1];
+    if (directRotateVariable && directRotate?.[2]) {
+      const entity = byVariable.get(directRotateVariable);
+      const angle = boundedStaticNumberLiteral(directRotate[2]);
+      if (entity && angle !== null && rotationKnown.get(entity.id) === true) {
+        const previous = rotationSamples.get(entity.id)?.at(-1)?.value;
+        const from = typeof previous === "number" ? previous : 0;
+        const value = from + angle;
+        if (Number.isFinite(value) && Math.abs(value) <= MAX_COORDINATE) {
+          appendChannelSample(rotationSamples, entity.id, {
+            from,
+            interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+            kind: "exact",
+            knowledge: { kind: "known", value },
+            provenanceId: `import:${sceneId}:${entity.sourceVariable}:rotation:${statement.line}`,
+            relative: true,
+            value,
+          });
+        } else {
+          rotationKnown.set(entity.id, false);
+          rotationSamples.delete(entity.id);
+        }
+      } else if (entity) {
+        rotationKnown.set(entity.id, false);
+        rotationSamples.delete(entity.id);
+      }
+    }
     const directGeometryVariable = directResizeVariable ?? directRotateVariable;
     if (directGeometryVariable) {
       const parsed = dimensionsMarkerSchema.safeParse(directDimensionsMarker);
@@ -2272,6 +2310,23 @@ export function importManimScene(
         });
         entity.scale = value;
         entity.scaleKnowledge = knowledge;
+      }
+      continue;
+    }
+    const directOpacity = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*set_opacity\s*\((.*)\)\s*$/s);
+    if (directOpacity?.[1] && directOpacity[2]) {
+      const entity = byVariable.get(directOpacity[1]);
+      const opacity = boundedStaticNumberLiteral(directOpacity[2]);
+      if (entity && opacity !== null && opacity >= 0 && opacity <= 1) {
+        appendChannelSample(appearanceSamples, entity.id, {
+          interval: { end: Number.MAX_SAFE_INTEGER, start: cursor },
+          kind: "exact",
+          knowledge: { kind: "known", value: opacity },
+          provenanceId: `import:${sceneId}:${entity.sourceVariable}:appearance:${statement.line}`,
+          value: opacity,
+        });
+      } else if (entity) {
+        appearanceSamples.delete(entity.id);
       }
       continue;
     }
@@ -2626,8 +2681,12 @@ export function importManimScene(
         ["position", positionSamples.get(entity.id) ?? []],
         ["scale", scaleSamples.get(entity.id) ?? []],
       ];
+      const appearance = appearanceSamples.get(entity.id);
+      if (appearance) channels.unshift(["appearance", appearance]);
       const content = contentSamples.get(entity.id);
       if (content) channels.unshift(["content", content]);
+      const rotation = rotationSamples.get(entity.id);
+      if (rotation) channels.unshift(["rotation", rotation]);
       return channels.map(([key, samples]) => [
         `${entity.id}/${key}`,
         {

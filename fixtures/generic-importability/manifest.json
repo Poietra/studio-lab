@@ -2,7 +2,7 @@
   "schema": "poietra.generic-importability-scoreboard",
   "completion": {
     "acceptedVisibleRootMissing": { "met": true, "observed": 0, "required": 0 },
-    "claimedEditRoundtripPercent": { "met": false, "observed": 0, "required": 100 },
+    "claimedEditRoundtripPercent": { "met": false, "observed": 57.14285714285714, "required": 100 },
     "silentOmissions": { "met": true, "observed": 0, "required": 0 }
   },
   "evidenceTests": [
@@ -251,12 +251,10 @@
         "selection": "pass",
         "edit": { "move": "pass", "uniform-resize": "pass", "rotation": "pass", "opacity": "pass" },
         "py-export": "pass",
-        "reimport": "unmeasured",
+        "reimport": "pass",
         "fresh-validation": "pass"
       },
-      "notes": {
-        "reimport": "Existing tests re-derive validation facts but do not run the static importer on every exported operation."
-      }
+      "notes": {}
     },
     {
       "id": "generic-feynman-diagram",
