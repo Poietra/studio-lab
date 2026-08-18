@@ -8,10 +8,22 @@ import {
   type StudioMp4ExportSourceV1,
   studioExportProgressPercentV1,
 } from "./studio-export-control";
+import type { StudioExportPublicationAvailabilityV1 } from "./studio-export-publication";
 
 const exportSource: StudioMp4ExportSourceV1 = {
   assetPayloads: [],
   bundle: { assets: {}, scene: { sceneId: "scene:shared_circle_opacity" } } as unknown as SceneIrBundleV1,
+  sourceLineage: {
+    projectId: "project-a",
+    sceneId: "scene:shared_circle_opacity",
+    sourceHash: "a".repeat(64),
+    sourcePath: "scene.py",
+    workingRevision: "pristine",
+  },
+};
+const unavailablePublication: StudioExportPublicationAvailabilityV1 = {
+  kind: "unavailable",
+  reason: "Wait for the Editor Document lineage before publishing.",
 };
 
 describe("studioExportProgressPercentV1", () => {
@@ -38,23 +50,31 @@ describe("browserMp4ExportFileNameV1", () => {
 
 describe("StudioExportControl", () => {
   it("renders an honestly disabled affordance without a presented Scene", () => {
-    const markup = renderToStaticMarkup(<StudioExportControl exportSource={null} />);
+    const markup = renderToStaticMarkup(
+      <StudioExportControl exportSource={null} publication={unavailablePublication} />,
+    );
     expect(markup).toContain('data-studio-export-mp4-state="unavailable"');
     expect(markup).toContain("Export MP4");
     expect(markup).toContain('disabled=""');
     expect(markup).not.toContain(">Cancel<");
+    expect(markup).toContain("Publish MP4 unavailable: Wait for the Editor Document lineage before publishing.");
   });
 
   it("offers an enabled export without a Cancel affordance while idle", () => {
-    const markup = renderToStaticMarkup(<StudioExportControl exportSource={exportSource} />);
+    const markup = renderToStaticMarkup(
+      <StudioExportControl exportSource={exportSource} publication={unavailablePublication} />,
+    );
     expect(markup).toContain('data-studio-export-mp4-state="idle"');
-    expect(markup).not.toContain('disabled=""');
+    expect(markup).toMatch(/<button(?![^>]*disabled="")[^>]*>Export MP4<\/button>/u);
     expect(markup).not.toContain(">Cancel<");
     expect(markup).not.toContain('role="alert"');
+    expect(markup).toContain(">Publish</button>");
   });
 
   it("stays disabled while the surrounding session transition locks the header", () => {
-    const markup = renderToStaticMarkup(<StudioExportControl disabled exportSource={exportSource} />);
+    const markup = renderToStaticMarkup(
+      <StudioExportControl disabled exportSource={exportSource} publication={unavailablePublication} />,
+    );
     expect(markup).toContain('data-studio-export-mp4-state="idle"');
     expect(markup).toContain('disabled=""');
   });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canonicalAppliedProgramsWorkingRevisionV1,
   canonicalEditorWorkingRevision,
   EDITOR_SESSION_LOADING_BLOCKER,
   type EditorRevisionScene,
@@ -133,6 +134,13 @@ describe("canonicalEditorWorkingRevision", () => {
     };
     expect(canonicalEditorWorkingRevision({ ...revisionInput(), redoPrograms: [first] })).not.toBe(
       canonicalEditorWorkingRevision({ ...revisionInput(), redoPrograms: [second] }),
+    );
+  });
+
+  it("uses the same identity for a durable Program list and its applied UI records", () => {
+    const programs = [record("first"), record("second")];
+    expect(canonicalAppliedProgramsWorkingRevisionV1(programs.map((value) => value.program))).toBe(
+      canonicalEditorWorkingRevision({ ...revisionInput(), appliedEdits: programs }),
     );
   });
 });

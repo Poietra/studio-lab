@@ -1,12 +1,58 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { EditorDocumentAuthorityErrorV1 } from "../collaboration/editor-document-authority";
+import {
+  EditorDocumentAuthorityErrorV1,
+  type EditorDocumentAuthoritySnapshotV1,
+} from "../collaboration/editor-document-authority";
 import {
   editorDocumentAuthorityStateAfterJournalStorageFailureV1,
+  editorDocumentExportLineageV1,
   editorDocumentSessionFlushAllowsTransitionV1,
   editorMutationJournalConflictIsDefinitiveV1,
   installEditorAuthorityBasisAfterJournalSettlementV1,
 } from "./use-editor-document-authority";
+
+describe("Editor Document export lineage", () => {
+  it("captures immutable document, source, and durable working revision facts", () => {
+    const snapshot = {
+      document: {
+        documentKey: "a".repeat(64),
+        epoch: "00000000-0000-4000-8000-000000000001",
+        openedAt: "2026-08-18T00:00:00.000Z",
+        projectId: "project-a",
+        revision: "0",
+        sealedAt: null,
+        sourceHash: "b".repeat(64),
+        sourcePath: "scene.py",
+        tenantId: "organization-a",
+        updatedAt: "2026-08-18T00:00:00.000Z",
+      },
+      programs: [],
+      revision: "0",
+      sessionGeneration: "1",
+    } satisfies EditorDocumentAuthoritySnapshotV1;
+
+    expect(editorDocumentExportLineageV1(snapshot)).toEqual({
+      documentEpoch: snapshot.document.epoch,
+      documentKey: snapshot.document.documentKey,
+      documentRevision: "0",
+      projectId: "project-a",
+      sourceHash: "b".repeat(64),
+      sourcePath: "scene.py",
+      workingRevision: "pristine",
+    });
+    expect(Object.isFrozen(editorDocumentExportLineageV1(snapshot))).toBe(true);
+  });
+
+  it("refuses a split document and projection revision", () => {
+    const snapshot = {
+      document: { revision: "1" },
+      programs: [],
+      revision: "2",
+    } as unknown as EditorDocumentAuthoritySnapshotV1;
+    expect(() => editorDocumentExportLineageV1(snapshot)).toThrow(/revision is inconsistent/i);
+  });
+});
 
 describe("Editor document navigation flush policy", () => {
   it("allows durable document transitions but never treats an in-flight commit as flushed", () => {

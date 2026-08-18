@@ -119,6 +119,13 @@ export type StudioPreviewRendererView = Readonly<{
   canonicalScene: Readonly<{
     assetPayloads: readonly CanvasPngAssetTransferV1[];
     bundle: SceneIrBundleV1;
+    sourceLineage: Readonly<{
+      projectId: string;
+      sceneId: string;
+      sourceHash: string;
+      sourcePath: string;
+      workingRevision: string;
+    }>;
   }> | null;
   /** Verified world-space center used to project Studio viewport positions. */
   cameraCenter: Readonly<{ x: number; y: number }> | null;
@@ -1736,6 +1743,13 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
         ? {
             assetPayloads: currentCompiledScene.snapshot.assetPayloads,
             bundle: currentCompiledScene.bundle,
+            sourceLineage: {
+              projectId: currentCompiledScene.snapshot.correlation.context.projectId,
+              sceneId: currentCompiledScene.snapshot.correlation.sceneId,
+              sourceHash: currentCompiledScene.snapshot.correlation.context.sourceHash,
+              sourcePath: currentCompiledScene.snapshot.correlation.context.sourcePath,
+              workingRevision: currentCompiledScene.workingRevision,
+            },
           }
         : null,
     creationProjection: state.phase === "presented" ? (currentCompiledScene?.creationProjection ?? null) : null,
