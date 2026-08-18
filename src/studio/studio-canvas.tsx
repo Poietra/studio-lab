@@ -10,6 +10,7 @@ import {
   type ResizeHandleDirection,
   resizeKindForType,
 } from "./shape-resize";
+import { StudioInlineTextEditor, type StudioInlineTextEditorSession } from "./studio-inline-text-editor";
 import { StudioMotionOverlay } from "./studio-motion-overlay";
 import {
   orderedStudioPeersV1,
@@ -44,6 +45,7 @@ export type StudioCanvasProps = Readonly<{
   frame: Readonly<{ height: number; width: number }>;
   geometryPreview: EntityGeometryPreview | null;
   incomingSceneName: string | null;
+  inlineTextEditor: StudioInlineTextEditorSession | null;
   insertTool: StudioTool;
   interactionMode: InteractionMode;
   motionPaths: readonly StudioMotionPath[];
@@ -71,6 +73,9 @@ export type StudioCanvasProps = Readonly<{
   onEntityRotationPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityRotationPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityRotationPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+  onEntityTextEdit: (entityId: string, point: Point) => void;
+  onInlineTextCancel: () => void;
+  onInlineTextCommit: (text: string) => boolean;
   onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
   onPresenceCursorChange?: (cursor: Readonly<{ x: number; y: number }> | null) => void;
   onSelectEntity: (entityId: string) => void;
@@ -303,6 +308,7 @@ export function StudioCanvas({
   frame,
   geometryPreview,
   incomingSceneName,
+  inlineTextEditor,
   insertTool,
   interactionMode,
   motionPaths,
@@ -322,6 +328,9 @@ export function StudioCanvas({
   onEntityRotationPointerDown,
   onEntityRotationPointerMove,
   onEntityRotationPointerUp,
+  onEntityTextEdit,
+  onInlineTextCancel,
+  onInlineTextCommit,
   onMotionControlChange,
   onPresenceCursorChange = () => undefined,
   onSelectEntity,
@@ -592,6 +601,25 @@ export function StudioCanvas({
                       onSelectEntity(entity.id);
                     }}
                     onLostPointerCapture={selectionOnlyEntity ? undefined : onEntityPointerCancel}
+                    onDoubleClick={
+                      entity.type === "Text" &&
+                      !mutationLocked &&
+                      (entity.sourceIdentity.kind === "known" || entity.transactionId)
+                        ? (event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            const canvas = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]");
+                            if (!canvas) return;
+                            onEntityTextEdit(
+                              entity.id,
+                              clientPointToViewport(canvas.getBoundingClientRect(), {
+                                x: event.clientX,
+                                y: event.clientY,
+                              }),
+                            );
+                          }
+                        : undefined
+                    }
                     onPointerCancel={selectionOnlyEntity ? undefined : onEntityPointerCancel}
                     onPointerDown={(event) => {
                       if (!selectionOnlyEntity) {
@@ -657,6 +685,14 @@ export function StudioCanvas({
             );
           })}
         </div>
+        {inlineTextEditor ? (
+          <StudioInlineTextEditor
+            key={`${inlineTextEditor.kind}:${inlineTextEditor.entityId ?? "new"}:${inlineTextEditor.point.x}:${inlineTextEditor.point.y}`}
+            onCancel={onInlineTextCancel}
+            onCommit={onInlineTextCommit}
+            session={inlineTextEditor}
+          />
+        ) : null}
         {preview ? (
           <div
             className="absolute right-2 top-2 z-30 border border-zinc-700 bg-zinc-950/90 px-2 py-1 text-[10px] text-zinc-300"

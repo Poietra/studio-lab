@@ -77,7 +77,12 @@ import {
   updateStudioFragmentMaterialSourceV1,
 } from "./studio/fragment-material-authoring";
 import { importedWorkingState, projectVerifiedSourceDuration } from "./studio/imported-workspace";
-import type { InspectorEditField, ValidatedInspectorEdits } from "./studio/inspector-edit";
+import {
+  type InspectorEditField,
+  initialInspectorEditValues,
+  type ValidatedInspectorEdits,
+  validateInspectorEdits,
+} from "./studio/inspector-edit";
 import {
   buildLifetimeEditControls,
   findCompetingImportedLifetimeOwner,
@@ -127,6 +132,7 @@ import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimel
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
+import type { StudioInlineTextEditorSession } from "./studio/studio-inline-text-editor";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
@@ -450,6 +456,7 @@ export function App({
     readGesturePreviewKind,
   );
   const [inspectorReturnFocus, setInspectorReturnFocus] = useState<InspectorEditField | null>(null);
+  const [inlineTextEditor, setInlineTextEditor] = useState<StudioInlineTextEditorSession | null>(null);
   const [sessionTransitionPending, setSessionTransitionPending] = useState(false);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
@@ -471,6 +478,7 @@ export function App({
   useEffect(() => {
     if (draftEdit === null) setLifetimeEditMessage(null);
   }, [draftEdit]);
+  useEffect(() => setInlineTextEditor(null), [activeProjectId, activeSceneId]);
 
   function activeEditorSessionIdentity(): EditorSessionIdentity | null {
     return activeProjectId && activeScene
@@ -2125,6 +2133,68 @@ export function App({
     }
   }
 
+  function beginInlineTextCreation(point: Point) {
+    setIsPlaying(false);
+    setInlineTextEditor({ initialValue: insertValue, kind: "create", point });
+  }
+
+  function beginInlineTextEdit(entityId: string, point: Point) {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId);
+    if (!entity || entity.type !== "Text") return;
+    const initialValue = initialInspectorEditValues(entity).content;
+    if (initialValue === null) return;
+    setSelectedObjectIds([entityId]);
+    setInsertTool("select");
+    setIsPlaying(false);
+    setInlineTextEditor({ entityId, initialValue, kind: "edit", point });
+  }
+
+  function cancelInlineTextEdit() {
+    if (inlineTextEditor?.kind === "create") setInsertTool("select");
+    setInlineTextEditor(null);
+  }
+
+  function commitInlineTextEdit(text: string) {
+    const session = inlineTextEditor;
+    if (!session) return false;
+    if (session.kind === "create") {
+      if (text.trim().length === 0) {
+        setDraftError("Enter text content before committing the inline editor.");
+        return false;
+      }
+      try {
+        const inserted = insertEntitiesAt(session.point, [
+          { content: defaultEntityContent("Text", text), position: session.point, type: "Text" },
+        ]);
+        if (inserted) setInlineTextEditor(null);
+        return inserted;
+      } catch (error) {
+        setDraftError(error instanceof Error ? error.message : "The inline Text could not be inserted.");
+        return false;
+      }
+    }
+    const entity = editableEntities.find((candidate) => candidate.id === session.entityId);
+    if (!entity || entity.type !== "Text") {
+      setInlineTextEditor(null);
+      return false;
+    }
+    const validation = validateInspectorEdits(entity, {
+      ...initialInspectorEditValues(entity),
+      content: text,
+    });
+    if (validation.kind === "invalid") {
+      setDraftError(validation.errors.content ?? "The inline Text edit is invalid.");
+      return false;
+    }
+    if (!validation.edits.content) {
+      setInlineTextEditor(null);
+      return true;
+    }
+    const installed = editEntityFromInspector(entity.id, validation.edits, "content");
+    if (installed) setInlineTextEditor(null);
+    return installed;
+  }
+
   function changeSceneDuration(targetDuration: number) {
     if (!activeScene || !draftBaseState) return false;
     if (draftEdit) {
@@ -3483,6 +3553,10 @@ export function App({
       return true;
     }
     if (command === "escape") {
+      if (inlineTextEditor) {
+        cancelInlineTextEdit();
+        return true;
+      }
       if (insertTool !== "select") {
         setInsertTool("select");
         return true;
@@ -3508,6 +3582,7 @@ export function App({
     };
     const tool = toolByCommand[command];
     if (tool === "select") {
+      setInlineTextEditor(null);
       setInsertTool(tool);
       return true;
     }
@@ -3516,6 +3591,7 @@ export function App({
       return false;
     }
     if (tool) {
+      setInlineTextEditor(null);
       setInsertTool(tool);
       return true;
     }
@@ -4143,6 +4219,7 @@ export function App({
               frame={workspace?.frame ?? { height: 8, width: 14.222 }}
               gesturePreviewStore={gesturePreviewStore}
               incomingSceneName={nextScene?.name ?? null}
+              inlineTextEditor={inlineTextEditor}
               insertTool={insertTool}
               insertValue={insertValue}
               interactionMode={interactionMode}
@@ -4154,7 +4231,10 @@ export function App({
               motionPaths={motionPaths}
               onAppliedMotionClipChange={changeAppliedMotionClip}
               onAppliedMotionClipSelect={editAppliedMotionClip}
-              onCanvasPlace={(point) => void insertEntitiesAt(point)}
+              onCanvasPlace={(point) => {
+                if (insertTool === "Text") beginInlineTextCreation(point);
+                else void insertEntitiesAt(point);
+              }}
               onEntityKeyDown={nudgeEntity}
               onEntityPointerCancel={cancelEntityDrag}
               onEntityPointerDown={beginEntityDrag}
@@ -4170,9 +4250,15 @@ export function App({
               onEntityRotationPointerDown={beginEntityRotation}
               onEntityRotationPointerMove={moveEntityRotation}
               onEntityRotationPointerUp={finishEntityRotation}
+              onEntityTextEdit={beginInlineTextEdit}
+              onInlineTextCancel={cancelInlineTextEdit}
+              onInlineTextCommit={commitInlineTextEdit}
               onInteractionModeChange={setInteractionMode}
               onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
-              onInsertToolChange={setInsertTool}
+              onInsertToolChange={(tool) => {
+                setInlineTextEditor(null);
+                setInsertTool(tool);
+              }}
               onInsertValueChange={setInsertValue}
               onLifetimeChange={(entityId, lifetimeStart, target) => {
                 void editEntityLifetime(entityId, lifetimeStart, target);
