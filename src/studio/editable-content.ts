@@ -1,3 +1,4 @@
+import { canonicalTextOutlineInputV1, MAX_TEXT_OUTLINE_SCALARS } from "../engine/mathtex-outline";
 import type { EntityContent } from "./model";
 
 export type EditableContentType = "MathTex" | "Text";
@@ -8,8 +9,9 @@ const CONTENT_KEYS = new Set(["displayLines", "label", "texParts", "text"]);
 const MAX_CONTENT_LENGTH = 2_000;
 const MAX_DISPLAY_LINES = 2_000;
 const MAX_MATHTEX_PARTS = 16;
-export const STUDIO_CREATION_TEXT_MAX_LENGTH = 256;
-const STUDIO_CREATION_TEXT_PATTERN = /^[\x20-\x7e]+$/u;
+export const STUDIO_CREATION_TEXT_MAX_LENGTH = MAX_TEXT_OUTLINE_SCALARS;
+export const STUDIO_CREATION_TEXT_CONTRACT =
+  "Text accepts visible Unicode text of at most 256 scalars, 8 lines, and 128 scalars per line.";
 
 /**
  * Accepts only the exact, round-trippable content shape used by Inspector edits.
@@ -31,13 +33,13 @@ export function canonicalEditableContent(value: unknown, type: EditableContentTy
     return null;
 
   if (type === "Text") {
-    if (
-      typeof record.text !== "string" ||
-      record.text.trim().length === 0 ||
-      record.text.length > MAX_CONTENT_LENGTH ||
-      record.texParts !== undefined
-    )
-      return null;
+    const text = canonicalTextOutlineInputV1(record.text);
+    if (text === null || record.texParts !== undefined) return null;
+    return {
+      displayLines: text.split("\n"),
+      ...(typeof record.label === "string" ? { label: record.label.replaceAll("\r\n", "\n") } : {}),
+      text,
+    } as EntityContent;
   } else {
     if (
       record.text !== undefined ||
@@ -54,14 +56,8 @@ export function canonicalEditableContent(value: unknown, type: EditableContentTy
   return value as EntityContent;
 }
 
-/** The intentionally small Text subset shared by browser outlining, Rust creation, and Python export. */
+/** The bounded LF-canonical text shared by browser outlining, Rust creation, and Python export. */
 export function studioCreationText(value: unknown): string | null {
   const content = canonicalEditableContent(value, "Text");
-  const text = content?.text;
-  return text &&
-    text.length <= STUDIO_CREATION_TEXT_MAX_LENGTH &&
-    text.trim().length > 0 &&
-    STUDIO_CREATION_TEXT_PATTERN.test(text)
-    ? text
-    : null;
+  return content?.text ?? null;
 }

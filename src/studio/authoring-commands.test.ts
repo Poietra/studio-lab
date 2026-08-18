@@ -9,6 +9,7 @@ import {
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
 } from "./authoring-commands";
+import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import { programRecord, projectProposedState } from "./evaluator";
 import { createFixtureProposedState, projectPersistentRemoveFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { CanonicalEditOperation } from "./operations";
@@ -102,12 +103,14 @@ describe("manual Studio authoring commands", () => {
     ]);
   });
 
-  it("preserves requested Text content in the canonical creation Program", () => {
+  it("stores Japanese multiline Text with canonical LF content in the creation Program", () => {
+    const text = "日本語で動画を作る\r\nこんにちは";
+    const canonical = "日本語で動画を作る\nこんにちは";
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
       entities: [
         {
-          content: defaultEntityContent("Text", "before"),
+          content: { displayLines: [text], label: text, text },
           position: { x: 200, y: 120 },
           type: "Text",
         },
@@ -118,11 +121,30 @@ describe("manual Studio authoring commands", () => {
     const create = creation.validation.program.operations.find((operation) => operation.kind === "CreateEntity");
     expect(create?.kind).toBe("CreateEntity");
     if (create?.kind !== "CreateEntity") return;
-    expect(create.entity.content).toEqual(defaultEntityContent("Text", "before"));
+    expect(create.entity.content).toEqual({
+      displayLines: ["日本語で動画を作る", "こんにちは"],
+      label: canonical,
+      text: canonical,
+    });
+    const lfCreation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        {
+          content: { displayLines: canonical.split("\n"), label: canonical, text: canonical },
+          position: { x: 200, y: 120 },
+          type: "Text",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "inspector-text-source",
+    });
+    expect(canonicalAppliedProgramsWorkingRevisionV1([creation.validation.program])).toBe(
+      canonicalAppliedProgramsWorkingRevisionV1([lfCreation.validation.program]),
+    );
   });
 
-  it.each(["line\nbreak", "こんにちは", "x".repeat(257)])(
-    "rejects Text creation outside the bounded printable-ASCII contract: %s",
+  it.each(["tab\tbreak", ["a", "b", "c", "d", "e", "f", "g", "h", "i"].join("\n"), "x".repeat(129)])(
+    "rejects Text creation outside the bounded Unicode multiline contract: %s",
     (text) => {
       expect(() =>
         createStudioEntitiesProgram({
@@ -137,7 +159,7 @@ describe("manual Studio authoring commands", () => {
           scene: STUDIO_FIXTURE_SCENE,
           transactionId: "invalid-text-source",
         }),
-      ).toThrow("one non-blank printable ASCII line of at most 256 characters");
+      ).toThrow("visible Unicode text of at most 256 scalars, 8 lines, and 128 scalars per line");
     },
   );
 

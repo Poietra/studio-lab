@@ -13,9 +13,13 @@ export type StudioInlineTextEditorSession = Readonly<{
 
 export type StudioInlineTextKeyAction = "cancel" | "commit" | null;
 
-export function studioInlineTextKeyAction(key: string, composing: boolean): StudioInlineTextKeyAction {
+export function studioInlineTextKeyAction(
+  key: string,
+  composing: boolean,
+  commitModifier = false,
+): StudioInlineTextKeyAction {
   if (composing) return null;
-  if (key === "Enter") return "commit";
+  if (key === "Enter" && commitModifier) return "commit";
   if (key === "Escape") return "cancel";
   return null;
 }
@@ -56,7 +60,11 @@ export function StudioInlineTextEditor({
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     event.stopPropagation();
-    const action = studioInlineTextKeyAction(event.key, composing.current || event.nativeEvent.isComposing);
+    const action = studioInlineTextKeyAction(
+      event.key,
+      composing.current || event.nativeEvent.isComposing,
+      event.ctrlKey || event.metaKey,
+    );
     if (!action) return;
     event.preventDefault();
     if (action === "cancel") {
@@ -77,7 +85,7 @@ export function StudioInlineTextEditor({
           aria-label={session.kind === "create" ? "New text content" : "Edit text content"}
           autoComplete="off"
           className="block min-h-8 w-full resize-none bg-transparent px-1 py-1 text-sm leading-5 text-zinc-100 outline-none"
-          maxLength={session.kind === "create" ? STUDIO_CREATION_TEXT_MAX_LENGTH : 2_000}
+          maxLength={STUDIO_CREATION_TEXT_MAX_LENGTH}
           onBlur={(event) => {
             event.stopPropagation();
             if (studioInlineTextBlurCommits(composing.current)) commit();
@@ -96,10 +104,12 @@ export function StudioInlineTextEditor({
           onKeyDown={handleKeyDown}
           onPointerDown={(event) => event.stopPropagation()}
           ref={editor}
-          rows={1}
+          rows={2}
           value={value}
         />
-        <span className="block px-1 text-[9px] leading-4 text-zinc-500">Enter to commit · Escape to cancel</span>
+        <span className="block px-1 text-[9px] leading-4 text-zinc-500">
+          Enter for new line · Ctrl/⌘+Enter to commit · Escape to cancel
+        </span>
       </label>
     </div>
   );

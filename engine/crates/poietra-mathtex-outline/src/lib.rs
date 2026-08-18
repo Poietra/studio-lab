@@ -31,7 +31,8 @@ pub use segmented::{
     SegmentedTexWriteSampleV1, compile_segmented_tex_outline_v1, evaluate_segmented_tex_write_v1,
 };
 pub use text::{
-    MAX_TEXT_CHARACTERS_V1, TEXT_OUTLINE_REQUEST_SCHEMA_V1, TEXT_OUTLINE_RESPONSE_SCHEMA_V1,
+    MAX_TEXT_CHARACTERS_V1, MAX_TEXT_CUBIC_SEGMENTS_V1, MAX_TEXT_LINE_CHARACTERS_V1,
+    MAX_TEXT_LINES_V1, TEXT_OUTLINE_REQUEST_SCHEMA_V1, TEXT_OUTLINE_RESPONSE_SCHEMA_V1,
     TEXT_OUTLINE_VERSION_V1, TextOutlineArtifactV1, TextOutlineBoundsV1,
     TextOutlineRequestSchemaV1, TextOutlineRequestV1, TextOutlineResultV1,
     TextOutlineUnsupportedCodeV1, TextOutlineUnsupportedV1, compile_text_outline_v1,

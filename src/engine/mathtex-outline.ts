@@ -9,7 +9,10 @@ const MAX_MATHTEX_REQUEST_JSON_BYTES = 16 * 1024;
 const MAX_MATHTEX_RESPONSE_JSON_BYTES = 1024 * 1024;
 const MAX_MATHTEX_OUTLINE_SEGMENTS = 2_048;
 const MATHTEX_NORMALIZATION_TOLERANCE = 0.000_002;
-const MAX_TEXT_OUTLINE_SEGMENTS = 2_048;
+export const MAX_TEXT_OUTLINE_SCALARS = 256;
+export const MAX_TEXT_OUTLINE_LINES = 8;
+export const MAX_TEXT_OUTLINE_LINE_SCALARS = 128;
+export const MAX_TEXT_OUTLINE_SEGMENTS = 2_048;
 
 const mathTexOutlineRequestV1Schema = z
   .object({
@@ -98,14 +101,56 @@ export type MathTexOutlineArtifactV1 = z.infer<typeof mathTexOutlineArtifactV1Sc
 export type MathTexOutlineResponseV1 = z.infer<typeof mathTexOutlineResponseV1Schema>;
 export type MathTexOutlineCompilerV1 = (texParts: readonly string[]) => Promise<MathTexOutlineResponseV1>;
 
+function hasUnpairedUtf16Surrogate(text: string) {
+  for (let index = 0; index < text.length; index += 1) {
+    const codeUnit = text.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (!Number.isInteger(next) || next < 0xdc00 || next > 0xdfff) return true;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const textOutlineContentV1Schema = z
+  .string()
+  .transform((text) => text.replaceAll("\r\n", "\n"))
+  .superRefine((text, context) => {
+    const scalars = [...text];
+    const lines = text.split("\n");
+    if (text.length === 0 || text.trim().length === 0) {
+      context.addIssue({ code: "custom", message: "Text must contain visible content." });
+    }
+    if (hasUnpairedUtf16Surrogate(text)) {
+      context.addIssue({ code: "custom", message: "Text must contain valid Unicode scalar values." });
+    }
+    if (scalars.length > MAX_TEXT_OUTLINE_SCALARS) {
+      context.addIssue({ code: "custom", message: "Text accepts at most 256 Unicode scalars." });
+    }
+    if (lines.length > MAX_TEXT_OUTLINE_LINES) {
+      context.addIssue({ code: "custom", message: "Text accepts at most 8 lines." });
+    }
+    if (lines.some((line) => [...line].length > MAX_TEXT_OUTLINE_LINE_SCALARS)) {
+      context.addIssue({ code: "custom", message: "Each Text line accepts at most 128 Unicode scalars." });
+    }
+    if (scalars.some((scalar) => scalar !== "\n" && /[\u0000-\u001f\u007f-\u009f]/u.test(scalar))) {
+      context.addIssue({ code: "custom", message: "Text rejects control characters other than LF." });
+    }
+  });
+
+/** Returns the LF-normalized bounded text accepted by the Rust outline request. */
+export function canonicalTextOutlineInputV1(text: unknown): string | null {
+  const parsed = textOutlineContentV1Schema.safeParse(text);
+  return parsed.success ? parsed.data : null;
+}
+
 const textOutlineRequestV1Schema = z
   .object({
     schema: z.literal("poietra.text-outline-request"),
-    text: z
-      .string()
-      .min(1)
-      .max(256)
-      .regex(/^[\x20-\x7e]+$/u),
+    text: textOutlineContentV1Schema,
     version: z.literal(1),
   })
   .strict();

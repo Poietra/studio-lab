@@ -43,18 +43,24 @@ describe("Inspector field validation", () => {
     });
   });
 
-  it("preserves multiline Text content as one canonical content value", () => {
+  it("normalizes Japanese multiline Text to LF for edits and re-editing", () => {
     const entity = fixtureEntity("label_1");
-    expect(validateInspectorEdits(entity, values(entity, { content: "mass\nand energy" }))).toEqual({
+    expect(validateInspectorEdits(entity, values(entity, { content: "日本語で動画を作る\r\nこんにちは" }))).toEqual({
       edits: {
         content: {
-          displayLines: ["mass", "and energy"],
+          displayLines: ["日本語で動画を作る", "こんにちは"],
           label: undefined,
-          text: "mass\nand energy",
+          text: "日本語で動画を作る\nこんにちは",
         },
       },
       kind: "valid",
     });
+
+    const restored = {
+      ...entity,
+      content: { displayLines: ["日本語で動画を作る", "こんにちは"], text: "日本語で動画を作る\r\nこんにちは" },
+    } satisfies ProjectedEntity;
+    expect(initialInspectorEditValues(restored).content).toBe("日本語で動画を作る\nこんにちは");
   });
 
   it("reports MathTex syntax and empty parts on the content field before staging", () => {

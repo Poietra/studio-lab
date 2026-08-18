@@ -690,10 +690,14 @@ fn studio_creation_motion_is_compatible(
 }
 
 fn studio_creation_text_is_canonical(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    !bytes.is_empty()
-        && bytes.len() <= 256
-        && bytes.iter().all(|byte| matches!(byte, 0x20..=0x7e))
+    let lines = text.split('\n').collect::<Vec<_>>();
+    !text.is_empty()
+        && text.chars().count() <= 256
+        && lines.len() <= 8
+        && lines.iter().all(|line| line.chars().count() <= 128)
+        && text
+            .chars()
+            .all(|character| character == '\n' || !character.is_control())
         && !text.trim().is_empty()
 }
 
@@ -3786,8 +3790,9 @@ mod tests {
     fn normalized_creation_accepts_compiled_text_and_existing_instant_followups() {
         let bundle = static_imported_bundle();
         let entity_id = "tx:create/entity:circle";
+        let text = "日本語で動画を作る\nこんにちは";
 
-        let mut scale_command = studio_text_creation_command(&bundle, "Hello, Poietra");
+        let mut scale_command = studio_text_creation_command(&bundle, text);
         scale_command.programs[1].operations[0].kind = StudioCreationOperationKind::UniformScale {
             control_present: false,
             from: Some(1.0),
@@ -3796,17 +3801,11 @@ mod tests {
         };
         let scale_projection =
             project_studio_creation_edits(bundle.scene.duration, &scale_command.programs).unwrap();
-        assert_eq!(
-            scale_projection.entities[0].text.as_deref(),
-            Some("Hello, Poietra")
-        );
+        assert_eq!(scale_projection.entities[0].text.as_deref(), Some(text));
         assert!(scale_projection.entities[0].tex_parts.is_none());
         let serialized_projection = serde_json::to_value(&scale_projection).unwrap();
         assert_eq!(serialized_projection["entities"][0]["kind"], "text");
-        assert_eq!(
-            serialized_projection["entities"][0]["text"],
-            "Hello, Poietra"
-        );
+        assert_eq!(serialized_projection["entities"][0]["text"], text);
         assert!(
             serialized_projection["entities"][0]
                 .get("texParts")
@@ -3971,8 +3970,10 @@ mod tests {
         for invalid_text in [
             String::new(),
             "   ".to_owned(),
-            "two\nlines".to_owned(),
-            "café".to_owned(),
+            "two\r\nlines".to_owned(),
+            "tab\tcharacter".to_owned(),
+            ["a"; 9].join("\n"),
+            "a".repeat(129),
             "a".repeat(257),
         ] {
             let mut command = studio_text_creation_command(&bundle, &invalid_text);
@@ -3982,9 +3983,17 @@ mod tests {
                 Err(ProjectStudioCreationEditError::Unsupported)
             ));
         }
-        let mut maximum = studio_text_creation_command(&bundle, &"a".repeat(256));
-        maximum.programs.truncate(1);
-        assert!(project_studio_creation_edits(bundle.scene.duration, &maximum.programs).is_ok());
+        for valid_text in [
+            "日本語で動画を作る".to_owned(),
+            "こんにちは\nPoietra".to_owned(),
+            "a".repeat(128),
+        ] {
+            let mut command = studio_text_creation_command(&bundle, &valid_text);
+            command.programs.truncate(1);
+            assert!(
+                project_studio_creation_edits(bundle.scene.duration, &command.programs).is_ok()
+            );
+        }
     }
 
     #[test]

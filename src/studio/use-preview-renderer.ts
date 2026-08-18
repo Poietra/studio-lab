@@ -57,6 +57,7 @@ import {
   type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
+import { STUDIO_CREATION_TEXT_CONTRACT } from "./editable-content";
 import {
   EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
   type SceneFragmentMaterialStateV1,
@@ -729,7 +730,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
           const text = studioCreationTextContent(operation.entity.content);
           if (!text) {
             return {
-              error: `Text entity ${operation.entity.id} must contain one printable ASCII line of at most 256 characters.`,
+              error: `Text entity ${operation.entity.id} is invalid. ${STUDIO_CREATION_TEXT_CONTRACT}`,
               kind: "unsupported",
             };
           }

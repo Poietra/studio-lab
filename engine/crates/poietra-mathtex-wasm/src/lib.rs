@@ -19,7 +19,7 @@ use wasm_bindgen::prelude::*;
 pub const POIETRA_MATHTEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Independent sibling ABI version for ordered Tex/MathTex fragments.
 pub const POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
-/// Independent sibling ABI version for single-line plain text.
+/// Independent sibling ABI version for bounded plain text.
 pub const POIETRA_TEXT_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Upper bound for one JSON compilation request crossing the WASM boundary.
 pub const MAX_MATHTEX_OUTLINE_REQUEST_JSON_BYTES_V1: usize = 16 * 1024;
@@ -219,7 +219,7 @@ pub fn compile_segmented_tex_outline_json_v1(request_json: &[u8]) -> Vec<u8> {
     serialize_segmented_response(compile_segmented_tex_outline_v1(&request))
 }
 
-/// Compiles one bounded printable-ASCII line with embedded `DejaVu Sans Regular`.
+/// Compiles one bounded Unicode text block with the embedded deterministic faces.
 #[must_use]
 #[wasm_bindgen(js_name = compileTextOutlineV1)]
 pub fn compile_text_outline_json_v1(request_json: &[u8]) -> Vec<u8> {
@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn text_boundary_compiles_dejavu_cubics_without_changing_mathtex_contract() {
+    fn text_boundary_compiles_ascii_and_japanese_blocks_without_changing_mathtex_contract() {
         let response = compile_text_outline_json_v1(
             br#"{"schema":"poietra.text-outline-request","version":1,"text":"Hello AV"}"#,
         );
@@ -304,6 +304,12 @@ mod tests {
                 .is_some_and(|paths| !paths.is_empty())
         );
 
+        let japanese = compile_text_outline_json_v1(
+            "{\"schema\":\"poietra.text-outline-request\",\"version\":1,\"text\":\"日本語で動画を作る\\nこんにちは\"}"
+                .as_bytes(),
+        );
+        assert_eq!(decode(&japanese)["result"]["kind"], "compiled");
+
         let mathtex = compile_mathtex_outline_json_v1(
             br#"{"schema":"poietra.mathtex-outline-request","version":1,"texParts":["E = mc^2"]}"#,
         );
@@ -315,17 +321,19 @@ mod tests {
     }
 
     #[test]
-    fn text_boundary_rejects_malformed_multiline_and_oversized_json() {
+    fn text_boundary_accepts_crlf_and_rejects_controls_and_oversized_json() {
         let malformed = compile_text_outline_json_v1(br#"{"text":"Hello"}"#);
         assert_eq!(decode(&malformed)["result"]["code"], "invalid-request");
 
-        let multiline = compile_text_outline_json_v1(
-            br#"{"schema":"poietra.text-outline-request","version":1,"text":"a\nb"}"#,
+        let crlf = compile_text_outline_json_v1(
+            br#"{"schema":"poietra.text-outline-request","version":1,"text":"a\r\nb"}"#,
         );
-        assert_eq!(
-            decode(&multiline)["result"]["code"],
-            "character-unsupported"
+        assert_eq!(decode(&crlf)["result"]["kind"], "compiled");
+
+        let control = compile_text_outline_json_v1(
+            br#"{"schema":"poietra.text-outline-request","version":1,"text":"a\tb"}"#,
         );
+        assert_eq!(decode(&control)["result"]["code"], "character-unsupported");
 
         let oversized = compile_text_outline_json_v1(&vec![
             b'x';

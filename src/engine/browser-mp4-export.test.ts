@@ -144,6 +144,72 @@ describe("runBrowserMp4ExportV1", () => {
     await expect(outcomePromise).resolves.toMatchObject({ kind: "exported" });
   });
 
+  it("forwards the canonical Text cubic outline to the WebCodecs worker unchanged", async () => {
+    const base = await fixtureBundle();
+    const source = base.scene.entities[0];
+    if (!source) throw new Error("missing export fixture entity");
+    const outline = {
+      subpaths: [
+        {
+          closed: true,
+          segments: [
+            {
+              control1: { x: -0.5, y: -0.5 },
+              control2: { x: 0.5, y: -0.5 },
+              end: { x: 0.5, y: 0 },
+            },
+            {
+              control1: { x: 0.5, y: 0.5 },
+              control2: { x: -0.5, y: 0.5 },
+              end: { x: -0.5, y: 0 },
+            },
+          ],
+          start: { x: -0.5, y: 0 },
+        },
+      ],
+    } as const;
+    const snapshot = sceneIrBundleV1Schema.parse({
+      ...base,
+      scene: {
+        ...base.scene,
+        entities: [
+          ...base.scene.entities,
+          {
+            ...source,
+            geometry: { kind: "cubic-path", path: outline },
+            id: "studio:text:japanese-multiline",
+            sceneOrder: base.scene.entities.length,
+          },
+        ],
+        requiredCapabilities: [...new Set([...base.scene.requiredCapabilities, "cubic-path-geometry"])],
+      },
+    });
+    const worker = new FakeWorker();
+    const outcomePromise = runBrowserMp4ExportV1({
+      profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+      snapshot,
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    const request = exportWorkerRequestV1Schema.parse(worker.posted[0]);
+    if (request.kind !== "export-mp4") throw new Error("missing export request");
+    const forwarded = sceneIrBundleV1Schema.parse(
+      JSON.parse(new TextDecoder().decode(new Uint8Array(request.snapshotJson))),
+    );
+    expect(forwarded.scene.entities.find(({ id }) => id === "studio:text:japanese-multiline")?.geometry).toEqual({
+      kind: "cubic-path",
+      path: outline,
+    });
+    worker.emitMessage({
+      bytes: new Uint8Array([0, 0, 0, 8]).buffer,
+      kind: "export-finished",
+      requestId: request.requestId,
+      schema: "poietra.export-worker-response",
+      version: 1,
+    } satisfies ExportWorkerResponseV1);
+    await expect(outcomePromise).resolves.toMatchObject({ kind: "exported" });
+  });
+
   it("relays bounded progress and resolves the finished Blob", async () => {
     const bundle = await fixtureBundle();
     const worker = new FakeWorker();
