@@ -34,6 +34,8 @@ import {
   fastManimSnapshotPngAssetIdV4,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
+  fastManimSnapshotVectorAppearanceChannelIdV8,
+  fastManimSnapshotVectorAppearanceChannelProvenanceIdV8,
   isCanonicalFastManimLineSegmentV1,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_BUNDLE_JSON_BYTES,
@@ -560,6 +562,7 @@ async function dynamicPathMorphBundle(
 
 async function dynamicStaticPrimitiveTransformBundle(
   options: Readonly<{
+    appearance?: boolean;
     create?: boolean;
     createEasing?: "linear" | "manim-smooth";
     fadeOut?: boolean;
@@ -568,6 +571,7 @@ async function dynamicStaticPrimitiveTransformBundle(
   }> = {},
 ): Promise<SceneIrBundleV1> {
   const create = options.create ?? true;
+  const appearance = options.appearance ?? false;
   const fadeOut = options.fadeOut ?? true;
   const bundle = await dynamicPathMorphBundle("one-transform");
   const morph = structuredClone(bundle.scene.animationChannels[0]);
@@ -636,6 +640,47 @@ async function dynamicStaticPrimitiveTransformBundle(
   }
   channels.push(morph);
   channelProvenance.push(bundle.scene.provenance.at(-1)!);
+  if (appearance) {
+    const provenanceId = fastManimSnapshotVectorAppearanceChannelProvenanceIdV8(expected.sceneId, 0);
+    channels.push({
+      entityId: entity.id,
+      id: fastManimSnapshotVectorAppearanceChannelIdV8(expected.sceneId, 0),
+      keyframes: [
+        {
+          at: morphStart,
+          easingToNext: { kind: options.morphEasing ?? "manim-smooth" },
+          value: {
+            fill: { color: { alpha: 0, blue: 1, green: 1, red: 1 }, rule: "nonzero" },
+            stroke: entity.appearance.kind === "vector" ? entity.appearance.stroke : null,
+          },
+        },
+        {
+          at: morphEnd,
+          easingToNext: null,
+          value: {
+            fill: {
+              color: { alpha: 0.5, blue: 189 / 255, green: 71 / 255, red: 209 / 255 },
+              rule: "nonzero",
+            },
+            stroke: {
+              cap: "butt",
+              color: { alpha: 1, blue: 85 / 255, green: 98 / 255, red: 252 / 255 },
+              join: "miter",
+              miterLimit: 10,
+              widthWorld: 0.04,
+            },
+          },
+        },
+      ],
+      kind: "vector-appearance",
+      provenanceId,
+    });
+    channelProvenance.push({
+      evidence: ["producer-authored Manim-aligned appearance evidence must be normalized"],
+      id: provenanceId,
+      origin: "fast-manim-server-snapshot",
+    });
+  }
 
   return sceneIrBundleV1Schema.parse({
     ...bundle,
@@ -652,6 +697,7 @@ async function dynamicStaticPrimitiveTransformBundle(
         ...(fadeOut ? (["opacity-animation"] as const) : []),
         "path-morph-animation",
         ...(create ? (["path-trim-animation"] as const) : []),
+        ...(appearance ? (["vector-appearance-animation"] as const) : []),
       ],
     },
   });
@@ -2170,6 +2216,71 @@ class ExampleScene(Scene):
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, { ...expected, snapshotVersion: 2 })).resolves.toEqual(
       sealed,
     );
+  });
+
+  it("seals one Manim-aligned appearance channel paired with the static primitive Transform", async () => {
+    const bundle = await dynamicStaticPrimitiveTransformBundle({ appearance: true });
+    const sealed = await parseProducer(compiled(bundle), { ...expected, snapshotVersion: 2 });
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled static primitive appearance Transform.");
+
+    expect(sealed.bundle.scene.animationChannels.map(({ kind }) => kind)).toEqual([
+      "opacity",
+      "path-trim",
+      "path-morph",
+      "vector-appearance",
+    ]);
+    expect(sealed.bundle.scene.requiredCapabilities).toEqual([
+      "cubic-path-geometry",
+      "opacity-animation",
+      "path-morph-animation",
+      "path-trim-animation",
+      "vector-appearance-animation",
+    ]);
+    const appearance = sealed.bundle.scene.animationChannels[3];
+    if (appearance?.kind !== "vector-appearance") throw new Error("Expected the paired appearance channel.");
+    expect(appearance.keyframes[0]?.value.fill?.color).toEqual({ alpha: 0, blue: 1, green: 1, red: 1 });
+    expect(appearance.keyframes[1]?.value.fill?.color).toEqual({
+      alpha: 0.5,
+      blue: 189 / 255,
+      green: 71 / 255,
+      red: 209 / 255,
+    });
+    expect(appearance.keyframes[1]?.value.stroke?.color).toEqual({
+      alpha: 1,
+      blue: 85 / 255,
+      green: 98 / 255,
+      red: 252 / 255,
+    });
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, { ...expected, snapshotVersion: 2 })).resolves.toEqual(
+      sealed,
+    );
+  });
+
+  it("rejects partial or unpaired static primitive appearance evidence", async () => {
+    const expectedV2 = { ...expected, snapshotVersion: 2 } as const;
+    const mutations: Array<(bundle: SceneIrBundleV1) => void> = [
+      (bundle) => {
+        const appearance = bundle.scene.animationChannels[3];
+        if (appearance?.kind !== "vector-appearance") throw new Error("Expected appearance evidence.");
+        appearance.keyframes[0]!.at += 1 / 60;
+      },
+      (bundle) => {
+        const appearance = bundle.scene.animationChannels[3];
+        if (appearance?.kind !== "vector-appearance") throw new Error("Expected appearance evidence.");
+        appearance.keyframes[0]!.value.fill = null;
+      },
+      (bundle) => {
+        const appearance = bundle.scene.animationChannels[3];
+        if (appearance?.kind !== "vector-appearance") throw new Error("Expected appearance evidence.");
+        appearance.keyframes[1]!.value.stroke!.join = "round";
+      },
+    ];
+
+    for (const mutate of mutations) {
+      const bundle = await dynamicStaticPrimitiveTransformBundle({ appearance: true });
+      mutate(bundle);
+      await expect(parseProducer(compiled(bundle), expectedV2)).rejects.toBeDefined();
+    }
   });
 
   it("rejects invalid scalar companions around a static primitive Transform", async () => {

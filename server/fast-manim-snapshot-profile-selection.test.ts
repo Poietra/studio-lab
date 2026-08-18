@@ -93,10 +93,10 @@ describe("fast-manim producer-owned profile selection", () => {
       "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593",
     );
     expect(selectionRequest.sourceHash).toBe("fca8ddecffa4a37ca4f97e7a9de9f6d3c9935b3e95d866bd41a1b67e9f91ad03");
-    expect(selectionRequest.policyHash).toBe("8063838a96f3e54f21bbc8f653e0ae43c5dc6fe543f76934e8576bb233fb26d1");
+    expect(selectionRequest.policyHash).toBe("a5daf8eff9f7b417b6135607c7414d7264f2c3f32d5ec3ff385069e248887655");
     expect(selected.runtimeConfigHash).toBe("5eb22569bc257af3a71b87e62fdb23c070c8204ac4aa27ad684d8bff9b7b5a7a");
     expect(createFastManimSnapshotSelectedProfileDigestV1(selectionRequest, selected)).toBe(
-      "7bf3e1c83b57a039d1e30de5d8864e7d896f52f2327d025757da6cf0d81eba88",
+      "2ea7176023dda516bd70ebcdfcd5847864bfb041d764d749fe510de2e6958c15",
     );
   });
 
@@ -200,8 +200,8 @@ describe("fast-manim producer-owned profile selection", () => {
   });
 
   it.each([
-    [{ height: 1e-7, width: 1e20 }, "ac3a595c8e534d7c4b9e771b820e85e13f1551d5721cecde5c04a7173aea62f1"],
-    [{ height: 1e20, width: 1e-7 }, "0f205aef389c63f1329b799f9079c9e340caa182a1f669e4289e9050f212dbd1"],
+    [{ height: 1e-7, width: 1e20 }, "ecdac0544eeeb06abbcb4c37588d86a5d94984e69d51b93fc0a73d108ab10da1"],
+    [{ height: 1e20, width: 1e-7 }, "9f8dd98ef5d26b75d9d91507e88b3e54a9a5f81b1e0ff0e4307317d2a51fd6aa"],
   ] as const)("keeps policy and selected bytes cross-runtime stable for frame %o", (frame, expectedPolicyHash) => {
     const policy = createFastManimSnapshotProfileSelectionPolicyV1(frame, { pngAvailable: false });
     expect(policy.candidates.map(({ snapshotVersion }) => snapshotVersion)).toEqual([1, 2, 3, 5, 6, 7]);

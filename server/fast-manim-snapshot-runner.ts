@@ -101,6 +101,7 @@ import {
   readFastManimSnapshotPngV1,
   sameFastManimSnapshotPngReadV1,
 } from "./fast-manim-snapshot-png-provider";
+import { type FastManimSnapshotPreviewCache, processSnapshotCache } from "./fast-manim-snapshot-preview-cache";
 import { abortError } from "./fast-manim-snapshot-producer-process";
 import {
   createFastManimSnapshotProfileSelectionPolicyV1,
@@ -109,7 +110,6 @@ import {
   fastManimSnapshotRuntimeConfigForProfileV1,
   parseFastManimSnapshotProfileSelectionResultV1,
 } from "./fast-manim-snapshot-profile-selection";
-import { type FastManimSnapshotPreviewCache, processSnapshotCache } from "./fast-manim-snapshot-preview-cache";
 import {
   type FastManimSnapshotSourceProviderV1,
   type FastManimSnapshotSourceReadV1,
@@ -320,6 +320,7 @@ export class FastManimSnapshotRunner {
   private readonly backend: FastManimSandboxBackendV1;
   private backendLifecycleRejected = false;
   private readonly capabilities: readonly FastManimSnapshotRuntimeCapabilityV1[];
+  private readonly capabilitiesConfigured: boolean;
   private closing = false;
   private closeRequest: Promise<void> | null = null;
   private readonly deployment: FastManimSandboxDeployment;
@@ -406,6 +407,7 @@ export class FastManimSnapshotRunner {
     this.attestationVerifier = options.attestationVerifier;
     this.backend = options.backend ?? new UnavailableFastManimSandboxBackendV1();
     this.snapshotVersion = options.snapshotVersion;
+    this.capabilitiesConfigured = options.capabilities !== undefined;
     this.capabilities = Object.freeze([
       ...(options.capabilities ??
         (this.snapshotVersion === undefined
@@ -436,7 +438,7 @@ export class FastManimSnapshotRunner {
     // Fail fast on an invalid capability allowlist or frame instead of at run time.
     if (this.snapshotVersion === undefined) {
       createFastManimSnapshotProfileSelectionPolicyV1(this.frame, {
-        capabilities: this.capabilities,
+        capabilities: this.capabilitiesConfigured ? this.capabilities : undefined,
         pngAvailable: false,
       });
     } else {
@@ -759,7 +761,9 @@ export class FastManimSnapshotRunner {
       snapshotVersion,
       this.frame,
       this.snapshotVersion === undefined &&
-        (snapshotVersion === 4 ||
+        !this.capabilitiesConfigured &&
+        (snapshotVersion === 2 ||
+          snapshotVersion === 4 ||
           snapshotVersion === 8 ||
           snapshotVersion === 9 ||
           snapshotVersion === 10 ||
@@ -1371,7 +1375,7 @@ export class FastManimSnapshotRunner {
     let producerRequest: FastManimSnapshotProducerRequestV1 | FastManimSnapshotProfileSelectionRequestV1;
     if (this.snapshotVersion === undefined) {
       const policy = createFastManimSnapshotProfileSelectionPolicyV1(this.frame, {
-        capabilities: this.capabilities,
+        capabilities: this.capabilitiesConfigured ? this.capabilities : undefined,
         pngAvailable: beforePng !== null,
       });
       selectionRequest = createFastManimSnapshotProfileSelectionRequestV1({

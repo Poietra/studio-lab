@@ -89,12 +89,12 @@ class VariableWaitScene(Scene):
         self.wait(2.5, frozen_frame=True)
 `;
 
-const staticPrimitiveTransformSceneSource = `from manim import Circle, Create, FadeOut, Scene, Square, Transform, WHITE
+const staticPrimitiveTransformSceneSource = `from manim import Circle, Create, FadeOut, PINK, Scene, Square, Transform, WHITE
 
 class StaticPrimitiveTransform(Scene):
     def construct(self):
         square = Square(side_length=2).set_fill(opacity=0).set_stroke(WHITE, width=4)
-        circle = Circle(radius=1).set_fill(opacity=0).set_stroke(WHITE, width=4)
+        circle = Circle(radius=1).set_fill(PINK, opacity=0.5)
         self.play(Create(square))
         self.play(Transform(square, circle), run_time=2)
         self.play(FadeOut(square))
@@ -341,8 +341,14 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
       "opacity-animation",
       "path-morph-animation",
       "path-trim-animation",
+      "vector-appearance-animation",
     ]);
-    expect(scene.animationChannels.map(({ kind }) => kind)).toEqual(["opacity", "path-trim", "path-morph"]);
+    expect(scene.animationChannels.map(({ kind }) => kind)).toEqual([
+      "opacity",
+      "path-trim",
+      "path-morph",
+      "vector-appearance",
+    ]);
     const entity = scene.entities[0]!;
     const morph = scene.animationChannels.find((channel) => channel.kind === "path-morph");
     if (entity.geometry.kind !== "cubic-path" || !morph) throw new Error("Expected one cubic path morph entity.");
@@ -351,6 +357,22 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
     expect(morph.keyframes[0]?.value).toEqual(entity.geometry.path);
     expect(morph.keyframes[0]?.easingToNext).toEqual({ kind: "manim-smooth" });
     expect(morph.keyframes[1]?.easingToNext).toBeNull();
+    const appearance = scene.animationChannels.find((channel) => channel.kind === "vector-appearance");
+    if (!appearance || appearance.kind !== "vector-appearance") {
+      throw new Error("Expected one Manim-aligned vector appearance channel.");
+    }
+    expect(appearance.keyframes[1]?.value.fill?.color).toEqual({
+      alpha: 0.5,
+      blue: 189 / 255,
+      green: 71 / 255,
+      red: 209 / 255,
+    });
+    expect(appearance.keyframes[1]?.value.stroke?.color).toEqual({
+      alpha: 1,
+      blue: 85 / 255,
+      green: 98 / 255,
+      red: 252 / 255,
+    });
   });
 
   it("selects V3, V7, V8, V9, and V10 per Scene through one Studio runner", { timeout: 600_000 }, async () => {

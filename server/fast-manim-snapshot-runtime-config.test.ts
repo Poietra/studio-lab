@@ -4,6 +4,7 @@ import { sceneCapabilityV1Schema } from "../src/engine/contracts";
 import {
   canonicalF64HexV1,
   digestFastManimSnapshotRuntimeConfigV1,
+  FAST_MANIM_DYNAMIC_RUNTIME_CAPABILITIES,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
@@ -35,6 +36,10 @@ describe("fast-manim snapshot runtime config", () => {
     }
     expect(FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1.length).toBeLessThan(universe.length);
     expect(FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1).not.toContain("png-image");
+    expect([...FAST_MANIM_DYNAMIC_RUNTIME_CAPABILITIES]).toEqual([
+      ...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
+      "vector-appearance-animation",
+    ]);
   });
 
   it("encodes doubles as cross-runtime IEEE-754 bit patterns with pinned golden values", () => {
