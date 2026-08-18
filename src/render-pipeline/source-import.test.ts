@@ -58,6 +58,21 @@ describe("conservative Manim source import", () => {
     expect(imported?.contentReplacementSafety).not.toHaveProperty("example_text");
   });
 
+  it("recovers the official SquareToCircle fill color without treating fill opacity as object opacity", async () => {
+    const officialSource = await readFile(
+      new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const imported = importManimScene(officialSource, "example_scenes/basic.py", "SquareToCircle");
+    const circleId = "source:example_scenes/basic.py#SquareToCircle:circle";
+
+    expect(imported?.runtimeSceneState.objectGraph.entities[circleId]?.geometry?.style).toEqual({
+      kind: "known",
+      value: { fillColor: "PINK" },
+    });
+    expect(imported?.runtimeSceneState.propertyChannels[`${circleId}/appearance`]).toBeUndefined();
+  });
+
   it("classifies only direct ImageMobject assignment paths without comment or string false positives", () => {
     const imageSource = `from manim import *
 
@@ -849,6 +864,76 @@ class Geometry(Scene):
     expect(runtimeSceneStateSchema.parse(JSON.parse(JSON.stringify(imported?.runtimeSceneState)))).toEqual(
       imported?.runtimeSceneState,
     );
+  });
+
+  it("recovers direct and simple chained literal paint mutations", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class StaticPaint(Scene):
+    def construct(self):
+        chained = Circle().set_fill("#123456", opacity=0.25).set_stroke(WHITE, width=2)
+        direct = Circle(color=WHITE)
+        direct.set_color("navy")
+        direct.set_stroke(color=RED, width=3)
+        opacity_only = Circle(fill_color=BLUE)
+        opacity_only.set_fill(opacity=0.5)
+        self.add(chained, direct, opacity_only)
+`,
+      "scene.py",
+      "StaticPaint",
+    );
+    const entity = (variable: string) =>
+      imported?.runtimeSceneState.objectGraph.entities[`source:scene.py#StaticPaint:${variable}`];
+
+    expect(entity("chained")?.geometry?.style).toEqual({
+      kind: "known",
+      value: { fillColor: "#123456", strokeColor: "WHITE" },
+    });
+    expect(entity("direct")?.geometry?.style).toEqual({
+      kind: "known",
+      value: { color: "navy", strokeColor: "RED" },
+    });
+    expect(entity("opacity_only")?.geometry?.style).toEqual({
+      kind: "known",
+      value: { fillColor: "BLUE" },
+    });
+    for (const variable of ["chained", "direct", "opacity_only"]) {
+      expect(
+        imported?.runtimeSceneState.propertyChannels[`source:scene.py#StaticPaint:${variable}/appearance`],
+      ).toBeUndefined();
+    }
+    expect(runtimeSceneStateSchema.parse(imported?.runtimeSceneState)).toEqual(imported?.runtimeSceneState);
+  });
+
+  it("invalidates style after dynamic, ambiguous, or animated paint mutations", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class UnsupportedPaint(Scene):
+    def construct(self):
+        dynamic = Circle(fill_color=RED)
+        dynamic.set_fill(BLUE)
+        dynamic.set_fill(chosen_color)
+        dynamic.set_fill(GREEN)
+        ambiguous = Circle(color=WHITE)
+        ambiguous.set_color(BLUE if enabled else GREEN)
+        animated = Circle(stroke_color=WHITE)
+        apply_method = Circle(fill_color=RED)
+        self.play(animated.animate.set_stroke(BLUE))
+        self.play(ApplyMethod(apply_method.set_fill, GREEN))
+        self.add(dynamic, ambiguous, animated, apply_method)
+`,
+      "scene.py",
+      "UnsupportedPaint",
+    );
+
+    for (const variable of ["dynamic", "ambiguous", "animated", "apply_method"]) {
+      expect(
+        imported?.runtimeSceneState.objectGraph.entities[`source:scene.py#UnsupportedPaint:${variable}`]?.geometry
+          ?.style,
+      ).toMatchObject({ kind: "unknown", reason: expect.stringMatching(/paint|source expression/) });
+    }
   });
 
   it("imports the LineJoints group closure without inventing nested layout facts", () => {
