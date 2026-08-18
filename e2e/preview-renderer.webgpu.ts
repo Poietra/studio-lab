@@ -2,6 +2,8 @@ import { readFile } from "node:fs/promises";
 
 import { type Download, expect, type Page, test } from "@playwright/test";
 
+import { verifyExportMp4V1 } from "../src/engine/export-mp4-verification";
+
 const FIXTURE_QUERY = "?previewRenderer=fixture";
 const EXPORT_FIXTURE_QUERY = "?previewRenderer=export-fixture";
 const MATHTEX_FIXTURE_QUERY = "?previewRenderer=mathtex-fixture";
@@ -69,6 +71,27 @@ function topLevelMp4Atoms(bytes: Uint8Array) {
     offset += size;
   }
   return atoms;
+}
+
+function monoPcmWav48k(durationSeconds: number) {
+  const sampleCount = Math.round(48_000 * durationSeconds);
+  const bytes = Buffer.alloc(44 + sampleCount * 2);
+  bytes.write("RIFF", 0);
+  bytes.writeUInt32LE(bytes.byteLength - 8, 4);
+  bytes.write("WAVEfmt ", 8);
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(48_000, 24);
+  bytes.writeUInt32LE(96_000, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write("data", 36);
+  bytes.writeUInt32LE(sampleCount * 2, 40);
+  for (let sample = 0; sample < sampleCount; sample += 1) {
+    bytes.writeInt16LE(Math.round(Math.sin((sample * Math.PI * 2 * 440) / 48_000) * 8_000), 44 + sample * 2);
+  }
+  return bytes;
 }
 
 async function retainedFrameIdentity(page: Page) {
@@ -368,6 +391,68 @@ test("downloads a playable 30 fps MP4 from the exact presented Rust Scene", { ta
   expect(playback.width).toBe(854);
   expect(playback.height).toBe(480);
   expect(playback.duration).toBeCloseTo(0.2, 1);
+});
+
+test("exports an attached WAV as a verified Opus track", { tag: "@ci-smoke" }, async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto(`/${EXPORT_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  await page
+    .getByLabel("Active imported Scene")
+    .selectOption({ label: "shared_circle_opacity.py · SharedCircleOpacity" });
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expectPresented(page);
+
+  await page.getByLabel("WAV audio file").setInputFiles({
+    buffer: monoPcmWav48k(0.2),
+    mimeType: "audio/wav",
+    name: "tone.wav",
+  });
+  await expect(page.getByText("tone.wav", { exact: true })).toBeVisible();
+
+  const downloadPromise = new Promise<Download>((resolve) => page.once("download", resolve));
+  await page.getByRole("button", { name: "Export MP4" }).click();
+  const outcome = await Promise.race([
+    downloadPromise.then((download) => ({ download, kind: "download" as const })),
+    page
+      .getByRole("alert")
+      .last()
+      .waitFor({ state: "visible", timeout: 110_000 })
+      .then(async () => ({ detail: await page.getByRole("alert").last().innerText(), kind: "refused" as const })),
+  ]);
+  if (outcome.kind === "refused") throw new Error(`Browser audio export refused:\n${outcome.detail}`);
+
+  const path = await outcome.download.path();
+  if (!path) throw new Error("Chromium did not retain the downloaded audio MP4.");
+  const bytes = new Uint8Array(await readFile(path));
+  const verification = await verifyExportMp4V1(bytes);
+  if (verification.kind !== "verified") {
+    throw new Error(`The Rust verifier refused the audio MP4: ${verification.code}: ${verification.message}`);
+  }
+  expect(verification.structure.audio).toMatchObject({ channels: 1, sampleRate: 48_000 });
+  expect(verification.structure.audio?.sampleCount).toBeGreaterThan(0);
+  expect(verification.structure.audio?.encodedDurationSamples).toBeGreaterThanOrEqual(9_600);
+
+  const decodedAudio = await page.evaluate(async (base64) => {
+    const binary = atob(base64);
+    const encoded = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const context = new AudioContext();
+    try {
+      const decoded = await context.decodeAudioData(encoded.buffer);
+      let peak = 0;
+      for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+        for (const sample of decoded.getChannelData(channel)) peak = Math.max(peak, Math.abs(sample));
+      }
+      return { channels: decoded.numberOfChannels, duration: decoded.duration, peak };
+    } finally {
+      await context.close();
+    }
+  }, Buffer.from(bytes).toString("base64"));
+  expect(decodedAudio.channels).toBe(1);
+  expect(decodedAudio.duration).toBeCloseTo(0.2, 1);
+  expect(decodedAudio.peak).toBeGreaterThan(0.01);
 });
 
 test("cancels a running MP4 export without delivering any file", { tag: "@ci-smoke" }, async ({ page }) => {

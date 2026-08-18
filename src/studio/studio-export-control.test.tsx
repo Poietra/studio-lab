@@ -127,6 +127,8 @@ describe("StudioExportControl", () => {
     expect(markup).not.toContain(">Cancel<");
     expect(markup).not.toContain('role="alert"');
     expect(markup).toContain(">Publish</button>");
+    expect(markup).toContain(">+ WAV</button>");
+    expect(markup).toContain('accept=".wav,audio/wav,audio/x-wav"');
   });
 
   it("stays disabled while the surrounding session transition locks the header", () => {

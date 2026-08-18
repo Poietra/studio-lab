@@ -55,6 +55,7 @@ describe("verifyExportMp4V1", () => {
     expect(result.structure.timescale).toBe(1_000_000);
     expect(result.structure.frameRate).toBe(30);
     expect(result.structure.sampleCount).toBeGreaterThan(0);
+    expect(result.structure.audio).toBeUndefined();
     expect(result.provenance).toEqual({
       engineAbiVersion: 27,
       exportProfileHash: "a".repeat(64),

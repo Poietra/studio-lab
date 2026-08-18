@@ -10,7 +10,11 @@ import {
   downloadMp4Blob,
   runBrowserMp4ExportV1,
 } from "../engine/browser-mp4-export";
-import type { ExportProgressV1, ExportRefusalReasonV1 } from "../engine/export-worker-protocol";
+import {
+  type ExportProgressV1,
+  type ExportRefusalReasonV1,
+  MAX_EXPORT_WAV_BYTES,
+} from "../engine/export-worker-protocol";
 import { cn } from "../lib/cn";
 import { saveVideoFileWithDesktop } from "../shell/desktop-bridge";
 import {
@@ -135,7 +139,10 @@ export function StudioExportControl({
 }: StudioExportControlProps) {
   const [run, setRun] = useState<ExportRunStateV1>({ kind: "idle" });
   const [publicationRun, setPublicationRun] = useState<PublicationRunStateV1>({ kind: "idle" });
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [audioError, setAudioError] = useState<string | null>(null);
   const activeExport = useRef<AbortController | null>(null);
+  const audioInput = useRef<HTMLInputElement | null>(null);
   const pendingPublication = useRef<PreparedStudioExportPublicationV1 | null>(null);
 
   const stateKind: StudioExportControlStateKindV1 =
@@ -145,9 +152,14 @@ export function StudioExportControl({
   const publishing = publicationRun.kind === "publishing";
   const startBlocked = disabled || running || saving || publishing || exportSource === null;
   const publishBlocked =
-    disabled || publishing || publicationRun.kind === "published" || pendingPublication.current === null;
-  const publishUnavailableReason =
-    publicationRun.kind === "unavailable"
+    disabled ||
+    audioFile !== null ||
+    publishing ||
+    publicationRun.kind === "published" ||
+    pendingPublication.current === null;
+  const publishUnavailableReason = audioFile
+    ? "WAV audio exports are local-only in this release."
+    : publicationRun.kind === "unavailable"
       ? publicationRun.reason
       : pendingPublication.current === null
         ? publication.kind === "unavailable"
@@ -160,14 +172,17 @@ export function StudioExportControl({
     // Snapshot both inputs synchronously. Nothing below this point may read a
     // later preview or Editor Document revision for this artifact.
     const capturedSource = exportSource;
+    const capturedAudioFile = audioFile;
     const capturedAvailability = publication;
     let capturedPublication: ReturnType<typeof captureStudioExportPublicationV1> = null;
     let publicationCaptureFailure: string | null = null;
-    try {
-      capturedPublication = captureStudioExportPublicationV1(capturedAvailability);
-    } catch (error) {
-      publicationCaptureFailure =
-        error instanceof Error ? error.message : "The MP4 publication identity could not be created.";
+    if (!capturedAudioFile) {
+      try {
+        capturedPublication = captureStudioExportPublicationV1(capturedAvailability);
+      } catch (error) {
+        publicationCaptureFailure =
+          error instanceof Error ? error.message : "The MP4 publication identity could not be created.";
+      }
     }
     const controller = new AbortController();
     activeExport.current = controller;
@@ -176,6 +191,7 @@ export function StudioExportControl({
     setRun({ kind: "running", progress: null });
     try {
       const outcome = await runBrowserMp4ExportV1({
+        ...(capturedAudioFile ? { audioWav: await capturedAudioFile.arrayBuffer() } : {}),
         assetPayloads: capturedSource.assetPayloads,
         onProgress: (progress) => {
           if (activeExport.current === controller) setRun({ kind: "running", progress });
@@ -198,6 +214,12 @@ export function StudioExportControl({
       const video = new Uint8Array(await outcome.mp4.arrayBuffer());
       const desktopSaved = await saveVideoFileWithDesktop(fileName, video);
       if (desktopSaved === null) {
+        if (capturedAudioFile) {
+          downloadMp4Blob(fileName, outcome.mp4);
+          setPublicationRun({ kind: "unavailable", reason: "WAV audio exports are local-only in this release." });
+          setRun({ fileName, kind: "done" });
+          return;
+        }
         const completion = await completeBrowserMp4ExportV1({
           capturedAvailability,
           capturedPublication,
@@ -226,9 +248,26 @@ export function StudioExportControl({
     }
   }
 
+  function selectAudio(file: File | undefined) {
+    if (!file) return;
+    if (file.size === 0 || file.size > MAX_EXPORT_WAV_BYTES) {
+      setAudioFile(null);
+      setAudioError(`Choose a non-empty WAV file no larger than ${MAX_EXPORT_WAV_BYTES / (1024 * 1024)} MiB.`);
+      return;
+    }
+    setAudioFile(file);
+    setAudioError(null);
+  }
+
+  function removeAudio() {
+    setAudioFile(null);
+    setAudioError(null);
+    if (audioInput.current) audioInput.current.value = "";
+  }
+
   async function publishExport() {
     const artifact = pendingPublication.current;
-    if (disabled || publicationRun.kind === "publishing" || !artifact) return;
+    if (disabled || audioFile || publicationRun.kind === "publishing" || !artifact) return;
     setPublicationRun({ kind: "publishing" });
     try {
       await client.publish(artifact);
@@ -266,6 +305,39 @@ export function StudioExportControl({
             ? "Saving MP4…"
             : "Export MP4"}
       </button>
+      <input
+        accept=".wav,audio/wav,audio/x-wav"
+        aria-label="WAV audio file"
+        className="sr-only"
+        disabled={disabled || running || saving || publishing}
+        onChange={(event) => selectAudio(event.currentTarget.files?.[0])}
+        ref={audioInput}
+        type="file"
+      />
+      {audioFile ? (
+        <span className="flex max-w-48 items-center gap-1 text-zinc-400" title={audioFile.name}>
+          <span className="truncate">{audioFile.name}</span>
+          <button
+            aria-label={`Remove WAV ${audioFile.name}`}
+            className="px-1 text-zinc-500 hover:text-zinc-200"
+            disabled={running || saving}
+            onClick={removeAudio}
+            type="button"
+          >
+            ×
+          </button>
+        </span>
+      ) : (
+        <button
+          className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-600"
+          disabled={disabled || running || saving || publishing}
+          onClick={() => audioInput.current?.click()}
+          title="Attach one 48 kHz PCM WAV to this local export"
+          type="button"
+        >
+          + WAV
+        </button>
+      )}
       <button
         aria-label={publishUnavailableReason ? `Publish MP4 unavailable: ${publishUnavailableReason}` : "Publish MP4"}
         className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
@@ -301,6 +373,11 @@ export function StudioExportControl({
         </span>
       ) : null}
       {run.kind === "cancelled" ? <span className="text-zinc-500">Export cancelled</span> : null}
+      {audioError ? (
+        <span className="max-w-64 truncate text-amber-300" role="alert" title={audioError}>
+          {audioError}
+        </span>
+      ) : null}
       {run.kind === "done" ? (
         <span className="text-emerald-300" title={`Saved ${run.fileName}`}>
           Saved
