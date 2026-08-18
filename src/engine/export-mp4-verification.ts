@@ -28,6 +28,7 @@ const exportMp4StructureSchemaV1 = z
   .object({
     color: exportMp4ColorSchemaV1,
     durationTicks: z.number().int().min(0),
+    frameRate: z.union([z.literal(30), z.literal(60)]),
     heightPx: z.number().int().min(1),
     sampleCount: z.number().int().min(1),
     syncSampleCount: z.number().int().min(1),

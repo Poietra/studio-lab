@@ -1,4 +1,7 @@
-use mp4_atom::{Atom, Avc1, Codec, Colr, Decode, FourCC, Ftyp, Moov, StscEntry, StszSamples, Trak};
+use mp4_atom::{
+    Atom, Avc1, Codec, Colr, Decode, Encode, FourCC, Ftyp, Matrix, Moov, StscEntry, StszSamples,
+    Trak,
+};
 
 use crate::MAX_SAMPLE_TABLE_ENTRIES_V1;
 use crate::session::{ColorParametersV1, MAX_PROVENANCE_BYTES_V1, PROVENANCE_UUID_V1};
@@ -11,6 +14,13 @@ pub const MAX_VERIFIED_EXPORT_MP4_BYTES_V1: usize = 134_217_728;
 /// Longest admissible movie duration in media-timescale seconds, matching the
 /// 900-second cap shared by every profile of the closed v1 export ladder.
 const MAX_VERIFIED_EXPORT_DURATION_SECONDS_V1: u64 = 900;
+
+/// The browser producer writes `WebCodecs` microsecond timestamps without
+/// quantization. No other media timescale belongs to the closed v1 shape.
+const EXPORT_TIMESCALE_V1: u32 = 1_000_000;
+
+/// The only frame rates in the closed browser export profile ladder.
+const EXPORT_FRAME_RATES_V1: [u32; 2] = [30, 60];
 
 /// The closed resolution ladder of the v1 export profiles, as
 /// `(width_px, height_px)` pairs.
@@ -27,6 +37,9 @@ pub struct ExportMp4StructureV1 {
     pub height_px: u16,
     /// Shared movie and media timescale in ticks per second.
     pub timescale: u32,
+    /// Frame rate proven from every `stts` delta on the canonical timestamp
+    /// grid.
+    pub frame_rate: u32,
     /// Movie duration in media-timescale ticks, equal across `mvhd`, `tkhd`,
     /// and `mdhd`.
     pub duration_ticks: u64,
@@ -138,6 +151,7 @@ struct TopLevelAtomSpan {
 struct SampleTableSummary {
     sample_count: u64,
     duration_ticks: u64,
+    frame_rate: u32,
 }
 
 /// Verifies that `bytes` are one complete MP4 exactly as
@@ -172,11 +186,13 @@ pub fn verify_export_mp4_v1(bytes: &[u8]) -> Result<ExportMp4StructureV1, Export
     let (width_px, height_px) = verify_dimensions(trak, avc1)?;
     let sample_tables = verify_sample_tables(trak, media_spans)?;
     let sync_sample_count = verify_sync_samples(trak, sample_tables.sample_count)?;
+    verify_avcc_samples(bytes, trak, avc1, media_spans)?;
     let (timescale, duration_ticks) = verify_durations(&moov, trak, sample_tables.duration_ticks)?;
     Ok(ExportMp4StructureV1 {
         width_px,
         height_px,
         timescale,
+        frame_rate: sample_tables.frame_rate,
         duration_ticks,
         sample_count: sample_tables.sample_count,
         sync_sample_count,
@@ -300,6 +316,22 @@ fn decode_moov(bytes: &[u8], span: &TopLevelAtomSpan) -> Result<Moov, ExportMp4V
     if !encoded.is_empty() {
         return Err(malformed("the trailing moov atom was not fully consumed"));
     }
+    // `mp4-atom` converts a nested large-size payload length through
+    // `usize`. On wasm32 a malicious >4 GiB declaration could otherwise
+    // truncate to a small in-buffer length. A producer moov is canonical, so
+    // exact decode/re-encode equality closes that target-specific gap while
+    // also rejecting shapes the muxer itself never writes.
+    let mut canonical = Vec::new();
+    moov.encode(&mut canonical).map_err(|error| {
+        malformed(format!(
+            "the trailing moov atom does not re-encode: {error}"
+        ))
+    })?;
+    if canonical != bytes[span.box_start..span.box_end] {
+        return Err(malformed(
+            "the trailing moov atom is not the muxer's canonical encoding",
+        ));
+    }
     Ok(moov)
 }
 
@@ -371,6 +403,23 @@ fn single_video_avc1(moov: &Moov) -> Result<(&Trak, &Avc1), ExportMp4VerifyError
         )));
     }
     let trak = &moov.trak[0];
+    if !trak.tkhd.enabled || !trak.tkhd.in_movie {
+        return Err(track_mismatch("the sole video track is disabled"));
+    }
+    if trak.tkhd.size_is_aspect_ratio {
+        return Err(track_mismatch(
+            "tkhd dimensions are marked as an aspect ratio",
+        ));
+    }
+    if trak.tkhd.matrix != Matrix::default() {
+        return Err(track_mismatch("tkhd carries a non-identity matrix"));
+    }
+    if trak.edts.is_some() {
+        return Err(track_mismatch("the track carries an edit list"));
+    }
+    if trak.mdia.minf.stbl.ctts.is_some() {
+        return Err(track_mismatch("the track carries composition-time offsets"));
+    }
     if trak.mdia.hdlr.handler != b"vide".into() {
         return Err(track_mismatch(format!(
             "the media handler is {:?}, not vide",
@@ -390,6 +439,34 @@ fn single_video_avc1(moov: &Moov) -> Result<(&Trak, &Avc1), ExportMp4VerifyError
     let Codec::Avc1(avc1) = &codecs[0] else {
         return Err(track_mismatch("the sample entry is not avc1"));
     };
+    if avc1.visual.data_reference_index != 1 {
+        return Err(track_mismatch(
+            "the avc1 sample entry does not use data reference 1",
+        ));
+    }
+    let data_references = &trak.mdia.minf.dinf.dref.urls;
+    if data_references.len() != 1 || !data_references[0].location.is_empty() {
+        return Err(track_mismatch(
+            "the video samples use an external data reference",
+        ));
+    }
+    if avc1.avcc.sequence_parameter_sets.is_empty()
+        || !avc1
+            .avcc
+            .sequence_parameter_sets
+            .iter()
+            .all(|nal| nal.first().is_some_and(|byte| byte & 0x1f == 7))
+        || avc1.avcc.picture_parameter_sets.is_empty()
+        || !avc1
+            .avcc
+            .picture_parameter_sets
+            .iter()
+            .all(|nal| nal.first().is_some_and(|byte| byte & 0x1f == 8))
+    {
+        return Err(track_mismatch(
+            "avcC does not contain non-empty SPS and PPS parameter sets",
+        ));
+    }
     Ok((trak, avc1))
 }
 
@@ -503,6 +580,7 @@ fn verify_sample_tables(
              stts sums to {stts_count}, and {mdat_count} mdat atoms are present"
         )));
     }
+    let frame_rate = verify_timestamp_grid(&stbl.stts.entries, stsz_count)?;
     let one_sample_per_chunk = [StscEntry {
         first_chunk: 1,
         samples_per_chunk: 1,
@@ -538,7 +616,110 @@ fn verify_sample_tables(
     Ok(SampleTableSummary {
         sample_count: stsz_count,
         duration_ticks: stts_duration,
+        frame_rate,
     })
+}
+
+fn verify_timestamp_grid(
+    entries: &[mp4_atom::SttsEntry],
+    sample_count: u64,
+) -> Result<u32, ExportMp4VerifyErrorV1> {
+    for frame_rate in EXPORT_FRAME_RATES_V1 {
+        let mut sample_index = 0u64;
+        let mut matches = true;
+        for entry in entries {
+            for _ in 0..entry.sample_count {
+                let start = u128::from(sample_index) * u128::from(EXPORT_TIMESCALE_V1)
+                    / u128::from(frame_rate);
+                let end = u128::from(sample_index + 1) * u128::from(EXPORT_TIMESCALE_V1)
+                    / u128::from(frame_rate);
+                if u128::from(entry.sample_delta) != end - start {
+                    matches = false;
+                    break;
+                }
+                sample_index += 1;
+            }
+            if !matches {
+                break;
+            }
+        }
+        if matches && sample_index == sample_count {
+            return Ok(frame_rate);
+        }
+    }
+    Err(sample_table_mismatch(
+        "stts does not follow the canonical 30 or 60 fps microsecond timestamp grid",
+    ))
+}
+
+fn verify_avcc_samples(
+    bytes: &[u8],
+    trak: &Trak,
+    avc1: &Avc1,
+    media_spans: &[TopLevelAtomSpan],
+) -> Result<(), ExportMp4VerifyErrorV1> {
+    let length_size = usize::from(avc1.avcc.length_size);
+    if !(1..=4).contains(&length_size) {
+        return Err(track_mismatch("avcC carries an invalid NAL length size"));
+    }
+    let sync_samples = &trak
+        .mdia
+        .minf
+        .stbl
+        .stss
+        .as_ref()
+        .expect("sync-sample shape is verified before AVCC payloads")
+        .entries;
+    for (sample_index, span) in media_spans.iter().enumerate() {
+        let sample_number = u32::try_from(sample_index + 1)
+            .map_err(|_| sample_table_mismatch("the sample index does not fit u32"))?;
+        let payload = &bytes[span.payload_start..span.box_end];
+        let mut cursor = 0usize;
+        let mut contains_idr = false;
+        let mut nal_count = 0usize;
+        while cursor < payload.len() {
+            let length_end = cursor
+                .checked_add(length_size)
+                .ok_or_else(|| sample_table_mismatch("an AVCC NAL length offset overflowed"))?;
+            if length_end > payload.len() {
+                return Err(sample_table_mismatch(format!(
+                    "sample {sample_number} ends inside an AVCC NAL length prefix"
+                )));
+            }
+            let mut nal_length = 0usize;
+            for byte in &payload[cursor..length_end] {
+                nal_length = (nal_length << 8) | usize::from(*byte);
+            }
+            cursor = length_end;
+            if nal_length == 0 {
+                return Err(sample_table_mismatch(format!(
+                    "sample {sample_number} contains an empty AVCC NAL unit"
+                )));
+            }
+            let nal_end = cursor
+                .checked_add(nal_length)
+                .ok_or_else(|| sample_table_mismatch("an AVCC NAL end offset overflowed"))?;
+            if nal_end > payload.len() {
+                return Err(sample_table_mismatch(format!(
+                    "sample {sample_number} ends inside an AVCC NAL unit"
+                )));
+            }
+            contains_idr |= payload[cursor] & 0x1f == 5;
+            nal_count += 1;
+            cursor = nal_end;
+        }
+        if nal_count == 0 {
+            return Err(sample_table_mismatch(format!(
+                "sample {sample_number} contains no AVCC NAL units"
+            )));
+        }
+        if sync_samples.binary_search(&sample_number).is_ok() && !contains_idr {
+            return Err(sample_table_mismatch(format!(
+                "sync sample {sample_number} contains no IDR NAL unit"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn verify_durations(
@@ -566,8 +747,10 @@ fn verify_durations(
         )));
     }
     let timescale = moov.mvhd.timescale;
-    if timescale == 0 {
-        return Err(track_mismatch("the movie timescale is zero"));
+    if timescale != EXPORT_TIMESCALE_V1 {
+        return Err(track_mismatch(format!(
+            "the movie timescale is {timescale}, not {EXPORT_TIMESCALE_V1}"
+        )));
     }
     let duration_ticks = moov.mvhd.duration;
     if duration_ticks > MAX_VERIFIED_EXPORT_DURATION_SECONDS_V1 * u64::from(timescale) {
@@ -611,14 +794,14 @@ mod tests {
         encoded[8..].to_vec()
     }
 
-    fn config(width_px: u16, height_px: u16) -> ExportMuxConfigV1 {
+    fn config_at_fps(width_px: u16, height_px: u16, frame_rate: u32) -> ExportMuxConfigV1 {
         ExportMuxConfigV1 {
             decoder_configuration: synthetic_description(),
             video: VideoParametersV1 {
                 width_px: NonZeroU16::new(width_px).unwrap(),
                 height_px: NonZeroU16::new(height_px).unwrap(),
                 timescale: NonZeroU32::new(1_000_000).unwrap(),
-                frames_per_second: NonZeroU32::new(30).unwrap(),
+                frames_per_second: NonZeroU32::new(frame_rate).unwrap(),
             },
             color: ColorParametersV1 {
                 primaries: 1,
@@ -631,28 +814,48 @@ mod tests {
         }
     }
 
-    fn sample(bytes: &[u8], timestamp_us: u64, is_key: bool) -> EncodedSampleV1<'_> {
-        EncodedSampleV1 {
-            bytes,
-            timestamp_us,
-            duration_us: 33_333,
-            is_key,
-        }
+    fn config(width_px: u16, height_px: u16) -> ExportMuxConfigV1 {
+        config_at_fps(width_px, height_px, 30)
+    }
+
+    fn avcc_sample(nal_header: u8, body_bytes: usize) -> Vec<u8> {
+        let nal_length = u32::try_from(body_bytes + 1).unwrap();
+        let mut bytes = nal_length.to_be_bytes().to_vec();
+        bytes.push(nal_header);
+        bytes.resize(bytes.len() + body_bytes, 0x80);
+        bytes
     }
 
     /// Three samples (keyframes first and last) at the given resolution.
     fn mux_three_samples(width_px: u16, height_px: u16) -> Vec<u8> {
+        mux_three_samples_at_fps(width_px, height_px, 30)
+    }
+
+    fn mux_three_samples_at_fps(width_px: u16, height_px: u16, frame_rate: u32) -> Vec<u8> {
         let mut session =
-            ExportMuxSessionV1::begin(config(width_px, height_px), Vec::new()).unwrap();
-        session
-            .append_sample(sample(&[0x11; 120], 0, true))
-            .unwrap();
-        session
-            .append_sample(sample(&[0x22; 90], 33_333, false))
-            .unwrap();
-        session
-            .append_sample(sample(&[0x33; 150], 66_667, true))
-            .unwrap();
+            ExportMuxSessionV1::begin(config_at_fps(width_px, height_px, frame_rate), Vec::new())
+                .unwrap();
+        for (index, (payload, is_key)) in [
+            (avcc_sample(0x65, 119), true),
+            (avcc_sample(0x41, 89), false),
+            (avcc_sample(0x65, 149), true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let index = u64::try_from(index).unwrap();
+            let timestamp_us = index * u64::from(EXPORT_TIMESCALE_V1) / u64::from(frame_rate);
+            let next_timestamp_us =
+                (index + 1) * u64::from(EXPORT_TIMESCALE_V1) / u64::from(frame_rate);
+            session
+                .append_sample(EncodedSampleV1 {
+                    bytes: &payload,
+                    timestamp_us,
+                    duration_us: next_timestamp_us - timestamp_us,
+                    is_key,
+                })
+                .unwrap();
+        }
         session.finish().unwrap()
     }
 
@@ -708,6 +911,7 @@ mod tests {
                 width_px: 854,
                 height_px: 480,
                 timescale: 1_000_000,
+                frame_rate: 30,
                 duration_ticks: 100_000,
                 sample_count: 3,
                 sync_sample_count: 2,
@@ -731,6 +935,13 @@ mod tests {
                 (width_px, height_px)
             );
         }
+    }
+
+    #[test]
+    fn accepts_the_60_fps_timestamp_grid_and_reports_it() {
+        let structure = verify_export_mp4_v1(&mux_three_samples_at_fps(854, 480, 60)).unwrap();
+        assert_eq!(structure.frame_rate, 60);
+        assert_eq!(structure.duration_ticks, 50_000);
     }
 
     #[test]
@@ -862,6 +1073,67 @@ mod tests {
     }
 
     #[test]
+    fn rejects_timeline_and_display_shapes_the_v1_muxer_never_writes() {
+        let valid = mux_three_samples(854, 480);
+        let disabled = rewrite_moov(&valid, |moov| {
+            moov.trak[0].tkhd.enabled = false;
+        });
+        let transformed = rewrite_moov(&valid, |moov| {
+            moov.trak[0].tkhd.matrix.x = 1;
+        });
+        let edit_list = rewrite_moov(&valid, |moov| {
+            moov.trak[0].edts = Some(mp4_atom::Edts::default());
+        });
+        let composition_offsets = rewrite_moov(&valid, |moov| {
+            moov.trak[0].mdia.minf.stbl.ctts = Some(mp4_atom::Ctts::default());
+        });
+        let external_data = rewrite_moov(&valid, |moov| {
+            moov.trak[0].mdia.minf.dinf.dref.urls[0].location =
+                "https://example.invalid/video.h264".to_owned();
+        });
+        let wrong_reference_index = rewrite_moov(&valid, |moov| {
+            avc1_mut(moov).visual.data_reference_index = 2;
+        });
+        for bytes in [
+            disabled,
+            transformed,
+            edit_list,
+            composition_offsets,
+            external_data,
+            wrong_reference_index,
+        ] {
+            assert!(matches!(
+                verify_export_mp4_v1(&bytes).unwrap_err(),
+                ExportMp4VerifyErrorV1::TrackMismatch { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_missing_or_mislabeled_avcc_parameter_sets() {
+        let valid = mux_three_samples(854, 480);
+        let missing_sequence_parameter_sets = rewrite_moov(&valid, |moov| {
+            avc1_mut(moov).avcc.sequence_parameter_sets.clear();
+        });
+        let missing_picture_parameter_sets = rewrite_moov(&valid, |moov| {
+            avc1_mut(moov).avcc.picture_parameter_sets.clear();
+        });
+        let mislabeled_sps = rewrite_moov(&valid, |moov| {
+            avc1_mut(moov).avcc.sequence_parameter_sets[0][0] = 0x68;
+        });
+        for bytes in [
+            missing_sequence_parameter_sets,
+            missing_picture_parameter_sets,
+            mislabeled_sps,
+        ] {
+            assert!(matches!(
+                verify_export_mp4_v1(&bytes).unwrap_err(),
+                ExportMp4VerifyErrorV1::TrackMismatch { .. }
+            ));
+        }
+    }
+
+    #[test]
     fn rejects_a_missing_or_non_nclx_colr_box() {
         let valid = mux_three_samples(854, 480);
         let no_colr = rewrite_moov(&valid, |moov| {
@@ -925,6 +1197,32 @@ mod tests {
                 verify_export_mp4_v1(&bytes).unwrap_err(),
                 ExportMp4VerifyErrorV1::KeyframeFirstMissing
             );
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_avcc_samples_and_sync_samples_without_idr() {
+        let valid = mux_three_samples(854, 480);
+        let spans = decode_top_level_spans(&valid).unwrap();
+        let first_mdat = spans
+            .iter()
+            .find(|span| span.kind == Mdat::KIND)
+            .expect("the fixture has an mdat");
+
+        let mut incomplete = valid.clone();
+        let impossible_length =
+            u32::try_from(first_mdat.box_end - first_mdat.payload_start).unwrap();
+        incomplete[first_mdat.payload_start..first_mdat.payload_start + 4]
+            .copy_from_slice(&impossible_length.to_be_bytes());
+
+        let mut non_idr_sync = valid;
+        non_idr_sync[first_mdat.payload_start + 4] = 0x41;
+
+        for bytes in [incomplete, non_idr_sync] {
+            assert!(matches!(
+                verify_export_mp4_v1(&bytes).unwrap_err(),
+                ExportMp4VerifyErrorV1::SampleTableMismatch { .. }
+            ));
         }
     }
 
@@ -1019,7 +1317,21 @@ mod tests {
         let duration_disagrees = rewrite_moov(&valid, |moov| {
             moov.trak[0].mdia.minf.stbl.stts.entries[0].sample_delta += 1;
         });
-        for bytes in [zero_delta, duration_disagrees] {
+        let final_delta_is_off_grid = rewrite_moov(&valid, |moov| {
+            moov.trak[0]
+                .mdia
+                .minf
+                .stbl
+                .stts
+                .entries
+                .last_mut()
+                .unwrap()
+                .sample_delta += 1;
+            moov.mvhd.duration += 1;
+            moov.trak[0].tkhd.duration += 1;
+            moov.trak[0].mdia.mdhd.duration += 1;
+        });
+        for bytes in [zero_delta, duration_disagrees, final_delta_is_off_grid] {
             assert!(matches!(
                 verify_export_mp4_v1(&bytes).unwrap_err(),
                 ExportMp4VerifyErrorV1::SampleTableMismatch { .. }
@@ -1064,7 +1376,15 @@ mod tests {
         let mdhd_timescale_disagrees = rewrite_moov(&valid, |moov| {
             moov.trak[0].mdia.mdhd.timescale = 90_000;
         });
-        for bytes in [tkhd_disagrees, mdhd_timescale_disagrees] {
+        let unsupported_timescale = rewrite_moov(&valid, |moov| {
+            moov.mvhd.timescale = 90_000;
+            moov.trak[0].mdia.mdhd.timescale = 90_000;
+        });
+        for bytes in [
+            tkhd_disagrees,
+            mdhd_timescale_disagrees,
+            unsupported_timescale,
+        ] {
             assert!(matches!(
                 verify_export_mp4_v1(&bytes).unwrap_err(),
                 ExportMp4VerifyErrorV1::TrackMismatch { .. }
@@ -1074,11 +1394,25 @@ mod tests {
 
     #[test]
     fn rejects_a_movie_longer_than_the_export_bound() {
-        let mut session = ExportMuxSessionV1::begin(config(854, 480), Vec::new()).unwrap();
-        session.append_sample(sample(&[0x11; 32], 0, true)).unwrap();
-        session
-            .append_sample(sample(&[0x22; 32], 901_000_000, false))
-            .unwrap();
+        const SAMPLE_COUNT: u32 = 27_001;
+        let mut long_config = config(854, 480);
+        long_config.max_sample_count = NonZeroU32::new(SAMPLE_COUNT).unwrap();
+        let mut session = ExportMuxSessionV1::begin(long_config, Vec::new()).unwrap();
+        let idr = avcc_sample(0x65, 1);
+        let non_idr = avcc_sample(0x41, 1);
+        for index in 0..SAMPLE_COUNT {
+            let index = u64::from(index);
+            let timestamp_us = index * u64::from(EXPORT_TIMESCALE_V1) / 30;
+            let next_timestamp_us = (index + 1) * u64::from(EXPORT_TIMESCALE_V1) / 30;
+            session
+                .append_sample(EncodedSampleV1 {
+                    bytes: if index == 0 { &idr } else { &non_idr },
+                    timestamp_us,
+                    duration_us: next_timestamp_us - timestamp_us,
+                    is_key: index == 0,
+                })
+                .unwrap();
+        }
         let bytes = session.finish().unwrap();
         assert!(matches!(
             verify_export_mp4_v1(&bytes).unwrap_err(),

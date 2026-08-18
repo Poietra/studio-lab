@@ -7,6 +7,38 @@ import { MAX_VERIFIED_EXPORT_MP4_BYTES_V1, verifyExportMp4V1 } from "./export-mp
 
 const FIXTURE_PATH = resolve(process.cwd(), "fixtures", "client-export", "tiny-client-export.mp4");
 
+function findFourcc(bytes: Uint8Array, fourcc: string, from = 0): number {
+  const needle = new TextEncoder().encode(fourcc);
+  return bytes.findIndex((_, index) => index >= from && needle.every((byte, offset) => bytes[index + offset] === byte));
+}
+
+/**
+ * Re-encodes the nested mvhd header as a deliberately false >4 GiB extended
+ * size. `mp4-atom` used to truncate its payload length on wasm32; the bytes
+ * remain small so this exercises the actual browser target without allocating
+ * gigabytes.
+ */
+function withTruncatingNestedLargeSize(bytes: Uint8Array): Uint8Array {
+  const moovType = findFourcc(bytes, "moov");
+  const mvhdType = findFourcc(bytes, "mvhd", moovType + 4);
+  expect(moovType).toBeGreaterThan(4);
+  expect(mvhdType).toBeGreaterThan(moovType + 4);
+  const moovStart = moovType - 4;
+  const mvhdStart = mvhdType - 4;
+  const sourceView = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const moovSize = sourceView.getUint32(moovStart, false);
+  const mvhdSize = sourceView.getUint32(mvhdStart, false);
+  const mutated = new Uint8Array(bytes.byteLength + 8);
+  mutated.set(bytes.subarray(0, mvhdStart), 0);
+  mutated.set(bytes.subarray(mvhdStart, mvhdStart + 8), mvhdStart);
+  const mutatedView = new DataView(mutated.buffer);
+  mutatedView.setUint32(mvhdStart, 1, false);
+  mutatedView.setBigUint64(mvhdStart + 8, 0x1_0000_0000n + BigInt(mvhdSize + 8), false);
+  mutated.set(bytes.subarray(mvhdStart + 8), mvhdStart + 16);
+  mutatedView.setUint32(moovStart, moovSize + 8, false);
+  return mutated;
+}
+
 describe("verifyExportMp4V1", () => {
   it("verifies the committed muxer fixture and extracts its provenance through the shared WASM core", async () => {
     const bytes = new Uint8Array(await readFile(FIXTURE_PATH));
@@ -16,6 +48,7 @@ describe("verifyExportMp4V1", () => {
     expect(result.structure.widthPx).toBe(854);
     expect(result.structure.heightPx).toBe(480);
     expect(result.structure.timescale).toBe(1_000_000);
+    expect(result.structure.frameRate).toBe(30);
     expect(result.structure.sampleCount).toBeGreaterThan(0);
     expect(result.provenance).toEqual({
       engineAbiVersion: 27,
@@ -23,6 +56,14 @@ describe("verifyExportMp4V1", () => {
       sceneId: "fixture-scene",
       sceneRevisionHash: "b".repeat(64),
     });
+  });
+
+  it("refuses a nested extended size that would truncate on wasm32", async () => {
+    const bytes = new Uint8Array(await readFile(FIXTURE_PATH));
+    const result = await verifyExportMp4V1(withTruncatingNestedLargeSize(bytes));
+    expect(result.kind).toBe("refused");
+    if (result.kind !== "refused") return;
+    expect(result.code).toBe("malformed-container");
   });
 
   it("refuses bytes that are not a Poietra export container", async () => {

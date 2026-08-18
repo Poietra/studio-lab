@@ -102,6 +102,7 @@ struct ExportVerifiedStructureV1 {
     width_px: u16,
     height_px: u16,
     timescale: u32,
+    frame_rate: u32,
     duration_ticks: u64,
     sample_count: u64,
     sync_sample_count: u64,
@@ -234,6 +235,7 @@ fn verified_structure(structure: &ExportMp4StructureV1) -> ExportVerifiedStructu
         width_px: structure.width_px,
         height_px: structure.height_px,
         timescale: structure.timescale,
+        frame_rate: structure.frame_rate,
         duration_ticks: structure.duration_ticks,
         sample_count: structure.sample_count,
         sync_sample_count: structure.sync_sample_count,
@@ -353,21 +355,29 @@ mod tests {
             max_sample_count: NonZeroU32::new(16).unwrap(),
         };
         let mut session = ExportMuxSessionV1::begin(config, Vec::new()).unwrap();
-        for (payload, timestamp_us, is_key) in [
-            (vec![0x11; 120], 0, true),
-            (vec![0x22; 90], 33_333, false),
-            (vec![0x33; 150], 66_667, true),
+        for (payload, timestamp_us, duration_us, is_key) in [
+            (avcc_sample(0x65, 119), 0, 33_333, true),
+            (avcc_sample(0x41, 89), 33_333, 33_333, false),
+            (avcc_sample(0x65, 149), 66_666, 33_334, true),
         ] {
             session
                 .append_sample(EncodedSampleV1 {
                     bytes: &payload,
                     timestamp_us,
-                    duration_us: 33_333,
+                    duration_us,
                     is_key,
                 })
                 .unwrap();
         }
         session.finish().unwrap()
+    }
+
+    fn avcc_sample(nal_header: u8, body_bytes: usize) -> Vec<u8> {
+        let nal_length = u32::try_from(body_bytes + 1).unwrap();
+        let mut bytes = nal_length.to_be_bytes().to_vec();
+        bytes.push(nal_header);
+        bytes.resize(bytes.len() + body_bytes, 0x80);
+        bytes
     }
 
     fn valid_export() -> Vec<u8> {
@@ -422,6 +432,7 @@ mod tests {
         assert_eq!(structure["widthPx"], 854);
         assert_eq!(structure["heightPx"], 480);
         assert_eq!(structure["timescale"], 1_000_000);
+        assert_eq!(structure["frameRate"], 30);
         assert_eq!(structure["durationTicks"], 100_000);
         assert_eq!(structure["sampleCount"], 3);
         assert_eq!(structure["syncSampleCount"], 2);
@@ -513,7 +524,7 @@ mod tests {
         // Renaming the box to `free` removes it without resizing anything.
         let offset = find(&bytes, b"colr");
         bytes[offset..offset + 4].copy_from_slice(b"free");
-        assert_eq!(refusal_code(&bytes), "color-parameters-missing");
+        assert_eq!(refusal_code(&bytes), "malformed-container");
     }
 
     #[test]
@@ -528,6 +539,7 @@ mod tests {
 
     #[test]
     fn a_movie_beyond_the_duration_bound_is_refused() {
+        const SAMPLE_COUNT: u32 = 27_001;
         let config_provenance = serde_json::to_vec(&fixture_provenance()).unwrap();
         let config = ExportMuxConfigV1 {
             decoder_configuration: SYNTHETIC_AVCC.to_vec(),
@@ -544,25 +556,24 @@ mod tests {
                 full_range: false,
             },
             provenance: config_provenance,
-            max_sample_count: NonZeroU32::new(16).unwrap(),
+            max_sample_count: NonZeroU32::new(SAMPLE_COUNT).unwrap(),
         };
         let mut session = ExportMuxSessionV1::begin(config, Vec::new()).unwrap();
-        session
-            .append_sample(EncodedSampleV1 {
-                bytes: &[0x11; 32],
-                timestamp_us: 0,
-                duration_us: 33_333,
-                is_key: true,
-            })
-            .unwrap();
-        session
-            .append_sample(EncodedSampleV1 {
-                bytes: &[0x22; 32],
-                timestamp_us: 901_000_000,
-                duration_us: 33_333,
-                is_key: false,
-            })
-            .unwrap();
+        let idr = avcc_sample(0x65, 1);
+        let non_idr = avcc_sample(0x41, 1);
+        for index in 0..SAMPLE_COUNT {
+            let index = u64::from(index);
+            let timestamp_us = index * 1_000_000 / 30;
+            let next_timestamp_us = (index + 1) * 1_000_000 / 30;
+            session
+                .append_sample(EncodedSampleV1 {
+                    bytes: if index == 0 { &idr } else { &non_idr },
+                    timestamp_us,
+                    duration_us: next_timestamp_us - timestamp_us,
+                    is_key: index == 0,
+                })
+                .unwrap();
+        }
         assert_eq!(
             refusal_code(&session.finish().unwrap()),
             "duration-exceeded"
