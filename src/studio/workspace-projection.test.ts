@@ -72,6 +72,7 @@ function workspaceScene(
   if (!imported) throw new Error(`Could not import ${name}.`);
   return {
     anchors: imported.anchors,
+    importOutcomes: imported.importOutcomes,
     name,
     nextSceneId,
     runtimeSceneState: imported.runtimeSceneState,

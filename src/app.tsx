@@ -3880,6 +3880,7 @@ export function App({
               onUndo={undoProgramCommitFirst}
               redoCount={redoPrograms.length}
               selectedIds={selectedSet}
+              sourceImportOutcomes={activeScene.importOutcomes}
             />
 
             <StudioViewport

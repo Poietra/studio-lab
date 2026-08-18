@@ -19,8 +19,10 @@ import {
   type StaticSemanticState,
   type TimelineEvent,
 } from "../studio/model";
+import type { ManimSourceImportOutcome } from "./contracts";
 import { referencedPythonReferences } from "./python-reference-analysis";
 import { analyzePythonSource, isPythonStatementStart, isStandalonePythonComment } from "./python-source-analysis";
+import { studioSourceAnalysisProviderV1 } from "./source-analysis";
 
 export type ImportedManimEntity = Readonly<{
   id: string;
@@ -39,6 +41,7 @@ export type ImportedContentReplacementSafety =
 export type ImportedManimScene = Readonly<{
   anchors: readonly number[];
   contentReplacementSafety: Readonly<Record<string, ImportedContentReplacementSafety>>;
+  importOutcomes: readonly ManimSourceImportOutcome[];
   initialVisibleSourceVariables: readonly string[];
   initialization: readonly string[];
   name: string;
@@ -1617,6 +1620,123 @@ export function isSimpleShiftAnimationStatement(statement: string, sourceVariabl
   );
 }
 
+function omittedBindingImportOutcomes(
+  source: string,
+  sourcePath: string,
+  sceneName: string,
+  block: SourceSceneBlock,
+  importedVariables: ReadonlySet<string>,
+): readonly ManimSourceImportOutcome[] {
+  let analysis: ReturnType<typeof studioSourceAnalysisProviderV1.analyze>;
+  try {
+    analysis = studioSourceAnalysisProviderV1.analyze({
+      expectedSourceHash: hashSource(source),
+      sceneName,
+      sourcePath,
+      sourceText: source,
+    });
+  } catch {
+    return [
+      {
+        access: "read-only",
+        bindingId: `source-analysis-unavailable:${sourcePath}#${sceneName}`,
+        constructorPath: null,
+        kind: "unsupported",
+        reason: "source-analysis-unavailable",
+        sourceLine: block.classLine + 1,
+        sourceVariable: null,
+      },
+    ];
+  }
+
+  const constructBindings = analysis.bindings.filter(
+    (binding) => binding.kind === "assignment" && binding.scopeId === analysis.scene.construct.scopeId,
+  );
+  const constructNames = new Set(constructBindings.map((binding) => binding.name));
+  const directAliasStatements = new Set(
+    analysis.scene.bindingBlockers.flatMap((blocker) =>
+      blocker.kind === "direct-alias-binding" && blocker.statementId ? [blocker.statementId] : [],
+    ),
+  );
+
+  return constructBindings.flatMap((binding): readonly ManimSourceImportOutcome[] => {
+    if (importedVariables.has(binding.name)) return [];
+    const constructorPath = binding.constructorCall?.path ?? null;
+    const directAlias = binding.statementId !== null && directAliasStatements.has(binding.statementId);
+    // Scalar locals are not object candidates. A constructor call or a direct
+    // alias is the bounded source fact that makes an omitted binding visible.
+    if (constructorPath === null && !directAlias) return [];
+
+    const capability = binding.capabilities.move;
+    if (binding.ambiguous || (capability.status === "unknown" && capability.reason === "ambiguous-binding")) {
+      return [
+        {
+          access: "read-only",
+          bindingId: binding.id,
+          constructorPath,
+          kind: "unsupported",
+          reason: "ambiguous-binding",
+          sourceLine: binding.span.startLine,
+          sourceVariable: binding.name,
+        },
+      ];
+    }
+    if (capability.status === "unknown" && capability.reason === "unsupported-binding-form") {
+      return [
+        {
+          access: "read-only",
+          bindingId: binding.id,
+          constructorPath,
+          kind: "unsupported",
+          reason: "unsupported-binding-form",
+          sourceLine: binding.span.startLine,
+          sourceVariable: binding.name,
+        },
+      ];
+    }
+    if (
+      binding.controlPath.length > 0 ||
+      (capability.status === "unknown" && capability.reason === "dynamic-control-flow")
+    ) {
+      return [
+        {
+          access: "read-only",
+          bindingId: binding.id,
+          constructorPath,
+          kind: "runtime-only",
+          reason: "dynamic-control-flow",
+          sourceLine: binding.span.startLine,
+          sourceVariable: binding.name,
+        },
+      ];
+    }
+    if (constructorPath === null || constructNames.has(constructorPath[0] ?? "")) {
+      return [
+        {
+          access: "read-only",
+          bindingId: binding.id,
+          constructorPath,
+          kind: "runtime-only",
+          reason: "runtime-constructor",
+          sourceLine: binding.span.startLine,
+          sourceVariable: binding.name,
+        },
+      ];
+    }
+    return [
+      {
+        access: "read-only",
+        bindingId: binding.id,
+        constructorPath,
+        kind: "source-preserved",
+        reason: "constructor-not-supported",
+        sourceLine: binding.span.startLine,
+        sourceVariable: binding.name,
+      },
+    ];
+  });
+}
+
 function appendChannelSample(
   channelSamples: Map<string, PropertyChannelSample[]>,
   entityId: string,
@@ -2499,6 +2619,13 @@ export function importManimScene(
       ),
     )
     .map((entity) => entity.sourceVariable);
+  const importOutcomes = omittedBindingImportOutcomes(
+    source,
+    sourcePath,
+    sceneName,
+    block,
+    new Set(mutableEntities.map((entity) => entity.sourceVariable)),
+  );
   return {
     anchors,
     contentReplacementSafety: Object.fromEntries(
@@ -2507,6 +2634,7 @@ export function importManimScene(
         .map((entity) => [entity.sourceVariable, entity.contentReplacementSafety]),
     ),
     initialVisibleSourceVariables,
+    importOutcomes,
     initialization: mutableEntities
       .filter(
         (entity) => statements.findIndex((statement) => statement.text === entity.initialization) < firstPlayIndex,

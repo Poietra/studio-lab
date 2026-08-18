@@ -26,6 +26,33 @@ describe("Canonical EditProgram source lowering", () => {
     expect(findSceneMotionAnchors(source, "GroupedEquation")).toEqual([{ line: 6, seconds: 7 }]);
   });
 
+  it("preserves an unsupported constructor byte-for-byte while editing another object", () => {
+    const customStatement = '        custom = widgets.CustomMobject("keep  spaces", option={"x": 1})';
+    const mixedSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+${customStatement}
+        circle = Circle()
+        self.add(circle, custom)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.wait(1)
+`;
+    const program = canonicalProgram([motionOperation({ targetEntityIds: ["circle_1"] })]);
+    const lowered = lowerCanonicalProgramSource(
+      mixedSource,
+      request(program, [{ entityId: "circle_1", sourceVariable: "circle" }]),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.source.split("\n").filter((line) => line === customStatement)).toHaveLength(1);
+    expect(importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation")?.importOutcomes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: "source-preserved", sourceVariable: "custom" })]),
+    );
+  });
+
   it("round-trips canonical Inspector Text and MathTex content edits", () => {
     const contentSource = `from manim import *
 

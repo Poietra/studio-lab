@@ -87,6 +87,7 @@ export function importSourceSnapshot(
       path,
       scenes: importedScenes.map((scene, index) => ({
         anchors: scene.anchors,
+        importOutcomes: scene.importOutcomes,
         name: scene.name,
         nextSceneId:
           importedScenes[index + 1]?.sceneId === scene.sceneId ? null : (importedScenes[index + 1]?.sceneId ?? null),

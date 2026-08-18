@@ -1,6 +1,7 @@
 import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggestions";
 import { cn } from "../lib/cn";
 import type {
+  ManimSourceImportOutcome,
   ManimWorkspaceView,
   OriginalManimSourceExportRequest,
   RenderSessionView,
@@ -53,6 +54,21 @@ function styleSummary(entity: ProjectedEntity) {
 function colorInputValue(value: string | null) {
   return value && /^#[0-9a-f]{6}$/i.test(value) ? value.toLowerCase() : "#ffffff";
 }
+
+const IMPORT_OUTCOME_LABELS: Readonly<Record<ManimSourceImportOutcome["kind"], string>> = {
+  "runtime-only": "Runtime",
+  "source-preserved": "Read-only",
+  unsupported: "Unsupported",
+};
+
+const IMPORT_OUTCOME_DETAILS: Readonly<Record<ManimSourceImportOutcome["reason"], string>> = {
+  "ambiguous-binding": "This source name has more than one binding.",
+  "constructor-not-supported": "Studio preserves this constructor but cannot edit or preview it yet.",
+  "dynamic-control-flow": "This binding depends on Python control flow at runtime.",
+  "runtime-constructor": "This constructor is resolved from another local binding at runtime.",
+  "source-analysis-unavailable": "Studio could not classify this Scene with the static source analyzer.",
+  "unsupported-binding-form": "This source binding cannot be edited safely.",
+};
 
 function directPositionDraft(record: ProgramRecord, entity: ProjectedEntity | null) {
   const operation = record.program.operations[0];
@@ -141,6 +157,7 @@ export function WorkspaceSidebar({
   onUndo,
   redoCount,
   selectedIds,
+  sourceImportOutcomes,
 }: Readonly<{
   activeScene: ManimWorkspaceScene;
   appliedProgramReadOnlyReasons: Readonly<Record<string, string | null>>;
@@ -162,6 +179,7 @@ export function WorkspaceSidebar({
   onUndo: () => void;
   redoCount: number;
   selectedIds: ReadonlySet<string>;
+  sourceImportOutcomes: readonly ManimSourceImportOutcome[];
 }>) {
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
@@ -201,6 +219,32 @@ export function WorkspaceSidebar({
           );
         })}
       </ul>
+      {sourceImportOutcomes.length > 0 ? (
+        <section className="mt-4 border-t border-zinc-900 pt-3">
+          <div className="flex items-center justify-between gap-2">
+            <h3 className="text-[10px] font-medium text-zinc-500">Source-only bindings</h3>
+            <span className="tabular-nums text-[10px] text-zinc-700">{sourceImportOutcomes.length}</span>
+          </div>
+          <ul aria-label="Read-only source bindings" className="mt-1 space-y-1">
+            {sourceImportOutcomes.map((outcome) => (
+              <li
+                className="flex items-center gap-2 px-2 py-1.5 text-xs text-zinc-500"
+                key={outcome.bindingId}
+                title={IMPORT_OUTCOME_DETAILS[outcome.reason]}
+              >
+                <span aria-hidden="true" className="size-3.5 shrink-0 text-center text-[10px] text-zinc-600">
+                  —
+                </span>
+                <span className="min-w-0 flex-1 truncate">
+                  {outcome.sourceVariable ?? "Scene source"}
+                  <span className="ml-1 text-[10px] text-zinc-700">line {outcome.sourceLine}</span>
+                </span>
+                <span className="shrink-0 text-[10px] text-amber-700">{IMPORT_OUTCOME_LABELS[outcome.kind]}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       <section className="mt-5 border-t border-zinc-800 pt-4">
         <h2 className="text-balance text-xs font-medium text-zinc-300">Scene graph</h2>

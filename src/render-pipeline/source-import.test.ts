@@ -184,6 +184,52 @@ class UnsafeMarkers(Scene):
     );
   });
 
+  it("classifies omitted constructor bindings without guessing from strings", () => {
+    const mixedSource = `from manim import *
+
+class MixedScene(Scene):
+    def construct(self):
+        supported = Circle()
+        custom = widgets.CustomMobject("label")
+        factory = CustomMobject
+        aliased = factory()
+        documentation = "nested = StringOnlyMobject()"
+        if enabled:
+            nested = RuntimeMobject()
+        self.add(supported)
+`;
+    const imported = importManimScene(mixedSource, "scene.py", "MixedScene");
+
+    expect(imported?.sourceVariables).toEqual({ "source:scene.py#MixedScene:supported": "supported" });
+    expect(imported?.importOutcomes).toEqual([
+      expect.objectContaining({
+        constructorPath: ["widgets", "CustomMobject"],
+        kind: "source-preserved",
+        reason: "constructor-not-supported",
+        sourceVariable: "custom",
+      }),
+      expect.objectContaining({
+        constructorPath: null,
+        kind: "unsupported",
+        reason: "unsupported-binding-form",
+        sourceVariable: "factory",
+      }),
+      expect.objectContaining({
+        constructorPath: ["factory"],
+        kind: "runtime-only",
+        reason: "runtime-constructor",
+        sourceVariable: "aliased",
+      }),
+      expect.objectContaining({
+        constructorPath: ["RuntimeMobject"],
+        kind: "runtime-only",
+        reason: "dynamic-control-flow",
+        sourceVariable: "nested",
+      }),
+    ]);
+    expect(imported?.importOutcomes.some(({ sourceVariable }) => sourceVariable === "documentation")).toBe(false);
+  });
+
   it("restores a transaction-scoped Studio identity from a committed source marker", () => {
     const marked = source
       .replace(
