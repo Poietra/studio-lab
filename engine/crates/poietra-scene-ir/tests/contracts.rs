@@ -605,6 +605,7 @@ fn fragment_material_contract_is_bounded_and_linear_light_only() {
         parameters: vec![2.0, 0.5, 0.25, 0.1],
         revision: 1,
         shader_id: "time-gradient".to_owned(),
+        texture: None,
     };
     let mut packet = empty_packet();
     let mut draw = filled_path_draw(0);
@@ -683,6 +684,7 @@ fn fragment_material_wire_fixture_is_emitted_by_the_rust_contract() {
             parameters: vec![1.0, -2.0, 3.5],
             revision: 1,
             shader_id: "time-gradient".to_owned(),
+            texture: None,
         }),
         rule: FillRuleV1::NonZero,
     };

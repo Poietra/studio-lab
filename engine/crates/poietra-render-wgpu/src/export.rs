@@ -1112,6 +1112,7 @@ mod tests {
             parameters: vec![1.0, 1.0, 0.0, 0.2],
             revision: crate::TIME_GRADIENT_SHADER_REVISION_V1,
             shader_id: crate::TIME_GRADIENT_SHADER_ID_V1.to_owned(),
+            texture: None,
         });
         bundle.scene.required_capabilities = vec![
             SceneCapabilityV1::FragmentMaterial,

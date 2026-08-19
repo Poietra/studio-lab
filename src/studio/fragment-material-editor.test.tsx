@@ -11,6 +11,7 @@ describe("FragmentMaterialEditor", () => {
         active
         assignedParameters={[0.65, 12]}
         assignedShaderId="project-material-1"
+        assignedTexture={null}
         available
         compileError={null}
         materials={[
@@ -39,12 +40,15 @@ describe("FragmentMaterialEditor", () => {
         onAssign={vi.fn()}
         onCreate={vi.fn(() => null)}
         onCreatePreset={vi.fn(() => null)}
+        onCreateTexturePreset={vi.fn(() => null)}
         onDuplicate={vi.fn(() => null)}
         onImportGlsl={vi.fn(async () => undefined)}
         onRemoveAsset={vi.fn()}
         onRename={vi.fn()}
         onUpdateSource={vi.fn()}
         onUpdateParameter={vi.fn()}
+        onUpdateTexture={vi.fn()}
+        textureAssets={[]}
       />,
     );
 
@@ -72,6 +76,7 @@ describe("FragmentMaterialEditor", () => {
         active={false}
         assignedParameters={null}
         assignedShaderId={null}
+        assignedTexture={null}
         available
         compileError="WGSL compilation failed"
         materials={[
@@ -88,16 +93,64 @@ describe("FragmentMaterialEditor", () => {
         onAssign={vi.fn()}
         onCreate={vi.fn(() => null)}
         onCreatePreset={vi.fn(() => null)}
+        onCreateTexturePreset={vi.fn(() => null)}
         onDuplicate={vi.fn(() => null)}
         onImportGlsl={vi.fn(async () => undefined)}
         onRemoveAsset={vi.fn()}
         onRename={vi.fn()}
         onUpdateSource={vi.fn()}
         onUpdateParameter={vi.fn()}
+        onUpdateTexture={vi.fn()}
+        textureAssets={[]}
       />,
     );
 
     expect(markup).toContain("Rejected");
     expect(markup).toContain("WGSL compilation failed");
+  });
+
+  it("shows the selected object's project PNG and sampler for a texture material", () => {
+    const markup = renderToStaticMarkup(
+      <FragmentMaterialEditor
+        active
+        assignedParameters={[]}
+        assignedShaderId="screen-texture"
+        assignedTexture={{
+          asset: { assetId: "asset:diagram", sha256: "a".repeat(64) },
+          sampler: "nearest",
+        }}
+        available
+        compileError={null}
+        materials={[
+          {
+            assignmentCount: 1,
+            glslSource: null,
+            name: "Screen texture",
+            parameterSchema: [],
+            revision: 1,
+            shaderId: "screen-texture",
+            source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+            textureSlot: "texture2d",
+          },
+        ]}
+        onAssign={vi.fn()}
+        onCreate={vi.fn(() => null)}
+        onCreatePreset={vi.fn(() => null)}
+        onCreateTexturePreset={vi.fn(() => null)}
+        onDuplicate={vi.fn(() => null)}
+        onImportGlsl={vi.fn(async () => undefined)}
+        onRemoveAsset={vi.fn()}
+        onRename={vi.fn()}
+        onUpdateSource={vi.fn()}
+        onUpdateParameter={vi.fn()}
+        onUpdateTexture={vi.fn()}
+        textureAssets={[{ assetId: "asset:diagram", label: "Diagram (640×360)" }]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Material texture"');
+    expect(markup).toContain("Diagram (640×360)");
+    expect(markup).toContain('<option value="nearest" selected="">Nearest</option>');
+    expect(markup).toContain("Texture materials use canonical WGSL");
   });
 });

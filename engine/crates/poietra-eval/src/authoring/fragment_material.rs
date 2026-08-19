@@ -8,6 +8,46 @@ use serde::Deserialize;
 
 use crate::{EngineSessionV1, EvaluationError};
 
+fn fragment_material_capability_flags(scene: &poietra_scene_ir::SceneIrV1) -> (bool, bool) {
+    let mut has_fragment_material = false;
+    let mut has_png_image = scene.entities.iter().any(|entity| {
+        matches!(
+            entity.geometry,
+            poietra_scene_ir::SceneGeometryV1::Image { .. }
+        )
+    });
+    let mut inspect = |material: &FragmentMaterialV1| {
+        has_fragment_material = true;
+        has_png_image |= material.texture.is_some();
+    };
+    for entity in &scene.entities {
+        if let SceneAppearanceV1::Vector {
+            fill: Some(fill), ..
+        } = &entity.appearance
+            && let Some(material) = &fill.fragment_material
+        {
+            inspect(material);
+        }
+    }
+    for channel in &scene.animation_channels {
+        let poietra_scene_ir::AnimationChannelV1::VectorAppearance { keyframes, .. } = channel
+        else {
+            continue;
+        };
+        for keyframe in keyframes {
+            if let Some(material) = keyframe
+                .value
+                .fill
+                .as_ref()
+                .and_then(|fill| fill.fragment_material.as_ref())
+            {
+                inspect(material);
+            }
+        }
+    }
+    (has_fragment_material, has_png_image)
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioFragmentMaterialAssignment {
@@ -97,15 +137,8 @@ impl EngineSessionV1 {
             fill.fragment_material = assignment.material;
             entity.provenance_id.clone_from(&provenance_id);
         }
-        let has_fragment_material = candidate.scene.entities.iter().any(|entity| {
-            matches!(
-                &entity.appearance,
-                SceneAppearanceV1::Vector {
-                    fill: Some(fill),
-                    ..
-                } if fill.fragment_material.is_some()
-            )
-        });
+        let (has_fragment_material, has_png_image) =
+            fragment_material_capability_flags(&candidate.scene);
         let mut capabilities = candidate
             .scene
             .required_capabilities
@@ -116,6 +149,11 @@ impl EngineSessionV1 {
             capabilities.insert(SceneCapabilityV1::FragmentMaterial);
         } else {
             capabilities.remove(&SceneCapabilityV1::FragmentMaterial);
+        }
+        if has_png_image {
+            capabilities.insert(SceneCapabilityV1::PngImage);
+        } else {
+            capabilities.remove(&SceneCapabilityV1::PngImage);
         }
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
         candidate.scene.provenance.push(ProvenanceRecordV1 {
@@ -146,6 +184,7 @@ mod tests {
                 parameters: vec![0.5, 8.0],
                 revision: 1,
                 shader_id: "project-studio-fragment".to_owned(),
+                texture: None,
             }),
         }
     }

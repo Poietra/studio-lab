@@ -2,9 +2,10 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::arena::GpuBufferArenaV1;
+use crate::fragment_material_wgsl::validate_fragment_material_wgsl_resources;
 use crate::image_gpu::{
     ImageFrameGpuV1, ImagePipelineV1, ImageTextureCacheV1, build_image_geometry_upload_plan_v1,
-    preflight_image_resources_v1, upload_image_frame_v1,
+    preflight_image_and_material_resources_v1, upload_image_frame_v1,
 };
 use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
@@ -12,7 +13,7 @@ use crate::{
     ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1, MANIM_CAIRO_SAMPLE_COUNT_V1,
     PreparedFrameV1, PreparedRenderCommandV1, build_gpu_upload_plan_v1,
 };
-use poietra_scene_ir::{MAX_VIEWPORT_PIXELS_V1, RenderCompositingV1};
+use poietra_scene_ir::{ImageSamplerV1, MAX_VIEWPORT_PIXELS_V1, RenderCompositingV1};
 use wgpu::util::DeviceExt;
 
 #[cfg(target_arch = "wasm32")]
@@ -290,16 +291,34 @@ fn create_fragment_material_pipeline_v1(
 ) -> (wgpu::BindGroupLayout, wgpu::RenderPipeline) {
     let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("poietra fragment material host ABI layout v1"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: wgpu::BufferSize::new(FRAGMENT_MATERIAL_UNIFORM_BYTES_V1),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(FRAGMENT_MATERIAL_UNIFORM_BYTES_V1),
+                },
+                count: None,
             },
-            count: None,
-        }],
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("poietra fragment material pipeline layout v1"),
@@ -502,6 +521,7 @@ pub struct FragmentMaterialSourceV1 {
     pub revision: u32,
     pub shader_id: String,
     pub source: String,
+    pub texture_slot: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -581,6 +601,12 @@ fn validate_fragment_material_sources_v1(
                 shader_id: material.shader_id.clone(),
             });
         }
+        validate_fragment_material_wgsl_resources(&material.source, material.texture_slot)
+            .map_err(|message| FragmentMaterialRegistryErrorV1::Compilation {
+                message,
+                revision: material.revision,
+                shader_id: material.shader_id.clone(),
+            })?;
     }
     Ok(())
 }
@@ -688,6 +714,9 @@ impl FragmentMaterialFrameGpuV1 {
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,
         frame: &PreparedFrameV1,
+        image_pipeline: &ImagePipelineV1,
+        image_texture_cache: &ImageTextureCacheV1,
+        fallback_texture_view: &wgpu::TextureView,
     ) -> Result<Self, GpuUploadPlanErrorV1> {
         let mut bind_groups = Vec::new();
         let mut draw_indices = Vec::new();
@@ -727,13 +756,38 @@ impl FragmentMaterialFrameGpuV1 {
                 contents: &bytes,
                 usage: wgpu::BufferUsages::UNIFORM,
             });
+            let (texture_view, sampler) = if let Some(texture) = material.texture() {
+                (
+                    image_texture_cache.texture_view(texture.asset()).ok_or(
+                        GpuUploadPlanErrorV1::Inconsistent(
+                            "fragment material texture was not retained by the image cache",
+                        ),
+                    )?,
+                    image_pipeline.sampler(texture.sampler()),
+                )
+            } else {
+                (
+                    fallback_texture_view,
+                    image_pipeline.sampler(ImageSamplerV1::Linear),
+                )
+            };
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("poietra fragment material host ABI binding v1"),
                 layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: buffer.as_entire_binding(),
-                }],
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(texture_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(sampler),
+                    },
+                ],
             });
             uniform_buffers.push(buffer);
             bind_groups.push(bind_group);
@@ -941,6 +995,9 @@ pub struct WgpuFillRendererV1 {
     cairo_pipeline: wgpu::RenderPipeline,
     cairo_target_format: wgpu::TextureFormat,
     fragment_material_bind_group_layout: wgpu::BindGroupLayout,
+    fragment_material_fallback_initialized: bool,
+    fragment_material_fallback_texture: wgpu::Texture,
+    fragment_material_fallback_texture_view: wgpu::TextureView,
     fragment_material_pipeline: wgpu::RenderPipeline,
     image_pipeline: ImagePipelineV1,
     image_texture_cache: ImageTextureCacheV1,
@@ -950,6 +1007,7 @@ pub struct WgpuFillRendererV1 {
     portable_aa_pipeline: wgpu::RenderPipeline,
     portable_aa_target: Option<PortableAntialiasTargetV1>,
     project_fragment_material_pipelines: BTreeMap<(String, u32), wgpu::RenderPipeline>,
+    project_fragment_material_texture_slots: BTreeSet<(String, u32)>,
     target_format: wgpu::TextureFormat,
 }
 
@@ -960,6 +1018,11 @@ impl FragmentMaterialSupportV1 for WgpuFillRendererV1 {
             || self
                 .project_fragment_material_pipelines
                 .contains_key(&(shader_id.to_owned(), revision))
+    }
+
+    fn has_fragment_material_texture_slot(&self, shader_id: &str, revision: u32) -> bool {
+        self.project_fragment_material_texture_slots
+            .contains(&(shader_id.to_owned(), revision))
     }
 }
 
@@ -1052,6 +1115,22 @@ impl WgpuFillRendererV1 {
             create_portable_antialias_pipeline_v1(device, target_format);
         let (fragment_material_bind_group_layout, fragment_material_pipeline) =
             create_fragment_material_pipeline_v1(device, target_format);
+        let fragment_material_fallback_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("poietra fragment material white fallback texture v1"),
+            size: wgpu::Extent3d {
+                depth_or_array_layers: 1,
+                height: 1,
+                width: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let fragment_material_fallback_texture_view =
+            fragment_material_fallback_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let shader = device.create_shader_module(wgpu::include_wgsl!("fill.wgsl"));
         let create_paint_pipeline = |label, format, sample_count| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -1106,6 +1185,9 @@ impl WgpuFillRendererV1 {
             cairo_pipeline,
             cairo_target_format,
             fragment_material_bind_group_layout,
+            fragment_material_fallback_initialized: false,
+            fragment_material_fallback_texture,
+            fragment_material_fallback_texture_view,
             fragment_material_pipeline,
             image_pipeline: ImagePipelineV1::new(device, target_format),
             image_texture_cache: ImageTextureCacheV1::with_limits(image_texture_cache_limits),
@@ -1115,6 +1197,7 @@ impl WgpuFillRendererV1 {
             portable_aa_pipeline,
             portable_aa_target: None,
             project_fragment_material_pipelines: BTreeMap::new(),
+            project_fragment_material_texture_slots: BTreeSet::new(),
             target_format,
         })
     }
@@ -1132,6 +1215,7 @@ impl WgpuFillRendererV1 {
     ) -> Result<(), FragmentMaterialRegistryErrorV1> {
         validate_fragment_material_sources_v1(sources)?;
         let mut candidate = BTreeMap::new();
+        let mut candidate_texture_slots = BTreeSet::new();
         for material in sources {
             #[cfg(not(target_arch = "wasm32"))]
             let pipeline = {
@@ -1165,8 +1249,12 @@ impl WgpuFillRendererV1 {
                 shader_id: material.shader_id.clone(),
             })?;
             candidate.insert((material.shader_id.clone(), material.revision), pipeline);
+            if material.texture_slot {
+                candidate_texture_slots.insert((material.shader_id.clone(), material.revision));
+            }
         }
         self.project_fragment_material_pipelines = candidate;
+        self.project_fragment_material_texture_slots = candidate_texture_slots;
         Ok(())
     }
 
@@ -1357,9 +1445,16 @@ impl WgpuFillRendererV1 {
                 Some(build_gpu_upload_plan_v1(frame)?.into_parts())
             };
             let image_upload = build_image_geometry_upload_plan_v1(frame.image_draws())?;
-            let image_resources = if image_upload.is_some() {
-                Some(preflight_image_resources_v1(
+            let material_textures = frame
+                .material_plan()
+                .materials()
+                .iter()
+                .filter_map(|material| material.fragment_material()?.texture())
+                .collect::<Vec<_>>();
+            let image_resources = if image_upload.is_some() || !material_textures.is_empty() {
+                Some(preflight_image_and_material_resources_v1(
                     frame.image_draws(),
+                    &material_textures,
                     device.limits().max_texture_dimension_2d,
                 )?)
             } else {
@@ -1390,10 +1485,41 @@ impl WgpuFillRendererV1 {
                     .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)?;
                 debug_assert!(arena_stats.capacity_bytes > 0);
             }
+            if !self.fragment_material_fallback_initialized
+                && frame.material_plan().materials().iter().any(|material| {
+                    material
+                        .fragment_material()
+                        .is_some_and(|material| material.texture().is_none())
+                })
+            {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &self.fragment_material_fallback_texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &[255, 255, 255, 255],
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4),
+                        rows_per_image: Some(1),
+                    },
+                    wgpu::Extent3d {
+                        depth_or_array_layers: 1,
+                        height: 1,
+                        width: 1,
+                    },
+                );
+                self.fragment_material_fallback_initialized = true;
+            }
             let prepared_fragment_material_frame = FragmentMaterialFrameGpuV1::prepare(
                 device,
                 &self.fragment_material_bind_group_layout,
                 frame,
+                &self.image_pipeline,
+                &self.image_texture_cache,
+                &self.fragment_material_fallback_texture_view,
             )?;
             evidence.buffer_creations = evidence
                 .buffer_creations
@@ -1603,6 +1729,7 @@ mod tests {
                 revision: crate::TIME_GRADIENT_SHADER_REVISION_V1 + 1,
                 shader_id: crate::TIME_GRADIENT_SHADER_ID_V1.to_owned(),
                 source: "validity is checked after identity admission".to_owned(),
+                texture_slot: false,
             }]),
             Err(FragmentMaterialRegistryErrorV1::Reserved { revision: 2, .. })
         ));

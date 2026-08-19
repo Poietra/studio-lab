@@ -115,6 +115,13 @@ export const fragmentMaterialV1Schema = z
       .max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1),
     revision: z.number().int().positive().max(0xffff_ffff),
     shaderId: opaqueIdV1Schema,
+    texture: z
+      .object({
+        asset: assetReferenceV1Schema,
+        sampler: z.enum(["linear", "nearest"]),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

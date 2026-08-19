@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use poietra_scene_ir::{ImageSamplerV1, MAX_ASSETS_V1};
 
+use crate::prepare::PreparedFragmentMaterialTextureV1;
 use crate::{DecodedPngAssetV1, PreparedImageDrawV1};
 
 const IMAGE_VERTICES_PER_DRAW_V1: usize = 4;
@@ -290,7 +291,7 @@ impl ImagePipelineV1 {
         &self.pipeline
     }
 
-    fn sampler(&self, sampler: ImageSamplerV1) -> &wgpu::Sampler {
+    pub(crate) fn sampler(&self, sampler: ImageSamplerV1) -> &wgpu::Sampler {
         match sampler {
             ImageSamplerV1::Linear => &self.linear_sampler,
             ImageSamplerV1::Nearest => &self.nearest_sampler,
@@ -431,6 +432,12 @@ impl ImageTextureCacheV1 {
         self.entries
             .get(&key.texture)
             .and_then(|entry| entry.binding(key.sampler))
+    }
+
+    pub(crate) fn texture_view(&self, asset: &DecodedPngAssetV1) -> Option<&wgpu::TextureView> {
+        self.entries
+            .get(&ImageTextureCacheKeyV1::from_asset(asset))
+            .map(|entry| &entry.view)
     }
 
     fn remove(&mut self, key: &ImageTextureCacheKeyV1) -> bool {
@@ -813,11 +820,16 @@ fn preflight_texture_upload_v1(
     ))
 }
 
-pub(crate) fn preflight_image_resources_v1(
+#[allow(clippy::too_many_lines)] // One pass deduplicates image and material textures under shared limits.
+fn preflight_image_and_material_resources_inner_v1(
     draws: &[PreparedImageDrawV1],
+    material_textures: &[&PreparedFragmentMaterialTextureV1],
     maximum_dimension: u32,
 ) -> Result<ImageResourceUploadPlanV1, ImageGpuUploadErrorV1> {
-    let texture_capacity = draws.len().min(MAX_IMAGE_TEXTURES_PER_FRAME_V1);
+    let texture_capacity = draws
+        .len()
+        .saturating_add(material_textures.len())
+        .min(MAX_IMAGE_TEXTURES_PER_FRAME_V1);
     let bind_group_capacity = draws.len().min(MAX_IMAGE_BIND_GROUPS_PER_FRAME_V1);
     let mut texture_by_digest = HashMap::<&str, usize>::new();
     texture_by_digest
@@ -890,6 +902,29 @@ pub(crate) fn preflight_image_resources_v1(
         bind_group_indices.push(bind_group_index);
     }
 
+    for texture in material_textures {
+        let asset = texture.asset();
+        if texture_by_digest.contains_key(asset.sha256()) {
+            continue;
+        }
+        let required_textures = textures
+            .len()
+            .checked_add(1)
+            .ok_or(ImageGpuUploadErrorV1::ByteAccountingOverflow)?;
+        if required_textures > MAX_IMAGE_TEXTURES_PER_FRAME_V1 {
+            return Err(ImageGpuUploadErrorV1::TextureCountLimitExceeded {
+                maximum_textures: MAX_IMAGE_TEXTURES_PER_FRAME_V1,
+                required_textures,
+            });
+        }
+        let (upload, next_upload_bytes) =
+            preflight_texture_upload_v1(asset, maximum_dimension, texture_upload_bytes)?;
+        texture_upload_bytes = next_upload_bytes;
+        let index = textures.len();
+        textures.push(upload);
+        texture_by_digest.insert(asset.sha256(), index);
+    }
+
     if bind_group_indices.len() != draws.len() {
         return Err(ImageGpuUploadErrorV1::InconsistentDrawPlan);
     }
@@ -899,6 +934,14 @@ pub(crate) fn preflight_image_resources_v1(
         texture_upload_bytes,
         textures,
     })
+}
+
+pub(crate) fn preflight_image_and_material_resources_v1(
+    draws: &[PreparedImageDrawV1],
+    material_textures: &[&PreparedFragmentMaterialTextureV1],
+    maximum_dimension: u32,
+) -> Result<ImageResourceUploadPlanV1, ImageGpuUploadErrorV1> {
+    preflight_image_and_material_resources_inner_v1(draws, material_textures, maximum_dimension)
 }
 
 #[allow(clippy::too_many_lines)] // One bounded upload transaction owns all temporary GPU handles.

@@ -9,8 +9,11 @@ use poietra_render_wgpu::{
     compile_fragment_material_glsl, prepare_frame_v1,
     prepare_frame_with_cache_assets_and_fragment_materials_v1,
 };
-use poietra_scene_ir::{FragmentMaterialV1, RenderCapabilityV1, RenderDrawV1};
-use support::time_gradient_paint_order_packet;
+use poietra_scene_ir::{
+    AssetReferenceV1, FragmentMaterialTextureV1, FragmentMaterialV1, ImageSamplerV1,
+    RenderCapabilityV1, RenderDrawV1,
+};
+use support::{time_gradient_paint_order_packet, verified_rgba_png};
 
 #[test]
 fn reuses_fill_geometry_and_splits_solid_fragment_solid_paint_order() {
@@ -121,6 +124,103 @@ impl DecodedPngAssetResolverV1 for NoAssets {
     }
 }
 
+struct TextureMaterialSupport;
+
+impl FragmentMaterialSupportV1 for TextureMaterialSupport {
+    fn supports_fragment_material(&self, shader_id: &str, revision: u32) -> bool {
+        shader_id == "project-screen-texture" && revision == 1
+    }
+
+    fn has_fragment_material_texture_slot(&self, shader_id: &str, revision: u32) -> bool {
+        self.supports_fragment_material(shader_id, revision)
+    }
+}
+
+#[test]
+fn resolves_each_fragment_material_draws_own_texture_and_sampler() {
+    let (red_metadata, red) = verified_rgba_png("asset:red", 1, 1, &[255, 0, 0, 255]);
+    let (green_metadata, green) = verified_rgba_png("asset:green", 1, 1, &[0, 255, 0, 255]);
+    let resolver = |sha256: &str| match sha256 {
+        digest if digest == red_metadata.sha256 => Some(std::sync::Arc::clone(&red)),
+        digest if digest == green_metadata.sha256 => Some(std::sync::Arc::clone(&green)),
+        _ => None,
+    };
+    let mut packet = time_gradient_paint_order_packet(0.0);
+    let mut first = packet.draws[1].clone();
+    let mut second = first.clone();
+    for (draw, metadata, sampler, suffix, order) in [
+        (&mut first, &red_metadata, ImageSamplerV1::Nearest, "red", 0),
+        (
+            &mut second,
+            &green_metadata,
+            ImageSamplerV1::Linear,
+            "green",
+            1,
+        ),
+    ] {
+        let RenderDrawV1::Path {
+            draw_id,
+            entity_id,
+            fill: Some(fill),
+            paint_order,
+            source_z_index,
+            ..
+        } = draw
+        else {
+            unreachable!()
+        };
+        *draw_id = format!("draw:{suffix}");
+        *entity_id = format!("entity:{suffix}");
+        *paint_order = order;
+        *source_z_index = f64::from(order);
+        fill.fragment_material = Some(FragmentMaterialV1 {
+            parameters: Vec::new(),
+            revision: 1,
+            shader_id: "project-screen-texture".to_owned(),
+            texture: Some(Box::new(FragmentMaterialTextureV1 {
+                asset: AssetReferenceV1 {
+                    asset_id: metadata.id.clone(),
+                    sha256: metadata.sha256.clone(),
+                },
+                sampler,
+            })),
+        });
+    }
+    packet.draws = vec![first, second];
+    packet.required_capabilities = vec![
+        RenderCapabilityV1::CubicPathFill,
+        RenderCapabilityV1::FragmentMaterial,
+        RenderCapabilityV1::PngImage,
+    ];
+
+    let prepared = prepare_frame_with_cache_assets_and_fragment_materials_v1(
+        &packet,
+        &mut PreparedGeometryCacheV1::default(),
+        &resolver,
+        &TextureMaterialSupport,
+    )
+    .expect("both per-object material textures must resolve");
+    let textures = prepared
+        .material_plan()
+        .materials()
+        .iter()
+        .map(|material| {
+            let texture = material
+                .fragment_material()
+                .and_then(|material| material.texture())
+                .expect("each draw must retain its own texture binding");
+            (texture.asset().sha256(), texture.sampler())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        textures,
+        vec![
+            (red_metadata.sha256.as_str(), ImageSamplerV1::Nearest),
+            (green_metadata.sha256.as_str(), ImageSamplerV1::Linear),
+        ]
+    );
+}
+
 #[test]
 #[ignore = "requires a native software WGPU adapter; the dedicated GPU lane runs this proof"]
 fn compiled_glsl_renders_and_invalid_replacement_preserves_the_active_registry() {
@@ -160,6 +260,7 @@ void main() {
             revision: 1,
             shader_id: SHADER_ID.to_owned(),
             source: wgsl,
+            texture_slot: false,
         }],
     ))
     .expect("the custom fragment source must compile");
@@ -175,6 +276,7 @@ void main() {
         parameters: vec![0.25],
         revision: 1,
         shader_id: SHADER_ID.to_owned(),
+        texture: None,
     });
     let mut cache = PreparedGeometryCacheV1::default();
     let prepared = prepare_frame_with_cache_assets_and_fragment_materials_v1(
@@ -217,6 +319,7 @@ void main() {
             revision: 2,
             shader_id: "project-invalid-proof".to_owned(),
             source: "this is not valid WGSL".to_owned(),
+            texture_slot: false,
         }],
     ));
     assert!(matches!(

@@ -418,18 +418,22 @@ export function StudioInspector({
     active: false,
     assignedParameters: null,
     assignedShaderId: null,
+    assignedTexture: null,
     available: false,
     compileError: null,
     materials: [],
     onAssign: () => undefined,
     onCreate: () => null,
     onCreatePreset: () => null,
+    onCreateTexturePreset: () => null,
     onDuplicate: () => null,
     onImportGlsl: async () => undefined,
     onRemoveAsset: () => undefined,
     onRename: () => undefined,
     onUpdateSource: () => undefined,
     onUpdateParameter: () => undefined,
+    onUpdateTexture: () => undefined,
+    textureAssets: [],
   },
   onApplyDraft,
   onDiscardDraft,
@@ -472,18 +476,25 @@ export function StudioInspector({
     active: boolean;
     assignedParameters: readonly number[] | null;
     assignedShaderId: string | null;
+    assignedTexture: Readonly<{
+      asset: Readonly<{ assetId: string; sha256: string }>;
+      sampler: "linear" | "nearest";
+    }> | null;
     available: boolean;
     compileError: string | null;
     materials: readonly FragmentMaterialEditorItem[];
     onAssign: (shaderId: string | null) => void;
     onCreate: (name: string) => string | null;
     onCreatePreset: () => string | null;
+    onCreateTexturePreset: () => string | null;
     onDuplicate: (shaderId: string) => string | null;
     onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
     onRemoveAsset: (shaderId: string) => void;
     onRename: (shaderId: string, name: string) => void;
     onUpdateSource: (shaderId: string, source: string) => void;
     onUpdateParameter: (name: string, value: number) => void;
+    onUpdateTexture: (assetId: string, sampler: "linear" | "nearest") => void;
+    textureAssets: readonly Readonly<{ assetId: string; label: string }>[];
   }>;
   onApplyDraft: () => void;
   onDiscardDraft: () => void;

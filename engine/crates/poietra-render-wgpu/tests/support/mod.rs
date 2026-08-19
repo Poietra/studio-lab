@@ -296,6 +296,7 @@ pub fn time_gradient_paint_order_packet(sample_time: f64) -> RenderPacketV1 {
         parameters: vec![1.0, 1.0, 0.0, 0.2],
         revision: 1,
         shader_id: "time-gradient".to_owned(),
+        texture: None,
     });
     packet.draws = vec![
         solid_rectangle_draw(

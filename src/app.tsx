@@ -66,6 +66,7 @@ import {
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
+  createStudioTextureFragmentMaterialPresetV1,
   createStudioWaveFragmentMaterialPresetV1,
   duplicateStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
@@ -81,6 +82,7 @@ import {
   updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
+  updateStudioFragmentMaterialTextureV1,
 } from "./studio/fragment-material-authoring";
 import { importedWorkingState, projectVerifiedSourceDuration } from "./studio/imported-workspace";
 import {
@@ -899,6 +901,7 @@ export function App({
     workingState: previewWorkingState,
   });
   const studioExportSource = previewRenderer?.canonicalScene ?? null;
+  const activeFragmentMaterialTextureAssets = studioExportSource?.bundle.assets.assets ?? [];
   const studioExportPublication = resolveStudioExportPublicationAvailabilityV1({
     exportSource: studioExportSource,
     lineage: editorDocumentAuthority.exportLineage,
@@ -3947,6 +3950,26 @@ export function App({
     }
   }
 
+  function createTextureFragmentMaterialPreset() {
+    try {
+      const created = createStudioTextureFragmentMaterialPresetV1(activeProjectFragmentMaterials);
+      const asset = activeFragmentMaterialTextureAssets[0];
+      const next =
+        activeScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable && asset
+          ? assignStudioFragmentMaterialV1(created.state, {
+              entityId: selectedFragmentMaterialEntity.id,
+              sceneId: activeScene.sceneId,
+              shaderId: created.shaderId,
+              texture: { asset: { assetId: asset.id, sha256: asset.sha256 }, sampler: "linear" },
+            })
+          : created.state;
+      return commitActiveProjectFragmentMaterials(next) ? created.shaderId : null;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Texture preset could not be created.");
+      return null;
+    }
+  }
+
   function duplicateFragmentMaterial(shaderId: string) {
     try {
       const duplicated = duplicateStudioFragmentMaterialV1(activeProjectFragmentMaterials, shaderId);
@@ -3997,6 +4020,7 @@ export function App({
       (material) => material.shaderId === shaderId,
     );
     if (!expectedMaterial) throw new Error("The material no longer exists.");
+    if (expectedMaterial.textureSlot) throw new Error("Texture materials currently accept canonical WGSL only.");
     const expectedGlsl = activeProjectFragmentMaterials.glslSourcesByShaderId[shaderId] ?? null;
     const wgsl = await compileFragmentMaterialGlsl(input);
     const current = loadProjectFragmentMaterials(projectId) ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
@@ -4026,11 +4050,28 @@ export function App({
       return;
     }
     try {
+      const material = shaderId
+        ? activeProjectFragmentMaterials.registry.materials.find((candidate) => candidate.shaderId === shaderId)
+        : null;
+      const previousTexture = selectedFragmentMaterialAssignment?.texture;
+      const selectedTextureAsset = material?.textureSlot
+        ? (activeFragmentMaterialTextureAssets.find(
+            (asset) => asset.id === previousTexture?.asset.assetId && asset.sha256 === previousTexture.asset.sha256,
+          ) ?? activeFragmentMaterialTextureAssets[0])
+        : null;
       const next = shaderId
         ? assignStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
             entityId: selectedFragmentMaterialEntity.id,
             sceneId: activeScene.sceneId,
             shaderId,
+            ...(selectedTextureAsset
+              ? {
+                  texture: {
+                    asset: { assetId: selectedTextureAsset.id, sha256: selectedTextureAsset.sha256 },
+                    sampler: previousTexture?.sampler ?? "linear",
+                  },
+                }
+              : {}),
           })
         : removeStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
             entityId: selectedFragmentMaterialEntity.id,
@@ -4039,6 +4080,26 @@ export function App({
       commitActiveProjectFragmentMaterials(next);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The material assignment could not be updated.");
+    }
+  }
+
+  function updateSelectedFragmentMaterialTexture(assetId: string, sampler: "linear" | "nearest") {
+    if (!activeScene || !selectedFragmentMaterialEntity || !selectedFragmentMaterialAssignment) return;
+    const asset = activeFragmentMaterialTextureAssets.find(({ id }) => id === assetId);
+    if (!asset) {
+      setDraftError("The selected project PNG is no longer available.");
+      return;
+    }
+    try {
+      commitActiveProjectFragmentMaterials(
+        updateStudioFragmentMaterialTextureV1(activeProjectFragmentMaterials, {
+          entityId: selectedFragmentMaterialEntity.id,
+          sceneId: activeScene.sceneId,
+          texture: { asset: { assetId: asset.id, sha256: asset.sha256 }, sampler },
+        }),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material texture could not be updated.");
     }
   }
 
@@ -4635,18 +4696,25 @@ export function App({
                 active: selectedFragmentMaterialAssigned && previewRenderer?.state.phase === "presented",
                 assignedParameters: selectedFragmentMaterialAssignment?.parameters ?? null,
                 assignedShaderId: selectedFragmentMaterialAssignment?.shaderId ?? null,
+                assignedTexture: selectedFragmentMaterialAssignment?.texture ?? null,
                 available: selectedFragmentMaterialAvailable,
                 compileError: activeSceneFragmentMaterialCompileError,
                 materials: activeProjectNamedFragmentMaterials,
                 onAssign: assignSelectedFragmentMaterial,
                 onCreate: createFragmentMaterial,
                 onCreatePreset: createWaveFragmentMaterialPreset,
+                onCreateTexturePreset: createTextureFragmentMaterialPreset,
                 onDuplicate: duplicateFragmentMaterial,
                 onImportGlsl: importFragmentMaterialGlsl,
                 onRemoveAsset: removeFragmentMaterialAsset,
                 onRename: renameFragmentMaterial,
                 onUpdateSource: updateFragmentMaterialSource,
                 onUpdateParameter: updateSelectedFragmentMaterialParameter,
+                onUpdateTexture: updateSelectedFragmentMaterialTexture,
+                textureAssets: activeFragmentMaterialTextureAssets.map((asset) => ({
+                  assetId: asset.id,
+                  label: `${asset.id} (${asset.pixelWidth}×${asset.pixelHeight})`,
+                })),
               }}
               opacityAvailable={selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null}
               opacityValue={
