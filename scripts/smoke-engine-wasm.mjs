@@ -9,7 +9,7 @@ const wasmBytes = await readFile("public/engine-wasm/poietra_wasm_bg.wasm");
 const engine = await import("../public/engine-wasm/poietra_wasm.js");
 
 await engine.default({ module_or_path: wasmBytes });
-assert.equal(engine.poietraEngineAbiVersion(), 31);
+assert.equal(engine.poietraEngineAbiVersion(), 32);
 assert.equal(engine.poietraCanvasAbiVersion(), 7);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
 assert.equal(engine.poietraExportVerifyAbiVersion(), 1);

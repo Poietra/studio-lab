@@ -741,7 +741,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
               };
             }
             textOutlineInputByKey.set(
-              `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.lineHeight}`,
+              `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontSize}\u0000${content.layout.lineHeight}`,
               { content, entityId: operation.entity.id },
             );
           }
@@ -783,7 +783,12 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
         [...textOutlineInputByKey.values()].map(async ({ content, entityId }) => ({
           content,
           entityId,
-          response: textOutlineResponseV1Schema.parse(await compiler(content)),
+          response: textOutlineResponseV1Schema.parse(
+            await compiler({
+              layout: { alignment: content.layout.alignment, lineHeight: content.layout.lineHeight },
+              text: content.text,
+            }),
+          ),
         })),
       );
       for (const { content, entityId, response } of responses) {

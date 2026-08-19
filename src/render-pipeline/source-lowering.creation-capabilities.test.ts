@@ -180,14 +180,18 @@ describe("Canonical EditProgram source lowering", () => {
     ).toThrow(/only Studio-created objects/i);
   });
 
-  it("lowers Studio-created Text with the preview font and unit-height contract", () => {
+  it("lowers Studio-created Text with the preview font and canonical size", () => {
     const entityId = "tx:created-text/entity:label";
     const create = canonicalProgram(
       [
         {
           ...operationBase("create-text", 7),
           entity: {
-            content: { displayLines: ["Hello, Poietra!"], text: "Hello, Poietra!" },
+            content: {
+              displayLines: ["Hello, Poietra!"],
+              text: "Hello, Poietra!",
+              textLayout: { alignment: "left", fontSize: 1.5, lineHeight: 1.2 },
+            },
             id: entityId,
             lifetime: { end: null, start: 7 },
             type: "Text",
@@ -201,7 +205,7 @@ describe("Canonical EditProgram source lowering", () => {
     const lowered = lowerCanonicalProgramSource(source, request(create, []), { height: 8, width: 14.222 }, null);
 
     expect(lowered.insertedCode).toContain(
-      'Text("Hello, Poietra!", font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)',
+      'Text("Hello, Poietra!", font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1.5)',
     );
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
     expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
@@ -244,7 +248,7 @@ describe("Canonical EditProgram source lowering", () => {
             content: {
               displayLines: ["Wide"],
               text: "Wide",
-              textLayout: { alignment: "right", lineHeight: 1.8 },
+              textLayout: { alignment: "right", fontSize: 1, lineHeight: 1.8 },
             },
             id: "tx:layout-text/entity:label",
             lifetime: { end: null, start: 7 },

@@ -59,7 +59,7 @@ describe("Inspector field validation", () => {
           displayLines: ["日本語で動画を作る", "こんにちは"],
           label: undefined,
           text: "日本語で動画を作る\nこんにちは",
-          textLayout: { alignment: "left", lineHeight: 1.2 },
+          textLayout: { alignment: "left", fontSize: 1, lineHeight: 1.2 },
         },
       },
       kind: "valid",
@@ -72,18 +72,27 @@ describe("Inspector field validation", () => {
     expect(initialInspectorEditValues(restored).content).toBe("日本語で動画を作る\nこんにちは");
   });
 
-  it("validates Text alignment and line height as one content edit", () => {
+  it("validates Text size, alignment, and line height as one content edit", () => {
     const entity = studioTextEntity();
-    expect(validateInspectorEdits(entity, values(entity, { textAlignment: "center", textLineHeight: "1.8" }))).toEqual({
+    expect(
+      validateInspectorEdits(
+        entity,
+        values(entity, { textAlignment: "center", textFontSize: "1.5", textLineHeight: "1.8" }),
+      ),
+    ).toEqual({
       edits: {
         content: {
           displayLines: ["energy"],
           label: undefined,
           text: "energy",
-          textLayout: { alignment: "center", lineHeight: 1.8 },
+          textLayout: { alignment: "center", fontSize: 1.5, lineHeight: 1.8 },
         },
       },
       kind: "valid",
+    });
+    expect(validateInspectorEdits(entity, values(entity, { textFontSize: "0" }))).toEqual({
+      errors: { textFontSize: expect.stringMatching(/greater than zero/i) },
+      kind: "invalid",
     });
     expect(validateInspectorEdits(entity, values(entity, { textLineHeight: "0" }))).toEqual({
       errors: { textLineHeight: expect.stringMatching(/greater than zero/i) },

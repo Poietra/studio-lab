@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "../engine/fragment-material-registry";
+import { createStudioEntitiesProgram, replaceStudioTextContentProgram } from "./authoring-commands";
 import { resolveVerifiedSourceDurationBasis } from "./editor-revision-policy";
 import {
   EDITOR_SESSION_STALE_SOURCE_MESSAGE,
@@ -15,6 +16,8 @@ import {
   MAX_STORED_EDITOR_SESSIONS,
   WebStorageEditorSessionAdapter,
 } from "./editor-session-store";
+import { programRecord } from "./evaluator";
+import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
@@ -273,6 +276,56 @@ describe("durable editor session storage", () => {
       snapshot: {
         draftProgram: { program: { intentCount: 0, operations: [] }, validation: { status: "invalid" } },
       },
+    });
+  });
+
+  it("restores canonical Studio Text font size from the editor session", () => {
+    const adapter = new MemoryAdapter();
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 2,
+      entities: [
+        {
+          content: { displayLines: ["Sized Text"], label: "Sized Text", text: "Sized Text" },
+          position: { x: 320, y: 180 },
+          type: "Text",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "sized-text",
+    });
+    const owner = programRecord(creation.validation.program, creation.validation);
+    const replacement = replaceStudioTextContentProgram({
+      content: {
+        displayLines: ["Sized Text"],
+        label: "Sized Text",
+        text: "Sized Text",
+        textLayout: { alignment: "left", fontSize: 1.75, lineHeight: 1.2 },
+      },
+      entityId: creation.entityIds[0]!,
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    const applied = editorProgramRecord(programRecord(replacement.program, replacement), null, creation.entityIds);
+    const sizedTextSnapshot = snapshotEditorSession({
+      ...createInitialEditorState(),
+      appliedPrograms: [applied],
+      programUndoEntries: [{ index: 0, kind: "append", value: applied }],
+      selectedObjectIds: ["tx:sized-text/entity:text"],
+    });
+    const store = new EditorSessionStore(adapter);
+
+    expect(store.save(identity(), sizedTextSnapshot)).toBe(true);
+
+    const restored = new EditorSessionStore(adapter).restore(identity());
+    expect(restored.kind).toBe("restored");
+    if (restored.kind !== "restored") throw new Error("Expected the sized Text session to restore.");
+    const create = restored.snapshot.appliedPrograms[0]?.program.operations.find(
+      (operation) => operation.kind === "CreateEntity",
+    );
+    expect(create?.kind === "CreateEntity" ? create.entity.content?.textLayout : null).toEqual({
+      alignment: "left",
+      fontSize: 1.75,
+      lineHeight: 1.2,
     });
   });
 

@@ -751,7 +751,7 @@ function manimTextConstructor(
     );
   }
   if (!options.unitHeight) return `Text(${JSON.stringify(text)})`;
-  return `Text(${JSON.stringify(text)}, font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)`;
+  return `Text(${JSON.stringify(text)}, font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(${formatAmount(layout.fontSize)})`;
 }
 
 function entityConstructor(operation: CreateEntityOperation) {
