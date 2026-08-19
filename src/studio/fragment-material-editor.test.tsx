@@ -82,7 +82,11 @@ describe("FragmentMaterialEditor", () => {
         materials={[
           {
             assignmentCount: 1,
-            glslSource: null,
+            glslSource: {
+              diagnostic: "material.glsl:2:12: expected ')'",
+              entryPoint: "main",
+              source: "#version 450\nvoid main( {",
+            },
             name: "Broken wave",
             parameterSchema: [],
             revision: 2,
@@ -107,6 +111,8 @@ describe("FragmentMaterialEditor", () => {
 
     expect(markup).toContain("Rejected");
     expect(markup).toContain("WGSL compilation failed");
+    expect(markup).toContain("material.glsl:2:12: expected &#x27;)&#x27;");
+    expect(markup).toContain("void main( {");
   });
 
   it("shows the selected object's project PNG and sampler for a texture material", () => {

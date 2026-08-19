@@ -73,6 +73,7 @@ import {
   listStudioFragmentMaterialsV1,
   type ProjectFragmentMaterialStateV1,
   projectFragmentMaterialsForSceneV1,
+  recordStudioFragmentMaterialGlslDiagnosticV1,
   removeStudioFragmentMaterialAssetV1,
   removeStudioFragmentMaterialV1,
   renameStudioFragmentMaterialV1,
@@ -4266,7 +4267,10 @@ export function App({
     if (!expectedMaterial) throw new Error("The material no longer exists.");
     if (expectedMaterial.textureSlot) throw new Error("Texture materials currently accept canonical WGSL only.");
     const expectedGlsl = activeProjectFragmentMaterials.glslSourcesByShaderId[shaderId] ?? null;
-    const wgsl = await compileFragmentMaterialGlsl(input);
+    const compilation = await compileFragmentMaterialGlsl(input).then(
+      (wgsl) => ({ kind: "compiled" as const, wgsl }),
+      (error: unknown) => ({ error, kind: "rejected" as const }),
+    );
     const current = loadProjectFragmentMaterials(projectId) ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
     const currentMaterial = current.registry.materials.find((material) => material.shaderId === shaderId);
     const currentGlsl = current.glslSourcesByShaderId[shaderId] ?? null;
@@ -4274,15 +4278,31 @@ export function App({
       !currentMaterial ||
       currentMaterial.revision !== expectedMaterial.revision ||
       currentMaterial.source !== expectedMaterial.source ||
+      currentGlsl?.diagnostic !== expectedGlsl?.diagnostic ||
       currentGlsl?.entryPoint !== expectedGlsl?.entryPoint ||
       currentGlsl?.source !== expectedGlsl?.source
     ) {
       throw new Error("The material changed while GLSL was compiling. Review the latest source and try again.");
     }
+    if (compilation.kind === "rejected") {
+      const diagnostic =
+        compilation.error instanceof Error && compilation.error.message
+          ? compilation.error.message
+          : "The Rust core rejected the GLSL source.";
+      const rejected = recordStudioFragmentMaterialGlslDiagnosticV1(current, {
+        ...input,
+        diagnostic,
+        shaderId,
+      });
+      if (!commitProjectFragmentMaterials(projectId, rejected)) {
+        throw new Error("The rejected GLSL source and its diagnostic could not be saved.");
+      }
+      throw new Error(diagnostic);
+    }
     const next = updateStudioFragmentMaterialFromGlslV1(current, {
       ...input,
       shaderId,
-      wgsl,
+      wgsl: compilation.wgsl,
     });
     if (!commitProjectFragmentMaterials(projectId, next)) {
       throw new Error("The compiled GLSL material could not be saved.");

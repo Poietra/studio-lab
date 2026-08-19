@@ -20,6 +20,7 @@ import {
   createStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   projectFragmentMaterialsForSceneV1,
+  recordStudioFragmentMaterialGlslDiagnosticV1,
   removeStudioFragmentMaterialV1,
   updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialParameterV1,
@@ -374,7 +375,7 @@ describe("durable editor session storage", () => {
     expect(adapter.value).toContain("namesByShaderId");
   });
 
-  it("restores editable GLSL while persisting canonical WGSL in the material registry", () => {
+  it("restores a rejected GLSL draft and diagnostic beside the last canonical WGSL", () => {
     const adapter = new MemoryAdapter();
     const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "GLSL" });
     const source = "#version 450\nvoid main() {}";
@@ -384,10 +385,20 @@ describe("durable editor session storage", () => {
       source,
       wgsl: "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
     });
-    expect(new EditorSessionStore(adapter).saveProjectFragmentMaterials("project-a", imported)).toBe(true);
+    const rejected = recordStudioFragmentMaterialGlslDiagnosticV1(imported, {
+      diagnostic: "material.glsl:2:12: expected ')'",
+      entryPoint: "main",
+      shaderId: material.shaderId,
+      source: "#version 450\nvoid main( {",
+    });
+    expect(new EditorSessionStore(adapter).saveProjectFragmentMaterials("project-a", rejected)).toBe(true);
 
     const restored = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
-    expect(restored.glslSourcesByShaderId[material.shaderId]).toEqual({ entryPoint: "main", source });
+    expect(restored.glslSourcesByShaderId[material.shaderId]).toEqual({
+      diagnostic: "material.glsl:2:12: expected ')'",
+      entryPoint: "main",
+      source: "#version 450\nvoid main( {",
+    });
     expect(restored.registry.materials[0]?.source).toContain("fn fs_main");
   });
 
