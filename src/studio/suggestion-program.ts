@@ -785,6 +785,79 @@ export function createDirectManipulationRotationProgram(
   );
 }
 
+/** Creates one atomic Program for a rigid multi-selection rotation. Gesture
+ * geometry stays in the presentation layer; Rust admits the resulting shared
+ * position/rotation transform as one canonical authoring mutation. */
+export function createDirectManipulationGroupRotationProgram(
+  input: Readonly<{
+    angleRadians: number;
+    capturedPlayhead: number;
+    scene: RuntimeSceneState;
+    start: number;
+    targets: readonly Readonly<{
+      entityId: string;
+      toPosition: Readonly<{ x: number; y: number }>;
+    }>[];
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  if (input.targets.length < 2) throw new Error("Group rotation requires at least two objects.");
+  const angleRadians = Math.atan2(Math.sin(input.angleRadians), Math.cos(input.angleRadians));
+  if (!Number.isFinite(input.angleRadians) || Math.abs(angleRadians) <= 1e-12) {
+    throw new Error("Group rotation must use one finite non-identity angle.");
+  }
+  const entityIds = new Set<string>();
+  const positions: Record<string, Readonly<{ x: number; y: number }>> = {};
+  for (const target of input.targets) {
+    if (
+      entityIds.has(target.entityId) ||
+      !Number.isFinite(target.toPosition.x) ||
+      !Number.isFinite(target.toPosition.y)
+    ) {
+      throw new Error("Group rotation requires unique objects with finite positions.");
+    }
+    entityIds.add(target.entityId);
+    positions[target.entityId] = target.toPosition;
+  }
+  const targetEntityIds = input.targets.map(({ entityId }) => entityId);
+  const position = createDirectManipulationPositionProgram({
+    capturedPlayhead: input.capturedPlayhead,
+    delta: { x: 0, y: 0 },
+    positions,
+    scene: input.scene,
+    start: input.start,
+    targetEntityIds,
+    transactionId: input.transactionId,
+  });
+  if (position.kind === "invalid") return position;
+  const rotations = targetEntityIds.map(
+    (entityId, index): SceneEditOperation => ({
+      dependsOn: [],
+      easing: "smooth",
+      entityId,
+      from: 0,
+      id: operationId(input.transactionId, `set-rotation-${index}`),
+      interval: { end: input.start, start: input.start },
+      key: "rotation",
+      kind: "AnimateProperty",
+      provenance: provenance("direct-manipulation", ["selection rotation", "shared planar angle"]),
+      relativeDelta: angleRadians,
+      to: angleRadians,
+    }),
+  );
+  const operations = [...position.program.operations, ...rotations];
+  return validateAndScheduleProgram(
+    {
+      ...position.program,
+      intentCount: 1,
+      operations,
+      provenance: provenance("direct-manipulation", ["rigid selection rotation"]),
+      schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+    },
+    input.scene,
+  );
+}
+
 export function createDirectManipulationOpacityProgram(
   input: Readonly<{
     capturedPlayhead: number;

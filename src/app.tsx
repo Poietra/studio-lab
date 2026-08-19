@@ -134,6 +134,13 @@ import {
   selectionResizePreviewAtFactor,
 } from "./studio/selection-resize-gesture";
 import {
+  createSelectionRotationGesture,
+  latestCreationPositionForEntity,
+  type SelectionRotationGesture,
+  selectionRotationCommandTargets,
+  selectionRotationPreviewAtAngle,
+} from "./studio/selection-rotation-gesture";
+import {
   hasShapeDimensions,
   type ResizeHandleDirection,
   resizeHandleUsesDelta,
@@ -158,6 +165,7 @@ import { STUDIO_STYLE_PROFILE } from "./studio/style-profile";
 import {
   createDirectManipulationColorProgram,
   createDirectManipulationGroupResizeProgram,
+  createDirectManipulationGroupRotationProgram,
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -477,6 +485,7 @@ export function App({
   const [sessionTransitionPending, setSessionTransitionPending] = useState(false);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
+  const canvasGroupRotation = useRef<SelectionRotationGesture | null>(null);
   const canvasGroupResize = useRef<SelectionResizeGesture | null>(null);
   const canvasResize = useRef<CanvasResizeState | null>(null);
   const canvasRotation = useRef<CanvasRotationState | null>(null);
@@ -577,6 +586,7 @@ export function App({
     if (!activeScene) return;
     cancelSuggestionRequest();
     canvasDrag.current = null;
+    canvasGroupRotation.current = null;
     canvasGroupResize.current = null;
     canvasResize.current = null;
     canvasRotation.current = null;
@@ -2592,7 +2602,14 @@ export function App({
   }
 
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
-    if (canvasDrag.current || canvasGroupResize.current || canvasResize.current || canvasRotation.current) return;
+    if (
+      canvasDrag.current ||
+      canvasGroupResize.current ||
+      canvasGroupRotation.current ||
+      canvasResize.current ||
+      canvasRotation.current
+    )
+      return;
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
@@ -2741,7 +2758,14 @@ export function App({
     direction: ResizeHandleDirection,
   ) {
     event.stopPropagation();
-    if (canvasDrag.current || canvasGroupResize.current || canvasResize.current || canvasRotation.current) return;
+    if (
+      canvasDrag.current ||
+      canvasGroupResize.current ||
+      canvasGroupRotation.current ||
+      canvasResize.current ||
+      canvasRotation.current
+    )
+      return;
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
@@ -2901,7 +2925,14 @@ export function App({
     start: Point,
     surfaceBounds: Readonly<{ height: number; left: number; top: number; width: number }>,
   ): SelectionResizeGesture | null {
-    if (canvasDrag.current || canvasGroupResize.current || canvasResize.current || canvasRotation.current) return null;
+    if (
+      canvasDrag.current ||
+      canvasGroupResize.current ||
+      canvasGroupRotation.current ||
+      canvasResize.current ||
+      canvasRotation.current
+    )
+      return null;
     if (editingAppliedProgram) {
       setDraftError("Apply or discard the Applied Program edit before resizing the selection.");
       return null;
@@ -3051,9 +3082,185 @@ export function App({
     installSelectionResizeDraft(resize, selectionResizePreviewAtFactor(resize, factor));
   }
 
+  function selectionRotationState(
+    basis: PreparedSelectionResizeBasis,
+    pointerId: number,
+    start: Point,
+    surfaceBounds: Readonly<{ height: number; left: number; top: number; width: number }>,
+  ): SelectionRotationGesture | null {
+    if (
+      canvasDrag.current ||
+      canvasGroupResize.current ||
+      canvasGroupRotation.current ||
+      canvasResize.current ||
+      canvasRotation.current
+    )
+      return null;
+    if (editingAppliedProgram) {
+      setDraftError("Apply or discard the Applied Program edit before rotating the selection.");
+      return null;
+    }
+    if (interactionMode !== "position" || previewSelectionOnly || boundedRuntimeEditTargetIds.size > 0) return null;
+    const selectedEntities = selectedObjectIds.flatMap((entityId) => {
+      const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+      return entity ? [entity] : [];
+    });
+    const selectedTargets = selectedEntities.flatMap((entity) => {
+      const fromPosition = latestCreationPositionForEntity(workspaceCreationProjection, entity.id);
+      return fromPosition ? [{ entityId: entity.id, fromPosition }] : [];
+    });
+    if (
+      selectedEntities.length < 2 ||
+      selectedEntities.length !== selectedObjectIds.length ||
+      selectedTargets.length !== selectedEntities.length ||
+      selectedEntities.some(
+        (entity) =>
+          !groupRotationEligibleIds.has(entity.id) ||
+          studioCreationProjectionEntityFor(entity.id) === null ||
+          entity.geometry.position.kind === "unknown" ||
+          (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
+      )
+    ) {
+      setDraftError("Group rotation currently requires two or more unrotated Studio-created objects.");
+      return null;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return null;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "selection rotation",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: selectedObjectIds,
+    });
+    if (!anchor) return null;
+    return createSelectionRotationGesture({
+      basis,
+      cameraScale: projection?.camera.scale ?? 1,
+      pointerId,
+      sourceAnchor: anchor.sourceTime,
+      start,
+      surfaceBounds,
+      targets: selectedTargets,
+    });
+  }
+
+  function installSelectionRotationDraft(rotation: SelectionRotationGesture, angleRadians: number) {
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const preview = selectionRotationPreviewAtAngle(rotation, angleRadians);
+    try {
+      const validation = createDirectManipulationGroupRotationProgram({
+        angleRadians,
+        capturedPlayhead: rotation.sourceAnchor,
+        scene: sourceScene,
+        start: rotation.sourceAnchor,
+        targets: selectionRotationCommandTargets(rotation, preview),
+        transactionId: `studio-group-rotation-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, rotation.sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The selection could not be rotated.");
+      return false;
+    }
+  }
+
+  function selectionRotationAngle(rotation: SelectionRotationGesture, event: PointerEvent<HTMLButtonElement>) {
+    return rotationDeltaFromClientPoints(
+      rotation.pivot,
+      rotation.start,
+      clientPointToViewport(rotation.surfaceBounds, { x: event.clientX, y: event.clientY }),
+      event.shiftKey ? Math.PI / 12 : null,
+    );
+  }
+
+  function beginSelectionRotation(event: PointerEvent<HTMLButtonElement>, basis: PreparedSelectionResizeBasis) {
+    event.preventDefault();
+    event.stopPropagation();
+    const surfaceBounds = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]")?.getBoundingClientRect();
+    if (!surfaceBounds) return;
+    const start = clientPointToViewport(surfaceBounds, { x: event.clientX, y: event.clientY });
+    const rotation = selectionRotationState(basis, event.pointerId, start, surfaceBounds);
+    if (!rotation) return;
+    canvasGroupRotation.current = rotation;
+    setIsPlaying(false);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveSelectionRotation(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const rotation = canvasGroupRotation.current;
+    if (!rotation || rotation.pointerId !== event.pointerId) return;
+    gesturePreviewStore.setGroupRotationPreview(
+      selectionRotationPreviewAtAngle(rotation, selectionRotationAngle(rotation, event)),
+    );
+  }
+
+  function finishSelectionRotation(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const rotation = canvasGroupRotation.current;
+    if (!rotation || rotation.pointerId !== event.pointerId) return;
+    canvasGroupRotation.current = null;
+    const angleRadians = selectionRotationAngle(rotation, event);
+    gesturePreviewStore.clear();
+    if (Math.abs(angleRadians) < Math.PI / 360) return;
+    installSelectionRotationDraft(rotation, angleRadians);
+  }
+
+  function cancelSelectionRotation(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (canvasGroupRotation.current?.pointerId !== event.pointerId) return;
+    canvasGroupRotation.current = null;
+    gesturePreviewStore.clear();
+  }
+
+  function nudgeSelectionRotation(event: KeyboardEvent<HTMLButtonElement>, basis: PreparedSelectionResizeBasis) {
+    if (event.key === "Escape") {
+      const rotation = canvasGroupRotation.current;
+      if (!rotation) return;
+      event.preventDefault();
+      event.stopPropagation();
+      canvasGroupRotation.current = null;
+      gesturePreviewStore.clear();
+      if (rotation.pointerId >= 0 && event.currentTarget.hasPointerCapture(rotation.pointerId)) {
+        event.currentTarget.releasePointerCapture(rotation.pointerId);
+      }
+      return;
+    }
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    event.stopPropagation();
+    const surfaceBounds = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]")?.getBoundingClientRect();
+    if (!surfaceBounds) return;
+    const start = {
+      x: (basis.bounds.left + basis.bounds.right) / 2,
+      y: basis.bounds.top,
+    };
+    const rotation = selectionRotationState(basis, -1, start, surfaceBounds);
+    if (!rotation) return;
+    const stepRadians = ((event.shiftKey ? 1 : 15) * Math.PI) / 180;
+    installSelectionRotationDraft(rotation, event.key === "ArrowLeft" ? stepRadians : -stepRadians);
+  }
+
   function beginEntityRotation(event: PointerEvent<HTMLButtonElement>, entityId: string) {
     event.stopPropagation();
-    if (canvasDrag.current || canvasGroupResize.current || canvasResize.current || canvasRotation.current) return;
+    if (
+      canvasDrag.current ||
+      canvasGroupResize.current ||
+      canvasGroupRotation.current ||
+      canvasResize.current ||
+      canvasRotation.current
+    )
+      return;
     const wrapper = event.currentTarget.closest<HTMLElement>("[data-studio-entity-wrapper]");
     const object = wrapper?.querySelector<HTMLElement>("[data-studio-entity]");
     const bounds = object?.getBoundingClientRect();
@@ -4077,6 +4284,12 @@ export function App({
       ? selectedEntity.id
       : null;
   const groupResizeEligibleIds = groupResizeEligibleCreationEntityIds(workspaceCreationProjection);
+  const groupRotationEligibleIds = new Set(
+    selectedObjectIds.filter((entityId) => {
+      const authority = studioCreationAppearanceAuthorityFor(entityId);
+      return authority?.rotationAvailable === true && groupResizeEligibleIds.has(entityId);
+    }),
+  );
   const selectedOpacityAuthority =
     selectedRuntimeTraceEditAuthority &&
     selectedRuntimeTraceEditCapabilities?.paintOpacity &&
@@ -4104,6 +4317,7 @@ export function App({
     void runAfterEditorSessionFlush(() => {
       suspendEditor();
       canvasDrag.current = null;
+      canvasGroupRotation.current = null;
       canvasGroupResize.current = null;
       canvasResize.current = null;
       canvasRotation.current = null;
@@ -4513,6 +4727,7 @@ export function App({
               entities={visibleEntities}
               frame={workspace?.frame ?? { height: 8, width: 14.222 }}
               gesturePreviewStore={gesturePreviewStore}
+              groupRotationEligibleIds={groupRotationEligibleIds}
               groupResizeEligibleIds={groupResizeEligibleIds}
               incomingSceneName={nextScene?.name ?? null}
               inlineTextEditor={inlineTextEditor}
@@ -4567,6 +4782,11 @@ export function App({
               onSelectionResizePointerDown={beginSelectionResize}
               onSelectionResizePointerMove={moveSelectionResize}
               onSelectionResizePointerUp={finishSelectionResize}
+              onSelectionRotationCancel={cancelSelectionRotation}
+              onSelectionRotationKeyDown={nudgeSelectionRotation}
+              onSelectionRotationPointerDown={beginSelectionRotation}
+              onSelectionRotationPointerMove={moveSelectionRotation}
+              onSelectionRotationPointerUp={finishSelectionRotation}
               onSelectEntity={(entityId, mode = "single") =>
                 setSelectedObjectIds((selection) =>
                   mode === "toggle" ? toggleCanvasEntitySelection(selection, entityId) : [entityId],

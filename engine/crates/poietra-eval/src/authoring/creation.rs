@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, ContractVersionV1, CubicPathV1, CubicSegmentV1,
@@ -51,6 +51,7 @@ struct CreateSceneEntityFadeIn {
 struct CreateSceneEntityInstantTransform {
     at: f64,
     position: PointV1,
+    rotation: f64,
     scale_x: f64,
     scale_y: f64,
 }
@@ -474,6 +475,7 @@ struct PlannedStudioCreationEntity {
     initial_dimensions: StudioAuthoringDimensions,
     initial_position: PointV1,
     instant_at: Option<f64>,
+    instant_rotation: f64,
     has_position_or_resize_instant: bool,
     kind: StudioAuthoringEntityKind,
     lifetime: IntervalV1,
@@ -723,6 +725,111 @@ fn studio_creation_spec_text_content(spec: &StudioCreationEntitySpec) -> Option<
     spec.text.as_ref().map(|text| StudioTextContent {
         layout: spec.layout.unwrap_or_default(),
         text: text.clone(),
+    })
+}
+
+struct PlannedStudioGroupRotation {
+    angle_radians: f64,
+    entity_ids: BTreeSet<String>,
+}
+
+fn closed_studio_group_rotation(
+    program: &StudioCreationEditInput,
+    entities: &[PlannedStudioCreationEntity],
+) -> Option<PlannedStudioGroupRotation> {
+    if program.origin != StudioAuthoringOrigin::DirectManipulation
+        || program.requested_execution != SceneEditExecution::Parallel
+        || program.schedule_mode != SceneEditScheduleMode::Parallel
+        || program.schedule_edge_count != 0
+        || program.operations.len() < 4
+        || program.operations.len() % 2 != 0
+    {
+        return None;
+    }
+    let mut positions = BTreeMap::<String, PointV1>::new();
+    let mut rotations = BTreeMap::<String, f64>::new();
+    for operation in &program.operations {
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || !studio_timeline_semantic_values_match(
+                operation.interval.start,
+                program.anchor_resolved_seconds,
+            )
+            || !studio_timeline_semantic_values_match(
+                operation.interval.end,
+                program.anchor_resolved_seconds,
+            )
+        {
+            return None;
+        }
+        let entity_id = operation.entity_id.as_ref()?;
+        match &operation.kind {
+            StudioCreationOperationKind::Position {
+                position: Some(position),
+            } if studio_authoring_point_is_finite(position) => {
+                if positions
+                    .insert(entity_id.clone(), position.clone())
+                    .is_some()
+                {
+                    return None;
+                }
+            }
+            StudioCreationOperationKind::Rotation {
+                control_present: false,
+                from: Some(from),
+                relative_delta: Some(relative_delta),
+                to: Some(to),
+            } if close_transform_baseline_value(*from, 0.0)
+                && relative_delta.is_finite()
+                && !rotation_is_noop(*relative_delta)
+                && close_transform_baseline_value(*to, *relative_delta) =>
+            {
+                if rotations
+                    .insert(entity_id.clone(), *relative_delta)
+                    .is_some()
+                {
+                    return None;
+                }
+            }
+            _ => return None,
+        }
+    }
+    if positions.len() < 2 || positions.keys().ne(rotations.keys()) {
+        return None;
+    }
+    let angle_radians = *rotations.first_key_value()?.1;
+    if rotations
+        .values()
+        .any(|candidate| !close_transform_baseline_value(*candidate, angle_radians))
+    {
+        return None;
+    }
+    let first_id = positions.first_key_value()?.0;
+    let first_state = entities.iter().find(|state| state.spec.id == *first_id)?;
+    let first_target = positions.get(first_id)?;
+    let cosine = angle_radians.cos();
+    let sine = angle_radians.sin();
+    for (entity_id, target) in &positions {
+        let state = entities.iter().find(|state| state.spec.id == *entity_id)?;
+        if !rotation_is_noop(state.current_rotation)
+            || !rotation_is_noop(state.instant_rotation)
+            || state.instant_at.is_some()
+            || state.persistent_removal.is_some()
+        {
+            return None;
+        }
+        let from_x = state.position.x - first_state.position.x;
+        let from_y = state.position.y - first_state.position.y;
+        let expected_x = cosine * from_x + sine * from_y;
+        let expected_y = -sine * from_x + cosine * from_y;
+        if !close_transform_baseline_value(target.x - first_target.x, expected_x)
+            || !close_transform_baseline_value(target.y - first_target.y, expected_y)
+        {
+            return None;
+        }
+    }
+    Some(PlannedStudioGroupRotation {
+        angle_radians,
+        entity_ids: positions.into_keys().collect(),
     })
 }
 
@@ -1064,6 +1171,7 @@ fn plan_studio_creation_edits(
             initial_dimensions: spec.dimensions,
             initial_position: initial_position.clone(),
             instant_at: None,
+            instant_rotation: 0.0,
             kind: spec.kind,
             lifetime,
             persistent_removal: None,
@@ -1155,6 +1263,16 @@ fn plan_studio_creation_edits(
             continue;
         }
 
+        let group_rotation = closed_studio_group_rotation(program, &entities);
+        let contains_position = program.operations.iter().any(|operation| {
+            matches!(operation.kind, StudioCreationOperationKind::Position { .. })
+        });
+        let contains_rotation = program.operations.iter().any(|operation| {
+            matches!(operation.kind, StudioCreationOperationKind::Rotation { .. })
+        });
+        if contains_position && contains_rotation && group_rotation.is_none() {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
         let contains_persistent_remove = program.operations.iter().any(|operation| {
             matches!(
                 operation.kind,
@@ -1262,6 +1380,33 @@ fn plan_studio_creation_edits(
                             kind: StudioCreationProjectedMutationKind::UniformScale {
                                 from: projected_from,
                                 to: projected_to,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
+                StudioCreationOperationKind::Rotation {
+                    control_present: _,
+                    from: Some(_),
+                    relative_delta: Some(relative_delta),
+                    to: Some(_),
+                } if group_rotation.as_ref().is_some_and(|rotation| {
+                    rotation.entity_ids.contains(entity_id)
+                        && close_transform_baseline_value(*relative_delta, rotation.angle_radians)
+                }) =>
+                {
+                    record_planned_studio_creation_instant(state, instant_at)?;
+                    state.instant_rotation = *relative_delta;
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: instant_interval,
+                            kind: StudioCreationProjectedMutationKind::Rotation {
+                                from: 0.0,
+                                to: *relative_delta,
                             },
                             operation_id: operation.id.clone(),
                             transaction_id: program.transaction_id.clone(),
@@ -1507,7 +1652,9 @@ fn plan_studio_creation_edits(
     }
 
     for state in &entities {
-        if !rotation_is_noop(state.current_rotation) && state.instant_at.is_some() {
+        if (!rotation_is_noop(state.current_rotation) && state.instant_at.is_some())
+            || (!rotation_is_noop(state.instant_rotation) && state.instant_at.is_none())
+        {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
         if state.appearance_at.is_some_and(|at| {
@@ -1549,6 +1696,7 @@ fn plan_studio_creation_edits(
                 .find(|state| state.spec.id == *entity_id)
                 .ok_or(ProjectStudioCreationEditError::Unsupported)?;
             if !rotation_is_noop(state.current_rotation)
+                || !rotation_is_noop(state.instant_rotation)
                 || !studio_creation_motion_is_compatible(state, &motion.interval)
             {
                 return Err(ProjectStudioCreationEditError::Unsupported);
@@ -1785,6 +1933,7 @@ fn validate_create_scene_entities_command(
                 || step.at >= entity.lifetime.end
                 || !step.position.x.is_finite()
                 || !step.position.y.is_finite()
+                || !step.rotation.is_finite()
                 || !step.scale_x.is_finite()
                 || step.scale_x <= 0.0
                 || !step.scale_y.is_finite()
@@ -1978,7 +2127,7 @@ fn append_created_entity(
     }
     if let Some(step) = entity.instant_transform {
         capabilities.insert(SceneCapabilityV1::AffineTransformAnimation);
-        let value = AffineTransformV1 {
+        let mut value = AffineTransformV1 {
             m11: step.scale_x,
             m12: 0.0,
             m21: 0.0,
@@ -1986,6 +2135,9 @@ fn append_created_entity(
             tx: step.position.x,
             ty: step.position.y,
         };
+        if !rotation_is_noop(step.rotation) {
+            apply_world_rotation(&mut value, step.rotation, &step.position);
+        }
         let keyframes = vec![
             KeyframeV1 {
                 at: step.at,
@@ -2255,6 +2407,7 @@ impl EngineSessionV1 {
                         viewport,
                         &self.scene().camera.view.center,
                     ),
+                    rotation: state.instant_rotation,
                     scale_x: state.scale * x_ratio,
                     scale_y: state.scale * y_ratio,
                 })
@@ -2347,6 +2500,8 @@ impl EngineSessionV1 {
 
 #[cfg(test)]
 mod tests {
+    use std::f64::consts::FRAC_PI_2;
+
     use super::super::tests::{
         NEXT_REVISION, fixture_bundle, imported_bundle, static_imported_bundle,
     };
@@ -2433,6 +2588,7 @@ mod tests {
                     instant_transform: Some(CreateSceneEntityInstantTransform {
                         at: 1.25,
                         position: PointV1 { x: -1.0, y: 0.5 },
+                        rotation: 0.0,
                         scale_x: 0.75,
                         scale_y: 1.0,
                     }),
@@ -2813,6 +2969,67 @@ mod tests {
         }
     }
 
+    fn studio_group_rotation_edit_input(
+        targets: &[(&str, PointV1)],
+        angle_radians: f64,
+    ) -> StudioCreationEditInput {
+        let transform_at = 0.95;
+        let mut operations = Vec::new();
+        for (index, (entity_id, position)) in targets.iter().enumerate() {
+            operations.push(StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some((*entity_id).to_owned()),
+                id: format!("group-position-{index}"),
+                interval: IntervalV1 {
+                    end: transform_at,
+                    start: transform_at,
+                },
+                kind: StudioCreationOperationKind::Position {
+                    position: Some(position.clone()),
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            });
+        }
+        for (index, (entity_id, _)) in targets.iter().enumerate() {
+            operations.push(StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some((*entity_id).to_owned()),
+                id: format!("group-rotation-{index}"),
+                interval: IntervalV1 {
+                    end: transform_at,
+                    start: transform_at,
+                },
+                kind: StudioCreationOperationKind::Rotation {
+                    control_present: false,
+                    from: Some(0.0),
+                    relative_delta: Some(angle_radians),
+                    to: Some(angle_radians),
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            });
+        }
+        let schedule_order = operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect();
+        StudioCreationEditInput {
+            anchor_captured_playhead: transform_at,
+            anchor_resolved_seconds: transform_at,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(transform_at),
+            },
+            intent_count: 1,
+            lowering_supported: true,
+            operations,
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Parallel,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Parallel,
+            schedule_order,
+            transaction_id: "group-rotation".to_owned(),
+        }
+    }
+
     fn assert_group_resize_transform(
         channels: &[AnimationChannelV1],
         entity_id: &str,
@@ -2831,6 +3048,30 @@ mod tests {
             .unwrap();
         assert!((transform.m11 - 1.5).abs() < 1e-12);
         assert!((transform.m22 - 1.5).abs() < 1e-12);
+        assert!((transform.tx - expected.x).abs() < 1e-12);
+        assert!((transform.ty - expected.y).abs() < 1e-12);
+    }
+
+    fn assert_group_rotation_transform(
+        channels: &[AnimationChannelV1],
+        entity_id: &str,
+        expected: &PointV1,
+    ) {
+        let transform = channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::AffineTransform {
+                    entity_id: candidate,
+                    keyframes,
+                    ..
+                } if candidate == entity_id => keyframes.first().map(|keyframe| &keyframe.value),
+                _ => None,
+            })
+            .unwrap();
+        assert!(transform.m11.abs() < 1e-12);
+        assert!((transform.m12 + 1.0).abs() < 1e-12);
+        assert!((transform.m21 - 1.0).abs() < 1e-12);
+        assert!(transform.m22.abs() < 1e-12);
         assert!((transform.tx - expected.x).abs() < 1e-12);
         assert!((transform.ty - expected.y).abs() < 1e-12);
     }
@@ -3916,6 +4157,125 @@ mod tests {
             );
         }
         assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn normalized_creation_applies_one_rigid_group_rotation_program() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let first_id = "tx:create/entity:circle";
+        let second_id = "tx:second/entity:rectangle";
+        let second_creation = second_group_resize_creation(&command.programs[0]);
+        command.programs.push(second_creation);
+        let targets = [
+            (first_id, PointV1 { x: 400.0, y: 260.0 }),
+            (second_id, PointV1 { x: 400.0, y: 100.0 }),
+        ];
+        command
+            .programs
+            .push(studio_group_rotation_edit_input(&targets, FRAC_PI_2));
+        let expected = targets.map(|(entity_id, position)| {
+            (
+                entity_id,
+                studio_point_to_scene_point(
+                    &position,
+                    command.frame,
+                    command.viewport,
+                    &bundle.scene.camera.view.center,
+                ),
+            )
+        });
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let projection = result.creation_projection.as_ref().unwrap();
+        assert_eq!(
+            projection
+                .mutations
+                .iter()
+                .filter(|mutation| mutation.transaction_id == "group-rotation")
+                .count(),
+            4
+        );
+        for (entity_id, expected) in expected {
+            assert_group_rotation_transform(
+                &result.bundle.scene.animation_channels,
+                entity_id,
+                &expected,
+            );
+        }
+        assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn normalized_creation_rejects_a_non_rigid_or_partial_group_rotation() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let first_id = "tx:create/entity:circle";
+        let second_id = "tx:second/entity:rectangle";
+        let second_creation = second_group_resize_creation(&command.programs[0]);
+        command.programs.push(second_creation);
+        command.programs.push(studio_group_rotation_edit_input(
+            &[
+                (first_id, PointV1 { x: 400.0, y: 260.0 }),
+                (second_id, PointV1 { x: 401.0, y: 100.0 }),
+            ],
+            FRAC_PI_2,
+        ));
+        let mut partial = command.clone();
+        let partial_rotation = partial.programs.last_mut().unwrap();
+        partial_rotation
+            .operations
+            .retain(|operation| operation.entity_id.as_deref() == Some(first_id));
+        partial_rotation.schedule_order = partial_rotation
+            .operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect();
+        let mut disjoint = command.clone();
+        let disjoint_rotation = disjoint.programs.last_mut().unwrap();
+        disjoint_rotation.anchor_captured_playhead = 0.5;
+        disjoint_rotation.anchor_resolved_seconds = 0.5;
+        disjoint_rotation.anchor_source = SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(0.5),
+        };
+        disjoint_rotation.operations.retain(|operation| {
+            matches!(operation.kind, StudioCreationOperationKind::Position { .. })
+                && operation.entity_id.as_deref() == Some(first_id)
+                || matches!(operation.kind, StudioCreationOperationKind::Rotation { .. })
+                    && operation.entity_id.as_deref() == Some(second_id)
+        });
+        for operation in &mut disjoint_rotation.operations {
+            operation.interval = IntervalV1 {
+                end: 0.5,
+                start: 0.5,
+            };
+        }
+        disjoint_rotation.schedule_order = disjoint_rotation
+            .operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect();
+        let original = bundle.scene.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &original);
+        assert!(matches!(
+            session.apply_studio_creation_edit(partial),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &original);
+        assert!(matches!(
+            session.apply_studio_creation_edit(disjoint),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &original);
     }
 
     #[test]

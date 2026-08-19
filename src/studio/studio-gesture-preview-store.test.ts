@@ -10,6 +10,7 @@ describe("Studio gesture preview store", () => {
     expect(initial).toEqual({
       dragPreview: null,
       geometryPreview: null,
+      groupRotationPreview: null,
       groupResizePreview: null,
       kind: "idle",
       rotationPreview: null,
@@ -32,6 +33,7 @@ describe("Studio gesture preview store", () => {
     expect(first).toEqual({
       dragPreview: { delta: { x: 12, y: -4 }, entityIds: ["entity:a", "entity:b"] },
       geometryPreview: null,
+      groupRotationPreview: null,
       groupResizePreview: null,
       kind: "drag",
       rotationPreview: null,
@@ -73,6 +75,7 @@ describe("Studio gesture preview store", () => {
     expect(scale).toEqual({
       dragPreview: null,
       geometryPreview: null,
+      groupRotationPreview: null,
       groupResizePreview: null,
       kind: "scale",
       rotationPreview: null,
@@ -94,6 +97,7 @@ describe("Studio gesture preview store", () => {
     expect(rotation).toEqual({
       dragPreview: null,
       geometryPreview: null,
+      groupRotationPreview: null,
       groupResizePreview: null,
       kind: "rotation",
       rotationPreview: { angleRadians: Math.PI / 4, entityId: "entity:circle" },
@@ -118,6 +122,7 @@ describe("Studio gesture preview store", () => {
     expect(preview).toEqual({
       dragPreview: null,
       geometryPreview: null,
+      groupRotationPreview: null,
       groupResizePreview: {
         entities: [
           { delta: { x: -10, y: -5 }, entityId: "entity:a", scale: 1.5 },
@@ -129,6 +134,37 @@ describe("Studio gesture preview store", () => {
       scalePreview: null,
     });
     store.setGroupResizePreview(preview.groupResizePreview!);
+    expect(store.getSnapshot()).toBe(preview);
+  });
+
+  it("publishes one multi-entity rotation preview without retaining resize state", () => {
+    const store = createStudioGesturePreviewStore();
+    store.setGroupResizePreview({
+      entities: [{ delta: { x: 1, y: 2 }, entityId: "entity:a", scale: 2 }],
+    });
+    store.setGroupRotationPreview({
+      entities: [
+        { angleRadians: Math.PI / 2, delta: { x: 20, y: 30 }, entityId: "entity:a" },
+        { angleRadians: Math.PI / 2, delta: { x: -20, y: -30 }, entityId: "entity:b" },
+      ],
+    });
+    const preview = store.getSnapshot();
+
+    expect(preview).toEqual({
+      dragPreview: null,
+      geometryPreview: null,
+      groupResizePreview: null,
+      groupRotationPreview: {
+        entities: [
+          { angleRadians: Math.PI / 2, delta: { x: 20, y: 30 }, entityId: "entity:a" },
+          { angleRadians: Math.PI / 2, delta: { x: -20, y: -30 }, entityId: "entity:b" },
+        ],
+      },
+      kind: "group-rotation",
+      rotationPreview: null,
+      scalePreview: null,
+    });
+    store.setGroupRotationPreview(preview.groupRotationPreview!);
     expect(store.getSnapshot()).toBe(preview);
   });
 
