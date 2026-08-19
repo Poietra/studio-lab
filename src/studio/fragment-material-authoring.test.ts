@@ -13,6 +13,7 @@ import {
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   listStudioFragmentMaterialsV1,
   projectFragmentMaterialsForSceneV1,
+  recordStudioFragmentMaterialGlslDiagnosticV1,
   removeStudioFragmentMaterialAssetV1,
   removeStudioFragmentMaterialV1,
   renameStudioFragmentMaterialV1,
@@ -304,5 +305,36 @@ describe("project-local fragment material authoring", () => {
         wgsl: imported.registry.materials[0]?.source ?? "",
       }),
     ).toBe(imported);
+  });
+
+  it("retains rejected GLSL and its diagnostic without replacing the last compiled WGSL", () => {
+    const created = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "GLSL" });
+    const canonicalWgsl = created.state.registry.materials[0]?.source ?? "";
+    const rejectedSource = "#version 450\nvoid main( {";
+    const rejected = recordStudioFragmentMaterialGlslDiagnosticV1(created.state, {
+      diagnostic: "material.glsl:2:12: expected ')'",
+      entryPoint: "main",
+      shaderId: created.shaderId,
+      source: rejectedSource,
+    });
+
+    expect(rejected.registry).toEqual(created.state.registry);
+    expect(rejected.glslSourcesByShaderId[created.shaderId]).toEqual({
+      diagnostic: "material.glsl:2:12: expected ')'",
+      entryPoint: "main",
+      source: rejectedSource,
+    });
+
+    const accepted = updateStudioFragmentMaterialFromGlslV1(rejected, {
+      entryPoint: "main",
+      shaderId: created.shaderId,
+      source: rejectedSource,
+      wgsl: canonicalWgsl,
+    });
+    expect(accepted.registry).toEqual(created.state.registry);
+    expect(accepted.glslSourcesByShaderId[created.shaderId]).toEqual({
+      entryPoint: "main",
+      source: rejectedSource,
+    });
   });
 });

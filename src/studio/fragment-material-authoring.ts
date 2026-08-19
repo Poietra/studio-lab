@@ -45,6 +45,7 @@ export type ProjectFragmentMaterialStateV1 = Readonly<{
 }>;
 
 export type StudioFragmentMaterialGlslSource = Readonly<{
+  diagnostic?: string;
   entryPoint: "main";
   source: string;
 }>;
@@ -74,6 +75,7 @@ const fragmentMaterialNameSchema = z
 
 const fragmentMaterialGlslSourceSchema = z
   .object({
+    diagnostic: z.string().min(1).optional(),
     entryPoint: z.literal("main"),
     source: z
       .string()
@@ -509,6 +511,7 @@ export function updateStudioFragmentMaterialFromGlslV1(
   const currentGlsl = state.glslSourcesByShaderId[input.shaderId];
   if (
     activeMaterial.source === input.wgsl &&
+    currentGlsl?.diagnostic === undefined &&
     currentGlsl?.entryPoint === input.entryPoint &&
     currentGlsl.source === input.source
   ) {
@@ -532,6 +535,31 @@ export function updateStudioFragmentMaterialFromGlslV1(
     glslSourcesByShaderId: {
       ...updated.glslSourcesByShaderId,
       [input.shaderId]: { entryPoint: input.entryPoint, source: input.source },
+    },
+  });
+}
+
+export function recordStudioFragmentMaterialGlslDiagnosticV1(
+  state: ProjectFragmentMaterialStateV1,
+  input: Readonly<{
+    diagnostic: string;
+    entryPoint: "main";
+    shaderId: string;
+    source: string;
+  }>,
+): ProjectFragmentMaterialStateV1 {
+  if (!state.registry.materials.some(({ shaderId }) => shaderId === input.shaderId)) {
+    throw new Error("The material no longer exists.");
+  }
+  return parseProjectFragmentMaterialState({
+    ...state,
+    glslSourcesByShaderId: {
+      ...state.glslSourcesByShaderId,
+      [input.shaderId]: {
+        diagnostic: input.diagnostic,
+        entryPoint: input.entryPoint,
+        source: input.source,
+      },
     },
   });
 }

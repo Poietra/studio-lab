@@ -4,11 +4,14 @@ import {
   MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
   MAX_PROJECT_FRAGMENT_MATERIALS_V1,
 } from "../engine/fragment-material-registry";
-import type { StudioFragmentMaterialParameterSchemaV1 } from "./fragment-material-authoring";
+import type {
+  StudioFragmentMaterialGlslSource,
+  StudioFragmentMaterialParameterSchemaV1,
+} from "./fragment-material-authoring";
 
 export type FragmentMaterialEditorItem = Readonly<{
   assignmentCount: number;
-  glslSource: Readonly<{ entryPoint: "main"; source: string }> | null;
+  glslSource: StudioFragmentMaterialGlslSource | null;
   name: string;
   parameterSchema: StudioFragmentMaterialParameterSchemaV1;
   revision: number;
@@ -367,8 +370,11 @@ export function FragmentMaterialEditor({
             </p>
           ) : (
             <FragmentMaterialGlslImporter
+              initialDiagnostic={editingMaterial.glslSource?.diagnostic ?? null}
               initialSource={editingMaterial.glslSource?.source ?? ""}
-              key={`glsl/${editingMaterial.shaderId}/${editingMaterial.revision}`}
+              key={`glsl/${editingMaterial.shaderId}/${editingMaterial.revision}/${
+                editingMaterial.glslSource?.diagnostic ? "rejected" : editingMaterial.glslSource ? "accepted" : "wgsl"
+              }`}
               onImport={async (input) => {
                 await onImportGlsl(editingMaterial.shaderId, input);
                 setInputError(null);
@@ -405,14 +411,16 @@ void main() {
 `;
 
 function FragmentMaterialGlslImporter({
+  initialDiagnostic,
   initialSource,
   onImport,
 }: Readonly<{
+  initialDiagnostic: string | null;
   initialSource: string;
   onImport: (input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
 }>) {
   const [source, setSource] = useState(initialSource || GLSL_FRAGMENT_STARTER);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(initialDiagnostic);
   const [pending, setPending] = useState(false);
 
   return (
