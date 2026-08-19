@@ -604,9 +604,6 @@ export function StudioCanvas({
     preparedSelectedGeometries.length === selectedIds.size
       ? unionPreparedSelectionBounds(preparedSelectedGeometries, frame)
       : null;
-  const compositeSelectionDisplayBounds = compositeSelectionBounds
-    ? compensatePreparedGeometryForOverlayScales(compositeSelectionBounds, cameraScale, 1)
-    : null;
   const compositeSelectionResizeBasis: PreparedSelectionResizeBasis | null = compositeSelectionBounds
     ? {
         bounds: {
@@ -970,16 +967,16 @@ export function StudioCanvas({
             );
           })}
         </div>
-        {compositeSelectionBounds && compositeSelectionDisplayBounds ? (
+        {compositeSelectionBounds ? (
           <div
             aria-label={`${selectedIds.size} objects selected`}
             className="pointer-events-none absolute z-20 box-border -translate-x-1/2 -translate-y-1/2 border border-sky-400"
             data-studio-composite-selection={selectedIds.size}
-            data-studio-selection-height={compositeSelectionDisplayBounds.dimensions?.height?.toFixed(4)}
-            data-studio-selection-width={compositeSelectionDisplayBounds.dimensions?.width?.toFixed(4)}
+            data-studio-selection-height={compositeSelectionBounds.dimensions.height.toFixed(4)}
+            data-studio-selection-width={compositeSelectionBounds.dimensions.width.toFixed(4)}
             style={{
-              ...entityDimensionStyle(compositeSelectionDisplayBounds.dimensions, frame),
-              ...viewportPositionStyle(compositeSelectionDisplayBounds.position),
+              ...entityDimensionStyle(compositeSelectionBounds.dimensions, frame),
+              ...viewportPositionStyle(compositeSelectionBounds.position),
             }}
           >
             <span className="absolute -top-6 left-0 whitespace-nowrap bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">

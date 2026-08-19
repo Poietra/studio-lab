@@ -310,7 +310,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(onEntityPointerDown).not.toHaveBeenCalled();
   });
 
-  it("draws one paint-free outline from two prepared AABBs and keeps entity handles hidden", () => {
+  it("draws one paint-free outline from final prepared AABBs without reapplying camera scale", () => {
     const rectangle: ProjectedEntity = {
       ...CIRCLE_ENTITY,
       geometry: {
@@ -325,6 +325,7 @@ describe("StudioCanvas retained preview layer", () => {
     const markup = renderToStaticMarkup(
       <StudioCanvas
         {...baseProps()}
+        cameraScale={2}
         entities={[CIRCLE_ENTITY, rectangle]}
         preview={previewView(
           {
@@ -337,8 +338,8 @@ describe("StudioCanvas retained preview layer", () => {
             phase: "presented",
           },
           new Map([
-            ["scene:circle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 160, y: 180 } }],
-            ["scene:rectangle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 480, y: 180 } }],
+            ["scene:circle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 120, y: 180 } }],
+            ["scene:rectangle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 440, y: 180 } }],
           ]),
           new Map([
             [
@@ -368,6 +369,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('aria-label="2 objects selected"');
     expect(markup).toContain('data-studio-selection-height="2.0000"');
     expect(markup).toContain('data-studio-selection-width="9.1110"');
+    expect(markup).toContain("left:43.75%");
     expect(markup).not.toContain("data-studio-resize-handle");
     expect(markup).not.toContain("data-studio-rotation-handle");
   });
