@@ -11,7 +11,7 @@ export type PropertyChannelKey =
   | "dimensions"
   | "fillColor"
   | "identity"
-  | "ordering"
+  | "sourceZIndex"
   | "position"
   | "presence"
   | "rotation"

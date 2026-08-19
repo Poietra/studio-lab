@@ -68,6 +68,7 @@ struct CreateSceneEntity {
     position: PointV1,
     rotation: f64,
     scale: f64,
+    source_z_index: Option<f64>,
     stroke_color: Option<RgbaColorV1>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
 }
@@ -127,6 +128,9 @@ pub enum StudioCreationProjectedMutationKind {
     },
     Opacity {
         value: f64,
+    },
+    SourceZIndex {
+        source_z_index: f64,
     },
     FillColor {
         value: String,
@@ -209,6 +213,9 @@ pub enum StudioCreationOperationKind {
     },
     Opacity {
         alpha: Option<f64>,
+    },
+    SourceZIndex {
+        source_z_index: Option<f64>,
     },
     FillColor {
         color: Option<String>,
@@ -339,6 +346,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Rotation { .. }
             | StudioCreationOperationKind::Opacity { .. }
+            | StudioCreationOperationKind::SourceZIndex { .. }
             | StudioCreationOperationKind::FillColor { .. }
             | StudioCreationOperationKind::StrokeColor { .. }
             | StudioCreationOperationKind::Resize { .. }
@@ -482,6 +490,7 @@ struct PlannedStudioCreationEntity {
     persistent_removal: Option<PersistentSceneRemoval>,
     position: PointV1,
     scale: f64,
+    source_z_index: Option<f64>,
     spec: StudioCreationEntitySpec,
 }
 
@@ -922,6 +931,7 @@ fn plan_studio_creation_edits(
                 StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
+                | StudioCreationOperationKind::SourceZIndex { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
@@ -954,6 +964,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
+                | StudioCreationOperationKind::SourceZIndex { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
@@ -1177,6 +1188,7 @@ fn plan_studio_creation_edits(
             persistent_removal: None,
             position: initial_position.clone(),
             scale: 1.0,
+            source_z_index: None,
             spec: spec.clone(),
         });
     }
@@ -1487,6 +1499,35 @@ fn plan_studio_creation_edits(
                         },
                     ));
                 }
+                StudioCreationOperationKind::SourceZIndex {
+                    source_z_index: Some(source_z_index),
+                } if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                    && source_z_index.is_finite()
+                    && studio_timeline_semantic_values_match(
+                        operation.interval.end,
+                        program.anchor_resolved_seconds,
+                    )
+                    && studio_timeline_semantic_values_match(
+                        program.anchor_resolved_seconds,
+                        state.spec.lifetime_start,
+                    )
+                    && state.persistent_removal.is_none() =>
+                {
+                    state.source_z_index = Some(*source_z_index);
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: instant_interval,
+                            kind: StudioCreationProjectedMutationKind::SourceZIndex {
+                                source_z_index: *source_z_index,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
                 StudioCreationOperationKind::FillColor { color: Some(color) }
                     if operation.origin == StudioAuthoringOrigin::DirectManipulation
                         && matches!(
@@ -1639,6 +1680,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
+                | StudioCreationOperationKind::SourceZIndex { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
@@ -2213,12 +2255,13 @@ impl EngineSessionV1 {
             .collect::<BTreeSet<_>>();
 
         for (scene_order, entity) in (first_scene_order..).zip(command.entities) {
+            let entity_source_z_index = entity.source_z_index.unwrap_or(source_z_index);
             append_created_entity(
                 &mut candidate.scene,
                 entity,
                 &command.provenance.id,
                 scene_order,
-                source_z_index,
+                entity_source_z_index,
                 &mut capabilities,
             );
             source_z_index += 1.0;
@@ -2453,6 +2496,7 @@ impl EngineSessionV1 {
                 ),
                 rotation: state.current_rotation,
                 scale: 1.0,
+                source_z_index: state.source_z_index,
                 stroke_color,
             });
         }
@@ -2564,6 +2608,7 @@ mod tests {
                     position: PointV1 { x: 2.0, y: -1.0 },
                     rotation: 0.0,
                     scale: 1.25,
+                    source_z_index: None,
                     stroke_color: None,
                     instant_transform: None,
                 },
@@ -2584,6 +2629,7 @@ mod tests {
                     position: PointV1 { x: -2.0, y: 1.0 },
                     rotation: 0.0,
                     scale: 0.5,
+                    source_z_index: None,
                     stroke_color: None,
                     instant_transform: Some(CreateSceneEntityInstantTransform {
                         at: 1.25,
@@ -2607,6 +2653,7 @@ mod tests {
                     position: PointV1 { x: 0.0, y: 1.5 },
                     rotation: 0.0,
                     scale: 2.0,
+                    source_z_index: None,
                     stroke_color: None,
                     instant_transform: None,
                 },
@@ -3371,6 +3418,59 @@ mod tests {
         assert!((after_stroke.green - 178.0 / 255.0).abs() < 1e-12);
         assert!((after_stroke.blue - 154.0 / 255.0).abs() < 1e-12);
         assert!((after_stroke.alpha - 0.25).abs() < 1e-12);
+    }
+
+    #[test]
+    fn normalized_creation_applies_persistent_canonical_paint_order() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        command.programs.push(studio_created_appearance_edit_input(
+            0.5,
+            entity_id,
+            "layer-order",
+            StudioCreationOperationKind::SourceZIndex {
+                source_z_index: Some(-10.0),
+            },
+        ));
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert!(matches!(
+            &projection.mutations[2].kind,
+            StudioCreationProjectedMutationKind::SourceZIndex { source_z_index }
+                if (*source_z_index + 10.0).abs() < 1e-12
+        ));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+        assert!((created.source_z_index + 10.0).abs() < f64::EPSILON);
+        let packet = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "created-order-sample",
+                sample_time: 1.0,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            packet
+                .draws
+                .first()
+                .map(poietra_scene_ir::RenderDrawV1::entity_id),
+            Some(entity_id)
+        );
     }
 
     #[test]

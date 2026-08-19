@@ -979,6 +979,18 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
     if (options.generatedEntityIds?.has(operation.entityId)) return;
     throw new ProgramLoweringError("operation-unsupported", "Opacity requires the Runtime Trace source lowerer.");
   }
+  if (operation.kind === "SetProperty" && operation.key === "sourceZIndex") {
+    if (
+      options.generatedEntityIds?.has(operation.entityId) &&
+      typeof operation.value === "number" &&
+      Number.isFinite(operation.value)
+    )
+      return;
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Layer order currently supports only Studio-created objects with a finite canonical z-index.",
+    );
+  }
   if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
     if (!isCanonicalRgbHex(operation.value)) {
       throw new ProgramLoweringError(
@@ -1630,6 +1642,14 @@ export function lowerCanonicalProgramSource(
       ) {
         output.push(`${variable}.set_opacity(${formatAmount(operation.value)})`);
         options.entityOpacityStates?.set(operation.entityId, operation.value);
+      } else if (
+        variable &&
+        operation.kind === "SetProperty" &&
+        operation.key === "sourceZIndex" &&
+        typeof operation.value === "number" &&
+        Number.isFinite(operation.value)
+      ) {
+        output.push(`${variable}.set_z_index(${formatAmount(operation.value)})`);
       } else if (
         variable &&
         operation.kind === "SetProperty" &&

@@ -90,6 +90,8 @@ function setPropertyExecution(
     return SUPPORTED_EXECUTION;
   if ((operation.key === "fillColor" || operation.key === "strokeColor") && isCanonicalRgbHex(operation.value))
     return SUPPORTED_EXECUTION;
+  if (operation.key === "sourceZIndex" && typeof operation.value === "number" && Number.isFinite(operation.value))
+    return SUPPORTED_EXECUTION;
   if (operation.key === "content") {
     if (canonicalEditableContent(operation.value, "Text") || canonicalEditableContent(operation.value, "MathTex"))
       return SUPPORTED_EXECUTION;
@@ -401,6 +403,26 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
       operationId: operation.id,
       severity: "error" as const,
     });
+  }
+  if (operation.key === "sourceZIndex") {
+    if (typeof operation.value !== "number" || !Number.isFinite(operation.value)) {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "value",
+        message: "Layer order edits require a finite canonical z-index.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+    if (!scene.objectGraph.entities[operation.entityId]?.transactionId) {
+      issues.push({
+        code: "lowering-unsupported" as const,
+        field: "entityId",
+        message: "Layer order edits currently support only Studio-created objects.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
   }
   if (operation.key === "content") {
     const entity = scene.objectGraph.entities[operation.entityId];

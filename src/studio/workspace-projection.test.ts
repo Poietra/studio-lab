@@ -771,7 +771,7 @@ describe("Studio workspace projection", () => {
     ]);
   });
 
-  it("installs Studio-created shape color channels from the Rust projection", () => {
+  it("installs Studio-created shape color and ordering channels from the Rust projection", () => {
     const imported = workspaceScene("First", null);
     const entityId = "tx:create-color/entity:circle";
     const creationProgram: CanonicalEditProgram = {
@@ -821,6 +821,23 @@ describe("Studio workspace projection", () => {
       transactionId: "fill-color",
       version: 1,
     };
+    const orderingProgram: CanonicalEditProgram = {
+      ...colorProgram,
+      operations: [
+        {
+          dependsOn: [],
+          entityId,
+          id: "ordering/circle",
+          interval: { end: 0, start: 0 },
+          key: "sourceZIndex",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          value: -2.5,
+        },
+      ],
+      schedule: { edges: [], mode: "parallel", order: ["ordering/circle"] },
+      transactionId: "ordering",
+    };
     const projection: StudioCreationProjectionV1 = {
       entities: [
         {
@@ -844,6 +861,14 @@ describe("Studio workspace projection", () => {
           transactionId: "fill-color",
           value: "#12abef",
         },
+        {
+          entityId,
+          interval: { end: 0, start: 0 },
+          kind: "source-z-index",
+          operationId: "ordering/circle",
+          sourceZIndex: -2.5,
+          transactionId: "ordering",
+        },
       ],
       projectedDuration: imported.runtimeSceneState.duration,
       removals: [],
@@ -854,6 +879,7 @@ describe("Studio workspace projection", () => {
       appliedEdits: [
         programRecord(creationProgram, { issues: [], kind: "valid" }),
         programRecord(colorProgram, { issues: [], kind: "valid" }),
+        programRecord(orderingProgram, { issues: [], kind: "valid" }),
       ],
       creationProjection: projection,
       currentTime: 0,
@@ -865,6 +891,9 @@ describe("Studio workspace projection", () => {
 
     expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/fillColor`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: "#12abef" }),
+    ]);
+    expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/sourceZIndex`]?.samples).toEqual([
+      expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: -2.5 }),
     ]);
     expect(projected.projection.inspector.entities.find((entity) => entity.id === entityId)?.geometry.style).toEqual({
       kind: "known",

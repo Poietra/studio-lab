@@ -14,6 +14,7 @@ import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
 import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragment-material-editor";
 import type { ManimWorkspaceScene } from "./imported-workspace";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
+import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity } from "./model";
 import { entityLabel } from "./studio-viewport";
 
@@ -150,9 +151,11 @@ export function WorkspaceSidebar({
   durationError,
   durationMinimum,
   entities,
+  layers,
   nextScene,
   onDurationChange,
   onEditAppliedProgram,
+  onLayerOrder,
   onRedo,
   onToggleEntity,
   onUndo,
@@ -172,9 +175,11 @@ export function WorkspaceSidebar({
   durationError: string | null;
   durationMinimum: number;
   entities: readonly ProjectedEntity[];
+  layers?: readonly StudioLayerEntry[];
   nextScene: ManimWorkspaceScene | null;
   onDurationChange: (duration: number) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
+  onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onRedo: () => void;
   onToggleEntity: (entityId: string, selected: boolean) => void;
   onUndo: () => void;
@@ -182,17 +187,28 @@ export function WorkspaceSidebar({
   selectedIds: ReadonlySet<string>;
   sourceImportOutcomes: readonly ManimSourceImportOutcome[];
 }>) {
+  const layerEntries: readonly StudioLayerEntry[] =
+    layers ??
+    entities.map((entity) => ({
+      canMove: { back: false, backward: false, forward: false, front: false },
+      entity,
+      readOnlyReason: null,
+      sceneOrder: null,
+      sourceAnchor: null,
+      sourceZIndex: null,
+    }));
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       <div className="flex items-center justify-between gap-2">
-        <h2 className="text-balance text-xs font-medium text-zinc-300">Objects</h2>
-        <span className="tabular-nums text-[10px] text-zinc-600">{entities.length}</span>
+        <h2 className="text-balance text-xs font-medium text-zinc-300">Layers</h2>
+        <span className="tabular-nums text-[10px] text-zinc-600">{layerEntries.length}</span>
       </div>
       <p className="mt-1 truncate text-[10px] text-zinc-600" title={activeScene.sceneId}>
         {activeScene.name}
       </p>
       <ul className="mt-3 space-y-1">
-        {entities.map((entity) => {
+        {layerEntries.map((layer) => {
+          const entity = layer.entity;
           const selected = selectedIds.has(entity.id);
           const locked =
             entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId));
@@ -214,8 +230,38 @@ export function WorkspaceSidebar({
                   type="checkbox"
                 />
                 <span className="min-w-0 flex-1 truncate">{entityLabel(entity)}</span>
-                <span className="shrink-0 text-[10px] text-zinc-600">{entity.type}</span>
+                <span className="shrink-0 text-[10px] text-zinc-600" title={layer.readOnlyReason ?? undefined}>
+                  {layer.readOnlyReason ? "Read-only" : entity.type}
+                </span>
               </label>
+              {selected && onLayerOrder ? (
+                <div
+                  className="grid grid-cols-4 border-x border-b border-zinc-800"
+                  role="group"
+                  aria-label={`Order ${entityLabel(entity)}`}
+                >
+                  {(
+                    [
+                      ["back", "Back", "⇤"],
+                      ["backward", "Backward", "←"],
+                      ["forward", "Forward", "→"],
+                      ["front", "Front", "⇥"],
+                    ] as const
+                  ).map(([direction, label, glyph]) => (
+                    <button
+                      aria-label={`${label} ${entityLabel(entity)}`}
+                      className="h-7 border-r border-zinc-800 text-[11px] text-zinc-400 last:border-r-0 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                      disabled={!authoringAvailable || layer.readOnlyReason !== null || !layer.canMove[direction]}
+                      key={direction}
+                      onClick={() => onLayerOrder(entity.id, direction)}
+                      title={layer.readOnlyReason ?? label}
+                      type="button"
+                    >
+                      {glyph}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </li>
           );
         })}

@@ -914,6 +914,60 @@ export function createDirectManipulationOpacityProgram(
   );
 }
 
+/** Creates one persistent Studio-owned paint-order edit. The absolute value is
+ * selected from the canonical Scene IR by the Layers presentation. */
+export function createDirectManipulationLayerOrderProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityId: string;
+    scene: RuntimeSceneState;
+    sourceZIndex: number;
+    start: number;
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  if (!Number.isFinite(input.sourceZIndex)) throw new Error("Layer order requires a finite canonical z-index.");
+  if (
+    !Number.isFinite(input.start) ||
+    !Number.isFinite(input.capturedPlayhead) ||
+    input.start < 0 ||
+    input.start > input.scene.duration
+  ) {
+    throw new Error("Layer order requires a valid source time inside the Scene.");
+  }
+  const resolution = resolveTimeAnchorOnce(
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead", referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute", seconds: input.start },
+    { capturedPlayhead: input.capturedPlayhead, sceneDuration: input.scene.duration },
+  );
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: SceneEditOperation = {
+    dependsOn: [],
+    entityId: input.entityId,
+    id: operationId(input.transactionId, "set-layer-order"),
+    interval: { end: input.start, start: input.start },
+    key: "sourceZIndex",
+    kind: "SetProperty",
+    provenance: provenance("direct-manipulation", ["Layers panel", "absolute canonical z-index"]),
+    value: input.sourceZIndex,
+  };
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["persistent paint order"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
+}
+
 export function createDirectManipulationColorProgram(
   input: Readonly<{
     capturedPlayhead: number;

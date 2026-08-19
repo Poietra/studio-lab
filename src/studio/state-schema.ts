@@ -93,7 +93,7 @@ const propertyChannelSchema = z
       "content",
       "dimensions",
       "fillColor",
-      "ordering",
+      "sourceZIndex",
       "position",
       "presence",
       "rotation",

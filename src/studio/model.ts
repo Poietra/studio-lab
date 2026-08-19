@@ -118,7 +118,7 @@ export type PropertyChannel = Readonly<{
     | "content"
     | "dimensions"
     | "fillColor"
-    | "ordering"
+    | "sourceZIndex"
     | "position"
     | "presence"
     | "rotation"

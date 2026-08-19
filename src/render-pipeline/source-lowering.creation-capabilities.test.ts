@@ -127,6 +127,59 @@ describe("Canonical EditProgram source lowering", () => {
     expect(lowered.insertedCode).toContain("poietra_created_appearance_1.rotate(0.5236)");
   });
 
+  it("lowers persistent paint order only for a Studio-created variable", () => {
+    const entityId = "tx:created-order/entity:circle";
+    const create = canonicalProgram(
+      [
+        {
+          ...operationBase("create-ordered-circle", 7),
+          entity: {
+            dimensions: { radius: 1 },
+            id: entityId,
+            lifetime: { end: null, start: 7 },
+            type: "Circle",
+          },
+          kind: "CreateEntity",
+        },
+      ],
+      "created-order",
+    );
+    const ordering = canonicalProgram(
+      [
+        {
+          ...operationBase("set-created-order", 7),
+          entityId,
+          key: "sourceZIndex",
+          kind: "SetProperty",
+          value: -2.5,
+        },
+      ],
+      "created-order-followup",
+    );
+
+    const lowered = lowerCanonicalProgramBatchSource(
+      source,
+      request(create, []),
+      [create, ordering].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    expect(lowered.insertedCode).toContain("poietra_created_order_1.set_z_index(-2.5)");
+
+    const importedOrdering = canonicalProgram([
+      {
+        ...operationBase("imported-order", 7),
+        entityId: "equation_1",
+        key: "sourceZIndex",
+        kind: "SetProperty",
+        value: 2,
+      },
+    ]);
+    expect(() =>
+      lowerCanonicalProgramSource(source, request(importedOrdering), { height: 8, width: 14.222 }, null),
+    ).toThrow(/only Studio-created objects/i);
+  });
+
   it("lowers Studio-created Text with the preview font and unit-height contract", () => {
     const entityId = "tx:created-text/entity:label";
     const create = canonicalProgram(
