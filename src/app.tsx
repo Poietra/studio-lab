@@ -44,6 +44,7 @@ import {
 } from "./studio/authoring-commands";
 import { canvasDragTargetEntityIds, toggleCanvasEntitySelection } from "./studio/canvas-selection";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
+import { runDraftSourcePreflight } from "./studio/draft-apply-preflight";
 import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } from "./studio/draft-validation";
 import {
   editorProgramsMatchAuthorityV1,
@@ -116,6 +117,12 @@ import {
 } from "./studio/motion-clip-edit";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
+import {
+  type OpacityKeyframe,
+  opacityKeyframeTrackFromProgram,
+  replaceOpacityKeyframe,
+  replaceOpacityKeyframeProgram,
+} from "./studio/opacity-keyframe-edit";
 import { programExecutionCapabilities } from "./studio/operation-registry";
 import { isSceneDurationOperation, type OperationOrigin } from "./studio/operations";
 import { PoietraBrand } from "./studio/poietra-brand";
@@ -167,6 +174,7 @@ import type { StudioInlineTextEditorSession } from "./studio/studio-inline-text-
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
+import type { StudioOpacityTimelineTrack } from "./studio/studio-timeline";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
 import { clientPointToViewport, rotationDeltaFromClientPoints } from "./studio/studio-viewport-geometry";
@@ -1137,6 +1145,72 @@ export function App({
             ? sourceTimeToWorkingTimeFromProjection(appliedTimelineProjection.transforms, sourceTime)
             : sourceTimeToWorkingTimeWithoutTimeline(previewAppliedSceneEdits, sourceTime),
     })) ?? [];
+  const opacityTrackEligibleIds = new Set(
+    workspaceCreationProjection?.entities.flatMap(({ entityId, transactionId }) => {
+      const owner = previewAppliedEdits.find(({ program }) =>
+        program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
+      );
+      const existingTrack = owner ? opacityKeyframeTrackFromProgram(owner.program, 0) : null;
+      const ownerIsApplied = owner !== undefined;
+      const draftAllowsOwner = !draftEdit || editingAppliedProgram?.original.program.transactionId === transactionId;
+      const hasCompetingAppearanceOrRemoval = previewAppliedEdits.some(({ program }) =>
+        program.operations.some(
+          (operation) =>
+            "entityId" in operation &&
+            operation.entityId === entityId &&
+            ((operation.kind === "SetProperty" && operation.key === "appearance") ||
+              (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent)),
+        ),
+      );
+      const sharedProgramAllowsEntity = !existingTrack || existingTrack.entityId === entityId;
+      return ownerIsApplied && draftAllowsOwner && !hasCompetingAppearanceOrRemoval && sharedProgramAllowsEntity
+        ? [entityId]
+        : [];
+    }) ?? [],
+  );
+  const opacityTracks: readonly StudioOpacityTimelineTrack[] = previewAppliedEdits.flatMap((record, programIndex) => {
+    const track = opacityKeyframeTrackFromProgram(record.program, programIndex);
+    if (!track || !workspaceCreationProjection) return [];
+    const operations = record.program.operations.filter(
+      (operation) =>
+        operation.kind === "AnimateProperty" && operation.key === "appearance" && operation.entityId === track.entityId,
+    );
+    const mutations = operations.map((operation) =>
+      workspaceCreationProjection.mutations.find(
+        (mutation) => mutation.kind === "opacity-keyframes" && mutation.operationId === operation.id,
+      ),
+    );
+    if (mutations.some((mutation) => !mutation)) return [];
+    const projectedMutations = mutations as readonly Extract<
+      (typeof workspaceCreationProjection.mutations)[number],
+      { kind: "opacity-keyframes" }
+    >[];
+    const workingTimes =
+      projectedMutations.length === 1 &&
+      Math.abs(projectedMutations[0]!.interval.end - projectedMutations[0]!.interval.start) < 0.0005
+        ? [projectedMutations[0]!.interval.start]
+        : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
+    if (workingTimes.length !== track.keyframes.length) return [];
+    const label =
+      workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === track.entityId)
+        ?.label ?? track.entityId;
+    const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
+    return [
+      {
+        entityId: track.entityId,
+        keyframes: track.keyframes.map((keyframe, index) => ({
+          ...keyframe,
+          sourceTime: keyframe.time,
+          time: workingTimes[index]!,
+        })),
+        label,
+        programIndex,
+        readOnlyReason:
+          draftEdit && !activeDraftIsThisTrack ? "Apply or discard the current draft before editing opacity." : null,
+        transactionId: track.transactionId,
+      },
+    ];
+  });
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
   const runtimeTraceEditCandidates = previewRenderer?.runtimeTraceEditCandidates ?? [];
   const runtimeTraceEditCandidateFor = (entityId: string | null | undefined) =>
@@ -2044,7 +2118,13 @@ export function App({
     // A draft may predate preview activation; the correlated Rust compilation
     // below remains the final source-export boundary.
     if (previewSelectionOnly && rejectSelectionOnlyPreviewMutation()) return;
-    if (!renderCandidate) return;
+    const draftExecution = programExecutionCapabilities(draftEdit.program);
+    if (draftExecution.apply !== "supported") {
+      setDraftError(draftExecution.applyBlocker ?? "The draft cannot be applied safely.");
+      return;
+    }
+    const sourcePreflightCandidate = draftExecution.lowering === "supported" ? renderCandidate : null;
+    if (draftExecution.lowering === "supported" && !sourcePreflightCandidate) return;
     const initialLifecycleBlocker = readDurationBlocker();
     if (initialLifecycleBlocker) {
       setDraftError(initialLifecycleBlocker);
@@ -2071,7 +2151,10 @@ export function App({
     setDraftApplyPending(true);
     setDraftError(null);
     try {
-      await exportManimSource(renderCandidateRequest(renderCandidate), revisionRequest.controller.signal);
+      await runDraftSourcePreflight(draftEdit.program, async () => {
+        if (!sourcePreflightCandidate) throw new Error("The Manim source preflight candidate is unavailable.");
+        await exportManimSource(renderCandidateRequest(sourcePreflightCandidate), revisionRequest.controller.signal);
+      });
       if (!isEditorRevisionRequestCurrent(revisionRequest)) return;
       const resolvedLifecycleBlocker = readDurationBlocker();
       if (resolvedLifecycleBlocker) {
@@ -2135,6 +2218,156 @@ export function App({
     });
     if (staged) setLifetimeEditMessage(null);
     return staged;
+  }
+
+  function stageOpacityKeyframes(
+    entityId: string,
+    programIndex: number,
+    baseProgram: SceneEdit,
+    keyframes: readonly OpacityKeyframe[],
+  ) {
+    if (!projectedActiveScene) return false;
+    const original = appliedEdits[programIndex];
+    if (!original || original.program.transactionId !== baseProgram.transactionId) {
+      setDraftError("The opacity track no longer matches the applied Program history.");
+      return false;
+    }
+    try {
+      const validation = replaceOpacityKeyframeProgram({
+        baseProgram,
+        entityId,
+        keyframes,
+        scene: projectedActiveScene.runtimeSceneState,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return stageDraft({
+        appliedEdit: { index: programIndex, original },
+        clearSuggestion: true,
+        currentTime,
+        operation: null,
+        record: validated.record,
+        selectedObjectIds: [entityId],
+        stopPlayback: true,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The opacity keyframe could not be edited.");
+      setIsPlaying(false);
+      return false;
+    }
+  }
+
+  function opacityProgramOwner(entityId: string) {
+    const programIndex = previewAppliedEdits.findIndex((record) =>
+      record.program.operations.some(
+        (operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId,
+      ),
+    );
+    const record = previewAppliedEdits[programIndex];
+    return programIndex >= 0 && record ? { programIndex, record } : null;
+  }
+
+  function addOpacityKeyframe(entityId: string) {
+    const owner = opacityProgramOwner(entityId);
+    if (!owner) {
+      setDraftError("Opacity keyframes currently support only Studio-created objects.");
+      return;
+    }
+    try {
+      const sourceTime = workingTimeToSourceTime(previewAppliedSceneEdits, currentTime);
+      const track = opacityKeyframeTrackFromProgram(owner.record.program, owner.programIndex);
+      if (track && track.entityId !== entityId) {
+        throw new Error("This shared creation Program already owns another object's opacity track.");
+      }
+      const fadeEnd = Math.max(
+        owner.record.program.anchor.resolvedSeconds,
+        ...owner.record.program.operations.flatMap((operation) =>
+          operation.kind === "ChangePresence" && operation.effect === "fade-in" && operation.entityId === entityId
+            ? [operation.interval.end]
+            : [],
+        ),
+      );
+      if (!track && sourceTime <= fadeEnd + 0.0005) {
+        setDraftError("Add the first opacity keyframe after the object's initial fade has finished.");
+        return;
+      }
+      if (track?.keyframes.some((keyframe) => Math.abs(keyframe.time - sourceTime) < 0.0005)) {
+        setDraftError("An opacity keyframe already exists at the playhead.");
+        return;
+      }
+      const staticOpacity = owner.record.program.operations
+        .flatMap((operation) =>
+          operation.kind === "SetProperty" &&
+          operation.key === "appearance" &&
+          operation.entityId === entityId &&
+          typeof operation.value === "number"
+            ? [operation.value]
+            : [],
+        )
+        .at(-1);
+      const sampledOpacity = samplePropertyValue(
+        workspaceProjection?.proposedState.evaluatedScene.propertyChannels[`${entityId}/appearance`]?.samples ?? [],
+        currentTime,
+      );
+      const value = track ? (typeof sampledOpacity === "number" ? sampledOpacity : (staticOpacity ?? 1)) : 1;
+      const keyframes = [...(track?.keyframes ?? []), { easing: "smooth" as const, time: sourceTime, value }].sort(
+        (left, right) => left.time - right.time,
+      );
+      stageOpacityKeyframes(entityId, owner.programIndex, owner.record.program, keyframes);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The opacity keyframe could not be added.");
+    }
+  }
+
+  function changeOpacityKeyframe(
+    track: StudioOpacityTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioOpacityTimelineTrack["keyframes"][number], "easing" | "time" | "value">>,
+  ) {
+    const owner = opacityProgramOwner(track.entityId);
+    if (!owner || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The opacity track no longer matches the Studio-created object.");
+      return;
+    }
+    try {
+      if (index === 0 && patch.value !== undefined) {
+        throw new Error("The first opacity keyframe preserves the object's post-fade opacity of 1.");
+      }
+      const sourcePatch: Partial<OpacityKeyframe> = {
+        ...(patch.easing === undefined ? {} : { easing: patch.easing }),
+        ...(patch.time === undefined ? {} : { time: workingTimeToSourceTime(previewAppliedSceneEdits, patch.time) }),
+        ...(patch.value === undefined ? {} : { value: patch.value }),
+      };
+      const sourceTrack = opacityKeyframeTrackFromProgram(owner.record.program, owner.programIndex);
+      if (!sourceTrack) throw new Error("The opacity track is not a canonical Studio property track.");
+      stageOpacityKeyframes(
+        track.entityId,
+        owner.programIndex,
+        owner.record.program,
+        replaceOpacityKeyframe(sourceTrack.keyframes, index, sourcePatch),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The opacity keyframe could not be changed.");
+    }
+  }
+
+  function deleteOpacityKeyframe(track: StudioOpacityTimelineTrack, index: number) {
+    const owner = opacityProgramOwner(track.entityId);
+    const sourceTrack = owner ? opacityKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The opacity track no longer matches the Studio-created object.");
+      return;
+    }
+    if (index === 0 && sourceTrack.keyframes.length > 1) {
+      setDraftError("Delete the later opacity keyframes before deleting the fixed first marker.");
+      return;
+    }
+    stageOpacityKeyframes(
+      track.entityId,
+      owner.programIndex,
+      owner.record.program,
+      sourceTrack.keyframes.filter((_, candidate) => candidate !== index),
+    );
   }
 
   function insertEntitiesAt(point: Point, entities?: readonly StudioEntityInput[]) {
@@ -4902,6 +5135,8 @@ export function App({
               lifetimeTrimDisabled={draftEdit !== null}
               motionDuration={motionDuration}
               motionPaths={motionPaths}
+              opacityTrackEligibleIds={opacityTrackEligibleIds}
+              opacityTracks={opacityTracks}
               onAppliedMotionClipChange={changeAppliedMotionClip}
               onAppliedMotionClipSelect={editAppliedMotionClip}
               onCanvasPlace={(point) => {
@@ -4938,6 +5173,9 @@ export function App({
               }}
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}
+              onOpacityKeyframeAdd={addOpacityKeyframe}
+              onOpacityKeyframeChange={changeOpacityKeyframe}
+              onOpacityKeyframeDelete={deleteOpacityKeyframe}
               onPresenceCursorChange={(cursor) => editorDocumentAuthority.updatePresence({ cursor })}
               onSelectionResizeCancel={cancelSelectionResize}
               onSelectionResizeKeyDown={nudgeSelectionResize}

@@ -254,6 +254,16 @@ function normalizedStudioCreationOperation(
       sourceZIndex: typeof operation.value === "number" && Number.isFinite(operation.value) ? operation.value : null,
     };
   }
+  if (operation.kind === "AnimateProperty" && operation.key === "appearance") {
+    return {
+      ...common,
+      easing: operation.easing,
+      entityId: operation.entityId,
+      from: typeof operation.from === "number" ? operation.from : null,
+      kind: "opacity-keyframes",
+      to: typeof operation.to === "number" ? operation.to : null,
+    };
+  }
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {
     return { ...common, entityId: operation.entityId, kind: "fade-in", persistent: operation.persistent };
   }

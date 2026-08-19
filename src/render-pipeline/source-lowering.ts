@@ -991,6 +991,12 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
       "Layer order currently supports only Studio-created objects with a finite canonical z-index.",
     );
   }
+  if (operation.kind === "AnimateProperty" && operation.key === "appearance") {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Opacity keyframes are available in the canonical client preview and video export, but not Manim source export.",
+    );
+  }
   if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
     if (!isCanonicalRgbHex(operation.value)) {
       throw new ProgramLoweringError(
@@ -1387,6 +1393,7 @@ export function lowerCanonicalProgramSource(
   }
   const request = singleProgramRequest(inputRequest, programs[0], inputRequest.sourceBindings);
   const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
+  request.program.operations.forEach((operation) => assertLoweringSupported(operation, options));
   const execution = programExecutionCapabilities(request.program);
   if (execution.lowering !== "supported") {
     throw new ProgramLoweringError(
@@ -1395,7 +1402,6 @@ export function lowerCanonicalProgramSource(
         `Program ${request.program.transactionId} is marked ${execution.lowering}, not supported.`,
     );
   }
-  request.program.operations.forEach((operation) => assertLoweringSupported(operation, options));
   const transformScale = scaleTransformViolation(request.program.operations);
   if (transformScale) {
     throw new ProgramLoweringError(

@@ -74,7 +74,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   }),
   operationBaseSchema.extend({
     control: pointSchema.optional(),
-    easing: z.literal("smooth"),
+    easing: z.enum(["linear", "smooth"]),
     entityId: z.string(),
     from: z.union([pointSchema, z.number()]).optional(),
     key: z.enum(["appearance", "position", "rotation", "scale"]),
