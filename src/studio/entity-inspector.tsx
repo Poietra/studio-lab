@@ -97,6 +97,8 @@ export function EntityInspectorEditor({
   const contentAvailable =
     (entity.type === "Text" || entity.type === "MathTex") &&
     (entity.sourceIdentity.kind === "known" || Boolean(entity.transactionId));
+  const typographyAvailable =
+    entity.type === "Text" && entity.sourceIdentity.kind === "unknown" && Boolean(entity.transactionId);
   const dimensionsAvailable =
     entity.geometry.dimensions.kind === "known" &&
     entity.geometry.position.kind === "known" &&
@@ -226,7 +228,7 @@ export function EntityInspectorEditor({
                 />
                 <FieldError entityId={entity.id} error={errors.content} field="content" />
               </label>
-              {entity.type === "Text" ? (
+              {typographyAvailable ? (
                 <div className="grid grid-cols-2 gap-2">
                   <label className="text-[10px] text-zinc-500">
                     Alignment

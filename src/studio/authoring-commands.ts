@@ -1,4 +1,9 @@
-import { canonicalEditableContent, STUDIO_CREATION_TEXT_CONTRACT } from "./editable-content";
+import {
+  canonicalEditableContent,
+  STUDIO_CREATION_TEXT_CONTRACT,
+  STUDIO_TEXT_DEFAULT_LAYOUT,
+  studioCreationTextContent,
+} from "./editable-content";
 import {
   importedLifetimeEditEvidence,
   MIN_OBJECT_LIFETIME_SECONDS,
@@ -214,6 +219,17 @@ export function createInspectorEntityEditProgram(
   }
   if (input.edits.content && entity.sourceIdentity.kind === "unknown" && !entity.transactionId) {
     throw new Error("Studio cannot edit content without a known or Studio-generated source identity.");
+  }
+  if (
+    input.edits.content &&
+    entity.type === "Text" &&
+    (entity.sourceIdentity.kind !== "unknown" || !entity.transactionId)
+  ) {
+    const before = studioCreationTextContent(entity.content)?.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
+    const after = studioCreationTextContent(input.edits.content)?.layout;
+    if (after && (after.alignment !== before.alignment || after.lineHeight !== before.lineHeight)) {
+      throw new Error("Typography editing is available only for Studio-created Text.");
+    }
   }
   if (Object.keys(input.edits).length === 0) {
     throw new Error("Change at least one Inspector field before creating a draft.");

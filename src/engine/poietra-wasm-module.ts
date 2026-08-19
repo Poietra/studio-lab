@@ -1,4 +1,4 @@
-export const POIETRA_ENGINE_ABI_VERSION = 28 as const;
+export const POIETRA_ENGINE_ABI_VERSION = 29 as const;
 
 type PoietraWasmModule = Readonly<Record<string, unknown>>;
 

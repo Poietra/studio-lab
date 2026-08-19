@@ -801,7 +801,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
             kind: "unsupported",
           };
         }
-        textOutlines.push({ content, entityId, path: response.result.path });
+        textOutlines.push({ entityId, layout: content.layout, path: response.result.path, text: content.text });
         textOutlineDigestMap[entityId] = response.result;
       }
     } catch (error) {

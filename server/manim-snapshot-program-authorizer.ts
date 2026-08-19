@@ -147,7 +147,7 @@ export async function authorizeSnapshotProgramWithSnapshot(
           400,
         );
       }
-      textOutlines.push({ content, entityId, path: response.result.path });
+      textOutlines.push({ entityId, layout: content.layout, path: response.result.path, text: content.text });
     }
     await compileApplyStudioCreationEdit(
       bundle,

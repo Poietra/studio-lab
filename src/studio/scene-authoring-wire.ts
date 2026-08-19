@@ -191,6 +191,7 @@ function normalizedStudioCreationOperation(
   };
   if (operation.kind === "CreateEntity") {
     const type = operation.entity.type;
+    const textContent = type === "Text" ? studioCreationTextContent(operation.entity.content) : null;
     return {
       ...common,
       entity: {
@@ -212,9 +213,10 @@ function normalizedStudioCreationOperation(
                       : type === "Text"
                         ? "text"
                         : "other",
+        layout: textContent?.layout ?? null,
         lifetimeEnd: operation.entity.lifetime.end,
         lifetimeStart: operation.entity.lifetime.start,
-        textContent: type === "Text" ? studioCreationTextContent(operation.entity.content) : null,
+        text: textContent?.text ?? null,
         texParts: type === "MathTex" ? studioCreationMathTexParts(operation.entity.content) : null,
       },
       kind: "create",
@@ -247,7 +249,13 @@ function normalizedStudioCreationOperation(
   if (operation.kind === "SetProperty" && operation.key === "content") {
     const content = studioCreationTextContent(operation.value);
     return content
-      ? { ...common, content, entityId: operation.entityId, kind: "text-content" }
+      ? {
+          ...common,
+          entityId: operation.entityId,
+          kind: "text-content",
+          layout: content.layout,
+          text: content.text,
+        }
       : { ...common, kind: "unsupported" };
   }
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {

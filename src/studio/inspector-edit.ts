@@ -214,7 +214,10 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
       (currentText?.layout.alignment !== textLayout.alignment ||
         currentText?.layout.lineHeight !== textLayout.lineHeight);
     const contentChanged = values.content !== currentContentValue(entity) || layoutChanged;
-    if (contentChanged) {
+    const studioCreated = entity.sourceIdentity.kind === "unknown" && Boolean(entity.transactionId);
+    if (layoutChanged && !studioCreated) {
+      errors.textAlignment = "Typography editing is available only for Studio-created Text.";
+    } else if (contentChanged) {
       const content = validateContent(entity, values.content, textLayout, errors);
       if (content) edits.content = content;
     }

@@ -156,12 +156,36 @@ describe("manual Studio authoring commands", () => {
       text: "Wide\ni",
       textLayout: { alignment: "right" as const, lineHeight: 1.8 },
     };
+    expect(() =>
+      createInspectorEntityEditProgram({
+        capturedPlayhead: 5,
+        edits: { content },
+        entityId: "label_1",
+        from: { position: { x: 384, y: 224 }, scale: 1 },
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "imported-text-layout-edit",
+      }),
+    ).toThrow(/only for Studio-created Text/i);
+    const scene = {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          label_1: {
+            ...STUDIO_FIXTURE_SCENE.objectGraph.entities.label_1!,
+            sourceIdentity: { kind: "unknown" as const, reason: "Created in Studio." },
+            transactionId: "create-text",
+          },
+        },
+      },
+    };
     const validation = createInspectorEntityEditProgram({
       capturedPlayhead: 5,
       edits: { content },
       entityId: "label_1",
       from: { position: { x: 384, y: 224 }, scale: 1 },
-      scene: STUDIO_FIXTURE_SCENE,
+      scene,
       transactionId: "text-layout-edit",
     });
     expect(validation.kind, JSON.stringify(validation.issues)).toBe("valid");

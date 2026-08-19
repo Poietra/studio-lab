@@ -475,12 +475,6 @@ const studioTextLayoutV1Schema = z
     lineHeight: finiteNumberSchema.positive(),
   })
   .strict();
-const studioTextContentV1Schema = z
-  .object({
-    layout: studioTextLayoutV1Schema,
-    text: z.string().min(1).max(256),
-  })
-  .strict();
 const studioMathTexContentV1Schema = z
   .object({
     displayLines: z.array(z.string()).min(1),
@@ -528,8 +522,9 @@ const studioCreationProjectionV1Schema = z
           initialDimensions: studioStaticRootDimensionsV1Schema,
           initialScale: finiteNumberSchema.positive(),
           kind: z.enum(["arrow", "circle", "line", "math-tex", "rectangle", "text"]),
+          layout: studioTextLayoutV1Schema.optional(),
           operationId: z.string().min(1),
-          textContent: studioTextContentV1Schema.optional(),
+          text: z.string().min(1).max(256).optional(),
           texParts: z.array(z.string().min(1)).optional(),
           transactionId: z.string().min(1),
         })
@@ -627,11 +622,12 @@ const studioCreationProjectionV1Schema = z
           .strict(),
         z
           .object({
-            content: studioTextContentV1Schema,
             entityId: z.string().min(1),
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("text-content"),
+            layout: studioTextLayoutV1Schema,
             operationId: z.string().min(1),
+            text: z.string().min(1).max(256),
             transactionId: z.string().min(1),
           })
           .strict(),
@@ -796,9 +792,10 @@ type StudioCreationOperationV1 = Readonly<{
           dimensions: StudioCreationDimensionsV1;
           id: string;
           kind: StudioCreationEntityKindV1;
+          layout: StudioTextContentV1["layout"] | null;
           lifetimeEnd: number | null;
           lifetimeStart: number;
-          textContent: StudioTextContentV1 | null;
+          text: string | null;
           texParts: readonly string[] | null;
         }>;
         kind: "create";
@@ -834,7 +831,12 @@ type StudioCreationOperationV1 = Readonly<{
         toDimensions: StudioCreationDimensionsV1;
         toPosition: Readonly<{ x: number; y: number }>;
       }>
-    | Readonly<{ content: StudioTextContentV1; entityId: string; kind: "text-content" }>
+    | Readonly<{
+        entityId: string;
+        kind: "text-content";
+        layout: StudioTextContentV1["layout"];
+        text: string;
+      }>
     | Readonly<{
         controlOffset: Readonly<{ x: number; y: number }>;
         delta: Readonly<{ x: number; y: number }>;
@@ -854,9 +856,10 @@ export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
     texParts: readonly string[];
   }>[];
   textOutlines: readonly Readonly<{
-    content: StudioTextContentV1;
     entityId: string;
+    layout: StudioTextContentV1["layout"];
     path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
+    text: string;
   }>[];
   nextRevision: string;
   programs: readonly StudioAuthoringProgramV1<StudioCreationOperationV1>[];

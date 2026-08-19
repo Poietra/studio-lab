@@ -20,7 +20,7 @@ pub const POIETRA_MATHTEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Independent sibling ABI version for ordered Tex/MathTex fragments.
 pub const POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Independent sibling ABI version for bounded plain text.
-pub const POIETRA_TEXT_OUTLINE_ABI_VERSION_V1: u32 = 1;
+pub const POIETRA_TEXT_OUTLINE_ABI_VERSION: u32 = 2;
 /// Upper bound for one JSON compilation request crossing the WASM boundary.
 pub const MAX_MATHTEX_OUTLINE_REQUEST_JSON_BYTES_V1: usize = 16 * 1024;
 /// Upper bound for one JSON compilation response crossing the WASM boundary.
@@ -175,7 +175,7 @@ pub fn poietra_segmented_tex_outline_abi_version() -> u32 {
 #[must_use]
 #[wasm_bindgen(js_name = poietraTextOutlineAbiVersion)]
 pub fn poietra_text_outline_abi_version() -> u32 {
-    POIETRA_TEXT_OUTLINE_ABI_VERSION_V1
+    POIETRA_TEXT_OUTLINE_ABI_VERSION
 }
 
 /// Compiles one bounded, versioned `MathTex` request into a bounded response.
@@ -251,7 +251,7 @@ mod tests {
     fn exported_abi_version_is_explicit() {
         assert_eq!(poietra_mathtex_outline_abi_version(), 1);
         assert_eq!(poietra_segmented_tex_outline_abi_version(), 1);
-        assert_eq!(poietra_text_outline_abi_version(), 1);
+        assert_eq!(poietra_text_outline_abi_version(), 2);
     }
 
     #[test]

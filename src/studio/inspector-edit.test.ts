@@ -17,6 +17,15 @@ function values(entity: ProjectedEntity, changes: Partial<InspectorEditValues> =
   return { ...initialInspectorEditValues(entity), ...changes };
 }
 
+function studioTextEntity() {
+  return {
+    ...fixtureEntity("label_1"),
+    id: "tx:studio-text/entity:label",
+    sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
+    transactionId: "studio-text",
+  } satisfies ProjectedEntity;
+}
+
 describe("Inspector field validation", () => {
   it("returns only changed position and valid MathTex fields", () => {
     const entity = fixtureEntity("equation_1");
@@ -64,7 +73,7 @@ describe("Inspector field validation", () => {
   });
 
   it("validates Text alignment and line height as one content edit", () => {
-    const entity = fixtureEntity("label_1");
+    const entity = studioTextEntity();
     expect(validateInspectorEdits(entity, values(entity, { textAlignment: "center", textLineHeight: "1.8" }))).toEqual({
       edits: {
         content: {
@@ -78,6 +87,11 @@ describe("Inspector field validation", () => {
     });
     expect(validateInspectorEdits(entity, values(entity, { textLineHeight: "0" }))).toEqual({
       errors: { textLineHeight: expect.stringMatching(/greater than zero/i) },
+      kind: "invalid",
+    });
+    const imported = fixtureEntity("label_1");
+    expect(validateInspectorEdits(imported, values(imported, { textAlignment: "right" }))).toEqual({
+      errors: { textAlignment: expect.stringMatching(/only for Studio-created Text/i) },
       kind: "invalid",
     });
   });

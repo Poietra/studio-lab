@@ -2,7 +2,7 @@ import { z } from "zod";
 import { coordinateV1Schema, countCubicPathSegments, cubicPathV1Schema, sha256V1Schema } from "./primitives";
 
 export const POIETRA_MATHTEX_OUTLINE_ABI_VERSION = 1 as const;
-export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 1 as const;
+export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 2 as const;
 const MAX_MATHTEX_PARTS = 16;
 const MAX_MATHTEX_CONTENT_LENGTH = 2_000;
 const MAX_MATHTEX_REQUEST_JSON_BYTES = 16 * 1024;

@@ -2574,7 +2574,8 @@ describe("compileStudioPreviewSceneV1", () => {
           initialScale: 1,
           kind: "text",
           operationId: createOperation.id,
-          textContent,
+          layout: textContent.layout,
+          text: textContent.text,
           transactionId: creation.validation.program.transactionId,
         },
       ],
@@ -2660,10 +2661,16 @@ describe("compileStudioPreviewSceneV1", () => {
     const compiled = outline.result;
     if (compiled.kind !== "compiled") throw new Error("Text test outline must compile.");
     expect(commands[0]?.textOutlines).toEqual([
-      { content: textContent, entityId: creation.entityIds[0], path: compiled.path },
+      { entityId: creation.entityIds[0], layout: textContent.layout, path: compiled.path, text: textContent.text },
     ]);
     expect(commands[0]?.programs[0]?.operations[0]).toMatchObject({
-      entity: { id: creation.entityIds[0], kind: "text", textContent, texParts: null },
+      entity: {
+        id: creation.entityIds[0],
+        kind: "text",
+        layout: textContent.layout,
+        text: textContent.text,
+        texParts: null,
+      },
       kind: "create",
     });
     if (result.kind !== "compiled") throw new Error(result.error);

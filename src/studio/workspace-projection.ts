@@ -10,7 +10,7 @@ import type {
   StudioStaticRootProjectionV1,
   StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
-import { canonicalEditableContent, studioCreationTextContent } from "./editable-content";
+import { canonicalEditableContent, STUDIO_TEXT_DEFAULT_LAYOUT, studioCreationTextContent } from "./editable-content";
 import { insertSceneTime, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import {
@@ -357,12 +357,12 @@ function correlateCreationProjection(
       operation?.kind === "CreateEntity" && operation.entity.type === "Text"
         ? (studioCreationTextContent(operation.entity.content) ?? undefined)
         : undefined;
+    const projectedLayout = entity.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
     const textContentMismatch = expectedTextContent
-      ? !entity.textContent ||
-        entity.textContent.text !== expectedTextContent.text ||
-        entity.textContent.layout.alignment !== expectedTextContent.layout.alignment ||
-        !sameProjectionNumber(entity.textContent.layout.lineHeight, expectedTextContent.layout.lineHeight)
-      : entity.textContent !== undefined;
+      ? entity.text !== expectedTextContent.text ||
+        projectedLayout.alignment !== expectedTextContent.layout.alignment ||
+        !sameProjectionNumber(projectedLayout.lineHeight, expectedTextContent.layout.lineHeight)
+      : entity.text !== undefined || entity.layout !== undefined;
     if (
       !expected ||
       operation?.kind !== "CreateEntity" ||
@@ -403,9 +403,9 @@ function correlateCreationProjection(
           : null;
       if (
         !content ||
-        mutation.content.text !== content.text ||
-        mutation.content.layout.alignment !== content.layout.alignment ||
-        !sameProjectionNumber(mutation.content.layout.lineHeight, content.layout.lineHeight)
+        mutation.text !== content.text ||
+        mutation.layout.alignment !== content.layout.alignment ||
+        !sameProjectionNumber(mutation.layout.lineHeight, content.layout.lineHeight)
       ) {
         throw new TypeError(`Text content ${mutation.operationId} is not correlated with the Rust projection.`);
       }

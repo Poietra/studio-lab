@@ -84,10 +84,8 @@ describe("Studio creation wire", () => {
     expect(command.programs[0]?.operations[0]).toMatchObject({
       entity: {
         kind: "text",
-        textContent: {
-          layout: { alignment: "left", lineHeight: 1.2 },
-          text: "日本語で動画を作る\nこんにちは",
-        },
+        layout: { alignment: "left", lineHeight: 1.2 },
+        text: "日本語で動画を作る\nこんにちは",
         texParts: null,
       },
       kind: "create",

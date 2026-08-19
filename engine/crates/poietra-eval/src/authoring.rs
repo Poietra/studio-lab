@@ -234,10 +234,11 @@ pub struct StudioCreationMathTexOutline {
     pub tex_parts: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StudioTextAlignment {
     Center,
+    #[default]
     Left,
     Right,
 }
@@ -247,6 +248,15 @@ pub enum StudioTextAlignment {
 pub struct StudioTextLayout {
     pub alignment: StudioTextAlignment,
     pub line_height: f64,
+}
+
+impl Default for StudioTextLayout {
+    fn default() -> Self {
+        Self {
+            alignment: StudioTextAlignment::Left,
+            line_height: 1.2,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -259,9 +269,11 @@ pub struct StudioTextContent {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCreationTextOutline {
-    pub content: StudioTextContent,
     pub entity_id: String,
+    #[serde(default)]
+    pub layout: StudioTextLayout,
     pub path: CubicPathV1,
+    pub text: String,
 }
 
 fn close_transform_baseline_value(left: f64, right: f64) -> bool {
