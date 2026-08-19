@@ -2,7 +2,12 @@ import type { KeyboardEvent, PointerEvent } from "react";
 
 import { cn } from "../lib/cn";
 import type { CanvasSelectionMode } from "./canvas-selection";
-import type { FrameAlignmentGuide, FrameSnapBounds, PreparedMoveSnapBasis } from "./frame-alignment-snap";
+import type {
+  AlignmentGuide,
+  FrameAlignmentGuide,
+  FrameSnapBounds,
+  PreparedMoveSnapBasis,
+} from "./frame-alignment-snap";
 import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 import type { StudioMotionPath } from "./motion-paths";
 import { describeStudioPreviewFallback } from "./preview-renderer-policy";
@@ -444,20 +449,40 @@ const FRAME_ALIGNMENT_GUIDE_CLASS: Readonly<Record<FrameAlignmentGuide, string>>
   "frame-top": "inset-x-0 top-0 h-px",
 };
 
-function FrameAlignmentGuides({ guides }: Readonly<{ guides: readonly FrameAlignmentGuide[] }>) {
+function AlignmentGuides({ guides }: Readonly<{ guides: readonly AlignmentGuide[] }>) {
   if (guides.length === 0) return null;
   return (
     <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-30">
-      {guides.map((guide) => (
-        <span
-          className={cn(
-            "absolute bg-fuchsia-400 shadow-[0_0_0_1px_rgb(24_24_27/0.65)]",
-            FRAME_ALIGNMENT_GUIDE_CLASS[guide],
-          )}
-          data-studio-alignment-guide={guide}
-          key={guide}
-        />
-      ))}
+      {guides.map((guide) => {
+        if (typeof guide === "string") {
+          return (
+            <span
+              className={cn(
+                "absolute bg-fuchsia-400 shadow-[0_0_0_1px_rgb(24_24_27/0.65)]",
+                FRAME_ALIGNMENT_GUIDE_CLASS[guide],
+              )}
+              data-studio-alignment-guide={guide}
+              key={guide}
+            />
+          );
+        }
+        return (
+          <span
+            className={cn(
+              "absolute bg-fuchsia-400 shadow-[0_0_0_1px_rgb(24_24_27/0.65)]",
+              guide.axis === "x" ? "inset-y-0 w-px -translate-x-1/2" : "inset-x-0 h-px -translate-y-1/2",
+            )}
+            data-studio-alignment-guide={`object-${guide.axis}`}
+            data-studio-alignment-target={guide.entityId}
+            key={`${guide.axis}/${guide.entityId}/${guide.position.toFixed(4)}`}
+            style={
+              guide.axis === "x"
+                ? { left: `${(guide.position / STUDIO_VIEWPORT.width) * 100}%` }
+                : { top: `${(guide.position / STUDIO_VIEWPORT.height) * 100}%` }
+            }
+          />
+        );
+      })}
     </div>
   );
 }
@@ -614,6 +639,28 @@ export function StudioCanvas({
       );
     }
   }
+  let preparedObjectSnapTargets: ReadonlyArray<Readonly<{ bounds: FrameSnapBounds; entityId: string }>> | undefined;
+  if (showingCanvasPixels && preview?.interactionGeometry) {
+    const presentEntities = entities.filter((entity) => entity.present);
+    const targets: Array<Readonly<{ bounds: FrameSnapBounds; entityId: string }>> = [];
+    let complete = true;
+    for (const entity of presentEntities) {
+      const runtimeTraceCandidate = runtimeTraceEditCandidatesByStudioEntityId.get(entity.id);
+      const verified = verifiedPreviewGeometryForStudioEntity(preview, studioEntityIdByUniqueSourceName, entity);
+      const geometry =
+        verified?.geometry ??
+        (runtimeTraceCandidate
+          ? (preview.interactionGeometry.get(runtimeTraceCandidate.runtimeEntityId) ?? null)
+          : null);
+      const bounds = geometry ? preparedGeometryBounds(geometry, frame) : null;
+      if (!bounds) {
+        complete = false;
+        break;
+      }
+      targets.push({ bounds, entityId: entity.id });
+    }
+    if (complete) preparedObjectSnapTargets = targets;
+  }
   const preparedSelectedGeometries =
     selectedIds.size > 1 && showingCanvasPixels && preview?.interactionGeometry
       ? entities.flatMap((entity) => {
@@ -677,6 +724,7 @@ export function StudioCanvas({
       ? {
           bounds: compositeSelectionResizeBasis.bounds,
           entityIds: preparedSelectedGeometries.map(({ entityId }) => entityId),
+          objects: preparedObjectSnapTargets?.filter(({ entityId }) => !selectedIds.has(entityId)),
         }
       : null;
   const compositeSelectionResizeAvailable =
@@ -848,7 +896,11 @@ export function StudioCanvas({
               selected && selectedIds.size > 1
                 ? compositeMoveSnapBasis
                 : singleMoveSnapBounds
-                  ? { bounds: singleMoveSnapBounds, entityIds: [entity.id] }
+                  ? {
+                      bounds: singleMoveSnapBounds,
+                      entityIds: [entity.id],
+                      objects: preparedObjectSnapTargets,
+                    }
                   : null;
             const moveLocked = selectionLocked;
             const groupRotation = entityGroupRotationTransform(groupRotationPreview, entity.id);
@@ -983,7 +1035,7 @@ export function StudioCanvas({
                         : positionUnknown
                           ? entity.geometry.position.reason
                           : interactionMode === "position"
-                            ? "Drag to move · Hold Alt or Option to temporarily disable frame snapping"
+                            ? "Drag to move · Hold Alt or Option to temporarily disable snapping"
                             : "Drag to create motion"
                     }
                     type="button"
@@ -1032,7 +1084,7 @@ export function StudioCanvas({
             );
           })}
         </div>
-        <FrameAlignmentGuides guides={dragPreview?.guides ?? []} />
+        <AlignmentGuides guides={dragPreview?.guides ?? []} />
         {compositeSelectionBounds ? (
           <div
             aria-label={`${selectedIds.size} objects selected`}

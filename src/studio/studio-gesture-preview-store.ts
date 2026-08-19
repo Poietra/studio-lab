@@ -1,3 +1,4 @@
+import type { AlignmentGuide } from "./frame-alignment-snap";
 import type {
   EntityDragPreview,
   EntityGeometryPreview,
@@ -47,13 +48,29 @@ function sameStrings(left: readonly string[], right: readonly string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function sameAlignmentGuides(left: readonly AlignmentGuide[], right: readonly AlignmentGuide[]) {
+  return (
+    left.length === right.length &&
+    left.every((guide, index) => {
+      const candidate = right[index];
+      if (typeof guide === "string" || typeof candidate === "string") return guide === candidate;
+      return (
+        candidate !== undefined &&
+        guide.axis === candidate.axis &&
+        guide.entityId === candidate.entityId &&
+        sameNumber(guide.position, candidate.position)
+      );
+    })
+  );
+}
+
 function sameDragPreview(left: EntityDragPreview | null, right: EntityDragPreview) {
   return (
     left !== null &&
     sameNumber(left.delta.x, right.delta.x) &&
     sameNumber(left.delta.y, right.delta.y) &&
     sameStrings(left.entityIds, right.entityIds) &&
-    sameStrings(left.guides, right.guides)
+    sameAlignmentGuides(left.guides, right.guides)
   );
 }
 

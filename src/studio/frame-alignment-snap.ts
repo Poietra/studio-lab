@@ -10,6 +10,15 @@ export type FrameAlignmentGuide =
   | "frame-right"
   | "frame-top";
 
+export type ObjectAlignmentGuide = Readonly<{
+  axis: "x" | "y";
+  entityId: string;
+  kind: "object";
+  position: number;
+}>;
+
+export type AlignmentGuide = FrameAlignmentGuide | ObjectAlignmentGuide;
+
 export type FrameSnapBounds = Readonly<{
   bottom: number;
   left: number;
@@ -19,17 +28,20 @@ export type FrameSnapBounds = Readonly<{
 
 export type FrameSnapBasis = Readonly<{
   frame: FrameSnapBounds;
+  objects?: readonly Readonly<{ bounds: FrameSnapBounds; entityId: string }>[];
   selection: FrameSnapBounds;
 }>;
 
 export type PreparedMoveSnapBasis = Readonly<{
   bounds: FrameSnapBounds;
   entityIds: readonly string[];
+  objects?: readonly Readonly<{ bounds: FrameSnapBounds; entityId: string }>[];
 }>;
 
 type AxisCandidate = Readonly<{
   correction: number;
-  guide: FrameAlignmentGuide;
+  guide: AlignmentGuide;
+  priority: number;
 }>;
 
 function center(start: number, end: number) {
@@ -40,9 +52,49 @@ function closestCandidate(candidates: readonly AxisCandidate[], tolerance: numbe
   let closest: AxisCandidate | null = null;
   for (const candidate of candidates) {
     if (Math.abs(candidate.correction) > tolerance) continue;
-    if (closest === null || Math.abs(candidate.correction) < Math.abs(closest.correction)) closest = candidate;
+    const distance = Math.abs(candidate.correction);
+    const closestDistance = closest === null ? Number.POSITIVE_INFINITY : Math.abs(closest.correction);
+    if (
+      closest === null ||
+      distance < closestDistance ||
+      (distance === closestDistance && candidate.priority < closest.priority)
+    ) {
+      closest = candidate;
+    }
   }
   return closest;
+}
+
+function orderedObjectTargets(objects: FrameSnapBasis["objects"]) {
+  if (!objects || objects.some(({ bounds }) => !validBounds(bounds))) return [];
+  return [...objects].sort((left, right) =>
+    left.entityId < right.entityId ? -1 : left.entityId > right.entityId ? 1 : 0,
+  );
+}
+
+function axisValues(bounds: FrameSnapBounds, axis: "x" | "y") {
+  return axis === "x"
+    ? [bounds.left, center(bounds.left, bounds.right), bounds.right]
+    : [bounds.top, center(bounds.top, bounds.bottom), bounds.bottom];
+}
+
+function objectAxisCandidates(
+  objects: ReturnType<typeof orderedObjectTargets>,
+  movedSelection: FrameSnapBounds,
+  axis: "x" | "y",
+  priorityOffset: number,
+) {
+  const selectionValues = axisValues(movedSelection, axis);
+  return objects.flatMap(({ bounds, entityId }, objectIndex) => {
+    const targetValues = axisValues(bounds, axis);
+    return targetValues.flatMap((target, targetIndex) =>
+      selectionValues.map((selection, selectionIndex) => ({
+        correction: target - selection,
+        guide: { axis, entityId, kind: "object" as const, position: target },
+        priority: priorityOffset + objectIndex * 9 + targetIndex * 3 + selectionIndex,
+      })),
+    );
+  });
 }
 
 function validBounds(bounds: FrameSnapBounds) {
@@ -57,10 +109,11 @@ function validBounds(bounds: FrameSnapBounds) {
 }
 
 /**
- * Snaps exact prepared selection bounds in viewport space. Only the tolerance
- * is converted from CSS pixels; device pixels never enter the calculation.
- * The chosen correction is converted back to the existing authoring delta, so
- * preview and commit share one value without evaluating Scene geometry here.
+ * Snaps exact prepared selection bounds to frame and object guide lines in
+ * viewport space. Only the tolerance is converted from CSS pixels; device
+ * pixels never enter the calculation. The chosen correction is converted back
+ * to the existing authoring delta, so preview and commit share one value
+ * without evaluating Scene geometry here.
  */
 export function snapViewportDragToFrame(
   input: Readonly<{
@@ -71,7 +124,7 @@ export function snapViewportDragToFrame(
     viewportDelta: Point;
     viewportUnitsPerCssPixel: Point;
   }>,
-): Readonly<{ delta: Point; guides: readonly FrameAlignmentGuide[] }> {
+): Readonly<{ delta: Point; guides: readonly AlignmentGuide[] }> {
   const { basis, disabled, viewportDelta, viewportUnitsPerCssPixel } = input;
   if (
     disabled ||
@@ -101,25 +154,30 @@ export function snapViewportDragToFrame(
     right: basis.selection.right + preparedDelta.x,
     top: basis.selection.top + preparedDelta.y,
   };
+  const objectTargets = orderedObjectTargets(basis.objects);
   const horizontal = closestCandidate(
     [
-      { correction: basis.frame.left - movedSelection.left, guide: "frame-left" },
+      { correction: basis.frame.left - movedSelection.left, guide: "frame-left", priority: 0 },
       {
         correction: center(basis.frame.left, basis.frame.right) - center(movedSelection.left, movedSelection.right),
         guide: "frame-center-x",
+        priority: 1,
       },
-      { correction: basis.frame.right - movedSelection.right, guide: "frame-right" },
+      { correction: basis.frame.right - movedSelection.right, guide: "frame-right", priority: 2 },
+      ...objectAxisCandidates(objectTargets, movedSelection, "x", 3),
     ],
     tolerance * viewportUnitsPerCssPixel.x,
   );
   const vertical = closestCandidate(
     [
-      { correction: basis.frame.top - movedSelection.top, guide: "frame-top" },
+      { correction: basis.frame.top - movedSelection.top, guide: "frame-top", priority: 0 },
       {
         correction: center(basis.frame.top, basis.frame.bottom) - center(movedSelection.top, movedSelection.bottom),
         guide: "frame-center-y",
+        priority: 1,
       },
-      { correction: basis.frame.bottom - movedSelection.bottom, guide: "frame-bottom" },
+      { correction: basis.frame.bottom - movedSelection.bottom, guide: "frame-bottom", priority: 2 },
+      ...objectAxisCandidates(objectTargets, movedSelection, "y", 3),
     ],
     tolerance * viewportUnitsPerCssPixel.y,
   );
@@ -128,6 +186,6 @@ export function snapViewportDragToFrame(
       x: viewportDelta.x + (horizontal?.correction ?? 0) / input.cameraScale,
       y: viewportDelta.y + (vertical?.correction ?? 0) / input.cameraScale,
     },
-    guides: [horizontal?.guide, vertical?.guide].filter((guide): guide is FrameAlignmentGuide => guide !== undefined),
+    guides: [horizontal?.guide, vertical?.guide].filter((guide): guide is AlignmentGuide => guide !== undefined),
   };
 }

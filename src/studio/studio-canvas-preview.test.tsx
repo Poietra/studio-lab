@@ -322,12 +322,18 @@ describe("StudioCanvas retained preview layer", () => {
       sourceIdentity: { kind: "known", value: "rectangle_1" },
       type: "Rectangle",
     };
+    const snapTarget: ProjectedEntity = {
+      ...rectangle,
+      id: "entity:snap-target",
+      position: { x: 600, y: 180 },
+      sourceIdentity: { kind: "known", value: "snap_target" },
+    };
     const onEntityPointerDown = vi.fn();
     const tree = (
       <StudioCanvas
         {...baseProps()}
         cameraScale={2}
-        entities={[CIRCLE_ENTITY, rectangle]}
+        entities={[CIRCLE_ENTITY, rectangle, snapTarget]}
         onEntityPointerDown={onEntityPointerDown}
         preview={previewView(
           {
@@ -342,6 +348,7 @@ describe("StudioCanvas retained preview layer", () => {
           new Map([
             ["scene:circle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 120, y: 180 } }],
             ["scene:rectangle/entity:0", { dimensions: { height: 2, width: 2 }, position: { x: 440, y: 180 } }],
+            ["scene:snap-target/entity:0", { dimensions: { height: 1, width: 1 }, position: { x: 600, y: 180 } }],
           ]),
           new Map([
             [
@@ -358,6 +365,14 @@ describe("StudioCanvas retained preview layer", () => {
                 bindingId: `source-binding:${"b".repeat(64)}`,
                 entityId: "scene:rectangle/entity:0",
                 sourceName: "rectangle_1",
+              },
+            ],
+            [
+              "snap_target",
+              {
+                bindingId: `source-binding:${"c".repeat(64)}`,
+                entityId: "scene:snap-target/entity:0",
+                sourceName: "snap_target",
               },
             ],
           ]),
@@ -389,6 +404,10 @@ describe("StudioCanvas retained preview layer", () => {
     expect(snapBasis?.bounds.right).toBeCloseTo(485, 2);
     expect(snapBasis?.bounds.top).toBe(135);
     expect(snapBasis?.bounds.bottom).toBe(225);
+    expect(snapBasis?.objects).toHaveLength(1);
+    expect(snapBasis?.objects[0]?.entityId).toBe(snapTarget.id);
+    expect(snapBasis?.objects[0]?.bounds.left).toBeCloseTo(577.5, 1);
+    expect(snapBasis?.objects[0]?.bounds.right).toBeCloseTo(622.5, 1);
   });
 
   it("adds group handles only when every selected Rust-created target is unrotated", () => {
@@ -510,6 +529,62 @@ describe("StudioCanvas retained preview layer", () => {
     pointerDown({ ctrlKey: false, metaKey: false, shiftKey: false });
 
     expect(onEntityPointerDown).toHaveBeenCalledWith(expect.anything(), CIRCLE_ENTITY.id, null);
+  });
+
+  it("keeps frame snapping when a non-selected object lacks prepared bounds", () => {
+    const incomplete = {
+      ...CIRCLE_ENTITY,
+      id: "entity:incomplete-candidate",
+      sourceIdentity: { kind: "known" as const, value: "incomplete_candidate" },
+    };
+    const onEntityPointerDown = vi.fn();
+    const tree = StudioCanvas({
+      ...baseProps(),
+      entities: [CIRCLE_ENTITY, incomplete],
+      onEntityPointerDown,
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:incomplete-snap-candidate",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        new Map([
+          ["runtime:circle", { dimensions: { height: 2, width: 2 }, position: { x: 120, y: 180 } }],
+          ["runtime:incomplete", { dimensions: null, position: { x: 520, y: 180 } }],
+        ]),
+        new Map([
+          ["circle_1", { bindingId: "binding:circle", entityId: "runtime:circle", sourceName: "circle_1" }],
+          [
+            "incomplete_candidate",
+            {
+              bindingId: "binding:incomplete",
+              entityId: "runtime:incomplete",
+              sourceName: "incomplete_candidate",
+            },
+          ],
+        ]),
+      ),
+      selectedIds: new Set([CIRCLE_ENTITY.id]),
+    });
+    const button = findEntityButton(tree, CIRCLE_ENTITY.id);
+    const pointerDown = button.props.onPointerDown as (event: {
+      ctrlKey: boolean;
+      metaKey: boolean;
+      shiftKey: boolean;
+    }) => void;
+
+    pointerDown({ ctrlKey: false, metaKey: false, shiftKey: false });
+
+    const snapBasis = onEntityPointerDown.mock.calls[0]?.[2];
+    expect(snapBasis?.bounds.left).toBeCloseTo(75, 2);
+    expect(snapBasis?.bounds.right).toBeCloseTo(165, 2);
+    expect(snapBasis?.bounds.top).toBe(135);
+    expect(snapBasis?.bounds.bottom).toBe(225);
+    expect(snapBasis?.objects).toBeUndefined();
   });
 
   it.each([
@@ -1047,6 +1122,28 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-studio-alignment-guide="frame-bottom"');
     expect(markup).toContain("inset-y-0 left-1/2 w-px -translate-x-1/2");
     expect(markup).toContain("inset-x-0 bottom-0 h-px");
+  });
+
+  it("renders object alignment guides at their prepared viewport positions", () => {
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        dragPreview={{
+          delta: { x: 20, y: 30 },
+          entityIds: [CIRCLE_ENTITY.id],
+          guides: [
+            { axis: "x", entityId: "entity:rectangle", kind: "object", position: 160 },
+            { axis: "y", entityId: "entity:rectangle", kind: "object", position: 90 },
+          ],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('data-studio-alignment-guide="object-x"');
+    expect(markup).toContain('data-studio-alignment-guide="object-y"');
+    expect(markup.match(/data-studio-alignment-target="entity:rectangle"/g)).toHaveLength(2);
+    expect(markup).toContain("left:25%");
+    expect(markup).toContain("top:25%");
   });
 
   it("selects only the three LineJoints leaves without starting a source rewrite gesture", () => {
