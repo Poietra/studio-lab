@@ -26,10 +26,12 @@ import {
   type EntityDragPreview,
   type EntityGeometryPreview,
   type EntityGroupResizePreview,
+  type EntityGroupRotationPreview,
   type EntityRotationPreview,
   type EntityScalePreview,
   entityDragDelta,
   entityGroupResizeTransform,
+  entityGroupRotationTransform,
   entityPreviewRotation,
   entityPreviewScale,
   type InteractionMode,
@@ -48,6 +50,8 @@ export type StudioCanvasProps = Readonly<{
   entities: readonly ProjectedEntity[];
   frame: Readonly<{ height: number; width: number }>;
   geometryPreview: EntityGeometryPreview | null;
+  groupRotationEligibleIds: ReadonlySet<string>;
+  groupRotationPreview: EntityGroupRotationPreview | null;
   groupResizeEligibleIds: ReadonlySet<string>;
   groupResizePreview: EntityGroupResizePreview | null;
   incomingSceneName: string | null;
@@ -92,6 +96,11 @@ export type StudioCanvasProps = Readonly<{
   ) => void;
   onSelectionResizePointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onSelectionResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+  onSelectionRotationCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onSelectionRotationKeyDown: (event: KeyboardEvent<HTMLButtonElement>, basis: PreparedSelectionResizeBasis) => void;
+  onSelectionRotationPointerDown: (event: PointerEvent<HTMLButtonElement>, basis: PreparedSelectionResizeBasis) => void;
+  onSelectionRotationPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onSelectionRotationPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityTextEdit: (entityId: string, point: Point) => void;
   onInlineTextCancel: () => void;
   onInlineTextCommit: (text: string) => boolean;
@@ -360,6 +369,48 @@ function CompositeSelectionResizeHandles({
   ));
 }
 
+function CompositeSelectionRotationHandle({
+  basis,
+  cameraScale,
+  count,
+  onCancel,
+  onKeyDown,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+}: Readonly<{
+  basis: PreparedSelectionResizeBasis;
+  cameraScale: number;
+  count: number;
+  onCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, basis: PreparedSelectionResizeBasis) => void;
+  onPointerDown: (event: PointerEvent<HTMLButtonElement>, basis: PreparedSelectionResizeBasis) => void;
+  onPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+}>) {
+  return (
+    <button
+      aria-keyshortcuts="ArrowLeft ArrowRight Escape"
+      aria-label={`Rotate ${count} selected objects`}
+      className="pointer-events-auto absolute left-1/2 z-30 size-7 -translate-x-1/2 cursor-grab touch-none rounded-full border-2 border-sky-950 bg-sky-400 outline-none before:absolute before:left-1/2 before:top-full before:h-7 before:w-px before:-translate-x-1/2 before:bg-sky-400 active:cursor-grabbing focus-visible:ring-2 focus-visible:ring-sky-300"
+      data-studio-selection-rotation-handle={count}
+      onKeyDown={(event) => onKeyDown(event, basis)}
+      onLostPointerCapture={onCancel}
+      onPointerCancel={onCancel}
+      onPointerDown={(event) => onPointerDown(event, basis)}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      style={rotationHandleLayoutStyle(1, cameraScale)}
+      title="Drag to rotate the selection · Left/Right rotate by 15° · Shift for 1° · Escape cancels"
+      type="button"
+    >
+      <span aria-hidden="true" className="text-sm leading-none text-sky-950">
+        ↻
+      </span>
+    </button>
+  );
+}
+
 const ROTATION_HANDLE_RADIUS_PX = 14;
 const ROTATION_HANDLE_CONNECTOR_PX = 28;
 
@@ -425,6 +476,8 @@ export function StudioCanvas({
   entities,
   frame,
   geometryPreview,
+  groupRotationEligibleIds,
+  groupRotationPreview,
   groupResizeEligibleIds,
   groupResizePreview,
   incomingSceneName,
@@ -453,6 +506,11 @@ export function StudioCanvas({
   onSelectionResizePointerDown,
   onSelectionResizePointerMove,
   onSelectionResizePointerUp,
+  onSelectionRotationCancel,
+  onSelectionRotationKeyDown,
+  onSelectionRotationPointerDown,
+  onSelectionRotationPointerMove,
+  onSelectionRotationPointerUp,
   onEntityTextEdit,
   onInlineTextCancel,
   onInlineTextCommit,
@@ -520,8 +578,9 @@ export function StudioCanvas({
               ? (preview.interactionGeometry?.get(runtimeTraceCandidate.runtimeEntityId) ?? null)
               : null);
           if (!geometry) return [];
+          const groupRotation = entityGroupRotationTransform(groupRotationPreview, entity.id);
           const groupResize = entityGroupResizeTransform(groupResizePreview, entity.id);
-          const delta = groupResize?.delta ?? entityDragDelta(dragPreview, entity.id);
+          const delta = groupRotation?.delta ?? groupResize?.delta ?? entityDragDelta(dragPreview, entity.id);
           const factor = groupResize ? groupResize.scale / entity.scale : 1;
           return [
             {
@@ -545,6 +604,9 @@ export function StudioCanvas({
     preparedSelectedGeometries.length === selectedIds.size
       ? unionPreparedSelectionBounds(preparedSelectedGeometries, frame)
       : null;
+  const compositeSelectionDisplayBounds = compositeSelectionBounds
+    ? compensatePreparedGeometryForOverlayScales(compositeSelectionBounds, cameraScale, 1)
+    : null;
   const compositeSelectionResizeBasis: PreparedSelectionResizeBasis | null = compositeSelectionBounds
     ? {
         bounds: {
@@ -579,6 +641,22 @@ export function StudioCanvas({
           groupResizeEligibleIds.has(entity.id) &&
           entity.geometry.position.kind === "known" &&
           entity.geometry.scale.kind === "known" &&
+          (!entity.provisional || Boolean(entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
+      );
+  const compositeSelectionRotationAvailable =
+    compositeSelectionResizeBasis !== null &&
+    interactionMode === "position" &&
+    !readOnly &&
+    !displayOnlyPreview &&
+    !selectionOnlyPreview &&
+    !boundedRuntimeEditActive &&
+    entities
+      .filter((entity) => selectedIds.has(entity.id))
+      .every(
+        (entity) =>
+          entity.present &&
+          groupRotationEligibleIds.has(entity.id) &&
+          entity.geometry.position.kind === "known" &&
           (!entity.provisional || Boolean(entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
       );
   return (
@@ -713,10 +791,11 @@ export function StudioCanvas({
             // identity or a Runtime Trace candidate.
             const runtimeGeometry = preparedIdentity.geometry;
             const moveLocked = selectionLocked;
+            const groupRotation = entityGroupRotationTransform(groupRotationPreview, entity.id);
             const groupResize = entityGroupResizeTransform(groupResizePreview, entity.id);
-            const localDelta = groupResize?.delta ?? entityDragDelta(dragPreview, entity.id);
+            const localDelta = groupRotation?.delta ?? groupResize?.delta ?? entityDragDelta(dragPreview, entity.id);
             const displayedScale = groupResize?.scale ?? entityPreviewScale(scalePreview, entity);
-            const displayedRotation = entityPreviewRotation(rotationPreview, entity.id);
+            const displayedRotation = groupRotation?.angleRadians ?? entityPreviewRotation(rotationPreview, entity.id);
             const compensatedRuntimeGeometry = runtimeGeometry
               ? compensatePreparedGeometryForOverlayScales(runtimeGeometry, cameraScale, entity.scale)
               : null;
@@ -891,16 +970,16 @@ export function StudioCanvas({
             );
           })}
         </div>
-        {compositeSelectionBounds ? (
+        {compositeSelectionBounds && compositeSelectionDisplayBounds ? (
           <div
             aria-label={`${selectedIds.size} objects selected`}
             className="pointer-events-none absolute z-20 box-border -translate-x-1/2 -translate-y-1/2 border border-sky-400"
             data-studio-composite-selection={selectedIds.size}
-            data-studio-selection-height={compositeSelectionBounds.dimensions.height.toFixed(4)}
-            data-studio-selection-width={compositeSelectionBounds.dimensions.width.toFixed(4)}
+            data-studio-selection-height={compositeSelectionDisplayBounds.dimensions?.height?.toFixed(4)}
+            data-studio-selection-width={compositeSelectionDisplayBounds.dimensions?.width?.toFixed(4)}
             style={{
-              ...entityDimensionStyle(compositeSelectionBounds.dimensions, frame),
-              ...viewportPositionStyle(compositeSelectionBounds.position),
+              ...entityDimensionStyle(compositeSelectionDisplayBounds.dimensions, frame),
+              ...viewportPositionStyle(compositeSelectionDisplayBounds.position),
             }}
           >
             <span className="absolute -top-6 left-0 whitespace-nowrap bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
@@ -915,6 +994,18 @@ export function StudioCanvas({
                 onPointerDown={onSelectionResizePointerDown}
                 onPointerMove={onSelectionResizePointerMove}
                 onPointerUp={onSelectionResizePointerUp}
+              />
+            ) : null}
+            {compositeSelectionRotationAvailable ? (
+              <CompositeSelectionRotationHandle
+                basis={compositeSelectionResizeBasis}
+                cameraScale={cameraScale}
+                count={selectedIds.size}
+                onCancel={onSelectionRotationCancel}
+                onKeyDown={onSelectionRotationKeyDown}
+                onPointerDown={onSelectionRotationPointerDown}
+                onPointerMove={onSelectionRotationPointerMove}
+                onPointerUp={onSelectionRotationPointerUp}
               />
             ) : null}
           </div>

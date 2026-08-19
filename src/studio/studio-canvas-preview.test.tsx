@@ -104,6 +104,8 @@ function baseProps(): StudioCanvasProps {
     entities: [CIRCLE_ENTITY],
     frame: { height: 8, width: 14.222 },
     geometryPreview: null,
+    groupRotationEligibleIds: new Set<string>(),
+    groupRotationPreview: null,
     groupResizeEligibleIds: new Set<string>(),
     groupResizePreview: null,
     incomingSceneName: null,
@@ -136,6 +138,11 @@ function baseProps(): StudioCanvasProps {
     onSelectionResizePointerDown: vi.fn(),
     onSelectionResizePointerMove: vi.fn(),
     onSelectionResizePointerUp: vi.fn(),
+    onSelectionRotationCancel: vi.fn(),
+    onSelectionRotationKeyDown: vi.fn(),
+    onSelectionRotationPointerDown: vi.fn(),
+    onSelectionRotationPointerMove: vi.fn(),
+    onSelectionRotationPointerUp: vi.fn(),
     onSelectEntity: vi.fn(),
     readOnly: false,
     rotationHandleEntityId: null,
@@ -379,19 +386,23 @@ describe("StudioCanvas retained preview layer", () => {
       transactionId: "create-rectangle",
       type: "Rectangle",
     };
-    const renderSelection = (groupResizeEligibleIds: ReadonlySet<string>) =>
+    const renderSelection = (
+      groupResizeEligibleIds: ReadonlySet<string>,
+      groupRotationEligibleIds: ReadonlySet<string>,
+    ) =>
       renderToStaticMarkup(
         <StudioCanvas
           {...baseProps()}
           appliedTransactionIds={new Set(["create-circle", "create-rectangle"])}
           entities={[circle, rectangle]}
-          groupResizeEligibleIds={groupResizeEligibleIds}
-          groupResizePreview={{
+          groupRotationEligibleIds={groupRotationEligibleIds}
+          groupRotationPreview={{
             entities: [
-              { delta: { x: -40, y: 0 }, entityId: circle.id, scale: 2 },
-              { delta: { x: 40, y: 0 }, entityId: rectangle.id, scale: 2 },
+              { angleRadians: Math.PI / 2, delta: { x: 80, y: 80 }, entityId: circle.id },
+              { angleRadians: Math.PI / 2, delta: { x: -80, y: -80 }, entityId: rectangle.id },
             ],
           }}
+          groupResizeEligibleIds={groupResizeEligibleIds}
           preview={previewView(
             {
               frame: {
@@ -411,21 +422,24 @@ describe("StudioCanvas retained preview layer", () => {
         />,
       );
     const entities = [{ entityId: circle.id }, { entityId: rectangle.id }];
-    const markup = renderSelection(groupResizeEligibleCreationEntityIds({ entities, mutations: [] }));
+    const eligible = groupResizeEligibleCreationEntityIds({ entities, mutations: [] });
+    const markup = renderSelection(eligible, eligible);
 
     expect(markup.match(/data-studio-selection-resize-handle=/g)).toHaveLength(4);
-    expect(markup.match(/data-studio-entity-scale="2\.0000"/g)).toHaveLength(2);
+    expect(markup.match(/data-studio-selection-rotation-handle=/g)).toHaveLength(1);
+    expect(markup.match(/rotate:-1\.5707963267948966rad/g)).toHaveLength(2);
     expect(markup).toContain('aria-label="Resize 2 selected objects from bottom-right corner"');
+    expect(markup).toContain('aria-label="Rotate 2 selected objects"');
     expect(markup).not.toContain("data-studio-resize-handle");
     expect(markup).not.toContain("data-studio-rotation-handle");
 
-    const rotatedMarkup = renderSelection(
-      groupResizeEligibleCreationEntityIds({
-        entities,
-        mutations: [{ entityId: rectangle.id, kind: "rotation", to: Math.PI / 4 }],
-      }),
-    );
+    const rotatedEligible = groupResizeEligibleCreationEntityIds({
+      entities,
+      mutations: [{ entityId: rectangle.id, kind: "rotation", to: Math.PI / 4 }],
+    });
+    const rotatedMarkup = renderSelection(rotatedEligible, rotatedEligible);
     expect(rotatedMarkup).not.toContain("data-studio-selection-resize-handle");
+    expect(rotatedMarkup).not.toContain("data-studio-selection-rotation-handle");
   });
 
   it.each([

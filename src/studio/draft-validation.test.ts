@@ -8,6 +8,7 @@ import { canonicalOperationSchema, programExecutionCapabilities } from "./operat
 import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
 import {
   createDirectManipulationColorProgram,
+  createDirectManipulationGroupRotationProgram,
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -367,6 +368,63 @@ describe("Studio draft validation boundary", () => {
         })),
       }),
     ).toMatchObject({ apply: "supported", lowering: "supported" });
+  });
+
+  it("creates one parallel Program for every position and rotation in a rigid selection", () => {
+    const validation = createDirectManipulationGroupRotationProgram({
+      angleRadians: Math.PI / 2,
+      capturedPlayhead: 5,
+      scene: STUDIO_FIXTURE_SCENE,
+      start: 5,
+      targets: [
+        { entityId: "equation_1", toPosition: { x: 300, y: 220 } },
+        { entityId: "proof_box", toPosition: { x: 300, y: 100 } },
+      ],
+      transactionId: "selection-rotation",
+    });
+
+    expect(validation.kind).toBe("valid");
+    expect(validation.program).toMatchObject({
+      intentCount: 1,
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel" },
+      transactionId: "selection-rotation",
+    });
+    expect(validation.program.operations).toHaveLength(4);
+    expect(validation.program.operations.slice(0, 2)).toEqual([
+      expect.objectContaining({ entityId: "equation_1", key: "position", value: { x: 300, y: 220 } }),
+      expect.objectContaining({ entityId: "proof_box", key: "position", value: { x: 300, y: 100 } }),
+    ]);
+    expect(validation.program.operations.slice(2)).toEqual([
+      expect.objectContaining({
+        entityId: "equation_1",
+        from: 0,
+        key: "rotation",
+        relativeDelta: Math.PI / 2,
+        to: Math.PI / 2,
+      }),
+      expect.objectContaining({
+        entityId: "proof_box",
+        from: 0,
+        key: "rotation",
+        relativeDelta: Math.PI / 2,
+        to: Math.PI / 2,
+      }),
+    ]);
+    expect(new Set(validation.program.operations.map(({ id }) => id)).size).toBe(4);
+    expect(() =>
+      createDirectManipulationGroupRotationProgram({
+        angleRadians: Math.PI / 2,
+        capturedPlayhead: 5,
+        scene: STUDIO_FIXTURE_SCENE,
+        start: 5,
+        targets: [
+          { entityId: "equation_1", toPosition: { x: 300, y: 220 } },
+          { entityId: "equation_1", toPosition: { x: 300, y: 100 } },
+        ],
+        transactionId: "duplicate-selection-rotation",
+      }),
+    ).toThrow(/unique objects/i);
   });
 
   it("creates one bounded initial opacity edit", () => {

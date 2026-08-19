@@ -2,6 +2,7 @@ import type {
   EntityDragPreview,
   EntityGeometryPreview,
   EntityGroupResizePreview,
+  EntityGroupRotationPreview,
   EntityRotationPreview,
   EntityScalePreview,
 } from "./studio-viewport-geometry";
@@ -9,8 +10,9 @@ import type {
 export type StudioGesturePreviewSnapshot = Readonly<{
   dragPreview: EntityDragPreview | null;
   geometryPreview: EntityGeometryPreview | null;
+  groupRotationPreview: EntityGroupRotationPreview | null;
   groupResizePreview: EntityGroupResizePreview | null;
-  kind: "drag" | "geometry" | "group-resize" | "idle" | "rotation" | "scale";
+  kind: "drag" | "geometry" | "group-resize" | "group-rotation" | "idle" | "rotation" | "scale";
   rotationPreview: EntityRotationPreview | null;
   scalePreview: EntityScalePreview | null;
 }>;
@@ -20,6 +22,7 @@ export type StudioGesturePreviewStore = Readonly<{
   getSnapshot: () => StudioGesturePreviewSnapshot;
   setDragPreview: (preview: EntityDragPreview) => void;
   setGeometryPreview: (preview: EntityGeometryPreview) => void;
+  setGroupRotationPreview: (preview: EntityGroupRotationPreview) => void;
   setGroupResizePreview: (preview: EntityGroupResizePreview) => void;
   setRotationPreview: (preview: EntityRotationPreview) => void;
   setScalePreview: (preview: EntityScalePreview) => void;
@@ -29,6 +32,7 @@ export type StudioGesturePreviewStore = Readonly<{
 const IDLE_SNAPSHOT: StudioGesturePreviewSnapshot = {
   dragPreview: null,
   geometryPreview: null,
+  groupRotationPreview: null,
   groupResizePreview: null,
   kind: "idle",
   rotationPreview: null,
@@ -89,6 +93,23 @@ function sameGroupResizePreview(left: EntityGroupResizePreview | null, right: En
   );
 }
 
+function sameGroupRotationPreview(left: EntityGroupRotationPreview | null, right: EntityGroupRotationPreview) {
+  return (
+    left !== null &&
+    left.entities.length === right.entities.length &&
+    left.entities.every((entity, index) => {
+      const candidate = right.entities[index];
+      return (
+        candidate !== undefined &&
+        entity.entityId === candidate.entityId &&
+        sameNumber(entity.angleRadians, candidate.angleRadians) &&
+        sameNumber(entity.delta.x, candidate.delta.x) &&
+        sameNumber(entity.delta.y, candidate.delta.y)
+      );
+    })
+  );
+}
+
 export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
   let snapshot = IDLE_SNAPSHOT;
   const listeners = new Set<() => void>();
@@ -111,6 +132,7 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
       install({
         dragPreview: preview,
         geometryPreview: null,
+        groupRotationPreview: null,
         groupResizePreview: null,
         kind: "drag",
         rotationPreview: null,
@@ -122,6 +144,7 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
       install({
         dragPreview: null,
         geometryPreview: preview,
+        groupRotationPreview: null,
         groupResizePreview: null,
         kind: "geometry",
         rotationPreview: null,
@@ -133,8 +156,22 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
       install({
         dragPreview: null,
         geometryPreview: null,
+        groupRotationPreview: null,
         groupResizePreview: preview,
         kind: "group-resize",
+        rotationPreview: null,
+        scalePreview: null,
+      });
+    },
+    setGroupRotationPreview(preview) {
+      if (snapshot.kind === "group-rotation" && sameGroupRotationPreview(snapshot.groupRotationPreview, preview))
+        return;
+      install({
+        dragPreview: null,
+        geometryPreview: null,
+        groupRotationPreview: preview,
+        groupResizePreview: null,
+        kind: "group-rotation",
         rotationPreview: null,
         scalePreview: null,
       });
@@ -144,6 +181,7 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
       install({
         dragPreview: null,
         geometryPreview: null,
+        groupRotationPreview: null,
         groupResizePreview: null,
         kind: "rotation",
         rotationPreview: preview,
@@ -155,6 +193,7 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
       install({
         dragPreview: null,
         geometryPreview: null,
+        groupRotationPreview: null,
         groupResizePreview: null,
         kind: "scale",
         rotationPreview: null,

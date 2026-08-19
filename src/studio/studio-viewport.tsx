@@ -10,18 +10,19 @@ import { type StudioTool, StudioToolbar } from "./studio-toolbar";
 
 type StudioGestureCanvasBaseProps = Omit<
   StudioCanvasProps,
-  "dragPreview" | "geometryPreview" | "groupResizePreview" | "rotationPreview" | "scalePreview"
+  "dragPreview" | "geometryPreview" | "groupResizePreview" | "groupRotationPreview" | "rotationPreview" | "scalePreview"
 >;
 
 function StudioGestureCanvas({
   gesturePreviewStore,
   ...canvasProps
 }: Readonly<StudioGestureCanvasBaseProps & { gesturePreviewStore: StudioGesturePreviewStore }>) {
-  const { dragPreview, geometryPreview, groupResizePreview, rotationPreview, scalePreview } = useSyncExternalStore(
-    gesturePreviewStore.subscribe,
-    gesturePreviewStore.getSnapshot,
-    gesturePreviewStore.getSnapshot,
-  );
+  const { dragPreview, geometryPreview, groupResizePreview, groupRotationPreview, rotationPreview, scalePreview } =
+    useSyncExternalStore(
+      gesturePreviewStore.subscribe,
+      gesturePreviewStore.getSnapshot,
+      gesturePreviewStore.getSnapshot,
+    );
 
   return (
     <Profiler id="canvas" onRender={recordStudioCommitProfile}>
@@ -29,6 +30,7 @@ function StudioGestureCanvas({
         {...canvasProps}
         dragPreview={dragPreview}
         geometryPreview={geometryPreview}
+        groupRotationPreview={groupRotationPreview}
         groupResizePreview={groupResizePreview}
         rotationPreview={rotationPreview}
         scalePreview={scalePreview}
@@ -43,6 +45,7 @@ export type StudioViewportProps = Readonly<
     | "cameraScale"
     | "dragPreview"
     | "geometryPreview"
+    | "groupRotationPreview"
     | "groupResizePreview"
     | "readOnly"
     | "rotationPreview"
@@ -75,6 +78,7 @@ export function StudioViewport({
   entities,
   frame,
   gesturePreviewStore,
+  groupRotationEligibleIds,
   groupResizeEligibleIds,
   incomingSceneName,
   inlineTextEditor,
@@ -121,6 +125,11 @@ export function StudioViewport({
   onSelectionResizePointerDown,
   onSelectionResizePointerMove,
   onSelectionResizePointerUp,
+  onSelectionRotationCancel,
+  onSelectionRotationKeyDown,
+  onSelectionRotationPointerDown,
+  onSelectionRotationPointerMove,
+  onSelectionRotationPointerUp,
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
@@ -152,6 +161,7 @@ export function StudioViewport({
         entities={entities}
         frame={frame}
         gesturePreviewStore={gesturePreviewStore}
+        groupRotationEligibleIds={groupRotationEligibleIds}
         groupResizeEligibleIds={groupResizeEligibleIds}
         incomingSceneName={incomingSceneName}
         inlineTextEditor={inlineTextEditor}
@@ -184,6 +194,11 @@ export function StudioViewport({
         onSelectionResizePointerDown={onSelectionResizePointerDown}
         onSelectionResizePointerMove={onSelectionResizePointerMove}
         onSelectionResizePointerUp={onSelectionResizePointerUp}
+        onSelectionRotationCancel={onSelectionRotationCancel}
+        onSelectionRotationKeyDown={onSelectionRotationKeyDown}
+        onSelectionRotationPointerDown={onSelectionRotationPointerDown}
+        onSelectionRotationPointerMove={onSelectionRotationPointerMove}
+        onSelectionRotationPointerUp={onSelectionRotationPointerUp}
         onSelectEntity={onSelectEntity}
         preview={preview}
         presenceParticipants={presenceParticipants}
