@@ -95,14 +95,6 @@ export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeScene
       severity: "error",
     });
   }
-  if (input.loweringStatus === "unsupported") {
-    issues.push({
-      code: "lowering-unsupported",
-      field: "loweringStatus",
-      message: "This EditProgram cannot be applied confidently because source lowering is unsupported.",
-      severity: "error",
-    });
-  }
   if (input.operations.length === 0) {
     issues.push({
       code: "operation-count",
@@ -256,7 +248,8 @@ export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeScene
         field: "loweringStatus",
         message: execution.applyBlocker ?? `${operation.kind} has no truthful source lowering yet.`,
         operationId: operation.id,
-        severity: execution.lowering === "unsupported" ? "error" : "warning",
+        severity:
+          execution.apply === "supported" ? "warning" : execution.lowering === "unsupported" ? "error" : "warning",
       });
     }
     if (operation.kind === "TransformContent") {

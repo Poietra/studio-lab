@@ -262,6 +262,7 @@ pub struct StudioCreationEditInput {
     pub anchor_resolved_seconds: f64,
     pub anchor_source: SceneEditAnchorSource,
     pub intent_count: usize,
+    /// Host-side Manim export metadata; canonical Scene admission does not depend on it.
     pub lowering_supported: bool,
     pub operations: Vec<StudioCreationOperation>,
     pub origin: StudioAuthoringOrigin,
@@ -534,8 +535,7 @@ fn plan_studio_creation_timeline(
         || base_duration <= 0.0
         || programs.is_empty()
         || programs.iter().any(|program| {
-            !program.lowering_supported
-                || program.transaction_id.is_empty()
+            program.transaction_id.is_empty()
                 || !scene_edit_anchor_is_closed(
                     &program.anchor_source,
                     program.anchor_captured_playhead,
@@ -4035,6 +4035,16 @@ mod tests {
                 ))
         );
         assert_eq!(session.scene(), &result.scene);
+    }
+
+    #[test]
+    fn source_lowering_metadata_does_not_gate_canonical_creation() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command.programs[0].lowering_supported = false;
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        assert!(session.apply_studio_creation_edit(command).is_ok());
     }
 
     #[test]

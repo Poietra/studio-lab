@@ -864,24 +864,28 @@ const LOWERING_PRIORITY: Readonly<Record<OperationExecutionCapabilities["lowerin
 
 export function programExecutionCapabilities(program: SceneEdit): ProgramExecutionCapabilities {
   const operationCapabilities = program.operations.map(operationExecutionCapabilities);
-  const operationLowering = [
-    program.loweringStatus,
-    ...operationCapabilities.map((capability) => capability.lowering),
-  ].reduce<OperationExecutionCapabilities["lowering"]>(
+  const operationLowering = operationCapabilities
+    .map((capability) => capability.lowering)
+    .reduce<OperationExecutionCapabilities["lowering"]>(
+      (current, candidate) => (LOWERING_PRIORITY[candidate] > LOWERING_PRIORITY[current] ? candidate : current),
+      "supported",
+    );
+  const declaredLowering = [program.loweringStatus, operationLowering].reduce<
+    OperationExecutionCapabilities["lowering"]
+  >(
     (current, candidate) => (LOWERING_PRIORITY[candidate] > LOWERING_PRIORITY[current] ? candidate : current),
     "supported",
   );
   const blockedOperation = operationCapabilities.find((capability) => capability.apply !== "supported");
   const structureBlocker = programStructureBlocker(program);
-  const lowering = structureBlocker && operationLowering === "supported" ? "illustrative" : operationLowering;
-  const applyBlocker =
-    blockedOperation?.applyBlocker ??
-    structureBlocker ??
-    (program.loweringStatus !== "supported"
-      ? `This Program is marked ${program.loweringStatus} and cannot be applied until it has truthful Manim source lowering.`
-      : null);
+  const lowering = structureBlocker && declaredLowering === "supported" ? "illustrative" : declaredLowering;
+  const unexplainedLowering =
+    program.loweringStatus !== "supported" && operationLowering === "supported"
+      ? `This Program is marked ${program.loweringStatus} and cannot be applied because its operations do not explain that source-lowering restriction.`
+      : null;
+  const applyBlocker = blockedOperation?.applyBlocker ?? structureBlocker ?? unexplainedLowering;
   return {
-    apply: applyBlocker === null && lowering === "supported" ? "supported" : "blocked",
+    apply: applyBlocker === null ? "supported" : "blocked",
     applyBlocker,
     lowering,
   };
