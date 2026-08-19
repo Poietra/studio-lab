@@ -956,6 +956,84 @@ export function createDirectManipulationScaleProgram(
   );
 }
 
+/** Creates one atomic Program for a uniform resize around a shared selection
+ * pivot. Pointer geometry stays in the presentation layer; this command owns
+ * only the resulting canonical positions and scales. */
+export function createDirectManipulationGroupResizeProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    scene: RuntimeSceneState;
+    start: number;
+    targets: readonly Readonly<{
+      entityId: string;
+      fromScale: number;
+      toPosition: Readonly<{ x: number; y: number }>;
+      toScale: number;
+    }>[];
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  if (input.targets.length < 2) throw new Error("Group resize requires at least two objects.");
+  const entityIds = new Set<string>();
+  let uniformFactor: number | null = null;
+  const positions: Record<string, Readonly<{ x: number; y: number }>> = {};
+  const scales: Record<string, Readonly<{ from: number; to: number }>> = {};
+  for (const target of input.targets) {
+    if (
+      !entityIds.add(target.entityId) ||
+      !Number.isFinite(target.toPosition.x) ||
+      !Number.isFinite(target.toPosition.y) ||
+      !Number.isFinite(target.fromScale) ||
+      !Number.isFinite(target.toScale) ||
+      target.fromScale <= 0 ||
+      target.toScale <= 0
+    ) {
+      throw new Error("Group resize requires unique objects with finite positions and positive scales.");
+    }
+    const factor = target.toScale / target.fromScale;
+    if (!Number.isFinite(factor) || factor <= 0 || Math.abs(factor - 1) <= 1e-12) {
+      throw new Error("Group resize must apply one finite non-identity scale factor.");
+    }
+    if (uniformFactor === null) uniformFactor = factor;
+    else if (Math.abs(factor - uniformFactor) > 1e-9) {
+      throw new Error("Every object in a group resize must use the same scale factor.");
+    }
+    positions[target.entityId] = target.toPosition;
+    scales[target.entityId] = { from: target.fromScale, to: target.toScale };
+  }
+  const targetEntityIds = input.targets.map(({ entityId }) => entityId);
+  const position = createDirectManipulationPositionProgram({
+    capturedPlayhead: input.capturedPlayhead,
+    delta: { x: 0, y: 0 },
+    positions,
+    scene: input.scene,
+    start: input.start,
+    targetEntityIds,
+    transactionId: input.transactionId,
+  });
+  if (position.kind === "invalid") return position;
+  const scale = createDirectManipulationScaleProgram({
+    capturedPlayhead: input.capturedPlayhead,
+    interval: { end: input.start, start: input.start },
+    scales,
+    scene: input.scene,
+    targetEntityIds,
+    transactionId: input.transactionId,
+  });
+  if (scale.kind === "invalid") return scale;
+  const operations = [...position.program.operations, ...scale.program.operations];
+  return validateAndScheduleProgram(
+    {
+      ...position.program,
+      intentCount: 1,
+      operations,
+      provenance: provenance("direct-manipulation", ["uniform selection resize"]),
+      schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+    },
+    input.scene,
+  );
+}
+
 export function createDirectManipulationResizeProgram(
   input: Readonly<{
     capturedPlayhead: number;

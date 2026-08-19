@@ -27,6 +27,32 @@ export function resizeHandleUsesDelta(direction: ResizeHandleDirection, delta: P
   );
 }
 
+export function oppositeResizeCorner(
+  direction: ResizeHandleDirection,
+  bounds: Readonly<{ bottom: number; left: number; right: number; top: number }>,
+): Point {
+  return {
+    x: direction.includes("w") ? bounds.right : bounds.left,
+    y: direction.includes("n") ? bounds.bottom : bounds.top,
+  };
+}
+
+export function uniformCornerResizeFactor(
+  input: Readonly<{
+    current: Point;
+    maximum: number;
+    minimum: number;
+    pivot: Point;
+    start: Point;
+  }>,
+) {
+  const start = { x: input.start.x - input.pivot.x, y: input.start.y - input.pivot.y };
+  const current = { x: input.current.x - input.pivot.x, y: input.current.y - input.pivot.y };
+  const squaredLength = start.x ** 2 + start.y ** 2;
+  const factor = squaredLength > 1 ? (current.x * start.x + current.y * start.y) / squaredLength : 1;
+  return Math.min(input.maximum, Math.max(input.minimum, factor));
+}
+
 export function sameShapeGeometry(left: ShapeGeometry, right: ShapeGeometry) {
   return (
     JSON.stringify(left.dimensions) === JSON.stringify(right.dimensions) &&

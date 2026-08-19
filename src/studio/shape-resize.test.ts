@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import {
   hasShapeDimensions,
   inverseResizeHandleScale,
+  oppositeResizeCorner,
   resizeHandleUsesDelta,
   resizeShapeByViewportDelta,
   sameShapeGeometry,
+  uniformCornerResizeFactor,
 } from "./shape-resize";
 
 const frame = { height: 8, width: 16 };
@@ -26,6 +28,22 @@ describe("shape-aware resize geometry", () => {
         { dimensions: { height: 2, width: 4 }, position: { x: 400, y: 200 } },
       ),
     ).toBe(true);
+  });
+
+  it("uses the opposite prepared-bounds corner as the fixed uniform resize pivot", () => {
+    const bounds = { bottom: 300, left: 100, right: 500, top: 100 };
+    const pivot = oppositeResizeCorner("se", bounds);
+
+    expect(pivot).toEqual({ x: 100, y: 100 });
+    expect(
+      uniformCornerResizeFactor({
+        current: { x: 900, y: 500 },
+        maximum: 3,
+        minimum: 0.25,
+        pivot,
+        start: { x: 500, y: 300 },
+      }),
+    ).toBe(2);
   });
 
   it("rejects incomplete and non-finite shape dimensions", () => {

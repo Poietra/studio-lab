@@ -124,6 +124,15 @@ import { samplePropertyValue } from "./studio/property-sampling";
 import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-authoring-wire";
 import type { SceneEdit } from "./studio/scene-edit-contract";
 import {
+  createSelectionResizeGesture,
+  groupResizeEligibleCreationEntityIds,
+  type PreparedSelectionResizeBasis,
+  resizeSelectionAtPoint,
+  type SelectionResizeGesture,
+  selectionResizeCommandTargets,
+  selectionResizePreviewAtFactor,
+} from "./studio/selection-resize-gesture";
+import {
   hasShapeDimensions,
   type ResizeHandleDirection,
   resizeHandleUsesDelta,
@@ -143,10 +152,11 @@ import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
-import { rotationDeltaFromClientPoints } from "./studio/studio-viewport-geometry";
+import { clientPointToViewport, rotationDeltaFromClientPoints } from "./studio/studio-viewport-geometry";
 import { STUDIO_STYLE_PROFILE } from "./studio/style-profile";
 import {
   createDirectManipulationColorProgram,
+  createDirectManipulationGroupResizeProgram,
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -466,6 +476,7 @@ export function App({
   const [sessionTransitionPending, setSessionTransitionPending] = useState(false);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
+  const canvasGroupResize = useRef<SelectionResizeGesture | null>(null);
   const canvasResize = useRef<CanvasResizeState | null>(null);
   const canvasRotation = useRef<CanvasRotationState | null>(null);
   const studioClipboard = useRef<readonly StudioEntityInput[]>([]);
@@ -565,6 +576,7 @@ export function App({
     if (!activeScene) return;
     cancelSuggestionRequest();
     canvasDrag.current = null;
+    canvasGroupResize.current = null;
     canvasResize.current = null;
     canvasRotation.current = null;
     const identity = activeProjectId
@@ -2580,7 +2592,7 @@ export function App({
   }
 
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
-    if (canvasDrag.current || canvasResize.current || canvasRotation.current) return;
+    if (canvasDrag.current || canvasGroupResize.current || canvasResize.current || canvasRotation.current) return;
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
@@ -2729,7 +2741,7 @@ export function App({
     direction: ResizeHandleDirection,
   ) {
     event.stopPropagation();
-    if (canvasDrag.current || canvasResize.current || canvasRotation.current) return;
+    if (canvasDrag.current || canvasGroupResize.current || canvasResize.current || canvasRotation.current) return;
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
@@ -2882,9 +2894,166 @@ export function App({
     gesturePreviewStore.clear();
   }
 
+  function selectionResizeState(
+    basis: PreparedSelectionResizeBasis,
+    direction: ResizeHandleDirection,
+    pointerId: number,
+    start: Point,
+    surfaceBounds: Readonly<{ height: number; left: number; top: number; width: number }>,
+  ): SelectionResizeGesture | null {
+    if (canvasDrag.current || canvasGroupResize.current || canvasResize.current || canvasRotation.current) return null;
+    if (editingAppliedProgram) {
+      setDraftError("Apply or discard the Applied Program edit before resizing the selection.");
+      return null;
+    }
+    if (interactionMode !== "position" || previewSelectionOnly || boundedRuntimeEditTargetIds.size > 0) return null;
+    const selectedEntities = selectedObjectIds.flatMap((entityId) => {
+      const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+      return entity ? [entity] : [];
+    });
+    if (
+      selectedEntities.length < 2 ||
+      selectedEntities.length !== selectedObjectIds.length ||
+      selectedEntities.some(
+        (entity) =>
+          studioCreationProjectionEntityFor(entity.id) === null ||
+          entity.geometry.position.kind === "unknown" ||
+          entity.geometry.scale.kind === "unknown" ||
+          (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
+      )
+    ) {
+      setDraftError("Group resize currently requires two or more editable Studio-created objects.");
+      return null;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return null;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "selection resize",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: selectedObjectIds,
+    });
+    if (!anchor) return null;
+    return createSelectionResizeGesture({
+      basis,
+      cameraScale: projection?.camera.scale ?? 1,
+      direction,
+      maximumScale: MAX_ENTITY_SCALE,
+      minimumScale: MIN_ENTITY_SCALE,
+      pointerId,
+      sourceAnchor: anchor.sourceTime,
+      start,
+      surfaceBounds,
+      targets: selectedEntities.map((entity) => ({
+        entityId: entity.id,
+        fromPosition: entity.position,
+        fromScale: entity.scale,
+      })),
+    });
+  }
+
+  function installSelectionResizeDraft(
+    resize: SelectionResizeGesture,
+    preview: ReturnType<typeof selectionResizePreviewAtFactor>,
+  ) {
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    try {
+      const validation = createDirectManipulationGroupResizeProgram({
+        capturedPlayhead: resize.sourceAnchor,
+        scene: sourceScene,
+        start: resize.sourceAnchor,
+        targets: selectionResizeCommandTargets(resize, preview),
+        transactionId: `studio-group-resize-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, resize.sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The selection could not be resized.");
+      return false;
+    }
+  }
+
+  function beginSelectionResize(
+    event: PointerEvent<HTMLButtonElement>,
+    direction: ResizeHandleDirection,
+    basis: PreparedSelectionResizeBasis,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    const surfaceBounds = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]")?.getBoundingClientRect();
+    if (!surfaceBounds) return;
+    const start = clientPointToViewport(surfaceBounds, { x: event.clientX, y: event.clientY });
+    const resize = selectionResizeState(basis, direction, event.pointerId, start, surfaceBounds);
+    if (!resize) return;
+    canvasGroupResize.current = resize;
+    setIsPlaying(false);
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveSelectionResize(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const resize = canvasGroupResize.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    const point = clientPointToViewport(resize.surfaceBounds, { x: event.clientX, y: event.clientY });
+    gesturePreviewStore.setGroupResizePreview(resizeSelectionAtPoint(resize, point).preview);
+  }
+
+  function finishSelectionResize(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    const resize = canvasGroupResize.current;
+    if (!resize || resize.pointerId !== event.pointerId) return;
+    canvasGroupResize.current = null;
+    gesturePreviewStore.clear();
+    const point = clientPointToViewport(resize.surfaceBounds, { x: event.clientX, y: event.clientY });
+    const { factor, preview } = resizeSelectionAtPoint(resize, point);
+    if (Math.abs(factor - 1) < 0.01) return;
+    installSelectionResizeDraft(resize, preview);
+  }
+
+  function cancelSelectionResize(event: PointerEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    if (canvasGroupResize.current?.pointerId !== event.pointerId) return;
+    canvasGroupResize.current = null;
+    gesturePreviewStore.clear();
+  }
+
+  function nudgeSelectionResize(
+    event: KeyboardEvent<HTMLButtonElement>,
+    direction: ResizeHandleDirection,
+    basis: PreparedSelectionResizeBasis,
+  ) {
+    if (!(event.key in NUDGE_DELTAS)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const handleBounds = event.currentTarget.getBoundingClientRect();
+    const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]")?.getBoundingClientRect();
+    if (!canvasBounds) return;
+    const start = clientPointToViewport(canvasBounds, {
+      x: handleBounds.left + handleBounds.width / 2,
+      y: handleBounds.top + handleBounds.height / 2,
+    });
+    const resize = selectionResizeState(basis, direction, -1, start, canvasBounds);
+    if (!resize) return;
+    const step = event.shiftKey ? 1.25 : 1.05;
+    const grows = event.key === "ArrowUp" || event.key === "ArrowRight";
+    const factor = clamp(grows ? step : 1 / step, resize.minimumFactor, resize.maximumFactor);
+    if (Math.abs(factor - 1) < 0.01) return;
+    installSelectionResizeDraft(resize, selectionResizePreviewAtFactor(resize, factor));
+  }
+
   function beginEntityRotation(event: PointerEvent<HTMLButtonElement>, entityId: string) {
     event.stopPropagation();
-    if (canvasDrag.current || canvasResize.current || canvasRotation.current) return;
+    if (canvasDrag.current || canvasGroupResize.current || canvasResize.current || canvasRotation.current) return;
     const wrapper = event.currentTarget.closest<HTMLElement>("[data-studio-entity-wrapper]");
     const object = wrapper?.querySelector<HTMLElement>("[data-studio-entity]");
     const bounds = object?.getBoundingClientRect();
@@ -3867,6 +4036,7 @@ export function App({
       selectedRuntimeTraceEditCapabilities?.rotation === true)
       ? selectedEntity.id
       : null;
+  const groupResizeEligibleIds = groupResizeEligibleCreationEntityIds(workspaceCreationProjection);
   const selectedOpacityAuthority =
     selectedRuntimeTraceEditAuthority &&
     selectedRuntimeTraceEditCapabilities?.paintOpacity &&
@@ -3894,6 +4064,7 @@ export function App({
     void runAfterEditorSessionFlush(() => {
       suspendEditor();
       canvasDrag.current = null;
+      canvasGroupResize.current = null;
       canvasResize.current = null;
       canvasRotation.current = null;
       gesturePreviewStore.clear();
@@ -4302,6 +4473,7 @@ export function App({
               entities={visibleEntities}
               frame={workspace?.frame ?? { height: 8, width: 14.222 }}
               gesturePreviewStore={gesturePreviewStore}
+              groupResizeEligibleIds={groupResizeEligibleIds}
               incomingSceneName={nextScene?.name ?? null}
               inlineTextEditor={inlineTextEditor}
               insertTool={insertTool}
@@ -4350,6 +4522,11 @@ export function App({
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}
               onPresenceCursorChange={(cursor) => editorDocumentAuthority.updatePresence({ cursor })}
+              onSelectionResizeCancel={cancelSelectionResize}
+              onSelectionResizeKeyDown={nudgeSelectionResize}
+              onSelectionResizePointerDown={beginSelectionResize}
+              onSelectionResizePointerMove={moveSelectionResize}
+              onSelectionResizePointerUp={finishSelectionResize}
               onSelectEntity={(entityId, mode = "single") =>
                 setSelectedObjectIds((selection) =>
                   mode === "toggle" ? toggleCanvasEntitySelection(selection, entityId) : [entityId],

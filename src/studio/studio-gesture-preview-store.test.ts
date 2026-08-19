@@ -10,6 +10,7 @@ describe("Studio gesture preview store", () => {
     expect(initial).toEqual({
       dragPreview: null,
       geometryPreview: null,
+      groupResizePreview: null,
       kind: "idle",
       rotationPreview: null,
       scalePreview: null,
@@ -31,6 +32,7 @@ describe("Studio gesture preview store", () => {
     expect(first).toEqual({
       dragPreview: { delta: { x: 12, y: -4 }, entityIds: ["entity:a", "entity:b"] },
       geometryPreview: null,
+      groupResizePreview: null,
       kind: "drag",
       rotationPreview: null,
       scalePreview: null,
@@ -71,6 +73,7 @@ describe("Studio gesture preview store", () => {
     expect(scale).toEqual({
       dragPreview: null,
       geometryPreview: null,
+      groupResizePreview: null,
       kind: "scale",
       rotationPreview: null,
       scalePreview: { entityId: "entity:rectangle", scale: 1.5 },
@@ -91,6 +94,7 @@ describe("Studio gesture preview store", () => {
     expect(rotation).toEqual({
       dragPreview: null,
       geometryPreview: null,
+      groupResizePreview: null,
       kind: "rotation",
       rotationPreview: { angleRadians: Math.PI / 4, entityId: "entity:circle" },
       scalePreview: null,
@@ -98,6 +102,34 @@ describe("Studio gesture preview store", () => {
 
     store.setRotationPreview({ angleRadians: Math.PI / 4, entityId: "entity:circle" });
     expect(store.getSnapshot()).toBe(rotation);
+  });
+
+  it("publishes one multi-entity resize preview without retaining single-entity state", () => {
+    const store = createStudioGesturePreviewStore();
+    store.setScalePreview({ entityId: "entity:a", scale: 2 });
+    store.setGroupResizePreview({
+      entities: [
+        { delta: { x: -10, y: -5 }, entityId: "entity:a", scale: 1.5 },
+        { delta: { x: 10, y: 5 }, entityId: "entity:b", scale: 3 },
+      ],
+    });
+    const preview = store.getSnapshot();
+
+    expect(preview).toEqual({
+      dragPreview: null,
+      geometryPreview: null,
+      groupResizePreview: {
+        entities: [
+          { delta: { x: -10, y: -5 }, entityId: "entity:a", scale: 1.5 },
+          { delta: { x: 10, y: 5 }, entityId: "entity:b", scale: 3 },
+        ],
+      },
+      kind: "group-resize",
+      rotationPreview: null,
+      scalePreview: null,
+    });
+    store.setGroupResizePreview(preview.groupResizePreview!);
+    expect(store.getSnapshot()).toBe(preview);
   });
 
   it("clears an active preview once and stops notifying unsubscribed listeners", () => {

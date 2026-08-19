@@ -1,6 +1,7 @@
 import type {
   EntityDragPreview,
   EntityGeometryPreview,
+  EntityGroupResizePreview,
   EntityRotationPreview,
   EntityScalePreview,
 } from "./studio-viewport-geometry";
@@ -8,7 +9,8 @@ import type {
 export type StudioGesturePreviewSnapshot = Readonly<{
   dragPreview: EntityDragPreview | null;
   geometryPreview: EntityGeometryPreview | null;
-  kind: "drag" | "geometry" | "idle" | "rotation" | "scale";
+  groupResizePreview: EntityGroupResizePreview | null;
+  kind: "drag" | "geometry" | "group-resize" | "idle" | "rotation" | "scale";
   rotationPreview: EntityRotationPreview | null;
   scalePreview: EntityScalePreview | null;
 }>;
@@ -18,6 +20,7 @@ export type StudioGesturePreviewStore = Readonly<{
   getSnapshot: () => StudioGesturePreviewSnapshot;
   setDragPreview: (preview: EntityDragPreview) => void;
   setGeometryPreview: (preview: EntityGeometryPreview) => void;
+  setGroupResizePreview: (preview: EntityGroupResizePreview) => void;
   setRotationPreview: (preview: EntityRotationPreview) => void;
   setScalePreview: (preview: EntityScalePreview) => void;
   subscribe: (listener: () => void) => () => void;
@@ -26,6 +29,7 @@ export type StudioGesturePreviewStore = Readonly<{
 const IDLE_SNAPSHOT: StudioGesturePreviewSnapshot = {
   dragPreview: null,
   geometryPreview: null,
+  groupResizePreview: null,
   kind: "idle",
   rotationPreview: null,
   scalePreview: null,
@@ -68,6 +72,23 @@ function sameRotationPreview(left: EntityRotationPreview | null, right: EntityRo
   return left !== null && left.entityId === right.entityId && sameNumber(left.angleRadians, right.angleRadians);
 }
 
+function sameGroupResizePreview(left: EntityGroupResizePreview | null, right: EntityGroupResizePreview) {
+  return (
+    left !== null &&
+    left.entities.length === right.entities.length &&
+    left.entities.every((entity, index) => {
+      const candidate = right.entities[index];
+      return (
+        candidate !== undefined &&
+        entity.entityId === candidate.entityId &&
+        sameNumber(entity.delta.x, candidate.delta.x) &&
+        sameNumber(entity.delta.y, candidate.delta.y) &&
+        sameNumber(entity.scale, candidate.scale)
+      );
+    })
+  );
+}
+
 export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
   let snapshot = IDLE_SNAPSHOT;
   const listeners = new Set<() => void>();
@@ -87,14 +108,33 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
     },
     setDragPreview(preview) {
       if (snapshot.kind === "drag" && sameDragPreview(snapshot.dragPreview, preview)) return;
-      install({ dragPreview: preview, geometryPreview: null, kind: "drag", rotationPreview: null, scalePreview: null });
+      install({
+        dragPreview: preview,
+        geometryPreview: null,
+        groupResizePreview: null,
+        kind: "drag",
+        rotationPreview: null,
+        scalePreview: null,
+      });
     },
     setGeometryPreview(preview) {
       if (snapshot.kind === "geometry" && sameGeometryPreview(snapshot.geometryPreview, preview)) return;
       install({
         dragPreview: null,
         geometryPreview: preview,
+        groupResizePreview: null,
         kind: "geometry",
+        rotationPreview: null,
+        scalePreview: null,
+      });
+    },
+    setGroupResizePreview(preview) {
+      if (snapshot.kind === "group-resize" && sameGroupResizePreview(snapshot.groupResizePreview, preview)) return;
+      install({
+        dragPreview: null,
+        geometryPreview: null,
+        groupResizePreview: preview,
+        kind: "group-resize",
         rotationPreview: null,
         scalePreview: null,
       });
@@ -104,6 +144,7 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
       install({
         dragPreview: null,
         geometryPreview: null,
+        groupResizePreview: null,
         kind: "rotation",
         rotationPreview: preview,
         scalePreview: null,
@@ -114,6 +155,7 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
       install({
         dragPreview: null,
         geometryPreview: null,
+        groupResizePreview: null,
         kind: "scale",
         rotationPreview: null,
         scalePreview: preview,

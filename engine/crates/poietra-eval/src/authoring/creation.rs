@@ -2679,6 +2679,125 @@ mod tests {
         }
     }
 
+    fn second_group_resize_creation(first: &StudioCreationEditInput) -> StudioCreationEditInput {
+        let entity_id = "tx:second/entity:rectangle";
+        let mut creation = first.clone();
+        creation.transaction_id = "second".to_owned();
+        for operation in &mut creation.operations {
+            operation.id = format!("second-{}", operation.id);
+            operation.depends_on = operation
+                .depends_on
+                .iter()
+                .map(|dependency| format!("second-{dependency}"))
+                .collect();
+            if operation.entity_id.is_some() {
+                operation.entity_id = Some(entity_id.to_owned());
+            }
+            match &mut operation.kind {
+                StudioCreationOperationKind::Create { entity } => {
+                    entity.id = entity_id.to_owned();
+                    entity.kind = StudioAuthoringEntityKind::Rectangle;
+                    entity.dimensions = StudioAuthoringDimensions {
+                        height: Some(1.0),
+                        radius: None,
+                        width: Some(2.0),
+                    };
+                }
+                StudioCreationOperationKind::Position { position } => {
+                    *position = Some(PointV1 { x: 480.0, y: 180.0 });
+                }
+                StudioCreationOperationKind::FadeIn { .. } => {}
+                _ => unreachable!(),
+            }
+        }
+        creation.schedule_order = creation
+            .operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect();
+        creation
+    }
+
+    fn studio_group_resize_edit_input(targets: &[(&str, PointV1)]) -> StudioCreationEditInput {
+        let transform_at = 0.95;
+        let mut operations = Vec::new();
+        for (index, (entity_id, position)) in targets.iter().enumerate() {
+            operations.push(StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some((*entity_id).to_owned()),
+                id: format!("group-position-{index}"),
+                interval: IntervalV1 {
+                    end: transform_at,
+                    start: transform_at,
+                },
+                kind: StudioCreationOperationKind::Position {
+                    position: Some(position.clone()),
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            });
+        }
+        for (index, (entity_id, _)) in targets.iter().enumerate() {
+            operations.push(StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some((*entity_id).to_owned()),
+                id: format!("group-scale-{index}"),
+                interval: IntervalV1 {
+                    end: transform_at,
+                    start: transform_at,
+                },
+                kind: StudioCreationOperationKind::UniformScale {
+                    control_present: false,
+                    from: Some(1.0),
+                    relative_factor: Some(1.5),
+                    to: Some(1.5),
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            });
+        }
+        let schedule_order = operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect();
+        StudioCreationEditInput {
+            anchor_captured_playhead: transform_at,
+            anchor_resolved_seconds: transform_at,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(transform_at),
+            },
+            intent_count: 1,
+            lowering_supported: true,
+            operations,
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Parallel,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Parallel,
+            schedule_order,
+            transaction_id: "group-resize".to_owned(),
+        }
+    }
+
+    fn assert_group_resize_transform(
+        channels: &[AnimationChannelV1],
+        entity_id: &str,
+        expected: &PointV1,
+    ) {
+        let transform = channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::AffineTransform {
+                    entity_id: candidate,
+                    keyframes,
+                    ..
+                } if candidate == entity_id => keyframes.first().map(|keyframe| &keyframe.value),
+                _ => None,
+            })
+            .unwrap();
+        assert!((transform.m11 - 1.5).abs() < 1e-12);
+        assert!((transform.m22 - 1.5).abs() < 1e-12);
+        assert!((transform.tx - expected.x).abs() < 1e-12);
+        assert!((transform.ty - expected.y).abs() < 1e-12);
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -3710,6 +3829,55 @@ mod tests {
                             && (keyframes[0].at - 1.45).abs() < 1e-9
                 ))
         );
+    }
+
+    #[test]
+    fn normalized_creation_applies_one_group_position_and_scale_program() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let first_id = "tx:create/entity:circle";
+        let second_id = "tx:second/entity:rectangle";
+        let second_creation = second_group_resize_creation(&command.programs[0]);
+        command.programs.push(second_creation);
+        let targets = [
+            (first_id, PointV1 { x: 240.0, y: 180.0 }),
+            (second_id, PointV1 { x: 400.0, y: 180.0 }),
+        ];
+        command
+            .programs
+            .push(studio_group_resize_edit_input(&targets));
+        let expected = targets.map(|(entity_id, position)| {
+            (
+                entity_id,
+                studio_point_to_scene_point(
+                    &position,
+                    command.frame,
+                    command.viewport,
+                    &bundle.scene.camera.view.center,
+                ),
+            )
+        });
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let projection = result.creation_projection.as_ref().unwrap();
+        assert_eq!(
+            projection
+                .mutations
+                .iter()
+                .filter(|mutation| mutation.transaction_id == "group-resize")
+                .count(),
+            4
+        );
+        for (entity_id, expected) in expected {
+            assert_group_resize_transform(
+                &result.bundle.scene.animation_channels,
+                entity_id,
+                &expected,
+            );
+        }
+        assert_eq!(session.scene(), &result.bundle.scene);
     }
 
     #[test]

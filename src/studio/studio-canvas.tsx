@@ -5,6 +5,7 @@ import type { CanvasSelectionMode } from "./canvas-selection";
 import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 import type { StudioMotionPath } from "./motion-paths";
 import { describeStudioPreviewFallback } from "./preview-renderer-policy";
+import type { PreparedSelectionResizeBasis } from "./selection-resize-gesture";
 import {
   hasShapeDimensions,
   inverseResizeHandleScale,
@@ -24,9 +25,11 @@ import {
   clientPointToViewport,
   type EntityDragPreview,
   type EntityGeometryPreview,
+  type EntityGroupResizePreview,
   type EntityRotationPreview,
   type EntityScalePreview,
   entityDragDelta,
+  entityGroupResizeTransform,
   entityPreviewRotation,
   entityPreviewScale,
   type InteractionMode,
@@ -45,6 +48,8 @@ export type StudioCanvasProps = Readonly<{
   entities: readonly ProjectedEntity[];
   frame: Readonly<{ height: number; width: number }>;
   geometryPreview: EntityGeometryPreview | null;
+  groupResizeEligibleIds: ReadonlySet<string>;
+  groupResizePreview: EntityGroupResizePreview | null;
   incomingSceneName: string | null;
   inlineTextEditor: StudioInlineTextEditorSession | null;
   insertTool: StudioTool;
@@ -74,6 +79,19 @@ export type StudioCanvasProps = Readonly<{
   onEntityRotationPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityRotationPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityRotationPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+  onSelectionResizeCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onSelectionResizeKeyDown: (
+    event: KeyboardEvent<HTMLButtonElement>,
+    direction: ResizeHandleDirection,
+    basis: PreparedSelectionResizeBasis,
+  ) => void;
+  onSelectionResizePointerDown: (
+    event: PointerEvent<HTMLButtonElement>,
+    direction: ResizeHandleDirection,
+    basis: PreparedSelectionResizeBasis,
+  ) => void;
+  onSelectionResizePointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onSelectionResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityTextEdit: (entityId: string, point: Point) => void;
   onInlineTextCancel: () => void;
   onInlineTextCommit: (text: string) => boolean;
@@ -294,6 +312,54 @@ function EntityResizeHandles({
   });
 }
 
+function CompositeSelectionResizeHandles({
+  basis,
+  count,
+  onCancel,
+  onKeyDown,
+  onPointerDown,
+  onPointerMove,
+  onPointerUp,
+}: Readonly<{
+  basis: PreparedSelectionResizeBasis;
+  count: number;
+  onCancel: (event: PointerEvent<HTMLButtonElement>) => void;
+  onKeyDown: (
+    event: KeyboardEvent<HTMLButtonElement>,
+    direction: ResizeHandleDirection,
+    basis: PreparedSelectionResizeBasis,
+  ) => void;
+  onPointerDown: (
+    event: PointerEvent<HTMLButtonElement>,
+    direction: ResizeHandleDirection,
+    basis: PreparedSelectionResizeBasis,
+  ) => void;
+  onPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
+  onPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
+}>) {
+  return RESIZE_HANDLES.filter((handle) => handle.direction.length === 2).map((handle) => (
+    <button
+      aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+      aria-label={`Resize ${count} selected objects from ${handle.label}`}
+      className={cn(
+        "pointer-events-auto absolute z-30 size-6 touch-none bg-transparent outline-none after:absolute after:left-1/2 after:top-1/2 after:size-2.5 after:-translate-x-1/2 after:-translate-y-1/2 after:border-2 after:border-sky-950 after:bg-sky-400 focus-visible:ring-2 focus-visible:ring-sky-300",
+        handle.className,
+      )}
+      data-resize-direction={handle.direction}
+      data-studio-selection-resize-handle={handle.direction}
+      key={handle.direction}
+      onKeyDown={(event) => onKeyDown(event, handle.direction, basis)}
+      onLostPointerCapture={onCancel}
+      onPointerCancel={onCancel}
+      onPointerDown={(event) => onPointerDown(event, handle.direction, basis)}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      title={`Drag ${handle.label} to resize the selection uniformly`}
+      type="button"
+    />
+  ));
+}
+
 const ROTATION_HANDLE_RADIUS_PX = 14;
 const ROTATION_HANDLE_CONNECTOR_PX = 28;
 
@@ -359,6 +425,8 @@ export function StudioCanvas({
   entities,
   frame,
   geometryPreview,
+  groupResizeEligibleIds,
+  groupResizePreview,
   incomingSceneName,
   inlineTextEditor,
   insertTool,
@@ -380,6 +448,11 @@ export function StudioCanvas({
   onEntityRotationPointerDown,
   onEntityRotationPointerMove,
   onEntityRotationPointerUp,
+  onSelectionResizeCancel,
+  onSelectionResizeKeyDown,
+  onSelectionResizePointerDown,
+  onSelectionResizePointerMove,
+  onSelectionResizePointerUp,
   onEntityTextEdit,
   onInlineTextCancel,
   onInlineTextCommit,
@@ -447,10 +520,19 @@ export function StudioCanvas({
               ? (preview.interactionGeometry?.get(runtimeTraceCandidate.runtimeEntityId) ?? null)
               : null);
           if (!geometry) return [];
-          const delta = entityDragDelta(dragPreview, entity.id);
+          const groupResize = entityGroupResizeTransform(groupResizePreview, entity.id);
+          const delta = groupResize?.delta ?? entityDragDelta(dragPreview, entity.id);
+          const factor = groupResize ? groupResize.scale / entity.scale : 1;
           return [
             {
-              ...geometry,
+              entityId: entity.id,
+              dimensions: geometry.dimensions
+                ? {
+                    height: geometry.dimensions.height === undefined ? undefined : geometry.dimensions.height * factor,
+                    radius: geometry.dimensions.radius === undefined ? undefined : geometry.dimensions.radius * factor,
+                    width: geometry.dimensions.width === undefined ? undefined : geometry.dimensions.width * factor,
+                  }
+                : null,
               position: {
                 x: geometry.position.x + delta.x * cameraScale,
                 y: geometry.position.y + delta.y * cameraScale,
@@ -463,6 +545,42 @@ export function StudioCanvas({
     preparedSelectedGeometries.length === selectedIds.size
       ? unionPreparedSelectionBounds(preparedSelectedGeometries, frame)
       : null;
+  const compositeSelectionResizeBasis: PreparedSelectionResizeBasis | null = compositeSelectionBounds
+    ? {
+        bounds: {
+          bottom:
+            compositeSelectionBounds.position.y +
+            (compositeSelectionBounds.dimensions.height / frame.height) * (STUDIO_VIEWPORT.height / 2),
+          left:
+            compositeSelectionBounds.position.x -
+            (compositeSelectionBounds.dimensions.width / frame.width) * (STUDIO_VIEWPORT.width / 2),
+          right:
+            compositeSelectionBounds.position.x +
+            (compositeSelectionBounds.dimensions.width / frame.width) * (STUDIO_VIEWPORT.width / 2),
+          top:
+            compositeSelectionBounds.position.y -
+            (compositeSelectionBounds.dimensions.height / frame.height) * (STUDIO_VIEWPORT.height / 2),
+        },
+        entities: preparedSelectedGeometries.map(({ entityId, position }) => ({ center: position, entityId })),
+      }
+    : null;
+  const compositeSelectionResizeAvailable =
+    compositeSelectionResizeBasis !== null &&
+    interactionMode === "position" &&
+    !readOnly &&
+    !displayOnlyPreview &&
+    !selectionOnlyPreview &&
+    !boundedRuntimeEditActive &&
+    entities
+      .filter((entity) => selectedIds.has(entity.id))
+      .every(
+        (entity) =>
+          entity.present &&
+          groupResizeEligibleIds.has(entity.id) &&
+          entity.geometry.position.kind === "known" &&
+          entity.geometry.scale.kind === "known" &&
+          (!entity.provisional || Boolean(entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
+      );
   return (
     <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-4">
       <div
@@ -595,8 +713,9 @@ export function StudioCanvas({
             // identity or a Runtime Trace candidate.
             const runtimeGeometry = preparedIdentity.geometry;
             const moveLocked = selectionLocked;
-            const localDelta = entityDragDelta(dragPreview, entity.id);
-            const displayedScale = entityPreviewScale(scalePreview, entity);
+            const groupResize = entityGroupResizeTransform(groupResizePreview, entity.id);
+            const localDelta = groupResize?.delta ?? entityDragDelta(dragPreview, entity.id);
+            const displayedScale = groupResize?.scale ?? entityPreviewScale(scalePreview, entity);
             const displayedRotation = entityPreviewRotation(rotationPreview, entity.id);
             const compensatedRuntimeGeometry = runtimeGeometry
               ? compensatePreparedGeometryForOverlayScales(runtimeGeometry, cameraScale, entity.scale)
@@ -787,6 +906,17 @@ export function StudioCanvas({
             <span className="absolute -top-6 left-0 whitespace-nowrap bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
               {selectedIds.size} objects
             </span>
+            {compositeSelectionResizeAvailable ? (
+              <CompositeSelectionResizeHandles
+                basis={compositeSelectionResizeBasis}
+                count={selectedIds.size}
+                onCancel={onSelectionResizeCancel}
+                onKeyDown={onSelectionResizeKeyDown}
+                onPointerDown={onSelectionResizePointerDown}
+                onPointerMove={onSelectionResizePointerMove}
+                onPointerUp={onSelectionResizePointerUp}
+              />
+            ) : null}
           </div>
         ) : null}
         {inlineTextEditor ? (

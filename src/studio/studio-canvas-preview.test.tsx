@@ -5,6 +5,7 @@ import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { ProjectedEntity } from "./model";
 import type { StudioPreviewRuntimeTraceEditCandidate } from "./preview-temporal-rebase";
+import { groupResizeEligibleCreationEntityIds } from "./selection-resize-gesture";
 import {
   compensatePreparedGeometryForOverlayScales,
   rotationHandleLayoutStyle,
@@ -103,6 +104,8 @@ function baseProps(): StudioCanvasProps {
     entities: [CIRCLE_ENTITY],
     frame: { height: 8, width: 14.222 },
     geometryPreview: null,
+    groupResizeEligibleIds: new Set<string>(),
+    groupResizePreview: null,
     incomingSceneName: null,
     inlineTextEditor: null,
     insertTool: "select",
@@ -128,6 +131,11 @@ function baseProps(): StudioCanvasProps {
     onInlineTextCancel: vi.fn(),
     onInlineTextCommit: vi.fn(() => true),
     onMotionControlChange: vi.fn(),
+    onSelectionResizeCancel: vi.fn(),
+    onSelectionResizeKeyDown: vi.fn(),
+    onSelectionResizePointerDown: vi.fn(),
+    onSelectionResizePointerMove: vi.fn(),
+    onSelectionResizePointerUp: vi.fn(),
     onSelectEntity: vi.fn(),
     readOnly: false,
     rotationHandleEntityId: null,
@@ -355,6 +363,69 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-studio-selection-width="9.1110"');
     expect(markup).not.toContain("data-studio-resize-handle");
     expect(markup).not.toContain("data-studio-rotation-handle");
+  });
+
+  it("adds group handles only when every selected Rust-created target is unrotated", () => {
+    const circle: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      id: "tx:create-circle/entity:circle",
+      sourceIdentity: { kind: "unknown", reason: "Studio-created entity." },
+      transactionId: "create-circle",
+    };
+    const rectangle: ProjectedEntity = {
+      ...circle,
+      id: "tx:create-rectangle/entity:rectangle",
+      position: { x: 480, y: 180 },
+      transactionId: "create-rectangle",
+      type: "Rectangle",
+    };
+    const renderSelection = (groupResizeEligibleIds: ReadonlySet<string>) =>
+      renderToStaticMarkup(
+        <StudioCanvas
+          {...baseProps()}
+          appliedTransactionIds={new Set(["create-circle", "create-rectangle"])}
+          entities={[circle, rectangle]}
+          groupResizeEligibleIds={groupResizeEligibleIds}
+          groupResizePreview={{
+            entities: [
+              { delta: { x: -40, y: 0 }, entityId: circle.id, scale: 2 },
+              { delta: { x: 40, y: 0 }, entityId: rectangle.id, scale: 2 },
+            ],
+          }}
+          preview={previewView(
+            {
+              frame: {
+                packetId: "canvas:created-multi-selection",
+                revision: "a".repeat(64),
+                sampleTime: 0,
+                viewport: { heightPx: 360, widthPx: 640 },
+              },
+              phase: "presented",
+            },
+            new Map([
+              [circle.id, { dimensions: { height: 2, width: 2 }, position: { x: 160, y: 180 } }],
+              [rectangle.id, { dimensions: { height: 2, width: 4 }, position: { x: 480, y: 180 } }],
+            ]),
+          )}
+          selectedIds={new Set([circle.id, rectangle.id])}
+        />,
+      );
+    const entities = [{ entityId: circle.id }, { entityId: rectangle.id }];
+    const markup = renderSelection(groupResizeEligibleCreationEntityIds({ entities, mutations: [] }));
+
+    expect(markup.match(/data-studio-selection-resize-handle=/g)).toHaveLength(4);
+    expect(markup.match(/data-studio-entity-scale="2\.0000"/g)).toHaveLength(2);
+    expect(markup).toContain('aria-label="Resize 2 selected objects from bottom-right corner"');
+    expect(markup).not.toContain("data-studio-resize-handle");
+    expect(markup).not.toContain("data-studio-rotation-handle");
+
+    const rotatedMarkup = renderSelection(
+      groupResizeEligibleCreationEntityIds({
+        entities,
+        mutations: [{ entityId: rectangle.id, kind: "rotation", to: Math.PI / 4 }],
+      }),
+    );
+    expect(rotatedMarkup).not.toContain("data-studio-selection-resize-handle");
   });
 
   it.each([
