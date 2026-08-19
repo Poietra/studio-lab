@@ -2966,6 +2966,7 @@ export function App({
         interactionMode === "position" && snapBasisMatchesTargets
           ? {
               frame: { bottom: STUDIO_VIEWPORT.height, left: 0, right: STUDIO_VIEWPORT.width, top: 0 },
+              objects: preparedSnapBasis.objects?.filter(({ entityId }) => !snapTargetIds.has(entityId)),
               selection: preparedSnapBasis.bounds,
             }
           : null,

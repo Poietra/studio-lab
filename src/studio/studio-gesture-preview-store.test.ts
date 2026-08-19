@@ -61,6 +61,23 @@ describe("Studio gesture preview store", () => {
     });
     expect(store.getSnapshot()).toBe(guided);
     expect(listener).toHaveBeenCalledTimes(2);
+
+    store.setDragPreview({
+      delta: { x: 12, y: -4 },
+      entityIds: ["entity:a", "entity:b"],
+      guides: [{ axis: "x", entityId: "entity:target", kind: "object", position: 320 }],
+    });
+    const objectGuided = store.getSnapshot();
+    expect(objectGuided).not.toBe(guided);
+    expect(listener).toHaveBeenCalledTimes(3);
+
+    store.setDragPreview({
+      delta: { x: 12, y: -4 },
+      entityIds: ["entity:a", "entity:b"],
+      guides: [{ axis: "x", entityId: "entity:target", kind: "object", position: 320 }],
+    });
+    expect(store.getSnapshot()).toBe(objectGuided);
+    expect(listener).toHaveBeenCalledTimes(3);
   });
 
   it("compares geometry and scale previews by their observable values", () => {

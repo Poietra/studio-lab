@@ -73,4 +73,96 @@ describe("frame alignment snapping", () => {
       }),
     ).toEqual({ delta: { x: 160, y: 150 }, guides: [] });
   });
+
+  it("snaps selection bounds to another object's edge and center lines", () => {
+    const result = snapViewportDragToFrame({
+      basis: {
+        ...BASIS,
+        objects: [{ bounds: { bottom: 300, left: 300, right: 400, top: 200 }, entityId: "rectangle" }],
+      },
+      cameraScale: 1,
+      disabled: false,
+      viewportDelta: { x: 95, y: 95 },
+      viewportUnitsPerCssPixel: { x: 1, y: 1 },
+    });
+
+    expect(result).toEqual({
+      delta: { x: 100, y: 100 },
+      guides: [
+        { axis: "x", entityId: "rectangle", kind: "object", position: 300 },
+        { axis: "y", entityId: "rectangle", kind: "object", position: 200 },
+      ],
+    });
+  });
+
+  it("uses entity ID as a stable tie-break between equally close objects", () => {
+    const result = snapViewportDragToFrame({
+      basis: {
+        ...BASIS,
+        objects: [
+          { bounds: { bottom: 300, left: 300, right: 300, top: 300 }, entityId: "z-target" },
+          { bounds: { bottom: 300, left: 310, right: 310, top: 300 }, entityId: "a-target" },
+        ],
+      },
+      cameraScale: 1,
+      disabled: false,
+      viewportDelta: { x: 105, y: 0 },
+      viewportUnitsPerCssPixel: { x: 1, y: 1 },
+    });
+
+    expect(result.delta.x).toBe(110);
+    expect(result.guides).toEqual([{ axis: "x", entityId: "a-target", kind: "object", position: 310 }]);
+  });
+
+  it("keeps frame snapping ahead of an object on an exact tie", () => {
+    const result = snapViewportDragToFrame({
+      basis: {
+        ...BASIS,
+        objects: [{ bounds: { bottom: 280, left: 320, right: 320, top: 80 }, entityId: "centered-object" }],
+      },
+      cameraScale: 1,
+      disabled: false,
+      viewportDelta: { x: 165, y: 0 },
+      viewportUnitsPerCssPixel: { x: 1, y: 1 },
+    });
+
+    expect(result).toEqual({ delta: { x: 170, y: 0 }, guides: ["frame-center-x"] });
+  });
+
+  it("falls back to frame-only snapping when any object bounds are incomplete", () => {
+    const result = snapViewportDragToFrame({
+      basis: {
+        ...BASIS,
+        objects: [
+          { bounds: { bottom: 300, left: 300, right: 400, top: 200 }, entityId: "valid" },
+          { bounds: { bottom: 300, left: Number.NaN, right: 500, top: 200 }, entityId: "incomplete" },
+        ],
+      },
+      cameraScale: 1,
+      disabled: false,
+      viewportDelta: { x: 95, y: 95 },
+      viewportUnitsPerCssPixel: { x: 1, y: 1 },
+    });
+
+    expect(result).toEqual({ delta: { x: 95, y: 95 }, guides: [] });
+  });
+
+  it("keeps object snapping tolerance in CSS pixels through camera zoom", () => {
+    const result = snapViewportDragToFrame({
+      basis: {
+        ...BASIS,
+        objects: [{ bounds: { bottom: 340, left: 350, right: 450, top: 300 }, entityId: "zoom-target" }],
+        selection: { ...BASIS.selection, right: 180 },
+      },
+      cameraScale: 2,
+      disabled: false,
+      viewportDelta: { x: 83, y: 0 },
+      viewportUnitsPerCssPixel: { x: 0.5, y: 0.5 },
+    });
+
+    expect(result).toEqual({
+      delta: { x: 85, y: 0 },
+      guides: [{ axis: "x", entityId: "zoom-target", kind: "object", position: 350 }],
+    });
+  });
 });
