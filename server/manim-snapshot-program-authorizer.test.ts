@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { MathTexOutlineResponseV1 } from "../src/engine/mathtex-outline";
-import { createInspectorEntityEditProgram } from "../src/studio/authoring-commands";
+import { createInspectorEntityEditProgram, createStudioEntitiesProgram } from "../src/studio/authoring-commands";
 import {
   mathTexTransformProgram,
   motionProgram,
@@ -17,9 +17,11 @@ import { authorizeSnapshotProgramWithSnapshot } from "./manim-snapshot-program-a
 import { importSourceSnapshot, sceneView } from "./manim-workspace";
 
 const compilers = vi.hoisted(() => ({
+  creation: vi.fn(),
   mathTexTransform: vi.fn(),
   outline: vi.fn(),
   staticRoot: vi.fn(),
+  textOutline: vi.fn(),
 }));
 
 vi.mock("../src/engine/contracts", async (importOriginal) => {
@@ -33,10 +35,12 @@ vi.mock("../src/engine/contracts", async (importOriginal) => {
 vi.mock("../src/engine/mathtex-outline", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/engine/mathtex-outline")>()),
   compileMathTexOutlineV1: compilers.outline,
+  compileTextOutlineV1: compilers.textOutline,
 }));
 
 vi.mock("../src/engine/scene-authoring", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/engine/scene-authoring")>()),
+  compileApplyStudioCreationEdit: compilers.creation,
   compileApplyStudioMathTexTransformEdit: compilers.mathTexTransform,
   compileApplyStaticRootTransformEdit: compilers.staticRoot,
 }));
@@ -145,9 +149,74 @@ async function lowerTransformMotion(transactionId: string) {
 
 describe("snapshot MathTex authorization", () => {
   beforeEach(() => {
+    compilers.creation.mockReset();
     compilers.mathTexTransform.mockReset();
     compilers.outline.mockReset();
     compilers.staticRoot.mockReset();
+    compilers.textOutline.mockReset();
+  });
+
+  it("keeps canonical Text size out of unit-outline compilation and in the Rust creation command", async () => {
+    const imported = importSourceSnapshot(sourceWithZeroAnchor, "scene.py", frame);
+    const runtimeSceneState = sceneView(imported.view, "GroupedEquation")?.runtimeSceneState;
+    if (!runtimeSceneState) throw new Error("The Text authorization fixture did not import.");
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [
+        {
+          content: {
+            displayLines: ["Sized Text"],
+            text: "Sized Text",
+            textLayout: { alignment: "left", fontSize: 1.75, lineHeight: 1.2 },
+          },
+          position: { x: 320, y: 180 },
+          type: "Text",
+        },
+      ],
+      scene: runtimeSceneState,
+      transactionId: "authorized-sized-text",
+    });
+    const base = renderRequestFixture();
+    const request = {
+      ...base,
+      program: creation.validation.program,
+      sourceHash: createHash("sha256").update(sourceWithZeroAnchor).digest("hex"),
+    };
+    const snapshot = await verifiedSnapshotView(request, "equation");
+    if (snapshot.status !== "verified") throw new Error("The Text authorization snapshot is not verified.");
+    const bundle = snapshot.snapshot.bundle as SceneIrBundleV1;
+    const entity = bundle.scene.entities.find(({ geometry }) => geometry.kind === "cubic-path");
+    if (!entity || entity.geometry.kind !== "cubic-path") throw new Error("The snapshot has no outline path.");
+    compilers.textOutline.mockResolvedValue({
+      result: {
+        bounds: { bottom: -0.5, left: -0.5, right: 0.5, top: 0.5 },
+        fillRule: "nonzero",
+        kind: "compiled",
+        path: entity.geometry.path,
+      },
+      schema: "poietra.text-outline-response",
+      version: 1,
+    });
+    compilers.creation.mockResolvedValue({});
+
+    const result = lowerManimRenderRequest({
+      frame,
+      originalSource: sourceWithZeroAnchor,
+      projectId: request.projectId,
+      request,
+      snapshotProgramAuthorizer: (input) => authorizeSnapshotProgramWithSnapshot(input, async () => snapshot),
+    });
+
+    await expect(result).resolves.toBeDefined();
+    expect(compilers.textOutline).toHaveBeenCalledWith({
+      layout: { alignment: "left", lineHeight: 1.2 },
+      text: "Sized Text",
+    });
+    expect(compilers.creation.mock.calls[0]?.[1]).toMatchObject({
+      textOutlines: [
+        { entityId: creation.entityIds[0], layout: { alignment: "left", fontSize: 1.75, lineHeight: 1.2 } },
+      ],
+    });
   });
 
   it("compiles the replacement outline once before applying the existing static-root command", async () => {

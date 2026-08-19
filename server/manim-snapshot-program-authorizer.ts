@@ -117,7 +117,7 @@ export async function authorizeSnapshotProgramWithSnapshot(
             throw new HttpError("Studio-created Text requires bounded canonical Unicode content and layout.", 400);
           }
           textInputs.set(
-            `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.lineHeight}`,
+            `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontSize}\u0000${content.layout.lineHeight}`,
             { content, entityId: operation.entity.id },
           );
         }
@@ -126,7 +126,10 @@ export async function authorizeSnapshotProgramWithSnapshot(
     for (const { content, entityId } of textInputs.values()) {
       let response;
       try {
-        response = await compileTextOutlineV1(content);
+        response = await compileTextOutlineV1({
+          layout: { alignment: content.layout.alignment, lineHeight: content.layout.lineHeight },
+          text: content.text,
+        });
       } catch {
         throw new HttpError("The server Text outline compiler is unavailable.", 503);
       }

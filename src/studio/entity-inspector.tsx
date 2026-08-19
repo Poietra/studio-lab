@@ -129,7 +129,7 @@ export function EntityInspectorEditor({
       setErrors(validation.errors);
       setMessage("Fix the highlighted fields before creating a draft.");
       const firstInvalid = (
-        ["x", "y", "content", "textAlignment", "textLineHeight", "radius", "width", "height"] as const
+        ["x", "y", "content", "textAlignment", "textFontSize", "textLineHeight", "radius", "width", "height"] as const
       ).find((field) => validation.errors[field] !== undefined);
       if (firstInvalid) {
         event.currentTarget.querySelector<HTMLElement>(`[data-inspector-field="${firstInvalid}"]`)?.focus();
@@ -247,6 +247,24 @@ export function EntityInspectorEditor({
                       <option value="right">Right</option>
                     </select>
                     <FieldError entityId={entity.id} error={errors.textAlignment} field="textAlignment" />
+                  </label>
+                  <label className="text-[10px] text-zinc-500">
+                    Size (scene units)
+                    <input
+                      aria-label={`Text font size of ${entityLabel(entity)}`}
+                      aria-describedby={errors.textFontSize ? fieldErrorId(entity.id, "textFontSize") : undefined}
+                      aria-invalid={errors.textFontSize ? "true" : undefined}
+                      className={cn(inputClass, errors.textFontSize && "border-red-800")}
+                      data-inspector-field="textFontSize"
+                      inputMode="decimal"
+                      min="0.1"
+                      onChange={(event) => update("textFontSize", event.currentTarget.value)}
+                      ref={restoreFieldRef("textFontSize", restoreFocus, onFocusRestored)}
+                      step="0.1"
+                      type="number"
+                      value={values.textFontSize ?? ""}
+                    />
+                    <FieldError entityId={entity.id} error={errors.textFontSize} field="textFontSize" />
                   </label>
                   <label className="text-[10px] text-zinc-500">
                     Line height (em)

@@ -134,13 +134,14 @@ export function createStudioEntitiesProgram(
     const createId = operationId(input.transactionId, `create-${index}`);
     const positionId = operationId(input.transactionId, `position-${index}`);
     const appearId = operationId(input.transactionId, `appear-${index}`);
+    const dimensions = entity.dimensions ?? defaultEntityDimensions(entity.type);
     entityIds.push(entityId);
     return [
       {
         dependsOn: [],
         entity: {
           content,
-          dimensions: entity.dimensions ?? defaultEntityDimensions(entity.type),
+          ...(dimensions ? { dimensions } : {}),
           id: entityId,
           lifetime: { end: null, start: input.capturedPlayhead },
           type: entity.type,
@@ -235,7 +236,12 @@ export function createInspectorEntityEditProgram(
   ) {
     const before = studioCreationTextContent(entity.content)?.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
     const after = studioCreationTextContent(input.edits.content)?.layout;
-    if (after && (after.alignment !== before.alignment || after.lineHeight !== before.lineHeight)) {
+    if (
+      after &&
+      (after.alignment !== before.alignment ||
+        after.fontSize !== before.fontSize ||
+        after.lineHeight !== before.lineHeight)
+    ) {
       throw new Error("Typography editing is available only for Studio-created Text.");
     }
   }

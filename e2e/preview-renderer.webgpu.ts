@@ -309,7 +309,7 @@ test("presents Studio-created MathTex across undo and LaTeX commands", async ({ 
 
 test("creates, scrubs, and exports plain Text through the canonical WebGPU preview", async ({ page }) => {
   const text = "Hello WASM";
-  const textConstructor = `Text(${JSON.stringify(text)}, font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)`;
+  const textConstructor = `Text(${JSON.stringify(text)}, font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1.5)`;
   const exportedSource = [
     "from manim import *",
     "",
@@ -376,6 +376,27 @@ test("creates, scrubs, and exports plain Text through the canonical WebGPU previ
   await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.9");
   await expectOutlinedEntityCanvasInk(page, appliedFrame.revision, 0.9, text, "Text");
 
+  const textTarget = page.getByRole("button", { name: `Move ${text}`, exact: true });
+  const initialBounds = await textTarget.boundingBox();
+  if (!initialBounds) throw new Error("The initial Text bounds are unavailable.");
+  const fontSize = page.getByRole("spinbutton", { name: `Text font size of ${text}` });
+  await fontSize.fill("1.5");
+  await page.getByRole("button", { name: "Create draft" }).click();
+  const sizedDraftFrame = await waitForNewPresentedRevision(page, appliedFrame.revision);
+  await playhead.fill("0.9");
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "0.9");
+  const sizedBounds = await textTarget.boundingBox();
+  if (!sizedBounds) throw new Error("The sized Text bounds are unavailable.");
+  expect(sizedBounds.height).toBeGreaterThan(initialBounds.height * 1.4);
+  await page.getByRole("button", { name: "Replace program" }).click();
+  const sizedAppliedFrame = await waitForNewPresentedRevision(page, sizedDraftFrame.revision);
+  await page.getByRole("button", { name: "Undo" }).click();
+  const undoneFrame = await waitForNewPresentedRevision(page, sizedAppliedFrame.revision);
+  await expect(fontSize).toHaveValue("1.00");
+  await page.getByRole("button", { name: "Redo" }).click();
+  await waitForNewPresentedRevision(page, undoneFrame.revision);
+  await expect(fontSize).toHaveValue("1.50");
+
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "Export .py" }).click();
   const download = await downloadPromise;
@@ -385,7 +406,7 @@ test("creates, scrubs, and exports plain Text through the canonical WebGPU previ
   expect(source).toContain(textConstructor);
   expect(source).toContain(".move_to(");
   expect(source).toContain("FadeIn(");
-  expect(exportRequests).toBe(2);
+  expect(exportRequests).toBe(3);
 });
 
 test("creates an Arrow through the canonical WebGPU preview", async ({ page }) => {

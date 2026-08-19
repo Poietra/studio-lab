@@ -726,6 +726,8 @@ fn studio_creation_text_is_canonical(text: &str) -> bool {
 
 fn studio_text_content_is_canonical(content: &StudioTextContent) -> bool {
     studio_creation_text_is_canonical(&content.text)
+        && content.layout.font_size.is_finite()
+        && content.layout.font_size > 0.0
         && content.layout.line_height.is_finite()
         && content.layout.line_height > 0.0
 }
@@ -1864,6 +1866,23 @@ fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
     }
 }
 
+fn scale_cubic_path(path: &CubicPathV1, factor: f64) -> CubicPathV1 {
+    let scale = |point: &mut PointV1| {
+        point.x *= factor;
+        point.y *= factor;
+    };
+    let mut scaled = path.clone();
+    for subpath in &mut scaled.subpaths {
+        scale(&mut subpath.start);
+        for segment in &mut subpath.segments {
+            scale(&mut segment.control1);
+            scale(&mut segment.control2);
+            scale(&mut segment.end);
+        }
+    }
+    scaled
+}
+
 fn studio_arrow_path() -> CubicPathV1 {
     let points = [
         PointV1 { x: -1.0, y: -0.02 },
@@ -2412,8 +2431,13 @@ impl EngineSessionV1 {
                                 })
                         })
                         .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    let font_size = state
+                        .current_text_content
+                        .as_ref()
+                        .map(|content| content.layout.font_size)
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                     CreateSceneEntityGeometry::CubicOutline {
-                        path: outline.path.clone(),
+                        path: scale_cubic_path(&outline.path, font_size),
                     }
                 }
                 StudioAuthoringEntityKind::Image | StudioAuthoringEntityKind::Other => {
@@ -4557,6 +4581,9 @@ mod tests {
 
     #[test]
     fn normalized_creation_applies_nondefault_text_layout_in_the_initial_entity() {
+        let legacy_layout: StudioTextLayout =
+            serde_json::from_str(r#"{"alignment":"left","lineHeight":1.2}"#).unwrap();
+        assert_eq!(legacy_layout, StudioTextLayout::default());
         let bundle = static_imported_bundle();
         let entity_id = "tx:create/entity:circle";
         let mut command = studio_text_creation_command(&bundle, "Before");
@@ -4570,6 +4597,7 @@ mod tests {
         let updated = StudioTextContent {
             layout: StudioTextLayout {
                 alignment: StudioTextAlignment::Right,
+                font_size: 1.5,
                 line_height: 1.8,
             },
             text: "Wide\ni".to_owned(),
@@ -4581,7 +4609,8 @@ mod tests {
         };
         entity.layout = Some(updated.layout);
         entity.text = Some(updated.text.clone());
-        let updated_path = command.text_outlines[0].path.clone();
+        let updated_path =
+            scale_cubic_path(&command.text_outlines[0].path, updated.layout.font_size);
         command.text_outlines[0].layout = updated.layout;
         command.text_outlines[0].text.clone_from(&updated.text);
 

@@ -247,13 +247,20 @@ pub enum StudioTextAlignment {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioTextLayout {
     pub alignment: StudioTextAlignment,
+    #[serde(default = "default_studio_text_font_size")]
+    pub font_size: f64,
     pub line_height: f64,
+}
+
+const fn default_studio_text_font_size() -> f64 {
+    1.0
 }
 
 impl Default for StudioTextLayout {
     fn default() -> Self {
         Self {
             alignment: StudioTextAlignment::Left,
+            font_size: default_studio_text_font_size(),
             line_height: 1.2,
         }
     }

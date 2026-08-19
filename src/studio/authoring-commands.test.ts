@@ -132,7 +132,7 @@ describe("manual Studio authoring commands", () => {
       displayLines: ["日本語で動画を作る", "こんにちは"],
       label: canonical,
       text: canonical,
-      textLayout: { alignment: "left", lineHeight: 1.2 },
+      textLayout: { alignment: "left", fontSize: 1, lineHeight: 1.2 },
     });
     const lfCreation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
@@ -155,7 +155,7 @@ describe("manual Studio authoring commands", () => {
     const content = {
       displayLines: ["Wide", "i"],
       text: "Wide\ni",
-      textLayout: { alignment: "right" as const, lineHeight: 1.8 },
+      textLayout: { alignment: "right" as const, fontSize: 1.5, lineHeight: 1.8 },
     };
     expect(() =>
       createInspectorEntityEditProgram({

@@ -13,6 +13,7 @@ export type InspectorEditField =
   | "height"
   | "radius"
   | "textAlignment"
+  | "textFontSize"
   | "textLineHeight"
   | "width"
   | "x"
@@ -23,6 +24,7 @@ export type InspectorEditValues = Readonly<{
   height: string | null;
   radius: string | null;
   textAlignment: "center" | "left" | "right" | null;
+  textFontSize: string | null;
   textLineHeight: string | null;
   width: string | null;
   x: string | null;
@@ -105,7 +107,11 @@ function currentContentValue(entity: ProjectedEntity) {
 function validateContent(
   entity: ProjectedEntity,
   value: string,
-  textLayout: Readonly<{ alignment: "center" | "left" | "right"; lineHeight: number }> | null,
+  textLayout: Readonly<{
+    alignment: "center" | "left" | "right";
+    fontSize: number;
+    lineHeight: number;
+  }> | null,
   errors: Partial<Record<InspectorEditField, string>>,
 ) {
   if (entity.sourceIdentity.kind === "unknown" && !entity.transactionId) {
@@ -165,6 +171,10 @@ export function initialInspectorEditValues(entity: ProjectedEntity): InspectorEd
     radius: dimensions.radius === undefined ? null : formattedNumber(dimensions.radius, 2),
     textAlignment:
       textContent?.layout.alignment ?? (entity.type === "Text" ? STUDIO_TEXT_DEFAULT_LAYOUT.alignment : null),
+    textFontSize:
+      entity.type === "Text"
+        ? formattedNumber(textContent?.layout.fontSize ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontSize, 2)
+        : null,
     textLineHeight:
       entity.type === "Text"
         ? formattedNumber(textContent?.layout.lineHeight ?? STUDIO_TEXT_DEFAULT_LAYOUT.lineHeight, 2)
@@ -196,15 +206,29 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
   }
 
   if (values.content !== null && (entity.type === "Text" || entity.type === "MathTex")) {
-    let textLayout: Readonly<{ alignment: "center" | "left" | "right"; lineHeight: number }> | null = null;
+    let textLayout: Readonly<{
+      alignment: "center" | "left" | "right";
+      fontSize: number;
+      lineHeight: number;
+    }> | null = null;
     if (entity.type === "Text") {
       if (!values.textAlignment) errors.textAlignment = "Choose a Text alignment.";
+      const fontSize =
+        values.textFontSize === null ? null : parseFiniteNumber(values.textFontSize, "textFontSize", errors);
       const lineHeight =
         values.textLineHeight === null ? null : parseFiniteNumber(values.textLineHeight, "textLineHeight", errors);
+      if (fontSize !== null && fontSize <= 0) {
+        errors.textFontSize = "Font size must be greater than zero.";
+      }
       if (lineHeight !== null && lineHeight <= 0) {
         errors.textLineHeight = "Line height must be greater than zero.";
-      } else if (values.textAlignment && lineHeight !== null) {
-        textLayout = { alignment: values.textAlignment, lineHeight };
+      } else if (
+        values.textAlignment &&
+        fontSize !== null &&
+        errors.textFontSize === undefined &&
+        lineHeight !== null
+      ) {
+        textLayout = { alignment: values.textAlignment, fontSize, lineHeight };
       }
     }
     const currentText = studioCreationTextContent(entity.content);
@@ -212,6 +236,7 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
       entity.type === "Text" &&
       textLayout !== null &&
       (currentText?.layout.alignment !== textLayout.alignment ||
+        currentText?.layout.fontSize !== textLayout.fontSize ||
         currentText?.layout.lineHeight !== textLayout.lineHeight);
     const contentChanged = values.content !== currentContentValue(entity) || layoutChanged;
     const studioCreated = entity.sourceIdentity.kind === "unknown" && Boolean(entity.transactionId);

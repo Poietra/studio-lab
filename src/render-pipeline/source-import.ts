@@ -247,6 +247,7 @@ const contentMarkerSchema = z.discriminatedUnion("type", [
           textLayout: z
             .object({
               alignment: z.enum(["center", "left", "right"]),
+              fontSize: z.number().finite().positive().default(1),
               lineHeight: z.number().finite().positive(),
             })
             .strict()
