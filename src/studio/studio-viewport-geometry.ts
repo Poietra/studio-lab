@@ -19,6 +19,7 @@ export type EntityGroupResizePreview = Readonly<{
     entityId: string;
     scale: number;
   }>[];
+  guides: readonly AlignmentGuide[];
 }>;
 export type EntityGroupRotationPreview = Readonly<{
   entities: readonly Readonly<{

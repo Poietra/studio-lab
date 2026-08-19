@@ -146,6 +146,7 @@ describe("Studio gesture preview store", () => {
         { delta: { x: -10, y: -5 }, entityId: "entity:a", scale: 1.5 },
         { delta: { x: 10, y: 5 }, entityId: "entity:b", scale: 3 },
       ],
+      guides: [],
     });
     const preview = store.getSnapshot();
 
@@ -158,6 +159,7 @@ describe("Studio gesture preview store", () => {
           { delta: { x: -10, y: -5 }, entityId: "entity:a", scale: 1.5 },
           { delta: { x: 10, y: 5 }, entityId: "entity:b", scale: 3 },
         ],
+        guides: [],
       },
       kind: "group-resize",
       rotationPreview: null,
@@ -171,6 +173,7 @@ describe("Studio gesture preview store", () => {
     const store = createStudioGesturePreviewStore();
     store.setGroupResizePreview({
       entities: [{ delta: { x: 1, y: 2 }, entityId: "entity:a", scale: 2 }],
+      guides: [],
     });
     store.setGroupRotationPreview({
       entities: [

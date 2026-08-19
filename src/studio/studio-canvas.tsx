@@ -716,6 +716,8 @@ export function StudioCanvas({
             (compositeSelectionBounds.dimensions.height / frame.height) * (STUDIO_VIEWPORT.height / 2),
         },
         entities: preparedSelectedGeometries.map(({ entityId, position }) => ({ center: position, entityId })),
+        frame: { bottom: STUDIO_VIEWPORT.height, left: 0, right: STUDIO_VIEWPORT.width, top: 0 },
+        objects: preparedObjectSnapTargets?.filter(({ entityId }) => !selectedIds.has(entityId)),
       }
     : null;
   const compositeMoveSnapBasis: PreparedMoveSnapBasis | null =
@@ -1084,7 +1086,7 @@ export function StudioCanvas({
             );
           })}
         </div>
-        <AlignmentGuides guides={dragPreview?.guides ?? []} />
+        <AlignmentGuides guides={dragPreview?.guides ?? groupResizePreview?.guides ?? []} />
         {compositeSelectionBounds ? (
           <div
             aria-label={`${selectedIds.size} objects selected`}

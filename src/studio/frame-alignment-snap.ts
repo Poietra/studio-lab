@@ -44,6 +44,13 @@ type AxisCandidate = Readonly<{
   priority: number;
 }>;
 
+type UniformResizeCandidate = Readonly<{
+  factor: number;
+  guide: AlignmentGuide;
+  priority: number;
+  screenDistance: number;
+}>;
+
 function center(start: number, end: number) {
   return start + (end - start) / 2;
 }
@@ -95,6 +102,71 @@ function objectAxisCandidates(
       })),
     );
   });
+}
+
+function uniformResizeAxisCandidates(
+  input: Readonly<{
+    axis: "x" | "y";
+    factor: number;
+    maximumFactor: number;
+    minimumFactor: number;
+    objects: ReturnType<typeof orderedObjectTargets>;
+    pivot: number;
+    selection: FrameSnapBounds;
+    targets: readonly Readonly<{
+      guide: AlignmentGuide;
+      position: number;
+      priority: number;
+      selectionIndex?: number;
+    }>[];
+    tolerance: number;
+    unitsPerCssPixel: number;
+  }>,
+) {
+  const selectionValues = axisValues(input.selection, input.axis);
+  const targets = [
+    ...input.targets,
+    ...input.objects.flatMap(({ bounds, entityId }, objectIndex) =>
+      axisValues(bounds, input.axis).map((position, targetIndex) => ({
+        guide: {
+          axis: input.axis,
+          entityId,
+          kind: "object" as const,
+          position,
+        },
+        position,
+        priority: 3 + objectIndex * 9 + targetIndex * 3,
+        selectionIndex: undefined,
+      })),
+    ),
+  ];
+  return targets.flatMap((target) =>
+    selectionValues.flatMap((selection, selectionIndex) => {
+      if (target.selectionIndex !== undefined && target.selectionIndex !== selectionIndex) return [];
+      const offset = selection - input.pivot;
+      if (Math.abs(offset) <= Number.EPSILON) return [];
+      const current = input.pivot + offset * input.factor;
+      const correction = target.position - current;
+      if (Math.abs(correction) > input.tolerance) return [];
+      const factor = (target.position - input.pivot) / offset;
+      if (!Number.isFinite(factor) || factor < input.minimumFactor || factor > input.maximumFactor) {
+        return [];
+      }
+      return [
+        {
+          factor,
+          guide: target.guide,
+          priority: target.priority + selectionIndex,
+          screenDistance: Math.abs(correction) / input.unitsPerCssPixel,
+        },
+      ];
+    }),
+  );
+}
+
+function sameGuide(left: AlignmentGuide, right: AlignmentGuide) {
+  if (typeof left === "string" || typeof right === "string") return left === right;
+  return left.axis === right.axis && left.entityId === right.entityId && left.position === right.position;
 }
 
 function validBounds(bounds: FrameSnapBounds) {
@@ -188,4 +260,109 @@ export function snapViewportDragToFrame(
     },
     guides: [horizontal?.guide, vertical?.guide].filter((guide): guide is AlignmentGuide => guide !== undefined),
   };
+}
+
+/** Snaps a uniform resize factor using the same prepared frame/object guide
+ * ordering as move snapping. The result stays a single factor, so the existing
+ * Rust scale + position batch remains the only resize authority. */
+export function snapUniformResizeToFrame(
+  input: Readonly<{
+    basis: FrameSnapBasis | null;
+    disabled: boolean;
+    factor: number;
+    maximumFactor: number;
+    minimumFactor: number;
+    pivot: Point;
+    toleranceCssPx?: number;
+    viewportUnitsPerCssPixel: Point;
+  }>,
+): Readonly<{ factor: number; guides: readonly AlignmentGuide[] }> {
+  const { basis, viewportUnitsPerCssPixel } = input;
+  if (
+    input.disabled ||
+    basis === null ||
+    !validBounds(basis.frame) ||
+    !validBounds(basis.selection) ||
+    !Number.isFinite(input.factor) ||
+    !Number.isFinite(input.minimumFactor) ||
+    !Number.isFinite(input.maximumFactor) ||
+    input.minimumFactor <= 0 ||
+    input.maximumFactor < input.minimumFactor ||
+    input.factor < input.minimumFactor ||
+    input.factor > input.maximumFactor ||
+    !Number.isFinite(input.pivot.x) ||
+    !Number.isFinite(input.pivot.y) ||
+    !Number.isFinite(viewportUnitsPerCssPixel.x) ||
+    !Number.isFinite(viewportUnitsPerCssPixel.y) ||
+    viewportUnitsPerCssPixel.x <= 0 ||
+    viewportUnitsPerCssPixel.y <= 0
+  ) {
+    return { factor: input.factor, guides: [] };
+  }
+
+  const tolerance = input.toleranceCssPx ?? FRAME_ALIGNMENT_SNAP_TOLERANCE_CSS_PX;
+  if (!Number.isFinite(tolerance) || tolerance < 0) return { factor: input.factor, guides: [] };
+  const objects = orderedObjectTargets(basis.objects);
+  const horizontal = uniformResizeAxisCandidates({
+    axis: "x",
+    factor: input.factor,
+    maximumFactor: input.maximumFactor,
+    minimumFactor: input.minimumFactor,
+    objects,
+    pivot: input.pivot.x,
+    selection: basis.selection,
+    targets: [
+      { guide: "frame-left", position: basis.frame.left, priority: 0, selectionIndex: 0 },
+      {
+        guide: "frame-center-x",
+        position: center(basis.frame.left, basis.frame.right),
+        priority: 0,
+        selectionIndex: 1,
+      },
+      { guide: "frame-right", position: basis.frame.right, priority: 0, selectionIndex: 2 },
+    ],
+    tolerance: tolerance * viewportUnitsPerCssPixel.x,
+    unitsPerCssPixel: viewportUnitsPerCssPixel.x,
+  });
+  const vertical = uniformResizeAxisCandidates({
+    axis: "y",
+    factor: input.factor,
+    maximumFactor: input.maximumFactor,
+    minimumFactor: input.minimumFactor,
+    objects,
+    pivot: input.pivot.y,
+    selection: basis.selection,
+    targets: [
+      { guide: "frame-top", position: basis.frame.top, priority: 0, selectionIndex: 0 },
+      {
+        guide: "frame-center-y",
+        position: center(basis.frame.top, basis.frame.bottom),
+        priority: 0,
+        selectionIndex: 1,
+      },
+      { guide: "frame-bottom", position: basis.frame.bottom, priority: 0, selectionIndex: 2 },
+    ],
+    tolerance: tolerance * viewportUnitsPerCssPixel.y,
+    unitsPerCssPixel: viewportUnitsPerCssPixel.y,
+  });
+  const candidates = [...horizontal, ...vertical];
+  const winner = candidates.reduce<UniformResizeCandidate | null>((closest, candidate) => {
+    if (
+      closest === null ||
+      candidate.screenDistance < closest.screenDistance ||
+      (candidate.screenDistance === closest.screenDistance && candidate.priority < closest.priority)
+    ) {
+      return candidate;
+    }
+    return closest;
+  }, null);
+  if (!winner) return { factor: input.factor, guides: [] };
+
+  const guides: AlignmentGuide[] = [];
+  for (const candidate of candidates) {
+    if (Math.abs(candidate.factor - winner.factor) > 1e-9) continue;
+    if (guides.some((guide) => sameGuide(guide, candidate.guide))) continue;
+    guides.push(candidate.guide);
+  }
+  return { factor: winner.factor, guides };
 }

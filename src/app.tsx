@@ -3436,7 +3436,7 @@ export function App({
     const resize = canvasGroupResize.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
     const point = clientPointToViewport(resize.surfaceBounds, { x: event.clientX, y: event.clientY });
-    gesturePreviewStore.setGroupResizePreview(resizeSelectionAtPoint(resize, point).preview);
+    gesturePreviewStore.setGroupResizePreview(resizeSelectionAtPoint(resize, point, event.altKey).preview);
   }
 
   function finishSelectionResize(event: PointerEvent<HTMLButtonElement>) {
@@ -3446,7 +3446,7 @@ export function App({
     canvasGroupResize.current = null;
     gesturePreviewStore.clear();
     const point = clientPointToViewport(resize.surfaceBounds, { x: event.clientX, y: event.clientY });
-    const { factor, preview } = resizeSelectionAtPoint(resize, point);
+    const { factor, preview } = resizeSelectionAtPoint(resize, point, event.altKey);
     if (Math.abs(factor - 1) < 0.01) return;
     installSelectionResizeDraft(resize, preview);
   }

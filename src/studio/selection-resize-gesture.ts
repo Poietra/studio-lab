@@ -1,10 +1,13 @@
+import { type AlignmentGuide, type FrameSnapBasis, snapUniformResizeToFrame } from "./frame-alignment-snap";
 import type { Point } from "./model";
 import { oppositeResizeCorner, type ResizeHandleDirection, uniformCornerResizeFactor } from "./shape-resize";
-import type { EntityGroupResizePreview, SurfaceBounds } from "./studio-viewport-geometry";
+import { type EntityGroupResizePreview, type SurfaceBounds, viewportScaleForBounds } from "./studio-viewport-geometry";
 
 export type PreparedSelectionResizeBasis = Readonly<{
   bounds: Readonly<{ bottom: number; left: number; right: number; top: number }>;
   entities: readonly Readonly<{ center: Point; entityId: string }>[];
+  frame?: FrameSnapBasis["frame"];
+  objects?: FrameSnapBasis["objects"];
 }>;
 
 export type SelectionResizeGesture = Readonly<{
@@ -20,6 +23,7 @@ export type SelectionResizeGesture = Readonly<{
   pivot: Point;
   pointerId: number;
   sourceAnchor: number;
+  snapBasis: FrameSnapBasis | null;
   start: Point;
   surfaceBounds: SurfaceBounds;
 }>;
@@ -28,6 +32,17 @@ type CreationRotationAuthority = Readonly<{
   entities: readonly Readonly<{ entityId: string }>[];
   mutations: readonly Readonly<{ entityId: string; kind: string; to?: number }>[];
 }>;
+
+function validSelectionBounds(bounds: PreparedSelectionResizeBasis["bounds"]) {
+  return (
+    Number.isFinite(bounds.bottom) &&
+    Number.isFinite(bounds.left) &&
+    Number.isFinite(bounds.right) &&
+    Number.isFinite(bounds.top) &&
+    bounds.bottom >= bounds.top &&
+    bounds.right >= bounds.left
+  );
+}
 
 export function groupResizeEligibleCreationEntityIds(
   projection: CreationRotationAuthority | null | undefined,
@@ -58,6 +73,7 @@ export function createSelectionResizeGesture(
     targets: readonly Readonly<{ entityId: string; fromPosition: Point; fromScale: number }>[];
   }>,
 ): SelectionResizeGesture | null {
+  if (!validSelectionBounds(input.basis.bounds)) return null;
   const centers = new Map(input.basis.entities.map((entity) => [entity.entityId, entity.center]));
   const entities = input.targets.flatMap((target) => {
     const center = centers.get(target.entityId);
@@ -72,12 +88,23 @@ export function createSelectionResizeGesture(
     pivot: oppositeResizeCorner(input.direction, input.basis.bounds),
     pointerId: input.pointerId,
     sourceAnchor: input.sourceAnchor,
+    snapBasis: input.basis.frame
+      ? {
+          frame: input.basis.frame,
+          objects: input.basis.objects,
+          selection: input.basis.bounds,
+        }
+      : null,
     start: input.start,
     surfaceBounds: input.surfaceBounds,
   };
 }
 
-export function selectionResizePreviewAtFactor(resize: SelectionResizeGesture, factor: number) {
+export function selectionResizePreviewAtFactor(
+  resize: SelectionResizeGesture,
+  factor: number,
+  guides: readonly AlignmentGuide[] = [],
+) {
   return {
     entities: resize.entities.map((entity) => ({
       // Prepared centers, ProjectedEntity.position, and direct-manipulation
@@ -90,18 +117,31 @@ export function selectionResizePreviewAtFactor(resize: SelectionResizeGesture, f
       entityId: entity.entityId,
       scale: entity.fromScale * factor,
     })),
+    guides,
   } satisfies EntityGroupResizePreview;
 }
 
-export function resizeSelectionAtPoint(resize: SelectionResizeGesture, point: Point) {
-  const factor = uniformCornerResizeFactor({
+export function resizeSelectionAtPoint(resize: SelectionResizeGesture, point: Point, disableSnap = false) {
+  const rawFactor = uniformCornerResizeFactor({
     current: point,
     maximum: resize.maximumFactor,
     minimum: resize.minimumFactor,
     pivot: resize.pivot,
     start: resize.start,
   });
-  return { factor, preview: selectionResizePreviewAtFactor(resize, factor) };
+  const snapped = snapUniformResizeToFrame({
+    basis: resize.snapBasis,
+    disabled: disableSnap,
+    factor: rawFactor,
+    maximumFactor: resize.maximumFactor,
+    minimumFactor: resize.minimumFactor,
+    pivot: resize.pivot,
+    viewportUnitsPerCssPixel: viewportScaleForBounds(resize.surfaceBounds),
+  });
+  return {
+    factor: snapped.factor,
+    preview: selectionResizePreviewAtFactor(resize, snapped.factor, snapped.guides),
+  };
 }
 
 export function selectionResizeCommandTargets(resize: SelectionResizeGesture, preview: EntityGroupResizePreview) {
