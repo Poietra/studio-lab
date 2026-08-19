@@ -43,8 +43,8 @@ function sameNumber(left: number | undefined, right: number | undefined) {
   return Object.is(left, right);
 }
 
-function sameEntityIds(left: readonly string[], right: readonly string[]) {
-  return left.length === right.length && left.every((entityId, index) => entityId === right[index]);
+function sameStrings(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function sameDragPreview(left: EntityDragPreview | null, right: EntityDragPreview) {
@@ -52,7 +52,8 @@ function sameDragPreview(left: EntityDragPreview | null, right: EntityDragPrevie
     left !== null &&
     sameNumber(left.delta.x, right.delta.x) &&
     sameNumber(left.delta.y, right.delta.y) &&
-    sameEntityIds(left.entityIds, right.entityIds)
+    sameStrings(left.entityIds, right.entityIds) &&
+    sameStrings(left.guides, right.guides)
   );
 }
 

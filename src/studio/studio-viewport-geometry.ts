@@ -1,3 +1,4 @@
+import type { FrameAlignmentGuide } from "./frame-alignment-snap";
 import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 
 export const STUDIO_VIEWPORT = { height: 360, width: 640 } as const;
@@ -6,6 +7,7 @@ export type InteractionMode = "animate" | "position";
 export type EntityDragPreview = Readonly<{
   delta: Point;
   entityIds: readonly string[];
+  guides: readonly FrameAlignmentGuide[];
 }>;
 export type EntityScalePreview = Readonly<{
   entityId: string;
