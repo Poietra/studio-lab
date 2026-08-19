@@ -246,6 +246,14 @@ function normalizedStudioCreationOperation(
       kind: "opacity",
     };
   }
+  if (operation.kind === "SetProperty" && operation.key === "sourceZIndex") {
+    return {
+      ...common,
+      entityId: operation.entityId,
+      kind: "source-z-index",
+      sourceZIndex: typeof operation.value === "number" && Number.isFinite(operation.value) ? operation.value : null,
+    };
+  }
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {
     return { ...common, entityId: operation.entityId, kind: "fade-in", persistent: operation.persistent };
   }

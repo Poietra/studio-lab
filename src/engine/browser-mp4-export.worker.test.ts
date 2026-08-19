@@ -291,7 +291,7 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
     return {
       default: async () => undefined,
       exportSceneMp4V1: async () => new Uint8Array([1]),
-      poietraEngineAbiVersion: () => 30,
+      poietraEngineAbiVersion: () => 31,
       ...overrides,
     };
   }
@@ -323,6 +323,6 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
   it("rejects a stale engine ABI before calling an incompatible export signature", async () => {
     await expect(
       initializeBrowserMp4ExportBindingsV1(wasmModule({ poietraEngineAbiVersion: () => 29 })),
-    ).rejects.toThrow(/engine ABI 30/);
+    ).rejects.toThrow(/engine ABI 31/);
   });
 });

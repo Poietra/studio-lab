@@ -61,7 +61,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
       "camera",
       "content",
       "fillColor",
-      "ordering",
+      "sourceZIndex",
       "position",
       "presence",
       "rotation",

@@ -185,8 +185,8 @@ export function renderManimSceneThumbnailSvg(scene: RuntimeSceneState) {
     .map((entity, index) => ({ entity: entityAt(scene, entity, time), index }))
     .filter(({ entity }) => isVisible(entity))
     .sort((left, right) => {
-      const leftOrdering = channelAt(scene, left.entity.id, "ordering", time);
-      const rightOrdering = channelAt(scene, right.entity.id, "ordering", time);
+      const leftOrdering = channelAt(scene, left.entity.id, "sourceZIndex", time);
+      const rightOrdering = channelAt(scene, right.entity.id, "sourceZIndex", time);
       return (
         (typeof leftOrdering === "number" ? leftOrdering : left.index) -
           (typeof rightOrdering === "number" ? rightOrdering : right.index) ||

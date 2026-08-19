@@ -97,6 +97,7 @@ import {
   type ValidatedInspectorEdits,
   validateInspectorEdits,
 } from "./studio/inspector-edit";
+import { planStudioLayerOrder, projectStudioLayers, type StudioLayerOrderDirection } from "./studio/layer-order";
 import {
   buildLifetimeEditControls,
   findCompetingImportedLifetimeOwner,
@@ -174,6 +175,7 @@ import {
   createDirectManipulationColorProgram,
   createDirectManipulationGroupResizeProgram,
   createDirectManipulationGroupRotationProgram,
+  createDirectManipulationLayerOrderProgram,
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -1493,6 +1495,18 @@ export function App({
       ),
     workspaceProjection?.editableEntities ?? [],
   );
+  const creationSourceAnchors = new Map(
+    (workspaceCreationProjection?.entities ?? []).flatMap((entity) => {
+      const owner = previewEditRecords.find(({ program }) => program.transactionId === entity.transactionId);
+      return owner ? ([[entity.entityId, owner.program.anchor.resolvedSeconds]] as const) : [];
+    }),
+  );
+  const studioLayers = projectStudioLayers({
+    canonicalEntities: previewRenderer?.canonicalScene?.bundle.scene.entities ?? null,
+    creationSourceAnchors,
+    entities: editableEntities,
+    sourceRuntimeIdentity: previewRenderer?.sourceRuntimeIdentity ?? null,
+  });
   const selectedSet = new Set(selectedObjectIds);
   const activeDuration =
     workspaceProjection?.proposedState.evaluatedScene.duration ?? projectedActiveScene?.runtimeSceneState.duration ?? 1;
@@ -2554,6 +2568,34 @@ export function App({
       record: validated.record,
       stopPlayback: true,
     });
+  }
+
+  function changeLayerOrder(entityId: string, direction: StudioLayerOrderDirection) {
+    const plan = planStudioLayerOrder(studioLayers, entityId, direction);
+    if (plan.kind === "unavailable") {
+      setDraftError(plan.reason);
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    try {
+      const validation = createDirectManipulationLayerOrderProgram({
+        capturedPlayhead: plan.sourceAnchor,
+        entityId,
+        scene: sourceScene,
+        sourceZIndex: plan.sourceZIndex,
+        start: plan.sourceAnchor,
+        transactionId: `studio-layer-order-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, plan.sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The layer order could not be changed.");
+      return false;
+    }
   }
 
   function manualAuthoringAnchor(
@@ -4817,9 +4859,11 @@ export function App({
               durationError={durationError}
               durationMinimum={durationTrimAvailability.minimumDuration}
               entities={editableEntities}
+              layers={studioLayers}
               nextScene={nextScene}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onEditAppliedProgram={editAppliedProgram}
+              onLayerOrder={changeLayerOrder}
               onRedo={() => void redoProgram()}
               onToggleEntity={(entityId, selected) =>
                 setSelectedObjectIds((selection) =>

@@ -9,6 +9,7 @@ import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
 import {
   createDirectManipulationColorProgram,
   createDirectManipulationGroupRotationProgram,
+  createDirectManipulationLayerOrderProgram,
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -472,6 +473,73 @@ describe("Studio draft validation boundary", () => {
     ).toMatchObject({
       kind: "valid",
       program: { operations: [{ interval: { end: 5, start: 5 } }] },
+    });
+  });
+
+  it("creates one finite persistent paint-order edit", () => {
+    const entityId = "tx:layer/entity:circle";
+    const scene = {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          [entityId]: {
+            id: entityId,
+            lifetime: [{ end: STUDIO_FIXTURE_SCENE.duration, start: 0 }],
+            provisional: false,
+            sourceIdentity: { kind: "unknown" as const, reason: "Studio-created entity." },
+            transactionId: "layer",
+            type: "Circle",
+          },
+        },
+      },
+    };
+    const validation = createDirectManipulationLayerOrderProgram({
+      capturedPlayhead: 0,
+      entityId,
+      scene,
+      sourceZIndex: 12.5,
+      start: 0,
+      transactionId: "layer-order",
+    });
+
+    expect(validation).toMatchObject({
+      kind: "valid",
+      program: {
+        loweringStatus: "supported",
+        operations: [
+          {
+            entityId,
+            key: "sourceZIndex",
+            kind: "SetProperty",
+            value: 12.5,
+          },
+        ],
+      },
+    });
+    expect(() =>
+      createDirectManipulationLayerOrderProgram({
+        capturedPlayhead: 0,
+        entityId,
+        scene,
+        sourceZIndex: Number.NaN,
+        start: 0,
+        transactionId: "invalid-layer-order",
+      }),
+    ).toThrow(/finite canonical z-index/i);
+    expect(
+      createDirectManipulationLayerOrderProgram({
+        capturedPlayhead: 0,
+        entityId: "equation_1",
+        scene: STUDIO_FIXTURE_SCENE,
+        sourceZIndex: 12.5,
+        start: 0,
+        transactionId: "imported-layer-order",
+      }),
+    ).toMatchObject({
+      issues: [expect.objectContaining({ code: "lowering-unsupported", field: "entityId" })],
+      kind: "invalid",
     });
   });
 

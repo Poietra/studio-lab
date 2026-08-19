@@ -143,6 +143,14 @@ describe("Studio creation wire", () => {
         kind: "SetProperty",
         value: 0.4,
       }),
+      followupProgram("ordering:Arrow", {
+        ...common,
+        entityId,
+        id: "ordering:Arrow",
+        key: "sourceZIndex",
+        kind: "SetProperty",
+        value: 4.5,
+      }),
       followupProgram("rotation:Arrow", {
         ...common,
         easing: "smooth",
@@ -159,7 +167,8 @@ describe("Studio creation wire", () => {
     const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs });
 
     expect(command.programs[1]?.operations[0]).toMatchObject({ alpha: 0.4, entityId, kind: "opacity" });
-    expect(command.programs[2]?.operations[0]).toMatchObject({
+    expect(command.programs[2]?.operations[0]).toMatchObject({ entityId, kind: "source-z-index", sourceZIndex: 4.5 });
+    expect(command.programs[3]?.operations[0]).toMatchObject({
       controlPresent: false,
       entityId,
       from: 0,
