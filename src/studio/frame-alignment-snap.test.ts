@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { type FrameSnapBasis, snapViewportDragToFrame } from "./frame-alignment-snap";
+import { type FrameSnapBasis, snapUniformResizeToFrame, snapViewportDragToFrame } from "./frame-alignment-snap";
 
 const BASIS: FrameSnapBasis = {
   frame: { bottom: 360, left: 0, right: 640, top: 0 },
@@ -164,5 +164,56 @@ describe("frame alignment snapping", () => {
       delta: { x: 85, y: 0 },
       guides: [{ axis: "x", entityId: "zoom-target", kind: "object", position: 350 }],
     });
+  });
+});
+
+describe("uniform resize alignment snapping", () => {
+  const resizeBasis: FrameSnapBasis = {
+    frame: { bottom: 360, left: 0, right: 640, top: 0 },
+    selection: { bottom: 200, left: 100, right: 200, top: 100 },
+  };
+
+  function snap(factor: number, disabled = false, basis = resizeBasis) {
+    return snapUniformResizeToFrame({
+      basis,
+      disabled,
+      factor,
+      maximumFactor: 10,
+      minimumFactor: 0.1,
+      pivot: { x: 100, y: 100 },
+      viewportUnitsPerCssPixel: { x: 1, y: 1 },
+    });
+  }
+
+  it("snaps the resized prepared bounds to a frame guide", () => {
+    expect(snap(2.55)).toEqual({ factor: 2.6, guides: ["frame-bottom"] });
+  });
+
+  it("snaps the resized prepared bounds to another object's guide", () => {
+    expect(
+      snap(2.95, false, {
+        ...resizeBasis,
+        objects: [{ bounds: { bottom: 80, left: 400, right: 450, top: 20 }, entityId: "target" }],
+      }),
+    ).toEqual({
+      factor: 3,
+      guides: [{ axis: "x", entityId: "target", kind: "object", position: 400 }],
+    });
+  });
+
+  it("lets Alt or Option bypass resize snapping", () => {
+    expect(snap(2.55, true)).toEqual({ factor: 2.55, guides: [] });
+  });
+
+  it("keeps frame snapping when any non-selected object bounds are incomplete", () => {
+    expect(
+      snap(2.55, false, {
+        ...resizeBasis,
+        objects: [
+          { bounds: { bottom: 80, left: 400, right: 450, top: 20 }, entityId: "complete" },
+          { bounds: { bottom: 80, left: Number.NaN, right: 550, top: 20 }, entityId: "incomplete" },
+        ],
+      }),
+    ).toEqual({ factor: 2.6, guides: ["frame-bottom"] });
   });
 });

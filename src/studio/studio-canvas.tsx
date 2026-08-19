@@ -389,7 +389,7 @@ function CompositeSelectionResizeHandles({
       onPointerDown={(event) => onPointerDown(event, handle.direction, basis)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      title={`Drag ${handle.label} to resize the selection uniformly`}
+      title={`Drag ${handle.label} to resize the selection uniformly · Hold Alt/Option to bypass snapping`}
       type="button"
     />
   ));
@@ -716,6 +716,8 @@ export function StudioCanvas({
             (compositeSelectionBounds.dimensions.height / frame.height) * (STUDIO_VIEWPORT.height / 2),
         },
         entities: preparedSelectedGeometries.map(({ entityId, position }) => ({ center: position, entityId })),
+        frame: { bottom: STUDIO_VIEWPORT.height, left: 0, right: STUDIO_VIEWPORT.width, top: 0 },
+        objects: preparedObjectSnapTargets?.filter(({ entityId }) => !selectedIds.has(entityId)),
       }
     : null;
   const compositeMoveSnapBasis: PreparedMoveSnapBasis | null =
@@ -1084,7 +1086,7 @@ export function StudioCanvas({
             );
           })}
         </div>
-        <AlignmentGuides guides={dragPreview?.guides ?? []} />
+        <AlignmentGuides guides={dragPreview?.guides ?? groupResizePreview?.guides ?? []} />
         {compositeSelectionBounds ? (
           <div
             aria-label={`${selectedIds.size} objects selected`}

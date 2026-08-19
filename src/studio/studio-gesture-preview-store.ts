@@ -97,6 +97,7 @@ function sameRotationPreview(left: EntityRotationPreview | null, right: EntityRo
 function sameGroupResizePreview(left: EntityGroupResizePreview | null, right: EntityGroupResizePreview) {
   return (
     left !== null &&
+    sameAlignmentGuides(left.guides, right.guides) &&
     left.entities.length === right.entities.length &&
     left.entities.every((entity, index) => {
       const candidate = right.entities[index];
