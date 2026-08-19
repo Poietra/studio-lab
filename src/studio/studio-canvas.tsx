@@ -2,6 +2,7 @@ import type { KeyboardEvent, PointerEvent } from "react";
 
 import { cn } from "../lib/cn";
 import type { CanvasSelectionMode } from "./canvas-selection";
+import type { FrameAlignmentGuide, FrameSnapBounds, PreparedMoveSnapBasis } from "./frame-alignment-snap";
 import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 import type { StudioMotionPath } from "./motion-paths";
 import { describeStudioPreviewFallback } from "./preview-renderer-policy";
@@ -62,7 +63,11 @@ export type StudioCanvasProps = Readonly<{
   onCanvasPlace: (point: Point) => void;
   onEntityKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityPointerCancel: (event: PointerEvent<HTMLButtonElement>) => void;
-  onEntityPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string) => void;
+  onEntityPointerDown: (
+    event: PointerEvent<HTMLButtonElement>,
+    entityId: string,
+    snapBasis: PreparedMoveSnapBasis | null,
+  ) => void;
   onEntityPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityResizeCancel: (event: PointerEvent<HTMLButtonElement>) => void;
@@ -128,6 +133,35 @@ function dimensionSize(dimensions: EntityDimensions) {
   };
 }
 
+/** Projects only renderer-prepared AABB dimensions into the renderer's
+ * 640x360 interaction coordinate space. */
+export function preparedGeometryBounds(
+  geometry: Readonly<{ dimensions: EntityDimensions | null; position: Point }>,
+  frame: Readonly<{ height: number; width: number }>,
+): FrameSnapBounds | null {
+  if (frame.height <= 0 || frame.width <= 0 || !geometry.dimensions) return null;
+  const size = dimensionSize(geometry.dimensions);
+  if (
+    size.height === null ||
+    size.width === null ||
+    !Number.isFinite(size.height) ||
+    !Number.isFinite(size.width) ||
+    size.height < 0 ||
+    size.width < 0 ||
+    !Number.isFinite(geometry.position.x) ||
+    !Number.isFinite(geometry.position.y)
+  )
+    return null;
+  const halfWidth = (size.width / frame.width) * (STUDIO_VIEWPORT.width / 2);
+  const halfHeight = (size.height / frame.height) * (STUDIO_VIEWPORT.height / 2);
+  return {
+    bottom: geometry.position.y + halfHeight,
+    left: geometry.position.x - halfWidth,
+    right: geometry.position.x + halfWidth,
+    top: geometry.position.y - halfHeight,
+  };
+}
+
 /** Unions only prepared renderer AABBs. This projection does not inspect
  * Scene shapes or repeat geometry evaluation in React. */
 export function unionPreparedSelectionBounds(
@@ -141,25 +175,12 @@ export function unionPreparedSelectionBounds(
   let maximumY = Number.NEGATIVE_INFINITY;
   let count = 0;
   for (const geometry of geometries) {
-    if (!geometry.dimensions) continue;
-    const size = dimensionSize(geometry.dimensions);
-    if (
-      size.height === null ||
-      size.width === null ||
-      !Number.isFinite(size.height) ||
-      !Number.isFinite(size.width) ||
-      size.height < 0 ||
-      size.width < 0 ||
-      !Number.isFinite(geometry.position.x) ||
-      !Number.isFinite(geometry.position.y)
-    )
-      continue;
-    const halfWidth = (size.width / frame.width) * (STUDIO_VIEWPORT.width / 2);
-    const halfHeight = (size.height / frame.height) * (STUDIO_VIEWPORT.height / 2);
-    minimumX = Math.min(minimumX, geometry.position.x - halfWidth);
-    maximumX = Math.max(maximumX, geometry.position.x + halfWidth);
-    minimumY = Math.min(minimumY, geometry.position.y - halfHeight);
-    maximumY = Math.max(maximumY, geometry.position.y + halfHeight);
+    const bounds = preparedGeometryBounds(geometry, frame);
+    if (!bounds) continue;
+    minimumX = Math.min(minimumX, bounds.left);
+    maximumX = Math.max(maximumX, bounds.right);
+    minimumY = Math.min(minimumY, bounds.top);
+    maximumY = Math.max(maximumY, bounds.bottom);
     count += 1;
   }
   if (count < 2) return null;
@@ -414,6 +435,33 @@ function CompositeSelectionRotationHandle({
 const ROTATION_HANDLE_RADIUS_PX = 14;
 const ROTATION_HANDLE_CONNECTOR_PX = 28;
 
+const FRAME_ALIGNMENT_GUIDE_CLASS: Readonly<Record<FrameAlignmentGuide, string>> = {
+  "frame-bottom": "inset-x-0 bottom-0 h-px",
+  "frame-center-x": "inset-y-0 left-1/2 w-px -translate-x-1/2",
+  "frame-center-y": "inset-x-0 top-1/2 h-px -translate-y-1/2",
+  "frame-left": "inset-y-0 left-0 w-px",
+  "frame-right": "inset-y-0 right-0 w-px",
+  "frame-top": "inset-x-0 top-0 h-px",
+};
+
+function FrameAlignmentGuides({ guides }: Readonly<{ guides: readonly FrameAlignmentGuide[] }>) {
+  if (guides.length === 0) return null;
+  return (
+    <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-30">
+      {guides.map((guide) => (
+        <span
+          className={cn(
+            "absolute bg-fuchsia-400 shadow-[0_0_0_1px_rgb(24_24_27/0.65)]",
+            FRAME_ALIGNMENT_GUIDE_CLASS[guide],
+          )}
+          data-studio-alignment-guide={guide}
+          key={guide}
+        />
+      ))}
+    </div>
+  );
+}
+
 /** Keeps both the disc and its connector anchored in screen space even
  * though the selection bounds live below entity and camera scaling. */
 export function rotationHandleLayoutStyle(displayedScale: number, cameraScale: number) {
@@ -623,6 +671,14 @@ export function StudioCanvas({
         entities: preparedSelectedGeometries.map(({ entityId, position }) => ({ center: position, entityId })),
       }
     : null;
+  const compositeMoveSnapBasis: PreparedMoveSnapBasis | null =
+    compositeSelectionResizeBasis &&
+    preparedSelectedGeometries.every((geometry) => preparedGeometryBounds(geometry, frame) !== null)
+      ? {
+          bounds: compositeSelectionResizeBasis.bounds,
+          entityIds: preparedSelectedGeometries.map(({ entityId }) => entityId),
+        }
+      : null;
   const compositeSelectionResizeAvailable =
     compositeSelectionResizeBasis !== null &&
     interactionMode === "position" &&
@@ -787,6 +843,13 @@ export function StudioCanvas({
             // bounded edit targets are admitted only by verified runtime
             // identity or a Runtime Trace candidate.
             const runtimeGeometry = preparedIdentity.geometry;
+            const singleMoveSnapBounds = preparedGeometryBounds(runtimeGeometry, frame);
+            const moveSnapBasis =
+              selected && selectedIds.size > 1
+                ? compositeMoveSnapBasis
+                : singleMoveSnapBounds
+                  ? { bounds: singleMoveSnapBounds, entityIds: [entity.id] }
+                  : null;
             const moveLocked = selectionLocked;
             const groupRotation = entityGroupRotationTransform(groupRotationPreview, entity.id);
             const groupResize = entityGroupResizeTransform(groupResizePreview, entity.id);
@@ -905,7 +968,7 @@ export function StudioCanvas({
                         return;
                       }
                       if (!selectionOnlyEntity) {
-                        onEntityPointerDown(event, entity.id);
+                        onEntityPointerDown(event, entity.id, moveSnapBasis);
                         return;
                       }
                       event.stopPropagation();
@@ -919,7 +982,9 @@ export function StudioCanvas({
                         ? "This verified object can be selected, but source rewriting is unavailable."
                         : positionUnknown
                           ? entity.geometry.position.reason
-                          : undefined
+                          : interactionMode === "position"
+                            ? "Drag to move · Hold Alt or Option to temporarily disable frame snapping"
+                            : "Drag to create motion"
                     }
                     type="button"
                   >
@@ -967,6 +1032,7 @@ export function StudioCanvas({
             );
           })}
         </div>
+        <FrameAlignmentGuides guides={dragPreview?.guides ?? []} />
         {compositeSelectionBounds ? (
           <div
             aria-label={`${selectedIds.size} objects selected`}

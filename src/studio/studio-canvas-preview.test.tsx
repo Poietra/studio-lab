@@ -322,11 +322,13 @@ describe("StudioCanvas retained preview layer", () => {
       sourceIdentity: { kind: "known", value: "rectangle_1" },
       type: "Rectangle",
     };
-    const markup = renderToStaticMarkup(
+    const onEntityPointerDown = vi.fn();
+    const tree = (
       <StudioCanvas
         {...baseProps()}
         cameraScale={2}
         entities={[CIRCLE_ENTITY, rectangle]}
+        onEntityPointerDown={onEntityPointerDown}
         preview={previewView(
           {
             frame: {
@@ -362,8 +364,9 @@ describe("StudioCanvas retained preview layer", () => {
         )}
         rotationHandleEntityId={CIRCLE_ENTITY.id}
         selectedIds={new Set([CIRCLE_ENTITY.id, rectangle.id])}
-      />,
+      />
     );
+    const markup = renderToStaticMarkup(tree);
 
     expect(markup).toContain('data-studio-composite-selection="2"');
     expect(markup).toContain('aria-label="2 objects selected"');
@@ -372,6 +375,20 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain("left:43.75%");
     expect(markup).not.toContain("data-studio-resize-handle");
     expect(markup).not.toContain("data-studio-rotation-handle");
+
+    const button = findEntityButton(StudioCanvas(tree.props), CIRCLE_ENTITY.id);
+    const pointerDown = button.props.onPointerDown as (event: {
+      ctrlKey: boolean;
+      metaKey: boolean;
+      shiftKey: boolean;
+    }) => void;
+    pointerDown({ ctrlKey: false, metaKey: false, shiftKey: false });
+    const snapBasis = onEntityPointerDown.mock.calls[0]?.[2];
+    expect(snapBasis?.entityIds).toEqual([CIRCLE_ENTITY.id, rectangle.id]);
+    expect(snapBasis?.bounds.left).toBeCloseTo(75, 2);
+    expect(snapBasis?.bounds.right).toBeCloseTo(485, 2);
+    expect(snapBasis?.bounds.top).toBe(135);
+    expect(snapBasis?.bounds.bottom).toBe(225);
   });
 
   it("adds group handles only when every selected Rust-created target is unrotated", () => {
@@ -442,6 +459,57 @@ describe("StudioCanvas retained preview layer", () => {
     const rotatedMarkup = renderSelection(rotatedEligible, rotatedEligible);
     expect(rotatedMarkup).not.toContain("data-studio-selection-resize-handle");
     expect(rotatedMarkup).not.toContain("data-studio-selection-rotation-handle");
+  });
+
+  it("keeps movement unsnapped when any selected target lacks complete prepared bounds", () => {
+    const second = {
+      ...CIRCLE_ENTITY,
+      id: "entity:second",
+      sourceIdentity: { kind: "known" as const, value: "second" },
+    };
+    const incomplete = {
+      ...CIRCLE_ENTITY,
+      id: "entity:incomplete",
+      sourceIdentity: { kind: "known" as const, value: "incomplete" },
+    };
+    const onEntityPointerDown = vi.fn();
+    const tree = StudioCanvas({
+      ...baseProps(),
+      entities: [CIRCLE_ENTITY, second, incomplete],
+      onEntityPointerDown,
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:incomplete-multi-selection",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        new Map([
+          ["runtime:circle", { dimensions: { height: 2, width: 2 }, position: { x: 120, y: 180 } }],
+          ["runtime:second", { dimensions: { height: 2, width: 2 }, position: { x: 320, y: 180 } }],
+          ["runtime:incomplete", { dimensions: null, position: { x: 520, y: 180 } }],
+        ]),
+        new Map([
+          ["circle_1", { bindingId: "binding:circle", entityId: "runtime:circle", sourceName: "circle_1" }],
+          ["second", { bindingId: "binding:second", entityId: "runtime:second", sourceName: "second" }],
+          ["incomplete", { bindingId: "binding:incomplete", entityId: "runtime:incomplete", sourceName: "incomplete" }],
+        ]),
+      ),
+      selectedIds: new Set([CIRCLE_ENTITY.id, second.id, incomplete.id]),
+    });
+    const button = findEntityButton(tree, CIRCLE_ENTITY.id);
+    const pointerDown = button.props.onPointerDown as (event: {
+      ctrlKey: boolean;
+      metaKey: boolean;
+      shiftKey: boolean;
+    }) => void;
+
+    pointerDown({ ctrlKey: false, metaKey: false, shiftKey: false });
+
+    expect(onEntityPointerDown).toHaveBeenCalledWith(expect.anything(), CIRCLE_ENTITY.id, null);
   });
 
   it.each([
@@ -961,6 +1029,24 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain(`data-studio-rotation-handle="${CIRCLE_ENTITY.id}"`);
     expect(markup).toContain('aria-label="Rotate circle_1"');
     expect(markup).toContain(`rotate:${-Math.PI / 4}rad`);
+  });
+
+  it("renders temporary frame guides from the canonical drag preview", () => {
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        dragPreview={{
+          delta: { x: 20, y: 30 },
+          entityIds: [CIRCLE_ENTITY.id],
+          guides: ["frame-center-x", "frame-bottom"],
+        }}
+      />,
+    );
+
+    expect(markup).toContain('data-studio-alignment-guide="frame-center-x"');
+    expect(markup).toContain('data-studio-alignment-guide="frame-bottom"');
+    expect(markup).toContain("inset-y-0 left-1/2 w-px -translate-x-1/2");
+    expect(markup).toContain("inset-x-0 bottom-0 h-px");
   });
 
   it("selects only the three LineJoints leaves without starting a source rewrite gesture", () => {

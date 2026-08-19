@@ -27,11 +27,11 @@ describe("Studio gesture preview store", () => {
     const listener = vi.fn();
     store.subscribe(listener);
 
-    store.setDragPreview({ delta: { x: 12, y: -4 }, entityIds: ["entity:a", "entity:b"] });
+    store.setDragPreview({ delta: { x: 12, y: -4 }, entityIds: ["entity:a", "entity:b"], guides: [] });
     const first = store.getSnapshot();
 
     expect(first).toEqual({
-      dragPreview: { delta: { x: 12, y: -4 }, entityIds: ["entity:a", "entity:b"] },
+      dragPreview: { delta: { x: 12, y: -4 }, entityIds: ["entity:a", "entity:b"], guides: [] },
       geometryPreview: null,
       groupRotationPreview: null,
       groupResizePreview: null,
@@ -41,12 +41,25 @@ describe("Studio gesture preview store", () => {
     });
     expect(listener).toHaveBeenCalledTimes(1);
 
-    store.setDragPreview({ delta: { x: 12, y: -4 }, entityIds: ["entity:a", "entity:b"] });
+    store.setDragPreview({ delta: { x: 12, y: -4 }, entityIds: ["entity:a", "entity:b"], guides: [] });
     expect(store.getSnapshot()).toBe(first);
     expect(listener).toHaveBeenCalledTimes(1);
 
-    store.setDragPreview({ delta: { x: 13, y: -4 }, entityIds: ["entity:a", "entity:b"] });
-    expect(store.getSnapshot()).not.toBe(first);
+    store.setDragPreview({
+      delta: { x: 12, y: -4 },
+      entityIds: ["entity:a", "entity:b"],
+      guides: ["frame-center-x"],
+    });
+    const guided = store.getSnapshot();
+    expect(guided).not.toBe(first);
+    expect(listener).toHaveBeenCalledTimes(2);
+
+    store.setDragPreview({
+      delta: { x: 12, y: -4 },
+      entityIds: ["entity:a", "entity:b"],
+      guides: ["frame-center-x"],
+    });
+    expect(store.getSnapshot()).toBe(guided);
     expect(listener).toHaveBeenCalledTimes(2);
   });
 
@@ -187,7 +200,7 @@ describe("Studio gesture preview store", () => {
     expect(listener).toHaveBeenCalledTimes(2);
 
     unsubscribe();
-    store.setDragPreview({ delta: { x: 1, y: 1 }, entityIds: ["entity:circle"] });
+    store.setDragPreview({ delta: { x: 1, y: 1 }, entityIds: ["entity:circle"], guides: [] });
     expect(listener).toHaveBeenCalledTimes(2);
   });
 });

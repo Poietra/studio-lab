@@ -84,6 +84,11 @@ import {
   updateStudioFragmentMaterialSourceV1,
   updateStudioFragmentMaterialTextureV1,
 } from "./studio/fragment-material-authoring";
+import {
+  type FrameSnapBasis,
+  type PreparedMoveSnapBasis,
+  snapViewportDragToFrame,
+} from "./studio/frame-alignment-snap";
 import { importedWorkingState, projectVerifiedSourceDuration } from "./studio/imported-workspace";
 import {
   type InspectorEditField,
@@ -230,9 +235,11 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
 };
 
 type CanvasDragState = Readonly<{
+  cameraScale: number;
   pointerId: number;
   pressedEntityId: string;
   scale: Readonly<{ x: number; y: number }>;
+  snapBasis: FrameSnapBasis | null;
   sourceAnchor: number | null;
   start: Readonly<{ x: number; y: number }>;
   targetEntityIds: readonly string[];
@@ -286,6 +293,16 @@ function canvasPointerDelta(drag: CanvasDragState, point: Readonly<{ x: number; 
     x: (point.x - drag.start.x) * drag.scale.x,
     y: (point.y - drag.start.y) * drag.scale.y,
   };
+}
+
+function resolvedCanvasDrag(drag: CanvasDragState, point: Readonly<{ x: number; y: number }>, disableSnap: boolean) {
+  return snapViewportDragToFrame({
+    basis: drag.snapBasis,
+    cameraScale: drag.cameraScale,
+    disabled: disableSnap,
+    viewportDelta: canvasPointerDelta(drag, point),
+    viewportUnitsPerCssPixel: drag.scale,
+  });
 }
 
 function resizedEntityScale(resize: CanvasScaleResizeState, point: Readonly<{ x: number; y: number }>) {
@@ -2604,7 +2621,11 @@ export function App({
     return anchor;
   }
 
-  function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
+  function beginEntityDrag(
+    event: PointerEvent<HTMLButtonElement>,
+    entityId: string,
+    preparedSnapBasis: PreparedMoveSnapBasis | null,
+  ) {
     if (
       canvasDrag.current ||
       canvasGroupResize.current ||
@@ -2650,15 +2671,28 @@ export function App({
       boundedRuntimeEditTargetIds.has(entityId),
     );
     event.currentTarget.setPointerCapture(event.pointerId);
-    const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect();
+    const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]")?.getBoundingClientRect();
+    const snapTargetIds = new Set(preparedSnapBasis?.entityIds ?? []);
+    const snapBasisMatchesTargets =
+      preparedSnapBasis !== null &&
+      snapTargetIds.size === targetEntityIds.length &&
+      targetEntityIds.every((targetEntityId) => snapTargetIds.has(targetEntityId));
     setSelectedObjectIds(targetEntityIds);
     canvasDrag.current = {
+      cameraScale: Math.max(projection?.camera.scale ?? 1, Number.EPSILON),
       pointerId: event.pointerId,
       pressedEntityId: entityId,
       scale: {
         x: canvasBounds?.width ? STUDIO_VIEWPORT.width / canvasBounds.width : 1,
         y: canvasBounds?.height ? STUDIO_VIEWPORT.height / canvasBounds.height : 1,
       },
+      snapBasis:
+        interactionMode === "position" && snapBasisMatchesTargets
+          ? {
+              frame: { bottom: STUDIO_VIEWPORT.height, left: 0, right: STUDIO_VIEWPORT.width, top: 0 },
+              selection: preparedSnapBasis.bounds,
+            }
+          : null,
       sourceAnchor: null,
       start: { x: event.clientX, y: event.clientY },
       targetEntityIds,
@@ -2669,9 +2703,10 @@ export function App({
   function moveEntityDrag(event: PointerEvent<HTMLButtonElement>) {
     let drag = canvasDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
+    const point = { x: event.clientX, y: event.clientY };
+    const rawDelta = canvasPointerDelta(drag, point);
     if (drag.sourceAnchor === null) {
-      if (Math.hypot(delta.x, delta.y) < 1) return;
+      if (Math.hypot(rawDelta.x, rawDelta.y) < 1) return;
       const gestureContext = directGestureContext();
       if (!gestureContext.proposedState) {
         canvasDrag.current = null;
@@ -2697,9 +2732,11 @@ export function App({
       drag = { ...drag, sourceAnchor: anchor.sourceTime };
       canvasDrag.current = drag;
     }
+    const snapped = resolvedCanvasDrag(drag, point, event.altKey);
     gesturePreviewStore.setDragPreview({
-      delta,
+      delta: snapped.delta,
       entityIds: drag.targetEntityIds,
+      guides: snapped.guides,
     });
   }
 
@@ -2713,7 +2750,7 @@ export function App({
       return;
     }
     if (!activeScene || !draftBaseState || !draftSourceScene) return;
-    const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
+    const delta = resolvedCanvasDrag(drag, { x: event.clientX, y: event.clientY }, event.altKey).delta;
     if (Math.hypot(delta.x, delta.y) < 1) return;
     const targetIds = drag.targetEntityIds;
     const transactionId = `studio-gesture-${crypto.randomUUID()}`;
