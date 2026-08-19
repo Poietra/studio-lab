@@ -2,6 +2,7 @@ import { Profiler, useSyncExternalStore } from "react";
 
 import { cn } from "../lib/cn";
 import type { ProposedStateProjection } from "./model";
+import type { SelectionLayoutCommand } from "./selection-layout";
 import { StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import type { StudioGesturePreviewStore } from "./studio-gesture-preview-store";
 import { recordStudioCommitProfile } from "./studio-render-profiler";
@@ -60,8 +61,10 @@ export type StudioViewportProps = Readonly<
       onInsertAtCenter: () => void;
       onInsertToolChange: (tool: StudioTool) => void;
       onInsertValueChange: (value: string) => void;
+      onSelectionLayout: (command: SelectionLayoutCommand) => void;
       projection: ProposedStateProjection;
       readOnly?: boolean;
+      selectionLayoutUnavailableReason: string | null;
     }
 >;
 
@@ -136,6 +139,7 @@ export function StudioViewport({
   onSelectionRotationPointerMove,
   onSelectionRotationPointerUp,
   onSelectEntity,
+  onSelectionLayout,
   onTimeChange,
   onTogglePlayback,
   preview = null,
@@ -145,6 +149,7 @@ export function StudioViewport({
   readOnly = false,
   rotationHandleEntityId,
   selectedIds,
+  selectionLayoutUnavailableReason,
 }: StudioViewportProps) {
   return (
     <section className={cn("flex min-h-0 min-w-0 flex-col bg-zinc-900", className)}>
@@ -154,7 +159,10 @@ export function StudioViewport({
           insertValue={insertValue}
           onInsertAtCenter={onInsertAtCenter}
           onInsertValueChange={onInsertValueChange}
+          onSelectionLayout={onSelectionLayout}
           onToolChange={onInsertToolChange}
+          selectionCount={selectedIds.size}
+          selectionLayoutUnavailableReason={selectionLayoutUnavailableReason}
           tool={insertTool}
         />
       </Profiler>

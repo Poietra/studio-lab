@@ -2,6 +2,11 @@ import { cn } from "../lib/cn";
 import type { InsertEntityType } from "./authoring-commands";
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { STUDIO_CREATION_TEXT_CONTRACT, STUDIO_CREATION_TEXT_MAX_LENGTH } from "./editable-content";
+import {
+  SELECTION_LAYOUT_COMMANDS,
+  type SelectionLayoutCommand,
+  selectionLayoutMinimumCount,
+} from "./selection-layout";
 import { markStudioRenderBoundary } from "./studio-render-profiler";
 
 export type StudioTool = "select" | InsertEntityType;
@@ -20,35 +25,52 @@ const TOOL_COMMANDS: readonly Readonly<{
   { commandId: "insert-arrow", label: "Arrow", tool: "Arrow" },
 ] as const;
 
+const LAYOUT_BUTTON_LABELS: Readonly<Record<SelectionLayoutCommand, string>> = {
+  "align-bottom": "Bottom",
+  "align-horizontal-center": "H center",
+  "align-left": "Left",
+  "align-right": "Right",
+  "align-top": "Top",
+  "align-vertical-middle": "V middle",
+  "distribute-horizontal": "H distribute",
+  "distribute-vertical": "V distribute",
+};
+
+export type StudioToolbarProps = Readonly<{
+  authoringAvailable: boolean;
+  insertValue: string;
+  onInsertAtCenter: () => void;
+  onInsertValueChange: (value: string) => void;
+  onSelectionLayout: (command: SelectionLayoutCommand) => void;
+  onToolChange: (tool: StudioTool) => void;
+  selectionCount: number;
+  selectionLayoutUnavailableReason: string | null;
+  tool: StudioTool;
+}>;
+
 export function StudioToolbar({
   authoringAvailable,
   insertValue,
   onInsertAtCenter,
   onInsertValueChange,
+  onSelectionLayout,
   onToolChange,
+  selectionCount,
+  selectionLayoutUnavailableReason,
   tool,
-}: Readonly<{
-  authoringAvailable: boolean;
-  insertValue: string;
-  onInsertAtCenter: () => void;
-  onInsertValueChange: (value: string) => void;
-  onToolChange: (tool: StudioTool) => void;
-  tool: StudioTool;
-}>) {
+}: StudioToolbarProps) {
   markStudioRenderBoundary("toolbar");
   const requiresContent = tool === "Text" || tool === "MathTex";
+  const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   return (
     <section aria-label="Studio tools" className="shrink-0 border-b border-zinc-800 bg-zinc-950 px-3 py-2">
       <div className="flex flex-wrap items-center gap-1" role="toolbar">
         {TOOL_COMMANDS.map((item) => {
           const command = studioCommand(item.commandId);
-          const shortcut = shortcutLabel(command.shortcut, navigator.platform);
+          const shortcut = shortcutLabel(command.shortcut, platform);
           return (
             <button
-              aria-keyshortcuts={command.shortcut.replace(
-                "Mod",
-                navigator.platform.includes("Mac") ? "Meta" : "Control",
-              )}
+              aria-keyshortcuts={command.shortcut.replace("Mod", platform.includes("Mac") ? "Meta" : "Control")}
               aria-label={`${command.label} (${shortcut})`}
               aria-pressed={tool === item.tool}
               className={cn(
@@ -70,6 +92,34 @@ export function StudioToolbar({
         <span className="ml-2 hidden text-pretty text-[10px] text-zinc-600 md:inline">
           {tool === "select" ? "Select and move objects" : "Click the canvas to place the object"}
         </span>
+        {selectionCount > 1 ? (
+          <div aria-label="Selection layout" className="ml-2 flex flex-wrap items-center gap-1" role="group">
+            {SELECTION_LAYOUT_COMMANDS.map((commandId) => {
+              const command = studioCommand(commandId);
+              const shortcut = shortcutLabel(command.shortcut, platform);
+              const countReason =
+                selectionCount < selectionLayoutMinimumCount(commandId)
+                  ? "Select at least three objects to distribute them."
+                  : null;
+              const unavailableReason = selectionLayoutUnavailableReason ?? countReason;
+              return (
+                <button
+                  aria-keyshortcuts={command.shortcut}
+                  aria-label={`${command.label} (${shortcut})`}
+                  className="h-8 border border-zinc-700 px-2 text-[11px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700"
+                  data-selection-layout-command={commandId}
+                  disabled={unavailableReason !== null}
+                  key={commandId}
+                  onClick={() => onSelectionLayout(commandId)}
+                  title={unavailableReason ?? `${command.label} · ${shortcut}`}
+                  type="button"
+                >
+                  {LAYOUT_BUTTON_LABELS[commandId]}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </div>
       {requiresContent ? (
         <form

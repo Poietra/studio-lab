@@ -29,8 +29,19 @@ describe("Studio command shortcuts", () => {
     expect(key("a")).toBe("insert-arrow");
   });
 
+  it("maps non-conflicting selection layout shortcuts", () => {
+    expect(key("l", { altKey: true, shiftKey: true })).toBe("align-left");
+    expect(key("c", { altKey: true, shiftKey: true })).toBe("align-horizontal-center");
+    expect(key("h", { altKey: true, shiftKey: true })).toBe("distribute-horizontal");
+    expect(key("v", { altKey: true, code: "KeyV", shiftKey: true })).toBe("distribute-vertical");
+    expect(key("l", { altKey: true })).toBeNull();
+    expect(key("l", { altKey: true, ctrlKey: true, shiftKey: true })).toBeNull();
+  });
+
   it("formats shortcut labels for the current platform", () => {
     expect(shortcutLabel("Mod+Shift+Z", "MacIntel")).toBe("⌘⇧Z");
     expect(shortcutLabel("Mod+Shift+Z", "Linux x86_64")).toBe("Ctrl+Shift+Z");
+    expect(shortcutLabel("Alt+Shift+L", "MacIntel")).toBe("⌥⇧L");
+    expect(shortcutLabel("Alt+Shift+L", "Linux x86_64")).toBe("Alt+Shift+L");
   });
 });
