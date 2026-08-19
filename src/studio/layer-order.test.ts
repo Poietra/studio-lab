@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planStudioLayerOrder, projectStudioLayers } from "./layer-order";
+import { planStudioLayerOrder, planStudioLayerReorder, projectStudioLayers } from "./layer-order";
 import type { ProjectedEntity } from "./model";
 
 function entity(id: string, sourceIdentity: ProjectedEntity["sourceIdentity"]): ProjectedEntity {
@@ -71,8 +71,54 @@ describe("Studio Layers paint order", () => {
     });
   });
 
+  it("chooses the canonical slot requested by a front-first drag", () => {
+    const projected = layers();
+
+    expect(planStudioLayerReorder(projected, "studio:a", 0)).toEqual({
+      kind: "planned",
+      sourceAnchor: 0,
+      sourceZIndex: 5,
+    });
+    expect(planStudioLayerReorder(projected, "studio:a", 2)).toEqual({
+      kind: "planned",
+      sourceAnchor: 0,
+      sourceZIndex: 1,
+    });
+    expect(planStudioLayerReorder(projected, "studio:b", 1)).toEqual({
+      kind: "planned",
+      sourceAnchor: 1,
+      sourceZIndex: 2.5,
+    });
+  });
+
+  it("rejects no-op, invalid, and partially unresolved drag destinations", () => {
+    expect(planStudioLayerReorder(layers(), "studio:a", 1)).toMatchObject({ kind: "unavailable" });
+    expect(planStudioLayerReorder(layers(), "studio:a", -1)).toMatchObject({ kind: "unavailable" });
+    expect(
+      planStudioLayerReorder(
+        [
+          ...layers(),
+          {
+            canMove: { back: false, backward: false, forward: false, front: false },
+            entity: entity("pending", { kind: "unknown", reason: "Studio-created" }),
+            readOnlyReason: "Wait for preview.",
+            sceneOrder: null,
+            sourceAnchor: 0,
+            sourceZIndex: null,
+          },
+        ],
+        "studio:a",
+        0,
+      ),
+    ).toMatchObject({ kind: "unavailable", reason: expect.stringMatching(/every layer/i) });
+  });
+
   it("rejects imported targets and ambiguous equal-z adjacency", () => {
     expect(planStudioLayerOrder(layers(), "imported", "front")).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/round-trip/i),
+    });
+    expect(planStudioLayerReorder(layers(), "imported", 0)).toMatchObject({
       kind: "unavailable",
       reason: expect.stringMatching(/round-trip/i),
     });
