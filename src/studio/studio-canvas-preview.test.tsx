@@ -103,6 +103,8 @@ function baseProps(): StudioCanvasProps {
     entities: [CIRCLE_ENTITY],
     frame: { height: 8, width: 14.222 },
     geometryPreview: null,
+    groupResizeEligibleIds: new Set<string>(),
+    groupResizePreview: null,
     incomingSceneName: null,
     inlineTextEditor: null,
     insertTool: "select",
@@ -128,6 +130,11 @@ function baseProps(): StudioCanvasProps {
     onInlineTextCancel: vi.fn(),
     onInlineTextCommit: vi.fn(() => true),
     onMotionControlChange: vi.fn(),
+    onSelectionResizeCancel: vi.fn(),
+    onSelectionResizeKeyDown: vi.fn(),
+    onSelectionResizePointerDown: vi.fn(),
+    onSelectionResizePointerMove: vi.fn(),
+    onSelectionResizePointerUp: vi.fn(),
     onSelectEntity: vi.fn(),
     readOnly: false,
     rotationHandleEntityId: null,
@@ -353,6 +360,58 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('aria-label="2 objects selected"');
     expect(markup).toContain('data-studio-selection-height="2.0000"');
     expect(markup).toContain('data-studio-selection-width="9.1110"');
+    expect(markup).not.toContain("data-studio-resize-handle");
+    expect(markup).not.toContain("data-studio-rotation-handle");
+  });
+
+  it("adds four uniform resize handles when every selected prepared target has Rust creation authority", () => {
+    const circle: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      id: "tx:create-circle/entity:circle",
+      sourceIdentity: { kind: "unknown", reason: "Studio-created entity." },
+      transactionId: "create-circle",
+    };
+    const rectangle: ProjectedEntity = {
+      ...circle,
+      id: "tx:create-rectangle/entity:rectangle",
+      position: { x: 480, y: 180 },
+      transactionId: "create-rectangle",
+      type: "Rectangle",
+    };
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        appliedTransactionIds={new Set(["create-circle", "create-rectangle"])}
+        entities={[circle, rectangle]}
+        groupResizeEligibleIds={new Set([circle.id, rectangle.id])}
+        groupResizePreview={{
+          entities: [
+            { delta: { x: -40, y: 0 }, entityId: circle.id, scale: 2 },
+            { delta: { x: 40, y: 0 }, entityId: rectangle.id, scale: 2 },
+          ],
+        }}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:created-multi-selection",
+              revision: "a".repeat(64),
+              sampleTime: 0,
+              viewport: { heightPx: 360, widthPx: 640 },
+            },
+            phase: "presented",
+          },
+          new Map([
+            [circle.id, { dimensions: { height: 2, width: 2 }, position: { x: 160, y: 180 } }],
+            [rectangle.id, { dimensions: { height: 2, width: 2 }, position: { x: 480, y: 180 } }],
+          ]),
+        )}
+        selectedIds={new Set([circle.id, rectangle.id])}
+      />,
+    );
+
+    expect(markup.match(/data-studio-selection-resize-handle=/g)).toHaveLength(4);
+    expect(markup.match(/data-studio-entity-scale="2\.0000"/g)).toHaveLength(2);
+    expect(markup).toContain('aria-label="Resize 2 selected objects from bottom-right corner"');
     expect(markup).not.toContain("data-studio-resize-handle");
     expect(markup).not.toContain("data-studio-rotation-handle");
   });

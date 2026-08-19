@@ -11,6 +11,13 @@ export type EntityScalePreview = Readonly<{
   entityId: string;
   scale: number;
 }>;
+export type EntityGroupResizePreview = Readonly<{
+  entities: readonly Readonly<{
+    delta: Point;
+    entityId: string;
+    scale: number;
+  }>[];
+}>;
 export type EntityRotationPreview = Readonly<{
   angleRadians: number;
   entityId: string;
@@ -30,7 +37,7 @@ export type SurfaceBounds = Readonly<{
 
 const ZERO_DELTA = { x: 0, y: 0 } as const;
 const CANVAS_INTERACTION_SELECTOR =
-  "[data-studio-entity], [data-motion-control], [data-studio-resize-handle], [data-studio-rotation-handle], [data-studio-inline-text-editor]";
+  "[data-studio-entity], [data-motion-control], [data-studio-resize-handle], [data-studio-selection-resize-handle], [data-studio-rotation-handle], [data-studio-inline-text-editor]";
 
 export function entityDragDelta(preview: EntityDragPreview | null, entityId: string) {
   return preview?.entityIds.includes(entityId) ? preview.delta : ZERO_DELTA;
@@ -41,6 +48,10 @@ export function entityPreviewScale(
   entity: Readonly<Pick<ProjectedEntity, "id" | "scale">>,
 ) {
   return preview?.entityId === entity.id ? preview.scale : entity.scale;
+}
+
+export function entityGroupResizeTransform(preview: EntityGroupResizePreview | null, entityId: string) {
+  return preview?.entities.find((entity) => entity.entityId === entityId) ?? null;
 }
 
 export function entityPreviewRotation(preview: EntityRotationPreview | null, entityId: string) {
