@@ -52,7 +52,7 @@ describe("WorkspaceSidebar Layers", () => {
       {
         canMove: { back: false, backward: false, forward: true, front: true },
         entity: back,
-        readOnlyReason: null,
+        readOnlyReason: "Imported Manim object: z-order round-trip is not supported yet.",
         sceneOrder: 0,
         sourceAnchor: 0,
         sourceZIndex: 1,
@@ -76,6 +76,7 @@ describe("WorkspaceSidebar Layers", () => {
         onDurationChange={vi.fn()}
         onEditAppliedProgram={vi.fn()}
         onLayerOrder={vi.fn()}
+        onLayerReorder={vi.fn()}
         onRedo={vi.fn()}
         onToggleEntity={vi.fn()}
         onUndo={vi.fn()}
@@ -88,6 +89,9 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("Layers");
     expect(markup.indexOf("Select front")).toBeLessThan(markup.indexOf("Select back"));
     expect(markup).toMatch(/aria-label="Select front"[^>]*checked=""/);
+    expect(markup).toMatch(/draggable="true"[^>]*title="Drag to reorder this layer"/);
+    expect(markup.match(/draggable="true"/g)).toHaveLength(1);
+    expect(markup).toContain('title="Imported Manim object: z-order round-trip is not supported yet."');
     expect(markup).toContain('aria-label="Backward front"');
     expect(markup).toMatch(/aria-label="Front front"[^>]*disabled=""/);
   });

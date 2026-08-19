@@ -104,15 +104,8 @@ function finiteOutside(value: number, direction: "above" | "below") {
   return Number.isFinite(result) ? result : null;
 }
 
-/** Chooses one absolute z-index for the selected Studio-created root. The
- * canonical renderer remains the only paint-order evaluator; this helper only
- * selects the adjacent slot requested by the presentation. */
-export function planStudioLayerOrder(
-  entries: readonly StudioLayerEntry[],
-  targetEntityId: string,
-  direction: StudioLayerOrderDirection,
-): StudioLayerOrderPlan {
-  const canonical = entries
+function canonicalPaintOrder(entries: readonly StudioLayerEntry[]) {
+  return entries
     .filter(
       (entry): entry is StudioLayerEntry & Readonly<{ sceneOrder: number; sourceZIndex: number }> =>
         entry.sceneOrder !== null && entry.sourceZIndex !== null,
@@ -123,6 +116,70 @@ export function planStudioLayerOrder(
         { id: right.entity.id, sceneOrder: right.sceneOrder, sourceZIndex: right.sourceZIndex },
       ),
     );
+}
+
+/** Chooses one absolute z-index that places a Studio-created root at the
+ * requested index in the front-first Layers presentation. The whole visible
+ * order must be backed by the canonical preview so a drop never silently
+ * skips an unresolved row. */
+export function planStudioLayerReorder(
+  entries: readonly StudioLayerEntry[],
+  targetEntityId: string,
+  frontFirstIndex: number,
+): StudioLayerOrderPlan {
+  if (!Number.isInteger(frontFirstIndex) || frontFirstIndex < 0 || frontFirstIndex >= entries.length) {
+    return { kind: "unavailable", reason: "The requested layer position is outside the current paint order." };
+  }
+  const canonical = canonicalPaintOrder(entries);
+  if (canonical.length !== entries.length) {
+    return {
+      kind: "unavailable",
+      reason: "Wait for every layer to appear in the canonical preview before reordering.",
+    };
+  }
+  const frontFirst = canonical.toReversed();
+  const currentIndex = frontFirst.findIndex(({ entity }) => entity.id === targetEntityId);
+  if (currentIndex < 0) {
+    return { kind: "unavailable", reason: "The selected layer has no current canonical paint order." };
+  }
+  const target = frontFirst[currentIndex]!;
+  if (target.readOnlyReason) return { kind: "unavailable", reason: target.readOnlyReason };
+  if (target.sourceAnchor === null) return { kind: "unavailable", reason: PREVIEW_ORDERING_REASON };
+  if (frontFirstIndex === currentIndex) {
+    return { kind: "unavailable", reason: "This layer is already at the requested paint position." };
+  }
+
+  const reordered = frontFirst.filter(({ entity }) => entity.id !== targetEntityId);
+  reordered.splice(frontFirstIndex, 0, target);
+  const frontNeighbor = reordered[frontFirstIndex - 1];
+  const backNeighbor = reordered[frontFirstIndex + 1];
+  let sourceZIndex: number | null;
+  if (!frontNeighbor && backNeighbor) sourceZIndex = finiteOutside(backNeighbor.sourceZIndex, "above");
+  else if (frontNeighbor && !backNeighbor) sourceZIndex = finiteOutside(frontNeighbor.sourceZIndex, "below");
+  else if (!frontNeighbor || !backNeighbor) {
+    return { kind: "unavailable", reason: "This layer is already at the only available paint position." };
+  } else if (frontNeighbor.sourceZIndex === backNeighbor.sourceZIndex) {
+    return {
+      kind: "unavailable",
+      reason: "The destination layers share one canonical z-index and cannot be split independently.",
+    };
+  } else sourceZIndex = (frontNeighbor.sourceZIndex + backNeighbor.sourceZIndex) / 2;
+
+  if (sourceZIndex === null || !Number.isFinite(sourceZIndex)) {
+    return { kind: "unavailable", reason: "The canonical z-index range cannot be extended safely." };
+  }
+  return { kind: "planned", sourceAnchor: target.sourceAnchor, sourceZIndex };
+}
+
+/** Chooses one absolute z-index for the selected Studio-created root. The
+ * canonical renderer remains the only paint-order evaluator; this helper only
+ * selects the adjacent slot requested by the presentation. */
+export function planStudioLayerOrder(
+  entries: readonly StudioLayerEntry[],
+  targetEntityId: string,
+  direction: StudioLayerOrderDirection,
+): StudioLayerOrderPlan {
+  const canonical = canonicalPaintOrder(entries);
   const target = canonical.find(({ entity }) => entity.id === targetEntityId);
   if (!target) return { kind: "unavailable", reason: "The selected layer has no current canonical paint order." };
   if (target.readOnlyReason) return { kind: "unavailable", reason: target.readOnlyReason };

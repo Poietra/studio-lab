@@ -1,3 +1,4 @@
+import { type DragEvent, useState } from "react";
 import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggestions";
 import { cn } from "../lib/cn";
 import type {
@@ -165,6 +166,7 @@ export function WorkspaceSidebar({
   onDurationChange,
   onEditAppliedProgram,
   onLayerOrder,
+  onLayerReorder,
   onRedo,
   onToggleEntity,
   onUndo,
@@ -189,6 +191,7 @@ export function WorkspaceSidebar({
   onDurationChange: (duration: number) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
+  onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
   onRedo: () => void;
   onToggleEntity: (entityId: string, selected: boolean) => void;
   onUndo: () => void;
@@ -196,6 +199,7 @@ export function WorkspaceSidebar({
   selectedIds: ReadonlySet<string>;
   sourceImportOutcomes: readonly ManimSourceImportOutcome[];
 }>) {
+  const [layerDrag, setLayerDrag] = useState<Readonly<{ boundary: number; entityId: string }> | null>(null);
   const layerEntries: readonly StudioLayerEntry[] =
     layers ??
     entities.map((entity) => ({
@@ -216,13 +220,64 @@ export function WorkspaceSidebar({
         {activeScene.name}
       </p>
       <ul className="mt-3 space-y-1">
-        {layerEntries.map((layer) => {
+        {layerEntries.map((layer, layerIndex) => {
           const entity = layer.entity;
           const selected = selectedIds.has(entity.id);
           const locked =
             entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId));
+          const dragUnavailableReason =
+            onLayerReorder === undefined
+              ? "Layer drag reordering is unavailable."
+              : !authoringAvailable
+                ? "Wait for the canonical preview before reordering layers."
+                : locked
+                  ? "Apply this provisional object before reordering it."
+                  : !entity.present
+                    ? "This object is not present at the current time."
+                    : layer.readOnlyReason;
+          const draggable = onLayerReorder !== undefined && dragUnavailableReason === null;
+          const updateDropBoundary = (event: DragEvent<HTMLLIElement>) => {
+            if (!layerDrag) return null;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            const boundary = layerIndex + (event.clientY >= bounds.top + bounds.height / 2 ? 1 : 0);
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setLayerDrag((current) => (current && current.boundary !== boundary ? { ...current, boundary } : current));
+            return boundary;
+          };
           return (
-            <li key={entity.id}>
+            <li
+              className={cn(
+                layerDrag?.boundary === layerIndex && "border-t border-sky-400",
+                layerDrag?.boundary === layerEntries.length && layerIndex === layerEntries.length - 1
+                  ? "border-b border-sky-400"
+                  : null,
+              )}
+              draggable={draggable}
+              key={entity.id}
+              onDragEnd={() => setLayerDrag(null)}
+              onDragOver={updateDropBoundary}
+              onDragStart={(event) => {
+                if (!draggable) {
+                  event.preventDefault();
+                  return;
+                }
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData("text/plain", entity.id);
+                setLayerDrag({ boundary: layerIndex, entityId: entity.id });
+              }}
+              onDrop={(event) => {
+                const boundary = updateDropBoundary(event) ?? layerDrag?.boundary;
+                if (!layerDrag || boundary === undefined) return;
+                const sourceIndex = layerEntries.findIndex(({ entity: item }) => item.id === layerDrag.entityId);
+                const frontFirstIndex = boundary > sourceIndex ? boundary - 1 : boundary;
+                if (sourceIndex >= 0 && frontFirstIndex !== sourceIndex) {
+                  onLayerReorder?.(layerDrag.entityId, frontFirstIndex);
+                }
+                setLayerDrag(null);
+              }}
+              title={dragUnavailableReason ?? "Drag to reorder this layer"}
+            >
               <label
                 className={cn(
                   "flex items-center gap-2 px-2 py-1.5 text-xs",
@@ -238,6 +293,12 @@ export function WorkspaceSidebar({
                   onChange={() => onToggleEntity(entity.id, selected)}
                   type="checkbox"
                 />
+                <span
+                  aria-hidden="true"
+                  className={cn("shrink-0 text-zinc-600", draggable ? "cursor-grab" : "opacity-40")}
+                >
+                  ⠿
+                </span>
                 <span className="min-w-0 flex-1 truncate">{entityLabel(entity)}</span>
                 <span className="shrink-0 text-[10px] text-zinc-600" title={layer.readOnlyReason ?? undefined}>
                   {layer.readOnlyReason ? "Read-only" : entity.type}

@@ -101,7 +101,13 @@ import {
   type ValidatedInspectorEdits,
   validateInspectorEdits,
 } from "./studio/inspector-edit";
-import { planStudioLayerOrder, projectStudioLayers, type StudioLayerOrderDirection } from "./studio/layer-order";
+import {
+  planStudioLayerOrder,
+  planStudioLayerReorder,
+  projectStudioLayers,
+  type StudioLayerOrderDirection,
+  type StudioLayerOrderPlan,
+} from "./studio/layer-order";
 import {
   buildLifetimeEditControls,
   findCompetingImportedLifetimeOwner,
@@ -2873,8 +2879,7 @@ export function App({
     });
   }
 
-  function changeLayerOrder(entityId: string, direction: StudioLayerOrderDirection) {
-    const plan = planStudioLayerOrder(studioLayers, entityId, direction);
+  function stageLayerOrder(entityId: string, plan: StudioLayerOrderPlan) {
     if (plan.kind === "unavailable") {
       setDraftError(plan.reason);
       return false;
@@ -2899,6 +2904,14 @@ export function App({
       setDraftError(error instanceof Error ? error.message : "The layer order could not be changed.");
       return false;
     }
+  }
+
+  function changeLayerOrder(entityId: string, direction: StudioLayerOrderDirection) {
+    return stageLayerOrder(entityId, planStudioLayerOrder(studioLayers, entityId, direction));
+  }
+
+  function reorderLayer(entityId: string, frontFirstIndex: number) {
+    return stageLayerOrder(entityId, planStudioLayerReorder(studioLayers, entityId, frontFirstIndex));
   }
 
   function manualAuthoringAnchor(
@@ -5181,7 +5194,7 @@ export function App({
               appliedProgramReadOnlyReasons={appliedProgramReadOnlyReasons}
               appliedEdits={appliedEdits}
               appliedTransactionIds={appliedTransactionIds}
-              authoringAvailable={previewMutationAvailable}
+              authoringAvailable={!studioAuthoringLocked && previewMutationAvailable}
               className="order-2 min-h-64 md:order-1 md:col-start-1 md:row-start-1 md:min-h-0"
               draftActive={draftEdit !== null}
               duration={activeDuration}
@@ -5194,6 +5207,7 @@ export function App({
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onEditAppliedProgram={editAppliedProgram}
               onLayerOrder={changeLayerOrder}
+              onLayerReorder={reorderLayer}
               onRedo={() => void redoProgram()}
               onToggleEntity={(entityId, selected) =>
                 setSelectedObjectIds((selection) =>
