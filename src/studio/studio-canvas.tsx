@@ -389,7 +389,7 @@ function CompositeSelectionResizeHandles({
       onPointerDown={(event) => onPointerDown(event, handle.direction, basis)}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      title={`Drag ${handle.label} to resize the selection uniformly`}
+      title={`Drag ${handle.label} to resize the selection uniformly · Hold Alt/Option to bypass snapping`}
       type="button"
     />
   ));

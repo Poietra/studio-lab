@@ -165,4 +165,42 @@ describe("selection resize gesture", () => {
       }),
     ).toBeNull();
   });
+
+  it("does not snap or commit a resize when the handle was only clicked", () => {
+    const gesture = createSelectionResizeGesture({
+      basis: {
+        bounds: { bottom: 355, left: 100, right: 200, top: 100 },
+        entities: [
+          { center: { x: 125, y: 200 }, entityId: "left" },
+          { center: { x: 175, y: 200 }, entityId: "right" },
+        ],
+        frame: { bottom: 360, left: 0, right: 640, top: 0 },
+      },
+      cameraScale: 1,
+      direction: "se",
+      maximumScale: 10,
+      minimumScale: 0.1,
+      pointerId: 4,
+      sourceAnchor: 1,
+      start: { x: 200, y: 355 },
+      surfaceBounds: { height: 360, left: 0, top: 0, width: 640 },
+      targets: [
+        { entityId: "left", fromPosition: { x: 125, y: 200 }, fromScale: 1 },
+        { entityId: "right", fromPosition: { x: 175, y: 200 }, fromScale: 1 },
+      ],
+    });
+    expect(gesture).not.toBeNull();
+    if (!gesture) return;
+
+    expect(resizeSelectionAtPoint(gesture, gesture.start)).toEqual({
+      factor: 1,
+      preview: {
+        entities: [
+          { delta: { x: 0, y: 0 }, entityId: "left", scale: 1 },
+          { delta: { x: 0, y: 0 }, entityId: "right", scale: 1 },
+        ],
+        guides: [],
+      },
+    });
+  });
 });

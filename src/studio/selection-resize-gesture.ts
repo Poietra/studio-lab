@@ -122,6 +122,9 @@ export function selectionResizePreviewAtFactor(
 }
 
 export function resizeSelectionAtPoint(resize: SelectionResizeGesture, point: Point, disableSnap = false) {
+  if (Math.hypot(point.x - resize.start.x, point.y - resize.start.y) <= 0.001) {
+    return { factor: 1, preview: selectionResizePreviewAtFactor(resize, 1) };
+  }
   const rawFactor = uniformCornerResizeFactor({
     current: point,
     maximum: resize.maximumFactor,
