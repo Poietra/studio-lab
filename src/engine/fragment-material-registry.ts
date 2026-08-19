@@ -84,6 +84,73 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
 }
 `;
 
+/** A directional two-color tint using the fixed host parameter slots. */
+export const STUDIO_GRADIENT_FRAGMENT_SOURCE_V1 = `struct FragmentHostUniform {
+    // xy = logical viewport pixels, z = Scene time, w = reserved.
+    viewport_and_time: vec4<f32>,
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> host: FragmentHostUniform;
+
+struct FragmentInput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) base_color: vec4<f32>,
+    // Normalized screen coordinates, top-left origin.
+    @location(1) screen_position: vec2<f32>,
+};
+
+@fragment
+fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
+    let angle = host.parameters_0.x;
+    let spread = host.parameters_0.y;
+    let axis = vec2<f32>(cos(angle), sin(angle));
+    let amount = clamp(
+        0.5 + dot(input.screen_position - vec2<f32>(0.5, 0.5), axis) * spread,
+        0.0,
+        1.0
+    );
+    let cool = vec3<f32>(0.2, 0.55, 1.0);
+    let warm = vec3<f32>(1.0, 0.3, 0.65);
+    let tint = cool * (1.0 - amount) + warm * amount;
+    return vec4<f32>(input.base_color.rgb * tint, input.base_color.a);
+}
+`;
+
+/** An animated radial pulse using the fixed host time and parameter slots. */
+export const STUDIO_PULSE_FRAGMENT_SOURCE_V1 = `struct FragmentHostUniform {
+    // xy = logical viewport pixels, z = Scene time, w = reserved.
+    viewport_and_time: vec4<f32>,
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> host: FragmentHostUniform;
+
+struct FragmentInput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) base_color: vec4<f32>,
+    // Normalized screen coordinates, top-left origin.
+    @location(1) screen_position: vec2<f32>,
+};
+
+@fragment
+fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
+    let speed = host.parameters_0.x;
+    let strength = clamp(host.parameters_0.y, 0.0, 1.0);
+    let radius = distance(input.screen_position, vec2<f32>(0.5, 0.5));
+    let pulse = 0.5 + 0.5 * sin(
+        6.28318530718 * (radius * 5.0 - host.viewport_and_time.z * speed)
+    );
+    let blend = pulse * strength;
+    let tint = vec3<f32>(1.0, 1.0, 1.0) * (1.0 - blend) + vec3<f32>(0.25, 0.65, 1.0) * blend;
+    return vec4<f32>(input.base_color.rgb * tint, input.base_color.a);
+}
+`;
+
 /** One fixed-slot material that samples a verified project PNG in screen UV space. */
 export const STUDIO_TEXTURE_FRAGMENT_SOURCE_V1 = `struct FragmentHostUniform {
     // xy = logical viewport pixels, z = Scene time, w = reserved.

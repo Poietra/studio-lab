@@ -7,6 +7,8 @@ import {
   MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
   MAX_PROJECT_FRAGMENT_MATERIALS_V1,
   PROJECT_FRAGMENT_SHADER_ID_V1,
+  STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
+  STUDIO_PULSE_FRAGMENT_SOURCE_V1,
   STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "../engine/fragment-material-registry";
@@ -58,6 +60,8 @@ export type StudioFragmentMaterialF32ParameterV1 = Readonly<{
 }>;
 
 export type StudioFragmentMaterialParameterSchemaV1 = readonly StudioFragmentMaterialF32ParameterV1[];
+
+export type StudioFragmentMaterialPresetId = "gradient" | "pulse" | "wave";
 
 export type StudioNamedFragmentMaterialV1 = FragmentMaterialSourceV1 &
   Readonly<{
@@ -140,6 +144,21 @@ const fragmentMaterialParameterSchema = z
 export const STUDIO_WAVE_FRAGMENT_PARAMETER_SCHEMA_V1: StudioFragmentMaterialParameterSchemaV1 = Object.freeze([
   Object.freeze({ default: 0.35, name: "Speed", range: Object.freeze({ max: 2, min: -2, step: 0.05 }), type: "f32" }),
   Object.freeze({ default: 8, name: "Bands", range: Object.freeze({ max: 24, min: 1, step: 1 }), type: "f32" }),
+]);
+
+export const STUDIO_GRADIENT_FRAGMENT_PARAMETER_SCHEMA_V1: StudioFragmentMaterialParameterSchemaV1 = Object.freeze([
+  Object.freeze({
+    default: 0.75,
+    name: "Angle",
+    range: Object.freeze({ max: 3.14, min: -3.14, step: 0.05 }),
+    type: "f32",
+  }),
+  Object.freeze({ default: 1.5, name: "Spread", range: Object.freeze({ max: 4, min: 0.25, step: 0.05 }), type: "f32" }),
+]);
+
+export const STUDIO_PULSE_FRAGMENT_PARAMETER_SCHEMA_V1: StudioFragmentMaterialParameterSchemaV1 = Object.freeze([
+  Object.freeze({ default: 1, name: "Speed", range: Object.freeze({ max: 3, min: -3, step: 0.05 }), type: "f32" }),
+  Object.freeze({ default: 0.65, name: "Strength", range: Object.freeze({ max: 1, min: 0, step: 0.05 }), type: "f32" }),
 ]);
 
 const rawProjectFragmentMaterialStateSchema = z
@@ -357,6 +376,26 @@ export function createStudioWaveFragmentMaterialPresetV1(
     name: uniquePresetName(state, "Wave"),
     parameterSchema: STUDIO_WAVE_FRAGMENT_PARAMETER_SCHEMA_V1,
     source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+  });
+}
+
+export function createStudioGradientFragmentMaterialPresetV1(
+  state: ProjectFragmentMaterialStateV1,
+): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
+  return createStudioFragmentMaterialV1(state, {
+    name: uniquePresetName(state, "Gradient"),
+    parameterSchema: STUDIO_GRADIENT_FRAGMENT_PARAMETER_SCHEMA_V1,
+    source: STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
+  });
+}
+
+export function createStudioPulseFragmentMaterialPresetV1(
+  state: ProjectFragmentMaterialStateV1,
+): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
+  return createStudioFragmentMaterialV1(state, {
+    name: uniquePresetName(state, "Pulse"),
+    parameterSchema: STUDIO_PULSE_FRAGMENT_PARAMETER_SCHEMA_V1,
+    source: STUDIO_PULSE_FRAGMENT_SOURCE_V1,
   });
 }
 

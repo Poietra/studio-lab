@@ -59,7 +59,10 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain("Assigned to 2 object(s). Unassign all uses before deleting.");
     expect(markup).toContain("Unassign this material from 2 object(s) before deleting it.");
     expect(markup).toContain('aria-label="Fragment material WGSL source"');
+    expect(markup).toContain("Built-in presets");
     expect(markup).toContain("Wave preset");
+    expect(markup).toContain("Gradient preset");
+    expect(markup).toContain("Pulse preset");
     expect(markup).toContain("Create &amp; apply");
     expect(markup).toContain('aria-label="Speed material parameter"');
     expect(markup).toContain('aria-label="Bands material parameter"');

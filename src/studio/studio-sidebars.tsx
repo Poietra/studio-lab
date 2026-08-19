@@ -11,6 +11,7 @@ import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../rende
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { DraftInspector } from "./draft-inspector";
 import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
+import type { StudioFragmentMaterialPresetId } from "./fragment-material-authoring";
 import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragment-material-editor";
 import type { ManimWorkspaceScene } from "./imported-workspace";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
@@ -531,7 +532,7 @@ export function StudioInspector({
     materials: readonly FragmentMaterialEditorItem[];
     onAssign: (shaderId: string | null) => void;
     onCreate: (name: string) => string | null;
-    onCreatePreset: () => string | null;
+    onCreatePreset: (preset: StudioFragmentMaterialPresetId) => string | null;
     onCreateTexturePreset: () => string | null;
     onDuplicate: (shaderId: string) => string | null;
     onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;

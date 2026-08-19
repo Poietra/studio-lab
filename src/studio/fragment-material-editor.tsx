@@ -7,6 +7,7 @@ import {
 import type {
   StudioFragmentMaterialGlslSource,
   StudioFragmentMaterialParameterSchemaV1,
+  StudioFragmentMaterialPresetId,
 } from "./fragment-material-authoring";
 
 export type FragmentMaterialEditorItem = Readonly<{
@@ -53,7 +54,7 @@ export function FragmentMaterialEditor({
   materials: readonly FragmentMaterialEditorItem[];
   onAssign: (shaderId: string | null) => void;
   onCreate: (name: string) => string | null;
-  onCreatePreset: () => string | null;
+  onCreatePreset: (preset: StudioFragmentMaterialPresetId) => string | null;
   onCreateTexturePreset: () => string | null;
   onDuplicate: (shaderId: string) => string | null;
   onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
@@ -188,7 +189,8 @@ export function FragmentMaterialEditor({
         </fieldset>
       ) : null}
 
-      <div className="mt-3 border border-sky-950 bg-sky-950/20 p-2">
+      <p className="mt-3 text-[10px] font-medium text-zinc-400">Built-in presets</p>
+      <div className="mt-1 border border-sky-950 bg-sky-950/20 p-2">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-[10px] font-medium text-sky-200">Wave preset</p>
@@ -200,7 +202,51 @@ export function FragmentMaterialEditor({
             className="shrink-0 border border-sky-800 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
             disabled={materials.length >= MAX_PROJECT_FRAGMENT_MATERIALS_V1}
             onClick={() => {
-              const shaderId = onCreatePreset();
+              const shaderId = onCreatePreset("wave");
+              if (shaderId) setEditingShaderId(shaderId);
+            }}
+            type="button"
+          >
+            {available ? "Create & apply" : "Create"}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-2 border border-sky-950 bg-sky-950/20 p-2">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-medium text-sky-200">Gradient preset</p>
+            <p className="mt-0.5 text-pretty text-[10px] leading-4 text-zinc-500">
+              Directional cool-to-warm tint with Angle and Spread controls. No shader code required.
+            </p>
+          </div>
+          <button
+            className="shrink-0 border border-sky-800 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+            disabled={materials.length >= MAX_PROJECT_FRAGMENT_MATERIALS_V1}
+            onClick={() => {
+              const shaderId = onCreatePreset("gradient");
+              if (shaderId) setEditingShaderId(shaderId);
+            }}
+            type="button"
+          >
+            {available ? "Create & apply" : "Create"}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-2 border border-sky-950 bg-sky-950/20 p-2">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-medium text-sky-200">Pulse preset</p>
+            <p className="mt-0.5 text-pretty text-[10px] leading-4 text-zinc-500">
+              Animated radial glow with Speed and Strength controls. No shader code required.
+            </p>
+          </div>
+          <button
+            className="shrink-0 border border-sky-800 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+            disabled={materials.length >= MAX_PROJECT_FRAGMENT_MATERIALS_V1}
+            onClick={() => {
+              const shaderId = onCreatePreset("pulse");
               if (shaderId) setEditingShaderId(shaderId);
             }}
             type="button"
