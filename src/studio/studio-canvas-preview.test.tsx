@@ -5,6 +5,7 @@ import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { ProjectedEntity } from "./model";
 import type { StudioPreviewRuntimeTraceEditCandidate } from "./preview-temporal-rebase";
+import { groupResizeEligibleCreationEntityIds } from "./selection-resize-gesture";
 import {
   compensatePreparedGeometryForOverlayScales,
   rotationHandleLayoutStyle,
@@ -364,7 +365,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).not.toContain("data-studio-rotation-handle");
   });
 
-  it("adds four uniform resize handles when every selected prepared target has Rust creation authority", () => {
+  it("adds group handles only when every selected Rust-created target is unrotated", () => {
     const circle: ProjectedEntity = {
       ...CIRCLE_ENTITY,
       id: "tx:create-circle/entity:circle",
@@ -378,42 +379,53 @@ describe("StudioCanvas retained preview layer", () => {
       transactionId: "create-rectangle",
       type: "Rectangle",
     };
-    const markup = renderToStaticMarkup(
-      <StudioCanvas
-        {...baseProps()}
-        appliedTransactionIds={new Set(["create-circle", "create-rectangle"])}
-        entities={[circle, rectangle]}
-        groupResizeEligibleIds={new Set([circle.id, rectangle.id])}
-        groupResizePreview={{
-          entities: [
-            { delta: { x: -40, y: 0 }, entityId: circle.id, scale: 2 },
-            { delta: { x: 40, y: 0 }, entityId: rectangle.id, scale: 2 },
-          ],
-        }}
-        preview={previewView(
-          {
-            frame: {
-              packetId: "canvas:created-multi-selection",
-              revision: "a".repeat(64),
-              sampleTime: 0,
-              viewport: { heightPx: 360, widthPx: 640 },
+    const renderSelection = (groupResizeEligibleIds: ReadonlySet<string>) =>
+      renderToStaticMarkup(
+        <StudioCanvas
+          {...baseProps()}
+          appliedTransactionIds={new Set(["create-circle", "create-rectangle"])}
+          entities={[circle, rectangle]}
+          groupResizeEligibleIds={groupResizeEligibleIds}
+          groupResizePreview={{
+            entities: [
+              { delta: { x: -40, y: 0 }, entityId: circle.id, scale: 2 },
+              { delta: { x: 40, y: 0 }, entityId: rectangle.id, scale: 2 },
+            ],
+          }}
+          preview={previewView(
+            {
+              frame: {
+                packetId: "canvas:created-multi-selection",
+                revision: "a".repeat(64),
+                sampleTime: 0,
+                viewport: { heightPx: 360, widthPx: 640 },
+              },
+              phase: "presented",
             },
-            phase: "presented",
-          },
-          new Map([
-            [circle.id, { dimensions: { height: 2, width: 2 }, position: { x: 160, y: 180 } }],
-            [rectangle.id, { dimensions: { height: 2, width: 2 }, position: { x: 480, y: 180 } }],
-          ]),
-        )}
-        selectedIds={new Set([circle.id, rectangle.id])}
-      />,
-    );
+            new Map([
+              [circle.id, { dimensions: { height: 2, width: 2 }, position: { x: 160, y: 180 } }],
+              [rectangle.id, { dimensions: { height: 2, width: 4 }, position: { x: 480, y: 180 } }],
+            ]),
+          )}
+          selectedIds={new Set([circle.id, rectangle.id])}
+        />,
+      );
+    const entities = [{ entityId: circle.id }, { entityId: rectangle.id }];
+    const markup = renderSelection(groupResizeEligibleCreationEntityIds({ entities, mutations: [] }));
 
     expect(markup.match(/data-studio-selection-resize-handle=/g)).toHaveLength(4);
     expect(markup.match(/data-studio-entity-scale="2\.0000"/g)).toHaveLength(2);
     expect(markup).toContain('aria-label="Resize 2 selected objects from bottom-right corner"');
     expect(markup).not.toContain("data-studio-resize-handle");
     expect(markup).not.toContain("data-studio-rotation-handle");
+
+    const rotatedMarkup = renderSelection(
+      groupResizeEligibleCreationEntityIds({
+        entities,
+        mutations: [{ entityId: rectangle.id, kind: "rotation", to: Math.PI / 4 }],
+      }),
+    );
+    expect(rotatedMarkup).not.toContain("data-studio-selection-resize-handle");
   });
 
   it.each([

@@ -24,6 +24,26 @@ export type SelectionResizeGesture = Readonly<{
   surfaceBounds: SurfaceBounds;
 }>;
 
+type CreationRotationAuthority = Readonly<{
+  entities: readonly Readonly<{ entityId: string }>[];
+  mutations: readonly Readonly<{ entityId: string; kind: string; to?: number }>[];
+}>;
+
+export function groupResizeEligibleCreationEntityIds(
+  projection: CreationRotationAuthority | null | undefined,
+): ReadonlySet<string> {
+  if (!projection) return new Set();
+  const rotationByEntity = new Map<string, number>();
+  for (const mutation of projection.mutations) {
+    if (mutation.kind === "rotation") rotationByEntity.set(mutation.entityId, mutation.to ?? Number.NaN);
+  }
+  return new Set(
+    projection.entities
+      .filter(({ entityId }) => (rotationByEntity.get(entityId) ?? 0) === 0)
+      .map(({ entityId }) => entityId),
+  );
+}
+
 export function createSelectionResizeGesture(
   input: Readonly<{
     basis: PreparedSelectionResizeBasis;

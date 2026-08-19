@@ -124,6 +124,15 @@ import { samplePropertyValue } from "./studio/property-sampling";
 import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-authoring-wire";
 import type { SceneEdit } from "./studio/scene-edit-contract";
 import {
+  createSelectionResizeGesture,
+  groupResizeEligibleCreationEntityIds,
+  type PreparedSelectionResizeBasis,
+  resizeSelectionAtPoint,
+  type SelectionResizeGesture,
+  selectionResizeCommandTargets,
+  selectionResizePreviewAtFactor,
+} from "./studio/selection-resize-gesture";
+import {
   hasShapeDimensions,
   type ResizeHandleDirection,
   resizeHandleUsesDelta,
@@ -133,14 +142,6 @@ import {
   type ShapeResizeKind,
   sameShapeGeometry,
 } from "./studio/shape-resize";
-import {
-  createSelectionResizeGesture,
-  type PreparedSelectionResizeBasis,
-  resizeSelectionAtPoint,
-  selectionResizeCommandTargets,
-  type SelectionResizeGesture,
-  selectionResizePreviewAtFactor,
-} from "./studio/selection-resize-gesture";
 import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimelineWithProjection } from "./studio/source-timeline";
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
@@ -4035,7 +4036,7 @@ export function App({
       selectedRuntimeTraceEditCapabilities?.rotation === true)
       ? selectedEntity.id
       : null;
-  const groupResizeEligibleIds = new Set(workspaceCreationProjection?.entities.map(({ entityId }) => entityId) ?? []);
+  const groupResizeEligibleIds = groupResizeEligibleCreationEntityIds(workspaceCreationProjection);
   const selectedOpacityAuthority =
     selectedRuntimeTraceEditAuthority &&
     selectedRuntimeTraceEditCapabilities?.paintOpacity &&
