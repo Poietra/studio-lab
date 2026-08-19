@@ -32,16 +32,41 @@ export type StudioTimelineProps = Readonly<{
   lifetimeTrimDisabled: boolean;
   motionDuration: number;
   objectTracks: readonly TimelineObjectTrack[];
+  opacityTrackEligibleIds: ReadonlySet<string>;
+  opacityTracks: readonly StudioOpacityTimelineTrack[];
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
   onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
   onLifetimeChange: (entityId: string, lifetimeStart: number, target: Interval) => void;
   onMotionDurationChange: (duration: number) => void;
+  onOpacityKeyframeAdd: (entityId: string) => void;
+  onOpacityKeyframeChange: (
+    track: StudioOpacityTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioOpacityTimelineKeyframe, "easing" | "time" | "value">>,
+  ) => void;
+  onOpacityKeyframeDelete: (track: StudioOpacityTimelineTrack, index: number) => void;
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
   readOnly: boolean;
   selectedIds: ReadonlySet<string>;
+}>;
+
+export type StudioOpacityTimelineKeyframe = Readonly<{
+  easing: "linear" | "smooth";
+  sourceTime: number;
+  time: number;
+  value: number;
+}>;
+
+export type StudioOpacityTimelineTrack = Readonly<{
+  entityId: string;
+  keyframes: readonly StudioOpacityTimelineKeyframe[];
+  label: string;
+  programIndex: number;
+  readOnlyReason: string | null;
+  transactionId: string;
 }>;
 
 function TimelinePlayhead({
@@ -68,12 +93,97 @@ type SelectedLifetime = Readonly<{
   index: number;
 }>;
 
+type SelectedOpacityKeyframe = Readonly<{
+  index: number;
+  transactionId: string;
+}>;
+
 const EMPTY_LIFETIME_CONTROLS: StudioLifetimeControls = {
   endTargets: [],
   moveTargets: [],
   reason: null,
   startTargets: [],
 };
+
+function OpacityKeyframeMarker({
+  duration,
+  index,
+  keyframe,
+  locked,
+  onChange,
+  onSelect,
+  selected,
+}: Readonly<{
+  duration: number;
+  index: number;
+  keyframe: StudioOpacityTimelineKeyframe;
+  locked: boolean;
+  onChange: (patch: Partial<Pick<StudioOpacityTimelineKeyframe, "time">>) => void;
+  onSelect: () => void;
+  selected: boolean;
+}>) {
+  const drag = useRef<Readonly<{ pointerId: number }> | null>(null);
+  const [previewTime, setPreviewTime] = useState<number | null>(null);
+
+  function pointerTime(event: PointerEvent<HTMLButtonElement>) {
+    const lane = event.currentTarget.closest<HTMLElement>("[data-timeline-lane]");
+    const bounds = lane?.getBoundingClientRect();
+    if (!bounds?.width) return keyframe.time;
+    return Math.min(duration, Math.max(0, ((event.clientX - bounds.left) / bounds.width) * duration));
+  }
+
+  function cancelDrag() {
+    drag.current = null;
+    setPreviewTime(null);
+  }
+
+  const displayedTime = previewTime ?? keyframe.time;
+  return (
+    <button
+      aria-label={`Opacity keyframe ${index + 1} at ${keyframe.time.toFixed(2)} seconds`}
+      aria-pressed={selected}
+      className={cn(
+        "absolute top-1/2 z-40 size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 border",
+        selected ? "border-sky-100 bg-sky-400" : "border-sky-300 bg-sky-700",
+        locked ? "cursor-not-allowed opacity-50" : "cursor-ew-resize",
+      )}
+      data-opacity-keyframe
+      disabled={locked}
+      onClick={(event) => {
+        event.stopPropagation();
+        onSelect();
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+        event.preventDefault();
+        event.stopPropagation();
+        onChange({ time: Math.min(duration, Math.max(0, keyframe.time + (event.key === "ArrowLeft" ? -0.05 : 0.05))) });
+      }}
+      onLostPointerCapture={cancelDrag}
+      onPointerCancel={cancelDrag}
+      onPointerDown={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onSelect();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        drag.current = { pointerId: event.pointerId };
+      }}
+      onPointerMove={(event) => {
+        if (drag.current?.pointerId !== event.pointerId) return;
+        setPreviewTime(pointerTime(event));
+      }}
+      onPointerUp={(event) => {
+        if (drag.current?.pointerId !== event.pointerId) return;
+        const time = pointerTime(event);
+        cancelDrag();
+        onChange({ time });
+      }}
+      style={{ left: `${timelinePositionPercent(displayedTime, duration)}%`, touchAction: "none" }}
+      title={`Opacity ${keyframe.value.toFixed(2)} · ${keyframe.easing}`}
+      type="button"
+    />
+  );
+}
 
 type LifetimeDragKind = "end" | "move" | "start";
 
@@ -324,11 +434,16 @@ export function StudioTimeline({
   lifetimeTrimDisabled,
   motionDuration,
   objectTracks,
+  opacityTrackEligibleIds,
+  opacityTracks,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
   onInteractionModeChange,
   onLifetimeChange,
   onMotionDurationChange,
+  onOpacityKeyframeAdd,
+  onOpacityKeyframeChange,
+  onOpacityKeyframeDelete,
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
@@ -338,6 +453,7 @@ export function StudioTimeline({
   markStudioRenderBoundary("timeline");
   const intervalEvents = events.flatMap((event) => (event.interval ? [{ event, interval: event.interval }] : []));
   const [selectedLifetime, setSelectedLifetime] = useState<SelectedLifetime | null>(null);
+  const [selectedOpacityKeyframe, setSelectedOpacityKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const selectedLifetimeTrack =
     selectedLifetime && selectedIds.has(selectedLifetime.entityId)
       ? objectTracks.find((track) => track.entityId === selectedLifetime.entityId)
@@ -355,6 +471,10 @@ export function StudioTimeline({
   const motionClipBlockers = [
     ...new Set(appliedMotionClips.flatMap((clip) => (clip.readOnlyReason ? [clip.readOnlyReason] : []))),
   ];
+  const selectedOpacityTrack = selectedOpacityKeyframe
+    ? (opacityTracks.find((track) => track.transactionId === selectedOpacityKeyframe.transactionId) ?? null)
+    : null;
+  const selectedOpacityMarker = selectedOpacityTrack?.keyframes[selectedOpacityKeyframe?.index ?? -1] ?? null;
   return (
     <section className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
       <div className="flex items-center gap-3">
@@ -462,6 +582,88 @@ export function StudioTimeline({
           ) : null}
         </div>
       ) : null}
+      {selectedOpacityTrack && selectedOpacityMarker ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="max-w-40 truncate text-zinc-400" title={selectedOpacityTrack.label}>
+            Opacity · {selectedOpacityTrack.label}
+          </span>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Time
+            <input
+              aria-label="Opacity keyframe time"
+              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-sky-500"
+              disabled={selectedOpacityTrack.readOnlyReason !== null}
+              max={duration}
+              min="0"
+              onChange={(event) =>
+                onOpacityKeyframeChange(selectedOpacityTrack, selectedOpacityKeyframe!.index, {
+                  time: Number(event.currentTarget.value),
+                })
+              }
+              step="0.05"
+              type="number"
+              value={selectedOpacityMarker.time}
+            />
+            s
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Value
+            <input
+              aria-label="Opacity keyframe value"
+              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-sky-500"
+              disabled={selectedOpacityTrack.readOnlyReason !== null || selectedOpacityKeyframe!.index === 0}
+              max="1"
+              min="0"
+              onChange={(event) =>
+                onOpacityKeyframeChange(selectedOpacityTrack, selectedOpacityKeyframe!.index, {
+                  value: Number(event.currentTarget.value),
+                })
+              }
+              step="0.05"
+              type="number"
+              value={selectedOpacityMarker.value}
+            />
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label="Opacity segment easing"
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-sky-500"
+              disabled={
+                selectedOpacityTrack.readOnlyReason !== null ||
+                selectedOpacityKeyframe!.index === selectedOpacityTrack.keyframes.length - 1
+              }
+              onChange={(event) =>
+                onOpacityKeyframeChange(selectedOpacityTrack, selectedOpacityKeyframe!.index, {
+                  easing: event.currentTarget.value as "linear" | "smooth",
+                })
+              }
+              value={selectedOpacityMarker.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={
+              selectedOpacityTrack.readOnlyReason !== null ||
+              (selectedOpacityKeyframe!.index === 0 && selectedOpacityTrack.keyframes.length > 1)
+            }
+            onClick={() => {
+              if (selectedOpacityKeyframe!.index === 0 && selectedOpacityTrack.keyframes.length > 1) return;
+              onOpacityKeyframeDelete(selectedOpacityTrack, selectedOpacityKeyframe!.index);
+              setSelectedOpacityKeyframe(null);
+            }}
+            type="button"
+          >
+            Delete keyframe
+          </button>
+          {selectedOpacityTrack.readOnlyReason ? (
+            <span className="text-amber-500">{selectedOpacityTrack.readOnlyReason}</span>
+          ) : null}
+        </div>
+      ) : null}
       {editingMotionClip ? (
         <p className="mt-2 border-t border-zinc-800 pt-2 text-pretty text-[10px] leading-4 text-zinc-500" role="status">
           Editing {editingMotionClip.label} motion. The body and left edge snap to safe amber source anchors; the right
@@ -532,6 +734,7 @@ export function StudioTimeline({
           </div>
           {objectTracks.map((track) => {
             const selected = selectedIds.has(track.entityId);
+            const opacityTrack = opacityTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackMotionOperationIds = new Set(trackMotionClips.map((clip) => clip.operationId));
             const locked =
@@ -543,20 +746,34 @@ export function StudioTimeline({
                 data-timeline-track={track.entityId}
                 key={track.entityId}
               >
-                <button
-                  aria-pressed={selected}
-                  className={cn(
-                    "min-w-0 truncate px-2 text-left text-[10px]",
-                    locked ? "cursor-not-allowed text-zinc-700" : "hover:bg-zinc-800",
-                    selected ? "bg-sky-950 text-sky-300" : "text-zinc-500",
-                  )}
-                  disabled={locked}
-                  onClick={() => onSelectEntity(track.entityId)}
-                  title={`${track.label} · ${track.type}`}
-                  type="button"
-                >
-                  {track.label}
-                </button>
+                <div className={cn("flex min-w-0 items-center", selected && "bg-sky-950")}>
+                  <button
+                    aria-pressed={selected}
+                    className={cn(
+                      "min-w-0 flex-1 truncate px-2 text-left text-[10px]",
+                      locked ? "cursor-not-allowed text-zinc-700" : "hover:bg-zinc-800",
+                      selected ? "text-sky-300" : "text-zinc-500",
+                    )}
+                    disabled={locked}
+                    onClick={() => onSelectEntity(track.entityId)}
+                    title={`${track.label} · ${track.type}`}
+                    type="button"
+                  >
+                    {track.label}
+                  </button>
+                  {selected && opacityTrackEligibleIds.has(track.entityId) ? (
+                    <button
+                      aria-label={`Add opacity keyframe for ${track.label}`}
+                      className="mr-1 size-5 shrink-0 text-sm leading-none text-sky-400 hover:bg-sky-900 disabled:cursor-not-allowed disabled:text-zinc-600"
+                      disabled={locked || readOnly}
+                      onClick={() => onOpacityKeyframeAdd(track.entityId)}
+                      title="Add opacity keyframe at the playhead"
+                      type="button"
+                    >
+                      +
+                    </button>
+                  ) : null}
+                </div>
                 <div className="relative h-7 min-w-0 overflow-hidden" data-timeline-lane>
                   {track.lifetimes.map((interval, index) => {
                     const lifetimeSelected =
@@ -593,6 +810,24 @@ export function StudioTimeline({
                       />
                     ),
                   )}
+                  {opacityTrack?.keyframes.map((keyframe, index) => (
+                    <OpacityKeyframeMarker
+                      duration={duration}
+                      index={index}
+                      key={`${opacityTrack.transactionId}/${index}`}
+                      keyframe={keyframe}
+                      locked={locked || readOnly || opacityTrack.readOnlyReason !== null}
+                      onChange={(patch) => onOpacityKeyframeChange(opacityTrack, index, patch)}
+                      onSelect={() => {
+                        onSelectEntity(track.entityId);
+                        setSelectedOpacityKeyframe({ index, transactionId: opacityTrack.transactionId });
+                      }}
+                      selected={
+                        selectedOpacityKeyframe?.transactionId === opacityTrack.transactionId &&
+                        selectedOpacityKeyframe.index === index
+                      }
+                    />
+                  ))}
                   {trackMotionClips.map((clip) => (
                     <TimelineMotionClip
                       clip={clip}

@@ -180,6 +180,38 @@ describe("Canonical EditProgram source lowering", () => {
     ).toThrow(/only Studio-created objects/i);
   });
 
+  it("keeps client opacity keyframes out of Manim source export", () => {
+    const entityId = "tx:client-opacity/entity:circle";
+    const program = canonicalProgram(
+      [
+        {
+          ...operationBase("create-client-opacity", 7),
+          entity: {
+            dimensions: { radius: 1 },
+            id: entityId,
+            lifetime: { end: null, start: 7 },
+            type: "Circle",
+          },
+          kind: "CreateEntity",
+        },
+        {
+          ...operationBase("client-opacity-segment", 7.5, 8),
+          easing: "linear",
+          entityId,
+          from: 1,
+          key: "appearance",
+          kind: "AnimateProperty",
+          to: 0,
+        },
+      ],
+      "client-opacity",
+    );
+
+    expect(() => lowerCanonicalProgramSource(source, request(program, []), { height: 8, width: 14.222 }, null)).toThrow(
+      /canonical client preview and video export, but not Manim source export/i,
+    );
+  });
+
   it("lowers Studio-created Text with the preview font and canonical size", () => {
     const entityId = "tx:created-text/entity:label";
     const create = canonicalProgram(

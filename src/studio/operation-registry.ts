@@ -42,6 +42,11 @@ const SUPPORTED_EXECUTION: OperationExecutionCapabilities = {
   applyBlocker: null,
   lowering: "supported",
 };
+const CLIENT_ONLY_EXECUTION: OperationExecutionCapabilities = {
+  apply: "supported",
+  applyBlocker: null,
+  lowering: "unsupported",
+};
 const SOURCE_LOWERING_EPSILON = 0.0005;
 
 function previewOnlyExecution(
@@ -105,6 +110,20 @@ function setPropertyExecution(
 function animatePropertyExecution(
   operation: Extract<SceneEditOperation, { kind: "AnimateProperty" }>,
 ): OperationExecutionCapabilities {
+  if (
+    operation.key === "appearance" &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number" &&
+    Number.isFinite(operation.from) &&
+    Number.isFinite(operation.to) &&
+    operation.from >= 0 &&
+    operation.from <= 1 &&
+    operation.to >= 0 &&
+    operation.to <= 1 &&
+    (operation.interval.end > operation.interval.start || operation.from === operation.to)
+  ) {
+    return CLIENT_ONLY_EXECUTION;
+  }
   if (
     operation.key === "rotation" &&
     operation.control === undefined &&
@@ -507,6 +526,38 @@ export const OPERATION_REGISTRY = {
     execution: animatePropertyExecution,
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
+      if (operation.key === "appearance") {
+        const entity = scene.objectGraph.entities[operation.entityId];
+        if (entity && !entity.transactionId) {
+          issues.push({
+            code: "lowering-unsupported",
+            field: "entityId",
+            message: "Opacity keyframes currently support only Studio-created objects.",
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
+        if (
+          typeof operation.from !== "number" ||
+          typeof operation.to !== "number" ||
+          !Number.isFinite(operation.from) ||
+          !Number.isFinite(operation.to) ||
+          operation.from < 0 ||
+          operation.from > 1 ||
+          operation.to < 0 ||
+          operation.to > 1 ||
+          (operation.interval.start === operation.interval.end && operation.from !== operation.to)
+        ) {
+          issues.push({
+            code: "schema-invalid",
+            field: "appearance",
+            message: "Opacity keyframes require finite values from 0 to 1; a point keyframe must keep one value.",
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
+        return issues;
+      }
       if (operation.relativeDelta !== undefined) {
         if (
           operation.key !== "rotation" ||

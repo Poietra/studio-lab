@@ -64,6 +64,7 @@ struct CreateSceneEntity {
     geometry: CreateSceneEntityGeometry,
     id: String,
     lifetime: IntervalV1,
+    opacity_keyframes: Vec<KeyframeV1<f64>>,
     paint_opacity: f64,
     position: PointV1,
     rotation: f64,
@@ -131,6 +132,11 @@ pub enum StudioCreationProjectedMutationKind {
     },
     SourceZIndex {
         source_z_index: f64,
+    },
+    OpacityKeyframes {
+        easing: StudioMotionEasing,
+        from: f64,
+        to: f64,
     },
     FillColor {
         value: String,
@@ -216,6 +222,11 @@ pub enum StudioCreationOperationKind {
     },
     SourceZIndex {
         source_z_index: Option<f64>,
+    },
+    OpacityKeyframes {
+        easing: StudioMotionEasing,
+        from: Option<f64>,
+        to: Option<f64>,
     },
     FillColor {
         color: Option<String>,
@@ -348,6 +359,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::Rotation { .. }
             | StudioCreationOperationKind::Opacity { .. }
             | StudioCreationOperationKind::SourceZIndex { .. }
+            | StudioCreationOperationKind::OpacityKeyframes { .. }
             | StudioCreationOperationKind::FillColor { .. }
             | StudioCreationOperationKind::StrokeColor { .. }
             | StudioCreationOperationKind::Resize { .. }
@@ -488,6 +500,7 @@ struct PlannedStudioCreationEntity {
     has_position_or_resize_instant: bool,
     kind: StudioAuthoringEntityKind,
     lifetime: IntervalV1,
+    opacity_keyframes: Vec<KeyframeV1<f64>>,
     persistent_removal: Option<PersistentSceneRemoval>,
     position: PointV1,
     scale: f64,
@@ -744,6 +757,91 @@ struct PlannedStudioGroupRotation {
     entity_ids: BTreeSet<String>,
 }
 
+fn opacity_easing(easing: StudioMotionEasing) -> EasingV1 {
+    match easing {
+        StudioMotionEasing::Linear => EasingV1::Linear {},
+        StudioMotionEasing::Smooth => EasingV1::ManimSmooth {},
+    }
+}
+
+fn closed_studio_opacity_track<'a>(
+    program: &'a StudioCreationEditInput,
+) -> Option<(&'a str, Vec<&'a StudioCreationOperation>)> {
+    if program.origin != StudioAuthoringOrigin::DirectManipulation
+        || program.requested_execution != SceneEditExecution::Sequence
+        || program.schedule_mode != SceneEditScheduleMode::Sequence
+        || program.operations.is_empty()
+    {
+        return None;
+    }
+    let operations = program
+        .schedule_order
+        .iter()
+        .filter_map(|operation_id| {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)?;
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::OpacityKeyframes { .. }
+            )
+            .then_some(operation)
+        })
+        .collect::<Vec<_>>();
+    let entity_id = operations.first()?.entity_id.as_deref()?;
+    if operations.first()?.interval.start + TIMELINE_ANCHOR_EPSILON
+        < program.anchor_resolved_seconds
+    {
+        return None;
+    }
+    for (index, operation) in operations.iter().enumerate() {
+        let StudioCreationOperationKind::OpacityKeyframes {
+            easing: _,
+            from: Some(from),
+            to: Some(to),
+        } = &operation.kind
+        else {
+            return None;
+        };
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || operation.entity_id.as_deref() != Some(entity_id)
+            || !from.is_finite()
+            || !(0.0..=1.0).contains(from)
+            || !to.is_finite()
+            || !(0.0..=1.0).contains(to)
+        {
+            return None;
+        }
+        if operations.len() == 1 && operation.interval.start == operation.interval.end {
+            if !close_transform_baseline_value(*from, *to) {
+                return None;
+            }
+            continue;
+        }
+        if operation.interval.end <= operation.interval.start + TIMELINE_ANCHOR_EPSILON {
+            return None;
+        }
+        if let Some(previous) = index.checked_sub(1).and_then(|prior| operations.get(prior)) {
+            let StudioCreationOperationKind::OpacityKeyframes {
+                to: Some(previous_to),
+                ..
+            } = &previous.kind
+            else {
+                return None;
+            };
+            if !studio_timeline_semantic_values_match(
+                previous.interval.end,
+                operation.interval.start,
+            ) || !close_transform_baseline_value(*previous_to, *from)
+            {
+                return None;
+            }
+        }
+    }
+    Some((entity_id, operations))
+}
+
 fn closed_studio_group_rotation(
     program: &StudioCreationEditInput,
     entities: &[PlannedStudioCreationEntity],
@@ -867,11 +965,67 @@ fn plan_studio_creation_edits(
     if create_programs.is_empty() {
         return Err(ProjectStudioCreationEditError::Unsupported);
     }
+    let opacity_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| {
+            programs[*index].operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::OpacityKeyframes { .. }
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    for index in &opacity_programs {
+        let program = &programs[*index];
+        let Some((entity_id, _)) = closed_studio_opacity_track(program) else {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        };
+        let creates_target = program.operations.iter().any(|operation| {
+            matches!(
+                &operation.kind,
+                StudioCreationOperationKind::Create { entity } if entity.id == entity_id
+            )
+        });
+        let contains_only_creation_scaffold_or_opacity =
+            program.operations.iter().all(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::Create { .. }
+                        | StudioCreationOperationKind::Position { .. }
+                        | StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::OpacityKeyframes { .. }
+                )
+            });
+        let has_competing_appearance_or_removal =
+            programs
+                .iter()
+                .enumerate()
+                .any(|(candidate_index, candidate)| {
+                    candidate_index != *index
+                        && candidate.operations.iter().any(|operation| {
+                            operation.entity_id.as_deref() == Some(entity_id)
+                                && matches!(
+                                    operation.kind,
+                                    StudioCreationOperationKind::Opacity { .. }
+                                        | StudioCreationOperationKind::PersistentRemove { .. }
+                                )
+                        })
+                });
+        if !creates_target
+            || !contains_only_creation_scaffold_or_opacity
+            || has_competing_appearance_or_removal
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+    }
     let followup_programs = timeline
         .ordered_programs
         .iter()
         .copied()
-        .filter(|index| !create_programs.contains(index))
+        .filter(|index| !create_programs.contains(index) && !opacity_programs.contains(index))
         .collect::<Vec<_>>();
 
     let mut create_records = Vec::new();
@@ -930,6 +1084,10 @@ fn plan_studio_creation_edits(
                         )
                         || operation.interval.end <= operation.interval.start
                 }
+                StudioCreationOperationKind::OpacityKeyframes { .. } => operation
+                    .entity_id
+                    .as_deref()
+                    .is_none_or(|entity_id| !program_created_ids.contains(entity_id)),
                 StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -957,12 +1115,14 @@ fn plan_studio_creation_edits(
                 }
                 StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
+                | StudioCreationOperationKind::OpacityKeyframes { .. }
                     if operation
                         .entity_id
                         .as_deref()
                         .is_some_and(|entity_id| scheduled_created_ids.contains(entity_id)) => {}
                 StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
+                | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -1187,12 +1347,116 @@ fn plan_studio_creation_edits(
             instant_rotation: 0.0,
             kind: spec.kind,
             lifetime,
+            opacity_keyframes: Vec::new(),
             persistent_removal: None,
             position: initial_position.clone(),
             scale: 1.0,
             source_z_index: None,
             spec: spec.clone(),
         });
+    }
+
+    for program_index in opacity_programs {
+        let program = &programs[program_index];
+        let (entity_id, track_operations) = closed_studio_opacity_track(program)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let state = entities
+            .iter_mut()
+            .find(|state| state.spec.id == entity_id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let program_rank = timeline.ranks[program_index];
+        if state.creation_program_rank > program_rank
+            || (state.creation_program_rank == program_rank
+                && state.creation_transaction_id != program.transaction_id)
+            || !state.opacity_keyframes.is_empty()
+            || state.persistent_removal.is_some()
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut projected = Vec::with_capacity(track_operations.len());
+        for operation in track_operations {
+            let StudioCreationOperationKind::OpacityKeyframes {
+                easing,
+                from: Some(from),
+                to: Some(to),
+            } = &operation.kind
+            else {
+                unreachable!();
+            };
+            let mut interval = IntervalV1 {
+                end: operation.interval.end + timeline.offsets[program_index],
+                start: operation.interval.start + timeline.offsets[program_index],
+            };
+            if state.creation_program_rank == program_rank
+                && let Some((_, insertion)) = timeline
+                    .ranked_insertions
+                    .iter()
+                    .find(|(rank, _)| *rank == program_rank)
+            {
+                shift_interval_for_insertion(&mut interval, insertion);
+            }
+            for (rank, insertion) in &timeline.ranked_insertions {
+                if *rank > program_rank {
+                    shift_interval_for_insertion(&mut interval, insertion);
+                }
+            }
+            if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+                || state
+                    .fade_interval
+                    .as_ref()
+                    .is_some_and(|fade| interval.start <= fade.end + TIMELINE_ANCHOR_EPSILON)
+            {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            let schedule_index = program
+                .schedule_order
+                .iter()
+                .position(|operation_id| operation_id == &operation.id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            ranked_mutations.push((
+                program_rank,
+                schedule_index,
+                StudioCreationProjectedMutation {
+                    entity_id: entity_id.to_owned(),
+                    interval: interval.clone(),
+                    kind: StudioCreationProjectedMutationKind::OpacityKeyframes {
+                        easing: *easing,
+                        from: *from,
+                        to: *to,
+                    },
+                    operation_id: operation.id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                },
+            ));
+            projected.push((interval, *easing, *from, *to));
+        }
+        if projected.first().is_none_or(|(_, _, from, _)| {
+            !close_transform_baseline_value(*from, state.current_opacity)
+        }) {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut keyframes = Vec::with_capacity(projected.len() + 1);
+        for (index, (interval, easing, from, to)) in projected.iter().enumerate() {
+            if index == 0 {
+                keyframes.push(KeyframeV1 {
+                    at: interval.start,
+                    easing_to_next: (interval.end > interval.start + TIMELINE_ANCHOR_EPSILON)
+                        .then(|| opacity_easing(*easing)),
+                    value: *from,
+                });
+            }
+            if interval.end > interval.start + TIMELINE_ANCHOR_EPSILON {
+                keyframes.push(KeyframeV1 {
+                    at: interval.end,
+                    easing_to_next: projected
+                        .get(index + 1)
+                        .map(|(_, next_easing, _, _)| opacity_easing(*next_easing)),
+                    value: *to,
+                });
+            }
+        }
+        state.opacity_keyframes = keyframes;
     }
 
     let mut planned_motions = Vec::new();
@@ -1683,6 +1947,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
                 | StudioCreationOperationKind::SourceZIndex { .. }
+                | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
@@ -2015,6 +2280,16 @@ fn validate_create_scene_entities_command(
         let appearance_changed = !close_transform_baseline_value(entity.paint_opacity, 1.0)
             || !rotation_is_noop(entity.rotation)
             || has_color_override;
+        let opacity_keyframes_are_valid = entity.opacity_keyframes.iter().all(|keyframe| {
+            keyframe.at.is_finite()
+                && keyframe.at >= entity.lifetime.start
+                && keyframe.at <= entity.lifetime.end
+                && keyframe.value.is_finite()
+                && (0.0..=1.0).contains(&keyframe.value)
+        }) && entity
+            .opacity_keyframes
+            .windows(2)
+            .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON);
         if !entity.paint_opacity.is_finite()
             || !(0.0..=1.0).contains(&entity.paint_opacity)
             || !entity.rotation.is_finite()
@@ -2026,6 +2301,13 @@ fn validate_create_scene_entities_command(
                         | CreateSceneEntityGeometry::Rectangle { .. }
                 ))
             || (!rotation_is_noop(entity.rotation) && entity.instant_transform.is_some())
+            || !opacity_keyframes_are_valid
+            || entity.fade_in.as_ref().is_some_and(|fade| {
+                entity
+                    .opacity_keyframes
+                    .first()
+                    .is_some_and(|keyframe| keyframe.at <= fade.end + TIMELINE_ANCHOR_EPSILON)
+            })
             || (appearance_changed && entity.appearance_at.is_none())
             || entity.appearance_at.is_some_and(|at| {
                 !at.is_finite()
@@ -2087,25 +2369,32 @@ fn append_created_entity(
         source_z_index,
         transform: base_transform.clone(),
     });
+    let mut opacity_keyframes = Vec::new();
     if let Some(fade) = entity.fade_in {
+        capabilities.insert(SceneCapabilityV1::OpacityAnimation);
+        opacity_keyframes.extend([
+            KeyframeV1 {
+                at: lifetime.start,
+                easing_to_next: Some(EasingV1::Smooth {}),
+                value: 0.0,
+            },
+            KeyframeV1 {
+                at: fade.end,
+                easing_to_next: (!entity.opacity_keyframes.is_empty())
+                    .then_some(EasingV1::Linear {}),
+                value: 1.0,
+            },
+        ]);
+    }
+    opacity_keyframes.extend(entity.opacity_keyframes);
+    if !opacity_keyframes.is_empty() {
         capabilities.insert(SceneCapabilityV1::OpacityAnimation);
         let channel_id_prefix = format!("studio-opacity-{scene_order}");
         let channel_id = unused_channel_id(scene, &channel_id_prefix);
         scene.animation_channels.push(AnimationChannelV1::Opacity {
             entity_id: created_id.clone(),
             id: channel_id,
-            keyframes: vec![
-                KeyframeV1 {
-                    at: lifetime.start,
-                    easing_to_next: Some(EasingV1::Smooth {}),
-                    value: 0.0,
-                },
-                KeyframeV1 {
-                    at: fade.end,
-                    easing_to_next: None,
-                    value: 1.0,
-                },
-            ],
+            keyframes: opacity_keyframes,
             provenance_id: provenance_id.to_owned(),
         });
     }
@@ -2511,6 +2800,7 @@ impl EngineSessionV1 {
                 id: state.spec.id.clone(),
                 instant_transform,
                 lifetime: state.lifetime.clone(),
+                opacity_keyframes: state.opacity_keyframes.clone(),
                 paint_opacity: state.current_opacity,
                 position: studio_point_to_scene_point(
                     &state.initial_position,
@@ -2629,6 +2919,7 @@ mod tests {
                         start: 0.5,
                     },
                     paint_opacity: 1.0,
+                    opacity_keyframes: vec![],
                     position: PointV1 { x: 2.0, y: -1.0 },
                     rotation: 0.0,
                     scale: 1.25,
@@ -2650,6 +2941,7 @@ mod tests {
                         start: 0.5,
                     },
                     paint_opacity: 1.0,
+                    opacity_keyframes: vec![],
                     position: PointV1 { x: -2.0, y: 1.0 },
                     rotation: 0.0,
                     scale: 0.5,
@@ -2674,6 +2966,7 @@ mod tests {
                         start: 0.5,
                     },
                     paint_opacity: 1.0,
+                    opacity_keyframes: vec![],
                     position: PointV1 { x: 0.0, y: 1.5 },
                     rotation: 0.0,
                     scale: 2.0,
@@ -2907,6 +3200,34 @@ mod tests {
             schedule_order: vec!["move-created".to_owned()],
             transaction_id: "move-created".to_owned(),
         }
+    }
+
+    fn add_creation_opacity_segment(
+        program: &mut StudioCreationEditInput,
+        entity_id: &str,
+        start: f64,
+        end: f64,
+    ) {
+        for operation in &mut program.operations {
+            operation.origin = StudioAuthoringOrigin::DirectManipulation;
+        }
+        program.origin = StudioAuthoringOrigin::DirectManipulation;
+        program.requested_execution = SceneEditExecution::Sequence;
+        program.schedule_mode = SceneEditScheduleMode::Sequence;
+        program.operations.push(StudioCreationOperation {
+            depends_on: vec![],
+            entity_id: Some(entity_id.to_owned()),
+            id: "opacity-segment".to_owned(),
+            interval: IntervalV1 { end, start },
+            kind: StudioCreationOperationKind::OpacityKeyframes {
+                easing: StudioMotionEasing::Linear,
+                from: Some(1.0),
+                to: Some(0.0),
+            },
+            origin: StudioAuthoringOrigin::DirectManipulation,
+        });
+        program.schedule_order.push("opacity-segment".to_owned());
+        program.schedule_edge_count = 6;
     }
 
     fn studio_created_appearance_edit_input(
@@ -4045,6 +4366,108 @@ mod tests {
 
         let mut session = EngineSessionV1::new(bundle).unwrap();
         assert!(session.apply_studio_creation_edit(command).is_ok());
+    }
+
+    #[test]
+    fn creation_opacity_track_uses_the_existing_timeline_without_inserting_time() {
+        let bundle = static_imported_bundle();
+        let base_duration = bundle.scene.duration;
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        add_creation_opacity_segment(&mut command.programs[0], entity_id, 1.0, 1.4);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+
+        assert!((result.bundle.scene.duration - (base_duration + 0.4)).abs() < 1e-12);
+        assert_eq!(
+            result
+                .creation_projection
+                .as_ref()
+                .unwrap()
+                .insertions
+                .len(),
+            1
+        );
+        let opacity = result
+            .creation_projection
+            .as_ref()
+            .unwrap()
+            .mutations
+            .iter()
+            .find(|mutation| mutation.operation_id == "opacity-segment")
+            .unwrap();
+        assert!(
+            (opacity.interval.start - 1.4).abs() < 1e-12,
+            "projected opacity interval: {:?}",
+            opacity.interval
+        );
+        assert!((opacity.interval.end - 1.8).abs() < 1e-12);
+        assert!(matches!(
+            opacity.kind,
+            StudioCreationProjectedMutationKind::OpacityKeyframes {
+                easing: StudioMotionEasing::Linear,
+                from: 1.0,
+                to: 0.0,
+            }
+        ));
+        let channel_keyframes = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::Opacity {
+                    entity_id: candidate,
+                    keyframes,
+                    ..
+                } if candidate == entity_id => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            channel_keyframes
+                .iter()
+                .zip([0.5, 0.9, 1.4, 1.8])
+                .all(|(keyframe, expected)| (keyframe.at - expected).abs() < 1e-12)
+        );
+        let packet = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "opacity-track-midpoint",
+                sample_time: 1.6,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        let alpha = packet
+            .draws
+            .iter()
+            .find(|draw| draw.entity_id() == entity_id)
+            .map(poietra_scene_ir::RenderDrawV1::opacity)
+            .unwrap();
+        assert!((alpha - 0.5).abs() < 1e-12, "sampled alpha: {alpha}");
+    }
+
+    #[test]
+    fn creation_opacity_track_rejects_a_mixed_non_creation_operation() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        let resize = command.programs[1].operations[0].clone();
+        add_creation_opacity_segment(&mut command.programs[0], entity_id, 1.0, 1.4);
+        command.programs[0].operations.push(resize);
+        command.programs[0].schedule_order.push("resize".to_owned());
+        command.programs[0].schedule_edge_count = 8;
+        command.programs.truncate(1);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
     }
 
     #[test]

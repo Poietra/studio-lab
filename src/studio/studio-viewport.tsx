@@ -91,6 +91,8 @@ export function StudioViewport({
   lifetimeTrimDisabled,
   motionDuration,
   motionPaths,
+  opacityTrackEligibleIds,
+  opacityTracks,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
   onCanvasPlace,
@@ -119,6 +121,9 @@ export function StudioViewport({
   onLifetimeChange,
   onMotionControlChange,
   onMotionDurationChange,
+  onOpacityKeyframeAdd,
+  onOpacityKeyframeChange,
+  onOpacityKeyframeDelete,
   onPresenceCursorChange,
   onSelectionResizeCancel,
   onSelectionResizeKeyDown,
@@ -223,11 +228,16 @@ export function StudioViewport({
           lifetimeTrimDisabled={lifetimeTrimDisabled}
           motionDuration={motionDuration}
           objectTracks={projection.timeline.objectTracks}
+          opacityTrackEligibleIds={opacityTrackEligibleIds}
+          opacityTracks={opacityTracks}
           onAppliedMotionClipChange={onAppliedMotionClipChange}
           onAppliedMotionClipSelect={onAppliedMotionClipSelect}
           onInteractionModeChange={onInteractionModeChange}
           onLifetimeChange={onLifetimeChange}
           onMotionDurationChange={onMotionDurationChange}
+          onOpacityKeyframeAdd={onOpacityKeyframeAdd}
+          onOpacityKeyframeChange={onOpacityKeyframeChange}
+          onOpacityKeyframeDelete={onOpacityKeyframeDelete}
           onSelectEntity={onSelectEntity}
           onTimeChange={onTimeChange}
           onTogglePlayback={onTogglePlayback}

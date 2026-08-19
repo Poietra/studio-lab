@@ -307,7 +307,8 @@ function editorDraftPreflightError(state: EditorControllerState, input: StageDra
     input.operation,
     input.selectedObjectIds ?? state.selectedObjectIds,
   );
-  const activeEdit = input.clearAppliedEdit ? null : state.editingAppliedProgram;
+  const activeEdit =
+    input.appliedEdit !== undefined ? input.appliedEdit : input.clearAppliedEdit ? null : state.editingAppliedProgram;
   const result = activeEdit
     ? replaceAppliedProgram(programs, activeEdit.original.program.transactionId, candidate)
     : appendAppliedProgram(programs, candidate);

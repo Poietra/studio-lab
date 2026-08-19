@@ -592,6 +592,18 @@ const studioCreationProjectionV1Schema = z
           .strict(),
         z
           .object({
+            easing: z.enum(["linear", "smooth"]),
+            entityId: z.string().min(1),
+            from: finiteNumberSchema.min(0).max(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("opacity-keyframes"),
+            operationId: z.string().min(1),
+            to: finiteNumberSchema.min(0).max(1),
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
             entityId: z.string().min(1),
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("source-z-index"),
@@ -809,6 +821,13 @@ type StudioCreationOperationV1 = Readonly<{
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
     | Readonly<{ alpha: number | null; entityId: string; kind: "opacity" }>
     | Readonly<{ entityId: string; kind: "source-z-index"; sourceZIndex: number | null }>
+    | Readonly<{
+        easing: "linear" | "smooth";
+        entityId: string;
+        from: number | null;
+        kind: "opacity-keyframes";
+        to: number | null;
+      }>
     | Readonly<{ entityId: string; kind: "persistent-remove"; persistent: boolean }>
     | Readonly<{
         controlPresent: boolean;
