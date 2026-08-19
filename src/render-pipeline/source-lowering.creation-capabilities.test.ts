@@ -182,6 +182,32 @@ describe("Canonical EditProgram source lowering", () => {
     },
   );
 
+  it("rejects non-default Text layout instead of dropping it from Python export", () => {
+    const create = canonicalProgram(
+      [
+        {
+          ...operationBase("create-layout-text", 7),
+          entity: {
+            content: {
+              displayLines: ["Wide"],
+              text: "Wide",
+              textLayout: { alignment: "right", lineHeight: 1.8 },
+            },
+            id: "tx:layout-text/entity:label",
+            lifetime: { end: null, start: 7 },
+            type: "Text",
+          },
+          kind: "CreateEntity",
+        },
+      ],
+      "layout-text",
+    );
+
+    expect(() => lowerCanonicalProgramSource(source, request(create, []), { height: 8, width: 14.222 }, null)).toThrow(
+      /Python export would not preserve it faithfully/i,
+    );
+  });
+
   it("lowers Studio-created shape colors in operation order with the current opacity", () => {
     const entityId = "tx:created-colors/entity:circle";
     const create = canonicalProgram(

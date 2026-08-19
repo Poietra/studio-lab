@@ -14,7 +14,7 @@ assert.equal(outline.poietraMathTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileMathTexOutlineV1, "function");
 assert.equal(outline.poietraSegmentedTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileSegmentedTexOutlineV1, "function");
-assert.equal(outline.poietraTextOutlineAbiVersion(), 1);
+assert.equal(outline.poietraTextOutlineAbiVersion(), 2);
 assert.equal(typeof outline.compileTextOutlineV1, "function");
 
 const encoder = new TextEncoder();
@@ -40,6 +40,7 @@ function compileWasm(request) {
 function encodeTextRequest(text) {
   return encoder.encode(
     JSON.stringify({
+      layout: { alignment: "left", lineHeight: 1.2 },
       schema: "poietra.text-outline-request",
       text,
       version: 1,

@@ -33,6 +33,13 @@ const contentSchema = z.object({
   label: z.string().optional(),
   texParts: z.array(z.string()).optional(),
   text: z.string().optional(),
+  textLayout: z
+    .object({
+      alignment: z.enum(["center", "left", "right"]),
+      lineHeight: z.number().finite().positive(),
+    })
+    .strict()
+    .optional(),
 });
 
 /** Structural grammar shared by every accepted Scene Edit boundary. */

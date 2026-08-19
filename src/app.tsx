@@ -39,6 +39,7 @@ import {
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
+  replaceStudioTextContentProgram,
   type StudioEntityInput,
 } from "./studio/authoring-commands";
 import { canvasDragTargetEntityIds, toggleCanvasEntitySelection } from "./studio/canvas-selection";
@@ -2250,6 +2251,52 @@ export function App({
     }
   }
 
+  function sourceSceneBeforeAppliedProgram(index: number) {
+    if (!projectedActiveScene) throw new Error("The active Scene is unavailable.");
+    const preceding = appliedEdits.slice(0, index);
+    const timelineProjection = timelineProjectionForRecords(preceding);
+    const boundEntityProjection = boundEntityProjectionForRecords(preceding);
+    const creationProjection = creationProjectionForRecords(preceding);
+    const mathTexTransformProjection = mathTexTransformProjectionForRecords(preceding);
+    const motionProjection = motionProjectionForRecords(preceding);
+    const persistentRemoveProjection = persistentRemoveProjectionForRecords(preceding);
+    const editAuthority = workspaceEditAuthorityForRecords(preceding);
+    const staticRootProjection = staticRootProjectionForRecords(preceding);
+    if (
+      timelineProjection === undefined ||
+      boundEntityProjection === undefined ||
+      creationProjection === undefined ||
+      mathTexTransformProjection === undefined ||
+      motionProjection === undefined ||
+      persistentRemoveProjection === undefined ||
+      editAuthority === undefined ||
+      staticRootProjection === undefined
+    ) {
+      throw new Error("Wait for the Rust authoring projection before replacing an applied Program.");
+    }
+    const state = projectStudioWorkspace({
+      activeScene: projectedActiveScene,
+      appliedEdits: preceding,
+      boundEntityProjection,
+      creationProjection,
+      currentTime,
+      draftEdit: null,
+      mathTexTransformProjection,
+      motionProjection,
+      nextScene,
+      persistentRemoveProjection,
+      editAuthority,
+      selectedObjectIds,
+      staticRootProjection,
+      timelineProjection,
+    }).proposedState.evaluatedScene;
+    const canonical = preceding.map((record) => record.program);
+    return {
+      canonical,
+      scene: projectRuntimeSceneToSourceTimeline(state, canonical),
+    } as const;
+  }
+
   function editEntityLifetime(
     entityId: string,
     workingLifetimeStart: number,
@@ -2264,53 +2311,6 @@ export function App({
       return false;
     }
 
-    const sourceSceneBefore = (index: number) => {
-      const preceding = appliedEdits.slice(0, index);
-      const timelineProjection = timelineProjectionForRecords(preceding);
-      const boundEntityProjection = boundEntityProjectionForRecords(preceding);
-      const creationProjection = creationProjectionForRecords(preceding);
-      const mathTexTransformProjection = mathTexTransformProjectionForRecords(preceding);
-      const motionProjection = motionProjectionForRecords(preceding);
-      const persistentRemoveProjection = persistentRemoveProjectionForRecords(preceding);
-      const editAuthority = workspaceEditAuthorityForRecords(preceding);
-      const staticRootProjection = staticRootProjectionForRecords(preceding);
-      if (
-        timelineProjection === undefined ||
-        boundEntityProjection === undefined ||
-        creationProjection === undefined ||
-        mathTexTransformProjection === undefined ||
-        motionProjection === undefined ||
-        persistentRemoveProjection === undefined ||
-        editAuthority === undefined ||
-        staticRootProjection === undefined
-      ) {
-        throw new Error("Wait for the Rust authoring projection before editing this object lifetime.");
-      }
-      const state = projectStudioWorkspace({
-        activeScene: projectedActiveScene,
-        appliedEdits: preceding,
-        boundEntityProjection,
-        creationProjection,
-        currentTime,
-        draftEdit: null,
-        mathTexTransformProjection,
-        motionProjection,
-        nextScene,
-        persistentRemoveProjection,
-        editAuthority,
-        selectedObjectIds,
-        staticRootProjection,
-        timelineProjection,
-      }).proposedState.evaluatedScene;
-      return {
-        canonical: preceding.map((record) => record.program),
-        scene: projectRuntimeSceneToSourceTimeline(
-          state,
-          preceding.map((record) => record.program),
-        ),
-      } as const;
-    };
-
     // A new lifetime edit has no Rust projection until it is staged under its
     // new working revision. The correlated preview gates Apply after staging.
     try {
@@ -2321,7 +2321,7 @@ export function App({
             "Another applied Program controls this object's lifetime end. Edit or remove that Program first.",
           );
         }
-        const preceding = sourceSceneBefore(owner.index);
+        const preceding = sourceSceneBeforeAppliedProgram(owner.index);
         const validation = replaceStudioEntityLifetimeProgram({
           entityId,
           owner: owner.record,
@@ -2380,7 +2380,7 @@ export function App({
       ) {
         throw new Error("The selected lifetime end is not backed by a safe .py source anchor.");
       }
-      const preceding = existing ? sourceSceneBefore(existing.index) : null;
+      const preceding = existing ? sourceSceneBeforeAppliedProgram(existing.index) : null;
       const editIndex = existing?.index ?? appliedEdits.length;
       const validation = createImportedEntityLifetimeProgram({
         entityId,
@@ -3521,6 +3521,46 @@ export function App({
     const runtimeTraceTransformAuthority = runtimeTraceProjectionAuthorityFor(entityId);
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     if (!entity || (!entity.present && runtimeTraceTransformAuthority?.studioEntityId !== entityId)) return false;
+    const replacesStudioTextContent =
+      edits.content !== undefined &&
+      entity.type === "Text" &&
+      entity.sourceIdentity.kind === "unknown" &&
+      Boolean(entity.transactionId);
+    if (replacesStudioTextContent) {
+      if (edits.position || edits.dimensions) {
+        setDraftError("Apply Text content and typography separately from position or size changes.");
+        return false;
+      }
+      if (draftEdit) {
+        setDraftError("Apply or discard the current draft before editing Text content or typography.");
+        return false;
+      }
+      const owner = findStudioLifetimeOwner(appliedEdits, entityId);
+      if (!owner || owner.record.program.transactionId !== entity.transactionId) {
+        setDraftError("The Studio-created Text has no unique creation owner.");
+        return false;
+      }
+      try {
+        const preceding = sourceSceneBeforeAppliedProgram(owner.index);
+        const validation = replaceStudioTextContentProgram({
+          content: edits.content,
+          entityId,
+          owner: owner.record,
+          scene: preceding.scene,
+        });
+        const validated = validatedProgramRecord(validation);
+        if (validated.kind === "invalid") throw new Error(validated.message);
+        const installed = installCanonicalDraft(validated.record, [entityId], preceding.canonical, null, {
+          index: owner.index,
+          original: owner.record,
+        });
+        if (installed) setInspectorReturnFocus(returnFocus);
+        return installed;
+      } catch (error) {
+        setDraftError(error instanceof Error ? error.message : "The Text creation Program could not be updated.");
+        return false;
+      }
+    }
     if (runtimeTraceTransformAuthority?.studioEntityId === entityId) {
       const runtimeTraceTransformBaseCenter = studioPreviewRuntimeTraceEditBaseCenter(runtimeTraceTransformAuthority);
       if (!runtimeTraceTransformBaseCenter || !edits.position || edits.content || edits.dimensions) {

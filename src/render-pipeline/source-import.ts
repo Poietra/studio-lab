@@ -241,7 +241,18 @@ const markerContentBaseSchema = z.object({
 const contentMarkerSchema = z.discriminatedUnion("type", [
   z
     .object({
-      content: markerContentBaseSchema.extend({ text: z.string().min(1).max(2_000) }).strict(),
+      content: markerContentBaseSchema
+        .extend({
+          text: z.string().min(1).max(2_000),
+          textLayout: z
+            .object({
+              alignment: z.enum(["center", "left", "right"]),
+              lineHeight: z.number().finite().positive(),
+            })
+            .strict()
+            .optional(),
+        })
+        .strict(),
       type: z.literal("Text"),
       variable: identifierSchema,
       version: z.literal(1),

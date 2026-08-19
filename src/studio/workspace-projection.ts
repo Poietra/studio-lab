@@ -10,7 +10,7 @@ import type {
   StudioStaticRootProjectionV1,
   StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
-import { canonicalEditableContent, studioCreationText } from "./editable-content";
+import { canonicalEditableContent, STUDIO_TEXT_DEFAULT_LAYOUT, studioCreationTextContent } from "./editable-content";
 import { insertSceneTime, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import {
@@ -351,10 +351,16 @@ function correlateCreationProjection(
       operation?.kind === "CreateEntity" && operation.entity.type === "MathTex"
         ? canonicalEditableContent(operation.entity.content, "MathTex")?.texParts
         : undefined;
-    const expectedText =
+    const expectedTextContent =
       operation?.kind === "CreateEntity" && operation.entity.type === "Text"
-        ? (studioCreationText(operation.entity.content) ?? undefined)
+        ? (studioCreationTextContent(operation.entity.content) ?? undefined)
         : undefined;
+    const projectedLayout = entity.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
+    const textContentMismatch = expectedTextContent
+      ? entity.text !== expectedTextContent.text ||
+        projectedLayout.alignment !== expectedTextContent.layout.alignment ||
+        !sameProjectionNumber(projectedLayout.lineHeight, expectedTextContent.layout.lineHeight)
+      : entity.text !== undefined || entity.layout !== undefined;
     if (
       !expected ||
       operation?.kind !== "CreateEntity" ||
@@ -367,7 +373,7 @@ function correlateCreationProjection(
       (expectedTexParts
         ? !entity.texParts || !sameStrings(entity.texParts, expectedTexParts)
         : entity.texParts !== undefined) ||
-      entity.text !== expectedText
+      textContentMismatch
     ) {
       throw new TypeError(`Created entity ${entity.operationId} is not correlated with the Rust projection.`);
     }

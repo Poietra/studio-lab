@@ -1,4 +1,9 @@
-import { canonicalEditableContent, STUDIO_CREATION_TEXT_CONTRACT, studioCreationText } from "./editable-content";
+import {
+  canonicalEditableContent,
+  STUDIO_CREATION_TEXT_CONTRACT,
+  STUDIO_TEXT_DEFAULT_LAYOUT,
+  studioCreationTextContent,
+} from "./editable-content";
 import {
   importedLifetimeEditEvidence,
   MIN_OBJECT_LIFETIME_SECONDS,
@@ -215,6 +220,25 @@ export function createInspectorEntityEditProgram(
   if (input.edits.content && entity.sourceIdentity.kind === "unknown" && !entity.transactionId) {
     throw new Error("Studio cannot edit content without a known or Studio-generated source identity.");
   }
+  if (
+    input.edits.content &&
+    entity.type === "Text" &&
+    entity.sourceIdentity.kind === "unknown" &&
+    entity.transactionId
+  ) {
+    throw new Error("Studio-created Text content must replace its creation Program.");
+  }
+  if (
+    input.edits.content &&
+    entity.type === "Text" &&
+    (entity.sourceIdentity.kind !== "unknown" || !entity.transactionId)
+  ) {
+    const before = studioCreationTextContent(entity.content)?.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
+    const after = studioCreationTextContent(input.edits.content)?.layout;
+    if (after && (after.alignment !== before.alignment || after.lineHeight !== before.lineHeight)) {
+      throw new Error("Typography editing is available only for Studio-created Text.");
+    }
+  }
   if (Object.keys(input.edits).length === 0) {
     throw new Error("Change at least one Inspector field before creating a draft.");
   }
@@ -270,6 +294,34 @@ export function createInspectorEntityEditProgram(
     scene: input.scene,
     transactionId: input.transactionId,
   });
+}
+
+export function replaceStudioTextContentProgram(
+  input: Readonly<{
+    content: EntityContent;
+    entityId: string;
+    owner: ProgramRecord;
+    scene: RuntimeSceneState;
+  }>,
+): SceneEditValidationResult {
+  const content = canonicalEditableContent(input.content, "Text");
+  if (!content) throw new Error(STUDIO_CREATION_TEXT_CONTRACT);
+  let replacementCount = 0;
+  const operations = input.owner.program.operations.map((operation) => {
+    if (operation.kind !== "CreateEntity" || operation.entity.id !== input.entityId) return operation;
+    if (operation.entity.type !== "Text") {
+      throw new Error("Only a Studio-created Text entity can replace its creation content.");
+    }
+    replacementCount += 1;
+    return {
+      ...operation,
+      entity: { ...operation.entity, content },
+    } satisfies SceneEditOperation;
+  });
+  if (replacementCount !== 1) {
+    throw new Error("The Studio-created Text has no unique creation owner.");
+  }
+  return validateAndScheduleProgram({ ...input.owner.program, operations }, input.scene);
 }
 
 export function createRemoveEntitiesProgram(
@@ -663,9 +715,12 @@ export function duplicateEntityInput(
 export function defaultEntityContent(type: InsertEntityType, value: string): EntityContent | undefined {
   if (type === "Text") {
     const candidate = value.trim().length === 0 ? "Text" : value;
-    const text = studioCreationText({ displayLines: candidate.split(/\r?\n/u), text: candidate });
-    if (text === null) throw new Error(STUDIO_CREATION_TEXT_CONTRACT);
-    return { displayLines: text.split("\n"), label: text, text };
+    const content = canonicalEditableContent(
+      { displayLines: candidate.split(/\r?\n/u), label: candidate, text: candidate },
+      "Text",
+    );
+    if (content === null) throw new Error(STUDIO_CREATION_TEXT_CONTRACT);
+    return content;
   }
   const normalized = value.trim();
   if (type === "MathTex") {

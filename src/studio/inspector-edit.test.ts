@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
-
-import { projectProposedState } from "./evaluator";
 import { entityInspectorKey } from "./entity-inspector";
+import { projectProposedState } from "./evaluator";
 import { createFixtureProposedState } from "./fixture";
-import { initialInspectorEditValues, validateInspectorEdits, type InspectorEditValues } from "./inspector-edit";
+import { type InspectorEditValues, initialInspectorEditValues, validateInspectorEdits } from "./inspector-edit";
 import type { ProjectedEntity } from "./model";
 
 function fixtureEntity(id: string) {
@@ -16,6 +15,15 @@ function fixtureEntity(id: string) {
 
 function values(entity: ProjectedEntity, changes: Partial<InspectorEditValues> = {}) {
   return { ...initialInspectorEditValues(entity), ...changes };
+}
+
+function studioTextEntity() {
+  return {
+    ...fixtureEntity("label_1"),
+    id: "tx:studio-text/entity:label",
+    sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
+    transactionId: "studio-text",
+  } satisfies ProjectedEntity;
 }
 
 describe("Inspector field validation", () => {
@@ -51,6 +59,7 @@ describe("Inspector field validation", () => {
           displayLines: ["日本語で動画を作る", "こんにちは"],
           label: undefined,
           text: "日本語で動画を作る\nこんにちは",
+          textLayout: { alignment: "left", lineHeight: 1.2 },
         },
       },
       kind: "valid",
@@ -61,6 +70,30 @@ describe("Inspector field validation", () => {
       content: { displayLines: ["日本語で動画を作る", "こんにちは"], text: "日本語で動画を作る\r\nこんにちは" },
     } satisfies ProjectedEntity;
     expect(initialInspectorEditValues(restored).content).toBe("日本語で動画を作る\nこんにちは");
+  });
+
+  it("validates Text alignment and line height as one content edit", () => {
+    const entity = studioTextEntity();
+    expect(validateInspectorEdits(entity, values(entity, { textAlignment: "center", textLineHeight: "1.8" }))).toEqual({
+      edits: {
+        content: {
+          displayLines: ["energy"],
+          label: undefined,
+          text: "energy",
+          textLayout: { alignment: "center", lineHeight: 1.8 },
+        },
+      },
+      kind: "valid",
+    });
+    expect(validateInspectorEdits(entity, values(entity, { textLineHeight: "0" }))).toEqual({
+      errors: { textLineHeight: expect.stringMatching(/greater than zero/i) },
+      kind: "invalid",
+    });
+    const imported = fixtureEntity("label_1");
+    expect(validateInspectorEdits(imported, values(imported, { textAlignment: "right" }))).toEqual({
+      errors: { textAlignment: expect.stringMatching(/only for Studio-created Text/i) },
+      kind: "invalid",
+    });
   });
 
   it("reports MathTex syntax and empty parts on the content field before staging", () => {

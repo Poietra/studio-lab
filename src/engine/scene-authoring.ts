@@ -469,6 +469,12 @@ const studioStaticRootDimensionsV1Schema = z
     width: finiteNumberSchema.optional(),
   })
   .strict();
+const studioTextLayoutV1Schema = z
+  .object({
+    alignment: z.enum(["center", "left", "right"]),
+    lineHeight: finiteNumberSchema.positive(),
+  })
+  .strict();
 const studioMathTexContentV1Schema = z
   .object({
     displayLines: z.array(z.string()).min(1),
@@ -516,13 +522,9 @@ const studioCreationProjectionV1Schema = z
           initialDimensions: studioStaticRootDimensionsV1Schema,
           initialScale: finiteNumberSchema.positive(),
           kind: z.enum(["arrow", "circle", "line", "math-tex", "rectangle", "text"]),
+          layout: studioTextLayoutV1Schema.optional(),
           operationId: z.string().min(1),
-          text: z
-            .string()
-            .min(1)
-            .max(256)
-            .regex(/^[\x20-\x7e]+$/u)
-            .optional(),
+          text: z.string().min(1).max(256).optional(),
           texParts: z.array(z.string().min(1)).optional(),
           transactionId: z.string().min(1),
         })
@@ -762,6 +764,10 @@ const studioTimelineProjectionV1Schema = z
 
 type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StudioCreationEntityKindV1 = "arrow" | "circle" | "image" | "line" | "math-tex" | "other" | "rectangle" | "text";
+type StudioTextContentV1 = Readonly<{
+  layout: Readonly<{ alignment: "center" | "left" | "right"; lineHeight: number }>;
+  text: string;
+}>;
 type StudioCreationOperationV1 = Readonly<{
   dependsOn: readonly string[];
   entityId?: string;
@@ -775,6 +781,7 @@ type StudioCreationOperationV1 = Readonly<{
           dimensions: StudioCreationDimensionsV1;
           id: string;
           kind: StudioCreationEntityKindV1;
+          layout: StudioTextContentV1["layout"] | null;
           lifetimeEnd: number | null;
           lifetimeStart: number;
           text: string | null;
@@ -833,6 +840,7 @@ export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
   }>[];
   textOutlines: readonly Readonly<{
     entityId: string;
+    layout: StudioTextContentV1["layout"];
     path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
     text: string;
   }>[];

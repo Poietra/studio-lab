@@ -81,10 +81,16 @@ export async function authorizeSnapshotProgramWithSnapshot(
   if (hasStudioCreation) {
     const mathTexOutlines = [];
     const textOutlines = [];
+    const textInputs = new Map<
+      string,
+      Readonly<{
+        content: NonNullable<ReturnType<typeof studioCreationTextContent>>;
+        entityId: string;
+      }>
+    >();
     for (const program of input.programs) {
       for (const operation of program.operations) {
-        if (operation.kind !== "CreateEntity") continue;
-        if (operation.entity.type === "MathTex") {
+        if (operation.kind === "CreateEntity" && operation.entity.type === "MathTex") {
           const texParts = studioCreationMathTexParts(operation.entity.content);
           if (!texParts) {
             throw new HttpError("Studio-created MathTex requires canonical non-empty TeX parts.", 400);
@@ -105,32 +111,35 @@ export async function authorizeSnapshotProgramWithSnapshot(
             );
           }
           mathTexOutlines.push({ entityId: operation.entity.id, path: response.result.path, texParts });
-        } else if (operation.entity.type === "Text") {
-          const text = studioCreationTextContent(operation.entity.content);
-          if (!text) {
-            throw new HttpError(
-              "Studio-created Text requires one printable ASCII line of at most 256 characters.",
-              400,
-            );
+        } else if (operation.kind === "CreateEntity" && operation.entity.type === "Text") {
+          const content = studioCreationTextContent(operation.entity.content);
+          if (!content) {
+            throw new HttpError("Studio-created Text requires bounded canonical Unicode content and layout.", 400);
           }
-          let response;
-          try {
-            response = await compileTextOutlineV1(text);
-          } catch {
-            throw new HttpError("The server Text outline compiler is unavailable.", 503);
-          }
-          if (response.result.kind === "unsupported") {
-            if (response.result.code === "internal-failure") {
-              throw new HttpError("The server Text outline compiler failed.", 500);
-            }
-            throw new HttpError(
-              `Studio-created Text is unsupported (${response.result.code}): ${response.result.message}`,
-              400,
-            );
-          }
-          textOutlines.push({ entityId: operation.entity.id, path: response.result.path, text });
+          textInputs.set(
+            `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.lineHeight}`,
+            { content, entityId: operation.entity.id },
+          );
         }
       }
+    }
+    for (const { content, entityId } of textInputs.values()) {
+      let response;
+      try {
+        response = await compileTextOutlineV1(content);
+      } catch {
+        throw new HttpError("The server Text outline compiler is unavailable.", 503);
+      }
+      if (response.result.kind === "unsupported") {
+        if (response.result.code === "internal-failure") {
+          throw new HttpError("The server Text outline compiler failed.", 500);
+        }
+        throw new HttpError(
+          `Studio-created Text is unsupported (${response.result.code}): ${response.result.message}`,
+          400,
+        );
+      }
+      textOutlines.push({ entityId, layout: content.layout, path: response.result.path, text: content.text });
     }
     await compileApplyStudioCreationEdit(
       bundle,

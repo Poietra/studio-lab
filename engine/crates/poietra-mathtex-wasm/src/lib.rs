@@ -20,7 +20,7 @@ pub const POIETRA_MATHTEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Independent sibling ABI version for ordered Tex/MathTex fragments.
 pub const POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Independent sibling ABI version for bounded plain text.
-pub const POIETRA_TEXT_OUTLINE_ABI_VERSION_V1: u32 = 1;
+pub const POIETRA_TEXT_OUTLINE_ABI_VERSION: u32 = 2;
 /// Upper bound for one JSON compilation request crossing the WASM boundary.
 pub const MAX_MATHTEX_OUTLINE_REQUEST_JSON_BYTES_V1: usize = 16 * 1024;
 /// Upper bound for one JSON compilation response crossing the WASM boundary.
@@ -175,7 +175,7 @@ pub fn poietra_segmented_tex_outline_abi_version() -> u32 {
 #[must_use]
 #[wasm_bindgen(js_name = poietraTextOutlineAbiVersion)]
 pub fn poietra_text_outline_abi_version() -> u32 {
-    POIETRA_TEXT_OUTLINE_ABI_VERSION_V1
+    POIETRA_TEXT_OUTLINE_ABI_VERSION
 }
 
 /// Compiles one bounded, versioned `MathTex` request into a bounded response.
@@ -251,7 +251,7 @@ mod tests {
     fn exported_abi_version_is_explicit() {
         assert_eq!(poietra_mathtex_outline_abi_version(), 1);
         assert_eq!(poietra_segmented_tex_outline_abi_version(), 1);
-        assert_eq!(poietra_text_outline_abi_version(), 1);
+        assert_eq!(poietra_text_outline_abi_version(), 2);
     }
 
     #[test]
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn text_boundary_compiles_ascii_and_japanese_blocks_without_changing_mathtex_contract() {
         let response = compile_text_outline_json_v1(
-            br#"{"schema":"poietra.text-outline-request","version":1,"text":"Hello AV"}"#,
+            br#"{"layout":{"alignment":"left","lineHeight":1.2},"schema":"poietra.text-outline-request","version":1,"text":"Hello AV"}"#,
         );
         let decoded = decode(&response);
         assert_eq!(decoded["schema"], "poietra.text-outline-response");
@@ -305,7 +305,7 @@ mod tests {
         );
 
         let japanese = compile_text_outline_json_v1(
-            "{\"schema\":\"poietra.text-outline-request\",\"version\":1,\"text\":\"日本語で動画を作る\\nこんにちは\"}"
+            "{\"layout\":{\"alignment\":\"right\",\"lineHeight\":1.8},\"schema\":\"poietra.text-outline-request\",\"version\":1,\"text\":\"日本語で動画を作る\\nこんにちは\"}"
                 .as_bytes(),
         );
         assert_eq!(decode(&japanese)["result"]["kind"], "compiled");
@@ -326,12 +326,12 @@ mod tests {
         assert_eq!(decode(&malformed)["result"]["code"], "invalid-request");
 
         let crlf = compile_text_outline_json_v1(
-            br#"{"schema":"poietra.text-outline-request","version":1,"text":"a\r\nb"}"#,
+            br#"{"layout":{"alignment":"left","lineHeight":1.2},"schema":"poietra.text-outline-request","version":1,"text":"a\r\nb"}"#,
         );
         assert_eq!(decode(&crlf)["result"]["kind"], "compiled");
 
         let control = compile_text_outline_json_v1(
-            br#"{"schema":"poietra.text-outline-request","version":1,"text":"a\tb"}"#,
+            br#"{"layout":{"alignment":"left","lineHeight":1.2},"schema":"poietra.text-outline-request","version":1,"text":"a\tb"}"#,
         );
         assert_eq!(decode(&control)["result"]["code"], "character-unsupported");
 

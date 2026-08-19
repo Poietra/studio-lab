@@ -31,6 +31,11 @@ export type EntityStyle = Readonly<{
   strokeColor?: string;
 }>;
 
+export type TextLayout = Readonly<{
+  alignment: "center" | "left" | "right";
+  lineHeight: number;
+}>;
+
 export type EntityGeometryKnowledge = Readonly<{
   dimensions: Knowledge<EntityDimensions>;
   position: Knowledge<Point>;
@@ -62,6 +67,7 @@ export type EntityContent = Readonly<{
   label?: string;
   texParts?: readonly string[];
   text?: string;
+  textLayout?: TextLayout;
 }>;
 
 export type RuntimeEntity = Readonly<{

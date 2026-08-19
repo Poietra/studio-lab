@@ -92,6 +92,7 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
             dimensions: {},
             id: "tx:create/entity:line",
             kind: "line",
+            layout: null,
             lifetimeEnd: null,
             lifetimeStart: 0.5,
             text: null,

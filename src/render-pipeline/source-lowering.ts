@@ -2,7 +2,11 @@ import { createHash } from "node:crypto";
 
 import { MAX_COORDINATE } from "../engine/primitives";
 import type { StudioTimelineEditTransformV1 } from "../engine/scene-authoring";
-import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
+import {
+  canonicalEditableContent,
+  type EditableContentType,
+  STUDIO_TEXT_DEFAULT_LAYOUT,
+} from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
 import type { EntityContent, MotionEasing } from "../studio/model";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
@@ -726,11 +730,24 @@ function variableAllocator(source: string, transactionId: string, additionalRese
   };
 }
 
-function manimTextConstructor(text: string, options: Readonly<{ unitHeight?: boolean }> = {}) {
+function manimTextConstructor(
+  text: string,
+  options: Readonly<{ layout?: EntityContent["textLayout"]; unitHeight?: boolean }> = {},
+) {
   if (/[^\u0020-\u007e]/u.test(text)) {
     throw new ProgramLoweringError(
       "operation-unsupported",
       "Manim .py export does not yet preserve Unicode or multiline Text faithfully. Preview and MP4 export support this text, but Python export would not preserve it faithfully.",
+    );
+  }
+  const layout = options.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
+  if (
+    layout.alignment !== STUDIO_TEXT_DEFAULT_LAYOUT.alignment ||
+    layout.lineHeight !== STUDIO_TEXT_DEFAULT_LAYOUT.lineHeight
+  ) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Manim .py export does not yet preserve Studio Text alignment or line height faithfully. Preview and MP4 export support this layout, but Python export would not preserve it faithfully.",
     );
   }
   if (!options.unitHeight) return `Text(${JSON.stringify(text)})`;
@@ -751,7 +768,7 @@ function entityConstructor(operation: CreateEntityOperation) {
   }
   if (type === "Text") {
     const text = content?.text ?? content?.displayLines.join(" ") ?? "";
-    return manimTextConstructor(text, { unitHeight: true });
+    return manimTextConstructor(text, { layout: content?.textLayout, unitHeight: true });
   }
   const shapeConstructor = {
     Arrow: "Arrow(LEFT, RIGHT, buff=0)",
@@ -829,7 +846,7 @@ function contentTarget(value: unknown): Readonly<{
   const content = canonicalEditableContent(value, type);
   if (!content) return null;
   if (type === "Text" && content.text !== undefined) {
-    return { content, constructor: manimTextConstructor(content.text), type: "Text" };
+    return { content, constructor: manimTextConstructor(content.text, { layout: content.textLayout }), type: "Text" };
   }
   if (!content.texParts) return null;
   return {
@@ -1506,7 +1523,9 @@ export function lowerCanonicalProgramSource(
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
         const target =
           operation.targetType === "Text"
-            ? manimTextConstructor(operation.replacement.text ?? operation.replacement.displayLines.join(" "))
+            ? manimTextConstructor(operation.replacement.text ?? operation.replacement.displayLines.join(" "), {
+                layout: operation.replacement.textLayout,
+              })
             : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
         output.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: targetVariable })}`);
         output.push(`${targetVariable} = ${target}`);

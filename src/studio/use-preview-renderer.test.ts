@@ -8,6 +8,7 @@ import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-s
 import {
   type MathTexOutlineResponseV1,
   mathTexOutlineResponseV1Schema,
+  type TextOutlineInputV1,
   type TextOutlineResponseV1,
   textOutlineResponseV1Schema,
 } from "../engine/mathtex-outline";
@@ -2528,11 +2529,16 @@ describe("compileStudioPreviewSceneV1", () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const sourceText = "日本語で動画を作る\r\nこんにちは";
     const text = "日本語で動画を作る\nこんにちは";
+    const textContent = { layout: { alignment: "right" as const, lineHeight: 1.8 }, text };
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 0.5,
       entities: [
         {
-          content: { displayLines: [sourceText], text: sourceText },
+          content: {
+            displayLines: [sourceText],
+            text: sourceText,
+            textLayout: { alignment: "right", lineHeight: 1.8 },
+          },
           position: { x: 320, y: 180 },
           type: "Text",
         },
@@ -2568,7 +2574,8 @@ describe("compileStudioPreviewSceneV1", () => {
           initialScale: 1,
           kind: "text",
           operationId: createOperation.id,
-          text,
+          layout: textContent.layout,
+          text: textContent.text,
           transactionId: creation.validation.program.transactionId,
         },
       ],
@@ -2597,7 +2604,7 @@ describe("compileStudioPreviewSceneV1", () => {
       removals: [],
     };
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
-    const compilerInputs: string[] = [];
+    const compilerInputs: TextOutlineInputV1[] = [];
     const outline = compiledTextResponse();
 
     const result = await compileStudioPreviewSceneV1({
@@ -2649,13 +2656,21 @@ describe("compileStudioPreviewSceneV1", () => {
     });
 
     expect(result.kind).toBe("compiled");
-    expect(compilerInputs).toEqual([text]);
+    expect(compilerInputs).toEqual([textContent]);
     expect(commands).toHaveLength(1);
     const compiled = outline.result;
     if (compiled.kind !== "compiled") throw new Error("Text test outline must compile.");
-    expect(commands[0]?.textOutlines).toEqual([{ entityId: creation.entityIds[0], path: compiled.path, text }]);
+    expect(commands[0]?.textOutlines).toEqual([
+      { entityId: creation.entityIds[0], layout: textContent.layout, path: compiled.path, text: textContent.text },
+    ]);
     expect(commands[0]?.programs[0]?.operations[0]).toMatchObject({
-      entity: { id: creation.entityIds[0], kind: "text", text, texParts: null },
+      entity: {
+        id: creation.entityIds[0],
+        kind: "text",
+        layout: textContent.layout,
+        text: textContent.text,
+        texParts: null,
+      },
       kind: "create",
     });
     if (result.kind !== "compiled") throw new Error(result.error);

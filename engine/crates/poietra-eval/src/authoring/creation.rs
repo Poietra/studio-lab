@@ -24,12 +24,13 @@ use super::{
     SceneEditOperationFacts, SceneEditScheduleMode, StudioAuthoringDimensions,
     StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioAuthoringOrigin,
     StudioAuthoringSize, StudioCreationMathTexOutline, StudioCreationTextOutline,
-    StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry,
-    TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value, scene_edit_anchor_is_closed,
-    scene_edit_structure_is_closed, studio_arrow_appearance, studio_authoring_point_is_finite,
-    studio_authoring_shape_size, studio_authoring_size_is_positive, studio_math_tex_appearance,
-    studio_point_to_scene_point, studio_shape_appearance, studio_timeline_semantic_values_match,
-    studio_vector_to_scene_vector, unused_channel_id,
+    StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry, StudioTextContent,
+    StudioTextLayout, TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value,
+    scene_edit_anchor_is_closed, scene_edit_structure_is_closed, studio_arrow_appearance,
+    studio_authoring_point_is_finite, studio_authoring_shape_size,
+    studio_authoring_size_is_positive, studio_math_tex_appearance, studio_point_to_scene_point,
+    studio_shape_appearance, studio_timeline_semantic_values_match, studio_vector_to_scene_vector,
+    unused_channel_id,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -90,6 +91,8 @@ pub struct StudioProjectedCreationEntity {
     pub initial_dimensions: StudioAuthoringDimensions,
     pub initial_scale: f64,
     pub kind: StudioAuthoringEntityKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<StudioTextLayout>,
     pub operation_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -167,6 +170,8 @@ pub struct StudioCreationEntitySpec {
     pub dimensions: StudioAuthoringDimensions,
     pub id: String,
     pub kind: StudioAuthoringEntityKind,
+    #[serde(default)]
+    pub layout: Option<StudioTextLayout>,
     pub lifetime_end: Option<f64>,
     pub lifetime_start: f64,
     pub text: Option<String>,
@@ -460,6 +465,7 @@ struct PlannedStudioCreationEntity {
     creation_transaction_id: String,
     creation_program_rank: usize,
     current_dimensions: StudioAuthoringDimensions,
+    current_text_content: Option<StudioTextContent>,
     fill_color_override: Option<String>,
     current_opacity: f64,
     current_rotation: f64,
@@ -628,16 +634,22 @@ impl StudioCreationPlan {
         let entities = self
             .entities
             .iter()
-            .map(|state| StudioProjectedCreationEntity {
-                created_lifetime: state.lifetime.clone(),
-                entity_id: state.spec.id.clone(),
-                initial_dimensions: state.initial_dimensions,
-                initial_scale: 1.0,
-                kind: state.kind,
-                operation_id: state.create_operation_id.clone(),
-                text: state.spec.text.clone(),
-                tex_parts: state.spec.tex_parts.clone(),
-                transaction_id: state.creation_transaction_id.clone(),
+            .map(|state| {
+                let initial_text = studio_creation_spec_text_content(&state.spec);
+                StudioProjectedCreationEntity {
+                    created_lifetime: state.lifetime.clone(),
+                    entity_id: state.spec.id.clone(),
+                    initial_dimensions: state.initial_dimensions,
+                    initial_scale: 1.0,
+                    kind: state.kind,
+                    layout: initial_text.as_ref().and_then(|content| {
+                        (content.layout != StudioTextLayout::default()).then_some(content.layout)
+                    }),
+                    operation_id: state.create_operation_id.clone(),
+                    text: initial_text.map(|content| content.text),
+                    tex_parts: state.spec.tex_parts.clone(),
+                    transaction_id: state.creation_transaction_id.clone(),
+                }
             })
             .collect();
         let removals = self
@@ -699,6 +711,19 @@ fn studio_creation_text_is_canonical(text: &str) -> bool {
             .chars()
             .all(|character| character == '\n' || !character.is_control())
         && !text.trim().is_empty()
+}
+
+fn studio_text_content_is_canonical(content: &StudioTextContent) -> bool {
+    studio_creation_text_is_canonical(&content.text)
+        && content.layout.line_height.is_finite()
+        && content.layout.line_height > 0.0
+}
+
+fn studio_creation_spec_text_content(spec: &StudioCreationEntitySpec) -> Option<StudioTextContent> {
+    spec.text.as_ref().map(|text| StudioTextContent {
+        layout: spec.layout.unwrap_or_default(),
+        text: text.clone(),
+    })
 }
 
 #[allow(
@@ -906,29 +931,32 @@ fn plan_studio_creation_edits(
                 shift_interval_for_insertion(&mut lifetime, insertion);
             }
         }
+        let initial_text_content = studio_creation_spec_text_content(spec);
         let creation_payload_is_valid = match spec.kind {
             StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
                 spec.text.is_none()
+                    && spec.layout.is_none()
                     && spec.tex_parts.is_none()
                     && studio_authoring_shape_size(spec.kind, spec.dimensions).is_some()
             }
             StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
                 spec.text.is_none()
+                    && spec.layout.is_none()
                     && spec.tex_parts.is_none()
                     && spec.dimensions == StudioAuthoringDimensions::default()
             }
             StudioAuthoringEntityKind::MathTex => {
                 spec.text.is_none()
+                    && spec.layout.is_none()
                     && spec.tex_parts.as_ref().is_some_and(|parts| {
                         !parts.is_empty() && parts.iter().all(|part| !part.trim().is_empty())
                     })
             }
             StudioAuthoringEntityKind::Text => {
                 spec.tex_parts.is_none()
-                    && spec
-                        .text
-                        .as_deref()
-                        .is_some_and(studio_creation_text_is_canonical)
+                    && initial_text_content
+                        .as_ref()
+                        .is_some_and(studio_text_content_is_canonical)
                     && spec.dimensions == StudioAuthoringDimensions::default()
             }
             StudioAuthoringEntityKind::Image | StudioAuthoringEntityKind::Other => false,
@@ -1026,6 +1054,7 @@ fn plan_studio_creation_edits(
             creation_program_rank: program_rank,
             creation_transaction_id: program.transaction_id.clone(),
             current_dimensions: spec.dimensions,
+            current_text_content: initial_text_content,
             fill_color_override: None,
             current_opacity: 1.0,
             current_rotation: 0.0,
@@ -2128,7 +2157,9 @@ impl EngineSessionV1 {
                     .iter()
                     .filter(|outline| {
                         outline.entity_id == state.spec.id
-                            && Some(&outline.text) == state.spec.text.as_ref()
+                            && state.current_text_content.as_ref().is_some_and(|content| {
+                                outline.text == content.text && outline.layout == content.layout
+                            })
                     })
                     .count(),
                 StudioAuthoringEntityKind::Arrow
@@ -2181,7 +2212,9 @@ impl EngineSessionV1 {
                         .iter()
                         .find(|outline| {
                             outline.entity_id == state.spec.id
-                                && Some(&outline.text) == state.spec.text.as_ref()
+                                && state.current_text_content.as_ref().is_some_and(|content| {
+                                    outline.text == content.text && outline.layout == content.layout
+                                })
                         })
                         .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                     CreateSceneEntityGeometry::CubicOutline {
@@ -2317,6 +2350,7 @@ mod tests {
     use super::super::tests::{
         NEXT_REVISION, fixture_bundle, imported_bundle, static_imported_bundle,
     };
+    use super::super::{StudioTextAlignment, StudioTextLayout};
     use super::*;
 
     fn studio_persistent_remove_edit_input(
@@ -2489,6 +2523,7 @@ mod tests {
                                     },
                                     id: entity_id.to_owned(),
                                     kind: StudioAuthoringEntityKind::Circle,
+                                    layout: None,
                                     lifetime_end: None,
                                     lifetime_start: 0.5,
                                     text: None,
@@ -2590,6 +2625,7 @@ mod tests {
             };
             entity.kind = StudioAuthoringEntityKind::Text;
             entity.dimensions = StudioAuthoringDimensions::default();
+            entity.layout = None;
             entity.text = Some(text.to_owned());
             entity.tex_parts = None;
             entity.id.clone()
@@ -2605,6 +2641,7 @@ mod tests {
         };
         command.text_outlines = vec![StudioCreationTextOutline {
             entity_id,
+            layout: StudioTextLayout::default(),
             path,
             text: text.to_owned(),
         }];
@@ -3751,6 +3788,7 @@ mod tests {
                             },
                             id: second_id.to_owned(),
                             kind: StudioAuthoringEntityKind::Rectangle,
+                            layout: None,
                             lifetime_end: Some(1.0),
                             lifetime_start: 0.5,
                             text: None,
@@ -3970,6 +4008,7 @@ mod tests {
         let scale_projection =
             project_studio_creation_edits(bundle.scene.duration, &scale_command.programs).unwrap();
         assert_eq!(scale_projection.entities[0].text.as_deref(), Some(text));
+        assert!(scale_projection.entities[0].layout.is_none());
         assert!(scale_projection.entities[0].tex_parts.is_none());
         let serialized_projection = serde_json::to_value(&scale_projection).unwrap();
         assert_eq!(serialized_projection["entities"][0]["kind"], "text");
@@ -4053,6 +4092,71 @@ mod tests {
                             if target == entity_id
                     )
                 })
+        );
+    }
+
+    #[test]
+    fn normalized_creation_applies_nondefault_text_layout_in_the_initial_entity() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_text_creation_command(&bundle, "Before");
+        command.programs.truncate(1);
+        let creation_lifetime =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs)
+                .unwrap()
+                .entities[0]
+                .created_lifetime
+                .clone();
+        let updated = StudioTextContent {
+            layout: StudioTextLayout {
+                alignment: StudioTextAlignment::Right,
+                line_height: 1.8,
+            },
+            text: "Wide\ni".to_owned(),
+        };
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.layout = Some(updated.layout);
+        entity.text = Some(updated.text.clone());
+        let updated_path = command.text_outlines[0].path.clone();
+        command.text_outlines[0].layout = updated.layout;
+        command.text_outlines[0].text.clone_from(&updated.text);
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(projection.entities[0].layout, Some(updated.layout));
+        assert_eq!(
+            projection.entities[0].text.as_deref(),
+            Some(updated.text.as_str())
+        );
+        assert!(
+            (projection.entities[0].created_lifetime.start - creation_lifetime.start).abs()
+                < f64::EPSILON
+        );
+        assert!(
+            (projection.entities[0].created_lifetime.end - creation_lifetime.end).abs()
+                < f64::EPSILON
+        );
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+        assert_eq!(
+            created.geometry,
+            SceneGeometryV1::CubicPath { path: updated_path }
+        );
+        assert_eq!(
+            created.lifetimes,
+            vec![projection.entities[0].created_lifetime.clone()]
         );
     }
 

@@ -8,6 +8,7 @@ import {
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
+  replaceStudioTextContentProgram,
 } from "./authoring-commands";
 import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import { programRecord, projectProposedState } from "./evaluator";
@@ -17,6 +18,12 @@ import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
+import {
+  createInitialEditorState,
+  editorProgramRecord,
+  redoEditorProgram,
+  undoEditorProgram,
+} from "./use-editor-controller";
 
 describe("manual Studio authoring commands", () => {
   function studioOwnedCircleScene(
@@ -125,6 +132,7 @@ describe("manual Studio authoring commands", () => {
       displayLines: ["日本語で動画を作る", "こんにちは"],
       label: canonical,
       text: canonical,
+      textLayout: { alignment: "left", lineHeight: 1.2 },
     });
     const lfCreation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
@@ -141,6 +149,92 @@ describe("manual Studio authoring commands", () => {
     expect(canonicalAppliedProgramsWorkingRevisionV1([creation.validation.program])).toBe(
       canonicalAppliedProgramsWorkingRevisionV1([lfCreation.validation.program]),
     );
+  });
+
+  it("keeps Text content and layout in one reversible Inspector transaction", () => {
+    const content = {
+      displayLines: ["Wide", "i"],
+      text: "Wide\ni",
+      textLayout: { alignment: "right" as const, lineHeight: 1.8 },
+    };
+    expect(() =>
+      createInspectorEntityEditProgram({
+        capturedPlayhead: 5,
+        edits: { content },
+        entityId: "label_1",
+        from: { position: { x: 384, y: 224 }, scale: 1 },
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "imported-text-layout-edit",
+      }),
+    ).toThrow(/only for Studio-created Text/i);
+    const studioScene = {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          label_1: {
+            ...STUDIO_FIXTURE_SCENE.objectGraph.entities.label_1!,
+            sourceIdentity: { kind: "unknown" as const, reason: "Created in Studio." },
+            transactionId: "create-text",
+          },
+        },
+      },
+    };
+    expect(() =>
+      createInspectorEntityEditProgram({
+        capturedPlayhead: 5,
+        edits: { content },
+        entityId: "label_1",
+        from: { position: { x: 384, y: 224 }, scale: 1 },
+        scene: studioScene,
+        transactionId: "later-text-layout-edit",
+      }),
+    ).toThrow(/replace its creation Program/i);
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        {
+          content: { displayLines: ["Before"], text: "Before" },
+          position: { x: 384, y: 224 },
+          type: "Text",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "create-text",
+    });
+    const owner = programRecord(creation.validation.program, creation.validation);
+    const validation = replaceStudioTextContentProgram({
+      content,
+      entityId: creation.entityIds[0]!,
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(validation.kind, JSON.stringify(validation.issues)).toBe("valid");
+    expect(validation.program.transactionId).toBe(owner.program.transactionId);
+    expect(validation.program.anchor).toEqual(owner.program.anchor);
+    expect(validation.program.operations).toContainEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({ content, id: creation.entityIds[0], type: "Text" }),
+        kind: "CreateEntity",
+      }),
+    );
+    expect(
+      validation.program.operations.some(
+        (operation) => operation.kind === "SetProperty" && operation.key === "content",
+      ),
+    ).toBe(false);
+
+    const applied = editorProgramRecord(programRecord(validation.program, validation), null, [creation.entityIds[0]!]);
+    const state = {
+      ...createInitialEditorState(),
+      appliedPrograms: [applied],
+      programUndoEntries: [{ index: 0, kind: "append" as const, value: applied }],
+      selectedObjectIds: ["label_1"],
+    };
+    const undone = undoEditorProgram(state);
+    expect(undone.appliedPrograms).toEqual([]);
+    expect(redoEditorProgram(undone).appliedPrograms).toEqual([applied]);
   });
 
   it.each(["tab\tbreak", ["a", "b", "c", "d", "e", "f", "g", "h", "i"].join("\n"), "x".repeat(129)])(
