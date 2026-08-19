@@ -132,6 +132,13 @@ pub enum PrepareFrameErrorV1 {
         shader_id: String,
     },
     #[error(
+        "draw {draw_id} fragment material texture assignment does not match its declared slot (expects texture: {expects_texture})"
+    )]
+    FragmentMaterialTextureMismatch {
+        draw_id: String,
+        expects_texture: bool,
+    },
+    #[error(
         "draw {draw_id} exceeded the per-frame fragment material limit of {maximum_draws} draws"
     )]
     FragmentMaterialDrawLimit {
@@ -174,6 +181,14 @@ pub struct PreparedFragmentMaterialV1 {
     parameters: [f32; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1],
     revision: u32,
     shader_id: String,
+    texture: Option<PreparedFragmentMaterialTextureV1>,
+}
+
+/// One verified decoded PNG bound to the fixed material texture slot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedFragmentMaterialTextureV1 {
+    asset: Arc<DecodedPngAssetV1>,
+    sampler: ImageSamplerV1,
 }
 
 impl PreparedFragmentMaterialV1 {
@@ -190,6 +205,23 @@ impl PreparedFragmentMaterialV1 {
     #[must_use]
     pub fn shader_id(&self) -> &str {
         &self.shader_id
+    }
+
+    #[must_use]
+    pub const fn texture(&self) -> Option<&PreparedFragmentMaterialTextureV1> {
+        self.texture.as_ref()
+    }
+}
+
+impl PreparedFragmentMaterialTextureV1 {
+    #[must_use]
+    pub fn asset(&self) -> &Arc<DecodedPngAssetV1> {
+        &self.asset
+    }
+
+    #[must_use]
+    pub const fn sampler(&self) -> ImageSamplerV1 {
+        self.sampler
     }
 }
 
@@ -1442,6 +1474,10 @@ pub struct ValidatedRenderPacketV1<'a> {
 /// material reference; the application-owned WGSL source remains outside it.
 pub trait FragmentMaterialSupportV1 {
     fn supports_fragment_material(&self, shader_id: &str, revision: u32) -> bool;
+
+    fn has_fragment_material_texture_slot(&self, _shader_id: &str, _revision: u32) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1564,11 +1600,14 @@ fn prepare_material(
     fragment_material: Option<&FragmentMaterialV1>,
     opacity: f64,
     draw_id: &str,
+    assets: Option<&dyn DecodedPngAssetResolverV1>,
     fragment_materials: &dyn FragmentMaterialSupportV1,
 ) -> Result<PreparedMaterialV1, PrepareFrameErrorV1> {
     Ok(PreparedMaterialV1 {
         fragment_material: fragment_material
-            .map(|material| prepare_fragment_material(material, draw_id, fragment_materials))
+            .map(|material| {
+                prepare_fragment_material(material, draw_id, assets, fragment_materials)
+            })
             .transpose()?,
         premultiplied_linear_color: premultiplied_linear_color(color, opacity, Some(draw_id))?,
         premultiplied_srgb_color: premultiplied_srgb_color(color, opacity, Some(draw_id))?,
@@ -1578,6 +1617,7 @@ fn prepare_material(
 fn prepare_fragment_material(
     material: &FragmentMaterialV1,
     draw_id: &str,
+    assets: Option<&dyn DecodedPngAssetResolverV1>,
     fragment_materials: &dyn FragmentMaterialSupportV1,
 ) -> Result<PreparedFragmentMaterialV1, PrepareFrameErrorV1> {
     if !fragment_materials.supports_fragment_material(&material.shader_id, material.revision) {
@@ -1587,6 +1627,37 @@ fn prepare_fragment_material(
             shader_id: material.shader_id.clone(),
         });
     }
+    let has_texture_slot = fragment_materials
+        .has_fragment_material_texture_slot(&material.shader_id, material.revision);
+    if has_texture_slot != material.texture.is_some() {
+        return Err(PrepareFrameErrorV1::FragmentMaterialTextureMismatch {
+            draw_id: draw_id.to_owned(),
+            expects_texture: has_texture_slot,
+        });
+    }
+    let texture = material
+        .texture
+        .as_ref()
+        .map(|texture| {
+            let decoded = assets
+                .and_then(|assets| assets.resolve_png_asset_v1(&texture.asset.sha256))
+                .ok_or_else(|| PrepareFrameErrorV1::MissingImageAsset {
+                    draw_id: draw_id.to_owned(),
+                    sha256: texture.asset.sha256.clone(),
+                })?;
+            if decoded.sha256() != texture.asset.sha256 {
+                return Err(PrepareFrameErrorV1::ResolvedImageDigestMismatch {
+                    actual_sha256: decoded.sha256().to_owned(),
+                    draw_id: draw_id.to_owned(),
+                    expected_sha256: texture.asset.sha256.clone(),
+                });
+            }
+            Ok(PreparedFragmentMaterialTextureV1 {
+                asset: decoded,
+                sampler: texture.sampler,
+            })
+        })
+        .transpose()?;
     let mut parameters = [0.0; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1];
     for (index, value) in material.parameters.iter().enumerate() {
         let Some(parameter) = parameters.get_mut(index) else {
@@ -1602,6 +1673,7 @@ fn prepare_fragment_material(
         parameters,
         revision: material.revision,
         shader_id: material.shader_id.clone(),
+        texture,
     })
 }
 
@@ -2275,10 +2347,11 @@ fn prepare_fill_geometry(
     Ok(())
 }
 
-struct PreparedFrameAccumulatorV1<'materials> {
+struct PreparedFrameAccumulatorV1<'resources> {
+    assets: Option<&'resources dyn DecodedPngAssetResolverV1>,
     commands: Vec<PreparedRenderCommandV1>,
     draws: Vec<PreparedDrawV1>,
-    fragment_materials: &'materials dyn FragmentMaterialSupportV1,
+    fragment_materials: &'resources dyn FragmentMaterialSupportV1,
     image_draws: Vec<PreparedImageDrawV1>,
     indices: Vec<u32>,
     materials: Vec<PreparedMaterialV1>,
@@ -2286,12 +2359,14 @@ struct PreparedFrameAccumulatorV1<'materials> {
     vertices: Vec<PreparedGeometryVertexV1>,
 }
 
-impl<'materials> PreparedFrameAccumulatorV1<'materials> {
+impl<'resources> PreparedFrameAccumulatorV1<'resources> {
     fn with_phase_capacity(
         phase_capacity: usize,
-        fragment_materials: &'materials dyn FragmentMaterialSupportV1,
+        assets: Option<&'resources dyn DecodedPngAssetResolverV1>,
+        fragment_materials: &'resources dyn FragmentMaterialSupportV1,
     ) -> Self {
         Self {
+            assets,
             commands: Vec::with_capacity(phase_capacity),
             draws: Vec::with_capacity(phase_capacity),
             fragment_materials,
@@ -2320,6 +2395,7 @@ impl<'materials> PreparedFrameAccumulatorV1<'materials> {
             fragment_material,
             opacity,
             draw_id,
+            self.assets,
             self.fragment_materials,
         )?;
         let index_start_len = self.indices.len();
@@ -2407,6 +2483,7 @@ impl<'materials> PreparedFrameAccumulatorV1<'materials> {
             fragment_material,
             opacity,
             draw_id,
+            self.assets,
             self.fragment_materials,
         )?;
         let index_start =
@@ -2823,7 +2900,7 @@ fn tessellate_validated_frame_inner_v1(
     }
     let phase_capacity = packet.draws.len().saturating_mul(2);
     let mut prepared =
-        PreparedFrameAccumulatorV1::with_phase_capacity(phase_capacity, fragment_materials);
+        PreparedFrameAccumulatorV1::with_phase_capacity(phase_capacity, assets, fragment_materials);
     for draw in &packet.draws {
         if matches!(draw, RenderDrawV1::Image { .. }) {
             let assets = assets.ok_or_else(|| PrepareFrameErrorV1::Unsupported {
@@ -2912,6 +2989,7 @@ mod tests {
             None,
             0.5,
             "draw:test",
+            None,
             &BuiltinFragmentMaterialSupportV1,
         )
         .unwrap();
@@ -3218,8 +3296,11 @@ mod tests {
 
     #[test]
     fn prepared_phase_rolls_back_geometry_when_tessellation_fails() {
-        let mut prepared =
-            PreparedFrameAccumulatorV1::with_phase_capacity(1, &BuiltinFragmentMaterialSupportV1);
+        let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(
+            1,
+            None,
+            &BuiltinFragmentMaterialSupportV1,
+        );
         let error = prepared.append_phase(
             "draw:rollback",
             "entity:rollback",

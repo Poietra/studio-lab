@@ -644,6 +644,13 @@ fn render_capabilities(draws: &[RenderDrawV1]) -> Vec<RenderCapabilityV1> {
                 {
                     capabilities.insert(RenderCapabilityV1::FragmentMaterial);
                 }
+                if fill.as_ref().is_some_and(|fill| {
+                    fill.fragment_material
+                        .as_ref()
+                        .is_some_and(|material| material.texture.is_some())
+                }) {
+                    capabilities.insert(RenderCapabilityV1::PngImage);
+                }
                 if stroke.is_some() {
                     capabilities.insert(RenderCapabilityV1::CubicPathStroke);
                 }

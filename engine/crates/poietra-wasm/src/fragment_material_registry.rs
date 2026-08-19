@@ -13,6 +13,14 @@ struct FragmentMaterialSourceJsonV1 {
     revision: u32,
     shader_id: String,
     source: String,
+    #[serde(default)]
+    texture_slot: Option<FragmentMaterialTextureSlotJsonV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum FragmentMaterialTextureSlotJsonV1 {
+    Texture2d,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,6 +58,7 @@ pub(crate) fn parse_fragment_material_registry_v1(
             revision: material.revision,
             shader_id: material.shader_id,
             source: material.source,
+            texture_slot: material.texture_slot.is_some(),
         })
         .collect())
 }
@@ -59,12 +68,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_json_is_strict_and_bounded() {
+    fn registry_json_is_strict_bounded_and_accepts_the_pre_texture_payload() {
         let parsed = parse_fragment_material_registry_v1(
             br#"{"materials":[{"revision":1,"shaderId":"project-wave","source":"@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }"}],"schema":"poietra.fragment-material-registry","version":1}"#,
         )
         .unwrap();
         assert_eq!(parsed.len(), 1);
+        assert!(!parsed[0].texture_slot);
+        let textured = parse_fragment_material_registry_v1(
+            br#"{"materials":[{"revision":1,"shaderId":"screen-texture","source":"texture source","textureSlot":"texture2d"}],"schema":"poietra.fragment-material-registry","version":1}"#,
+        )
+        .unwrap();
+        assert!(textured[0].texture_slot);
         assert!(
             parse_fragment_material_registry_v1(
                 br#"{"materials":[],"schema":"poietra.fragment-material-registry","version":1,"extra":true}"#

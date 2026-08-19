@@ -352,7 +352,7 @@ mod tests {
 
     fn fixture_provenance() -> ExportProvenanceV1 {
         ExportProvenanceV1 {
-            engine_abi_version: 29,
+            engine_abi_version: 30,
             export_profile_hash: "a".repeat(64),
             scene_id: "fixture-scene".to_owned(),
             scene_revision_hash: "b".repeat(64),
@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn fixture_provenance_serializes_to_the_canonical_compact_json() {
         let expected = format!(
-            "{{\"engineAbiVersion\":29,\"exportProfileHash\":\"{}\",\
+            "{{\"engineAbiVersion\":30,\"exportProfileHash\":\"{}\",\
              \"sceneId\":\"fixture-scene\",\"sceneRevisionHash\":\"{}\"}}",
             "a".repeat(64),
             "b".repeat(64)

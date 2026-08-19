@@ -6,6 +6,7 @@ import {
   MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
   PROJECT_FRAGMENT_SHADER_ID_V1,
   PROJECT_FRAGMENT_SHADER_REVISION_V1,
+  STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "./fragment-material-registry";
 
@@ -23,6 +24,22 @@ describe("fragmentMaterialRegistryV1Schema", () => {
         ],
       }),
     ).toMatchObject({ materials: [{ shaderId: PROJECT_FRAGMENT_SHADER_ID_V1 }] });
+  });
+
+  it("admits one declared 2D texture slot", () => {
+    expect(
+      fragmentMaterialRegistryV1Schema.parse({
+        ...EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+        materials: [
+          {
+            revision: 1,
+            shaderId: "screen-texture",
+            source: STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
+            textureSlot: "texture2d",
+          },
+        ],
+      }),
+    ).toMatchObject({ materials: [{ textureSlot: "texture2d" }] });
   });
 
   it("rejects reserved, duplicate, and oversized project sources", () => {

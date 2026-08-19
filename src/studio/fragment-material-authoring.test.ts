@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "../engine/fragment-material-registry";
+import {
+  STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
+  STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+} from "../engine/fragment-material-registry";
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
+  createStudioTextureFragmentMaterialPresetV1,
   createStudioWaveFragmentMaterialPresetV1,
   duplicateStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
@@ -17,9 +21,48 @@ import {
   updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
+  updateStudioFragmentMaterialTextureV1,
 } from "./fragment-material-authoring";
 
 describe("project-local fragment material authoring", () => {
+  it("assigns one declared screen texture per object and preserves the slot while duplicating", () => {
+    const preset = createStudioTextureFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
+    expect(listStudioFragmentMaterialsV1(preset.state)).toMatchObject([
+      { name: "Screen texture", source: STUDIO_TEXTURE_FRAGMENT_SOURCE_V1, textureSlot: "texture2d" },
+    ]);
+    const firstTexture = {
+      asset: { assetId: "asset:first", sha256: "1".repeat(64) },
+      sampler: "linear" as const,
+    };
+    const assigned = assignStudioFragmentMaterialV1(preset.state, {
+      entityId: "circle",
+      sceneId: "scene-a",
+      shaderId: preset.shaderId,
+      texture: firstTexture,
+    });
+    const changed = updateStudioFragmentMaterialTextureV1(assigned, {
+      entityId: "circle",
+      sceneId: "scene-a",
+      texture: {
+        asset: { assetId: "asset:second", sha256: "2".repeat(64) },
+        sampler: "nearest",
+      },
+    });
+    expect(changed.assignmentsByScene["scene-a"]?.circle?.texture).toEqual({
+      asset: { assetId: "asset:second", sha256: "2".repeat(64) },
+      sampler: "nearest",
+    });
+    expect(() =>
+      assignStudioFragmentMaterialV1(preset.state, {
+        entityId: "circle",
+        sceneId: "scene-a",
+        shaderId: preset.shaderId,
+      }),
+    ).toThrow("Select a project PNG");
+    const duplicated = duplicateStudioFragmentMaterialV1(changed, preset.shaderId);
+    expect(duplicated.state.registry.materials[1]).toMatchObject({ textureSlot: "texture2d" });
+  });
+
   it("creates the Wave preset and updates one object's bounded parameters without changing another object", () => {
     const preset = createStudioWaveFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
     expect(listStudioFragmentMaterialsV1(preset.state)).toMatchObject([

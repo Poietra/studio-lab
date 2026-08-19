@@ -14,40 +14,52 @@ export type FragmentMaterialEditorItem = Readonly<{
   revision: number;
   shaderId: string;
   source: string;
+  textureSlot?: "texture2d";
 }>;
 
 export function FragmentMaterialEditor({
   active,
   assignedParameters,
   assignedShaderId,
+  assignedTexture,
   available,
   compileError,
   materials,
   onAssign,
   onCreate,
   onCreatePreset,
+  onCreateTexturePreset,
   onDuplicate,
   onImportGlsl,
   onRemoveAsset,
   onRename,
   onUpdateSource,
   onUpdateParameter,
+  onUpdateTexture,
+  textureAssets,
 }: Readonly<{
   active: boolean;
   assignedParameters: readonly number[] | null;
   assignedShaderId: string | null;
+  assignedTexture: Readonly<{
+    asset: Readonly<{ assetId: string; sha256: string }>;
+    sampler: "linear" | "nearest";
+  }> | null;
   available: boolean;
   compileError: string | null;
   materials: readonly FragmentMaterialEditorItem[];
   onAssign: (shaderId: string | null) => void;
   onCreate: (name: string) => string | null;
   onCreatePreset: () => string | null;
+  onCreateTexturePreset: () => string | null;
   onDuplicate: (shaderId: string) => string | null;
   onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
   onRemoveAsset: (shaderId: string) => void;
   onRename: (shaderId: string, name: string) => void;
   onUpdateSource: (shaderId: string, source: string) => void;
   onUpdateParameter: (name: string, value: number) => void;
+  onUpdateTexture: (assetId: string, sampler: "linear" | "nearest") => void;
+  textureAssets: readonly Readonly<{ assetId: string; label: string }>[];
 }>) {
   const [inputError, setInputError] = useState<string | null>(null);
   const [editingShaderId, setEditingShaderId] = useState<string | null>(
@@ -134,6 +146,45 @@ export function FragmentMaterialEditor({
         )
       ) : null}
 
+      {assignedMaterial?.textureSlot === "texture2d" ? (
+        <fieldset className="mt-3 border border-zinc-800 p-2" aria-label="Material texture">
+          <legend className="px-1 text-[10px] font-medium text-zinc-400">Object texture</legend>
+          <label className="block text-[10px] text-zinc-500" htmlFor="fragment-material-texture-asset">
+            Project PNG
+          </label>
+          <select
+            className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+            disabled={!available || textureAssets.length === 0}
+            id="fragment-material-texture-asset"
+            onChange={(event) => onUpdateTexture(event.currentTarget.value, assignedTexture?.sampler ?? "linear")}
+            value={assignedTexture?.asset.assetId ?? ""}
+          >
+            {textureAssets.length === 0 ? <option value="">No project PNG assets</option> : null}
+            {textureAssets.map((asset) => (
+              <option key={asset.assetId} value={asset.assetId}>
+                {asset.label}
+              </option>
+            ))}
+          </select>
+          <label className="mt-2 block text-[10px] text-zinc-500" htmlFor="fragment-material-texture-filter">
+            Filtering
+          </label>
+          <select
+            className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+            disabled={!available || !assignedTexture}
+            id="fragment-material-texture-filter"
+            onChange={(event) =>
+              assignedTexture &&
+              onUpdateTexture(assignedTexture.asset.assetId, event.currentTarget.value as "linear" | "nearest")
+            }
+            value={assignedTexture?.sampler ?? "linear"}
+          >
+            <option value="linear">Linear</option>
+            <option value="nearest">Nearest</option>
+          </select>
+        </fieldset>
+      ) : null}
+
       <div className="mt-3 border border-sky-950 bg-sky-950/20 p-2">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -152,6 +203,28 @@ export function FragmentMaterialEditor({
             type="button"
           >
             {available ? "Create & apply" : "Create"}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-2 border border-sky-950 bg-sky-950/20 p-2">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-[10px] font-medium text-sky-200">Screen texture preset</p>
+            <p className="mt-0.5 text-pretty text-[10px] leading-4 text-zinc-500">
+              Samples one verified project PNG in top-left screen UV space through the fixed WGSL texture slot.
+            </p>
+          </div>
+          <button
+            className="shrink-0 border border-sky-800 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+            disabled={materials.length >= MAX_PROJECT_FRAGMENT_MATERIALS_V1}
+            onClick={() => {
+              const shaderId = onCreateTexturePreset();
+              if (shaderId) setEditingShaderId(shaderId);
+            }}
+            type="button"
+          >
+            {available && textureAssets.length > 0 ? "Create & apply" : "Create"}
           </button>
         </div>
       </div>
@@ -288,14 +361,20 @@ export function FragmentMaterialEditor({
               Apply WGSL source
             </button>
           </form>
-          <FragmentMaterialGlslImporter
-            initialSource={editingMaterial.glslSource?.source ?? ""}
-            key={`glsl/${editingMaterial.shaderId}/${editingMaterial.revision}`}
-            onImport={async (input) => {
-              await onImportGlsl(editingMaterial.shaderId, input);
-              setInputError(null);
-            }}
-          />
+          {editingMaterial.textureSlot ? (
+            <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+              Texture materials use canonical WGSL; the current Vulkan GLSL profile has no texture bindings.
+            </p>
+          ) : (
+            <FragmentMaterialGlslImporter
+              initialSource={editingMaterial.glslSource?.source ?? ""}
+              key={`glsl/${editingMaterial.shaderId}/${editingMaterial.revision}`}
+              onImport={async (input) => {
+                await onImportGlsl(editingMaterial.shaderId, input);
+                setInputError(null);
+              }}
+            />
+          )}
         </>
       ) : null}
       {inputError || compileError ? (

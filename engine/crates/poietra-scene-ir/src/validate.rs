@@ -329,6 +329,9 @@ fn validate_fragment_material(
             validator.issue(parameter_path, "must fit the finite f32 range");
         }
     }
+    if let Some(texture) = &material.texture {
+        validate_asset_reference(&texture.asset, &format!("{path}.texture.asset"), validator);
+    }
 }
 
 fn validate_stroke_inner(
@@ -731,6 +734,21 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
         ) {
             capabilities.insert(SceneCapabilityV1::FragmentMaterial);
         }
+        if matches!(
+            &entity.appearance,
+            SceneAppearanceV1::Vector {
+                fill: Some(FillStyleV1 {
+                    fragment_material: Some(FragmentMaterialV1 {
+                        texture: Some(_),
+                        ..
+                    }),
+                    ..
+                }),
+                ..
+            }
+        ) {
+            capabilities.insert(SceneCapabilityV1::PngImage);
+        }
     }
     for channel in &scene.animation_channels {
         capabilities.insert(match channel {
@@ -756,6 +774,17 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
             })
         {
             capabilities.insert(SceneCapabilityV1::FragmentMaterial);
+        }
+        if let AnimationChannelV1::VectorAppearance { keyframes, .. } = channel
+            && keyframes.iter().any(|keyframe| {
+                keyframe.value.fill.as_ref().is_some_and(|fill| {
+                    fill.fragment_material
+                        .as_ref()
+                        .is_some_and(|material| material.texture.is_some())
+                })
+            })
+        {
+            capabilities.insert(SceneCapabilityV1::PngImage);
         }
     }
     capabilities.into_iter().collect()
@@ -1503,6 +1532,13 @@ fn required_render_capabilities(packet: &RenderPacketV1) -> Vec<RenderCapability
                     .is_some_and(|fill| fill.fragment_material.is_some())
                 {
                     capabilities.insert(RenderCapabilityV1::FragmentMaterial);
+                }
+                if fill.as_ref().is_some_and(|fill| {
+                    fill.fragment_material
+                        .as_ref()
+                        .is_some_and(|material| material.texture.is_some())
+                }) {
+                    capabilities.insert(RenderCapabilityV1::PngImage);
                 }
                 if stroke.is_some() {
                     capabilities.insert(RenderCapabilityV1::CubicPathStroke);

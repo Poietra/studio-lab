@@ -23,6 +23,7 @@ export const fragmentMaterialSourceV1Schema = z
       "time-gradient is reserved by the built-in renderer.",
     ),
     source: utf8SourceSchema,
+    textureSlot: z.literal("texture2d").optional(),
   })
   .strict();
 
@@ -80,6 +81,37 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     );
     let tint = vec3<f32>(0.25 + 0.75 * wave, 0.35 + 0.65 * (1.0 - wave), 1.0);
     return vec4<f32>(input.base_color.rgb * tint, input.base_color.a);
+}
+`;
+
+/** One fixed-slot material that samples a verified project PNG in screen UV space. */
+export const STUDIO_TEXTURE_FRAGMENT_SOURCE_V1 = `struct FragmentHostUniform {
+    // xy = logical viewport pixels, z = Scene time, w = reserved.
+    viewport_and_time: vec4<f32>,
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> host: FragmentHostUniform;
+
+@group(0) @binding(1)
+var material_texture: texture_2d<f32>;
+
+@group(0) @binding(2)
+var material_sampler: sampler;
+
+struct FragmentInput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) base_color: vec4<f32>,
+    // Normalized screen coordinates, top-left origin.
+    @location(1) screen_position: vec2<f32>,
+};
+
+@fragment
+fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
+    let sampled = textureSample(material_texture, material_sampler, input.screen_position);
+    return sampled * input.base_color;
 }
 `;
 

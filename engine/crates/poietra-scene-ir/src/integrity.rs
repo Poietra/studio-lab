@@ -106,6 +106,47 @@ fn validate_scene_assets(
                 issues,
             );
         }
+        if let SceneAppearanceV1::Vector {
+            fill: Some(fill), ..
+        } = &entity.appearance
+            && let Some(texture) = fill
+                .fragment_material
+                .as_ref()
+                .and_then(|material| material.texture.as_ref())
+        {
+            validate_asset_reference(
+                &texture.asset,
+                &assets,
+                &format!(
+                    "{scene_prefix}.entities[{index}].appearance.fill.fragmentMaterial.texture.asset"
+                ),
+                issues,
+            );
+        }
+    }
+    for (channel_index, channel) in scene.animation_channels.iter().enumerate() {
+        let AnimationChannelV1::VectorAppearance { keyframes, .. } = channel else {
+            continue;
+        };
+        for (keyframe_index, keyframe) in keyframes.iter().enumerate() {
+            let Some(texture) = keyframe
+                .value
+                .fill
+                .as_ref()
+                .and_then(|fill| fill.fragment_material.as_ref())
+                .and_then(|material| material.texture.as_ref())
+            else {
+                continue;
+            };
+            validate_asset_reference(
+                &texture.asset,
+                &assets,
+                &format!(
+                    "{scene_prefix}.animationChannels[{channel_index}].keyframes[{keyframe_index}].value.fill.fragmentMaterial.texture.asset"
+                ),
+                issues,
+            );
+        }
     }
 }
 
@@ -128,6 +169,21 @@ fn validate_packet_assets(
                 asset,
                 &assets,
                 &format!("{packet_prefix}.draws[{index}].asset"),
+                issues,
+            );
+        }
+        if let RenderDrawV1::Path {
+            fill: Some(fill), ..
+        } = draw
+            && let Some(texture) = fill
+                .fragment_material
+                .as_ref()
+                .and_then(|material| material.texture.as_ref())
+        {
+            validate_asset_reference(
+                &texture.asset,
+                &assets,
+                &format!("{packet_prefix}.draws[{index}].fill.fragmentMaterial.texture.asset"),
                 issues,
             );
         }

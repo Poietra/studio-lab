@@ -7,6 +7,7 @@ import {
   MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
   MAX_PROJECT_FRAGMENT_MATERIALS_V1,
   PROJECT_FRAGMENT_SHADER_ID_V1,
+  STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "../engine/fragment-material-registry";
 import type { PreviewRendererHostStateV1 } from "../engine/preview-renderer";
@@ -22,6 +23,12 @@ export type StudioFragmentMaterialReferenceV1 = Readonly<{
   parameters: readonly number[];
   revision: number;
   shaderId: string;
+  texture?: StudioFragmentMaterialTextureV1;
+}>;
+
+export type StudioFragmentMaterialTextureV1 = Readonly<{
+  asset: Readonly<{ assetId: string; sha256: string }>;
+  sampler: "linear" | "nearest";
 }>;
 
 export type SceneFragmentMaterialStateV1 = Readonly<{
@@ -167,8 +174,8 @@ export const projectFragmentMaterialStateV1Schema = rawProjectFragmentMaterialSt
     }),
   )
   .superRefine((state, context) => {
-    const availableMaterials = new Set(
-      state.registry.materials.map((material) => `${material.shaderId}\0${material.revision}`),
+    const availableMaterials = new Map(
+      state.registry.materials.map((material) => [`${material.shaderId}\0${material.revision}`, material]),
     );
     const shaderIds = new Set<string>();
     for (const [index, material] of state.registry.materials.entries()) {
@@ -201,11 +208,22 @@ export const projectFragmentMaterialStateV1Schema = rawProjectFragmentMaterialSt
     }
     for (const [sceneId, assignments] of Object.entries(state.assignmentsByScene)) {
       for (const [entityId, assignment] of Object.entries(assignments)) {
-        if (!availableMaterials.has(`${assignment.shaderId}\0${assignment.revision}`)) {
+        const material = availableMaterials.get(`${assignment.shaderId}\0${assignment.revision}`);
+        if (!material) {
           context.addIssue({
             code: "custom",
             message: "The fragment material assignment has no matching project source revision.",
             path: ["assignmentsByScene", sceneId, entityId],
+          });
+        }
+        if (material && (material.textureSlot === "texture2d") !== (assignment.texture !== undefined)) {
+          context.addIssue({
+            code: "custom",
+            message:
+              material.textureSlot === "texture2d"
+                ? "The material requires one project texture assignment."
+                : "The material does not declare a texture slot.",
+            path: ["assignmentsByScene", sceneId, entityId, "texture"],
           });
         }
         const parameterSchema = state.parameterSchemasByShaderId[assignment.shaderId];
@@ -288,6 +306,7 @@ export function createStudioFragmentMaterialV1(
     name: string;
     parameterSchema?: StudioFragmentMaterialParameterSchemaV1 | null;
     source?: string;
+    textureSlot?: "texture2d";
   }>,
 ): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
   if (state.registry.materials.length >= MAX_PROJECT_FRAGMENT_MATERIALS_V1) {
@@ -311,7 +330,10 @@ export function createStudioFragmentMaterialV1(
         : state.parameterSchemasByShaderId,
       registry: {
         ...state.registry,
-        materials: [...state.registry.materials, { revision: 1, shaderId, source }],
+        materials: [
+          ...state.registry.materials,
+          { revision: 1, shaderId, source, ...(input.textureSlot ? { textureSlot: input.textureSlot } : {}) },
+        ],
       },
     }),
   };
@@ -333,6 +355,17 @@ export function createStudioWaveFragmentMaterialPresetV1(
     name: uniquePresetName(state, "Wave"),
     parameterSchema: STUDIO_WAVE_FRAGMENT_PARAMETER_SCHEMA_V1,
     source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+  });
+}
+
+export function createStudioTextureFragmentMaterialPresetV1(
+  state: ProjectFragmentMaterialStateV1,
+): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
+  return createStudioFragmentMaterialV1(state, {
+    name: uniquePresetName(state, "Screen texture"),
+    parameterSchema: null,
+    source: STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
+    textureSlot: "texture2d",
   });
 }
 
@@ -371,6 +404,7 @@ export function duplicateStudioFragmentMaterialV1(
     parameterSchema: parameterSchema ?? null,
     ...(state.glslSourcesByShaderId[shaderId] ? { glslSource: state.glslSourcesByShaderId[shaderId] } : {}),
     source: source.source,
+    ...(source.textureSlot ? { textureSlot: source.textureSlot } : {}),
   });
 }
 
@@ -504,10 +538,22 @@ export function updateStudioFragmentMaterialFromGlslV1(
 
 export function assignStudioFragmentMaterialV1(
   state: ProjectFragmentMaterialStateV1,
-  input: Readonly<{ entityId: string; sceneId: string; shaderId: string }>,
+  input: Readonly<{
+    entityId: string;
+    sceneId: string;
+    shaderId: string;
+    texture?: StudioFragmentMaterialTextureV1;
+  }>,
 ): ProjectFragmentMaterialStateV1 {
   const activeMaterial = state.registry.materials.find(({ shaderId }) => shaderId === input.shaderId);
   if (!activeMaterial) throw new Error("The material no longer exists.");
+  if ((activeMaterial.textureSlot === "texture2d") !== (input.texture !== undefined)) {
+    throw new Error(
+      activeMaterial.textureSlot === "texture2d"
+        ? "Select a project PNG for this texture material."
+        : "This material does not declare a texture slot.",
+    );
+  }
   const assignmentsByScene = { ...state.assignmentsByScene };
   assignmentsByScene[input.sceneId] = {
     ...assignmentsByScene[input.sceneId],
@@ -517,6 +563,7 @@ export function assignStudioFragmentMaterialV1(
       ],
       revision: activeMaterial.revision,
       shaderId: activeMaterial.shaderId,
+      ...(input.texture ? { texture: input.texture } : {}),
     },
   };
   return parseProjectFragmentMaterialState({
@@ -525,6 +572,32 @@ export function assignStudioFragmentMaterialV1(
     namesByShaderId: state.namesByShaderId,
     parameterSchemasByShaderId: state.parameterSchemasByShaderId,
     registry: state.registry,
+  });
+}
+
+export function updateStudioFragmentMaterialTextureV1(
+  state: ProjectFragmentMaterialStateV1,
+  input: Readonly<{
+    entityId: string;
+    sceneId: string;
+    texture: StudioFragmentMaterialTextureV1;
+  }>,
+): ProjectFragmentMaterialStateV1 {
+  const assignment = state.assignmentsByScene[input.sceneId]?.[input.entityId];
+  if (!assignment) throw new Error("The selected object no longer has a material.");
+  const material = state.registry.materials.find(
+    ({ revision, shaderId }) => revision === assignment.revision && shaderId === assignment.shaderId,
+  );
+  if (material?.textureSlot !== "texture2d") throw new Error("This material does not declare a texture slot.");
+  return parseProjectFragmentMaterialState({
+    ...state,
+    assignmentsByScene: {
+      ...state.assignmentsByScene,
+      [input.sceneId]: {
+        ...state.assignmentsByScene[input.sceneId],
+        [input.entityId]: { ...assignment, texture: input.texture },
+      },
+    },
   });
 }
 

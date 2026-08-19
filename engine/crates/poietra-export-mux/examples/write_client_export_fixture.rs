@@ -26,7 +26,7 @@ fn provenance_json() -> String {
     let export_profile_hash = "a".repeat(64);
     let scene_revision_hash = "b".repeat(64);
     format!(
-        "{{\"engineAbiVersion\":29,\"exportProfileHash\":\"{export_profile_hash}\",\
+        "{{\"engineAbiVersion\":30,\"exportProfileHash\":\"{export_profile_hash}\",\
          \"sceneId\":\"fixture-scene\",\"sceneRevisionHash\":\"{scene_revision_hash}\"}}"
     )
 }

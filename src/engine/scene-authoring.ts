@@ -92,6 +92,10 @@ export type ApplyStudioFragmentMaterialsWireCommandV1 = Readonly<{
       parameters: readonly number[];
       revision: number;
       shaderId: string;
+      texture?: Readonly<{
+        asset: Readonly<{ assetId: string; sha256: string }>;
+        sampler: "linear" | "nearest";
+      }>;
     }> | null;
   }>[];
   expectedBaseRevision: string;

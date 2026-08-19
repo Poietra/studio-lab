@@ -283,6 +283,16 @@ pub struct FragmentMaterialV1 {
     #[serde(deserialize_with = "deserialize_js_safe_u32")]
     pub revision: u32,
     pub shader_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<Box<FragmentMaterialTextureV1>>,
+}
+
+/// The single host-owned 2D texture slot available to a fragment material.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FragmentMaterialTextureV1 {
+    pub asset: AssetReferenceV1,
+    pub sampler: ImageSamplerV1,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
