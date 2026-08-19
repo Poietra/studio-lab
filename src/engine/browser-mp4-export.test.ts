@@ -9,7 +9,7 @@ import {
   type ExportWorkerResponseV1,
   exportWorkerRequestV1Schema,
 } from "./export-worker-protocol";
-import { fragmentMaterialRegistryV1Schema, STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "./fragment-material-registry";
+import { fragmentMaterialRegistryV1Schema, STUDIO_GRADIENT_FRAGMENT_SOURCE_V1 } from "./fragment-material-registry";
 
 class FakeWorker {
   readonly posted: unknown[] = [];
@@ -81,7 +81,7 @@ describe("runBrowserMp4ExportV1", () => {
               ...first.appearance,
               fill: {
                 ...first.appearance.fill,
-                fragmentMaterial: { parameters: [1.15, 13], revision: 1, shaderId: "project-material-1" },
+                fragmentMaterial: { parameters: [0.75, 2.25], revision: 1, shaderId: "project-material-1" },
               },
             },
           },
@@ -91,7 +91,7 @@ describe("runBrowserMp4ExportV1", () => {
       },
     });
     const registry = fragmentMaterialRegistryV1Schema.parse({
-      materials: [{ revision: 1, shaderId: "project-material-1", source: STUDIO_WAVE_FRAGMENT_SOURCE_V1 }],
+      materials: [{ revision: 1, shaderId: "project-material-1", source: STUDIO_GRADIENT_FRAGMENT_SOURCE_V1 }],
       schema: "poietra.fragment-material-registry",
       version: 1,
     });
@@ -108,7 +108,7 @@ describe("runBrowserMp4ExportV1", () => {
     const exportedBundle = sceneIrBundleV1Schema.parse(JSON.parse(new TextDecoder().decode(request.snapshotJson)));
     const exported = exportedBundle.scene.entities[0];
     expect(exported?.appearance.kind === "vector" ? exported.appearance.fill?.fragmentMaterial : null).toMatchObject({
-      parameters: [1.15, 13],
+      parameters: [0.75, 2.25],
       shaderId: "project-material-1",
     });
     expect(JSON.parse(new TextDecoder().decode(request.fragmentMaterialRegistryJson))).toEqual(registry);

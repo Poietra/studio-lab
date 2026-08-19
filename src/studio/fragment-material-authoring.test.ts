@@ -1,12 +1,16 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
+  STUDIO_PULSE_FRAGMENT_SOURCE_V1,
   STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "../engine/fragment-material-registry";
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
+  createStudioGradientFragmentMaterialPresetV1,
+  createStudioPulseFragmentMaterialPresetV1,
   createStudioTextureFragmentMaterialPresetV1,
   createStudioWaveFragmentMaterialPresetV1,
   duplicateStudioFragmentMaterialV1,
@@ -105,6 +109,44 @@ describe("project-local fragment material authoring", () => {
       }),
     ).toThrow("Bands must be between 1 and 24");
     expect(changed.assignmentsByScene["scene-a"]?.circle?.parameters).toEqual([0.35, 13]);
+  });
+
+  it("creates fixed Gradient and Pulse presets and applies their declared parameters", () => {
+    const gradient = createStudioGradientFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
+    const pulse = createStudioPulseFragmentMaterialPresetV1(gradient.state);
+
+    expect(listStudioFragmentMaterialsV1(pulse.state)).toMatchObject([
+      {
+        name: "Gradient",
+        parameterSchema: [
+          { default: 0.75, name: "Angle", range: { max: 3.14, min: -3.14, step: 0.05 }, type: "f32" },
+          { default: 1.5, name: "Spread", range: { max: 4, min: 0.25, step: 0.05 }, type: "f32" },
+        ],
+        source: STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
+      },
+      {
+        name: "Pulse",
+        parameterSchema: [
+          { default: 1, name: "Speed", range: { max: 3, min: -3, step: 0.05 }, type: "f32" },
+          { default: 0.65, name: "Strength", range: { max: 1, min: 0, step: 0.05 }, type: "f32" },
+        ],
+        source: STUDIO_PULSE_FRAGMENT_SOURCE_V1,
+      },
+    ]);
+
+    const assigned = assignStudioFragmentMaterialV1(pulse.state, {
+      entityId: "circle",
+      sceneId: "scene-a",
+      shaderId: gradient.shaderId,
+    });
+    const changed = updateStudioFragmentMaterialParameterV1(assigned, {
+      entityId: "circle",
+      name: "Spread",
+      sceneId: "scene-a",
+      value: 2.25,
+    });
+
+    expect(changed.assignmentsByScene["scene-a"]?.circle?.parameters).toEqual([0.75, 2.25]);
   });
 
   it("rejects invalid authoring schemas before they can replace project state", () => {

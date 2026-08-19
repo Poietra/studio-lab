@@ -42,6 +42,7 @@ import { createFixtureProposedState, validateMotionProgramFixture } from "./fixt
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
+  createStudioGradientFragmentMaterialPresetV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
   projectFragmentMaterialsForSceneV1,
@@ -1174,7 +1175,7 @@ describe("compileStudioPreviewSceneV1", () => {
         entities: [runtimeEntity, { ...runtimeEntity, id: "source:circle", sceneOrder: runtimeEntity.sceneOrder + 1 }],
       },
     });
-    const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
+    const material = createStudioGradientFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
     const assignedMaterial = assignStudioFragmentMaterialV1(material.state, {
       entityId: "source:circle",
       sceneId: "studio:circle-scene",
@@ -1183,9 +1184,9 @@ describe("compileStudioPreviewSceneV1", () => {
     const sceneFragmentMaterials = projectFragmentMaterialsForSceneV1(
       updateStudioFragmentMaterialParameterV1(assignedMaterial, {
         entityId: "source:circle",
-        name: "Speed",
+        name: "Spread",
         sceneId: "studio:circle-scene",
-        value: 1.15,
+        value: 2.25,
       }),
       "studio:circle-scene",
     );
@@ -1209,7 +1210,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(commands[0]?.assignments).toEqual([
       expect.objectContaining({
         entityId: "earlier",
-        material: expect.objectContaining({ parameters: [1.15, 8], revision: 1 }),
+        material: expect.objectContaining({ parameters: [0.75, 2.25], revision: 1 }),
       }),
     ]);
     expect(result.scene.fragmentMaterialInput).toBe(sceneFragmentMaterials);
@@ -1218,7 +1219,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const assigned = result.scene.bundle.scene.entities.find(({ id }) => id === "earlier");
     const collided = result.scene.bundle.scene.entities.find(({ id }) => id === "source:circle");
     expect(assigned?.appearance.kind === "vector" ? assigned.appearance.fill?.fragmentMaterial : null).toMatchObject({
-      parameters: [1.15, 8],
+      parameters: [0.75, 2.25],
       revision: 1,
       shaderId: material.shaderId,
     });

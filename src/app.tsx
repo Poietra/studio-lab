@@ -67,6 +67,8 @@ import {
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
+  createStudioGradientFragmentMaterialPresetV1,
+  createStudioPulseFragmentMaterialPresetV1,
   createStudioTextureFragmentMaterialPresetV1,
   createStudioWaveFragmentMaterialPresetV1,
   duplicateStudioFragmentMaterialV1,
@@ -81,6 +83,7 @@ import {
   sceneHasFragmentMaterialAssignmentsV1,
   studioFragmentMaterialAssignmentCountV1,
   studioFragmentMaterialCompileErrorV1,
+  type StudioFragmentMaterialPresetId,
   updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
@@ -4453,9 +4456,14 @@ export function App({
     }
   }
 
-  function createWaveFragmentMaterialPreset() {
+  function createFragmentMaterialPreset(preset: StudioFragmentMaterialPresetId) {
     try {
-      const created = createStudioWaveFragmentMaterialPresetV1(activeProjectFragmentMaterials);
+      const created =
+        preset === "gradient"
+          ? createStudioGradientFragmentMaterialPresetV1(activeProjectFragmentMaterials)
+          : preset === "pulse"
+            ? createStudioPulseFragmentMaterialPresetV1(activeProjectFragmentMaterials)
+            : createStudioWaveFragmentMaterialPresetV1(activeProjectFragmentMaterials);
       const next =
         activeScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable
           ? assignStudioFragmentMaterialV1(created.state, {
@@ -4466,7 +4474,7 @@ export function App({
           : created.state;
       return commitActiveProjectFragmentMaterials(next) ? created.shaderId : null;
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : "The Wave preset could not be created.");
+      setDraftError(error instanceof Error ? error.message : "The material preset could not be created.");
       return null;
     }
   }
@@ -5262,7 +5270,7 @@ export function App({
                 materials: activeProjectNamedFragmentMaterials,
                 onAssign: assignSelectedFragmentMaterial,
                 onCreate: createFragmentMaterial,
-                onCreatePreset: createWaveFragmentMaterialPreset,
+                onCreatePreset: createFragmentMaterialPreset,
                 onCreateTexturePreset: createTextureFragmentMaterialPreset,
                 onDuplicate: duplicateFragmentMaterial,
                 onImportGlsl: importFragmentMaterialGlsl,
