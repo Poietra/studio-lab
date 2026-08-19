@@ -246,18 +246,6 @@ function normalizedStudioCreationOperation(
       kind: "opacity",
     };
   }
-  if (operation.kind === "SetProperty" && operation.key === "content") {
-    const content = studioCreationTextContent(operation.value);
-    return content
-      ? {
-          ...common,
-          entityId: operation.entityId,
-          kind: "text-content",
-          layout: content.layout,
-          text: content.text,
-        }
-      : { ...common, kind: "unsupported" };
-  }
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {
     return { ...common, entityId: operation.entityId, kind: "fade-in", persistent: operation.persistent };
   }

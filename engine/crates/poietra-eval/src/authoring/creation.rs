@@ -139,10 +139,6 @@ pub enum StudioCreationProjectedMutationKind {
         to_dimensions: StudioAuthoringDimensions,
         to_position: PointV1,
     },
-    TextContent {
-        layout: StudioTextLayout,
-        text: String,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -226,11 +222,6 @@ pub enum StudioCreationOperationKind {
         shape: StudioAuthoringEntityKind,
         to_dimensions: StudioAuthoringDimensions,
         to_position: PointV1,
-    },
-    TextContent {
-        #[serde(default)]
-        layout: StudioTextLayout,
-        text: String,
     },
     PersistentRemove {
         persistent: bool,
@@ -350,7 +341,6 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::FillColor { .. }
             | StudioCreationOperationKind::StrokeColor { .. }
             | StudioCreationOperationKind::Resize { .. }
-            | StudioCreationOperationKind::TextContent { .. }
             | StudioCreationOperationKind::PersistentRemove { .. }
             | StudioCreationOperationKind::CreateMotion { .. }
             | StudioCreationOperationKind::Unsupported => None,
@@ -828,7 +818,6 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
-                | StudioCreationOperationKind::TextContent { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
                 | StudioCreationOperationKind::Unsupported => true,
@@ -861,7 +850,6 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
-                | StudioCreationOperationKind::TextContent { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
                 | StudioCreationOperationKind::Unsupported => {
@@ -1472,44 +1460,6 @@ fn plan_studio_creation_edits(
                         },
                     ));
                 }
-                StudioCreationOperationKind::TextContent { layout, text }
-                    if operation.origin == StudioAuthoringOrigin::StudioDefault
-                        && state.kind == StudioAuthoringEntityKind::Text
-                        && studio_text_content_is_canonical(&StudioTextContent {
-                            layout: *layout,
-                            text: text.clone(),
-                        })
-                        && state.current_text_content.as_ref().is_none_or(|current| {
-                            current.layout != *layout || current.text != *text
-                        })
-                        && studio_timeline_semantic_values_match(
-                            operation.interval.end,
-                            program.anchor_resolved_seconds,
-                        )
-                        && instant_at >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
-                        && instant_at < state.lifetime.end - TIMELINE_ANCHOR_EPSILON
-                        && state.persistent_removal.is_none() =>
-                {
-                    let content = StudioTextContent {
-                        layout: *layout,
-                        text: text.clone(),
-                    };
-                    state.current_text_content = Some(content.clone());
-                    ranked_mutations.push((
-                        timeline.ranks[program_index],
-                        schedule_index,
-                        StudioCreationProjectedMutation {
-                            entity_id: entity_id.to_owned(),
-                            interval: instant_interval,
-                            kind: StudioCreationProjectedMutationKind::TextContent {
-                                layout: content.layout,
-                                text: content.text,
-                            },
-                            operation_id: operation.id.clone(),
-                            transaction_id: program.transaction_id.clone(),
-                        },
-                    ));
-                }
                 StudioCreationOperationKind::PersistentRemove { persistent }
                     if *persistent
                         && matches!(
@@ -1547,7 +1497,6 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
-                | StudioCreationOperationKind::TextContent { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
                 | StudioCreationOperationKind::Unsupported => {
@@ -2886,25 +2835,6 @@ mod tests {
         assert!((transform.ty - expected.y).abs() < 1e-12);
     }
 
-    fn studio_created_text_content_edit_input(
-        anchor: f64,
-        entity_id: &str,
-        content: StudioTextContent,
-    ) -> StudioCreationEditInput {
-        let mut input = studio_created_appearance_edit_input(
-            anchor,
-            entity_id,
-            "set-text-content",
-            StudioCreationOperationKind::TextContent {
-                layout: content.layout,
-                text: content.text,
-            },
-        );
-        input.origin = StudioAuthoringOrigin::StudioDefault;
-        input.operations[0].origin = StudioAuthoringOrigin::StudioDefault;
-        input
-    }
-
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -4166,28 +4096,11 @@ mod tests {
     }
 
     #[test]
-    fn normalized_creation_applies_text_and_layout_as_one_semantic_followup() {
+    fn normalized_creation_applies_nondefault_text_layout_in_the_initial_entity() {
         let bundle = static_imported_bundle();
         let entity_id = "tx:create/entity:circle";
         let mut command = studio_text_creation_command(&bundle, "Before");
         command.programs.truncate(1);
-        let creation = &mut command.programs[0];
-        creation.anchor_captured_playhead = 0.0;
-        creation.anchor_resolved_seconds = 0.0;
-        creation.anchor_source = SceneEditAnchorSource::Playhead {
-            reference_seconds: Some(0.0),
-        };
-        for operation in &mut creation.operations {
-            operation.interval.start = 0.0;
-            if matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. }) {
-                operation.interval.end = 0.4;
-            } else {
-                operation.interval.end = 0.0;
-            }
-            if let StudioCreationOperationKind::Create { entity } = &mut operation.kind {
-                entity.lifetime_start = 0.0;
-            }
-        }
         let creation_lifetime =
             project_studio_creation_edits(bundle.scene.duration, &command.programs)
                 .unwrap()
@@ -4201,34 +4114,24 @@ mod tests {
             },
             text: "Wide\ni".to_owned(),
         };
-        command
-            .programs
-            .push(studio_created_text_content_edit_input(
-                1.0,
-                entity_id,
-                updated.clone(),
-            ));
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.layout = Some(updated.layout);
+        entity.text = Some(updated.text.clone());
         let updated_path = command.text_outlines[0].path.clone();
-        command.text_outlines.push(StudioCreationTextOutline {
-            entity_id: entity_id.to_owned(),
-            layout: updated.layout,
-            path: updated_path.clone(),
-            text: updated.text.clone(),
-        });
+        command.text_outlines[0].layout = updated.layout;
+        command.text_outlines[0].text.clone_from(&updated.text);
 
         let projection =
             project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
-        assert!(matches!(
-            projection.mutations.last().map(|mutation| &mutation.kind),
-            Some(StudioCreationProjectedMutationKind::TextContent { layout, text })
-                if *layout == updated.layout && text == &updated.text
-        ));
-        let content_mutation = projection.mutations.last().unwrap();
-        assert!(content_mutation.interval.start > 1.0);
-        assert!(
-            (content_mutation.interval.start - content_mutation.interval.end).abs() < f64::EPSILON
+        assert_eq!(projection.entities[0].layout, Some(updated.layout));
+        assert_eq!(
+            projection.entities[0].text.as_deref(),
+            Some(updated.text.as_str())
         );
-        assert!(projection.entities[0].created_lifetime.start.abs() < f64::EPSILON);
         assert!(
             (projection.entities[0].created_lifetime.start - creation_lifetime.start).abs()
                 < f64::EPSILON

@@ -92,6 +92,40 @@ describe("Studio creation wire", () => {
     });
   });
 
+  it("does not lower a later Text content replacement as static Scene geometry", () => {
+    const operation = {
+      dependsOn: [],
+      entityId: "entity:Text",
+      id: "replace-text-later",
+      interval: { end: 1, start: 1 },
+      key: "content" as const,
+      kind: "SetProperty" as const,
+      provenance: { evidence: [], origin: "studio-default" as const },
+      value: {
+        displayLines: ["After"],
+        text: "After",
+        textLayout: { alignment: "right" as const, lineHeight: 1.8 },
+      },
+    };
+    const followup = {
+      ...followupProgram("replace-text-later", operation),
+      anchor: {
+        capturedPlayhead: 1,
+        evidence: [],
+        resolvedSeconds: 1,
+        source: { kind: "absolute" as const, seconds: 1 },
+      },
+      provenance: { evidence: [], origin: "studio-default" as const },
+    };
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 2,
+      programs: [creationProgram("Text"), followup],
+    });
+
+    expect(command.programs[1]?.operations[0]).toMatchObject({ kind: "unsupported" });
+  });
+
   it("normalizes created-object opacity and relative rotation without interpreting them in TypeScript", () => {
     const entityId = "entity:Arrow";
     const common = {

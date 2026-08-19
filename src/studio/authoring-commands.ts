@@ -223,6 +223,14 @@ export function createInspectorEntityEditProgram(
   if (
     input.edits.content &&
     entity.type === "Text" &&
+    entity.sourceIdentity.kind === "unknown" &&
+    entity.transactionId
+  ) {
+    throw new Error("Studio-created Text content must replace its creation Program.");
+  }
+  if (
+    input.edits.content &&
+    entity.type === "Text" &&
     (entity.sourceIdentity.kind !== "unknown" || !entity.transactionId)
   ) {
     const before = studioCreationTextContent(entity.content)?.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
@@ -286,6 +294,34 @@ export function createInspectorEntityEditProgram(
     scene: input.scene,
     transactionId: input.transactionId,
   });
+}
+
+export function replaceStudioTextContentProgram(
+  input: Readonly<{
+    content: EntityContent;
+    entityId: string;
+    owner: ProgramRecord;
+    scene: RuntimeSceneState;
+  }>,
+): SceneEditValidationResult {
+  const content = canonicalEditableContent(input.content, "Text");
+  if (!content) throw new Error(STUDIO_CREATION_TEXT_CONTRACT);
+  let replacementCount = 0;
+  const operations = input.owner.program.operations.map((operation) => {
+    if (operation.kind !== "CreateEntity" || operation.entity.id !== input.entityId) return operation;
+    if (operation.entity.type !== "Text") {
+      throw new Error("Only a Studio-created Text entity can replace its creation content.");
+    }
+    replacementCount += 1;
+    return {
+      ...operation,
+      entity: { ...operation.entity, content },
+    } satisfies SceneEditOperation;
+  });
+  if (replacementCount !== 1) {
+    throw new Error("The Studio-created Text has no unique creation owner.");
+  }
+  return validateAndScheduleProgram({ ...input.owner.program, operations }, input.scene);
 }
 
 export function createRemoveEntitiesProgram(

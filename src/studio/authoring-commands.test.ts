@@ -8,6 +8,7 @@ import {
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
+  replaceStudioTextContentProgram,
 } from "./authoring-commands";
 import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import { programRecord, projectProposedState } from "./evaluator";
@@ -166,7 +167,7 @@ describe("manual Studio authoring commands", () => {
         transactionId: "imported-text-layout-edit",
       }),
     ).toThrow(/only for Studio-created Text/i);
-    const scene = {
+    const studioScene = {
       ...STUDIO_FIXTURE_SCENE,
       objectGraph: {
         ...STUDIO_FIXTURE_SCENE.objectGraph,
@@ -180,25 +181,51 @@ describe("manual Studio authoring commands", () => {
         },
       },
     };
-    const validation = createInspectorEntityEditProgram({
-      capturedPlayhead: 5,
-      edits: { content },
-      entityId: "label_1",
-      from: { position: { x: 384, y: 224 }, scale: 1 },
-      scene,
-      transactionId: "text-layout-edit",
+    expect(() =>
+      createInspectorEntityEditProgram({
+        capturedPlayhead: 5,
+        edits: { content },
+        entityId: "label_1",
+        from: { position: { x: 384, y: 224 }, scale: 1 },
+        scene: studioScene,
+        transactionId: "later-text-layout-edit",
+      }),
+    ).toThrow(/replace its creation Program/i);
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        {
+          content: { displayLines: ["Before"], text: "Before" },
+          position: { x: 384, y: 224 },
+          type: "Text",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "create-text",
+    });
+    const owner = programRecord(creation.validation.program, creation.validation);
+    const validation = replaceStudioTextContentProgram({
+      content,
+      entityId: creation.entityIds[0]!,
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
     });
     expect(validation.kind, JSON.stringify(validation.issues)).toBe("valid");
-    expect(validation.program.operations).toEqual([
+    expect(validation.program.transactionId).toBe(owner.program.transactionId);
+    expect(validation.program.anchor).toEqual(owner.program.anchor);
+    expect(validation.program.operations).toContainEqual(
       expect.objectContaining({
-        entityId: "label_1",
-        key: "content",
-        kind: "SetProperty",
-        value: content,
+        entity: expect.objectContaining({ content, id: creation.entityIds[0], type: "Text" }),
+        kind: "CreateEntity",
       }),
-    ]);
+    );
+    expect(
+      validation.program.operations.some(
+        (operation) => operation.kind === "SetProperty" && operation.key === "content",
+      ),
+    ).toBe(false);
 
-    const applied = editorProgramRecord(programRecord(validation.program, validation), null, ["label_1"]);
+    const applied = editorProgramRecord(programRecord(validation.program, validation), null, [creation.entityIds[0]!]);
     const state = {
       ...createInitialEditorState(),
       appliedPrograms: [applied],

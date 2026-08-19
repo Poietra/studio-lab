@@ -120,14 +120,6 @@ export async function authorizeSnapshotProgramWithSnapshot(
             `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.lineHeight}`,
             { content, entityId: operation.entity.id },
           );
-        } else if (operation.kind === "SetProperty" && operation.key === "content") {
-          const content = studioCreationTextContent(operation.value);
-          if (content) {
-            textInputs.set(
-              `${operation.entityId}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.lineHeight}`,
-              { content, entityId: operation.entityId },
-            );
-          }
         }
       }
     }

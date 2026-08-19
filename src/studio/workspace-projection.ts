@@ -273,8 +273,6 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "SetProperty" && operation.key === "appearance") return "opacity";
   if (operation.kind === "SetProperty" && operation.key === "fillColor") return "fill-color";
   if (operation.kind === "SetProperty" && operation.key === "strokeColor") return "stroke-color";
-  if (operation.kind === "SetProperty" && operation.key === "content" && studioCreationTextContent(operation.value))
-    return "text-content";
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") return "fade-in";
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") return "rotation";
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
@@ -395,20 +393,6 @@ function correlateCreationProjection(
       mutation.entityId !== ("entityId" in expected.operation ? expected.operation.entityId : undefined)
     ) {
       throw new TypeError(`Creation mutation ${mutation.operationId} is not correlated with the Rust projection.`);
-    }
-    if (mutation.kind === "text-content") {
-      const content =
-        expected.operation.kind === "SetProperty" && expected.operation.key === "content"
-          ? studioCreationTextContent(expected.operation.value)
-          : null;
-      if (
-        !content ||
-        mutation.text !== content.text ||
-        mutation.layout.alignment !== content.layout.alignment ||
-        !sameProjectionNumber(mutation.layout.lineHeight, content.layout.lineHeight)
-      ) {
-        throw new TypeError(`Text content ${mutation.operationId} is not correlated with the Rust projection.`);
-      }
     }
     seenMutationIds.add(mutation.operationId);
     return { mutation, ...expected };
@@ -757,7 +741,6 @@ function appendProjectedMutation(
   draft: MotionProjectionDraft,
   mutation: StudioBoundEntityProjectionV1 | StudioCreationProjectionMutationV1 | StudioStaticRootMutationV1,
   projectedDuration?: number,
-  textContent?: EntityContent,
 ) {
   const entityId = "studioEntityId" in mutation ? mutation.studioEntityId : mutation.entityId;
   const metadata = {
@@ -840,14 +823,6 @@ function appendProjectedMutation(
         value,
       });
     }
-  } else if (mutation.kind === "text-content") {
-    if (!textContent) throw new TypeError(`Text content ${mutation.operationId} is missing its Canonical content.`);
-    appendProjectedSample(draft.propertyChannels, entityId, "content", {
-      ...metadata,
-      interval: mutation.interval,
-      kind: "exact",
-      value: textContent,
-    });
   } else {
     appendProjectedSample(draft.propertyChannels, entityId, "content", {
       ...metadata,
@@ -1120,11 +1095,7 @@ function projectCreationWorkingState(
       throw new TypeError(`Creation mutation ${mutation.operationId} targets a missing projected entity.`);
     }
     appendProjectedOperationRecord(draft, operation, program, mutation.interval);
-    const textContent =
-      mutation.kind === "text-content" && operation.kind === "SetProperty" && operation.key === "content"
-        ? (canonicalEditableContent(operation.value, "Text") ?? undefined)
-        : undefined;
-    appendProjectedMutation(draft, mutation, projection.projectedDuration, textContent);
+    appendProjectedMutation(draft, mutation, projection.projectedDuration);
   }
   appendCorrelatedMotions(draft, correlated.motions);
   appendPersistentRemovals(draft, programs, correlated.removals);

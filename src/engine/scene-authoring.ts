@@ -620,17 +620,6 @@ const studioCreationProjectionV1Schema = z
             transactionId: z.string().min(1),
           })
           .strict(),
-        z
-          .object({
-            entityId: z.string().min(1),
-            interval: studioTimelineProjectionIntervalV1Schema,
-            kind: z.literal("text-content"),
-            layout: studioTextLayoutV1Schema,
-            operationId: z.string().min(1),
-            text: z.string().min(1).max(256),
-            transactionId: z.string().min(1),
-          })
-          .strict(),
       ]),
     ),
     projectedDuration: finiteNumberSchema,
@@ -830,12 +819,6 @@ type StudioCreationOperationV1 = Readonly<{
         shape: StudioCreationEntityKindV1;
         toDimensions: StudioCreationDimensionsV1;
         toPosition: Readonly<{ x: number; y: number }>;
-      }>
-    | Readonly<{
-        entityId: string;
-        kind: "text-content";
-        layout: StudioTextContentV1["layout"];
-        text: string;
       }>
     | Readonly<{
         controlOffset: Readonly<{ x: number; y: number }>;
