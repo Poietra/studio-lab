@@ -23,7 +23,34 @@ pub const MAX_TEXT_CUBIC_SEGMENTS_V1: usize = 2_048;
 const DEJAVU_SANS_REGULAR: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 const NOTO_SANS_CJK_JP_REGULAR_JOYO: &[u8] =
     include_bytes!("../assets/NotoSansCJKjp-Regular-Joyo.otf");
-const TEXT_LINE_ADVANCE_EM: f64 = 1.2;
+pub const DEFAULT_TEXT_LINE_HEIGHT_EM: f64 = 1.2;
+
+/// Horizontal alignment applied to each line inside the widest line box.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextAlignmentV1 {
+    Center,
+    #[default]
+    Left,
+    Right,
+}
+
+/// Bounded plain-text layout owned by the Rust outline compiler.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextOutlineLayoutV1 {
+    pub alignment: TextAlignmentV1,
+    pub line_height: f64,
+}
+
+impl Default for TextOutlineLayoutV1 {
+    fn default() -> Self {
+        Self {
+            alignment: TextAlignmentV1::Left,
+            line_height: DEFAULT_TEXT_LINE_HEIGHT_EM,
+        }
+    }
+}
 
 /// Literal request schema represented as a closed serde enum.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -33,9 +60,11 @@ pub enum TextOutlineRequestSchemaV1 {
 }
 
 /// One bounded plain-text outline request.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextOutlineRequestV1 {
+    #[serde(default)]
+    pub layout: TextOutlineLayoutV1,
     pub schema: TextOutlineRequestSchemaV1,
     pub version: u32,
     pub text: String,
@@ -45,6 +74,7 @@ impl TextOutlineRequestV1 {
     /// Creates a correctly versioned plain-text request.
     pub fn new(text: impl Into<String>) -> Self {
         Self {
+            layout: TextOutlineLayoutV1::default(),
             schema: TextOutlineRequestSchemaV1::TextOutlineRequest,
             version: TEXT_OUTLINE_VERSION_V1,
             text: text.into(),
@@ -154,11 +184,20 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
     } else {
         &japanese
     };
+    let line_widths = text
+        .split('\n')
+        .map(|line| line_advance(face, line))
+        .collect::<Result<Vec<_>, _>>()?;
+    let maximum_line_width = line_widths.iter().copied().fold(0.0_f64, f64::max);
     let mut subpaths = Vec::new();
     let mut segment_count = 0usize;
 
-    for (line_index, line) in text.split('\n').enumerate() {
-        let mut cursor_x = 0.0;
+    for (line_index, (line, line_width)) in text.split('\n').zip(line_widths).enumerate() {
+        let mut cursor_x = match request.layout.alignment {
+            TextAlignmentV1::Left => 0.0,
+            TextAlignmentV1::Center => (maximum_line_width - line_width) / 2.0,
+            TextAlignmentV1::Right => maximum_line_width - line_width,
+        };
         let mut previous = None;
         let line_index = u32::try_from(line_index).map_err(|_| {
             CompileFailure::new(
@@ -167,7 +206,7 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
             )
         })?;
         let baseline_y =
-            -f64::from(line_index) * f64::from(face.units_per_em()) * TEXT_LINE_ADVANCE_EM;
+            -f64::from(line_index) * f64::from(face.units_per_em()) * request.layout.line_height;
         for character in line.chars() {
             let glyph = face.glyph_index(character).ok_or_else(|| {
                 CompileFailure::new(
@@ -203,6 +242,30 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
         bounds,
         fill_rule: FillRuleV1::NonZero,
     })
+}
+
+fn line_advance(face: &Face<'_>, line: &str) -> Result<f64, CompileFailure> {
+    let mut width = 0.0;
+    let mut previous = None;
+    for character in line.chars() {
+        let glyph = face.glyph_index(character).ok_or_else(|| {
+            CompileFailure::new(
+                TextOutlineUnsupportedCodeV1::GlyphMissing,
+                "The embedded text fonts have no glyph for this Unicode scalar",
+            )
+        })?;
+        if let Some(left) = previous {
+            width += f64::from(horizontal_kerning(face, left, glyph));
+        }
+        width += f64::from(face.glyph_hor_advance(glyph).ok_or_else(|| {
+            CompileFailure::new(
+                TextOutlineUnsupportedCodeV1::OutlineInvalid,
+                "An embedded text glyph has no horizontal advance",
+            )
+        })?);
+        previous = Some(glyph);
+    }
+    Ok(width)
 }
 
 fn append_glyph(
@@ -243,7 +306,11 @@ fn append_glyph(
 }
 
 fn validate_request(request: &TextOutlineRequestV1) -> Result<String, CompileFailure> {
-    if request.version != TEXT_OUTLINE_VERSION_V1 || request.text.is_empty() {
+    if request.version != TEXT_OUTLINE_VERSION_V1
+        || request.text.is_empty()
+        || !request.layout.line_height.is_finite()
+        || request.layout.line_height <= 0.0
+    {
         return Err(CompileFailure::new(
             TextOutlineUnsupportedCodeV1::InvalidRequest,
             "Text outline request does not match the v1 contract",
@@ -345,6 +412,17 @@ mod tests {
         }
     }
 
+    fn compiled_with_layout(text: &str, layout: TextOutlineLayoutV1) -> TextOutlineArtifactV1 {
+        let mut request = TextOutlineRequestV1::new(text);
+        request.layout = layout;
+        match compile_text_outline_v1(&request) {
+            TextOutlineResultV1::Compiled(artifact) => artifact,
+            TextOutlineResultV1::Unsupported(unsupported) => {
+                panic!("expected compiled text, got {unsupported:?}")
+            }
+        }
+    }
+
     fn unsupported_code(text: &str) -> TextOutlineUnsupportedCodeV1 {
         match compile_text_outline_v1(&TextOutlineRequestV1::new(text)) {
             TextOutlineResultV1::Compiled(_) => panic!("expected unsupported text"),
@@ -384,6 +462,57 @@ mod tests {
         let spaced = compiled("A A");
         assert_eq!(compact, compiled("AA"));
         assert!(spaced.bounds.right > compact.bounds.right);
+    }
+
+    #[test]
+    fn alignment_and_line_height_change_multiline_geometry_in_rust() {
+        let left = compiled_with_layout("Wide\ni", TextOutlineLayoutV1::default());
+        assert_eq!(left, compiled("Wide\ni"));
+        let legacy: TextOutlineRequestV1 = serde_json::from_str(
+            r#"{"schema":"poietra.text-outline-request","version":1,"text":"Wide\ni"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.layout, TextOutlineLayoutV1::default());
+        assert_eq!(
+            compile_text_outline_v1(&legacy),
+            TextOutlineResultV1::Compiled(left.clone())
+        );
+        let center = compiled_with_layout(
+            "Wide\ni",
+            TextOutlineLayoutV1 {
+                alignment: TextAlignmentV1::Center,
+                line_height: DEFAULT_TEXT_LINE_HEIGHT_EM,
+            },
+        );
+        let right = compiled_with_layout(
+            "Wide\ni",
+            TextOutlineLayoutV1 {
+                alignment: TextAlignmentV1::Right,
+                line_height: 2.0,
+            },
+        );
+        assert_ne!(left.path, center.path);
+        assert_ne!(center.path, right.path);
+        assert_eq!(
+            right,
+            compiled_with_layout(
+                "Wide\ni",
+                TextOutlineLayoutV1 {
+                    alignment: TextAlignmentV1::Right,
+                    line_height: 2.0,
+                },
+            )
+        );
+
+        let mut overflowing = TextOutlineRequestV1::new("Wide\ni");
+        overflowing.layout.line_height = f64::MAX;
+        assert!(matches!(
+            compile_text_outline_v1(&overflowing),
+            TextOutlineResultV1::Unsupported(TextOutlineUnsupportedV1 {
+                code: TextOutlineUnsupportedCodeV1::OutlineInvalid,
+                ..
+            })
+        ));
     }
 
     #[test]

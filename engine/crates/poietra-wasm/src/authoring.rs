@@ -1726,16 +1726,25 @@ mod tests {
         let mut command: serde_json::Value =
             serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
         command["programs"].as_array_mut().unwrap().truncate(1);
-        let entity = &mut command["programs"][0]["operations"][0]["entity"];
-        entity["dimensions"] = json!({});
-        entity["kind"] = json!("text");
-        entity["text"] = json!("Hello");
+        let text_content = json!({
+            "layout": {
+                "alignment": "left",
+                "lineHeight": 1.2
+            },
+            "text": "Hello"
+        });
+        {
+            let entity = &mut command["programs"][0]["operations"][0]["entity"];
+            entity["dimensions"] = json!({});
+            entity["kind"] = json!("text");
+            entity["textContent"] = text_content.clone();
+        }
         let outline_fixture: serde_json::Value =
             serde_json::from_slice(&static_math_tex_fixture_json()).unwrap();
         command["textOutlines"] = json!([{
+            "content": text_content,
             "entityId": "tx:create/entity:rectangle",
-            "path": outline_fixture["scene"]["entities"][0]["geometry"]["path"],
-            "text": "Hello"
+            "path": outline_fixture["scene"]["entities"][0]["geometry"]["path"]
         }]);
 
         let response = apply_studio_creation_edit_json(
@@ -1755,8 +1764,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            response["creationProjection"]["entities"][0]["text"],
-            "Hello"
+            response["creationProjection"]["entities"][0]["textContent"],
+            text_content
         );
         assert!(matches!(
             created.geometry,

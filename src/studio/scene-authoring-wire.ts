@@ -8,7 +8,10 @@ import type {
   ProjectStudioMotionEditWireCommandV1,
   StudioMathTexContentV1,
 } from "../engine/scene-authoring";
-import { canonicalEditableContent, studioCreationText } from "./editable-content";
+import {
+  canonicalEditableContent,
+  studioCreationTextContent as canonicalStudioCreationTextContent,
+} from "./editable-content";
 import type { RuntimeSceneState } from "./model";
 import { isPointValue } from "./property-sampling";
 import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "./scene-edit-contract";
@@ -173,8 +176,8 @@ export function studioCreationMathTexParts(value: unknown): readonly string[] | 
   return canonicalEditableContent(value, "MathTex")?.texParts ?? null;
 }
 
-export function studioCreationTextContent(value: unknown): string | null {
-  return studioCreationText(value);
+export function studioCreationTextContent(value: unknown) {
+  return canonicalStudioCreationTextContent(value);
 }
 
 function normalizedStudioCreationOperation(
@@ -211,7 +214,7 @@ function normalizedStudioCreationOperation(
                         : "other",
         lifetimeEnd: operation.entity.lifetime.end,
         lifetimeStart: operation.entity.lifetime.start,
-        text: type === "Text" ? studioCreationTextContent(operation.entity.content) : null,
+        textContent: type === "Text" ? studioCreationTextContent(operation.entity.content) : null,
         texParts: type === "MathTex" ? studioCreationMathTexParts(operation.entity.content) : null,
       },
       kind: "create",
@@ -240,6 +243,12 @@ function normalizedStudioCreationOperation(
       entityId: operation.entityId,
       kind: "opacity",
     };
+  }
+  if (operation.kind === "SetProperty" && operation.key === "content") {
+    const content = studioCreationTextContent(operation.value);
+    return content
+      ? { ...common, content, entityId: operation.entityId, kind: "text-content" }
+      : { ...common, kind: "unsupported" };
   }
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {
     return { ...common, entityId: operation.entityId, kind: "fade-in", persistent: operation.persistent };

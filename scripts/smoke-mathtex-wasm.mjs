@@ -40,6 +40,7 @@ function compileWasm(request) {
 function encodeTextRequest(text) {
   return encoder.encode(
     JSON.stringify({
+      layout: { alignment: "left", lineHeight: 1.2 },
       schema: "poietra.text-outline-request",
       text,
       version: 1,

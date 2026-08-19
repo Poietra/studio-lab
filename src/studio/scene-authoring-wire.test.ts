@@ -82,7 +82,14 @@ describe("Studio creation wire", () => {
     const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs: [creationProgram("Text")] });
 
     expect(command.programs[0]?.operations[0]).toMatchObject({
-      entity: { kind: "text", text: "日本語で動画を作る\nこんにちは", texParts: null },
+      entity: {
+        kind: "text",
+        textContent: {
+          layout: { alignment: "left", lineHeight: 1.2 },
+          text: "日本語で動画を作る\nこんにちは",
+        },
+        texParts: null,
+      },
       kind: "create",
     });
   });

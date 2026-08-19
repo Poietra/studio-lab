@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn text_boundary_compiles_ascii_and_japanese_blocks_without_changing_mathtex_contract() {
         let response = compile_text_outline_json_v1(
-            br#"{"schema":"poietra.text-outline-request","version":1,"text":"Hello AV"}"#,
+            br#"{"layout":{"alignment":"left","lineHeight":1.2},"schema":"poietra.text-outline-request","version":1,"text":"Hello AV"}"#,
         );
         let decoded = decode(&response);
         assert_eq!(decoded["schema"], "poietra.text-outline-response");
@@ -305,7 +305,7 @@ mod tests {
         );
 
         let japanese = compile_text_outline_json_v1(
-            "{\"schema\":\"poietra.text-outline-request\",\"version\":1,\"text\":\"日本語で動画を作る\\nこんにちは\"}"
+            "{\"layout\":{\"alignment\":\"right\",\"lineHeight\":1.8},\"schema\":\"poietra.text-outline-request\",\"version\":1,\"text\":\"日本語で動画を作る\\nこんにちは\"}"
                 .as_bytes(),
         );
         assert_eq!(decode(&japanese)["result"]["kind"], "compiled");
@@ -326,12 +326,12 @@ mod tests {
         assert_eq!(decode(&malformed)["result"]["code"], "invalid-request");
 
         let crlf = compile_text_outline_json_v1(
-            br#"{"schema":"poietra.text-outline-request","version":1,"text":"a\r\nb"}"#,
+            br#"{"layout":{"alignment":"left","lineHeight":1.2},"schema":"poietra.text-outline-request","version":1,"text":"a\r\nb"}"#,
         );
         assert_eq!(decode(&crlf)["result"]["kind"], "compiled");
 
         let control = compile_text_outline_json_v1(
-            br#"{"schema":"poietra.text-outline-request","version":1,"text":"a\tb"}"#,
+            br#"{"layout":{"alignment":"left","lineHeight":1.2},"schema":"poietra.text-outline-request","version":1,"text":"a\tb"}"#,
         );
         assert_eq!(decode(&control)["result"]["code"], "character-unsupported");
 

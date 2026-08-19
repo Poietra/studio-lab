@@ -94,7 +94,7 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
             kind: "line",
             lifetimeEnd: null,
             lifetimeStart: 0.5,
-            text: null,
+            textContent: null,
             texParts: null,
           },
           id: "create-line",

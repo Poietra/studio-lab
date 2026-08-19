@@ -469,6 +469,18 @@ const studioStaticRootDimensionsV1Schema = z
     width: finiteNumberSchema.optional(),
   })
   .strict();
+const studioTextLayoutV1Schema = z
+  .object({
+    alignment: z.enum(["center", "left", "right"]),
+    lineHeight: finiteNumberSchema.positive(),
+  })
+  .strict();
+const studioTextContentV1Schema = z
+  .object({
+    layout: studioTextLayoutV1Schema,
+    text: z.string().min(1).max(256),
+  })
+  .strict();
 const studioMathTexContentV1Schema = z
   .object({
     displayLines: z.array(z.string()).min(1),
@@ -517,12 +529,7 @@ const studioCreationProjectionV1Schema = z
           initialScale: finiteNumberSchema.positive(),
           kind: z.enum(["arrow", "circle", "line", "math-tex", "rectangle", "text"]),
           operationId: z.string().min(1),
-          text: z
-            .string()
-            .min(1)
-            .max(256)
-            .regex(/^[\x20-\x7e]+$/u)
-            .optional(),
+          textContent: studioTextContentV1Schema.optional(),
           texParts: z.array(z.string().min(1)).optional(),
           transactionId: z.string().min(1),
         })
@@ -615,6 +622,16 @@ const studioCreationProjectionV1Schema = z
             operationId: z.string().min(1),
             toDimensions: studioStaticRootDimensionsV1Schema,
             toPosition: studioStaticRootPointV1Schema,
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            content: studioTextContentV1Schema,
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("text-content"),
+            operationId: z.string().min(1),
             transactionId: z.string().min(1),
           })
           .strict(),
@@ -762,6 +779,10 @@ const studioTimelineProjectionV1Schema = z
 
 type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StudioCreationEntityKindV1 = "arrow" | "circle" | "image" | "line" | "math-tex" | "other" | "rectangle" | "text";
+type StudioTextContentV1 = Readonly<{
+  layout: Readonly<{ alignment: "center" | "left" | "right"; lineHeight: number }>;
+  text: string;
+}>;
 type StudioCreationOperationV1 = Readonly<{
   dependsOn: readonly string[];
   entityId?: string;
@@ -777,7 +798,7 @@ type StudioCreationOperationV1 = Readonly<{
           kind: StudioCreationEntityKindV1;
           lifetimeEnd: number | null;
           lifetimeStart: number;
-          text: string | null;
+          textContent: StudioTextContentV1 | null;
           texParts: readonly string[] | null;
         }>;
         kind: "create";
@@ -813,6 +834,7 @@ type StudioCreationOperationV1 = Readonly<{
         toDimensions: StudioCreationDimensionsV1;
         toPosition: Readonly<{ x: number; y: number }>;
       }>
+    | Readonly<{ content: StudioTextContentV1; entityId: string; kind: "text-content" }>
     | Readonly<{
         controlOffset: Readonly<{ x: number; y: number }>;
         delta: Readonly<{ x: number; y: number }>;
@@ -832,9 +854,9 @@ export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
     texParts: readonly string[];
   }>[];
   textOutlines: readonly Readonly<{
+    content: StudioTextContentV1;
     entityId: string;
     path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
-    text: string;
   }>[];
   nextRevision: string;
   programs: readonly StudioAuthoringProgramV1<StudioCreationOperationV1>[];

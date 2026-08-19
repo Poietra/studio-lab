@@ -141,6 +141,13 @@ const textOutlineContentV1Schema = z
     }
   });
 
+export const textOutlineLayoutV1Schema = z
+  .object({
+    alignment: z.enum(["center", "left", "right"]),
+    lineHeight: z.number().finite().positive(),
+  })
+  .strict();
+
 /** Returns the LF-normalized bounded text accepted by the Rust outline request. */
 export function canonicalTextOutlineInputV1(text: unknown): string | null {
   const parsed = textOutlineContentV1Schema.safeParse(text);
@@ -149,6 +156,7 @@ export function canonicalTextOutlineInputV1(text: unknown): string | null {
 
 const textOutlineRequestV1Schema = z
   .object({
+    layout: textOutlineLayoutV1Schema.default({ alignment: "left", lineHeight: 1.2 }),
     schema: z.literal("poietra.text-outline-request"),
     text: textOutlineContentV1Schema,
     version: z.literal(1),
@@ -214,7 +222,11 @@ export const textOutlineResponseV1Schema = z
 
 export type TextOutlineArtifactV1 = z.infer<typeof textOutlineArtifactV1Schema>;
 export type TextOutlineResponseV1 = z.infer<typeof textOutlineResponseV1Schema>;
-export type TextOutlineCompilerV1 = (text: string) => Promise<TextOutlineResponseV1>;
+export type TextOutlineInputV1 = Readonly<{
+  layout: z.infer<typeof textOutlineLayoutV1Schema>;
+  text: string;
+}>;
+export type TextOutlineCompilerV1 = (input: TextOutlineInputV1) => Promise<TextOutlineResponseV1>;
 
 type PoietraMathTexOutlineWasmModuleV1 = Readonly<{
   compileMathTexOutlineV1: (requestJson: Uint8Array) => Uint8Array;
@@ -348,8 +360,9 @@ export const compileMathTexOutlineV1: MathTexOutlineCompilerV1 = async (texParts
   return parseBoundedResponse(bindings.compileMathTexOutlineV1(requestJson));
 };
 
-export const compileTextOutlineV1: TextOutlineCompilerV1 = async (text) => {
+export const compileTextOutlineV1: TextOutlineCompilerV1 = async ({ layout, text }) => {
   const request = textOutlineRequestV1Schema.parse({
+    layout,
     schema: "poietra.text-outline-request",
     text,
     version: 1,

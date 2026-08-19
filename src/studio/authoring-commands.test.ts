@@ -17,6 +17,12 @@ import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
+import {
+  createInitialEditorState,
+  editorProgramRecord,
+  redoEditorProgram,
+  undoEditorProgram,
+} from "./use-editor-controller";
 
 describe("manual Studio authoring commands", () => {
   function studioOwnedCircleScene(
@@ -125,6 +131,7 @@ describe("manual Studio authoring commands", () => {
       displayLines: ["日本語で動画を作る", "こんにちは"],
       label: canonical,
       text: canonical,
+      textLayout: { alignment: "left", lineHeight: 1.2 },
     });
     const lfCreation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
@@ -141,6 +148,42 @@ describe("manual Studio authoring commands", () => {
     expect(canonicalAppliedProgramsWorkingRevisionV1([creation.validation.program])).toBe(
       canonicalAppliedProgramsWorkingRevisionV1([lfCreation.validation.program]),
     );
+  });
+
+  it("keeps Text content and layout in one reversible Inspector transaction", () => {
+    const content = {
+      displayLines: ["Wide", "i"],
+      text: "Wide\ni",
+      textLayout: { alignment: "right" as const, lineHeight: 1.8 },
+    };
+    const validation = createInspectorEntityEditProgram({
+      capturedPlayhead: 5,
+      edits: { content },
+      entityId: "label_1",
+      from: { position: { x: 384, y: 224 }, scale: 1 },
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "text-layout-edit",
+    });
+    expect(validation.kind, JSON.stringify(validation.issues)).toBe("valid");
+    expect(validation.program.operations).toEqual([
+      expect.objectContaining({
+        entityId: "label_1",
+        key: "content",
+        kind: "SetProperty",
+        value: content,
+      }),
+    ]);
+
+    const applied = editorProgramRecord(programRecord(validation.program, validation), null, ["label_1"]);
+    const state = {
+      ...createInitialEditorState(),
+      appliedPrograms: [applied],
+      programUndoEntries: [{ index: 0, kind: "append" as const, value: applied }],
+      selectedObjectIds: ["label_1"],
+    };
+    const undone = undoEditorProgram(state);
+    expect(undone.appliedPrograms).toEqual([]);
+    expect(redoEditorProgram(undone).appliedPrograms).toEqual([applied]);
   });
 
   it.each(["tab\tbreak", ["a", "b", "c", "d", "e", "f", "g", "h", "i"].join("\n"), "x".repeat(129)])(

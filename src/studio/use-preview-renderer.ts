@@ -719,22 +719,40 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
       return { error: "Studio creation requires an exactly correlated base snapshot.", kind: "unsupported" };
     }
     const mathTexOutlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
-    const textOutlineInputs: Array<Readonly<{ entityId: string; text: string }>> = [];
+    const textOutlineInputByKey = new Map<
+      string,
+      Readonly<{
+        content: NonNullable<ReturnType<typeof studioCreationTextContent>>;
+        entityId: string;
+      }>
+    >();
     for (const { program } of sourceEdits) {
       for (const operation of program.operations) {
-        if (operation.kind !== "CreateEntity") continue;
-        if (operation.entity.type === "MathTex") {
-          const texParts = studioCreationMathTexParts(operation.entity.content);
-          if (texParts) mathTexOutlineInputs.push({ entityId: operation.entity.id, texParts });
-        } else if (operation.entity.type === "Text") {
-          const text = studioCreationTextContent(operation.entity.content);
-          if (!text) {
-            return {
-              error: `Text entity ${operation.entity.id} is invalid. ${STUDIO_CREATION_TEXT_CONTRACT}`,
-              kind: "unsupported",
-            };
+        if (operation.kind === "CreateEntity") {
+          if (operation.entity.type === "MathTex") {
+            const texParts = studioCreationMathTexParts(operation.entity.content);
+            if (texParts) mathTexOutlineInputs.push({ entityId: operation.entity.id, texParts });
+          } else if (operation.entity.type === "Text") {
+            const content = studioCreationTextContent(operation.entity.content);
+            if (!content) {
+              return {
+                error: `Text entity ${operation.entity.id} is invalid. ${STUDIO_CREATION_TEXT_CONTRACT}`,
+                kind: "unsupported",
+              };
+            }
+            textOutlineInputByKey.set(
+              `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.lineHeight}`,
+              { content, entityId: operation.entity.id },
+            );
           }
-          textOutlineInputs.push({ entityId: operation.entity.id, text });
+        } else if (operation.kind === "SetProperty" && operation.key === "content") {
+          const content = studioCreationTextContent(operation.value);
+          if (content) {
+            textOutlineInputByKey.set(
+              `${operation.entityId}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.lineHeight}`,
+              { content, entityId: operation.entityId },
+            );
+          }
         }
       }
     }
@@ -770,20 +788,20 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
     try {
       const compiler = input.textOutlineCompiler ?? compileTextOutlineV1;
       const responses = await Promise.all(
-        textOutlineInputs.map(async ({ entityId, text }) => ({
+        [...textOutlineInputByKey.values()].map(async ({ content, entityId }) => ({
+          content,
           entityId,
-          response: textOutlineResponseV1Schema.parse(await compiler(text)),
-          text,
+          response: textOutlineResponseV1Schema.parse(await compiler(content)),
         })),
       );
-      for (const { entityId, response, text } of responses) {
+      for (const { content, entityId, response } of responses) {
         if (response.result.kind === "unsupported") {
           return {
             error: `Text entity ${entityId} is unsupported (${response.result.code}): ${response.result.message}`,
             kind: "unsupported",
           };
         }
-        textOutlines.push({ entityId, path: response.result.path, text });
+        textOutlines.push({ content, entityId, path: response.result.path });
         textOutlineDigestMap[entityId] = response.result;
       }
     } catch (error) {

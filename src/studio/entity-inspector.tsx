@@ -1,12 +1,12 @@
-import { useState, type FormEvent, type KeyboardEvent } from "react";
+import { type FormEvent, type KeyboardEvent, useState } from "react";
 
 import { cn } from "../lib/cn";
 import {
-  initialInspectorEditValues,
-  validateInspectorEdits,
   type InspectorEditField,
   type InspectorEditValues,
+  initialInspectorEditValues,
   type ValidatedInspectorEdits,
+  validateInspectorEdits,
 } from "./inspector-edit";
 import type { ProjectedEntity } from "./model";
 import { entityLabel } from "./studio-viewport";
@@ -53,7 +53,7 @@ function restoreFieldRef(
   onFocusRestored: () => void,
 ) {
   let restored = false;
-  return (element: HTMLInputElement | HTMLTextAreaElement | null) => {
+  return (element: HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement | null) => {
     if (!element || restored || restoreFocus !== field) return;
     restored = true;
     element.focus();
@@ -126,9 +126,9 @@ export function EntityInspectorEditor({
     if (validation.kind === "invalid") {
       setErrors(validation.errors);
       setMessage("Fix the highlighted fields before creating a draft.");
-      const firstInvalid = (["x", "y", "content", "radius", "width", "height"] as const).find(
-        (field) => validation.errors[field] !== undefined,
-      );
+      const firstInvalid = (
+        ["x", "y", "content", "textAlignment", "textLineHeight", "radius", "width", "height"] as const
+      ).find((field) => validation.errors[field] !== undefined);
       if (firstInvalid) {
         event.currentTarget.querySelector<HTMLElement>(`[data-inspector-field="${firstInvalid}"]`)?.focus();
       }
@@ -206,25 +206,67 @@ export function EntityInspectorEditor({
             {entity.type === "MathTex" ? "MathTex content" : "Text content"}
           </legend>
           {contentAvailable ? (
-            <label className="mt-2 block text-[10px] text-zinc-500">
-              {entity.type === "MathTex" ? "One constructor argument per line" : "Content"}
-              <textarea
-                aria-label={`${entity.type} content of ${entityLabel(entity)}`}
-                aria-describedby={errors.content ? fieldErrorId(entity.id, "content") : undefined}
-                aria-invalid={errors.content ? "true" : undefined}
-                className={cn(
-                  textareaClass,
-                  entity.type === "MathTex" && "font-mono",
-                  errors.content && "border-red-800",
-                )}
-                data-inspector-field="content"
-                maxLength={2_000}
-                onChange={(event) => update("content", event.currentTarget.value)}
-                ref={restoreFieldRef("content", restoreFocus, onFocusRestored)}
-                value={values.content ?? ""}
-              />
-              <FieldError entityId={entity.id} error={errors.content} field="content" />
-            </label>
+            <div className="mt-2 space-y-3">
+              <label className="block text-[10px] text-zinc-500">
+                {entity.type === "MathTex" ? "One constructor argument per line" : "Content"}
+                <textarea
+                  aria-label={`${entity.type} content of ${entityLabel(entity)}`}
+                  aria-describedby={errors.content ? fieldErrorId(entity.id, "content") : undefined}
+                  aria-invalid={errors.content ? "true" : undefined}
+                  className={cn(
+                    textareaClass,
+                    entity.type === "MathTex" && "font-mono",
+                    errors.content && "border-red-800",
+                  )}
+                  data-inspector-field="content"
+                  maxLength={2_000}
+                  onChange={(event) => update("content", event.currentTarget.value)}
+                  ref={restoreFieldRef("content", restoreFocus, onFocusRestored)}
+                  value={values.content ?? ""}
+                />
+                <FieldError entityId={entity.id} error={errors.content} field="content" />
+              </label>
+              {entity.type === "Text" ? (
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-[10px] text-zinc-500">
+                    Alignment
+                    <select
+                      aria-label={`Text alignment of ${entityLabel(entity)}`}
+                      aria-describedby={errors.textAlignment ? fieldErrorId(entity.id, "textAlignment") : undefined}
+                      aria-invalid={errors.textAlignment ? "true" : undefined}
+                      className={cn(inputClass, errors.textAlignment && "border-red-800")}
+                      data-inspector-field="textAlignment"
+                      onChange={(event) => update("textAlignment", event.currentTarget.value)}
+                      ref={restoreFieldRef("textAlignment", restoreFocus, onFocusRestored)}
+                      value={values.textAlignment ?? "left"}
+                    >
+                      <option value="left">Left</option>
+                      <option value="center">Center</option>
+                      <option value="right">Right</option>
+                    </select>
+                    <FieldError entityId={entity.id} error={errors.textAlignment} field="textAlignment" />
+                  </label>
+                  <label className="text-[10px] text-zinc-500">
+                    Line height (em)
+                    <input
+                      aria-label={`Text line height of ${entityLabel(entity)}`}
+                      aria-describedby={errors.textLineHeight ? fieldErrorId(entity.id, "textLineHeight") : undefined}
+                      aria-invalid={errors.textLineHeight ? "true" : undefined}
+                      className={cn(inputClass, errors.textLineHeight && "border-red-800")}
+                      data-inspector-field="textLineHeight"
+                      inputMode="decimal"
+                      min="0.1"
+                      onChange={(event) => update("textLineHeight", event.currentTarget.value)}
+                      ref={restoreFieldRef("textLineHeight", restoreFocus, onFocusRestored)}
+                      step="0.1"
+                      type="number"
+                      value={values.textLineHeight ?? ""}
+                    />
+                    <FieldError entityId={entity.id} error={errors.textLineHeight} field="textLineHeight" />
+                  </label>
+                </div>
+              ) : null}
+            </div>
           ) : (
             <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-300">
               Reimport this object with a stable source identity before editing its content.

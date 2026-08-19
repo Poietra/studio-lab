@@ -1,4 +1,4 @@
-import { canonicalEditableContent, STUDIO_CREATION_TEXT_CONTRACT, studioCreationText } from "./editable-content";
+import { canonicalEditableContent, STUDIO_CREATION_TEXT_CONTRACT } from "./editable-content";
 import {
   importedLifetimeEditEvidence,
   MIN_OBJECT_LIFETIME_SECONDS,
@@ -663,9 +663,12 @@ export function duplicateEntityInput(
 export function defaultEntityContent(type: InsertEntityType, value: string): EntityContent | undefined {
   if (type === "Text") {
     const candidate = value.trim().length === 0 ? "Text" : value;
-    const text = studioCreationText({ displayLines: candidate.split(/\r?\n/u), text: candidate });
-    if (text === null) throw new Error(STUDIO_CREATION_TEXT_CONTRACT);
-    return { displayLines: text.split("\n"), label: text, text };
+    const content = canonicalEditableContent(
+      { displayLines: candidate.split(/\r?\n/u), label: candidate, text: candidate },
+      "Text",
+    );
+    if (content === null) throw new Error(STUDIO_CREATION_TEXT_CONTRACT);
+    return content;
   }
   const normalized = value.trim();
   if (type === "MathTex") {
