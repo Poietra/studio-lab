@@ -80,10 +80,10 @@ import {
   removeStudioFragmentMaterialAssetV1,
   removeStudioFragmentMaterialV1,
   renameStudioFragmentMaterialV1,
+  type StudioFragmentMaterialPresetId,
   sceneHasFragmentMaterialAssignmentsV1,
   studioFragmentMaterialAssignmentCountV1,
   studioFragmentMaterialCompileErrorV1,
-  type StudioFragmentMaterialPresetId,
   updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
@@ -144,6 +144,12 @@ import { samplePropertyValue } from "./studio/property-sampling";
 import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-authoring-wire";
 import type { SceneEdit } from "./studio/scene-edit-contract";
 import {
+  isSelectionLayoutCommand,
+  planSelectionLayout,
+  type SelectionLayoutCommand,
+  type SelectionLayoutTarget,
+} from "./studio/selection-layout";
+import {
   createSelectionResizeGesture,
   groupResizeEligibleCreationEntityIds,
   type PreparedSelectionResizeBasis,
@@ -170,6 +176,7 @@ import {
   sameShapeGeometry,
 } from "./studio/shape-resize";
 import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimelineWithProjection } from "./studio/source-timeline";
+import { preparedGeometryBounds, verifiedPreviewGeometryForStudioEntity } from "./studio/studio-canvas";
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
@@ -1585,6 +1592,66 @@ export function App({
     sourceRuntimeIdentity: previewRenderer?.sourceRuntimeIdentity ?? null,
   });
   const selectedSet = new Set(selectedObjectIds);
+  const selectedLayoutIds = [...selectedSet];
+  let selectionLayoutUnavailableReason: string | null = null;
+  const selectionLayoutTargets: SelectionLayoutTarget[] = [];
+  if (selectedLayoutIds.length < 2) {
+    selectionLayoutUnavailableReason = "Select at least two objects to arrange them.";
+  } else if (studioAuthoringLocked) {
+    selectionLayoutUnavailableReason = readDurationBlocker() ?? EDITOR_SESSION_LOADING_BLOCKER;
+  } else if (boundary !== null) {
+    selectionLayoutUnavailableReason = "Finish the Scene transition before arranging objects.";
+  } else if (!previewPaintAvailable) {
+    selectionLayoutUnavailableReason = "Wait for the canonical WebGPU preview before arranging objects.";
+  } else if (previewSelectionOnly) {
+    selectionLayoutUnavailableReason = "This verified preview is selection-only and cannot authorize layout edits.";
+  } else if (draftEdit || editingAppliedProgram) {
+    selectionLayoutUnavailableReason = "Apply or discard the current draft before arranging objects.";
+  } else if (interactionMode !== "position") {
+    selectionLayoutUnavailableReason = "Switch to Position mode before arranging objects.";
+  } else if (boundedRuntimeEditTargetIds.size > 0) {
+    selectionLayoutUnavailableReason = "Selection layout is unavailable while a bounded Runtime Trace edit is active.";
+  } else if (!Number.isFinite(projection?.camera.scale) || (projection?.camera.scale ?? 0) <= 0) {
+    selectionLayoutUnavailableReason = "The current camera scale cannot be used for layout.";
+  } else {
+    const entitiesById = new Map(editableEntities.map((entity) => [entity.id, entity]));
+    const emptySourceIdentity = new Map<string, string | null>();
+    for (const entityId of selectedLayoutIds) {
+      const entity = entitiesById.get(entityId);
+      if (!entity || !entity.present) {
+        selectionLayoutUnavailableReason = "Every selected object must be present and editable.";
+        break;
+      }
+      if (!studioCreationProjectionEntityFor(entity.id)) {
+        selectionLayoutUnavailableReason =
+          "Align and distribute currently support only applied Studio-created objects.";
+        break;
+      }
+      if (entity.provisional || !entity.transactionId || !appliedTransactionIds.has(entity.transactionId)) {
+        selectionLayoutUnavailableReason = "Apply every selected Studio-created object before arranging the selection.";
+        break;
+      }
+      if (entity.geometry.position.kind === "unknown") {
+        selectionLayoutUnavailableReason = `Studio cannot arrange ${entityLabel(entity)} safely: ${entity.geometry.position.reason}`;
+        break;
+      }
+      const verified = previewRenderer
+        ? verifiedPreviewGeometryForStudioEntity(previewRenderer, emptySourceIdentity, entity)
+        : null;
+      const bounds = verified
+        ? preparedGeometryBounds(verified.geometry, workspace?.frame ?? { height: 8, width: 14.222 })
+        : null;
+      if (!bounds) {
+        selectionLayoutUnavailableReason = `Exact prepared geometry is unavailable for ${entityLabel(entity)}.`;
+        break;
+      }
+      selectionLayoutTargets.push({ bounds, entityId, position: entity.position });
+    }
+  }
+  const selectionLayoutBasis =
+    selectionLayoutUnavailableReason === null && projection
+      ? { cameraScale: projection.camera.scale, targets: selectionLayoutTargets }
+      : null;
   const activeDuration =
     workspaceProjection?.proposedState.evaluatedScene.duration ?? projectedActiveScene?.runtimeSceneState.duration ?? 1;
   const durationTrimAvailability = appliedTimelineProjection
@@ -4192,16 +4259,19 @@ export function App({
       sourcePrograms: readonly ProgramRecord["program"][];
     }> = directGestureContext(),
     capturedSourceAnchor?: number,
+    absolutePositions?: Readonly<Record<string, Point>>,
   ) {
     if (editingAppliedProgram) {
       setDraftError("Apply or discard the Applied Program edit before moving another object.");
-      return;
+      return false;
     }
-    if (!gestureContext.proposedState || !projection) return;
-    const projected = projectedPositions(editableEntities, targetIds);
+    if (!gestureContext.proposedState || !projection) return false;
+    const projected = absolutePositions
+      ? { kind: "valid" as const, positions: absolutePositions }
+      : projectedPositions(editableEntities, targetIds);
     if (projected.kind === "invalid") {
       setDraftError(projected.message);
-      return;
+      return false;
     }
     const sourceScene = projectRuntimeSceneToSourceTimeline(
       gestureContext.proposedState.evaluatedScene,
@@ -4218,7 +4288,7 @@ export function App({
             targetEntityIds: targetIds,
           })
         : { sourceTime: capturedSourceAnchor };
-    if (!anchor) return;
+    if (!anchor) return false;
     const validationScene = projectStudioPreviewRuntimeTraceValidationScene(
       sourceScene,
       targetIds.length === 1 ? runtimeTraceEditCandidateAt(targetIds[0], anchor.sourceTime) : null,
@@ -4235,21 +4305,38 @@ export function App({
     const validated = validatedProgramRecord(validation);
     if (validated.kind === "invalid") {
       setDraftError(validated.message);
-      return;
+      return false;
     }
     cancelSuggestionRequest();
-    if (
-      !stageDraft({
-        clearAppliedEdit: true,
-        clearSuggestion: true,
-        currentTime: sourceTimeToWorkingTime(gestureContext.sourcePrograms, anchor.sourceTime),
-        operation: null,
-        preserveAppliedProgram: gestureContext.preserveDraft,
-        record: validated.record,
-        stopPlayback: true,
-      })
-    )
-      return;
+    return stageDraft({
+      clearAppliedEdit: true,
+      clearSuggestion: true,
+      currentTime: sourceTimeToWorkingTime(gestureContext.sourcePrograms, anchor.sourceTime),
+      operation: null,
+      preserveAppliedProgram: gestureContext.preserveDraft,
+      record: validated.record,
+      stopPlayback: true,
+    });
+  }
+
+  function arrangeSelection(command: SelectionLayoutCommand) {
+    if (!selectionLayoutBasis) {
+      setDraftError(selectionLayoutUnavailableReason ?? "The selected objects cannot be arranged.");
+      return false;
+    }
+    const plan = planSelectionLayout(command, selectionLayoutBasis);
+    if (plan.kind === "unavailable") {
+      setDraftError(plan.reason);
+      return false;
+    }
+    return installPositionDraft(
+      { x: 0, y: 0 },
+      plan.targetEntityIds,
+      `studio-layout-${crypto.randomUUID()}`,
+      undefined,
+      undefined,
+      plan.positions,
+    );
   }
 
   function nudgeEntity(event: KeyboardEvent<HTMLButtonElement>, entityId: string) {
@@ -4342,6 +4429,7 @@ export function App({
       return true;
     }
     if (command === "redo") return redoProgram();
+    if (isSelectionLayoutCommand(command)) return arrangeSelection(command);
     if (command === "delete") return deleteSelection();
     if (command === "duplicate") return duplicateSelection();
     if (command === "copy") return copySelection();
@@ -5177,6 +5265,7 @@ export function App({
                 setInsertTool(tool);
               }}
               onInsertValueChange={setInsertValue}
+              onSelectionLayout={(command) => void arrangeSelection(command)}
               onLifetimeChange={(entityId, lifetimeStart, target) => {
                 void editEntityLifetime(entityId, lifetimeStart, target);
               }}
@@ -5221,6 +5310,7 @@ export function App({
               readOnly={boundary !== null || canvasInteractionLocked}
               rotationHandleEntityId={rotationHandleEntityId}
               selectedIds={selectedSet}
+              selectionLayoutUnavailableReason={selectionLayoutUnavailableReason}
             />
 
             <StudioInspector
