@@ -100,7 +100,7 @@ describe("Studio gesture preview store", () => {
     expect(store.getSnapshot()).toBe(geometry);
     expect(listener).toHaveBeenCalledTimes(1);
 
-    store.setScalePreview({ entityId: "entity:rectangle", scale: 1.5 });
+    store.setScalePreview({ entityId: "entity:rectangle", guides: ["frame-right"], scale: 1.5 });
     const scale = store.getSnapshot();
     expect(scale).toEqual({
       dragPreview: null,
@@ -109,18 +109,18 @@ describe("Studio gesture preview store", () => {
       groupResizePreview: null,
       kind: "scale",
       rotationPreview: null,
-      scalePreview: { entityId: "entity:rectangle", scale: 1.5 },
+      scalePreview: { entityId: "entity:rectangle", guides: ["frame-right"], scale: 1.5 },
     });
     expect(listener).toHaveBeenCalledTimes(2);
 
-    store.setScalePreview({ entityId: "entity:rectangle", scale: 1.5 });
+    store.setScalePreview({ entityId: "entity:rectangle", guides: ["frame-right"], scale: 1.5 });
     expect(store.getSnapshot()).toBe(scale);
     expect(listener).toHaveBeenCalledTimes(2);
   });
 
   it("publishes canonical rotation preview angles without retaining stale resize state", () => {
     const store = createStudioGesturePreviewStore();
-    store.setScalePreview({ entityId: "entity:circle", scale: 2 });
+    store.setScalePreview({ entityId: "entity:circle", guides: [], scale: 2 });
     store.setRotationPreview({ angleRadians: Math.PI / 4, entityId: "entity:circle" });
     const rotation = store.getSnapshot();
 
@@ -140,7 +140,7 @@ describe("Studio gesture preview store", () => {
 
   it("publishes one multi-entity resize preview without retaining single-entity state", () => {
     const store = createStudioGesturePreviewStore();
-    store.setScalePreview({ entityId: "entity:a", scale: 2 });
+    store.setScalePreview({ entityId: "entity:a", guides: [], scale: 2 });
     store.setGroupResizePreview({
       entities: [
         { delta: { x: -10, y: -5 }, entityId: "entity:a", scale: 1.5 },
@@ -206,7 +206,7 @@ describe("Studio gesture preview store", () => {
     const listener = vi.fn();
     const unsubscribe = store.subscribe(listener);
 
-    store.setScalePreview({ entityId: "entity:circle", scale: 2 });
+    store.setScalePreview({ entityId: "entity:circle", guides: [], scale: 2 });
     const active = store.getSnapshot();
     store.clear();
     const cleared = store.getSnapshot();

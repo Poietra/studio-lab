@@ -11,6 +11,7 @@ export type EntityDragPreview = Readonly<{
 }>;
 export type EntityScalePreview = Readonly<{
   entityId: string;
+  guides: readonly AlignmentGuide[];
   scale: number;
 }>;
 export type EntityGroupResizePreview = Readonly<{
