@@ -6,8 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import { manimWorkspaceViewSchema } from "../src/render-pipeline/contracts";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
+import { ManimProjectRegistry } from "./manim-project-registry";
 import { handleManimRequest } from "./manim-render-http";
 import {
   cleanupManimRenderPipelineFixtures,
@@ -41,10 +43,12 @@ describe("Manim project registry", () => {
     });
     expect(JSON.stringify(projects)).not.toContain(firstRoot);
     expect(JSON.stringify(projects)).not.toContain(secondRoot);
-    await expect(registry.workspace("project-b")).resolves.toMatchObject({
+    const workspace = await registry.workspace("project-b");
+    expect(workspace).toMatchObject({
       projectId: "project-b",
       projectName: "Project B",
     });
+    expect("nativeDocument" in workspace).toBe(false);
     expect(() => registry.workspace("missing-project")).toThrow(/project not found/i);
   });
 
@@ -129,6 +133,108 @@ describe("Manim project registry", () => {
     );
     const reopened = new PersistentManimProjectCatalog({ dataRoot: dataRoot!, seedProjects: [] });
     expect(reopened.projects().some((project) => project.projectId === projectId)).toBe(false);
+  });
+
+  it("creates and reopens a source-free local Studio-native workspace", async () => {
+    const command = ["poietra-command-that-does-not-exist"];
+    const { dataRoot, registry } = await registryFixture(command, true);
+
+    const created = registry.createNativeStudioProject("Blank canvas");
+    const projectId = created.project?.id;
+    if (!projectId) throw new Error("The Studio-native project ID is missing.");
+    const managedRoot = join(dataRoot!, ".workspaces", projectId);
+    const documentKey = (await readFile(join(managedRoot, ".poietra-native-document"), "utf8")).trim();
+
+    expect(documentKey).toMatch(/^[0-9a-f]{64}$/u);
+    expect((await stat(join(managedRoot, ".poietra-native-document"))).mode & 0o777).toBe(0o600);
+    expect((await readdir(managedRoot)).some((entry) => entry.endsWith(".py"))).toBe(false);
+    await expect(registry.workspace(projectId)).resolves.toEqual({
+      commandAvailable: false,
+      frame: { height: 8, width: 14.222 },
+      nativeDocument: { documentKey },
+      projectId,
+      projectName: "Blank canvas",
+      renderCapability: {
+        available: false,
+        kind: "local-command",
+        unavailableReason: "native-render-frozen",
+      },
+      sources: [],
+    });
+
+    const reopenedCatalog = new PersistentManimProjectCatalog({ dataRoot: dataRoot!, seedProjects: [] });
+    expect(reopenedCatalog.projects()).toContainEqual(
+      expect.objectContaining({ nativeDocumentKey: documentKey, projectId }),
+    );
+    const reopenedRegistry = new ManimProjectRegistry({
+      catalog: reopenedCatalog,
+      catalogStorageRoot: dataRoot!,
+      command,
+      frame: { height: 8, width: 14.222 },
+      projects: [],
+      tenantId: "test-tenant",
+    });
+    try {
+      await expect(reopenedRegistry.workspace(projectId)).resolves.toMatchObject({
+        nativeDocument: { documentKey },
+        renderCapability: { available: false, unavailableReason: "native-render-frozen" },
+        sources: [],
+      });
+    } finally {
+      await reopenedRegistry.close();
+    }
+
+    await registry.unregisterProject(projectId);
+    await expect(stat(managedRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    const trashedRoot = (await readdir(join(dataRoot!, ".trash"))).find((entry) => entry.startsWith(`${projectId}-`));
+    if (!trashedRoot) throw new Error("The removed Studio-native workspace is missing from trash.");
+    await expect(readFile(join(dataRoot!, ".trash", trashedRoot, ".poietra-native-document"), "utf8")).resolves.toBe(
+      `${documentKey}\n`,
+    );
+  });
+
+  it("quarantines invalid local native markers instead of reopening them as imported workspaces", async () => {
+    const { dataRoot, registry } = await registryFixture(["poietra-command-that-does-not-exist"], true);
+    const malformed = registry.createNativeStudioProject("Malformed marker").project?.id;
+    const dangling = registry.createNativeStudioProject("Dangling marker").project?.id;
+    if (!malformed || !dangling) throw new Error("The Studio-native project IDs are missing.");
+    const malformedMarker = join(dataRoot!, ".workspaces", malformed, ".poietra-native-document");
+    const danglingMarker = join(dataRoot!, ".workspaces", dangling, ".poietra-native-document");
+    await writeFile(malformedMarker, "not-a-document-key\n", "utf8");
+    await rm(danglingMarker);
+    await symlink("missing-document-key", danglingMarker);
+
+    const reopened = new PersistentManimProjectCatalog({ dataRoot: dataRoot!, seedProjects: [] });
+    expect(reopened.projects().some((project) => project.projectId === malformed)).toBe(false);
+    expect(reopened.projects().some((project) => project.projectId === dangling)).toBe(false);
+  });
+
+  it("rolls back native workspace publication when its render manager cannot be created", async () => {
+    const dataRoot = await mkdtemp(join(tmpdir(), "poietra-native-manager-failure-"));
+    temporaryRoots.push(dataRoot);
+    const catalog = new PersistentManimProjectCatalog({
+      dataRoot,
+      projectIdFactory: () => "project-native-manager-failure",
+      seedProjects: [],
+    });
+    const registry = new ManimProjectRegistry({
+      catalog,
+      catalogStorageRoot: dataRoot,
+      command: ["poietra-command-that-does-not-exist"],
+      frame: { height: 8, width: 14.222 },
+      projects: [],
+      snapshotSandboxBackendFactory: () => {
+        throw new Error("manager construction failed");
+      },
+      tenantId: "test-tenant",
+    });
+    try {
+      expect(() => registry.createNativeStudioProject("Rollback me")).toThrow(/manager construction failed/i);
+      expect(catalog.projects()).toEqual([]);
+      expect(await readdir(join(dataRoot, ".workspaces"))).toEqual([]);
+    } finally {
+      await registry.close();
+    }
   });
 
   it("publishes a browser-selected Python file through the local managed adapter under one project identity", async () => {
@@ -737,6 +843,19 @@ class InlineImageScene(Scene):
         projectId: managed.project.id,
         sources: [{ path: "main.py", scenes: [{ name: "MainScene" }] }],
       });
+      const nativeResponse = await fetch(`${origin}/api/manim/projects`, {
+        body: JSON.stringify({ kind: "studio-native", name: "Native workspace" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(nativeResponse.status).toBe(201);
+      const native = (await nativeResponse.json()) as { project: { id: string } };
+      const nativeWorkspaceResponse = await fetch(`${origin}/api/manim/projects/${native.project.id}/workspace`);
+      const nativeWorkspace = manimWorkspaceViewSchema.parse(await nativeWorkspaceResponse.json());
+      expect(nativeWorkspace).toMatchObject({
+        nativeDocument: { documentKey: expect.stringMatching(/^[0-9a-f]{64}$/u) },
+        sources: [],
+      });
       const managedWithRootResponse = await fetch(`${origin}/api/manim/projects`, {
         body: JSON.stringify({ kind: "managed", name: "Invalid managed", root: addedRoot }),
         headers: { "content-type": "application/json" },
@@ -796,6 +915,11 @@ class InlineImageScene(Scene):
         method: "DELETE",
       });
       expect(deleteManagedResponse.status).toBe(200);
+      const deleteNativeResponse = await fetch(`${origin}/api/manim/projects/${native.project.id}`, {
+        headers: { "content-type": "application/json" },
+        method: "DELETE",
+      });
+      expect(deleteNativeResponse.status).toBe(200);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

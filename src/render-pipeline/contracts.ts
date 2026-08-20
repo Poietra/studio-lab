@@ -615,11 +615,12 @@ export const manimRenderCapabilitySchema: z.ZodType<ManimRenderCapability> = z
     (capability) =>
       capability.available
         ? capability.unavailableReason === null
-        : capability.kind === "local-command"
-          ? capability.unavailableReason === "local-command-unavailable"
-          : capability.unavailableReason === "durable-render-unavailable" ||
-            capability.unavailableReason === "durable-render-unconfigured" ||
-            capability.unavailableReason === "native-render-frozen",
+        : capability.unavailableReason === "native-render-frozen"
+          ? true
+          : capability.kind === "local-command"
+            ? capability.unavailableReason === "local-command-unavailable"
+            : capability.unavailableReason === "durable-render-unavailable" ||
+              capability.unavailableReason === "durable-render-unconfigured",
     { message: "Render capability availability and reason do not match." },
   );
 

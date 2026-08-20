@@ -666,7 +666,7 @@ async function routeManimRequest(
     if (parsed.data.kind === "studio-native") {
       const createNativeStudioProject = registry.createNativeStudioProject?.bind(registry);
       if (!createNativeStudioProject) {
-        throw new HttpError("Studio-native projects require the durable production runtime.", 403);
+        throw new HttpError("Studio-native projects are not supported by this project registry.", 403);
       }
       sendJson(response, 201, await createNativeStudioProject(parsed.data.name, signal));
       return;
