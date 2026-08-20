@@ -88,6 +88,7 @@ import {
   studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
 import {
+  isStudioNativePreviewSceneIdentityV1,
   loadStudioPreviewSnapshotMetadataV1,
   PRISTINE_WORKING_REVISION,
   type StudioPreviewEditingContextV1,
@@ -139,14 +140,22 @@ export type StudioPreviewRendererView = Readonly<{
     assetPayloads: readonly CanvasPngAssetTransferV1[];
     bundle: SceneIrBundleV1;
     fragmentMaterialRegistry: FragmentMaterialRegistryV1;
-    sourceLineage: Readonly<{
-      projectId: string;
-      sceneId: string;
-      sceneName: string;
-      sourceHash: string;
-      sourcePath: string;
-      workingRevision: string;
-    }>;
+    sourceLineage:
+      | Readonly<{
+          documentKey: string;
+          origin: "studio-native";
+          projectId: string;
+          sceneId: string;
+          workingRevision: string;
+        }>
+      | Readonly<{
+          projectId: string;
+          sceneId: string;
+          sceneName: string;
+          sourceHash: string;
+          sourcePath: string;
+          workingRevision: string;
+        }>;
   }> | null;
   /** Verified world-space center used to project Studio viewport positions. */
   cameraCenter: Readonly<{ x: number; y: number }> | null;
@@ -302,6 +311,7 @@ function importedSnapshotCorrelationIsExact(
   requirePristineWorkingRevision: boolean,
 ) {
   const { correlation, snapshot: bundle } = snapshot;
+  if (isStudioNativePreviewSceneIdentityV1(correlation.context)) return false;
   const source = bundle.scene.source;
   return (
     (source.kind === "imported-manim-runtime-trace" || source.kind === "imported-manim-server-snapshot") &&
@@ -314,6 +324,38 @@ function importedSnapshotCorrelationIsExact(
     snapshot.duration === correlation.sceneDuration &&
     correlation.sceneDuration === correlation.context.sourceDuration &&
     (!requirePristineWorkingRevision || correlation.context.workingRevision === PRISTINE_WORKING_REVISION)
+  );
+}
+
+function studioNativeSnapshotCorrelationIsExact(
+  snapshot: StudioVerifiedPreviewSnapshotV1,
+  requirePristineWorkingRevision: boolean,
+) {
+  const { correlation, snapshot: bundle } = snapshot;
+  const context = correlation.context;
+  const source = bundle.scene.source;
+  return (
+    isStudioNativePreviewSceneIdentityV1(context) &&
+    source.kind === "studio-edit-program" &&
+    context.sceneId === correlation.sceneId &&
+    bundle.scene.sceneId === context.sceneId &&
+    sceneIrSourceRevisionHash(bundle.scene) === correlation.engineRevisionHash &&
+    bundle.assets.manifestDigest === correlation.assetsManifestDigest &&
+    bundle.scene.duration === correlation.sceneDuration &&
+    snapshot.duration === correlation.sceneDuration &&
+    correlation.sceneDuration === context.sourceDuration &&
+    correlation.serverPublicationRevision === null &&
+    (!requirePristineWorkingRevision || context.workingRevision === PRISTINE_WORKING_REVISION)
+  );
+}
+
+function previewSnapshotCorrelationIsExact(
+  snapshot: StudioVerifiedPreviewSnapshotV1,
+  requirePristineWorkingRevision: boolean,
+) {
+  return (
+    importedSnapshotCorrelationIsExact(snapshot, requirePristineWorkingRevision) ||
+    studioNativeSnapshotCorrelationIsExact(snapshot, requirePristineWorkingRevision)
   );
 }
 
@@ -590,13 +632,29 @@ function importedWorkingSourceIsExact(
   input: Readonly<{ snapshot: StudioVerifiedPreviewSnapshotV1; workingState: WorkingState }>,
 ) {
   const correlation = input.snapshot.correlation;
+  if (isStudioNativePreviewSceneIdentityV1(correlation.context)) return false;
   const base = input.workingState;
   return (
     importedSnapshotCorrelationIsExact(input.snapshot, true) &&
     base.runtimeSceneState.sceneId === base.editorContext.activeSceneId &&
     base.runtimeSceneState.sceneId === `${correlation.context.sourcePath}#${correlation.context.sceneName}` &&
-    base.sourceSnapshot.sourceId === correlation.context.sourcePath &&
-    base.sourceSnapshot.hash === `sha256:${correlation.context.sourceHash}`
+    base.sourceSnapshot?.sourceId === correlation.context.sourcePath &&
+    base.sourceSnapshot?.hash === `sha256:${correlation.context.sourceHash}`
+  );
+}
+
+function studioNativeWorkingSourceIsExact(
+  input: Readonly<{ snapshot: StudioVerifiedPreviewSnapshotV1; workingState: WorkingState }>,
+) {
+  const context = input.snapshot.correlation.context;
+  const document = input.workingState.documentSnapshot;
+  return (
+    isStudioNativePreviewSceneIdentityV1(context) &&
+    studioNativeSnapshotCorrelationIsExact(input.snapshot, true) &&
+    document?.origin === "studio-native" &&
+    document.documentKey === context.documentKey &&
+    input.workingState.editorContext.activeSceneId === context.sceneId &&
+    input.workingState.runtimeSceneState.sceneId === context.sceneId
   );
 }
 
@@ -681,7 +739,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
   }
   if (sourceEdits.length === 0) {
     const { correlation, snapshot } = input.snapshot;
-    if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
+    if (!previewSnapshotCorrelationIsExact(input.snapshot, true)) {
       return { error: "The base verified preview has inconsistent revision evidence.", kind: "unsupported" };
     }
     return {
@@ -716,8 +774,11 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
     program.operations.some(({ kind }) => kind === "CreateEntity"),
   );
   if (hasStudioCreation) {
-    if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
-      return { error: "Studio creation requires an exactly correlated base snapshot.", kind: "unsupported" };
+    const nativeBase = isStudioNativePreviewSceneIdentityV1(input.snapshot.correlation.context);
+    if (
+      nativeBase ? !studioNativeWorkingSourceIsExact(input) : !importedSnapshotCorrelationIsExact(input.snapshot, true)
+    ) {
+      return { error: "Studio creation requires one exactly correlated base Scene.", kind: "unsupported" };
     }
     const mathTexOutlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
     const textOutlineInputByKey = new Map<
@@ -1387,12 +1448,15 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
   if (importedSource.kind === "imported-manim-server-snapshot") {
     const base = input.workingState;
     const correlation = input.snapshot.correlation;
+    if (isStudioNativePreviewSceneIdentityV1(correlation.context)) {
+      return { error: "Imported Scene correlation cannot use a Studio-native document.", kind: "unsupported" };
+    }
     if (
       !importedSnapshotCorrelationIsExact(input.snapshot, true) ||
       base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
       base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||
-      base.sourceSnapshot.sourceId !== correlation.context.sourcePath ||
-      base.sourceSnapshot.hash !== `sha256:${correlation.context.sourceHash}`
+      base.sourceSnapshot?.sourceId !== correlation.context.sourcePath ||
+      base.sourceSnapshot?.hash !== `sha256:${correlation.context.sourceHash}`
     ) {
       return {
         error: "Static imported Studio state is not correlated with one exact verified Scene.",
@@ -1667,6 +1731,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const runtimeTraceEditCandidates = snapshot
     ? studioPreviewRuntimeTraceEditCandidates(snapshot, sampleTime, sourceEvents)
     : [];
+  const nativeContextActive = context !== null && isStudioNativePreviewSceneIdentityV1(context);
   useEffect(() => {
     const workingState = latestWorkingState.current;
     const workingRevision = context?.workingRevision;
@@ -1675,8 +1740,8 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       !workingState ||
       !workingRevision ||
       workspaceKey === null ||
-      retainedSourceDuration === null ||
-      Math.abs(retainedSourceDuration - snapshot.duration) >= 0.0005
+      (!nativeContextActive &&
+        (retainedSourceDuration === null || Math.abs(retainedSourceDuration - snapshot.duration) >= 0.0005))
     ) {
       setCompilation(INACTIVE_COMPILATION);
       return;
@@ -1720,6 +1785,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     context?.workingRevision,
     frame.height,
     frame.width,
+    nativeContextActive,
     sceneFragmentMaterials,
     retainedSourceDuration,
     snapshot,
@@ -1915,6 +1981,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   // canvas remount, or host teardown never trusts a stale presented emission.
   const verifiedSourceDuration = studioPreviewVerifiedSourceDurationV1(snapshot, context);
   const sourceDurationMismatch =
+    !nativeContextActive &&
     retainedSourceDuration !== null &&
     verifiedSourceDuration !== null &&
     Math.abs(retainedSourceDuration - verifiedSourceDuration) >= 0.0005;
@@ -1985,7 +2052,11 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const runtimeTraceOpaqueSelectionEntities = projectStudioPreviewRuntimeTraceOpaqueSelectionEntities({
     interactionGeometry,
     sourceRuntimeIdentity: snapshot?.sourceRuntimeIdentity ?? null,
-    studioSceneId: context ? `${context.sourcePath}#${context.sceneName}` : null,
+    studioSceneId: context
+      ? isStudioNativePreviewSceneIdentityV1(context)
+        ? context.sceneId
+        : `${context.sourcePath}#${context.sceneName}`
+      : null,
   });
   return {
     attachCanvas,
@@ -2005,14 +2076,22 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
           bundle: presentedCompiledScene.bundle,
           fragmentMaterialRegistry:
             presentedCompiledScene.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
-          sourceLineage: {
-            projectId: presentedCompiledScene.snapshot.correlation.context.projectId,
-            sceneId: presentedCompiledScene.snapshot.correlation.sceneId,
-            sceneName: presentedCompiledScene.snapshot.correlation.context.sceneName,
-            sourceHash: presentedCompiledScene.snapshot.correlation.context.sourceHash,
-            sourcePath: presentedCompiledScene.snapshot.correlation.context.sourcePath,
-            workingRevision: presentedCompiledScene.workingRevision,
-          },
+          sourceLineage: isStudioNativePreviewSceneIdentityV1(presentedCompiledScene.snapshot.correlation.context)
+            ? {
+                documentKey: presentedCompiledScene.snapshot.correlation.context.documentKey,
+                origin: "studio-native",
+                projectId: presentedCompiledScene.snapshot.correlation.context.projectId,
+                sceneId: presentedCompiledScene.snapshot.correlation.sceneId,
+                workingRevision: presentedCompiledScene.workingRevision,
+              }
+            : {
+                projectId: presentedCompiledScene.snapshot.correlation.context.projectId,
+                sceneId: presentedCompiledScene.snapshot.correlation.sceneId,
+                sceneName: presentedCompiledScene.snapshot.correlation.context.sceneName,
+                sourceHash: presentedCompiledScene.snapshot.correlation.context.sourceHash,
+                sourcePath: presentedCompiledScene.snapshot.correlation.context.sourcePath,
+                workingRevision: presentedCompiledScene.workingRevision,
+              },
         }
       : null,
     // The workspace needs the exact compiled projection to keep the canvas

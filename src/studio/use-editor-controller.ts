@@ -681,12 +681,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
       fallback: Readonly<{ currentTime: number; selectedObjectIds: readonly string[] }>,
     ) => {
       const previousIdentity = activeSession.current;
-      if (
-        previousIdentity &&
-        (previousIdentity.projectId !== identity.projectId ||
-          previousIdentity.sceneId !== identity.sceneId ||
-          previousIdentity.sourceHash !== identity.sourceHash)
-      ) {
+      if (previousIdentity && editorSessionIdentityKey(previousIdentity) !== editorSessionIdentityKey(identity)) {
         sessionStore.current?.save(previousIdentity, snapshotEditorSession(stateRef.current));
       }
       activeSession.current = identity;

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -33,6 +33,7 @@ export type ManimProjectKind = "existing" | "managed";
 export type ResolvedManimProject = Readonly<{
   canonicalRoot: string;
   kind: ManimProjectKind;
+  nativeDocumentKey?: string;
   projectId: string;
   projectName: string;
 }>;
@@ -73,6 +74,8 @@ class MainScene(Scene):
         # poietra:anchor 0.000
         self.wait(1)
 `;
+
+const NATIVE_DOCUMENT_MARKER = ".poietra-native-document";
 
 function opaqueProjectId(canonicalRoot: string) {
   return `project-${createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 16)}`;
@@ -155,10 +158,13 @@ export class PersistentManimProjectCatalog {
       const quarantinedProjects: z.infer<typeof storedProjectSchema>[] = [];
       normalizedProjects.forEach((project) => {
         try {
-          const resolvedProject = resolveManimProjects([project])[0]!;
+          let resolvedProject = resolveManimProjects([project])[0]!;
           if (project.kind === "managed" && !this.isManagedProjectRoot(resolvedProject)) {
             quarantinedProjects.push(project);
             return;
+          }
+          if (project.kind === "managed") {
+            resolvedProject = this.restoreNativeDocumentIdentity(resolvedProject);
           }
           const conflictsWithAvailableProject = availableProjects.some(
             (availableProject) =>
@@ -204,7 +210,18 @@ export class PersistentManimProjectCatalog {
   }
 
   createManaged(name: string) {
-    return this.createManagedWorkspace(name, "main.py", MANAGED_WORKSPACE_STARTER);
+    return this.createManagedWorkspace(name, {
+      kind: "python",
+      source: MANAGED_WORKSPACE_STARTER,
+      sourceName: "main.py",
+    });
+  }
+
+  createNativeStudio(name: string) {
+    return this.createManagedWorkspace(name, {
+      documentKey: randomBytes(32).toString("hex"),
+      kind: "studio-native",
+    });
   }
 
   createManagedFromSource(request: BrowserManimProjectImportRequestV1, projectPngBytes: Uint8Array | null) {
@@ -212,14 +229,19 @@ export class PersistentManimProjectCatalog {
     if (!parsed.success) {
       throw new HttpError(parsed.error.issues[0]?.message ?? "The Python project import is invalid.", 400);
     }
-    return this.createManagedWorkspace(parsed.data.name, parsed.data.sourceName, parsed.data.source, projectPngBytes);
+    return this.createManagedWorkspace(parsed.data.name, {
+      kind: "python",
+      projectPngBytes,
+      source: parsed.data.source,
+      sourceName: parsed.data.sourceName,
+    });
   }
 
   private createManagedWorkspace(
     name: string,
-    sourceName: string,
-    source: string,
-    projectPngBytes: Uint8Array | null = null,
+    content:
+      | Readonly<{ documentKey: string; kind: "studio-native" }>
+      | Readonly<{ kind: "python"; projectPngBytes?: Uint8Array | null; source: string; sourceName: string }>,
   ) {
     const parsedName = this.validateNewProject(name);
     this.assertManagedRoot();
@@ -232,18 +254,26 @@ export class PersistentManimProjectCatalog {
     try {
       mkdirSync(workspaceRoot, { mode: 0o700 });
       workspaceCreated = true;
-      writeFileSync(join(workspaceRoot, sourceName), source, {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-      });
-      if (projectPngBytes) {
-        writeFileSync(join(workspaceRoot, "image.png"), projectPngBytes, {
+      if (content.kind === "studio-native") {
+        writeFileSync(join(workspaceRoot, NATIVE_DOCUMENT_MARKER), `${content.documentKey}\n`, {
+          encoding: "utf8",
           flag: "wx",
           mode: 0o600,
         });
+      } else {
+        writeFileSync(join(workspaceRoot, content.sourceName), content.source, {
+          encoding: "utf8",
+          flag: "wx",
+          mode: 0o600,
+        });
+        if (content.projectPngBytes) {
+          writeFileSync(join(workspaceRoot, "image.png"), content.projectPngBytes, {
+            flag: "wx",
+            mode: 0o600,
+          });
+        }
       }
-      const created = resolveManimProjects([
+      const resolved = resolveManimProjects([
         {
           id: projectId,
           kind: "managed",
@@ -251,6 +281,8 @@ export class PersistentManimProjectCatalog {
           root: workspaceRoot,
         },
       ])[0]!;
+      const created =
+        content.kind === "studio-native" ? { ...resolved, nativeDocumentKey: content.documentKey } : resolved;
       return this.register(created);
     } catch (error) {
       if (workspaceCreated) rmSync(workspaceRoot, { force: true, recursive: true });
@@ -354,6 +386,24 @@ export class PersistentManimProjectCatalog {
     } catch {
       return false;
     }
+  }
+
+  private restoreNativeDocumentIdentity(project: ResolvedManimProject) {
+    const markerPath = join(project.canonicalRoot, NATIVE_DOCUMENT_MARKER);
+    let metadata;
+    try {
+      metadata = lstatSync(markerPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return project;
+      throw error;
+    }
+    if (metadata.isSymbolicLink() || !metadata.isFile()) {
+      throw new TypeError("The Studio-native document marker is invalid.");
+    }
+    const stored = readFileSync(markerPath, "utf8");
+    const match = /^([0-9a-f]{64})\n?$/u.exec(stored);
+    if (!match) throw new TypeError("The Studio-native document marker is invalid.");
+    return { ...project, nativeDocumentKey: match[1]! };
   }
 
   private validateNewProject(name: string) {

@@ -175,6 +175,7 @@ export class ManimRenderManager {
   readonly command: readonly string[];
   readonly defaultProjectId: string;
   readonly frame: Readonly<{ height: number; width: number }>;
+  readonly nativeDocumentKey: string | null;
   readonly projectId: string;
   readonly projectKind: ManimProjectKind;
   projectName: string;
@@ -218,6 +219,7 @@ export class ManimRenderManager {
       logger?: StructuredLogger;
       maxConcurrentRenders?: number;
       maxRetainedSessions?: number;
+      nativeDocumentKey?: string;
       onSessionRemoved?: (id: string) => void;
       projectId?: string;
       projectKind?: ManimProjectKind;
@@ -261,6 +263,10 @@ export class ManimRenderManager {
       options.maxRetainedSessions ?? DEFAULT_MAX_RETAINED_SESSIONS,
       "Maximum retained sessions",
     );
+    if (options.nativeDocumentKey !== undefined && !/^[0-9a-f]{64}$/u.test(options.nativeDocumentKey)) {
+      throw new TypeError("Studio-native document keys must be 64 lower-case hexadecimal characters.");
+    }
+    this.nativeDocumentKey = options.nativeDocumentKey ?? null;
     this.mutationTransactions = new RenderMutationTransactionCoordinator({ isClosing: () => this.closing });
     this.onSessionRemoved = options.onSessionRemoved ?? (() => undefined);
     this.sourceStore = new ManimSourceStore(options.projectRoot, options.sourceStoreHooks);
@@ -433,6 +439,21 @@ export class ManimRenderManager {
   async workspace(projectId = this.projectId): Promise<ManimWorkspaceView> {
     if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
+    if (this.nativeDocumentKey) {
+      return {
+        commandAvailable: false,
+        frame: this.frame,
+        nativeDocument: { documentKey: this.nativeDocumentKey },
+        projectId: this.projectId,
+        projectName: this.projectName,
+        renderCapability: {
+          available: false,
+          kind: "local-command",
+          unavailableReason: "native-render-frozen",
+        },
+        sources: [],
+      };
+    }
     if (this.workspaceRequest) return this.workspaceRequest;
     this.workspaceRequest = (async () => {
       const [commandAvailable, sources] = await Promise.all([

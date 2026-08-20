@@ -49,16 +49,25 @@ import {
   updateStudioFragmentMaterialParameterV1,
 } from "./fragment-material-authoring";
 import { type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
+import { ingestNativeProjectPngV1 } from "./native-project-assets";
 import type { CanonicalEditProgram } from "./operations";
 import {
+  isStudioNativePreviewSceneIdentityV1,
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSnapshotProviderV1,
   type StudioPreviewSourceRuntimeMappingV1,
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
+import { createStudioNativePreviewSnapshotProviderV1 } from "./preview-snapshot-provider.native";
 import { validateAndScheduleProgram } from "./program-validation";
 import { isPointValue } from "./property-sampling";
+import { studioNativeImageAssetsV1 } from "./studio-image-assets";
+import {
+  createStudioNativeBlankScene,
+  createStudioNativeBlankSceneIrBundle,
+  studioNativeWorkingState,
+} from "./studio-native-workspace";
 import {
   canonicalizeSuggestionProgram,
   createDirectManipulationPositionProgram,
@@ -596,6 +605,9 @@ function unchangedAuthoringResult(bundle: SceneIrBundleV1) {
 
 async function importedMathTexPreviewInput() {
   const base = await compilablePreviewInput();
+  if (isStudioNativePreviewSceneIdentityV1(base.snapshot.correlation.context)) {
+    throw new Error("Imported MathTex fixtures require source identity.");
+  }
   const runtimeEntity = base.snapshot.snapshot.scene.entities[0];
   const outline = compiledMathTexResponse().result;
   const imported = importManimScene(
@@ -670,13 +682,14 @@ class MathTexScene(Scene):
   const workingState: WorkingState = {
     ...base.proposedState.base,
     appliedEdits: [],
+    documentSnapshot: undefined,
     editorContext: {
       ...base.proposedState.base.editorContext,
       activeSceneId: runtimeSceneState.sceneId,
     },
     runtimeSceneState,
     sourceSnapshot: {
-      ...base.proposedState.base.sourceSnapshot,
+      ...base.proposedState.base.sourceSnapshot!,
       hash: `sha256:${imported.sourceHash}`,
       sourceId: "scene.py",
     },
@@ -749,6 +762,9 @@ class MathTexScene(Scene):
 
 async function importedImagePreviewInput() {
   const fixture = await importedMathTexPreviewInput();
+  if (isStudioNativePreviewSceneIdentityV1(fixture.snapshot.correlation.context)) {
+    throw new Error("Imported Image fixtures require source identity.");
+  }
   const runtimeEntityId = "runtime:image";
   const png = await pngSnapshotBundleFixture({
     frame: { height: 9, width: 16 },
@@ -1147,6 +1163,74 @@ describe("studioPreviewInteractionAuthority", () => {
 });
 
 describe("compileStudioPreviewSceneV1", () => {
+  it("compiles a locally ingested PNG into ImageMobject on one exact native base", async () => {
+    const documentKey = "d".repeat(64);
+    const projectId = "native-project";
+    const nativeScene = createStudioNativeBlankScene(documentKey);
+    const frame = { height: 9, width: 16 } as const;
+    const blankBundle = await createStudioNativeBlankSceneIrBundle(nativeScene, frame);
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+    const nativeAssets = await ingestNativeProjectPngV1({
+      decodeDimensions: async () => ({ pixelHeight: 16, pixelWidth: 32 }),
+      source: { bytes: pngBytes.buffer, kind: "bytes", mediaType: "image/png" },
+      state: { assetPayloads: [], bundle: blankBundle },
+    });
+    const identity = {
+      documentKey,
+      origin: "studio-native" as const,
+      projectId,
+      sceneId: nativeScene.sceneId,
+    };
+    const snapshot = await createStudioNativePreviewSnapshotProviderV1({
+      assetPayloads: nativeAssets.assetPayloads,
+      bundle: nativeAssets.bundle,
+      identity,
+    }).loadVerifiedSnapshot({ identity });
+    const imageAsset = studioNativeImageAssetsV1(nativeAssets)[0];
+    if (!imageAsset) throw new Error("Native PNG ingress must expose one canonical Image asset.");
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [{ image: imageAsset.image, position: { x: 320, y: 180 }, type: "ImageMobject" }],
+      scene: nativeScene.runtimeSceneState,
+      transactionId: "native-image",
+    });
+    if (creation.validation.kind !== "valid") throw new Error("Native Image creation fixture must be valid.");
+    const record = {
+      ...programRecord(creation.validation.program, creation.validation),
+      validation: { issues: creation.validation.issues, status: "valid" as const },
+    };
+    const workingState = studioNativeWorkingState(nativeScene, {
+      appliedEdits: [record],
+      playhead: 0,
+      selection: creation.entityIds,
+    });
+    const workingRevision = canonicalEditorWorkingRevision({
+      appliedEdits: [record],
+      draftEdit: null,
+      editingAppliedProgram: null,
+      redoPrograms: [],
+    });
+    const context = { ...identity, sourceDuration: snapshot.duration, workingRevision };
+
+    const result = await compileStudioPreviewSceneV1({
+      frame,
+      snapshot,
+      workingState,
+      workingRevision,
+      workspaceKey: studioPreviewWorkspaceKeyV1(context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.bundle.scene.source.kind).toBe("studio-edit-program");
+    expect(result.scene.bundle.scene.entities.find(({ id }) => id === creation.entityIds[0])?.geometry).toEqual({
+      asset: imageAsset.image.asset,
+      kind: "image",
+      localRect: imageAsset.image.localRect,
+      sampler: imageAsset.image.sampler,
+    });
+    expect(result.scene.creationProjection?.entities[0]?.entityId).toBe(creation.entityIds[0]);
+  });
+
   it("drops stale presentation authority synchronously while a new material input compiles", () => {
     const previous = { fragmentMaterialInput: EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1 };
     const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
@@ -1655,7 +1739,8 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: base.snapshot,
       workingState: {
         ...timelineWorkingState,
-        sourceSnapshot: { ...timelineWorkingState.sourceSnapshot, hash: `sha256:${HASH_B}` },
+        documentSnapshot: undefined,
+        sourceSnapshot: { ...timelineWorkingState.sourceSnapshot!, hash: `sha256:${HASH_B}` },
       },
       workingRevision: "studio-working-v1:inexact-imported-timeline-source",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
@@ -2365,7 +2450,8 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        sourceSnapshot: { ...fixture.workingState.sourceSnapshot, hash: `sha256:${HASH_B}` },
+        documentSnapshot: undefined,
+        sourceSnapshot: { ...fixture.workingState.sourceSnapshot!, hash: `sha256:${HASH_B}` },
       },
       workingRevision: fixture.workingRevision,
       workspaceKey: fixture.workspaceKey,

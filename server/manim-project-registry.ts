@@ -125,7 +125,7 @@ export class ManimProjectRegistry {
     ]);
   }
 
-  private addManager({ canonicalRoot, kind, projectId, projectName }: ResolvedManimProject) {
+  private addManager({ canonicalRoot, kind, nativeDocumentKey, projectId, projectName }: ResolvedManimProject) {
     if (this.managers.has(projectId)) throw new TypeError(`Duplicate Manim project ID ${projectId}.`);
     this.managers.set(
       projectId,
@@ -135,6 +135,7 @@ export class ManimProjectRegistry {
         logger: this.logger.child({ projectId }),
         maxConcurrentRenders: this.maxConcurrentRenders,
         maxRetainedSessions: this.maxRetainedSessions,
+        ...(nativeDocumentKey ? { nativeDocumentKey } : {}),
         onSessionRemoved: (id) => this.sessionProjects.delete(id),
         projectId,
         projectKind: kind,
@@ -218,6 +219,23 @@ export class ManimProjectRegistry {
         catalog.rollbackManagedCreation(created.projectId);
       } catch (rollbackError) {
         throw new AggregateError([error, rollbackError], "Could not roll back the managed workspace creation.");
+      }
+      throw error;
+    }
+    return this.mutationView({ id: created.projectId, kind: created.kind, name: created.projectName });
+  }
+
+  createNativeStudioProject(name: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const catalog = this.mutableCatalog();
+    const created = catalog.createNativeStudio(name);
+    try {
+      this.addManager(created);
+    } catch (error) {
+      try {
+        catalog.rollbackManagedCreation(created.projectId);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Could not roll back the Studio-native workspace creation.");
       }
       throw error;
     }

@@ -67,6 +67,7 @@ import {
   SOURCE_TIMING_LOADING_BLOCKER,
   WORKSPACE_REIMPORT_BLOCKER,
 } from "./studio/editor-revision-policy";
+import { editorSessionIdentityKey } from "./studio/editor-session-store";
 import { LOCKED_ENTITY_MUTATION_MESSAGE, lockedEntityMutationTargets, toggleEntityLock } from "./studio/entity-lock";
 import {
   assignStudioFragmentMaterialV1,
@@ -102,7 +103,7 @@ import {
   type PreparedMoveSnapBasis,
   snapViewportDragToFrame,
 } from "./studio/frame-alignment-snap";
-import { importedWorkingState, projectVerifiedSourceDuration } from "./studio/imported-workspace";
+import { projectVerifiedSourceDuration } from "./studio/imported-workspace";
 import {
   type InspectorEditField,
   initialInspectorEditValues,
@@ -147,6 +148,7 @@ import {
 } from "./studio/motion-clip-edit";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
+import { ingestNativeProjectPngV1, type NativeProjectAssetStateV1 } from "./studio/native-project-assets";
 import {
   type OpacityKeyframe,
   opacityKeyframeTrackFromProgram,
@@ -156,6 +158,11 @@ import {
 import { programExecutionCapabilities } from "./studio/operation-registry";
 import { isSceneDurationOperation, type OperationOrigin } from "./studio/operations";
 import { PoietraBrand } from "./studio/poietra-brand";
+import type {
+  StudioNativePreviewEditingContextV1,
+  StudioNativePreviewSceneIdentityV1,
+} from "./studio/preview-snapshot-provider";
+import { createStudioNativePreviewSnapshotProviderV1 } from "./studio/preview-snapshot-provider.native";
 import {
   projectStudioPreviewRuntimeTraceEntityPresence,
   projectStudioPreviewRuntimeTraceValidationScene,
@@ -236,6 +243,11 @@ import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-ex
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
 import { studioNativeImageAssetsV1 } from "./studio/studio-image-assets";
 import type { StudioInlineTextEditorSession } from "./studio/studio-inline-text-editor";
+import {
+  createStudioNativeBlankSceneIrBundle,
+  isStudioNativeWorkspaceScene,
+  studioWorkspaceWorkingState,
+} from "./studio/studio-native-workspace";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
@@ -356,6 +368,12 @@ type CanvasRotationState = Readonly<{
   pointerId: number;
   start: Point;
 }>;
+type TabLocalNativeProjectState = NativeProjectAssetStateV1 &
+  Readonly<{
+    documentKey: string;
+    fragmentMaterials: ProjectFragmentMaterialStateV1;
+    projectId: string;
+  }>;
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
   if (window.poietraDesktop || navigator.userAgent.includes("Electron")) return "Electron";
@@ -447,6 +465,7 @@ export function App({
   const shell = detectShell();
   const aiEndpointConfigured = Boolean(import.meta.env.VITE_POIETRA_AI_ENDPOINT);
   const {
+    activeEditorScene,
     activeScene,
     activeSceneId,
     activeProjectId,
@@ -575,6 +594,9 @@ export function App({
     Readonly<Record<string, ProjectFragmentMaterialStateV1>>
   >({});
   const [draftApplyPending, setDraftApplyPending] = useState(false);
+  const [nativeProjectState, setNativeProjectState] = useState<TabLocalNativeProjectState | null>(null);
+  const [nativeProjectAssetPending, setNativeProjectAssetPending] = useState(false);
+  const [nativeProjectAssetError, setNativeProjectAssetError] = useState<string | null>(null);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const gesturePreviewStore = useMemo(createStudioGesturePreviewStore, []);
@@ -600,6 +622,7 @@ export function App({
   const sessionTransitionInFlight = useRef(false);
   const sourceTimingResolutionDialog = useRef<HTMLDialogElement | null>(null);
   const sourceTimingResolutionTarget = useRef<string | null>(null);
+  const nativeProjectAssetGeneration = useRef(0);
   const workspaceBounds = useRef<HTMLElement | null>(null);
   const appliedSceneEdits = appliedEdits.map((record) => record.program);
   const appliedProgramTransactionIds = useMemo(
@@ -611,14 +634,58 @@ export function App({
   }, [draftEdit]);
   useEffect(() => setInlineTextEditor(null), [activeProjectId, activeSceneId]);
 
+  useEffect(() => {
+    const generation = nativeProjectAssetGeneration.current + 1;
+    nativeProjectAssetGeneration.current = generation;
+    setNativeProjectState(null);
+    setNativeProjectAssetError(null);
+    setNativeProjectAssetPending(false);
+    if (
+      !activeProjectId ||
+      !activeEditorScene ||
+      !isStudioNativeWorkspaceScene(activeEditorScene) ||
+      workspace?.nativeDocument?.documentKey !== activeEditorScene.identity.documentKey
+    )
+      return;
+    const projectId = activeProjectId;
+    const documentKey = activeEditorScene.identity.documentKey;
+    setNativeProjectAssetPending(true);
+    void createStudioNativeBlankSceneIrBundle(activeEditorScene, workspace.frame).then(
+      (bundle) => {
+        if (nativeProjectAssetGeneration.current !== generation) return;
+        setNativeProjectState({
+          assetPayloads: [],
+          bundle,
+          documentKey,
+          fragmentMaterials: EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
+          projectId,
+        });
+        setNativeProjectAssetPending(false);
+      },
+      (cause: unknown) => {
+        if (nativeProjectAssetGeneration.current !== generation) return;
+        setNativeProjectAssetError(
+          cause instanceof Error ? cause.message : "Studio could not initialize this native project.",
+        );
+        setNativeProjectAssetPending(false);
+      },
+    );
+  }, [activeEditorScene, activeProjectId, workspace]);
+
   function activeEditorSessionIdentity(): EditorSessionIdentity | null {
-    return activeProjectId && activeScene
+    if (!activeProjectId || !activeEditorScene) return null;
+    return isStudioNativeWorkspaceScene(activeEditorScene)
       ? {
+          documentKey: activeEditorScene.identity.documentKey,
+          origin: "studio-native",
           projectId: activeProjectId,
-          sceneId: activeScene.sceneId,
-          sourceHash: activeScene.sourceHash,
+          sceneId: activeEditorScene.sceneId,
         }
-      : null;
+      : {
+          projectId: activeProjectId,
+          sceneId: activeEditorScene.sceneId,
+          sourceHash: activeEditorScene.sourceHash,
+        };
   }
 
   function saveEditorSession() {
@@ -659,7 +726,7 @@ export function App({
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (!activeScene || event.defaultPrevented || isEditableShortcutTarget(event.target)) return;
+      if (!activeEditorScene || event.defaultPrevented || isEditableShortcutTarget(event.target)) return;
       if (
         (event.key === " " || event.key === "Enter") &&
         (event.target instanceof HTMLButtonElement || event.target instanceof HTMLAnchorElement)
@@ -687,34 +754,28 @@ export function App({
   });
 
   useEffect(() => {
-    if (!activeScene) return;
+    if (!activeEditorScene) return;
     cancelSuggestionRequest();
     canvasDrag.current = null;
     canvasGroupRotation.current = null;
     canvasGroupResize.current = null;
     canvasResize.current = null;
     canvasRotation.current = null;
-    const identity = activeProjectId
-      ? {
-          projectId: activeProjectId,
-          sceneId: activeScene.sceneId,
-          sourceHash: activeScene.sourceHash,
-        }
-      : null;
-    const initialTime = activeScene.anchors[0] ?? 0;
-    const initialEntities = Object.values(activeScene.runtimeSceneState.objectGraph.entities).filter((entity) =>
+    const identity = activeEditorSessionIdentity();
+    const initialTime = activeEditorScene.anchors[0] ?? 0;
+    const initialEntities = Object.values(activeEditorScene.runtimeSceneState.objectGraph.entities).filter((entity) =>
       entity.lifetime.some((lifetime) => initialTime >= lifetime.start && initialTime < lifetime.end),
     );
     if (identity) {
       openSession(identity, {
-        currentTime: clamp(initialTime, 0, activeScene.runtimeSceneState.duration),
+        currentTime: clamp(initialTime, 0, activeEditorScene.runtimeSceneState.duration),
         selectedObjectIds: initialEntities.slice(0, 1).map((entity) => entity.id),
       });
     }
     setLifetimeEditMessage(null);
     gesturePreviewStore.clear();
     setInspectorReturnFocus(null);
-  }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId, gesturePreviewStore]);
+  }, [activeEditorScene, activeProjectId, gesturePreviewStore]);
 
   const editorDocumentIdentity = useMemo(
     () =>
@@ -894,11 +955,12 @@ export function App({
   function discardPendingCloudSession() {
     if (editorDocumentAuthority.discardPendingSession()) window.location.reload();
   }
+  const targetEditorSessionIdentity = activeEditorSessionIdentity();
   const editorPresenceSessionAligned =
-    activeScene !== null &&
-    activeSessionIdentity?.projectId === activeProjectId &&
-    activeSessionIdentity.sceneId === activeScene.sceneId &&
-    activeSessionIdentity.sourceHash === activeScene.sourceHash;
+    activeEditorScene !== null &&
+    activeSessionIdentity !== null &&
+    targetEditorSessionIdentity !== null &&
+    editorSessionIdentityKey(activeSessionIdentity) === editorSessionIdentityKey(targetEditorSessionIdentity);
   const updateEditorPresence = editorDocumentAuthority.updatePresence;
   useEffect(() => {
     updateEditorPresence({
@@ -910,12 +972,13 @@ export function App({
         : [],
     });
   }, [currentTime, editorDocumentIdentity, editorPresenceSessionAligned, selectedObjectIds, updateEditorPresence]);
-  const editorDocumentPresentationReady = editorDocumentAuthority.presentationReady;
+  const importedEditorDocumentPresentationReady = editorDocumentAuthority.presentationReady;
 
   const importedSceneBoundaryActive =
     activeScene?.runtimeSceneState.eventTrack.events.some(
       (event) => event.kind === "scene-boundary" && event.at !== undefined && event.at <= currentTime,
     ) ?? false;
+  const nativeSceneActive = activeEditorScene !== null && isStudioNativeWorkspaceScene(activeEditorScene);
   // Imported boundaries still gate the canvas directly. Studio-authored
   // boundaries are already fail-closed by their non-pristine revision.
   const sourceLifecycle = resolveEditorSourceLifecycle({
@@ -952,13 +1015,28 @@ export function App({
       workspace?.projectId,
     ],
   );
+  const editorSelectionAligned =
+    activeProjectId !== null && workspace?.projectId === activeProjectId && activeEditorScene !== null;
+  const editorSessionReady =
+    editorSelectionAligned &&
+    activeSessionIdentity !== null &&
+    targetEditorSessionIdentity !== null &&
+    editorSessionIdentityKey(activeSessionIdentity) === editorSessionIdentityKey(targetEditorSessionIdentity);
+  const editorDocumentPresentationReady = nativeSceneActive
+    ? editorSessionReady
+    : importedEditorDocumentPresentationReady;
   // The retained duration adopted by the revision policy is the only value
   // allowed to reshape Studio's imported base. The provider candidate is
   // committed in a layout effect, so adapter compilation may lag metadata by
   // one render but can never compile against unadopted runtime timing.
-  const projectedActiveScene = useMemo(
-    () => (activeScene ? projectVerifiedSourceDuration(activeScene, editorRevision.retainedSourceDuration) : null),
-    [activeScene, editorRevision.retainedSourceDuration],
+  const projectedEditorScene = useMemo(
+    () =>
+      activeEditorScene
+        ? isStudioNativeWorkspaceScene(activeEditorScene)
+          ? activeEditorScene
+          : projectVerifiedSourceDuration(activeEditorScene, editorRevision.retainedSourceDuration)
+        : null,
+    [activeEditorScene, editorRevision.retainedSourceDuration],
   );
   const previewReplacement =
     editingAppliedProgram && draftEdit
@@ -972,17 +1050,19 @@ export function App({
   const draftPrecedingEdits = editingAppliedProgram ? appliedEdits.slice(0, editingAppliedProgram.index) : appliedEdits;
   const draftPrecedingSceneEdits = draftPrecedingEdits.map((record) => record.program);
   const previewWorkingState =
-    editorDocumentPresentationReady && projectedActiveScene
-      ? importedWorkingState(projectedActiveScene, {
+    editorDocumentPresentationReady && projectedEditorScene
+      ? studioWorkspaceWorkingState(projectedEditorScene, {
           appliedEdits: previewAppliedEdits,
           playhead: currentTime,
           selection: selectedObjectIds,
           stagedEdits: editingAppliedProgram || !draftEdit ? [] : [draftEdit],
         })
       : null;
-  const activeProjectFragmentMaterials = activeProjectId
-    ? (projectFragmentMaterials[activeProjectId] ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1)
-    : EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
+  const activeProjectFragmentMaterials = nativeSceneActive
+    ? (nativeProjectState?.fragmentMaterials ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1)
+    : activeProjectId
+      ? (projectFragmentMaterials[activeProjectId] ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1)
+      : EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
   const activeProjectNamedFragmentMaterials = useMemo(
     () =>
       listStudioFragmentMaterialsV1(activeProjectFragmentMaterials).map((material) => ({
@@ -992,9 +1072,57 @@ export function App({
     [activeProjectFragmentMaterials],
   );
   const activeSceneFragmentMaterials = useMemo(
-    () => projectFragmentMaterialsForSceneV1(activeProjectFragmentMaterials, activeScene?.sceneId ?? null),
-    [activeProjectFragmentMaterials, activeScene?.sceneId],
+    () => projectFragmentMaterialsForSceneV1(activeProjectFragmentMaterials, activeEditorScene?.sceneId ?? null),
+    [activeProjectFragmentMaterials, activeEditorScene?.sceneId],
   );
+  const nativePreviewIdentity = useMemo<StudioNativePreviewSceneIdentityV1 | null>(
+    () =>
+      nativeSceneActive && activeProjectId && activeEditorScene && isStudioNativeWorkspaceScene(activeEditorScene)
+        ? {
+            documentKey: activeEditorScene.identity.documentKey,
+            origin: "studio-native",
+            projectId: activeProjectId,
+            sceneId: activeEditorScene.sceneId,
+          }
+        : null,
+    [activeEditorScene, activeProjectId, nativeSceneActive],
+  );
+  const nativePreviewContext = useMemo<StudioNativePreviewEditingContextV1 | null>(
+    () =>
+      nativePreviewIdentity && activeEditorScene
+        ? {
+            ...nativePreviewIdentity,
+            sourceDuration: activeEditorScene.runtimeSceneState.duration,
+            workingRevision: editorRevision.workingRevision,
+          }
+        : null,
+    [activeEditorScene, editorRevision.workingRevision, nativePreviewIdentity],
+  );
+  const nativePreviewBundle = nativeProjectState?.bundle ?? null;
+  const nativePreviewAssetPayloads = nativeProjectState?.assetPayloads ?? null;
+  const nativePreviewProjectId = nativeProjectState?.projectId ?? null;
+  const nativePreviewDocumentKey = nativeProjectState?.documentKey ?? null;
+  const nativePreviewProvider = useMemo(() => {
+    if (
+      !nativePreviewIdentity ||
+      !nativePreviewBundle ||
+      !nativePreviewAssetPayloads ||
+      nativePreviewProjectId !== nativePreviewIdentity.projectId ||
+      nativePreviewDocumentKey !== nativePreviewIdentity.documentKey
+    )
+      return null;
+    return createStudioNativePreviewSnapshotProviderV1({
+      assetPayloads: nativePreviewAssetPayloads,
+      bundle: nativePreviewBundle,
+      identity: nativePreviewIdentity,
+    });
+  }, [
+    nativePreviewAssetPayloads,
+    nativePreviewBundle,
+    nativePreviewDocumentKey,
+    nativePreviewIdentity,
+    nativePreviewProjectId,
+  ]);
   const {
     activate: activatePreviewAuthority,
     activationAllowed: previewActivationAllowed,
@@ -1003,13 +1131,14 @@ export function App({
     renderer: previewRenderer,
     retry: retryPreviewAuthority,
   } = useStudioPreviewAuthorityController({
-    context: editorDocumentPresentationReady ? editorRevision.previewContext : null,
+    context: editorDocumentPresentationReady ? (nativePreviewContext ?? editorRevision.previewContext) : null,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
+    nativeProvider: nativePreviewProvider,
     sceneFragmentMaterials: activeSceneFragmentMaterials,
-    retainedSourceDuration: editorRevision.retainedSourceDuration,
+    retainedSourceDuration: nativePreviewContext?.sourceDuration ?? editorRevision.retainedSourceDuration,
     sampleTime: currentTime,
     sceneBoundaryActive: importedSceneBoundaryActive,
-    sourceEvents: projectedActiveScene?.runtimeSceneState.eventTrack.events ?? [],
+    sourceEvents: projectedEditorScene?.runtimeSceneState.eventTrack.events ?? [],
     workingState: previewWorkingState,
   });
   const studioExportSource = previewRenderer?.canonicalScene ?? null;
@@ -1021,14 +1150,51 @@ export function App({
     organizationId: accountSession?.activeOrganization.id ?? null,
   });
 
+  async function importNativeProjectImageFile(file: File) {
+    if (
+      !activeProjectId ||
+      !activeEditorScene ||
+      !isStudioNativeWorkspaceScene(activeEditorScene) ||
+      !nativeProjectState ||
+      nativeProjectState.projectId !== activeProjectId ||
+      nativeProjectState.documentKey !== activeEditorScene.identity.documentKey ||
+      nativeProjectAssetPending
+    )
+      return;
+    const generation = nativeProjectAssetGeneration.current;
+    const projectId = activeProjectId;
+    const documentKey = activeEditorScene.identity.documentKey;
+    setNativeProjectAssetPending(true);
+    setNativeProjectAssetError(null);
+    try {
+      const result = await ingestNativeProjectPngV1({
+        source: { file, kind: "file" },
+        state: nativeProjectState,
+      });
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      setNativeProjectState({
+        assetPayloads: result.assetPayloads,
+        bundle: result.bundle,
+        documentKey,
+        fragmentMaterials: nativeProjectState.fragmentMaterials,
+        projectId,
+      });
+    } catch (cause) {
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not import the selected PNG.");
+    } finally {
+      if (nativeProjectAssetGeneration.current === generation) setNativeProjectAssetPending(false);
+    }
+  }
+
   function timelineProjectionForPrograms(programs: readonly SceneEdit[]) {
     if (!programs.some((program) => program.operations.some(isSceneDurationOperation))) return null;
-    if (!projectedActiveScene || !previewRenderer?.timelineProjection || !isSceneDurationProgramBatch(programs)) {
+    if (!projectedEditorScene || !previewRenderer?.timelineProjection || !isSceneDurationProgramBatch(programs)) {
       return undefined;
     }
     try {
       return selectTimelineProgramBatchProjection(
-        projectedActiveScene.runtimeSceneState.duration,
+        projectedEditorScene.runtimeSceneState.duration,
         programs,
         previewRenderer.timelineProjection,
       ).projection;
@@ -1065,10 +1231,10 @@ export function App({
     const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "rust-authorized-batch") return null;
-    if (!projectedActiveScene || !previewRenderer?.mathTexTransformProjection) return undefined;
+    if (!projectedEditorScene || !previewRenderer?.mathTexTransformProjection) return undefined;
     try {
       return selectMathTexTransformProjection(
-        projectedActiveScene.runtimeSceneState.duration,
+        projectedEditorScene.runtimeSceneState.duration,
         programs,
         previewRenderer.mathTexTransformProjection,
       );
@@ -1082,10 +1248,10 @@ export function App({
     const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "rust-authorized-batch") return null;
-    if (!projectedActiveScene || !previewRenderer?.creationProjection) return undefined;
+    if (!projectedEditorScene || !previewRenderer?.creationProjection) return undefined;
     try {
       return selectCreationProjection(
-        projectedActiveScene.runtimeSceneState.duration,
+        projectedEditorScene.runtimeSceneState.duration,
         programs,
         previewRenderer.creationProjection,
       );
@@ -1100,10 +1266,10 @@ export function App({
     const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "rust-authorized-batch" && authority !== "static-imported-root") return null;
-    if (!projectedActiveScene || !previewRenderer?.motionProjection) return undefined;
+    if (!projectedEditorScene || !previewRenderer?.motionProjection) return undefined;
     try {
       return selectMotionProjection(
-        projectedActiveScene.runtimeSceneState.duration,
+        projectedEditorScene.runtimeSceneState.duration,
         programs,
         previewRenderer.motionProjection,
       );
@@ -1178,7 +1344,7 @@ export function App({
   const workspaceStaticRootProjection = staticRootProjectionForRecords(previewEditRecords);
   const workspaceProjection =
     editorDocumentPresentationReady &&
-    projectedActiveScene &&
+    projectedEditorScene &&
     workspaceBoundEntityProjection !== undefined &&
     workspaceCreationProjection !== undefined &&
     workspaceTimelineProjection !== undefined &&
@@ -1188,7 +1354,7 @@ export function App({
     workspaceEditAuthority !== undefined &&
     workspaceStaticRootProjection !== undefined
       ? projectStudioWorkspace({
-          activeScene: projectedActiveScene,
+          activeScene: projectedEditorScene,
           appliedEdits: previewAppliedEdits,
           boundEntityProjection: workspaceBoundEntityProjection,
           creationProjection: workspaceCreationProjection,
@@ -1213,7 +1379,7 @@ export function App({
         ? workingTimeToSourceTimeFromProjection(appliedTimelineProjection.transforms, currentTime)
         : workingTimeToSourceTimeWithoutTimeline(previewAppliedSceneEdits, currentTime);
   const timelineAnchors =
-    activeScene?.anchors.map((sourceTime) => ({
+    activeEditorScene?.anchors.map((sourceTime) => ({
       sourceTime,
       workingTime:
         appliedTimelineProjection === undefined
@@ -1614,11 +1780,14 @@ export function App({
     readDurationBlocker,
     renderPipelineLifecycleBlocker,
   } = useEditorRevisionController({
-    candidate: previewRenderer?.verifiedSourceDuration ?? null,
+    // Native Scene duration is part of the canonical local document. The
+    // source-duration adoption policy exists only to reconcile imported
+    // Python estimates with a verified runtime snapshot.
+    candidate: nativeSceneActive ? null : (previewRenderer?.verifiedSourceDuration ?? null),
     lifecycle: sourceLifecycle,
-    metadataPhase: previewRenderer?.sourceMetadataPhase ?? null,
-    providerPending: previewProviderPending,
-    retained: verifiedSourceDurationBasis,
+    metadataPhase: nativeSceneActive ? null : (previewRenderer?.sourceMetadataPhase ?? null),
+    providerPending: nativeSceneActive ? false : previewProviderPending,
+    retained: nativeSceneActive ? null : verifiedSourceDurationBasis,
     revision: editorRevision,
     setVerifiedSourceDurationBasis,
   });
@@ -1627,7 +1796,7 @@ export function App({
     editorDocumentAuthority.authoringBlocked ||
     sessionTransitionPending ||
     sourceLifecycle.studioAuthoringLocked ||
-    (editorRevision.selectionAligned && !editorRevision.sessionReady);
+    (editorSelectionAligned && !editorSessionReady);
   const previewPaintAvailable = previewRenderer?.state.phase === "presented";
   const previewMutationAvailable = previewPaintAvailable && !previewSelectionOnly;
   const canvasInteractionLocked = studioAuthoringLocked || !previewPaintAvailable;
@@ -1715,8 +1884,9 @@ export function App({
     }
     const preservedAnchor = input.preserveAppliedProgram?.program.anchor.resolvedSeconds;
     if (
+      !nativeSceneActive &&
       preservedAnchor !== undefined &&
-      !activeScene?.anchors.some((anchor) => Math.abs(anchor - preservedAnchor) < 0.0005)
+      !activeEditorScene?.anchors.some((anchor) => Math.abs(anchor - preservedAnchor) < 0.0005)
     ) {
       setDraftError("Discard the preview-only draft before starting another edit.");
       setIsPlaying(false);
@@ -1856,7 +2026,7 @@ export function App({
   const draftBaseEditAuthority = workspaceEditAuthorityForRecords(draftPrecedingEdits);
   const draftBaseStaticRootProjection = staticRootProjectionForRecords(draftPrecedingEdits);
   const draftBaseProjection =
-    editorDocumentPresentationReady && projectedActiveScene && draftEdit
+    editorDocumentPresentationReady && projectedEditorScene && draftEdit
       ? draftBaseTimelineProjection === undefined ||
         draftBaseBoundEntityProjection === undefined ||
         draftBaseCreationProjection === undefined ||
@@ -1867,7 +2037,7 @@ export function App({
         draftBaseStaticRootProjection === undefined
         ? null
         : projectStudioWorkspace({
-            activeScene: projectedActiveScene,
+            activeScene: projectedEditorScene,
             appliedEdits: draftPrecedingEdits,
             boundEntityProjection: draftBaseBoundEntityProjection,
             creationProjection: draftBaseCreationProjection,
@@ -1889,12 +2059,12 @@ export function App({
     : null;
   const projection = workspaceProjection?.projection ?? null;
   const lifetimeControls =
-    projectedActiveScene && projection && appliedTimelineProjection === null
+    projectedEditorScene && projection && appliedTimelineProjection === null
       ? buildLifetimeEditControls({
-          anchors: projectedActiveScene.anchors,
-          baseScene: projectedActiveScene.runtimeSceneState,
+          anchors: projectedEditorScene.anchors,
+          baseScene: projectedEditorScene.runtimeSceneState,
           programs: previewAppliedEdits,
-          sourceDuration: projectedActiveScene.runtimeSceneState.duration,
+          sourceDuration: projectedEditorScene.runtimeSceneState.duration,
           tracks: projection.timeline.objectTracks,
         })
       : {};
@@ -2045,7 +2215,7 @@ export function App({
       ? { cameraScale: projection.camera.scale, targets: selectionLayoutTargets }
       : null;
   const activeDuration =
-    workspaceProjection?.proposedState.evaluatedScene.duration ?? projectedActiveScene?.runtimeSceneState.duration ?? 1;
+    workspaceProjection?.proposedState.evaluatedScene.duration ?? projectedEditorScene?.runtimeSceneState.duration ?? 1;
   const durationTrimAvailability = appliedTimelineProjection
     ? sceneDurationTrimAvailabilityFromProjection(appliedTimelineProjection)
     : {
@@ -2070,7 +2240,7 @@ export function App({
       (record) => [record.program.transactionId, record.program] as const,
     ) ?? [],
   );
-  const appliedMotionClips: readonly AppliedMotionClip[] = projectedActiveScene
+  const appliedMotionClips: readonly AppliedMotionClip[] = projectedEditorScene
     ? previewAppliedEdits.flatMap((record, programIndex) => {
         const evaluatedProgram = evaluatedProgramsByTransaction.get(record.program.transactionId);
         if (!evaluatedProgram) return [];
@@ -2091,9 +2261,9 @@ export function App({
             draftEdit && editingAppliedProgram?.original.program.transactionId !== record.program.transactionId
               ? "Apply or discard the current draft before editing this motion clip."
               : null;
-          const anchors = projectedActiveScene.anchors
+          const anchors = projectedEditorScene.anchors
             .map((sourceTime) => ({
-              maximumDuration: projectedActiveScene.runtimeSceneState.duration - sourceTime,
+              maximumDuration: projectedEditorScene.runtimeSceneState.duration - sourceTime,
               sourceTime,
               workingTime: sourceTimeToWorkingTime(precedingPrograms, sourceTime),
             }))
@@ -2108,7 +2278,7 @@ export function App({
               label: entity?.content?.label ?? entity?.content?.text ?? entityId.split(":").at(-1) ?? entityId,
               maximumDuration: Math.max(
                 0.1,
-                projectedActiveScene.runtimeSceneState.duration - sourceOperation.interval.start,
+                projectedEditorScene.runtimeSceneState.duration - sourceOperation.interval.start,
               ),
               operationId: operation.id,
               programIndex,
@@ -2139,7 +2309,7 @@ export function App({
   }, [isPlaying, sourceDurationBasisBlocked, setIsPlaying]);
 
   useEffect(() => {
-    if (!isPlaying || !activeScene || sourceDurationBasisBlocked) return;
+    if (!isPlaying || !activeEditorScene || sourceDurationBasisBlocked) return;
     let animationFrame = 0;
     let previous = performance.now();
     const tick = (now: number) => {
@@ -2157,7 +2327,7 @@ export function App({
     };
     animationFrame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(animationFrame);
-  }, [activeDuration, activeScene, isPlaying, sourceDurationBasisBlocked]);
+  }, [activeDuration, activeEditorScene, isPlaying, sourceDurationBasisBlocked]);
   const contextFingerprint = draftBaseState
     ? createClarificationContextFingerprint({
         entities: Object.values(draftBaseState.evaluatedScene.objectGraph.entities),
@@ -2178,7 +2348,7 @@ export function App({
     sourcePrograms: readonly ProgramRecord["program"][] = draftPrecedingSceneEdits,
     validationSelection: readonly string[] = selectedObjectIds,
   ) {
-    if (!activeScene || !proposedState) throw new Error("Choose an imported Scene first.");
+    if (!activeEditorScene || !proposedState) throw new Error("Choose an editable Scene first.");
     const validationState = {
       ...proposedState,
       evaluatedScene: projectRuntimeSceneToSourceTimeline(proposedState.evaluatedScene, sourcePrograms),
@@ -2441,7 +2611,7 @@ export function App({
       return false;
     }
     const metadata = editorRecord.editorMetadata;
-    if (!metadata?.operation || !projectedActiveScene) {
+    if (!metadata?.operation || !projectedEditorScene) {
       setDraftError("This Program is read-only because editable Studio authoring metadata is unavailable.");
       return false;
     }
@@ -2470,7 +2640,7 @@ export function App({
     }
     const workingFocus = sourceTimeToWorkingTime(precedingPrograms, focusSourceTime);
     const baseProjection = projectStudioWorkspace({
-      activeScene: projectedActiveScene,
+      activeScene: projectedEditorScene,
       appliedEdits: precedingRecords,
       boundEntityProjection: precedingBoundEntityProjection,
       creationProjection: precedingCreationProjection,
@@ -2587,6 +2757,17 @@ export function App({
       setDraftError(draftExecution.applyBlocker ?? "The draft cannot be applied safely.");
       return;
     }
+    if (nativeSceneActive) {
+      setDraftApplyPending(true);
+      setDraftError(null);
+      try {
+        if (rejectLockedProgramMutation(draftEdit.program)) return;
+        applyEditorDraft();
+      } finally {
+        setDraftApplyPending(false);
+      }
+      return;
+    }
     const sourcePreflightCandidate = draftExecution.lowering === "supported" ? renderCandidate : null;
     if (draftExecution.lowering === "supported" && !sourcePreflightCandidate) return;
     const initialLifecycleBlocker = readDurationBlocker();
@@ -2693,7 +2874,7 @@ export function App({
     baseProgram: SceneEdit,
     keyframes: readonly OpacityKeyframe[],
   ) {
-    if (!projectedActiveScene) return false;
+    if (!projectedEditorScene) return false;
     const original = appliedEdits[programIndex];
     if (!original || original.program.transactionId !== baseProgram.transactionId) {
       setDraftError("The opacity track no longer matches the applied Program history.");
@@ -2704,7 +2885,7 @@ export function App({
         baseProgram,
         entityId,
         keyframes,
-        scene: projectedActiveScene.runtimeSceneState,
+        scene: projectedEditorScene.runtimeSceneState,
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
@@ -2764,7 +2945,7 @@ export function App({
       setDraftError(input.conflictReason);
       return null;
     }
-    if (!projectedActiveScene) {
+    if (!projectedEditorScene) {
       setDraftError(`Wait for the canonical Scene before duplicating a ${input.label} keyframe.`);
       return null;
     }
@@ -2910,7 +3091,7 @@ export function App({
     baseProgram: SceneEdit,
     keyframes: readonly ScaleKeyframe[],
   ) {
-    if (!projectedActiveScene) return false;
+    if (!projectedEditorScene) return false;
     const original = appliedEdits[programIndex];
     const baseline = scaleBaseline(entityId);
     if (!original || original.program.transactionId !== baseProgram.transactionId || baseline === null) {
@@ -2923,7 +3104,7 @@ export function App({
         baseline,
         entityId,
         keyframes,
-        scene: projectedActiveScene.runtimeSceneState,
+        scene: projectedEditorScene.runtimeSceneState,
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
@@ -3069,7 +3250,7 @@ export function App({
     baseProgram: SceneEdit,
     keyframes: readonly RotationKeyframe[],
   ) {
-    if (!projectedActiveScene) return false;
+    if (!projectedEditorScene) return false;
     const original = appliedEdits[programIndex];
     const baseline = rotationBaseline(entityId);
     if (!original || original.program.transactionId !== baseProgram.transactionId || baseline === null) {
@@ -3082,7 +3263,7 @@ export function App({
         baseline,
         entityId,
         keyframes,
-        scene: projectedActiveScene.runtimeSceneState,
+        scene: projectedEditorScene.runtimeSceneState,
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
@@ -3228,7 +3409,7 @@ export function App({
       program: SceneEdit;
     }>,
   ) {
-    if (!projectedActiveScene) return false;
+    if (!projectedEditorScene) return false;
     const original = appliedEdits[track.programIndex];
     if (!original || original.program.transactionId !== track.program.transactionId) {
       setDraftError("The material track no longer matches the applied Program history.");
@@ -3242,7 +3423,7 @@ export function App({
         material: track.material,
         name: track.name,
         parameterIndex: track.parameterIndex,
-        scene: projectedActiveScene.runtimeSceneState,
+        scene: projectedEditorScene.runtimeSceneState,
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
@@ -3559,14 +3740,16 @@ export function App({
   }
 
   function changeSceneDuration(targetDuration: number) {
-    if (!activeScene || !draftBaseState) return false;
+    if (!activeEditorScene || !draftBaseState) return false;
     if (draftEdit) {
       const message = "Apply or discard the current draft before changing the Scene duration.";
       setDraftError(message);
       setDurationError(message);
       return false;
     }
-    const sourceAnchor = durationTrimAvailability.anchor ?? activeScene.anchors.at(-1);
+    const sourceAnchor =
+      durationTrimAvailability.anchor ??
+      (isStudioNativeWorkspaceScene(activeEditorScene) ? sourceCurrentTime : activeEditorScene.anchors.at(-1));
     if (sourceAnchor === undefined) {
       const message = "Add a # poietra:anchor at a safe source boundary before extending this Scene.";
       setDraftError(message);
@@ -3596,7 +3779,7 @@ export function App({
   }
 
   function sourceSceneBeforeAppliedProgram(index: number) {
-    if (!projectedActiveScene) throw new Error("The active Scene is unavailable.");
+    if (!projectedEditorScene) throw new Error("The active Scene is unavailable.");
     const preceding = appliedEdits.slice(0, index);
     const timelineProjection = timelineProjectionForRecords(preceding);
     const boundEntityProjection = boundEntityProjectionForRecords(preceding);
@@ -3619,7 +3802,7 @@ export function App({
       throw new Error("Wait for the Rust authoring projection before replacing an applied Program.");
     }
     const state = projectStudioWorkspace({
-      activeScene: projectedActiveScene,
+      activeScene: projectedEditorScene,
       appliedEdits: preceding,
       boundEntityProjection,
       creationProjection,
@@ -3647,7 +3830,7 @@ export function App({
     target: Readonly<{ end: number; start: number }>,
   ) {
     if (rejectSelectionOnlyPreviewMutation()) return false;
-    if (!projectedActiveScene || !draftSourceScene) return false;
+    if (!projectedEditorScene || !draftSourceScene) return false;
     if (draftEdit) {
       const message = "Apply or discard the current draft before editing an object lifetime.";
       setDraftError(message);
@@ -3671,7 +3854,7 @@ export function App({
           owner: owner.record,
           scene: preceding.scene,
           sourceAnchorBounds: programSourceAnchorBounds(appliedEdits, owner.index),
-          sourceAnchors: projectedActiveScene.anchors,
+          sourceAnchors: projectedEditorScene.anchors,
           target,
         });
         const validated = validatedProgramRecord(validation);
@@ -3689,7 +3872,7 @@ export function App({
       }
 
       const sourceLifetimeStart = workingTimeToSourceTime(appliedSceneEdits, workingLifetimeStart);
-      const original = projectedActiveScene.runtimeSceneState.objectGraph.entities[entityId]?.lifetime.find(
+      const original = projectedEditorScene.runtimeSceneState.objectGraph.entities[entityId]?.lifetime.find(
         (interval) => Math.abs(interval.start - sourceLifetimeStart) < 0.001,
       );
       if (!original) {
@@ -3720,7 +3903,7 @@ export function App({
       const sourceAnchor = restoring ? existing?.record.program.anchor.resolvedSeconds : target.end;
       if (
         sourceAnchor === undefined ||
-        !projectedActiveScene.anchors.some((anchor) => Math.abs(anchor - sourceAnchor) < 0.001)
+        !projectedEditorScene.anchors.some((anchor) => Math.abs(anchor - sourceAnchor) < 0.001)
       ) {
         throw new Error("The selected lifetime end is not backed by a safe .py source anchor.");
       }
@@ -4024,7 +4207,7 @@ export function App({
       targetEntityIds?: readonly string[];
     }>,
   ) {
-    if (!activeScene) return null;
+    if (!activeEditorScene) return null;
     const timelineProjection = timelineProjectionForPrograms(input.sourcePrograms);
     if (timelineProjection !== null) {
       setDraftError(
@@ -4035,7 +4218,12 @@ export function App({
       setIsPlaying(false);
       return null;
     }
-    const sourceAnchor = latestSafeSourceAnchor(input.sourcePrograms, activeScene.anchors, currentTime);
+    const sourceAnchor = isStudioNativeWorkspaceScene(activeEditorScene)
+      ? {
+          sourceTime: clamp(currentTime, 0, input.scene.duration),
+          workingTime: clamp(currentTime, 0, input.scene.duration),
+        }
+      : latestSafeSourceAnchor(input.sourcePrograms, activeEditorScene.anchors, currentTime);
     const runtimePresenceAuthority = input.allowSyntheticPreviewAnchor
       ? runtimeTraceEditCandidateFor(input.targetEntityIds?.length === 1 ? input.targetEntityIds[0] : null)
       : null;
@@ -4229,7 +4417,7 @@ export function App({
       setSelectedObjectIds([drag.pressedEntityId]);
       return;
     }
-    if (!activeScene || !draftBaseState || !draftSourceScene) return;
+    if (!activeEditorScene || !draftBaseState || !draftSourceScene) return;
     const delta = resolvedCanvasDrag(drag, { x: event.clientX, y: event.clientY }, event.altKey).delta;
     if (Math.hypot(delta.x, delta.y) < 1) return;
     const targetIds = drag.targetEntityIds;
@@ -4956,7 +5144,7 @@ export function App({
     transactionId: string,
     capturedSourceAnchor?: number,
   ) {
-    if (!activeScene || !draftBaseState) return false;
+    if (!activeEditorScene || !draftBaseState) return false;
     if (editingAppliedProgram) {
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return false;
@@ -5021,7 +5209,7 @@ export function App({
     transactionId: string,
     capturedSourceAnchor?: number,
   ) {
-    if (!activeScene || !draftBaseState) return false;
+    if (!activeEditorScene || !draftBaseState) return false;
     if (editingAppliedProgram) {
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return false;
@@ -5631,7 +5819,7 @@ export function App({
       return true;
     }
     if (command === "play-pause") {
-      if (!activeScene) return false;
+      if (!activeEditorScene) return false;
       const lifecycleBlocker = readDurationBlocker();
       if (lifecycleBlocker) {
         setDraftError(lifecycleBlocker);
@@ -5716,6 +5904,21 @@ export function App({
   }
 
   function commitActiveProjectFragmentMaterials(next: ProjectFragmentMaterialStateV1) {
+    if (nativeSceneActive) {
+      if (!activeProjectId || !activeEditorScene || !isStudioNativeWorkspaceScene(activeEditorScene)) return false;
+      const documentKey = activeEditorScene.identity.documentKey;
+      if (
+        !nativeProjectState ||
+        nativeProjectState.projectId !== activeProjectId ||
+        nativeProjectState.documentKey !== documentKey
+      )
+        return false;
+      setNativeProjectState((current) => {
+        if (!current || current.projectId !== activeProjectId || current.documentKey !== documentKey) return current;
+        return { ...current, fragmentMaterials: next };
+      });
+      return true;
+    }
     return activeProjectId ? commitProjectFragmentMaterials(activeProjectId, next) : false;
   }
 
@@ -5731,7 +5934,7 @@ export function App({
 
   function createFragmentMaterialPreset(preset: StudioFragmentMaterialPresetId) {
     try {
-      if (activeScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
+      if (activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
         const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
           entityId: selectedFragmentMaterialEntity.id,
         });
@@ -5744,10 +5947,10 @@ export function App({
             ? createStudioPulseFragmentMaterialPresetV1(activeProjectFragmentMaterials)
             : createStudioWaveFragmentMaterialPresetV1(activeProjectFragmentMaterials);
       const next =
-        activeScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable
+        activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable
           ? assignStudioFragmentMaterialV1(created.state, {
               entityId: selectedFragmentMaterialEntity.id,
-              sceneId: activeScene.sceneId,
+              sceneId: activeEditorScene.sceneId,
               shaderId: created.shaderId,
             })
           : created.state;
@@ -5760,7 +5963,7 @@ export function App({
 
   function createTextureFragmentMaterialPreset() {
     try {
-      if (activeScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
+      if (activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
         const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
           entityId: selectedFragmentMaterialEntity.id,
         });
@@ -5769,10 +5972,10 @@ export function App({
       const created = createStudioTextureFragmentMaterialPresetV1(activeProjectFragmentMaterials);
       const asset = activeFragmentMaterialTextureAssets[0];
       const next =
-        activeScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable && asset
+        activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable && asset
           ? assignStudioFragmentMaterialV1(created.state, {
               entityId: selectedFragmentMaterialEntity.id,
-              sceneId: activeScene.sceneId,
+              sceneId: activeEditorScene.sceneId,
               shaderId: created.shaderId,
               texture: { asset: { assetId: asset.id, sha256: asset.sha256 }, sampler: "linear" },
             })
@@ -5904,7 +6107,11 @@ export function App({
   }
 
   function assignSelectedFragmentMaterial(shaderId: string | null) {
-    if (!activeScene || !selectedFragmentMaterialEntity || (shaderId !== null && !selectedFragmentMaterialAvailable)) {
+    if (
+      !activeEditorScene ||
+      !selectedFragmentMaterialEntity ||
+      (shaderId !== null && !selectedFragmentMaterialAvailable)
+    ) {
       return;
     }
     if (rejectLockedEntityMutation(selectedFragmentMaterialEntity.id)) return;
@@ -5921,7 +6128,7 @@ export function App({
       const next = shaderId
         ? assignStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
             entityId: selectedFragmentMaterialEntity.id,
-            sceneId: activeScene.sceneId,
+            sceneId: activeEditorScene.sceneId,
             shaderId,
             ...(selectedTextureAsset
               ? {
@@ -5934,14 +6141,14 @@ export function App({
           })
         : removeStudioFragmentMaterialV1(activeProjectFragmentMaterials, {
             entityId: selectedFragmentMaterialEntity.id,
-            sceneId: activeScene.sceneId,
+            sceneId: activeEditorScene.sceneId,
           });
       const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
         entityId: selectedFragmentMaterialEntity.id,
       });
       if (
         blocker &&
-        JSON.stringify(next.assignmentsByScene[activeScene.sceneId]?.[selectedFragmentMaterialEntity.id]) !==
+        JSON.stringify(next.assignmentsByScene[activeEditorScene.sceneId]?.[selectedFragmentMaterialEntity.id]) !==
           JSON.stringify(selectedFragmentMaterialAssignment)
       ) {
         throw new Error(blocker);
@@ -5953,7 +6160,7 @@ export function App({
   }
 
   function updateSelectedFragmentMaterialTexture(assetId: string, sampler: "linear" | "nearest") {
-    if (!activeScene || !selectedFragmentMaterialEntity || !selectedFragmentMaterialAssignment) return;
+    if (!activeEditorScene || !selectedFragmentMaterialEntity || !selectedFragmentMaterialAssignment) return;
     if (rejectLockedEntityMutation(selectedFragmentMaterialEntity.id)) return;
     const asset = activeFragmentMaterialTextureAssets.find(({ id }) => id === assetId);
     if (!asset) {
@@ -5968,7 +6175,7 @@ export function App({
       commitActiveProjectFragmentMaterials(
         updateStudioFragmentMaterialTextureV1(activeProjectFragmentMaterials, {
           entityId: selectedFragmentMaterialEntity.id,
-          sceneId: activeScene.sceneId,
+          sceneId: activeEditorScene.sceneId,
           texture: { asset: { assetId: asset.id, sha256: asset.sha256 }, sampler },
         }),
       );
@@ -5979,7 +6186,7 @@ export function App({
 
   function updateSelectedFragmentMaterialParameter(name: string, value: StudioFragmentMaterialParameterValueV1) {
     if (
-      !activeScene ||
+      !activeEditorScene ||
       !selectedFragmentMaterialEntity ||
       !selectedFragmentMaterialAssignment ||
       !selectedFragmentMaterialAvailable
@@ -5995,7 +6202,7 @@ export function App({
         updateStudioFragmentMaterialParameterV1(activeProjectFragmentMaterials, {
           entityId: selectedFragmentMaterialEntity.id,
           name,
-          sceneId: activeScene.sceneId,
+          sceneId: activeEditorScene.sceneId,
           value,
         }),
       );
@@ -6172,7 +6379,7 @@ export function App({
                 session={accountSession}
               />
             ) : null}
-            {activeScene && !previewAwaitingConsent ? (
+            {activeEditorScene && !previewAwaitingConsent ? (
               <StudioPreviewControl
                 disabled={sessionTransitionPending}
                 onRetry={retryPreviewRenderer}
@@ -6185,38 +6392,42 @@ export function App({
               generate={studioExportSource && previewRenderer ? previewRenderer.generateThumbnail : null}
               publication={studioExportPublication}
             />
-            <button
-              className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
-              disabled={
-                sessionTransitionPending || workspaceIsRefreshing || sourceMutationPendingProjectId === activeProjectId
-              }
-              onClick={reimportWorkspaceAfterSessionFlush}
-              type="button"
-            >
-              {workspaceIsRefreshing ? "Reimporting…" : "Reimport"}
-            </button>
-            <button
-              aria-controls="studio-magic-edit"
-              aria-expanded={Boolean(activeScene && isMagicEditVisible)}
-              className={cn(
-                "border px-2 py-1 font-medium",
-                !activeScene
-                  ? "cursor-wait border-zinc-800 text-zinc-600"
-                  : isMagicEditVisible
-                    ? "border-sky-800 bg-sky-950 text-sky-300 hover:bg-sky-900"
-                    : "border-zinc-700 text-zinc-300 hover:bg-zinc-800",
-              )}
-              disabled={!activeScene || studioAuthoringLocked || !previewMutationAvailable}
-              onClick={() => setIsMagicEditVisible((visible) => !visible)}
-              type="button"
-            >
-              Magic Edit
-            </button>
+            {activeScene ? (
+              <>
+                <button
+                  className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
+                  disabled={
+                    sessionTransitionPending ||
+                    workspaceIsRefreshing ||
+                    sourceMutationPendingProjectId === activeProjectId
+                  }
+                  onClick={reimportWorkspaceAfterSessionFlush}
+                  type="button"
+                >
+                  {workspaceIsRefreshing ? "Reimporting…" : "Reimport"}
+                </button>
+                <button
+                  aria-controls="studio-magic-edit"
+                  aria-expanded={isMagicEditVisible}
+                  className={cn(
+                    "border px-2 py-1 font-medium",
+                    isMagicEditVisible
+                      ? "border-sky-800 bg-sky-950 text-sky-300 hover:bg-sky-900"
+                      : "border-zinc-700 text-zinc-300 hover:bg-zinc-800",
+                  )}
+                  disabled={studioAuthoringLocked || !previewMutationAvailable}
+                  onClick={() => setIsMagicEditVisible((visible) => !visible)}
+                  type="button"
+                >
+                  Magic Edit
+                </button>
+              </>
+            ) : null}
             <span className="hidden border border-zinc-700 px-2 py-1 text-zinc-500 xl:inline">{shell}</span>
           </div>
         </header>
 
-        {workspaceError && activeScene ? (
+        {workspaceError && activeEditorScene ? (
           <div
             className="flex shrink-0 items-center justify-between gap-3 border-b border-red-950 bg-red-950/40 px-3 py-1.5 text-xs text-red-200"
             role="alert"
@@ -6265,7 +6476,7 @@ export function App({
           </div>
         ) : null}
 
-        {activeScene && previewAwaitingConsent ? (
+        {activeEditorScene && previewAwaitingConsent ? (
           <section
             aria-labelledby="preview-activation-title"
             className="flex shrink-0 items-center justify-between gap-3 border-b border-sky-950 bg-sky-950/30 px-3 py-2"
@@ -6381,7 +6592,7 @@ export function App({
               ) : null}
             </div>
           </div>
-        ) : workspaceStatus !== "error" && activeScene && workspaceTimelineProjection === undefined ? (
+        ) : workspaceStatus !== "error" && activeEditorScene && workspaceTimelineProjection === undefined ? (
           <div className="grid min-h-0 flex-1 place-items-center bg-zinc-900 p-6">
             <div className="w-full max-w-md border border-amber-900 bg-amber-950/20 p-5">
               <h2 className="text-balance text-sm font-medium text-amber-200">Timeline projection is not ready</h2>
@@ -6421,21 +6632,29 @@ export function App({
               ) : null}
             </div>
           </div>
-        ) : workspaceStatus === "error" || !activeScene || !projection ? (
+        ) : workspaceStatus === "error" || !activeEditorScene || !projection ? (
           <div className="grid flex-1 place-items-center p-6">
             <div className="max-w-md border border-zinc-800 p-5">
-              <h2 className="text-balance text-sm font-medium">No imported Scene is available</h2>
+              <h2 className="text-balance text-sm font-medium">
+                {activeEditorScene ? "Preparing Scene preview" : "No editable Scene is available"}
+              </h2>
               <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">
-                {workspaceError ?? "Add a Python file containing a Manim Scene under the configured project root."}
+                {workspaceError ??
+                  nativeProjectAssetError ??
+                  (activeEditorScene
+                    ? "Waiting for the canonical WebGPU preview to accept this Scene."
+                    : "Add a Python Manim Scene or create a Studio-native workspace.")}
               </p>
-              <button
-                className="mt-4 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950"
-                disabled={sessionTransitionPending}
-                onClick={reimportWorkspaceAfterSessionFlush}
-                type="button"
-              >
-                Inspect workspace again
-              </button>
+              {activeScene ? (
+                <button
+                  className="mt-4 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950"
+                  disabled={sessionTransitionPending}
+                  onClick={reimportWorkspaceAfterSessionFlush}
+                  type="button"
+                >
+                  Inspect workspace again
+                </button>
+              ) : null}
             </div>
           </div>
         ) : (
@@ -6446,7 +6665,7 @@ export function App({
             inert={studioAuthoringLocked}
           >
             <WorkspaceSidebar
-              activeScene={activeScene}
+              activeScene={activeEditorScene}
               appliedProgramReadOnlyReasons={appliedProgramReadOnlyReasons}
               appliedEdits={appliedEdits}
               appliedTransactionIds={appliedTransactionIds}
@@ -6460,11 +6679,14 @@ export function App({
               entities={editableEntities}
               groupUnavailableReason={layerGroupUnavailableReason}
               imageAssets={studioImageAssets}
+              imageImportError={nativeSceneActive ? nativeProjectAssetError : null}
+              imageImportPending={nativeSceneActive && nativeProjectAssetPending}
               layers={studioLayers}
               lockToggleDisabled={draftApplyPending}
               lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
               onGroup={groupLayerSelection}
+              onImportImageFile={nativeSceneActive ? (file) => void importNativeProjectImageFile(file) : undefined}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onAddImageAsset={(asset) => {
                 setIsPlaying(false);
@@ -6491,7 +6713,7 @@ export function App({
               redoCount={redoPrograms.length}
               selectedIds={selectedSet}
               selectedGroupId={selectedLayerGroup?.groupId ?? null}
-              sourceImportOutcomes={activeScene.importOutcomes}
+              sourceImportOutcomes={activeEditorScene.importOutcomes}
             />
 
             <StudioViewport

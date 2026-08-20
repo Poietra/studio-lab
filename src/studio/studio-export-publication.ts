@@ -10,15 +10,23 @@ export type StudioMp4ExportSourceV1 = Readonly<{
   assetPayloads: readonly CanvasPngAssetTransferV1[];
   bundle: SceneIrBundleV1;
   fragmentMaterialRegistry: FragmentMaterialRegistryV1;
-  /** Exact imported-source context that produced this presented Scene. */
-  sourceLineage: Readonly<{
-    projectId: string;
-    sceneId: string;
-    sceneName: string;
-    sourceHash: string;
-    sourcePath: string;
-    workingRevision: string;
-  }>;
+  /** Exact imported-source or Studio-native context that produced this Scene. */
+  sourceLineage:
+    | Readonly<{
+        documentKey: string;
+        origin: "studio-native";
+        projectId: string;
+        sceneId: string;
+        workingRevision: string;
+      }>
+    | Readonly<{
+        projectId: string;
+        sceneId: string;
+        sceneName: string;
+        sourceHash: string;
+        sourcePath: string;
+        workingRevision: string;
+      }>;
 }>;
 
 export type StudioExportPublicationContextV1 = Readonly<{
@@ -59,6 +67,9 @@ export function resolveStudioExportPublicationAvailabilityV1(
     return { kind: "unavailable", reason: "Wait for the Editor Document lineage before publishing." };
   }
   const { sourceLineage } = input.exportSource;
+  if ("origin" in sourceLineage) {
+    return { kind: "unavailable", reason: "Studio-native exports are local-only in this release." };
+  }
   if (
     input.lineage.projectId !== sourceLineage.projectId ||
     input.lineage.sceneName !== sourceLineage.sceneName ||

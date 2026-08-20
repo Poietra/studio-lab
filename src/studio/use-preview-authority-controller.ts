@@ -3,6 +3,7 @@ import type { SceneFragmentMaterialStateV1 } from "./fragment-material-authoring
 import type { WorkingState } from "./model";
 import {
   createUnavailableStudioPreviewSnapshotProviderV1,
+  isStudioNativePreviewSceneIdentityV1,
   resolveStudioPreviewSnapshotProvider,
   type StudioPreviewEditingContextV1,
   type StudioPreviewProviderKind,
@@ -39,6 +40,8 @@ export type StudioPreviewAuthorityAction =
 type UseStudioPreviewAuthorityControllerInput = Readonly<{
   context: StudioPreviewEditingContextV1 | null;
   frame: Readonly<{ height: number; width: number }>;
+  /** Canonical local authority for a source-free Studio document. */
+  nativeProvider?: StudioPreviewSnapshotProviderV1 | null;
   sceneFragmentMaterials?: SceneFragmentMaterialStateV1;
   retainedSourceDuration: number | null;
   sampleTime: number;
@@ -189,6 +192,7 @@ function activationIsAllowed() {
 export function useStudioPreviewAuthorityController({
   context,
   frame,
+  nativeProvider = null,
   sceneFragmentMaterials,
   retainedSourceDuration,
   sampleTime,
@@ -207,12 +211,13 @@ export function useStudioPreviewAuthorityController({
   // render before the layout effect commits the new generation.
   const projectId = context?.projectId ?? null;
   const currentAuthority = authorityStateForProvider(authority, providerKind, projectId);
+  const nativeContextActive = context !== null && isStudioNativePreviewSceneIdentityV1(context);
   useLayoutEffect(() => {
     dispatch({ projectId, providerKind, type: "configure" });
   }, [projectId, providerKind]);
 
   useEffect(() => {
-    if (currentAuthority.phase !== "resolving") return;
+    if (nativeContextActive || currentAuthority.phase !== "resolving") return;
     const { generation, providerKind: resolvingProviderKind } = currentAuthority;
     let cancelled = false;
     void resolveStudioPreviewSnapshotProvider(resolvingProviderKind)
@@ -231,9 +236,15 @@ export function useStudioPreviewAuthorityController({
     return () => {
       cancelled = true;
     };
-  }, [currentAuthority]);
+  }, [currentAuthority, nativeContextActive]);
 
-  const provider = currentAuthority.phase === "active" ? currentAuthority.provider : null;
+  // Native documents are already canonical browser-local data. They neither
+  // execute workspace Python nor require the server provider's consent gate.
+  const provider = nativeContextActive
+    ? nativeProvider
+    : currentAuthority.phase === "active"
+      ? currentAuthority.provider
+      : null;
   const renderer = useStudioPreviewRenderer({
     context,
     frame,
@@ -247,21 +258,21 @@ export function useStudioPreviewAuthorityController({
   });
   const allowed = activationIsAllowed();
   const activate = useCallback(() => {
-    if (!allowed || currentAuthority.phase !== "awaiting-consent") return false;
+    if (nativeContextActive || !allowed || currentAuthority.phase !== "awaiting-consent") return false;
     dispatch({ allowed, type: "activate" });
     return true;
-  }, [allowed, currentAuthority.phase]);
+  }, [allowed, currentAuthority.phase, nativeContextActive]);
   const retry = useCallback(() => {
-    if (!allowed || currentAuthority.phase !== "active") return false;
+    if (nativeContextActive || !allowed || currentAuthority.phase !== "active") return false;
     dispatch({ allowed, type: "retry" });
     return true;
-  }, [allowed, currentAuthority.phase]);
+  }, [allowed, currentAuthority.phase, nativeContextActive]);
 
   return {
     activate,
-    activationAllowed: allowed,
-    awaitingConsent: currentAuthority.phase === "awaiting-consent",
-    providerPending: currentAuthority.phase === "resolving",
+    activationAllowed: !nativeContextActive && allowed,
+    awaitingConsent: !nativeContextActive && currentAuthority.phase === "awaiting-consent",
+    providerPending: nativeContextActive ? nativeProvider === null : currentAuthority.phase === "resolving",
     renderer,
     retry,
   };

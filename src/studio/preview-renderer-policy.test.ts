@@ -86,6 +86,30 @@ const CORRELATION: StudioPreviewSnapshotCorrelationV1 = {
 };
 
 describe("studioPreviewSnapshotCorrelatesV1", () => {
+  it("correlates a Studio-native document only on its explicit owner lane", () => {
+    const nativeContext = {
+      documentKey: "d".repeat(64),
+      origin: "studio-native" as const,
+      projectId: "native-project",
+      sceneId: `native:${"d".repeat(64)}`,
+      sourceDuration: 5,
+      workingRevision: "pristine",
+    };
+    const nativeCorrelation: StudioPreviewSnapshotCorrelationV1 = {
+      ...CORRELATION,
+      context: nativeContext,
+      sceneDuration: 5,
+      sceneId: nativeContext.sceneId,
+    };
+
+    expect(studioPreviewSnapshotCorrelatesV1(nativeCorrelation, nativeContext)).toBe(true);
+    expect(studioPreviewSnapshotCorrelatesV1(nativeCorrelation, { ...nativeContext, projectId: "other-project" })).toBe(
+      false,
+    );
+    expect(studioPreviewSnapshotCorrelatesV1(nativeCorrelation, { ...nativeContext, sourceDuration: 6 })).toBe(false);
+    expect(studioPreviewSnapshotMatchesSourceV1(CORRELATION, nativeContext)).toBe(false);
+  });
+
   it("correlates only when every editing-context axis matches exactly", () => {
     expect(studioPreviewSnapshotCorrelatesV1(CORRELATION, CONTEXT)).toBe(true);
   });

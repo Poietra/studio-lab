@@ -6,6 +6,7 @@ import type {
 } from "../engine/preview-renderer";
 import type { EntityDimensions, Point } from "./model";
 import {
+  isStudioNativePreviewSceneIdentityV1,
   PRISTINE_WORKING_REVISION,
   type StudioPreviewEditingContextV1,
   type StudioPreviewSnapshotCorrelationV1,
@@ -81,7 +82,8 @@ export function studioPreviewSnapshotCorrelatesV1(
   return (
     studioPreviewSnapshotMatchesSourceV1(correlation, context) &&
     correlation.context.workingRevision === context.workingRevision &&
-    correlation.sceneDuration === correlation.context.sourceDuration
+    correlation.sceneDuration === correlation.context.sourceDuration &&
+    (!isStudioNativePreviewSceneIdentityV1(context) || correlation.sceneDuration === context.sourceDuration)
   );
 }
 
@@ -90,11 +92,23 @@ export function studioPreviewSnapshotMatchesSourceV1(
   correlation: StudioPreviewSnapshotCorrelationV1,
   context: StudioPreviewEditingContextV1,
 ) {
+  const correlationContext = correlation.context;
+  const nativeContext = isStudioNativePreviewSceneIdentityV1(context);
+  const nativeCorrelation = isStudioNativePreviewSceneIdentityV1(correlationContext);
+  if (nativeContext || nativeCorrelation) {
+    return (
+      nativeContext &&
+      nativeCorrelation &&
+      correlationContext.projectId === context.projectId &&
+      correlationContext.documentKey === context.documentKey &&
+      correlationContext.sceneId === context.sceneId
+    );
+  }
   return (
-    correlation.context.projectId === context.projectId &&
-    correlation.context.sceneName === context.sceneName &&
-    correlation.context.sourceHash === context.sourceHash &&
-    correlation.context.sourcePath === context.sourcePath
+    correlationContext.projectId === context.projectId &&
+    correlationContext.sceneName === context.sceneName &&
+    correlationContext.sourceHash === context.sourceHash &&
+    correlationContext.sourcePath === context.sourcePath
   );
 }
 
@@ -112,6 +126,7 @@ export function studioPreviewVerifiedSourceDurationV1(
   if (!snapshot || !context) return null;
   const correlation = snapshot.correlation;
   const duration = correlation.sceneDuration;
+  const nativeContext = isStudioNativePreviewSceneIdentityV1(context);
   if (
     !studioPreviewSnapshotMatchesSourceV1(correlation, context) ||
     correlation.context.workingRevision !== PRISTINE_WORKING_REVISION ||
@@ -124,6 +139,7 @@ export function studioPreviewVerifiedSourceDurationV1(
     snapshot.snapshot.scene.sceneId !== correlation.sceneId
   )
     return null;
+  if (nativeContext && snapshot.snapshot.scene.source.kind !== "studio-edit-program") return null;
   return duration;
 }
 

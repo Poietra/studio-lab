@@ -356,7 +356,7 @@ export function WorkspaceLauncher({
   const removeDialog = useRef<HTMLDialogElement | null>(null);
   const [createName, setCreateName] = useState("");
   const [createRoot, setCreateRoot] = useState("");
-  const [browserCreationKind, setBrowserCreationKind] = useState<"import" | "starter">("starter");
+  const [browserCreationKind, setBrowserCreationKind] = useState<"import" | "studio-native">("studio-native");
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importImageFile, setImportImageFile] = useState<File | null>(null);
   const [renameName, setRenameName] = useState("");
@@ -391,7 +391,7 @@ export function WorkspaceLauncher({
   function showAddDialog() {
     setCreateName("");
     setCreateRoot("");
-    setBrowserCreationKind("starter");
+    setBrowserCreationKind("studio-native");
     setImportFile(null);
     setImportImageFile(null);
     if (importFileInput.current) importFileInput.current.value = "";
@@ -462,7 +462,7 @@ export function WorkspaceLauncher({
         ? { kind: "native-existing", name }
         : importingBrowserProject && importFile
           ? { file: importFile, imageFile: importImageFile, kind: "browser-import", name }
-          : { kind: "managed", name };
+          : { kind: "studio-native", name };
     if (await onCreate(input)) addDialog.current?.close();
   }
 
@@ -500,7 +500,7 @@ export function WorkspaceLauncher({
               <p className="mt-3 max-w-xl text-pretty text-sm leading-6 text-zinc-400">
                 {linkingExistingFolder
                   ? "Open a registered Manim folder, or add another workspace to Studio."
-                  : "Open a workspace, create a starter Scene, or import an existing Python Scene."}
+                  : "Open a workspace, create a blank native Scene, or import an existing Python Scene."}
               </p>
             </div>
             {projects.length > 0 && !isLoading ? (
@@ -568,7 +568,7 @@ export function WorkspaceLauncher({
               <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">
                 {linkingExistingFolder
                   ? "Add an existing Manim project folder to start editing its Scenes."
-                  : "Create a starter workspace or import one Python Scene file."}
+                  : "Create a blank workspace or import one Python Scene file."}
               </p>
               <button
                 className={cn(primaryButtonClassName, addWorkspaceButtonClassName, "mt-4")}
@@ -608,7 +608,7 @@ export function WorkspaceLauncher({
                 : "Register an existing folder on this machine. Studio will not move or copy its files."
               : importingBrowserProject
                 ? "Upload one existing Manim Python file and an optional image.png to private Studio storage. No local path is sent."
-                : "Create a new workspace with a starter Manim Scene. No folder setup is required."}
+                : "Create a source-free Studio Scene. No Python file or folder setup is required."}
           </p>
           {creationMode === "managed" ? (
             <fieldset className="mt-4">
@@ -616,20 +616,20 @@ export function WorkspaceLauncher({
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 <label className="flex cursor-pointer gap-2 border border-zinc-700 p-3 text-xs text-zinc-300 has-checked:border-sky-500 has-checked:bg-sky-950/40">
                   <input
-                    checked={browserCreationKind === "starter"}
+                    checked={browserCreationKind === "studio-native"}
                     disabled={creating}
                     name="workspace-content"
                     onChange={() => {
-                      setBrowserCreationKind("starter");
+                      setBrowserCreationKind("studio-native");
                       clearDialogError();
                     }}
                     type="radio"
-                    value="starter"
+                    value="studio-native"
                   />
                   <span>
-                    <span className="block font-medium text-zinc-100">Starter Scene</span>
+                    <span className="block font-medium text-zinc-100">Blank Scene</span>
                     <span className="mt-1 block text-pretty leading-5 text-zinc-500">
-                      Begin with a minimal main.py.
+                      Start in Studio without creating a Python file.
                     </span>
                   </span>
                 </label>

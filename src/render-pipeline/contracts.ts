@@ -615,11 +615,12 @@ export const manimRenderCapabilitySchema: z.ZodType<ManimRenderCapability> = z
     (capability) =>
       capability.available
         ? capability.unavailableReason === null
-        : capability.kind === "local-command"
-          ? capability.unavailableReason === "local-command-unavailable"
-          : capability.unavailableReason === "durable-render-unavailable" ||
-            capability.unavailableReason === "durable-render-unconfigured" ||
-            capability.unavailableReason === "native-render-frozen",
+        : capability.unavailableReason === "native-render-frozen"
+          ? true
+          : capability.kind === "local-command"
+            ? capability.unavailableReason === "local-command-unavailable"
+            : capability.unavailableReason === "durable-render-unavailable" ||
+              capability.unavailableReason === "durable-render-unconfigured",
     { message: "Render capability availability and reason do not match." },
   );
 
@@ -636,7 +637,16 @@ export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z
     renderCapability: manimRenderCapabilitySchema,
     sources: z.array(manimWorkspaceSourceSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((workspace, context) => {
+    if (workspace.nativeDocument && workspace.sources.length > 0) {
+      context.addIssue({
+        code: "custom",
+        message: "A Studio-native workspace cannot also expose imported Manim sources.",
+        path: ["sources"],
+      });
+    }
+  });
 
 export const manimProjectSummarySchema: z.ZodType<ManimProjectSummary> = z
   .object({

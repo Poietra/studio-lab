@@ -89,6 +89,15 @@ function identity(
   return { projectId, sceneId, sourceHash };
 }
 
+function nativeIdentity(documentKey = "d".repeat(64)): EditorSessionIdentity {
+  return {
+    documentKey,
+    origin: "studio-native",
+    projectId: "project-a",
+    sceneId: `native:${documentKey}`,
+  };
+}
+
 function assignedFragmentMaterials(sceneId: string, entityId: string) {
   const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
   return assignStudioFragmentMaterialV1(material.state, { entityId, sceneId, shaderId: material.shaderId });
@@ -257,6 +266,11 @@ describe("durable editor session storage", () => {
     const serialized = adapter.value;
     expect(serialized).not.toBeNull();
     expect(JSON.parse(serialized!)).toMatchObject({ version: EDITOR_SESSION_STORAGE_VERSION });
+    expect(JSON.parse(serialized!).entries[0].identity).toEqual({
+      projectId: "project-a",
+      sceneKey: expect.stringMatching(/^scene-/),
+      sourceHash: "a".repeat(64),
+    });
     expect(serialized).not.toContain("suggestionStatus");
     expect(serialized).not.toContain("pendingClarification");
     expect(serialized).not.toContain("move the selected object");
@@ -348,6 +362,16 @@ describe("durable editor session storage", () => {
     store.save(identity(), snapshot());
 
     expect(store.restore(identity())).toEqual({ kind: "restored", snapshot: snapshot() });
+  });
+
+  it("keeps Studio-native sessions transient without inventing a source hash", () => {
+    const adapter = new MemoryAdapter();
+    const store = new EditorSessionStore(adapter);
+
+    expect(store.save(nativeIdentity(), snapshot())).toBe(false);
+    expect(store.restore(nativeIdentity())).toEqual({ kind: "empty" });
+    expect(adapter.value).toBeNull();
+    expect(new EditorSessionStore(adapter).restore(nativeIdentity())).toEqual({ kind: "empty" });
   });
 
   it("restores preset parameters and Scene-isolated assignments through the existing storage authority", () => {

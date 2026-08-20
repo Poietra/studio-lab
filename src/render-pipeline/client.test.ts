@@ -140,6 +140,28 @@ describe("Manim API client contracts", () => {
     await expect(loadManimWorkspace()).resolves.toEqual(workspace);
   });
 
+  it("rejects a workspace that mixes a native document with imported sources", async () => {
+    const workspace = {
+      commandAvailable: false,
+      frame: { height: 8, width: 14.222 },
+      nativeDocument: { documentKey: "ab".repeat(32) },
+      projectId: "project-native",
+      projectName: "Ambiguous demo",
+      renderCapability: {
+        available: false,
+        kind: "durable-sandbox",
+        unavailableReason: "native-render-frozen",
+      },
+      sources: [{ path: "scene.py", scenes: [] }],
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(workspace), { status: 200 })),
+    );
+
+    await expect(loadManimWorkspace()).rejects.toThrow(/does not match the API contract/i);
+  });
+
   it("rejects undeclared workspace fields instead of exposing server paths", async () => {
     vi.stubGlobal(
       "fetch",
@@ -261,6 +283,26 @@ describe("Manim API client contracts", () => {
     expect(fetch).toHaveBeenNthCalledWith(4, "/api/projects/project-a", {
       headers: { "content-type": "application/json" },
       method: "DELETE",
+      signal: undefined,
+    });
+  });
+
+  it("creates a source-free Studio-native project through the explicit project kind", async () => {
+    const created = {
+      catalog: {
+        defaultProjectId: "project-native",
+        projects: [{ id: "project-native", kind: "managed", name: "Blank demo" }],
+      },
+      project: { id: "project-native", kind: "managed", name: "Blank demo" },
+    };
+    const fetch = vi.fn(async () => new Response(JSON.stringify(created), { status: 201 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(createManimProject({ kind: "studio-native", name: " Blank demo " })).resolves.toEqual(created);
+    expect(fetch).toHaveBeenCalledWith("/api/projects", {
+      body: JSON.stringify({ kind: "studio-native", name: "Blank demo" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
       signal: undefined,
     });
   });
