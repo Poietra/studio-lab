@@ -115,6 +115,39 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).not.toContain("Add image.png");
   });
 
+  it("offers bounded local PNG import only when the native workspace supplies the action", () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceSidebar
+        activeScene={activeScene()}
+        appliedProgramReadOnlyReasons={{}}
+        appliedEdits={[]}
+        appliedTransactionIds={new Set()}
+        draftActive={false}
+        duration={1}
+        durationError={null}
+        durationMinimum={0.1}
+        editingAppliedTransactionId={null}
+        entities={[]}
+        imageImportError="The PNG could not be decoded."
+        nextScene={null}
+        onDurationChange={vi.fn()}
+        onEditAppliedProgram={vi.fn()}
+        onImportImageFile={vi.fn()}
+        onRedo={vi.fn()}
+        onToggleEntity={vi.fn()}
+        onUndo={vi.fn()}
+        redoCount={0}
+        selectedIds={new Set()}
+        sourceImportOutcomes={[]}
+      />,
+    );
+
+    expect(markup).toContain("+ Import PNG");
+    expect(markup).toContain('accept="image/png,.png"');
+    expect(markup).toContain('role="alert"');
+    expect(markup).toContain("The PNG could not be decoded.");
+  });
+
   it("uses canonical front-first rows and reflects the shared Canvas selection", () => {
     const front = entity("front");
     const back = entity("back");
