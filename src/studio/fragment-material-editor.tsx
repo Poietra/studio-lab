@@ -87,6 +87,9 @@ export function FragmentMaterialEditor({
   const editingMaterial = materials.find(({ shaderId }) => shaderId === effectiveEditingShaderId) ?? null;
   const assignedMaterial = materials.find(({ shaderId }) => shaderId === assignedShaderId) ?? null;
   const assigned = assignedShaderId !== null;
+  const assignedTextureAvailable = assignedTexture
+    ? textureAssets.some(({ assetId }) => assetId === assignedTexture.asset.assetId)
+    : false;
   const matchingMaterials = fragmentMaterialsMatchingName(materials, materialSearchQuery);
   const editingMaterialMatches = editingMaterial
     ? matchingMaterials.some(({ shaderId }) => shaderId === editingMaterial.shaderId)
@@ -171,25 +174,42 @@ export function FragmentMaterialEditor({
             Project PNG
           </label>
           <select
+            aria-describedby={
+              assignedTexture && !assignedTextureAvailable ? "fragment-material-texture-error" : undefined
+            }
+            aria-invalid={assignedTexture && !assignedTextureAvailable ? true : undefined}
             className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
-            disabled={!available || textureAssets.length === 0}
+            disabled={textureAssets.length === 0 || (!available && (!assignedTexture || assignedTextureAvailable))}
             id="fragment-material-texture-asset"
             onChange={(event) => onUpdateTexture(event.currentTarget.value, assignedTexture?.sampler ?? "linear")}
-            value={assignedTexture?.asset.assetId ?? ""}
+            value={assignedTextureAvailable ? assignedTexture?.asset.assetId : ""}
           >
-            {textureAssets.length === 0 ? <option value="">No project PNG assets</option> : null}
+            {assignedTexture && !assignedTextureAvailable ? (
+              <option value="">Missing PNG: {assignedTexture.asset.assetId}</option>
+            ) : textureAssets.length === 0 ? (
+              <option value="">No project PNG assets</option>
+            ) : null}
             {textureAssets.map((asset) => (
               <option key={asset.assetId} value={asset.assetId}>
                 {asset.label}
               </option>
             ))}
           </select>
+          {assignedTexture && !assignedTextureAvailable ? (
+            <p
+              className="mt-1 text-pretty text-[10px] leading-4 text-red-300"
+              id="fragment-material-texture-error"
+              role="alert"
+            >
+              The assigned PNG is missing. Choose an available project PNG to repair this material.
+            </p>
+          ) : null}
           <label className="mt-2 block text-[10px] text-zinc-500" htmlFor="fragment-material-texture-filter">
             Filtering
           </label>
           <select
             className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
-            disabled={!available || !assignedTexture}
+            disabled={!available || !assignedTexture || !assignedTextureAvailable}
             id="fragment-material-texture-filter"
             onChange={(event) =>
               assignedTexture &&
