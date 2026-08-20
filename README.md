@@ -1,186 +1,195 @@
-# Poietra Studio Lab
+<p align="center">
+  <img src="./src/assets/poietra-symbol-05b.svg" width="112" alt="Poietra symbol" />
+</p>
 
-Disposable, evidence-driven experiments for choosing the Poietra Studio client architecture.
+<h1 align="center">Poietra</h1>
 
-This repository is intentionally separate from the product repository. Its first experiment
-compared Tauri and Electron with the same React application and representative Studio
-workload. The accepted [desktop shell ADR](docs/shell-evaluation.md) selects Electron for the
-first product path while preserving a shell-neutral renderer and service boundary.
+<p align="center">
+  <strong>A browser-native motion graphics engine for programmable, expressive animation.</strong>
+  <br />
+  Author, preview, seek, and export motion through one deterministic scene runtime.
+</p>
 
-## Scope
+<p align="center">
+  <a href="#vision">Vision</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#what-works-today">Capabilities</a> ·
+  <a href="#getting-started">Getting started</a> ·
+  <a href="#project-status">Status</a>
+</p>
 
-- frame-oriented media playback and seeking
-- Canvas/WebGL overlays for object picking and ghost trajectories
-- Python/Manim process lifecycle
-- Runtime IR streaming
-- file watching and partial re-render feedback
-- development, packaging, memory, and cross-platform behavior
+---
 
-The experiment charter and decision gate live in [docs/shell-evaluation.md](docs/shell-evaluation.md).
+## Vision
 
-The current shared screen imports conservative Scene, entity, lifetime, event,
-source-identity, and anchor snapshots from the configured Manim workspace. The
-canvas, object list, timeline, Inspector, and Magic Edit request all project that
-same imported `RuntimeSceneState`; runtime fixture data remains test-only. A
-playhead-aware Magic Edit board can create a structured motion draft without
-requiring a drag, or transform one selected `MathTex` object into new equation
-content as a distinct timed operation. It can also create explanatory `Text`
-beside a selected object with `FadeIn`, including an explicit playhead-relative
-anchor such as “5秒前”. Named
-equations with a dominant conventional form can be inferred—for example,
-“Newtonの運動方程式” becomes a matchable `F = ma` transform—without asking the
-user for literal LaTeX. Browser previews typeset the canonical MathTex `texParts`
-with KaTeX and safely fall back to display text when an expression is unsupported.
-Edit Programs can sequence a new equation or atomic equation-plus-explanation macro
-before a Scene-level cover-and-reveal transition, then Apply or Undo the composite as
-one transaction. The Scene boundary points to the actual next imported Scene, whose
-objects replace the outgoing composition at full cover. Magic Edit also previews a bounded camera-focus preset,
-MathTex-to-explanatory-Text replacement, and new provisional MathTex creation;
-the floating Magic Edit board can be dragged across the workspace, hidden, and
-restored without losing its instruction or draft preview.
+Poietra is building a new execution model for motion graphics: the immediacy of a
+browser creative tool with the precision and composability of programmatic
+animation.
 
-The web editor also has a workspace launcher that creates a ready-to-edit managed
-Manim workspace from a name alone, an
-Insert toolbar for Text, MathTex, Rectangle, Circle, Line, and Arrow objects, and
-PowerPoint-style select/copy/paste/duplicate/delete/undo/redo shortcuts. New motion
-duration is editable, its quadratic Bézier path and control handle are projected
-from executable operation data, and Scene duration can be extended at a safe source
-anchor. Sequential Edit Programs may transform the same logical MathTex more than
-once, rebinding each step to the preceding replacement identity.
+Code-first animation systems can express complex ideas, but their creative loop
+often ends in a render job: change source, execute it, wait for an artifact, and
+inspect the result. Visual editors give immediate feedback, but rarely preserve the
+semantic structure needed for mathematical, procedural, and reproducible motion.
 
-Cross-cutting findings from that screen are maintained separately in the
-[Edit operation model memo](docs/edit-operation-model.md). It records the emerging
-GestureConstraint → EditOperation → truthful preview → source-lowering boundary,
-the role of AI, and the highest-risk unresolved semantics.
+Poietra brings those properties together. A validated Scene is retained in the
+browser, sampled at any playhead position by the Rust engine, rendered through
+WebGPU, and exported locally as MP4. The browser is not merely a preview client; for
+Studio-native work, it is the primary motion runtime.
 
-The implemented versioned state layers, canonical operation registry, dependency
-DAG, pure ProposedState evaluator, transaction rules, and verification boundary are
-documented in the [Studio state and operation model](docs/studio-state-operation-model.md).
-The first real Manim round trip is documented in the
-[rendered validation pipeline](docs/rendered-validation-pipeline.md).
-The default-off fast-manim execution boundary and its remaining production
-dependencies are documented in the
-[sandbox backend runbook](docs/fast-manim-sandbox-backend.md).
-The ownership boundary between Studio source analysis, Runtime Trace, Studio
-markers, and the independent `manim-lint` project is recorded in
-[ADR 0001](docs/adr/0001-studio-owned-source-analysis.md).
-The persistent `EditorDocument`, structurally accepted Scene Edit contract, Rust
-mutation authority, and runtime `EngineSessionV1` boundary are recorded in
-[ADR 0004](docs/adr/0004-studio-edit-ownership-and-runtime-application.md).
-The SaaS bounded contexts, native document lineage, publication ownership,
-flow/stock quota split, and Tenant Cell vocabulary are recorded in
-[ADR 0005](docs/adr/0005-saas-platform-domain-model.md).
+The long-term goal is simple to state:
 
-## Commands
+> Make programmable motion directly manipulable without giving up its meaning.
+
+### Why browser-native?
+
+Browser-native rendering turns rendering from a remote batch operation into an
+interactive primitive:
+
+- edits, scrubbing, and playback can receive immediate local feedback;
+- preview and final browser export share the same Scene evaluation semantics;
+- Studio-native source and assets do not need to leave the device for rendering;
+- compute scales with the creator's device instead of a central render queue; and
+- a closed, resource-bounded Scene contract can be admitted without executing
+  arbitrary generated Python or JavaScript in the client.
+
+This is a deliberate primary path, not a claim that every workload belongs in a
+browser. Very long, very large, or unsupported productions may still need a native
+or server renderer. Poietra keeps the Scene contracts renderer-neutral for that
+reason.
+
+## Architecture
+
+Poietra is not a port of Python or Manim into WebAssembly. It separates authoring,
+animation semantics, frame evaluation, and drawing behind strict contracts:
+
+```text
+direct manipulation / structured edits / imported Manim
+                         │
+                         ▼
+                 validated Scene IR
+                         │
+                 deterministic sampling
+                         │
+                         ▼
+                   Render Packet
+                    ╱          ╲
+                   ▼            ▼
+          WASM + WebGPU    native/headless WGPU
+                   │
+                   ▼
+        interactive canvas / local MP4
+```
+
+The core boundaries are intentionally narrow:
+
+- **Scene IR** stores explicit 2D geometry, animation channels, timing, camera,
+  assets, materials, fidelity, and provenance.
+- **The Rust evaluator** is the single implementation that samples a Scene at a
+  requested time.
+- **Render Packet** contains one fully sampled, ordered frame and no authoring or
+  source-language semantics.
+- **The WGPU renderer** validates and prepares complete frames before drawing.
+- **The browser worker** retains the Scene, immutable assets, GPU state, and an
+  `OffscreenCanvas`; normal frame requests return only bounded correlation data.
+
+Unknown or unsupported meaning is never reconstructed from a bounding box, guessed
+from source, or silently dropped. A failure rejects the affected Scene or export
+with a structured reason. This truth-before-breadth rule is what allows preview,
+interaction, and output to share one trustworthy runtime.
+
+Read the complete contract and adoption decision in
+[ADR 0002](docs/adr/0002-poietra-engine-ir-contracts.md), or start with the
+[Engine overview](engine/README.md).
+
+## Engine and Studio
+
+This repository contains two closely related surfaces:
+
+### Poietra Engine
+
+The renderer-neutral Rust core. It owns Scene validation, deterministic frame
+evaluation, cubic geometry, MathTex and Text outlines, WGPU preparation/rendering,
+and the bounded WASM APIs used by browser preview and export.
+
+### Poietra Studio
+
+The reference authoring environment built with React. Studio demonstrates that the
+engine can support a real creative loop: selection and direct manipulation,
+timeline editing, an Inspector, structured operations, undo/redo, inline Text,
+MathTex, fragment materials, and browser-native export.
+
+Studio supports two explicit document origins:
+
+- **Studio-native** documents are source-free. Their accepted edits and materialized
+  Scene are authoritative, and MP4 export runs locally in the browser.
+- **Imported Manim** documents preserve Python as the source authority. Poietra
+  imports only semantics it can prove, provides bounded WebGPU preview and editing,
+  and keeps source lowering and rendered validation explicit.
+
+Natural-language assistance is an optional input to the same closed edit pipeline.
+It does not emit privileged Python or bypass deterministic validation.
+
+## What works today
+
+| Area | Implemented vertical slice |
+| --- | --- |
+| Scene runtime | Strict versioned Scene/asset/frame contracts, f64 evaluation, retained Scene sessions, atomic snapshot replacement |
+| Vector graphics | Closed cubic paths, concave and disjoint fills, holes and fill rules, general strokes, affine transforms, opacity, trim, morph, motion paths, and orthographic camera |
+| Materials and assets | Solid paint, verified PNG images, immutable digest-keyed assets, built-in and project-local bounded fragment materials |
+| Typography | Evidence-backed MathTex outlines plus bounded multiline Text with ASCII and a Japanese Noto Sans CJK JP subset |
+| Browser runtime | Dedicated Worker, Rust/WASM evaluation, `OffscreenCanvas`, WebGPU drawing, device-loss recovery, exact frame correlation |
+| Export | Local MP4 generation through the browser engine and WebCodecs, optional bounded WAV audio, progress, cancellation, and partial-output refusal |
+| Studio authoring | Text, MathTex, Rectangle, Circle, Line, and Arrow creation; selection and multi-selection; move, resize, rotate, opacity, motion, lifetime, timeline, and material controls |
+| Manim bridge | Conservative source discovery, verified Runtime Trace/snapshot profiles, bounded object selection and edits, `.py` export, reimport, and rendered validation |
+| Evidence | Native/browser golden fixtures, WebGPU readbacks, Manim/Cairo visual parity, resource ceilings, payload measurements, and gesture/engine performance gates |
+
+The renderer is deliberately not universal yet. Current contracts do not promise
+arbitrary Python, arbitrary Manim plugins or TeX templates, complete font shaping,
+3D/perspective, or every image, clipping, filtering, and compositing model. Generic
+Manim support is promoted scene-by-scene and operation-by-operation only when the
+complete import → preview → edit → export → reimport path has evidence.
+
+See the current [generic importability scoreboard](docs/generic-importability-quality-gate.md)
+and [MathTex source profile](docs/mathtex-source-profile.md) for the measured boundaries.
+
+## Getting started
+
+### Requirements
+
+- Node.js 24 or newer
+- pnpm 10
+- Rust and `wasm-pack 0.15.0` when rebuilding the engine or packaging Electron
+- Chromium with WebGPU and WebCodecs for the complete browser path
+
+### Run Studio in the browser
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm dev:web
-pnpm dev:electron
-pnpm package:electron
-pnpm test:electron-packaged
-pnpm dev:tauri
-pnpm evaluate:shell:native
-pnpm evaluate:shell:serve
-pnpm check:web
-pnpm check:style # zero-warning lint plus incremental format check
-pnpm test:unit
-pnpm test:integration
-pnpm test:third-party-notices
-pnpm test # all unit and boundary/integration tests
-pnpm exec playwright install chromium webkit # first E2E run only
-pnpm test:e2e
-pnpm test:e2e:webkit-smoke
-cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-Pull requests always run style and change-scope checks, then select only the
-Engine, WASM, web, unit/integration, storage, Chromium smoke, or Electron lanes affected
-by the patch. `CI gate` is the stable required-check name; it accepts intentionally
-skipped lanes and fails when any selected lane fails or is cancelled.
+Open the loopback URL printed by Vite. A new Studio-native project can be created
+from the workspace chooser without configuring Manim.
 
-Pushes to `main` and manual runs execute the complete matrix, including the
-packaged Electron startup smoke, WebKit, retained WebGPU previews, and native/browser
-visual parity. The former Tauri prototype is checked only when its retained
-experiment changes; it is not a product gate. Real Manim remains a manual
-pre-release smoke because it tests an external renderer.
-Playwright diagnostics are retained as workflow artifacts when browser jobs
-reach their test steps.
+### Run the desktop shell
 
-Biome provides the TypeScript/React lint and formatting baseline. Run `pnpm lint:fix`
-for safe lint fixes and `pnpm format` to format files changed from the pull request
-base (or `main` locally); `pnpm lint`, `pnpm format:check`, and the combined
-`pnpm check:style` never write files.
-The incremental format scope includes committed, staged, unstaged, and untracked files,
-preventing a one-time rewrite of untouched source. CI fetches full history and passes
-the pull request base SHA or push event's previous SHA to `pnpm check:style`.
+```sh
+pnpm dev:electron
+```
 
-The suite boundaries and the rule for adding regression coverage are documented in
-[the testing strategy](docs/testing-strategy.md).
+Build the development Electron package with:
 
-Magic Edit requires an explicit model endpoint; it never falls back to keyword or
-fixture behavior at runtime. For loopback development, set `VITE_POIETRA_AI_ENDPOINT`
-to `/api/ai/edit-suggestions`, inject `OPENAI_API_KEY` into the actual server process
-environment, and optionally select the server-side model with
-`POIETRA_OPENAI_MODEL`. Vite may parse dotenv files while loading public settings,
-but a dotenv `OPENAI_API_KEY` is never adopted as API configuration or exposed in
-diagnostics or the browser bundle; only the actual server process environment supplies
-that credential. Server-only `POIETRA_` settings are also read from an explicit
-non-secret process-environment allowlist; ordinary `VITE_` browser settings retain
-Vite's dotenv behavior. Without both the endpoint and injected credential, Magic Edit
-does not call the provider. Enabling it prints a fixed warning that editor context is
-sent to the configured remote model.
+```sh
+pnpm package:electron
+pnpm test:electron-packaged
+```
 
-The legacy repository-root `.openai-key` fallback is disabled by default. It can be
-used only by the loopback development server when both the endpoint above and the
-process-environment flag `POIETRA_AI_LOCAL_KEY_FILE_OPT_IN=1` are present; this path
-prints an explicit fallback warning. Test, staging, and production modes never
-read that file even if the flag is set. Production injects an already-constructed AI
-adapter from its secret provider or process environment, then routes requests through
-the same authenticated principal and tenant registry used by the Manim API. The Vite
-development server uses the Responses API and returns the same closed
-`CreateMotion | CreateTransform | CreateExplanation | CreateCameraFocus | CreateEquation | CreateExplainedEquation | CreateTextTransform | CreateSceneTransition | ScaleObjects | DeleteObjects | EditProgram`
-suggestion result documented in
-`src/ai/edit-suggestions.ts`. Provider credentials never use a `VITE_` variable and
-are not included in the browser bundle.
-Clarification responses may include two or three structured choices. Studio keeps
-the original request, up to four resolved question/answer turns, and the current
-pending question. A choice click, a relative answer such as `前者`, or a short
-answer such as `はい` therefore reaches the model with the decisions that preceded
-it instead of becoming an isolated prompt.
+The packaged output is a development package, not a signed installer.
 
-By default, the development API writes privacy-safe lifecycle events to stdout and
-to a per-workspace file below the operating system's temporary directory, outside
-the Vite project root. Each request receives an
-`x-poietra-request-id`; telemetry is limited to a bounded request ID, keyed opaque
-tenant/principal correlations, latency and HTTP status, fixed lifecycle event names,
-and numeric token counters when available.
-Prompts, source/object context, clarification content, model instructions and output,
-provider response IDs, response bodies, error messages, tracebacks, and absolute log paths
-are not recorded. Authenticated tenant and principal scopes each have bounded rate and
-concurrency admission. Request quota is consumed after authentication and tenant lookup,
-before the JSON body is read; only a schema-valid request can reserve generation capacity.
-Client disconnects and generation deadlines abort the provider request, but the capacity
-reservation remains held until the provider promise actually settles, including when an
-adapter ignores cancellation. Provider adapters receive request data and an abort signal,
-never the structured logger; the handler validates their narrow result telemetry before
-emitting fixed events. The file rotates to `.previous` at 2 MiB and is created with
-user-only permissions. Set `POIETRA_AI_DEBUG_LOG` in the process environment to use
-another local path. Setting it to `off` disables both the file sink and the bounded stdout
-telemetry.
+### Open an existing Manim project
 
-Logs created by an older Studio version may still contain editor or provider payloads.
-Treat both the active JSONL file and `.previous` as sensitive historical data: do not
-publish them, and explicitly archive or delete them according to the workspace owner's
-retention policy before relying on the new telemetry boundary.
-
-The rendered-validation experiment lowers a complete canonical `EditProgram` at an
-explicit safe source marker. Straight or quadratic Bézier motion, position,
-MathTex/Text/basic-shape creation, relative placement, FadeIn/removal, chained
-content transforms, explicit waits, and cover-and-reveal Scene boundaries can share
-one isolated Manim preview and guarded source commit. Start
-Studio with a Manim project root and command when they differ from this checkout and
-the `manim` executable:
+Set the project root and command when they differ from this checkout and the
+`manim` executable:
 
 ```sh
 POIETRA_MANIM_PROJECT_ROOT=/path/to/project \
@@ -188,108 +197,95 @@ POIETRA_MANIM_COMMAND='["uv", "run", "manim"]' \
 pnpm dev:web
 ```
 
-Multiple roots can be seeded before the first launch. `POIETRA_MANIM_PROJECTS` is a JSON array of root strings or
-`{"id":"project-a","name":"Display name","root":"/path"}` objects; the legacy
-single-root variable remains the fallback. On first start these values seed the local
-`.poietra/workspace-catalog.json`. In a browser, Add workspace asks only for a name
-and creates an importable `MainScene` under `.poietra/.workspaces`. Electron uses a
-native directory picker for existing folders and a native Save dialog for `.py`
-exports in the packaged app; neither operation exposes an absolute path to the renderer.
-`pnpm dev:electron` deliberately leaves the native bridge disabled and uses Vite's
-existing-folder registration form instead. Tauri retains that form while it remains
-an evaluation shell. The launcher can rename or remove either registration
-persistently. Removing an existing-folder workspace only unregisters it, leaving
-its folder and Python files in place. Removing a browser-managed workspace moves
-its directory to Studio Trash at `.poietra/.trash` instead of permanently deleting
-it; Studio does not yet provide a UI for restoring trashed workspaces. Set
-`POIETRA_STUDIO_DATA_ROOT` to relocate the private catalog, browser-managed
-workspace content, and Studio Trash. The local server remains bound to loopback,
-validates every registered folder with `realpath`, and never returns filesystem
-roots in API responses.
-
-`pnpm package:electron` builds the web renderer and Electron main process, then
-assembles a host-platform application under `release/electron-<platform>-<arch>`.
-It requires `wasm-pack 0.15.0` and builds the canonical engine and MathTex WASM
-artifacts as part of a clean package.
-The command explicitly runs Electron's runtime installer first, so a clean pnpm
-checkout downloads the host runtime before packaging instead of depending on a
-previous lifecycle-script side effect.
-The packaged app starts the same workspace/render/export service on a random loopback
-port. A per-launch capability is injected below the renderer API boundary, and the
-window denies new windows, cross-origin navigation, webviews, and permission requests.
-This output is a development package, not a signed installer. `pnpm
-test:electron-packaged` launches that exact output headlessly and covers native folder
-selection, workspace CRUD, render/video, export/save, commit/undo/discard, and shutdown.
-
-Web and packaged Electron distributions expose the canonical font license notice at
-`/THIRD_PARTY_NOTICES.txt`. The standalone server distribution places the same file
-beside `manim-production-server.mjs`. Its source of truth is the MathTex outline
-crate's `PACKAGE-LICENSES.txt`; the build and package smoke checks require byte-identical
-copies and verify the RaTeX revision, complete 19-face runtime-reachable KaTeX font
-manifest, and aggregate font attestation. The MathTex crate's unit test independently
-recomputes that SHA-256 from the exact faces staged from the pinned
-`ratex-katex-fonts` build dependency and embedded in the runtime artifact. The
-gated snapshot OCI image installs
-the same byte-identical notice at
-`/usr/share/doc/poietra-mathtex-outline/THIRD_PARTY_NOTICES.txt` and binds its
-SHA-256 into the admitted image labels.
-
-Studio starts at a workspace chooser. Visible cards lazily parse only the first
-importable Scene into a bounded semantic SVG thumbnail; this does not execute
-Manim or import the rest of the project, and failures retain the metadata cover.
-The complete workspace is imported only after it is opened. Returning to the
-chooser keeps each Scene's in-memory editor session available for the next open.
-The project-bound export API does not require Manim and never writes the source
-file. Before the first edit, `Export .py` downloads the selected Scene's Python
-source unchanged. Once an edit exists, it exports the result of canonical lowering
-after the same validation and stale-source checks used by rendered validation.
-
-If Manim is available through Docker instead, the included runner mounts the
-project read-only, mounts only the operating-system preview directory as writable,
-and disables container networking:
+For Docker-backed rendering, the included adapter mounts the project read-only,
+mounts only the preview directory as writable, and disables container networking:
 
 ```sh
 POIETRA_MANIM_COMMAND='["node", "scripts/manim-docker-runner.mjs"]' pnpm dev:web
 ```
 
-Run the fixed real-render smoke fixture with the same Docker adapter used by the
-scheduled and manually dispatched CI workflow:
+Imported source mutation requires explicit safe anchors. Unsupported overlap,
+camera operations, unknown source identities, stale source digests, and failed
+validation are refused rather than lowered approximately. The
+[rendered validation pipeline](docs/rendered-validation-pipeline.md) documents the
+current round trip.
+
+### Optional Magic Edit
+
+Magic Edit is disabled unless both an endpoint and a server-process credential are
+configured:
 
 ```sh
-pnpm test:manim-smoke
+VITE_POIETRA_AI_ENDPOINT=/api/ai/edit-suggestions \
+OPENAI_API_KEY=... \
+pnpm dev:web
 ```
 
-The smoke test renders and decodes an MP4 with the pinned image, commits and
-exactly undoes the lowered source, and verifies that both project and render
-temporary directories are removed. It also interrupts a live render to verify
-that the Vitest process tree, owned Docker container, temporary files, and
-artifact writers have all stopped before the runner exits. Its MP4, decoded
-media metadata, source hashes, cleanup result, and captured Vitest/Manim log are
-written under `test-results/manim-smoke/`. Set `POIETRA_MANIM_COMMAND` to use a
-local Manim installation and `POIETRA_MANIM_FFPROBE_COMMAND` when its `ffprobe`
-binary is not available on `PATH`.
+The credential must be injected into the actual server process and must never use a
+`VITE_` variable. Editor context is sent to the configured provider only when this
+feature is enabled. See the [interaction memo](docs/edit-operation-model.md) for the
+closed suggestion and validation model.
 
-Eligible source boundaries use an explicit marker such as
-`# poietra:anchor 5.000` inside a Scene method. Studio rejects missing anchors,
-unknown source variables, stale source hashes, unsupported overlap or camera
-operations, invalid next-Scene destinations, and failed renders instead of writing
-an illustrative patch. Committed
-generated entities carry data-only `poietra:entity` markers, so a subsequent import
-recovers their Studio identity and Python binding. Scene changes carry an explicit
-boundary marker and terminate the outgoing construct after revealing the imported
-next composition. The included `examples/relativity.py` provides two ordered Scenes
-and safe 5- and 7-second anchors.
+## Verification
 
-Linux development requires the [system packages listed by Tauri](https://v2.tauri.app/start/prerequisites/#linux) before `dev:tauri` or `cargo check` can run.
-When those packages are not available on the host, the Linux build path can be reproduced in a container:
+Common repository gates:
 
 ```sh
-docker build --file Dockerfile.linux --tag poietra-studio-lab-linux .
-docker run --rm poietra-studio-lab-linux
+pnpm check:style
+pnpm test
+pnpm check:web
+pnpm test:e2e
+pnpm test:e2e:visual-parity
+pnpm test:engine:wasm-smoke
+pnpm test:mathtex:wasm-smoke
+pnpm test:importer:quality
 ```
 
-The application code under `src/` is shared without shell-specific branches. Native integration must stay behind a small adapter so the comparison measures the shell rather than two different implementations.
+Engine-only checks:
 
-## Status
+```sh
+cargo fmt --all --manifest-path engine/Cargo.toml -- --check
+cargo test --locked --workspace --manifest-path engine/Cargo.toml
+cargo clippy --locked --workspace --all-targets --all-features \
+  --manifest-path engine/Cargo.toml -- -D warnings
+```
 
-Experimental. Nothing in this repository is a supported Poietra product API.
+Real Manim and production sandbox conformance remain explicit opt-in gates because
+they depend on external runtimes and host isolation. The full command catalog lives
+in [`package.json`](package.json), and suite ownership is documented in the
+[testing strategy](docs/testing-strategy.md).
+
+## Repository map
+
+| Path | Responsibility |
+| --- | --- |
+| [`engine/`](engine/) | Rust Scene contracts, evaluator, geometry, WGPU renderer, MathTex/Text compilers, and WASM/native boundaries |
+| [`src/`](src/) | React Studio, browser workers, authoring state, engine adapters, export, and client contracts |
+| [`server/`](server/) | Local/imported-Manim integration, render/snapshot boundaries, and production adapters |
+| [`fixtures/`](fixtures/) | Cross-runtime semantic, raster, parity, importability, and source-profile evidence |
+| [`docs/`](docs/) | Architecture decisions, runbooks, quality gates, and performance evidence |
+| [`e2e/`](e2e/) | Browser, WebGPU, interaction, packaging, and visual-parity scenarios |
+| [`scripts/`](scripts/) | Builds, smoke tests, fixture generation, benchmarks, and evidence promotion |
+
+## Design documents
+
+- [Engine IR and renderer contracts](docs/adr/0002-poietra-engine-ir-contracts.md)
+- [Runtime Trace digest and streaming](docs/adr/0003-runtime-trace-canonical-digest-streaming.md)
+- [Scene Edit and runtime ownership](docs/adr/0004-studio-edit-ownership-and-runtime-application.md)
+- [Studio state and operation model](docs/studio-state-operation-model.md)
+- [Direct-manipulation findings](docs/edit-operation-model.md)
+- [Browser/native visual and performance evidence](engine/README.md)
+- [Production render sandbox](docs/production-render-sandbox.md)
+
+Historical shell-selection work, including the Tauri/Electron comparison that led
+to the current Electron path, remains available in
+[the shell evaluation ADR](docs/shell-evaluation.md). It is project history, not the
+identity of Poietra.
+
+## Project status
+
+Poietra is under active development. The Engine and Studio vertical slices are
+implemented and extensively tested, but the public Scene ABI, authoring API, and
+document formats are not yet declared stable. Capability claims in this repository
+are intentionally bounded by executable evidence; unsupported inputs fail
+explicitly instead of receiving a best-effort rendering.
