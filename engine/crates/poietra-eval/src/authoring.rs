@@ -28,9 +28,9 @@ pub use bound_entity::{
 pub use creation::{
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError, CreateSceneEntitiesError,
     ProjectStudioCreationEditError, StudioCreationEditInput, StudioCreationEntitySpec,
-    StudioCreationOperation, StudioCreationOperationKind, StudioCreationProjectedMutation,
-    StudioCreationProjectedMutationKind, StudioCreationProjection, StudioProjectedCreationEntity,
-    StudioPropertyEasing, project_studio_creation_edits,
+    StudioCreationImageSpec, StudioCreationOperation, StudioCreationOperationKind,
+    StudioCreationProjectedMutation, StudioCreationProjectedMutationKind, StudioCreationProjection,
+    StudioProjectedCreationEntity, StudioPropertyEasing, project_studio_creation_edits,
 };
 pub use fragment_material::{
     ApplyStudioFragmentMaterialsCommand, ApplyStudioFragmentMaterialsError,

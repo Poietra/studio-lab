@@ -37,6 +37,84 @@ function activeScene(): ManimWorkspaceScene {
 }
 
 describe("WorkspaceSidebar Layers", () => {
+  it("lists the verified native image.png with Add and an explicit source-export boundary", () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceSidebar
+        activeScene={activeScene()}
+        appliedProgramReadOnlyReasons={{}}
+        appliedEdits={[]}
+        appliedTransactionIds={new Set()}
+        draftActive={false}
+        duration={1}
+        durationError={null}
+        durationMinimum={0.1}
+        editingAppliedTransactionId={null}
+        entities={[]}
+        imageAssets={[
+          {
+            byteLength: 74,
+            bytes: new ArrayBuffer(74),
+            image: {
+              asset: { assetId: "image-scene/asset:image.png", sha256: "4".repeat(64) },
+              localRect: { bottom: -0.5, left: -1, right: 1, top: 0.5 },
+              sampler: "nearest",
+            },
+            label: "image.png",
+            pixelHeight: 1,
+            pixelWidth: 2,
+          },
+        ]}
+        nextScene={null}
+        onAddImageAsset={vi.fn()}
+        onDurationChange={vi.fn()}
+        onEditAppliedProgram={vi.fn()}
+        onRedo={vi.fn()}
+        onToggleEntity={vi.fn()}
+        onUndo={vi.fn()}
+        redoCount={0}
+        selectedIds={new Set()}
+        sourceImportOutcomes={[]}
+      />,
+    );
+
+    expect(markup).toContain("Assets");
+    expect(markup).toContain("Images");
+    expect(markup).toContain("image.png");
+    expect(markup).toContain('alt="image.png"');
+    expect(markup).toContain("2 × 1");
+    expect(markup).toContain("+ Add");
+    expect(markup).toContain("Manim source export is unsupported");
+  });
+
+  it("renders a native Images empty state without a verified manifest asset", () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceSidebar
+        activeScene={activeScene()}
+        appliedProgramReadOnlyReasons={{}}
+        appliedEdits={[]}
+        appliedTransactionIds={new Set()}
+        draftActive={false}
+        duration={1}
+        durationError={null}
+        durationMinimum={0.1}
+        editingAppliedTransactionId={null}
+        entities={[]}
+        nextScene={null}
+        onDurationChange={vi.fn()}
+        onEditAppliedProgram={vi.fn()}
+        onRedo={vi.fn()}
+        onToggleEntity={vi.fn()}
+        onUndo={vi.fn()}
+        redoCount={0}
+        selectedIds={new Set()}
+        sourceImportOutcomes={[]}
+      />,
+    );
+
+    expect(markup).toContain("No verified project image is available in this Scene.");
+    expect(markup).not.toContain("Add image.png");
+  });
+
   it("uses canonical front-first rows and reflects the shared Canvas selection", () => {
     const front = entity("front");
     const back = entity("back");

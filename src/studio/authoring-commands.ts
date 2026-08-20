@@ -32,11 +32,16 @@ export type InsertEntityType = (typeof INSERT_ENTITY_TYPES)[number];
 export type StudioEntityInput = Readonly<{
   content?: EntityContent;
   dimensions?: EntityDimensions;
+  image?: Readonly<{
+    asset: Readonly<{ assetId: string; sha256: string }>;
+    localRect: Readonly<{ bottom: number; left: number; right: number; top: number }>;
+    sampler: "linear" | "nearest";
+  }>;
   position: Point;
-  type: InsertEntityType;
+  type: InsertEntityType | "ImageMobject";
 }>;
 
-export function defaultEntityDimensions(type: InsertEntityType): EntityDimensions | undefined {
+export function defaultEntityDimensions(type: InsertEntityType | "ImageMobject"): EntityDimensions | undefined {
   if (type === "Circle") return { radius: 1 };
   if (type === "Rectangle") return { height: 2, width: 4 };
   return undefined;
@@ -200,6 +205,7 @@ export function createStudioEntitiesProgram(
           content,
           ...(dimensions ? { dimensions } : {}),
           id: entityId,
+          ...(entity.image ? { image: entity.image } : {}),
           lifetime: { end: null, start: input.capturedPlayhead },
           type: entity.type,
         },

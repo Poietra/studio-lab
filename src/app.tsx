@@ -115,10 +115,10 @@ import {
   planStudioLayerOrder,
   planStudioLayerReorder,
   projectStudioLayers,
-  selectedStudioLayerGroup,
-  selectionContainsGroupedChild,
   type StudioLayerOrderDirection,
   type StudioLayerOrderPlan,
+  selectedStudioLayerGroup,
+  selectionContainsGroupedChild,
 } from "./studio/layer-order";
 import {
   buildLifetimeEditControls,
@@ -234,6 +234,7 @@ import { preparedGeometryBounds, verifiedPreviewGeometryForStudioEntity } from "
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
+import { studioNativeImageAssetsV1 } from "./studio/studio-image-assets";
 import type { StudioInlineTextEditorSession } from "./studio/studio-inline-text-editor";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
@@ -1012,6 +1013,7 @@ export function App({
     workingState: previewWorkingState,
   });
   const studioExportSource = previewRenderer?.canonicalScene ?? null;
+  const studioImageAssets = studioNativeImageAssetsV1(studioExportSource);
   const activeFragmentMaterialTextureAssets = studioExportSource?.bundle.assets.assets ?? [];
   const studioExportPublication = resolveStudioExportPublicationAvailabilityV1({
     exportSource: studioExportSource,
@@ -5165,7 +5167,12 @@ export function App({
 
   function setEntityOpacityFromInspector(entityId: string, opacity: number) {
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
+    if (createdAuthority && entity?.type === "ImageMobject") {
+      setDraftError("Use Timeline opacity keyframes for Images.");
+      return false;
+    }
     const authority = runtimeTraceProjectionAuthorityFor(entityId);
     if (!createdAuthority && (!authority?.capabilities.paintOpacity || !("baseOpacity" in authority))) {
       setDraftError("Opacity requires a Studio-created object or one exact updater-free Runtime Trace binding.");
@@ -5175,7 +5182,6 @@ export function App({
       setDraftError("Opacity must be a number from 0 to 1.");
       return false;
     }
-    const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const baseOpacity = createdAuthority
       ? (entity?.opacity ?? null)
       : authority && "baseOpacity" in authority
@@ -6034,6 +6040,8 @@ export function App({
     "baseOpacity" in selectedRuntimeTraceEditAuthority
       ? selectedRuntimeTraceEditAuthority
       : null;
+  const selectedStudioImageStaticOpacityUnavailable =
+    selectedStudioCreationAppearanceAuthority !== null && selectedEntity?.type === "ImageMobject";
   const appliedProgramReadOnlyReasons = Object.fromEntries(
     appliedEdits.map((record) => {
       const transactionId = record.program.transactionId;
@@ -6451,12 +6459,19 @@ export function App({
               durationMinimum={durationTrimAvailability.minimumDuration}
               entities={editableEntities}
               groupUnavailableReason={layerGroupUnavailableReason}
+              imageAssets={studioImageAssets}
               layers={studioLayers}
               lockToggleDisabled={draftApplyPending}
               lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
               onGroup={groupLayerSelection}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
+              onAddImageAsset={(asset) => {
+                setIsPlaying(false);
+                void insertEntitiesAt({ x: 320, y: 180 }, [
+                  { image: asset.image, position: { x: 320, y: 180 }, type: "ImageMobject" },
+                ]);
+              }}
               onEditAppliedProgram={editAppliedProgram}
               onLayerOrder={changeLayerOrder}
               onLayerReorder={reorderLayer}
@@ -6673,7 +6688,13 @@ export function App({
                   label: `${asset.id} (${asset.pixelWidth}×${asset.pixelHeight})`,
                 })),
               }}
-              opacityAvailable={selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null}
+              opacityAvailable={
+                !selectedStudioImageStaticOpacityUnavailable &&
+                (selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null)
+              }
+              opacityUnavailableReason={
+                selectedStudioImageStaticOpacityUnavailable ? "Use Timeline opacity keyframes for Images." : null
+              }
               opacityValue={
                 selectedStudioCreationAppearanceAtAnchor
                   ? (selectedEntity?.opacity ?? null)

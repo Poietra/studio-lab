@@ -75,8 +75,10 @@ function createEntityExecution(
   const hasMathTexContent =
     type === "MathTex" && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
   const hasTextContent = type === "Text" && studioCreationText(content) !== null;
+  const hasNativeImage = type === "ImageMobject" && operation.entity.image !== undefined;
   const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "Square"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
+  if (hasNativeImage) return CLIENT_ONLY_EXECUTION;
   if (hasMathTexContent || hasTextContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
   return previewOnlyExecution(`CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`);
 }
@@ -550,6 +552,15 @@ export const OPERATION_REGISTRY = {
           code: "schema-invalid",
           field: "entity.content",
           message: STUDIO_CREATION_TEXT_CONTRACT,
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if ((operation.entity.type === "ImageMobject") !== (operation.entity.image !== undefined)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "entity.image",
+          message: "A Studio-native ImageMobject requires one exact bounded PNG placement.",
           operationId: operation.id,
           severity: "error",
         });

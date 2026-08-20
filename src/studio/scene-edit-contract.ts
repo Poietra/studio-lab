@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { fragmentMaterialV1Schema } from "../engine/primitives";
+import { assetReferenceV1Schema, fragmentMaterialV1Schema } from "../engine/primitives";
 import { studioPropertyKeyframeEasingSchema } from "../engine/scene-authoring";
 import { styleProfileRefSchema } from "./style-profile";
 
@@ -17,6 +17,23 @@ const dimensionsSchema = z
     height: z.number().positive().optional(),
     radius: z.number().positive().optional(),
     width: z.number().positive().optional(),
+  })
+  .strict();
+const studioImagePlacementSchema = z
+  .object({
+    asset: assetReferenceV1Schema,
+    localRect: z
+      .object({
+        bottom: z.number().finite(),
+        left: z.number().finite(),
+        right: z.number().finite(),
+        top: z.number().finite(),
+      })
+      .strict()
+      .refine((rectangle) => rectangle.right > rectangle.left && rectangle.top > rectangle.bottom, {
+        message: "Studio Image localRect must have positive width and height.",
+      }),
+    sampler: z.enum(["linear", "nearest"]),
   })
   .strict();
 const intervalSchema = z.object({ end: z.number(), start: z.number() });
@@ -54,6 +71,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
       content: contentSchema.optional(),
       dimensions: dimensionsSchema.optional(),
       id: z.string(),
+      image: studioImagePlacementSchema.optional(),
       lifetime: z.object({ end: z.number().nullable(), start: z.number() }),
       type: z.string(),
     }),

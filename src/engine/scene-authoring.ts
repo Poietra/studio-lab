@@ -486,6 +486,26 @@ const studioTextLayoutV1Schema = z
     lineHeight: finiteNumberSchema.positive(),
   })
   .strict();
+const studioCreationImageV1Schema = z
+  .object({
+    asset: z
+      .object({
+        assetId: z.string().min(1),
+        sha256: z.string().regex(/^[0-9a-f]{64}$/u),
+      })
+      .strict(),
+    localRect: z
+      .object({
+        bottom: finiteNumberSchema,
+        left: finiteNumberSchema,
+        right: finiteNumberSchema,
+        top: finiteNumberSchema,
+      })
+      .strict()
+      .refine((rectangle) => rectangle.right > rectangle.left && rectangle.top > rectangle.bottom),
+    sampler: z.enum(["linear", "nearest"]),
+  })
+  .strict();
 const studioMathTexContentV1Schema = z
   .object({
     displayLines: z.array(z.string()).min(1),
@@ -533,7 +553,8 @@ const studioCreationProjectionV1Schema = z
           initialDimensions: studioStaticRootDimensionsV1Schema,
           initialRotation: finiteNumberSchema,
           initialScale: finiteNumberSchema.positive(),
-          kind: z.enum(["arrow", "circle", "line", "math-tex", "rectangle", "text"]),
+          image: studioCreationImageV1Schema.optional(),
+          kind: z.enum(["arrow", "circle", "image", "line", "math-tex", "rectangle", "text"]),
           layout: studioTextLayoutV1Schema.optional(),
           operationId: z.string().min(1),
           text: z.string().min(1).max(256).optional(),
@@ -846,6 +867,11 @@ const studioTimelineProjectionV1Schema = z
 
 type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StudioCreationEntityKindV1 = "arrow" | "circle" | "image" | "line" | "math-tex" | "other" | "rectangle" | "text";
+type StudioCreationImageV1 = Readonly<{
+  asset: Readonly<{ assetId: string; sha256: string }>;
+  localRect: Readonly<{ bottom: number; left: number; right: number; top: number }>;
+  sampler: "linear" | "nearest";
+}>;
 type StudioTextContentV1 = Readonly<{
   layout: Readonly<{
     alignment: "center" | "left" | "right";
@@ -868,6 +894,7 @@ type StudioCreationOperationV1 = Readonly<{
         entity: Readonly<{
           dimensions: StudioCreationDimensionsV1;
           id: string;
+          image?: StudioCreationImageV1 | null;
           kind: StudioCreationEntityKindV1;
           layout: StudioTextContentV1["layout"] | null;
           lifetimeEnd: number | null;

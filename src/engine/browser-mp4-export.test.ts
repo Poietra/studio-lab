@@ -64,6 +64,53 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("runBrowserMp4ExportV1", () => {
+  it("forwards a canonical Studio-created Image and its verified PNG payload to the WebCodecs worker", async () => {
+    const base = await fixtureBundle("png-alpha-edge-camera.json");
+    const image = base.scene.entities.find((entity) => entity.geometry.kind === "image");
+    const asset = base.assets.assets[0];
+    if (!image || !asset) throw new Error("Expected a canonical PNG fixture.");
+    const snapshot = sceneIrBundleV1Schema.parse({
+      ...base,
+      scene: {
+        ...base.scene,
+        entities: [
+          ...base.scene.entities,
+          { ...image, id: "studio:image:copy", sceneOrder: base.scene.entities.length },
+        ],
+      },
+    });
+    const payload = {
+      assetId: asset.id,
+      byteLength: asset.byteLength,
+      bytes: new ArrayBuffer(asset.byteLength),
+      mediaType: "image/png" as const,
+      pixelHeight: asset.pixelHeight,
+      pixelWidth: asset.pixelWidth,
+      sha256: asset.sha256,
+    };
+    const worker = new FakeWorker();
+    const outcomePromise = runBrowserMp4ExportV1({
+      assetPayloads: [payload],
+      profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+      snapshot,
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    const request = exportWorkerRequestV1Schema.parse(worker.posted[0]);
+    if (request.kind !== "export-mp4") throw new Error("missing export request");
+
+    expect(request.assetPayloads).toEqual([payload]);
+    expect(JSON.parse(new TextDecoder().decode(request.snapshotJson))).toEqual(snapshot);
+    worker.emitMessage({
+      bytes: new Uint8Array([0, 0, 0, 8]).buffer,
+      kind: "export-finished",
+      requestId: request.requestId,
+      schema: "poietra.export-worker-response",
+      version: 1,
+    } satisfies ExportWorkerResponseV1);
+    await expect(outcomePromise).resolves.toMatchObject({ kind: "exported" });
+  });
+
   it("hands the same object parameter values and canonical WGSL registry to the WebCodecs worker", async () => {
     const base = await fixtureBundle();
     const first = base.scene.entities[0];

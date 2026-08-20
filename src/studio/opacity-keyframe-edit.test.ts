@@ -7,6 +7,44 @@ import { insertedProgramDuration } from "./program-composition";
 import { duplicatePropertyKeyframeAtTime } from "./property-keyframe-duplicate";
 
 describe("opacity keyframe editing", () => {
+  it("keeps Studio Image opacity on the Timeline keyframe path", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        {
+          image: {
+            asset: { assetId: "image-scene/asset:image.png", sha256: "4".repeat(64) },
+            localRect: { bottom: -0.5, left: -1, right: 1, top: 0.5 },
+            sampler: "nearest",
+          },
+          position: { x: 320, y: 180 },
+          type: "ImageMobject",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "image-opacity-track",
+    });
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const entityId = creation.entityIds[0]!;
+
+    const result = replaceOpacityKeyframeProgram({
+      baseProgram: creation.validation.program,
+      entityId,
+      keyframes: [
+        { easing: "linear", time: 2, value: 1 },
+        { easing: "smooth", time: 3, value: 0.4 },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(result.kind, JSON.stringify(result.issues)).toBe("valid");
+    expect(result.program.loweringStatus).toBe("unsupported");
+    expect(opacityKeyframeTrackFromProgram(result.program, 0)?.keyframes).toEqual([
+      { easing: "linear", time: 2, value: 1 },
+      { easing: "smooth", time: 3, value: 0.4 },
+    ]);
+  });
+
   it("replaces the Studio creation Program without inserting Scene time", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,

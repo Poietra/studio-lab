@@ -165,6 +165,7 @@ function renderSelectedInspector(
   fillColorValue: string | null = null,
   strokeColorValue: string | null = null,
   selectedEntityLocked = false,
+  opacityUnavailableReason: string | null = null,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
@@ -194,6 +195,7 @@ function renderSelectedInspector(
       renderSession={null}
       replacingAppliedProgram={false}
       opacityAvailable={opacityAvailable}
+      opacityUnavailableReason={opacityUnavailableReason}
       opacityValue={opacityValue}
       rotationAvailable={rotationAvailable}
       selectedEntity={entity}
@@ -1641,6 +1643,27 @@ describe("StudioCanvas retained preview layer", () => {
     expect(enabled.match(control)?.[0]).not.toContain('disabled=""');
     expect(enabled.match(control)?.[0]).toContain('value="0.35"');
     expect(mixed.match(control)?.[0]).toContain('placeholder="Mixed"');
+  });
+
+  it("keeps static Image opacity disabled and points to Timeline keyframes", () => {
+    const imageEntity = { ...CIRCLE_ENTITY, id: "entity:image", type: "ImageMobject" } satisfies ProjectedEntity;
+    const markup = renderSelectedInspector(
+      imageEntity,
+      null,
+      null,
+      false,
+      false,
+      1,
+      false,
+      null,
+      null,
+      false,
+      "Use Timeline opacity keyframes for Images.",
+    );
+    const control = /<input aria-label="Opacity image"[^>]*>/u;
+
+    expect(markup.match(control)?.[0]).toContain('disabled=""');
+    expect(markup.match(control)?.[0]).toContain('title="Use Timeline opacity keyframes for Images."');
   });
 
   it("enables solid fill and stroke colors only for an authorized Studio-created shape", () => {
