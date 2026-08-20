@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { importManimScene } from "../render-pipeline/source-import";
 import type { ManimWorkspaceScene } from "./imported-workspace";
-import type { StudioLayerEntry } from "./layer-order";
+import { projectStudioLayers, type StudioLayerEntry } from "./layer-order";
 import type { ProjectedEntity } from "./model";
 import { WorkspaceSidebar } from "./studio-sidebars";
 
@@ -196,5 +196,56 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toMatch(/aria-label="Select hidden"[^>]*checked=""/);
     expect(markup).toMatch(/aria-label="Show hidden"[^>]*aria-pressed="true"/);
     expect(markup).toContain("Hidden");
+  });
+
+  it("disables every z-order control while a Studio logical group is active", () => {
+    const first = entity("first");
+    const second = entity("second");
+    const outside = entity("outside");
+    const layers = projectStudioLayers({
+      canonicalEntities: [
+        { geometry: { kind: "group" }, id: "tx:group/entity:group", sceneOrder: 3, sourceZIndex: 1 },
+        { id: "first", parentId: "tx:group/entity:group", sceneOrder: 0, sourceZIndex: 0 },
+        { id: "second", parentId: "tx:group/entity:group", sceneOrder: 1, sourceZIndex: 1 },
+        { id: "outside", sceneOrder: 2, sourceZIndex: 2 },
+      ],
+      creationSourceAnchors: new Map([
+        ["first", 0],
+        ["second", 0],
+        ["outside", 0],
+      ]),
+      entities: [first, second, outside],
+      sourceRuntimeIdentity: null,
+    });
+    const markup = renderToStaticMarkup(
+      <WorkspaceSidebar
+        activeScene={activeScene()}
+        appliedProgramReadOnlyReasons={{}}
+        appliedEdits={[]}
+        appliedTransactionIds={new Set()}
+        draftActive={false}
+        duration={1}
+        durationError={null}
+        durationMinimum={0.1}
+        editingAppliedTransactionId={null}
+        entities={[first, second, outside]}
+        layers={layers}
+        nextScene={null}
+        onDurationChange={vi.fn()}
+        onEditAppliedProgram={vi.fn()}
+        onLayerOrder={vi.fn()}
+        onLayerReorder={vi.fn()}
+        onRedo={vi.fn()}
+        onToggleEntity={vi.fn()}
+        onUndo={vi.fn()}
+        redoCount={0}
+        selectedIds={new Set(["outside"])}
+        sourceImportOutcomes={[]}
+      />,
+    );
+
+    expect(markup).not.toContain('draggable="true"');
+    expect(markup).toMatch(/aria-label="Back outside"[^>]*disabled=""/);
+    expect(markup).toContain("atomic group reordering is not available yet");
   });
 });

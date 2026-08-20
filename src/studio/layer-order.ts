@@ -9,6 +9,7 @@ export type StudioLayerEntry = Readonly<{
   depth?: number;
   groupId?: string | null;
   isGroup?: boolean;
+  orderingReadOnlyReason?: string | null;
   parentGroupId?: string | null;
   readOnlyReason: string | null;
   sceneOrder: number | null;
@@ -34,6 +35,8 @@ const IMPORTED_ORDERING_REASON = "Imported Manim object: z-order round-trip is n
 const PREVIEW_ORDERING_REASON = "Wait for the canonical preview before changing this layer order.";
 const IMPORTED_VISIBILITY_REASON = "Imported Manim object: visibility round-trip is not supported yet.";
 const PREVIEW_VISIBILITY_REASON = "Wait for the canonical preview before changing this layer visibility.";
+const ACTIVE_GROUP_ORDERING_REASON =
+  "Ungroup every active group before changing layer order; atomic group reordering is not available yet.";
 
 function comparePaintOrder(left: CanonicalLayerEntity, right: CanonicalLayerEntity) {
   return left.sourceZIndex - right.sourceZIndex || left.sceneOrder - right.sceneOrder;
@@ -61,6 +64,9 @@ export function projectStudioLayers(
   }>,
 ): readonly StudioLayerEntry[] {
   const canonicalById = new Map(input.canonicalEntities?.map((entity) => [entity.id, entity] as const) ?? []);
+  const hasActiveStudioGroup = [...canonicalById.values()].some(
+    ({ geometry, id }) => geometry?.kind === "group" && id.startsWith("tx:"),
+  );
   const projected = input.entities.map((entity, fallbackIndex) => {
     const studioCreated = entity.transactionId !== undefined || input.creationSourceAnchors.has(entity.id);
     const runtimeId = studioCreated
@@ -71,7 +77,7 @@ export function projectStudioLayers(
     const canonical = canonicalById.get(runtimeId) ?? null;
     const sourceAnchor = input.creationSourceAnchors.get(entity.id) ?? null;
     const parentGroupId =
-      canonical?.parentId && canonicalById.get(canonical.parentId)?.geometry?.kind === "group"
+      canonical?.parentId?.startsWith("tx:") && canonicalById.get(canonical.parentId)?.geometry?.kind === "group"
         ? canonical.parentId
         : null;
     const hierarchyReason = parentGroupId ? "Grouped child: change hierarchy before changing child z-order." : null;
@@ -135,23 +141,31 @@ export function projectStudioLayers(
   const rows: StudioLayerEntry[] = [];
   const emittedGroups = new Set<string>();
   for (const entry of entityEntries) {
+    const orderingEntry = hasActiveStudioGroup
+      ? {
+          ...entry,
+          canMove: movementAvailability(-1, 0),
+          orderingReadOnlyReason: ACTIVE_GROUP_ORDERING_REASON,
+        }
+      : entry;
     const groupId = entry.parentGroupId;
     if (groupId && !emittedGroups.has(groupId)) {
       const children = groupChildren.get(groupId) ?? [];
       emittedGroups.add(groupId);
       rows.push({
-        ...entry,
+        ...orderingEntry,
         canMove: movementAvailability(-1, 0),
         childEntityIds: children.map(({ entity }) => entity.id),
         depth: 0,
         groupId,
         isGroup: true,
+        orderingReadOnlyReason: ACTIVE_GROUP_ORDERING_REASON,
         parentGroupId: null,
         readOnlyReason: "Group z-order is fixed for this vertical slice.",
         visibilityReadOnlyReason: "Group visibility is not available in this vertical slice.",
       });
     }
-    rows.push(entry);
+    rows.push(orderingEntry);
   }
   return rows;
 }
@@ -255,6 +269,19 @@ function canonicalPaintOrder(entries: readonly StudioLayerEntry[]) {
     );
 }
 
+function activeGroupOrderingReason(entries: readonly StudioLayerEntry[]) {
+  return entries.some(
+    ({ groupId, isGroup, orderingReadOnlyReason: reason }) =>
+      reason === ACTIVE_GROUP_ORDERING_REASON || (isGroup && groupId?.startsWith("tx:")),
+  )
+    ? ACTIVE_GROUP_ORDERING_REASON
+    : null;
+}
+
+function orderingReadOnlyReason(entry: StudioLayerEntry) {
+  return entry.orderingReadOnlyReason ?? entry.readOnlyReason;
+}
+
 /** Chooses one absolute z-index that places a Studio-created root at the
  * requested index in the front-first Layers presentation. The whole visible
  * order must be backed by the canonical preview so a drop never silently
@@ -264,6 +291,8 @@ export function planStudioLayerReorder(
   targetEntityId: string,
   frontFirstIndex: number,
 ): StudioLayerOrderPlan {
+  const hierarchyReason = activeGroupOrderingReason(entries);
+  if (hierarchyReason) return { kind: "unavailable", reason: hierarchyReason };
   if (!Number.isInteger(frontFirstIndex) || frontFirstIndex < 0 || frontFirstIndex >= entries.length) {
     return { kind: "unavailable", reason: "The requested layer position is outside the current paint order." };
   }
@@ -280,7 +309,8 @@ export function planStudioLayerReorder(
     return { kind: "unavailable", reason: "The selected layer has no current canonical paint order." };
   }
   const target = frontFirst[currentIndex]!;
-  if (target.readOnlyReason) return { kind: "unavailable", reason: target.readOnlyReason };
+  const targetReadOnlyReason = orderingReadOnlyReason(target);
+  if (targetReadOnlyReason) return { kind: "unavailable", reason: targetReadOnlyReason };
   if (target.sourceAnchor === null) return { kind: "unavailable", reason: PREVIEW_ORDERING_REASON };
   if (frontFirstIndex === currentIndex) {
     return { kind: "unavailable", reason: "This layer is already at the requested paint position." };
@@ -316,10 +346,13 @@ export function planStudioLayerOrder(
   targetEntityId: string,
   direction: StudioLayerOrderDirection,
 ): StudioLayerOrderPlan {
+  const hierarchyReason = activeGroupOrderingReason(entries);
+  if (hierarchyReason) return { kind: "unavailable", reason: hierarchyReason };
   const canonical = canonicalPaintOrder(entries);
   const target = canonical.find(({ entity }) => entity.id === targetEntityId);
   if (!target) return { kind: "unavailable", reason: "The selected layer has no current canonical paint order." };
-  if (target.readOnlyReason) return { kind: "unavailable", reason: target.readOnlyReason };
+  const targetReadOnlyReason = orderingReadOnlyReason(target);
+  if (targetReadOnlyReason) return { kind: "unavailable", reason: targetReadOnlyReason };
   if (target.sourceAnchor === null) return { kind: "unavailable", reason: PREVIEW_ORDERING_REASON };
   const from = canonical.findIndex(({ entity }) => entity.id === targetEntityId);
   const to =

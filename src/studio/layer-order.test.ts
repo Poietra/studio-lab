@@ -230,6 +230,17 @@ describe("Studio Layers paint order", () => {
       kind: "unavailable",
       reason: expect.stringMatching(/nested/i),
     });
+    const outsideRoot = projected.find(({ entity: item }) => item.id === "studio:c");
+    expect(outsideRoot?.canMove).toEqual({ back: false, backward: false, forward: false, front: false });
+    expect(outsideRoot?.orderingReadOnlyReason).toMatch(/atomic group reordering/i);
+    expect(planStudioLayerOrder(projected, "studio:c", "back")).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/atomic group reordering/i),
+    });
+    expect(planStudioLayerReorder(projected, "studio:c", 0)).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/atomic group reordering/i),
+    });
   });
 
   it("rejects hidden, rotation-keyframed, and non-contiguous grouping targets", () => {

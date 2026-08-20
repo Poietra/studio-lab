@@ -303,6 +303,7 @@ export function WorkspaceSidebar({
           const provisionalLocked =
             entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId));
           const authoringLocked = lockedEntityIds.has(entity.id);
+          const orderingReadOnlyReason = layer.orderingReadOnlyReason ?? layer.readOnlyReason;
           const visibilityUnavailableReason =
             onToggleEntityVisibility === undefined
               ? "Layer visibility is unavailable."
@@ -322,7 +323,7 @@ export function WorkspaceSidebar({
                     ? "Unlock this object before reordering it."
                     : !entity.present
                       ? "This object is not present at the current time."
-                      : layer.readOnlyReason;
+                      : orderingReadOnlyReason;
           const draggable = onLayerReorder !== undefined && dragUnavailableReason === null;
           const updateDropBoundary = (event: DragEvent<HTMLLIElement>) => {
             if (!layerDrag) return null;
@@ -475,12 +476,12 @@ export function WorkspaceSidebar({
                       disabled={
                         !authoringAvailable ||
                         authoringLocked ||
-                        layer.readOnlyReason !== null ||
+                        orderingReadOnlyReason !== null ||
                         !layer.canMove[direction]
                       }
                       key={direction}
                       onClick={() => onLayerOrder(entity.id, direction)}
-                      title={layer.readOnlyReason ?? label}
+                      title={orderingReadOnlyReason ?? label}
                       type="button"
                     >
                       {glyph}

@@ -1509,18 +1509,21 @@ fn plan_studio_creation_edits(
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
     }
-    let hierarchy_programs = timeline
-        .ordered_programs
+    let hierarchy_programs = programs
         .iter()
-        .copied()
-        .filter(|index| {
-            programs[*index].operations.iter().any(|operation| {
-                matches!(
-                    operation.kind,
-                    StudioCreationOperationKind::Group { .. }
-                        | StudioCreationOperationKind::Ungroup { .. }
-                )
-            })
+        .enumerate()
+        .filter_map(|(index, program)| {
+            program
+                .operations
+                .iter()
+                .any(|operation| {
+                    matches!(
+                        operation.kind,
+                        StudioCreationOperationKind::Group { .. }
+                            | StudioCreationOperationKind::Ungroup { .. }
+                    )
+                })
+                .then_some(index)
         })
         .collect::<Vec<_>>();
     let followup_programs = timeline
@@ -4872,6 +4875,14 @@ mod tests {
         }
     }
 
+    fn bundle_contains_entity(bundle: &SceneIrBundleV1, entity_id: &str) -> bool {
+        bundle
+            .scene
+            .entities
+            .iter()
+            .any(|entity| entity.id == entity_id)
+    }
+
     fn studio_group_resize_edit_input(targets: &[(&str, PointV1)]) -> StudioCreationEditInput {
         let transform_at = 0.95;
         let mut operations = Vec::new();
@@ -7096,7 +7107,7 @@ mod tests {
     }
 
     #[test]
-    fn normalized_creation_groups_and_ungroups_contiguous_created_roots_with_identity_parent() {
+    fn normalized_creation_replays_group_and_ungroup_history_across_reverse_playheads() {
         let bundle = static_imported_bundle();
         let mut command = studio_creation_command(&bundle);
         command
@@ -7109,12 +7120,13 @@ mod tests {
         let group_id = "tx:studio-group/entity:group".to_owned();
         command.programs.push(studio_hierarchy_edit_input(
             "studio-group",
-            0.95,
+            1.0,
             StudioCreationOperationKind::Group {
                 child_entity_ids: child_ids.clone(),
                 group_id: group_id.clone(),
             },
         ));
+        let grouped_history = command.clone();
 
         let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
         let grouped = session.apply_studio_creation_edit(command.clone()).unwrap();
@@ -7160,21 +7172,14 @@ mod tests {
 
         command.programs.push(studio_hierarchy_edit_input(
             "studio-ungroup",
-            1.0,
+            0.5,
             StudioCreationOperationKind::Ungroup {
                 group_id: group_id.clone(),
             },
         ));
         let mut session = EngineSessionV1::new(bundle).unwrap();
-        let ungrouped = session.apply_studio_creation_edit(command).unwrap();
-        assert!(
-            ungrouped
-                .bundle
-                .scene
-                .entities
-                .iter()
-                .all(|entity| entity.id != group_id)
-        );
+        let ungrouped = session.apply_studio_creation_edit(command.clone()).unwrap();
+        assert!(!bundle_contains_entity(&ungrouped.bundle, &group_id));
         assert!(child_ids.iter().all(|child_id| {
             ungrouped
                 .bundle
@@ -7184,6 +7189,17 @@ mod tests {
                 .find(|entity| entity.id == *child_id)
                 .is_some_and(|entity| entity.parent_id.is_none())
         }));
+
+        let base = static_imported_bundle();
+        let mut undo_session = EngineSessionV1::new(base.clone()).unwrap();
+        let undo = undo_session
+            .apply_studio_creation_edit(grouped_history)
+            .unwrap();
+        assert!(bundle_contains_entity(&undo.bundle, &group_id));
+
+        let mut redo_session = EngineSessionV1::new(base).unwrap();
+        let redo = redo_session.apply_studio_creation_edit(command).unwrap();
+        assert!(!bundle_contains_entity(&redo.bundle, &group_id));
     }
 
     #[test]
