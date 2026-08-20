@@ -18,7 +18,7 @@ pub use path::{
 };
 pub use transform::{
     apply_manim_motion_path_v1, apply_motion_path_v1, compose_affine_transforms_v1,
-    interpolate_affine_transform_v1,
+    interpolate_affine_transform_v1, rotate_affine_transform_v1,
 };
 
 /// A deterministic v1 geometry operation could not be evaluated truthfully.

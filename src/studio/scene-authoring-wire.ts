@@ -305,6 +305,16 @@ function normalizedStudioCreationOperation(
     };
   }
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
+    if (operation.timelineTrack === true) {
+      return {
+        ...common,
+        easing: operation.easing,
+        entityId: operation.entityId,
+        from: typeof operation.from === "number" ? operation.from : null,
+        kind: "rotation-keyframes",
+        to: typeof operation.to === "number" ? operation.to : null,
+      };
+    }
     return {
       ...common,
       controlPresent: operation.control !== undefined,

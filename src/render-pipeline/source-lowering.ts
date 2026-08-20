@@ -1003,6 +1003,12 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
       "Scale keyframes are available in the canonical client preview and video export, but not Manim source export.",
     );
   }
+  if (operation.kind === "AnimateProperty" && operation.key === "rotation" && operation.timelineTrack === true) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Rotation keyframes are available in the canonical client preview and video export, but not Manim source export.",
+    );
+  }
   if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
     if (!isCanonicalRgbHex(operation.value)) {
       throw new ProgramLoweringError(

@@ -245,6 +245,39 @@ describe("Canonical EditProgram source lowering", () => {
     );
   });
 
+  it("keeps client rotation keyframes out of Manim source export", () => {
+    const entityId = "tx:client-rotation/entity:circle";
+    const program = canonicalProgram(
+      [
+        {
+          ...operationBase("create-client-rotation", 7),
+          entity: {
+            dimensions: { radius: 1 },
+            id: entityId,
+            lifetime: { end: null, start: 7 },
+            type: "Circle",
+          },
+          kind: "CreateEntity",
+        },
+        {
+          ...operationBase("client-rotation-segment", 7.5, 8),
+          easing: "smooth",
+          entityId,
+          from: 0,
+          key: "rotation",
+          kind: "AnimateProperty",
+          timelineTrack: true,
+          to: Math.PI,
+        },
+      ],
+      "client-rotation",
+    );
+
+    expect(() => lowerCanonicalProgramSource(source, request(program, []), { height: 8, width: 14.222 }, null)).toThrow(
+      /rotation keyframes are available in the canonical client preview and video export, but not Manim source export/i,
+    );
+  });
+
   it("lowers Studio-created Text with the preview font and canonical size", () => {
     const entityId = "tx:created-text/entity:label";
     const create = canonicalProgram(

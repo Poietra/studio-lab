@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 use poietra_geometry::{
     GeometryError, apply_easing_v1, apply_manim_motion_path_v1, apply_motion_path_v1,
     compose_affine_transforms_v1, interpolate_affine_transform_v1, interpolate_cubic_path_v1,
-    scene_geometry_as_cubic_path_v1, trim_cubic_path_uniform_parameter_v1, trim_cubic_path_v1,
+    rotate_affine_transform_v1, scene_geometry_as_cubic_path_v1,
+    trim_cubic_path_uniform_parameter_v1, trim_cubic_path_v1,
 };
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetManifestV1, ContractVersionV1, CubicPathV1,
@@ -419,21 +420,30 @@ fn sample_affine_transform(
     let Some(channel_index) = index.affine_channel(entity_index) else {
         return Ok((entity.transform.clone(), false));
     };
-    let Some(AnimationChannelV1::AffineTransform { keyframes, .. }) =
-        scene.animation_channels.get(channel_index)
-    else {
-        return Err(EvaluationError::MalformedScene(
-            "retained affine channel index has the wrong kind",
-        ));
+    let (transform, active) = match scene.animation_channels.get(channel_index) {
+        Some(AnimationChannelV1::AffineTransform { keyframes, .. }) => sample_keyframes(
+            &entity.transform,
+            keyframes,
+            time,
+            |left, right, progress| {
+                Ok::<_, GeometryError>(interpolate_affine_transform_v1(left, right, progress))
+            },
+        )?,
+        Some(AnimationChannelV1::Rotation {
+            keyframes, pivot, ..
+        }) => {
+            let (angle, active) = sample_keyframes(&0.0, keyframes, time, interpolate_number)?;
+            (
+                rotate_affine_transform_v1(&entity.transform, angle, pivot),
+                active,
+            )
+        }
+        _ => {
+            return Err(EvaluationError::MalformedScene(
+                "retained transform channel index has the wrong kind",
+            ));
+        }
     };
-    let (transform, active) = sample_keyframes(
-        &entity.transform,
-        keyframes,
-        time,
-        |left, right, progress| {
-            Ok::<_, GeometryError>(interpolate_affine_transform_v1(left, right, progress))
-        },
-    )?;
     // V1 evidence is deliberately limited to the entity's own sampled channel
     // before motion/world composition. Ancestor or motion-induced singularity,
     // and any composition that loses exact singularity, remain fail-closed.

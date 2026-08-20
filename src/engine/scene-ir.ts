@@ -193,6 +193,15 @@ const affineTransformChannelV1Schema = z
   })
   .strict();
 
+const rotationChannelV1Schema = z
+  .object({
+    ...entityChannelBase,
+    keyframes: z.array(keyframeV1Schema(finiteNumberV1Schema)).min(2).max(MAX_KEYFRAMES),
+    kind: z.literal("rotation"),
+    pivot: enginePointV1Schema,
+  })
+  .strict();
+
 const opacityChannelV1Schema = z
   .object({
     ...entityChannelBase,
@@ -282,6 +291,7 @@ export const animationChannelV1Schema = z.discriminatedUnion("kind", [
   opacityChannelV1Schema,
   pathMorphChannelV1Schema,
   pathTrimChannelV1Schema,
+  rotationChannelV1Schema,
   vectorAppearanceChannelV1Schema,
 ]);
 

@@ -1,4 +1,4 @@
-use poietra_scene_ir::{AffineTransformV1, CubicPathV1};
+use poietra_scene_ir::{AffineTransformV1, CubicPathV1, PointV1};
 
 use crate::{
     GeometryError, sample_cubic_path_manim_point_from_proportion_v1, sample_cubic_path_v1,
@@ -32,6 +32,25 @@ pub fn compose_affine_transforms_v1(
         m22: outer.m21 * inner.m12 + outer.m22 * inner.m22,
         tx: outer.m11 * inner.tx + outer.m12 * inner.ty + outer.tx,
         ty: outer.m21 * inner.tx + outer.m22 * inner.ty + outer.ty,
+    }
+}
+
+/// Applies a world-space rotation around an explicit pivot.
+#[must_use]
+pub fn rotate_affine_transform_v1(
+    transform: &AffineTransformV1,
+    angle_radians: f64,
+    pivot: &PointV1,
+) -> AffineTransformV1 {
+    let cosine = angle_radians.cos();
+    let sine = angle_radians.sin();
+    AffineTransformV1 {
+        m11: cosine * transform.m11 - sine * transform.m21,
+        m12: cosine * transform.m12 - sine * transform.m22,
+        m21: sine * transform.m11 + cosine * transform.m21,
+        m22: sine * transform.m12 + cosine * transform.m22,
+        tx: pivot.x + cosine * (transform.tx - pivot.x) - sine * (transform.ty - pivot.y),
+        ty: pivot.y + sine * (transform.tx - pivot.x) + cosine * (transform.ty - pivot.y),
     }
 }
 

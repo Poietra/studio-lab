@@ -70,6 +70,7 @@ struct CreateSceneEntity {
     paint_opacity: f64,
     position: PointV1,
     rotation: f64,
+    rotation_keyframes: Vec<KeyframeV1<f64>>,
     scale: f64,
     uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
@@ -95,6 +96,7 @@ pub struct StudioProjectedCreationEntity {
     pub created_lifetime: IntervalV1,
     pub entity_id: String,
     pub initial_dimensions: StudioAuthoringDimensions,
+    pub initial_rotation: f64,
     pub initial_scale: f64,
     pub kind: StudioAuthoringEntityKind,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -222,6 +224,11 @@ pub enum StudioCreationOperationKind {
         to: Option<f64>,
     },
     UniformScaleKeyframes {
+        easing: StudioMotionEasing,
+        from: Option<f64>,
+        to: Option<f64>,
+    },
+    RotationKeyframes {
         easing: StudioMotionEasing,
         from: Option<f64>,
         to: Option<f64>,
@@ -385,6 +392,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::OpacityKeyframes { .. }
             | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
             | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+            | StudioCreationOperationKind::RotationKeyframes { .. }
             | StudioCreationOperationKind::FillColor { .. }
             | StudioCreationOperationKind::StrokeColor { .. }
             | StudioCreationOperationKind::Resize { .. }
@@ -529,6 +537,7 @@ struct PlannedStudioCreationEntity {
     opacity_keyframes: Vec<KeyframeV1<f64>>,
     persistent_removal: Option<PersistentSceneRemoval>,
     position: PointV1,
+    rotation_keyframes: Vec<KeyframeV1<f64>>,
     scale: f64,
     uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
@@ -691,6 +700,7 @@ impl StudioCreationPlan {
                     created_lifetime: state.lifetime.clone(),
                     entity_id: state.spec.id.clone(),
                     initial_dimensions: state.initial_dimensions,
+                    initial_rotation: 0.0,
                     initial_scale: 1.0,
                     kind: state.kind,
                     layout: initial_text.as_ref().and_then(|content| {
@@ -851,6 +861,82 @@ fn closed_studio_uniform_scale_track(
         }
         if let Some(previous) = index.checked_sub(1).and_then(|prior| operations.get(prior)) {
             let StudioCreationOperationKind::UniformScaleKeyframes {
+                to: Some(previous_to),
+                ..
+            } = &previous.kind
+            else {
+                return None;
+            };
+            if !studio_timeline_semantic_values_match(
+                previous.interval.end,
+                operation.interval.start,
+            ) || !close_transform_baseline_value(*previous_to, *from)
+            {
+                return None;
+            }
+        }
+    }
+    Some((entity_id, operations))
+}
+
+fn closed_studio_rotation_track(
+    program: &StudioCreationEditInput,
+) -> Option<(&str, Vec<&StudioCreationOperation>)> {
+    if program.origin != StudioAuthoringOrigin::DirectManipulation
+        || program.requested_execution != SceneEditExecution::Sequence
+        || program.schedule_mode != SceneEditScheduleMode::Sequence
+        || program.operations.is_empty()
+    {
+        return None;
+    }
+    let operations = program
+        .schedule_order
+        .iter()
+        .filter_map(|operation_id| {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)?;
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::RotationKeyframes { .. }
+            )
+            .then_some(operation)
+        })
+        .collect::<Vec<_>>();
+    let entity_id = operations.first()?.entity_id.as_deref()?;
+    if operations.first()?.interval.start + TIMELINE_ANCHOR_EPSILON
+        < program.anchor_resolved_seconds
+    {
+        return None;
+    }
+    for (index, operation) in operations.iter().enumerate() {
+        let StudioCreationOperationKind::RotationKeyframes {
+            easing: _,
+            from: Some(from),
+            to: Some(to),
+        } = &operation.kind
+        else {
+            return None;
+        };
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || operation.entity_id.as_deref() != Some(entity_id)
+            || !from.is_finite()
+            || !to.is_finite()
+        {
+            return None;
+        }
+        if operations.len() == 1 && interval_is_exact_point(&operation.interval) {
+            if !close_transform_baseline_value(*from, *to) {
+                return None;
+            }
+            continue;
+        }
+        if operation.interval.end <= operation.interval.start + TIMELINE_ANCHOR_EPSILON {
+            return None;
+        }
+        if let Some(previous) = index.checked_sub(1).and_then(|prior| operations.get(prior)) {
+            let StudioCreationOperationKind::RotationKeyframes {
                 to: Some(previous_to),
                 ..
             } = &previous.kind
@@ -1202,6 +1288,7 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                        | StudioCreationOperationKind::RotationKeyframes { .. }
                 )
             });
         let has_competing_appearance_or_removal =
@@ -1260,6 +1347,7 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                        | StudioCreationOperationKind::RotationKeyframes { .. }
                 )
             });
         if !creates_target || !contains_only_creation_scaffold_or_property_tracks {
@@ -1300,6 +1388,48 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                        | StudioCreationOperationKind::RotationKeyframes { .. }
+                )
+            });
+        if !creates_target || !contains_only_creation_scaffold_or_property_tracks {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+    }
+    let rotation_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| {
+            programs[*index].operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::RotationKeyframes { .. }
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    for index in &rotation_programs {
+        let program = &programs[*index];
+        let Some((entity_id, _)) = closed_studio_rotation_track(program) else {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        };
+        let creates_target = program.operations.iter().any(|operation| {
+            matches!(
+                &operation.kind,
+                StudioCreationOperationKind::Create { entity } if entity.id == entity_id
+            )
+        });
+        let contains_only_creation_scaffold_or_property_tracks =
+            program.operations.iter().all(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::Create { .. }
+                        | StudioCreationOperationKind::Position { .. }
+                        | StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::OpacityKeyframes { .. }
+                        | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                        | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                        | StudioCreationOperationKind::RotationKeyframes { .. }
                 )
             });
         if !creates_target || !contains_only_creation_scaffold_or_property_tracks {
@@ -1315,6 +1445,7 @@ fn plan_studio_creation_edits(
                 && !opacity_programs.contains(index)
                 && !material_parameter_programs.contains(index)
                 && !uniform_scale_programs.contains(index)
+                && !rotation_programs.contains(index)
         })
         .collect::<Vec<_>>();
 
@@ -1376,7 +1507,8 @@ fn plan_studio_creation_edits(
                 }
                 StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
-                | StudioCreationOperationKind::UniformScaleKeyframes { .. } => operation
+                | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                | StudioCreationOperationKind::RotationKeyframes { .. } => operation
                     .entity_id
                     .as_deref()
                     .is_none_or(|entity_id| !program_created_ids.contains(entity_id)),
@@ -1410,6 +1542,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                | StudioCreationOperationKind::RotationKeyframes { .. }
                     if operation
                         .entity_id
                         .as_deref()
@@ -1419,6 +1552,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                | StudioCreationOperationKind::RotationKeyframes { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -1647,6 +1781,7 @@ fn plan_studio_creation_edits(
             opacity_keyframes: Vec::new(),
             persistent_removal: None,
             position: initial_position.clone(),
+            rotation_keyframes: Vec::new(),
             scale: 1.0,
             uniform_scale_keyframes: Vec::new(),
             source_z_index: None,
@@ -1974,6 +2109,109 @@ fn plan_studio_creation_edits(
             }
         }
         state.uniform_scale_keyframes = keyframes;
+    }
+
+    for program_index in rotation_programs {
+        let program = &programs[program_index];
+        let (entity_id, track_operations) = closed_studio_rotation_track(program)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let state = entities
+            .iter_mut()
+            .find(|state| state.spec.id == entity_id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let program_rank = timeline.ranks[program_index];
+        if state.creation_program_rank > program_rank
+            || (state.creation_program_rank == program_rank
+                && state.creation_transaction_id != program.transaction_id)
+            || !state.rotation_keyframes.is_empty()
+            || !state.uniform_scale_keyframes.is_empty()
+            || state.persistent_removal.is_some()
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut projected = Vec::with_capacity(track_operations.len());
+        for operation in track_operations {
+            let StudioCreationOperationKind::RotationKeyframes {
+                easing,
+                from: Some(from),
+                to: Some(to),
+            } = &operation.kind
+            else {
+                unreachable!();
+            };
+            let mut interval = IntervalV1 {
+                end: operation.interval.end + timeline.offsets[program_index],
+                start: operation.interval.start + timeline.offsets[program_index],
+            };
+            if state.creation_program_rank == program_rank
+                && let Some((_, insertion)) = timeline
+                    .ranked_insertions
+                    .iter()
+                    .find(|(rank, _)| *rank == program_rank)
+            {
+                shift_interval_for_insertion(&mut interval, insertion);
+            }
+            for (rank, insertion) in &timeline.ranked_insertions {
+                if *rank > program_rank {
+                    shift_interval_for_insertion(&mut interval, insertion);
+                }
+            }
+            if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+                || state
+                    .fade_interval
+                    .as_ref()
+                    .is_some_and(|fade| interval.start <= fade.end + TIMELINE_ANCHOR_EPSILON)
+            {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            let schedule_index = program
+                .schedule_order
+                .iter()
+                .position(|operation_id| operation_id == &operation.id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            ranked_mutations.push((
+                program_rank,
+                schedule_index,
+                StudioCreationProjectedMutation {
+                    entity_id: entity_id.to_owned(),
+                    interval: interval.clone(),
+                    kind: StudioCreationProjectedMutationKind::Rotation {
+                        from: *from,
+                        to: *to,
+                    },
+                    operation_id: operation.id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                },
+            ));
+            projected.push((interval, *easing, *from, *to));
+        }
+        if projected.first().is_none_or(|(_, _, from, _)| {
+            !close_transform_baseline_value(*from, state.current_rotation)
+        }) {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut keyframes = Vec::with_capacity(projected.len() + 1);
+        for (index, (interval, easing, from, to)) in projected.iter().enumerate() {
+            if index == 0 {
+                keyframes.push(KeyframeV1 {
+                    at: interval.start,
+                    easing_to_next: (interval.end > interval.start + TIMELINE_ANCHOR_EPSILON)
+                        .then(|| property_easing(*easing)),
+                    value: *from,
+                });
+            }
+            if interval.end > interval.start + TIMELINE_ANCHOR_EPSILON {
+                keyframes.push(KeyframeV1 {
+                    at: interval.end,
+                    easing_to_next: projected
+                        .get(index + 1)
+                        .map(|(_, next_easing, _, _)| property_easing(*next_easing)),
+                    value: *to,
+                });
+            }
+        }
+        state.rotation_keyframes = keyframes;
     }
 
     let mut planned_motions = Vec::new();
@@ -2467,6 +2705,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                | StudioCreationOperationKind::RotationKeyframes { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
@@ -2480,10 +2719,15 @@ fn plan_studio_creation_edits(
     }
 
     for state in &entities {
-        if (!state.uniform_scale_keyframes.is_empty()
-            && (state.instant_at.is_some()
+        if (!state.rotation_keyframes.is_empty()
+            && (!state.uniform_scale_keyframes.is_empty()
+                || state.instant_at.is_some()
                 || !rotation_is_noop(state.current_rotation)
                 || !rotation_is_noop(state.instant_rotation)))
+            || (!state.uniform_scale_keyframes.is_empty()
+                && (state.instant_at.is_some()
+                    || !rotation_is_noop(state.current_rotation)
+                    || !rotation_is_noop(state.instant_rotation)))
             || (!rotation_is_noop(state.current_rotation) && state.instant_at.is_some())
             || (!rotation_is_noop(state.instant_rotation) && state.instant_at.is_none())
         {
@@ -2529,6 +2773,7 @@ fn plan_studio_creation_edits(
                 .ok_or(ProjectStudioCreationEditError::Unsupported)?;
             if !rotation_is_noop(state.current_rotation)
                 || !rotation_is_noop(state.instant_rotation)
+                || !state.rotation_keyframes.is_empty()
                 || !state.uniform_scale_keyframes.is_empty()
                 || !studio_creation_motion_is_compatible(state, &motion.interval)
             {
@@ -2784,6 +3029,19 @@ fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> boo
             .uniform_scale_keyframes
             .first()
             .is_none_or(|keyframe| close_transform_baseline_value(keyframe.value, entity.scale));
+    let rotation_is_valid = entity.rotation_keyframes.iter().all(|keyframe| {
+        keyframe.at.is_finite()
+            && keyframe.at >= entity.lifetime.start
+            && keyframe.at <= entity.lifetime.end
+            && keyframe.value.is_finite()
+    }) && entity
+        .rotation_keyframes
+        .windows(2)
+        .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
+        && entity
+            .rotation_keyframes
+            .first()
+            .is_none_or(|keyframe| close_transform_baseline_value(keyframe.value, entity.rotation));
     let starts_after_fade = entity.fade_in.as_ref().is_none_or(|fade| {
         entity
             .opacity_keyframes
@@ -2797,8 +3055,16 @@ fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> boo
                 .uniform_scale_keyframes
                 .first()
                 .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
+            && entity
+                .rotation_keyframes
+                .first()
+                .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
     });
-    opacity_is_valid && material_is_valid && scale_is_valid && starts_after_fade
+    opacity_is_valid
+        && material_is_valid
+        && rotation_is_valid
+        && scale_is_valid
+        && starts_after_fade
 }
 
 fn validate_create_scene_entities_command(
@@ -2878,6 +3144,10 @@ fn validate_create_scene_entities_command(
             || (!rotation_is_noop(entity.rotation) && entity.instant_transform.is_some())
             || (!entity.uniform_scale_keyframes.is_empty()
                 && (!rotation_is_noop(entity.rotation) || entity.instant_transform.is_some()))
+            || (!entity.rotation_keyframes.is_empty()
+                && (!entity.uniform_scale_keyframes.is_empty()
+                    || !rotation_is_noop(entity.rotation)
+                    || entity.instant_transform.is_some()))
             || !create_entity_property_keyframes_are_valid(entity)
             || (!entity.material_parameter_keyframes.is_empty() && has_color_override)
             || (appearance_changed && entity.appearance_at.is_none())
@@ -3054,6 +3324,17 @@ fn append_created_entity(
                 keyframes,
                 provenance_id: provenance_id.to_owned(),
             });
+    }
+    if entity.rotation_keyframes.len() >= 2 {
+        capabilities.insert(SceneCapabilityV1::AffineTransformAnimation);
+        let channel_id = unused_channel_id(scene, &format!("studio-rotation-track-{scene_order}"));
+        scene.animation_channels.push(AnimationChannelV1::Rotation {
+            entity_id: created_id.clone(),
+            id: channel_id,
+            keyframes: entity.rotation_keyframes.clone(),
+            pivot: entity.position.clone(),
+            provenance_id: provenance_id.to_owned(),
+        });
     }
     if let Some(at) = entity.appearance_at {
         if !has_material_parameter_keyframes
@@ -3468,6 +3749,7 @@ impl EngineSessionV1 {
                     &self.scene().camera.view.center,
                 ),
                 rotation: state.current_rotation,
+                rotation_keyframes: state.rotation_keyframes.clone(),
                 scale: 1.0,
                 uniform_scale_keyframes: state.uniform_scale_keyframes.clone(),
                 source_z_index: state.source_z_index,
@@ -3518,7 +3800,7 @@ impl EngineSessionV1 {
 
 #[cfg(test)]
 mod tests {
-    use std::f64::consts::FRAC_PI_2;
+    use std::f64::consts::{FRAC_PI_2, PI};
 
     use super::super::tests::{
         NEXT_REVISION, fixture_bundle, imported_bundle, static_imported_bundle,
@@ -3587,6 +3869,7 @@ mod tests {
                     opacity_keyframes: vec![],
                     position: PointV1 { x: 2.0, y: -1.0 },
                     rotation: 0.0,
+                    rotation_keyframes: vec![],
                     scale: 1.25,
                     uniform_scale_keyframes: vec![],
                     source_z_index: None,
@@ -3611,6 +3894,7 @@ mod tests {
                     opacity_keyframes: vec![],
                     position: PointV1 { x: -2.0, y: 1.0 },
                     rotation: 0.0,
+                    rotation_keyframes: vec![],
                     scale: 0.5,
                     uniform_scale_keyframes: vec![],
                     source_z_index: None,
@@ -3640,6 +3924,7 @@ mod tests {
                     opacity_keyframes: vec![],
                     position: PointV1 { x: 0.0, y: 1.5 },
                     rotation: 0.0,
+                    rotation_keyframes: vec![],
                     scale: 2.0,
                     uniform_scale_keyframes: vec![],
                     source_z_index: None,
@@ -3955,6 +4240,35 @@ mod tests {
             origin: StudioAuthoringOrigin::DirectManipulation,
         });
         program.schedule_order.push("scale-segment".to_owned());
+        program.schedule_edge_count = 2 * (program.operations.len() - 1);
+    }
+
+    fn add_creation_rotation_segment(
+        program: &mut StudioCreationEditInput,
+        entity_id: &str,
+        start: f64,
+        end: f64,
+        to: f64,
+    ) {
+        for operation in &mut program.operations {
+            operation.origin = StudioAuthoringOrigin::DirectManipulation;
+        }
+        program.origin = StudioAuthoringOrigin::DirectManipulation;
+        program.requested_execution = SceneEditExecution::Sequence;
+        program.schedule_mode = SceneEditScheduleMode::Sequence;
+        program.operations.push(StudioCreationOperation {
+            depends_on: vec![],
+            entity_id: Some(entity_id.to_owned()),
+            id: "rotation-segment".to_owned(),
+            interval: IntervalV1 { end, start },
+            kind: StudioCreationOperationKind::RotationKeyframes {
+                easing: StudioMotionEasing::Linear,
+                from: Some(0.0),
+                to: Some(to),
+            },
+            origin: StudioAuthoringOrigin::DirectManipulation,
+        });
+        program.schedule_order.push("rotation-segment".to_owned());
         program.schedule_edge_count = 2 * (program.operations.len() - 1);
     }
 
@@ -5308,6 +5622,178 @@ mod tests {
                     )
                 })
         );
+    }
+
+    #[test]
+    fn creation_rotation_track_uses_scalar_angles_and_an_explicit_pivot() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        add_creation_rotation_segment(&mut command.programs[0], entity_id, 1.0, 1.4, 5.0 * PI);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let entity = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+        let (keyframes, pivot) = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::Rotation {
+                    entity_id: candidate,
+                    keyframes,
+                    pivot,
+                    ..
+                } if candidate == entity_id => Some((keyframes, pivot)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(keyframes.len(), 2);
+        assert!((pivot.x - entity.transform.tx).abs() < 1e-12);
+        assert!((pivot.y - entity.transform.ty).abs() < 1e-12);
+
+        let sample_time = keyframes[0].at + (keyframes[1].at - keyframes[0].at) * 0.25;
+        let packet = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "rotation-track-quarter",
+                sample_time,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        let transform = packet
+            .draws
+            .iter()
+            .find_map(|draw| match draw {
+                poietra_scene_ir::RenderDrawV1::Path {
+                    entity_id: candidate,
+                    transform,
+                    ..
+                } if candidate == entity_id => Some(transform),
+                _ => None,
+            })
+            .unwrap();
+        let expected = 1.25 * PI;
+        assert!((transform.m11 - expected.cos()).abs() < 1e-12);
+        assert!((transform.m12 + expected.sin()).abs() < 1e-12);
+        assert!((transform.m21 - expected.sin()).abs() < 1e-12);
+        assert!((transform.m22 - expected.cos()).abs() < 1e-12);
+        assert!(
+            (transform.m11 * transform.m22 - transform.m12 * transform.m21 - 1.0).abs() < 1e-12
+        );
+    }
+
+    #[test]
+    fn rotation_channel_rejects_an_invalid_pivot_or_competing_affine_channel() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        add_creation_rotation_segment(&mut command.programs[0], entity_id, 1.0, 1.4, 5.0 * PI);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+
+        let mut invalid = result.bundle.scene.clone();
+        let pivot = invalid
+            .animation_channels
+            .iter_mut()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::Rotation { pivot, .. } => Some(pivot),
+                _ => None,
+            })
+            .expect("expected the rotation channel");
+        pivot.x = f64::NAN;
+        assert!(poietra_scene_ir::validate_scene_ir_v1(&invalid).is_err());
+
+        let mut conflicting = result.bundle.scene.clone();
+        let provenance_id = conflicting
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::Rotation { provenance_id, .. } => Some(provenance_id.clone()),
+                _ => None,
+            })
+            .unwrap();
+        conflicting
+            .animation_channels
+            .push(AnimationChannelV1::AffineTransform {
+                entity_id: entity_id.to_owned(),
+                id: "conflicting-affine".to_owned(),
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: 1.0,
+                        easing_to_next: Some(EasingV1::Linear {}),
+                        value: AffineTransformV1::identity(),
+                    },
+                    KeyframeV1 {
+                        at: 1.4,
+                        easing_to_next: None,
+                        value: AffineTransformV1::identity(),
+                    },
+                ],
+                provenance_id,
+            });
+        assert!(
+            poietra_scene_ir::validate_scene_ir_v1(&conflicting)
+                .unwrap_err()
+                .contains_message("duplicate animation channel target")
+        );
+    }
+
+    #[test]
+    fn one_rotation_marker_keeps_the_base_without_a_transform_channel() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        add_creation_rotation_segment(&mut command.programs[0], entity_id, 1.0, 1.0, 0.0);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+
+        assert!(
+            !result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::Rotation {
+                            entity_id: candidate,
+                            ..
+                        } if candidate == entity_id
+                    )
+                })
+        );
+    }
+
+    #[test]
+    fn creation_rotation_and_scale_tracks_are_mutually_exclusive() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        add_creation_uniform_scale_segment(&mut command.programs[0], entity_id, 1.0, 1.4, 2.0);
+        add_creation_rotation_segment(&mut command.programs[0], entity_id, 1.0, 1.4, FRAC_PI_2);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
     }
 
     #[test]

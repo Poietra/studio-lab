@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use poietra_geometry::rotate_affine_transform_v1;
 use poietra_scene_ir::{
     AnimationChannelV1, ContractVersionV1, CubicPathV1, EasingV1, KeyframeV1, PointV1,
     ProvenanceOriginV1, ProvenanceRecordV1, SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1,
@@ -221,16 +222,7 @@ pub(super) fn apply_world_rotation(
     angle_radians: f64,
     pivot: &PointV1,
 ) {
-    let cosine = angle_radians.cos();
-    let sine = angle_radians.sin();
-    *transform = poietra_scene_ir::AffineTransformV1 {
-        m11: cosine * transform.m11 - sine * transform.m21,
-        m12: cosine * transform.m12 - sine * transform.m22,
-        m21: sine * transform.m11 + cosine * transform.m21,
-        m22: sine * transform.m12 + cosine * transform.m22,
-        tx: pivot.x + cosine * (transform.tx - pivot.x) - sine * (transform.ty - pivot.y),
-        ty: pivot.y + sine * (transform.tx - pivot.x) + cosine * (transform.ty - pivot.y),
-    };
+    *transform = rotate_affine_transform_v1(transform, angle_radians, pivot);
 }
 
 #[allow(
@@ -267,6 +259,7 @@ pub(super) fn has_animated_transform(scene: &poietra_scene_ir::SceneIrV1, entity
         matches!(
             channel,
             AnimationChannelV1::AffineTransform { entity_id: animated_id, .. }
+                | AnimationChannelV1::Rotation { entity_id: animated_id, .. }
                 | AnimationChannelV1::MotionPath { entity_id: animated_id, .. }
                 if animated_id == entity_id
         )
@@ -2010,6 +2003,54 @@ mod tests {
             assert_eq!(session.assets(), &expected_assets);
             assert_eq!(session.retained_index_stats().build_count, 1);
         }
+
+        let mut bundle = imported_bundle();
+        let entity_id = "later";
+        let provenance_id = bundle.scene.provenance[0].id.clone();
+        bundle
+            .scene
+            .animation_channels
+            .push(AnimationChannelV1::Rotation {
+                entity_id: entity_id.to_owned(),
+                id: "rotation-track".to_owned(),
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: 0.5,
+                        easing_to_next: Some(EasingV1::Linear {}),
+                        value: 0.0,
+                    },
+                    KeyframeV1 {
+                        at: 1.0,
+                        easing_to_next: None,
+                        value: std::f64::consts::FRAC_PI_2,
+                    },
+                ],
+                pivot: PointV1 { x: 3.0, y: -2.0 },
+                provenance_id,
+            });
+        if !bundle
+            .scene
+            .required_capabilities
+            .contains(&SceneCapabilityV1::AffineTransformAnimation)
+        {
+            bundle
+                .scene
+                .required_capabilities
+                .push(SceneCapabilityV1::AffineTransformAnimation);
+            bundle.scene.required_capabilities.sort_unstable();
+        }
+        let expected_scene = bundle.scene.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let mut command = command();
+        command.entity_id = entity_id.to_owned();
+        command.expected_base_revision = session.scene().source.revision_hash().to_owned();
+
+        assert!(matches!(
+            session.rotate_scene_entity(command),
+            Err(RotateSceneEntityError::AnimatedTransformUnsupported(target))
+                if target == entity_id
+        ));
+        assert_eq!(session.scene(), &expected_scene);
     }
 
     #[test]

@@ -525,6 +525,7 @@ const studioCreationProjectionV1Schema = z
           createdLifetime: studioTimelineProjectionIntervalV1Schema,
           entityId: z.string().min(1),
           initialDimensions: studioStaticRootDimensionsV1Schema,
+          initialRotation: finiteNumberSchema,
           initialScale: finiteNumberSchema.positive(),
           kind: z.enum(["arrow", "circle", "line", "math-tex", "rectangle", "text"]),
           layout: studioTextLayoutV1Schema.optional(),
@@ -874,6 +875,13 @@ type StudioCreationOperationV1 = Readonly<{
         from: number | null;
         kind: "rotation";
         relativeDelta: number | null;
+        to: number | null;
+      }>
+    | Readonly<{
+        easing: "linear" | "smooth";
+        entityId: string;
+        from: number | null;
+        kind: "rotation-keyframes";
         to: number | null;
       }>
     | Readonly<{
