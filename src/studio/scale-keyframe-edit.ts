@@ -216,6 +216,18 @@ export function scaleKeyframeTrackFromProgram(program: SceneEdit, programIndex: 
   return { entityId: first.entityId, keyframes, programIndex, transactionId: program.transactionId };
 }
 
+export function scaleKeyframeTransformConflictEntity(
+  programs: readonly SceneEdit[],
+  targetEntityIds: readonly string[],
+) {
+  const targets = new Set(targetEntityIds);
+  for (const [programIndex, program] of programs.entries()) {
+    const track = scaleKeyframeTrackFromProgram(program, programIndex);
+    if (track && targets.has(track.entityId)) return track.entityId;
+  }
+  return null;
+}
+
 export function replaceScaleKeyframe(
   keyframes: readonly ScaleKeyframe[],
   index: number,

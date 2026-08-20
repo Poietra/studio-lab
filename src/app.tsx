@@ -204,6 +204,7 @@ import {
   replaceScaleKeyframeProgram,
   type ScaleKeyframe,
   scaleKeyframeTrackFromProgram,
+  scaleKeyframeTransformConflictEntity,
 } from "./studio/scale-keyframe-edit";
 import { preparedGeometryBounds, verifiedPreviewGeometryForStudioEntity } from "./studio/studio-canvas";
 import { StudioExportControl } from "./studio/studio-export-control";
@@ -1330,12 +1331,7 @@ export function App({
       },
     ];
   });
-  const scaleTrackEntityIds = new Set(
-    previewAppliedEdits.flatMap((record, programIndex) => {
-      const track = scaleKeyframeTrackFromProgram(record.program, programIndex);
-      return track ? [track.entityId] : [];
-    }),
-  );
+  const scaleTrackPrograms = previewAppliedEdits.map(({ program }) => program);
   const materialParameterOptions: readonly StudioMaterialParameterTimelineOption[] = workspaceCreationProjection
     ? Object.entries(activeSceneFragmentMaterials.assignments).flatMap(([entityId, assignment]) => {
         const owner = previewAppliedEdits.find(({ program }) =>
@@ -3510,7 +3506,7 @@ export function App({
   }
 
   function blockTransformWhileScaleTrackExists(targetEntityIds: readonly string[], action: string) {
-    const blockedEntityId = targetEntityIds.find((entityId) => scaleTrackEntityIds.has(entityId));
+    const blockedEntityId = scaleKeyframeTransformConflictEntity(scaleTrackPrograms, targetEntityIds);
     if (!blockedEntityId) return false;
     setSelectedObjectIds([blockedEntityId]);
     setDraftError(`Remove this object's scale keyframe track before ${action}.`);
@@ -5406,7 +5402,7 @@ export function App({
       : null;
   const groupResizeEligibleIds = new Set(
     [...groupResizeEligibleCreationEntityIds(workspaceCreationProjection)].filter(
-      (entityId) => !scaleTrackEntityIds.has(entityId),
+      (entityId) => scaleKeyframeTransformConflictEntity(scaleTrackPrograms, [entityId]) === null,
     ),
   );
   const groupRotationEligibleIds = new Set(

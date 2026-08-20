@@ -4,7 +4,12 @@ import { createStudioEntitiesProgram } from "./authoring-commands";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
-import { appendScaleKeyframe, replaceScaleKeyframeProgram, scaleKeyframeTrackFromProgram } from "./scale-keyframe-edit";
+import {
+  appendScaleKeyframe,
+  replaceScaleKeyframeProgram,
+  scaleKeyframeTrackFromProgram,
+  scaleKeyframeTransformConflictEntity,
+} from "./scale-keyframe-edit";
 
 describe("uniform scale keyframe editing", () => {
   it("stores one Studio-created scale track without inserting Scene time", () => {
@@ -34,6 +39,8 @@ describe("uniform scale keyframe editing", () => {
       { easing: "linear", time: 2, value: 1 },
       { easing: "smooth", time: 4, value: 2 },
     ]);
+    expect(scaleKeyframeTransformConflictEntity([tracked.program], [entityId])).toBe(entityId);
+    expect(scaleKeyframeTransformConflictEntity([tracked.program], ["another-entity"])).toBeNull();
 
     const removed = replaceScaleKeyframeProgram({
       baseProgram: tracked.program,
@@ -45,6 +52,7 @@ describe("uniform scale keyframe editing", () => {
     expect(removed.kind, JSON.stringify(removed.issues)).toBe("valid");
     expect(removed.program.loweringStatus).toBe("supported");
     expect(scaleKeyframeTrackFromProgram(removed.program, 0)).toBeNull();
+    expect(scaleKeyframeTransformConflictEntity([removed.program], [entityId])).toBeNull();
   });
 
   it("keeps the first marker at the Rust baseline and insertion append-only", () => {
