@@ -298,6 +298,10 @@ pub enum StudioCreationOperationKind {
         alpha: Option<f64>,
     },
     SourceZIndex {
+        #[serde(default)]
+        document_static: bool,
+        #[serde(default)]
+        from_source_z_index: Option<f64>,
         source_z_index: Option<f64>,
     },
     Visibility {
@@ -877,6 +881,10 @@ struct PlannedStudioGroupRotation {
     entity_ids: BTreeSet<String>,
 }
 
+struct PlannedStudioGroupLayerOrder {
+    entity_ids: BTreeSet<String>,
+}
+
 fn property_easing(easing: StudioPropertyEasing) -> EasingV1 {
     match easing {
         StudioPropertyEasing::Linear => EasingV1::Linear {},
@@ -1332,6 +1340,155 @@ fn closed_studio_group_rotation(
     })
 }
 
+fn closed_studio_group_layer_order(
+    program_index: usize,
+    programs: &[StudioCreationEditInput],
+    timeline: &StudioCreationTimelinePlan,
+    entities: &[PlannedStudioCreationEntity],
+    base_source_z_index_start: Option<f64>,
+) -> Option<PlannedStudioGroupLayerOrder> {
+    let program = programs.get(program_index)?;
+    if program.origin != StudioAuthoringOrigin::DirectManipulation
+        || program.intent_count != 1
+        || program.requested_execution != SceneEditExecution::Parallel
+        || program.schedule_mode != SceneEditScheduleMode::Parallel
+        || program.schedule_edge_count != 0
+        || !(2..=64).contains(&program.operations.len())
+        || program.schedule_order.len() != program.operations.len()
+    {
+        return None;
+    }
+    let mut targets = BTreeMap::<String, (f64, f64)>::new();
+    for operation in &program.operations {
+        let entity_id = operation.entity_id.as_ref()?;
+        let StudioCreationOperationKind::SourceZIndex {
+            document_static: true,
+            from_source_z_index: Some(from_source_z_index),
+            source_z_index: Some(source_z_index),
+        } = operation.kind
+        else {
+            return None;
+        };
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || !from_source_z_index.is_finite()
+            || !source_z_index.is_finite()
+            || !studio_timeline_semantic_values_match(
+                operation.interval.start,
+                program.anchor_resolved_seconds,
+            )
+            || !studio_timeline_semantic_values_match(
+                operation.interval.end,
+                program.anchor_resolved_seconds,
+            )
+            || targets
+                .insert(entity_id.clone(), (from_source_z_index, source_z_index))
+                .is_some()
+        {
+            return None;
+        }
+    }
+    if program.schedule_order.iter().collect::<BTreeSet<_>>()
+        != program
+            .operations
+            .iter()
+            .map(|operation| &operation.id)
+            .collect()
+    {
+        return None;
+    }
+
+    let mut active_groups = BTreeMap::<String, Vec<String>>::new();
+    let mut parent_by_child = BTreeMap::<String, String>::new();
+    let mut reached_program = false;
+    for candidate_index in &timeline.ordered_programs {
+        if *candidate_index == program_index {
+            reached_program = true;
+            break;
+        }
+        let candidate = programs.get(*candidate_index)?;
+        let hierarchy_operations = candidate
+            .operations
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::Group { .. }
+                        | StudioCreationOperationKind::Ungroup { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        if hierarchy_operations.is_empty() {
+            continue;
+        }
+        if hierarchy_operations.len() != 1 || candidate.operations.len() != 1 {
+            return None;
+        }
+        match &hierarchy_operations[0].kind {
+            StudioCreationOperationKind::Group {
+                child_entity_ids,
+                group_id,
+            } => {
+                let children = child_entity_ids.iter().cloned().collect::<BTreeSet<_>>();
+                if children.len() != child_entity_ids.len()
+                    || children.len() < 2
+                    || active_groups.contains_key(group_id)
+                    || children
+                        .iter()
+                        .any(|child_id| parent_by_child.contains_key(child_id))
+                {
+                    return None;
+                }
+                for child_id in child_entity_ids {
+                    parent_by_child.insert(child_id.clone(), group_id.clone());
+                }
+                active_groups.insert(group_id.clone(), child_entity_ids.clone());
+            }
+            StudioCreationOperationKind::Ungroup { group_id } => {
+                let children = active_groups.remove(group_id)?;
+                for child_id in children {
+                    if parent_by_child.remove(&child_id).as_deref() != Some(group_id.as_str()) {
+                        return None;
+                    }
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    if !reached_program {
+        return None;
+    }
+    let target_ids = targets.keys().cloned().collect::<BTreeSet<_>>();
+    if !active_groups
+        .values()
+        .any(|children| children.iter().cloned().collect::<BTreeSet<_>>() == target_ids)
+    {
+        return None;
+    }
+    let (_, (first_from, first_to)) = targets.first_key_value()?;
+    let delta = first_to - first_from;
+    if targets
+        .values()
+        .any(|(from, to)| !close_transform_baseline_value(to - from, delta))
+    {
+        return None;
+    }
+    for (entity_id, (from, _)) in &targets {
+        let (index, state) = entities
+            .iter()
+            .enumerate()
+            .find(|(_, state)| state.spec.id == *entity_id)?;
+        let current = state
+            .source_z_index
+            .or_else(|| base_source_z_index_start.map(|start| start + index as f64));
+        if current.is_some_and(|current| !close_transform_baseline_value(*from, current)) {
+            return None;
+        }
+    }
+    Some(PlannedStudioGroupLayerOrder {
+        entity_ids: target_ids,
+    })
+}
+
 #[allow(
     clippy::float_cmp,
     clippy::too_many_lines,
@@ -1340,6 +1497,7 @@ fn closed_studio_group_rotation(
 fn plan_studio_creation_edits(
     base_duration: f64,
     programs: &[StudioCreationEditInput],
+    base_source_z_index_start: Option<f64>,
 ) -> Result<StudioCreationPlan, ProjectStudioCreationEditError> {
     let timeline = plan_studio_creation_timeline(base_duration, programs)?;
     let create_programs = timeline
@@ -2450,6 +2608,13 @@ fn plan_studio_creation_edits(
         }
 
         let group_rotation = closed_studio_group_rotation(program, &entities);
+        let group_layer_order = closed_studio_group_layer_order(
+            program_index,
+            programs,
+            &timeline,
+            &entities,
+            base_source_z_index_start,
+        );
         let contains_position = program.operations.iter().any(|operation| {
             matches!(operation.kind, StudioCreationOperationKind::Position { .. })
         });
@@ -2679,6 +2844,8 @@ fn plan_studio_creation_edits(
                     ));
                 }
                 StudioCreationOperationKind::SourceZIndex {
+                    document_static,
+                    from_source_z_index,
                     source_z_index: Some(source_z_index),
                 } if operation.origin == StudioAuthoringOrigin::DirectManipulation
                     && source_z_index.is_finite()
@@ -2686,10 +2853,19 @@ fn plan_studio_creation_edits(
                         operation.interval.end,
                         program.anchor_resolved_seconds,
                     )
-                    && studio_timeline_semantic_values_match(
-                        program.anchor_resolved_seconds,
-                        state.spec.lifetime_start,
-                    )
+                    && ((!*document_static
+                        && from_source_z_index.is_none()
+                        && studio_timeline_semantic_values_match(
+                            program.anchor_resolved_seconds,
+                            state.spec.lifetime_start,
+                        ))
+                        || (*document_static
+                            && from_source_z_index.is_some_and(f64::is_finite)
+                            && group_layer_order.as_ref().is_some_and(|order| {
+                                order.entity_ids.contains(entity_id)
+                                    && instant_at >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                                    && instant_at < state.lifetime.end
+                            })))
                     && state.persistent_removal.is_none() =>
                 {
                     state.source_z_index = Some(*source_z_index);
@@ -2698,7 +2874,10 @@ fn plan_studio_creation_edits(
                         schedule_index,
                         StudioCreationProjectedMutation {
                             entity_id: entity_id.to_owned(),
-                            interval: instant_interval,
+                            interval: IntervalV1 {
+                                end: state.lifetime.start,
+                                start: state.lifetime.start,
+                            },
                             kind: StudioCreationProjectedMutationKind::SourceZIndex {
                                 source_z_index: *source_z_index,
                             },
@@ -3206,7 +3385,7 @@ pub fn project_studio_creation_edits(
     base_duration: f64,
     programs: &[StudioCreationEditInput],
 ) -> Result<StudioCreationProjection, ProjectStudioCreationEditError> {
-    Ok(plan_studio_creation_edits(base_duration, programs)?.projection())
+    Ok(plan_studio_creation_edits(base_duration, programs, None)?.projection())
 }
 
 fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
@@ -4084,8 +4263,19 @@ impl EngineSessionV1 {
         {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
-        let plan = plan_studio_creation_edits(self.scene().duration, &programs)
-            .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
+        let base_source_z_index_start = self
+            .scene()
+            .entities
+            .iter()
+            .map(|entity| entity.source_z_index)
+            .fold(-1.0_f64, f64::max)
+            + 1.0;
+        let plan = plan_studio_creation_edits(
+            self.scene().duration,
+            &programs,
+            Some(base_source_z_index_start),
+        )
+        .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
         for state in &plan.entities {
             let matching_outline_count = match state.kind {
                 StudioAuthoringEntityKind::MathTex => math_tex_outlines
@@ -5493,10 +5683,11 @@ mod tests {
             entity_id,
             "layer-order",
             StudioCreationOperationKind::SourceZIndex {
+                document_static: false,
+                from_source_z_index: None,
                 source_z_index: Some(-10.0),
             },
         ));
-
         let projection =
             project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
         assert!(matches!(
@@ -5533,6 +5724,252 @@ mod tests {
                 .map(poietra_scene_ir::RenderDrawV1::entity_id),
             Some(entity_id)
         );
+    }
+
+    #[test]
+    fn normalized_creation_applies_late_group_paint_order_atomically() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command
+            .programs
+            .push(second_group_resize_creation(&command.programs[0]));
+        let first_created_z = bundle
+            .scene
+            .entities
+            .iter()
+            .map(|entity| entity.source_z_index)
+            .fold(-1.0_f64, f64::max)
+            + 1.0;
+        command.programs.push(studio_created_appearance_edit_input(
+            0.5,
+            "tx:create/entity:circle",
+            "prior-child-layer-order",
+            StudioCreationOperationKind::SourceZIndex {
+                document_static: false,
+                from_source_z_index: None,
+                source_z_index: Some(first_created_z),
+            },
+        ));
+        let child_ids = vec![
+            "tx:second/entity:rectangle".to_owned(),
+            "tx:create/entity:circle".to_owned(),
+        ];
+        let group_id = "tx:ordered-group/entity:group".to_owned();
+        command.programs.push(studio_hierarchy_edit_input(
+            "ordered-group",
+            1.0,
+            StudioCreationOperationKind::Group {
+                child_entity_ids: child_ids.clone(),
+                group_id: group_id.clone(),
+            },
+        ));
+        let command_without_order = command.clone();
+        let operations = child_ids
+            .iter()
+            .rev()
+            .enumerate()
+            .map(|(index, entity_id)| StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some(entity_id.clone()),
+                id: format!("order-group-child-{index}"),
+                interval: IntervalV1 {
+                    end: 1.1,
+                    start: 1.1,
+                },
+                kind: StudioCreationOperationKind::SourceZIndex {
+                    document_static: true,
+                    from_source_z_index: Some(first_created_z + index as f64),
+                    source_z_index: Some(10.0 + index as f64),
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            })
+            .collect::<Vec<_>>();
+        command.programs.push(StudioCreationEditInput {
+            anchor_captured_playhead: 1.1,
+            anchor_resolved_seconds: 1.1,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(1.1),
+            },
+            intent_count: 1,
+            lowering_supported: false,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Parallel,
+            schedule_order: operations
+                .iter()
+                .map(|operation| operation.id.clone())
+                .collect(),
+            operations,
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Parallel,
+            transaction_id: "order-active-group".to_owned(),
+        });
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        let group_order_mutations = projection
+            .mutations
+            .iter()
+            .filter(|mutation| {
+                matches!(
+                    mutation.kind,
+                    StudioCreationProjectedMutationKind::SourceZIndex { .. }
+                ) && mutation.transaction_id == "order-active-group"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(group_order_mutations.len(), 2);
+        assert!(group_order_mutations.iter().all(|mutation| {
+            projection.entities.iter().any(|entity| {
+                entity.entity_id == mutation.entity_id
+                    && studio_timeline_semantic_values_match(
+                        mutation.interval.start,
+                        entity.created_lifetime.start,
+                    )
+                    && studio_timeline_semantic_values_match(
+                        mutation.interval.end,
+                        entity.created_lifetime.start,
+                    )
+            })
+        }));
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+        let result = session.apply_studio_creation_edit(command.clone()).unwrap();
+        for child_id in &child_ids {
+            let child = result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == *child_id)
+                .unwrap();
+            let expected_z = if child_id == "tx:create/entity:circle" {
+                10.0
+            } else {
+                11.0
+            };
+            assert_eq!(child.source_z_index, expected_z);
+            assert_eq!(child.parent_id.as_deref(), Some(group_id.as_str()));
+        }
+        let undone = EngineSessionV1::new(bundle.clone())
+            .unwrap()
+            .apply_studio_creation_edit(command_without_order)
+            .unwrap();
+        for (index, child_id) in ["tx:create/entity:circle", "tx:second/entity:rectangle"]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(
+                undone
+                    .bundle
+                    .scene
+                    .entities
+                    .iter()
+                    .find(|entity| entity.id == *child_id)
+                    .unwrap()
+                    .source_z_index,
+                first_created_z + index as f64
+            );
+        }
+        let redone = EngineSessionV1::new(bundle.clone())
+            .unwrap()
+            .apply_studio_creation_edit(command.clone())
+            .unwrap();
+        assert_eq!(redone.bundle, result.bundle);
+        let packet = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "group-order-before-authoring-anchor",
+                sample_time: 1.0,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            packet
+                .draws
+                .iter()
+                .map(poietra_scene_ir::RenderDrawV1::entity_id)
+                .filter(|entity_id| child_ids.iter().any(|child_id| child_id == entity_id))
+                .collect::<Vec<_>>(),
+            vec!["tx:create/entity:circle", "tx:second/entity:rectangle"]
+        );
+
+        let mut wrong_from = command.clone();
+        for operation in &mut wrong_from.programs.last_mut().unwrap().operations {
+            let StudioCreationOperationKind::SourceZIndex {
+                from_source_z_index,
+                ..
+            } = &mut operation.kind
+            else {
+                unreachable!();
+            };
+            *from_source_z_index = from_source_z_index.map(|value| value + 1.0);
+        }
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &wrong_from.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        let mut wrong_default = command.clone();
+        let default_operation = wrong_default
+            .programs
+            .last_mut()
+            .unwrap()
+            .operations
+            .iter_mut()
+            .find(|operation| operation.entity_id.as_deref() == Some("tx:second/entity:rectangle"))
+            .unwrap();
+        let StudioCreationOperationKind::SourceZIndex {
+            from_source_z_index,
+            source_z_index,
+            ..
+        } = &mut default_operation.kind
+        else {
+            unreachable!();
+        };
+        *from_source_z_index = from_source_z_index.map(|value| value + 1.0);
+        *source_z_index = source_z_index.map(|value| value + 1.0);
+        assert!(
+            project_studio_creation_edits(bundle.scene.duration, &wrong_default.programs).is_ok()
+        );
+        assert!(matches!(
+            EngineSessionV1::new(bundle.clone())
+                .unwrap()
+                .apply_studio_creation_edit(wrong_default),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+
+        let mut wrong_contract = command.clone();
+        let StudioCreationOperationKind::SourceZIndex {
+            document_static, ..
+        } = &mut wrong_contract.programs.last_mut().unwrap().operations[0].kind
+        else {
+            unreachable!();
+        };
+        *document_static = false;
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &wrong_contract.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        let mut non_uniform = command.clone();
+        let StudioCreationOperationKind::SourceZIndex { source_z_index, .. } =
+            &mut non_uniform.programs.last_mut().unwrap().operations[0].kind
+        else {
+            unreachable!();
+        };
+        *source_z_index = source_z_index.map(|value| value + 0.25);
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &non_uniform.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        command.programs.last_mut().unwrap().operations.pop();
+        command.programs.last_mut().unwrap().schedule_order.pop();
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &command.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
     }
 
     #[test]

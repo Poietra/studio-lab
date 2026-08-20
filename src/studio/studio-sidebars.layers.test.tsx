@@ -340,7 +340,7 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("Hidden");
   });
 
-  it("disables every z-order control while a Studio logical group is active", () => {
+  it("offers atomic edge order controls for a selected Studio logical group", () => {
     const first = entity("first");
     const second = entity("second");
     const outside = entity("outside");
@@ -375,6 +375,7 @@ describe("WorkspaceSidebar Layers", () => {
         nextScene={null}
         onDurationChange={vi.fn()}
         onEditAppliedProgram={vi.fn()}
+        onLayerGroupOrder={vi.fn()}
         onLayerOrder={vi.fn()}
         onLayerReorder={vi.fn()}
         onRedo={vi.fn()}
@@ -383,7 +384,7 @@ describe("WorkspaceSidebar Layers", () => {
         onToggleEntity={vi.fn()}
         onUndo={vi.fn()}
         redoCount={0}
-        selectedIds={new Set(["outside"])}
+        selectedIds={new Set(["first", "second"])}
         sourceImportOutcomes={[]}
       />,
     );
@@ -392,7 +393,7 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain('aria-label="Hide group of 2 objects"');
     expect(markup).toMatch(/aria-label="Lock group of 2 objects"[^>]*aria-pressed="false"/);
     expect(markup).toContain('title="Hide group"');
-    expect(markup).toMatch(/aria-label="Back outside"[^>]*disabled=""/);
-    expect(markup).toContain("atomic group reordering is not available yet");
+    expect(markup).toMatch(/aria-label="Back group of 2 objects"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Front group of 2 objects"(?![^>]* disabled="")/);
   });
 });

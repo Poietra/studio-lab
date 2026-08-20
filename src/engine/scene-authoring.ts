@@ -908,7 +908,13 @@ type StudioCreationOperationV1 = Readonly<{
     | Readonly<{ color: string | null; entityId: string; kind: "fill-color" | "stroke-color" }>
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
     | Readonly<{ alpha: number | null; entityId: string; kind: "opacity" }>
-    | Readonly<{ entityId: string; kind: "source-z-index"; sourceZIndex: number | null }>
+    | Readonly<{
+        documentStatic: boolean;
+        entityId: string;
+        fromSourceZIndex: number | null;
+        kind: "source-z-index";
+        sourceZIndex: number | null;
+      }>
     | Readonly<{ entityId: string; kind: "visibility"; visible: boolean | null }>
     | Readonly<{
         easing: StudioPropertyKeyframeEasing;

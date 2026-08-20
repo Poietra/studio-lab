@@ -968,6 +968,68 @@ export function createDirectManipulationLayerOrderProgram(
   );
 }
 
+/** Reorders every leaf in one logical group through one parallel Program. */
+export function createDirectManipulationGroupLayerOrderProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    scene: RuntimeSceneState;
+    start: number;
+    targets: readonly Readonly<{ entityId: string; fromSourceZIndex: number; sourceZIndex: number }>[];
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  if (
+    input.targets.length < 2 ||
+    new Set(input.targets.map(({ entityId }) => entityId)).size !== input.targets.length ||
+    input.targets.some(
+      ({ fromSourceZIndex, sourceZIndex }) => !Number.isFinite(fromSourceZIndex) || !Number.isFinite(sourceZIndex),
+    )
+  ) {
+    throw new Error("Group layer order requires at least two unique entities with finite canonical z-indices.");
+  }
+  if (
+    !Number.isFinite(input.start) ||
+    !Number.isFinite(input.capturedPlayhead) ||
+    input.start < 0 ||
+    input.start > input.scene.duration
+  ) {
+    throw new Error("Group layer order requires a valid source time inside the Scene.");
+  }
+  const resolution = resolveTimeAnchorOnce(
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead", referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute", seconds: input.start },
+    { capturedPlayhead: input.capturedPlayhead, sceneDuration: input.scene.duration },
+  );
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operations: SceneEditOperation[] = input.targets.map(({ entityId, fromSourceZIndex, sourceZIndex }, index) => ({
+    dependsOn: [],
+    documentStatic: true,
+    entityId,
+    from: fromSourceZIndex,
+    id: operationId(input.transactionId, `set-layer-order-${index}`),
+    interval: { end: input.start, start: input.start },
+    key: "sourceZIndex",
+    kind: "SetProperty",
+    provenance: provenance("direct-manipulation", ["Layers panel", "atomic logical group z-index"]),
+    value: sourceZIndex,
+  }));
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "unsupported",
+      operations,
+      provenance: provenance("direct-manipulation", ["document-static logical group paint order"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: operations.map(({ id }) => id) },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
+}
+
 /** Creates one static Studio-owned visibility edit. Visibility is separate
  * from opacity and lifetime and is evaluated by the canonical Rust Scene. */
 export function createDirectManipulationVisibilityProgram(

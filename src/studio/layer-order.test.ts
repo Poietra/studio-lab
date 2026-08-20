@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   filterStudioCanvasEntitiesByVisibility,
   planStudioLayerGroup,
+  planStudioLayerGroupOrder,
   planStudioLayerOrder,
   planStudioLayerReorder,
   projectStudioLayers,
@@ -236,14 +237,25 @@ describe("Studio Layers paint order", () => {
     });
     const outsideRoot = projected.find(({ entity: item }) => item.id === "studio:c");
     expect(outsideRoot?.canMove).toEqual({ back: false, backward: false, forward: false, front: false });
-    expect(outsideRoot?.orderingReadOnlyReason).toMatch(/atomic group reordering/i);
+    expect(outsideRoot?.orderingReadOnlyReason).toMatch(/logical group as one layer/i);
     expect(planStudioLayerOrder(projected, "studio:c", "back")).toMatchObject({
       kind: "unavailable",
-      reason: expect.stringMatching(/atomic group reordering/i),
+      reason: expect.stringMatching(/logical group as one layer/i),
     });
     expect(planStudioLayerReorder(projected, "studio:c", 0)).toMatchObject({
       kind: "unavailable",
-      reason: expect.stringMatching(/atomic group reordering/i),
+      reason: expect.stringMatching(/logical group as one layer/i),
+    });
+    expect(planStudioLayerGroupOrder(projected, "tx:group/entity:group", "front")).toEqual({
+      kind: "planned",
+      targets: [
+        { entityId: "studio:a", fromSourceZIndex: 0, sourceZIndex: 3 },
+        { entityId: "studio:b", fromSourceZIndex: 1, sourceZIndex: 4 },
+      ],
+    });
+    expect(planStudioLayerGroupOrder(projected, "tx:group/entity:group", "back")).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/already at the back edge/i),
     });
   });
 
