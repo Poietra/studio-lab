@@ -157,6 +157,7 @@ export type TimelineObjectTrack = Readonly<{
     interval: Interval;
     key: PropertyChannel["key"];
     operationId?: string;
+    readOnlyReason?: string;
   }>[];
   entityId: string;
   label: string;

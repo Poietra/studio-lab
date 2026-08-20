@@ -86,6 +86,26 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain('aria-label="Add opacity keyframe for Circle"');
   });
 
+  it("explains why imported Manim animations are read-only", () => {
+    const base = props();
+    const reason = "This animation is owned by the imported Manim source. Edit the Python source to change it.";
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...base}
+        objectTracks={[
+          {
+            ...base.objectTracks[0]!,
+            animatedChannels: [{ interval: { end: 3, start: 1 }, key: "scale", readOnlyReason: reason }],
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("data-timeline-read-only-animation");
+    expect(markup).toContain(`aria-label="scale animation · ${reason}"`);
+    expect(markup).toContain('tabindex="0"');
+  });
+
   it("renders a named material parameter picker and marker with the shared keyframe controls", () => {
     const base = props();
     const markup = renderToStaticMarkup(
