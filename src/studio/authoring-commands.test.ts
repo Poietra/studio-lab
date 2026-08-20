@@ -133,7 +133,7 @@ describe("manual Studio authoring commands", () => {
       displayLines: ["日本語で動画を作る", "こんにちは"],
       label: canonical,
       text: canonical,
-      textLayout: { alignment: "left", fontSize: 1, fontWeight: "regular", lineHeight: 1.2 },
+      textLayout: { alignment: "left", fontFamily: "sans", fontSize: 1, fontWeight: "regular", lineHeight: 1.2 },
     });
     const lfCreation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
@@ -156,7 +156,13 @@ describe("manual Studio authoring commands", () => {
     const content = {
       displayLines: ["Wide", "i"],
       text: "Wide\ni",
-      textLayout: { alignment: "right" as const, fontSize: 1.5, fontWeight: "bold" as const, lineHeight: 1.8 },
+      textLayout: {
+        alignment: "right" as const,
+        fontFamily: "mono" as const,
+        fontSize: 1.5,
+        fontWeight: "bold" as const,
+        lineHeight: 1.8,
+      },
     };
     expect(() =>
       createInspectorEntityEditProgram({
@@ -241,12 +247,16 @@ describe("manual Studio authoring commands", () => {
     expect(undone.appliedPrograms).toEqual([original]);
     expect(
       undone.appliedPrograms[0]?.program.operations.find((operation) => operation.kind === "CreateEntity"),
-    ).toMatchObject({ entity: { content: { text: "Before", textLayout: { fontWeight: "regular" } } } });
+    ).toMatchObject({
+      entity: { content: { text: "Before", textLayout: { fontFamily: "sans", fontWeight: "regular" } } },
+    });
     const redone = redoEditorProgram(undone);
     expect(redone.appliedPrograms).toEqual([applied]);
     expect(
       redone.appliedPrograms[0]?.program.operations.find((operation) => operation.kind === "CreateEntity"),
-    ).toMatchObject({ entity: { content: { text: "Wide\ni", textLayout: { fontWeight: "bold" } } } });
+    ).toMatchObject({
+      entity: { content: { text: "Wide\ni", textLayout: { fontFamily: "mono", fontWeight: "bold" } } },
+    });
   });
 
   it.each(["tab\tbreak", ["a", "b", "c", "d", "e", "f", "g", "h", "i"].join("\n"), "x".repeat(129)])(

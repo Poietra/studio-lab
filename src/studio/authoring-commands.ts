@@ -239,6 +239,8 @@ export function createInspectorEntityEditProgram(
     if (
       after &&
       (after.alignment !== before.alignment ||
+        (after.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) !==
+          (before.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) ||
         after.fontSize !== before.fontSize ||
         after.fontWeight !== before.fontWeight ||
         after.lineHeight !== before.lineHeight)

@@ -41,7 +41,7 @@ pub use authoring::{
     StudioMotionProjectionBatch, StudioMotionProjectionEntityIdentity,
     StudioMotionProjectionInsertion, StudioMotionSourceBinding, StudioPersistentRemoveProjection,
     StudioPersistentRemoveProjectionEntry, StudioProjectedCreationEntity, StudioProjectedMotion,
-    StudioProjectionEasing, StudioPropertyEasing, StudioTimelineEditInput,
+    StudioProjectionEasing, StudioPropertyEasing, StudioTextFontFamily, StudioTimelineEditInput,
     StudioTimelineEditProjection, StudioTimelineEditTransform, StudioTimelineEventKind,
     StudioTimelineOperation, StudioTimelineProjection, StudioTimelinePurpose,
     StudioTimelineWaitReduction, project_studio_creation_edits,

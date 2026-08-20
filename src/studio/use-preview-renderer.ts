@@ -57,7 +57,7 @@ import {
   type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
-import { STUDIO_CREATION_TEXT_CONTRACT } from "./editable-content";
+import { STUDIO_CREATION_TEXT_CONTRACT, STUDIO_TEXT_DEFAULT_LAYOUT } from "./editable-content";
 import {
   EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
   type SceneFragmentMaterialStateV1,
@@ -742,7 +742,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
               };
             }
             textOutlineInputByKey.set(
-              `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}`,
+              `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}`,
               { content, entityId: operation.entity.id },
             );
           }
@@ -788,6 +788,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
             await compiler({
               layout: {
                 alignment: content.layout.alignment,
+                fontFamily: content.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily,
                 fontWeight: content.layout.fontWeight,
                 lineHeight: content.layout.lineHeight,
               },

@@ -215,17 +215,25 @@ produce the public `glyph-missing` result.
 DejaVu Sans provenance and license
 ----------------------------------
 
-Names: DejaVu Sans Regular and Bold
+Names: DejaVu Sans Regular and Bold; DejaVu Sans Mono Regular and Bold
 Official distribution: https://dejavu-fonts.github.io/
 Copyright: Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
 License: Bitstream Vera
 
 The embedded faces are mechanically subset to printable ASCII (U+0020–U+007E)
-without changing glyph designs or the DejaVu Sans family and Book/Bold style
-names. The Bold source SHA-256 is
+without changing glyph designs or the DejaVu Sans/DejaVu Sans Mono family and
+Book/Bold style names. The Sans Bold source SHA-256 is
 `5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895` and the
 embedded Bold subset SHA-256 is
 `faf60d17a78efc57cfbe99be7a707a0f057e06778682dc0c3518be8b3624f4f8`.
+The Mono Regular source SHA-256 is
+`c805f9436dbc268644c1d9584f01a601a653e028e08fd74b9b949f6cf8304d88` and its
+embedded subset SHA-256 is
+`dd6f67b31174866895c6e9d70cf278d95aceba83185b28f8ebb6b3282bb83cd1`.
+The Mono Bold source SHA-256 is
+`3a3c502eeff669a231549e80df9f7c49de109bafe303170409e905d0b31a38fe` and its
+embedded subset SHA-256 is
+`1b1778f89bf43b68ce9bc5423a156a3b8e67a377bb959f6771c1986e82ae16fc`.
 
 DejaVu changes are in public domain. Bitstream Vera is a trademark of
 Bitstream, Inc.

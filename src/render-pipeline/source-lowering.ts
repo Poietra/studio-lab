@@ -751,8 +751,11 @@ function manimTextConstructor(
     );
   }
   const weightArgument = layout.fontWeight === "bold" ? ", weight=BOLD" : "";
-  if (!options.unitHeight) return `Text(${JSON.stringify(text)}${weightArgument})`;
-  return `Text(${JSON.stringify(text)}, font="DejaVu Sans"${weightArgument}, disable_ligatures=True).scale_to_fit_height(${formatAmount(layout.fontSize)})`;
+  const fontFamily = layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily;
+  const fontName = fontFamily === "mono" ? "DejaVu Sans Mono" : "DejaVu Sans";
+  const familyArgument = fontFamily === "mono" ? `, font=${JSON.stringify(fontName)}` : "";
+  if (!options.unitHeight) return `Text(${JSON.stringify(text)}${familyArgument}${weightArgument})`;
+  return `Text(${JSON.stringify(text)}, font=${JSON.stringify(fontName)}${weightArgument}, disable_ligatures=True).scale_to_fit_height(${formatAmount(layout.fontSize)})`;
 }
 
 function entityConstructor(operation: CreateEntityOperation) {

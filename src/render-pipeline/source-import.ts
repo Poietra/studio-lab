@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { MAX_COORDINATE } from "../engine/primitives";
-import { canonicalEditableContent, UNKNOWN_EDITABLE_CONTENT } from "../studio/editable-content";
+import {
+  canonicalEditableContent,
+  STUDIO_TEXT_DEFAULT_LAYOUT,
+  UNKNOWN_EDITABLE_CONTENT,
+} from "../studio/editable-content";
 import {
   type EntityContent,
   type EntityDimensions,
@@ -17,6 +21,7 @@ import {
   type RuntimeSceneState,
   STUDIO_STATE_VERSION,
   type StaticSemanticState,
+  type TextLayout,
   type TimelineEvent,
 } from "../studio/model";
 import type { ManimSourceImportOutcome } from "./contracts";
@@ -247,6 +252,7 @@ const contentMarkerSchema = z.discriminatedUnion("type", [
           textLayout: z
             .object({
               alignment: z.enum(["center", "left", "right"]),
+              fontFamily: z.enum(["mono", "sans"]).default("sans"),
               fontSize: z.number().finite().positive().default(1),
               fontWeight: z.enum(["bold", "regular"]).default("regular"),
               lineHeight: z.number().finite().positive(),
@@ -1080,7 +1086,41 @@ function markerIdentity(statements: readonly SourceStatement[], assignmentIndex:
   }
 }
 
-function entityContent(type: string, variable: string, argumentsSource: string): EntityContent | undefined {
+function studioGeneratedTextLayout(argumentsSource: string, suffix: string): TextLayout | undefined {
+  const { keywords, positional } = constructorArguments(argumentsSource);
+  if (
+    positional.length !== 1 ||
+    !isStaticStringLiteral(positional[0] ?? "") ||
+    [...keywords].some(([keyword]) => !["disable_ligatures", "font", "weight"].includes(keyword)) ||
+    keywords.get("disable_ligatures") !== "True"
+  ) {
+    return undefined;
+  }
+  const fontExpression = keywords.get("font");
+  if (!fontExpression || !isStaticStringLiteral(fontExpression)) return undefined;
+  const fontName = stringLiterals(fontExpression)[0];
+  if (fontName !== "DejaVu Sans" && fontName !== "DejaVu Sans Mono") return undefined;
+  const weight = keywords.get("weight");
+  if (weight !== undefined && weight !== "BOLD") return undefined;
+  const sizeExpression = suffix
+    .trim()
+    .match(new RegExp(`^\\.scale_to_fit_height\\(\\s*(${UNSIGNED_NUMBER_LITERAL})\\s*\\)$`, "s"))?.[1];
+  const fontSize = sizeExpression ? positiveNumberLiteral(sizeExpression) : null;
+  if (fontSize === null) return undefined;
+  return {
+    ...STUDIO_TEXT_DEFAULT_LAYOUT,
+    fontFamily: fontName === "DejaVu Sans Mono" ? "mono" : "sans",
+    fontSize,
+    fontWeight: weight === "BOLD" ? "bold" : "regular",
+  };
+}
+
+function entityContent(
+  type: string,
+  variable: string,
+  argumentsSource: string,
+  suffix: string,
+): EntityContent | undefined {
   if (type === "MathTex" || type === "Tex") {
     const { positional } = constructorArguments(argumentsSource);
     const texParts = positional.flatMap((argument) =>
@@ -1096,7 +1136,8 @@ function entityContent(type: string, variable: string, argumentsSource: string):
   const strings = stringLiterals(argumentsSource);
   if (type === "Text") {
     const text = strings[0] ?? variable.replaceAll("_", " ");
-    return { displayLines: [text], label: variable.replaceAll("_", " "), text };
+    const textLayout = studioGeneratedTextLayout(argumentsSource, suffix);
+    return { displayLines: [text], label: variable.replaceAll("_", " "), text, ...(textLayout ? { textLayout } : {}) };
   }
   return { displayLines: [variable.replaceAll("_", " ")], label: variable.replaceAll("_", " ") };
 }
@@ -1438,9 +1479,11 @@ function markerBefore(statements: readonly SourceStatement[], statementIndex: nu
 }
 
 function verifiedContentReplacement(statement: string, marker: z.infer<typeof contentMarkerSchema>) {
+  const textFont =
+    marker.type === "Text" && marker.content.textLayout?.fontFamily === "mono" ? ', font="DejaVu Sans Mono"' : "";
   const constructor =
     marker.type === "Text"
-      ? `Text(${JSON.stringify(marker.content.text)}${marker.content.textLayout?.fontWeight === "bold" ? ", weight=BOLD" : ""})`
+      ? `Text(${JSON.stringify(marker.content.text)}${textFont}${marker.content.textLayout?.fontWeight === "bold" ? ", weight=BOLD" : ""})`
       : `MathTex(${marker.content.texParts.map((part) => JSON.stringify(part)).join(", ")})`;
   const variable = marker.variable;
   return (
@@ -1987,7 +2030,7 @@ export function importManimScene(
     const initialPosition = initialPositionFrom(type, suffix, approximatePosition);
     const initialScale = initialScaleFrom(suffix);
     const entity: MutableEntity = {
-      content: entityContent(type, sourceVariable, argumentsSource),
+      content: entityContent(type, sourceVariable, argumentsSource, suffix),
       contentReplacementSafety: initialContentReplacementSafety(type, argumentsSource, suffix),
       dimensions:
         suffixMutatesDimensions(suffix) || (type === "Rectangle" && suffixRotates(suffix))

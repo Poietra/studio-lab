@@ -22,6 +22,8 @@ pub const MAX_TEXT_CUBIC_SEGMENTS_V1: usize = 2_048;
 
 const DEJAVU_SANS_REGULAR: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
 const DEJAVU_SANS_BOLD: &[u8] = include_bytes!("../assets/DejaVuSans-Bold.ttf");
+const DEJAVU_SANS_MONO_REGULAR: &[u8] = include_bytes!("../assets/DejaVuSansMono.ttf");
+const DEJAVU_SANS_MONO_BOLD: &[u8] = include_bytes!("../assets/DejaVuSansMono-Bold.ttf");
 const NOTO_SANS_CJK_JP_REGULAR_JOYO: &[u8] =
     include_bytes!("../assets/NotoSansCJKjp-Regular-Joyo.otf");
 const NOTO_SANS_CJK_JP_BOLD_JOYO: &[u8] = include_bytes!("../assets/NotoSansCJKjp-Bold-Joyo.otf");
@@ -46,11 +48,22 @@ pub enum TextFontWeightV1 {
     Regular,
 }
 
+/// Closed embedded font family selected for plain Text outlines.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextFontFamilyV1 {
+    Mono,
+    #[default]
+    Sans,
+}
+
 /// Bounded plain-text layout owned by the Rust outline compiler.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextOutlineLayoutV1 {
     pub alignment: TextAlignmentV1,
+    #[serde(default)]
+    pub font_family: TextFontFamilyV1,
     #[serde(default)]
     pub font_weight: TextFontWeightV1,
     pub line_height: f64,
@@ -60,6 +73,7 @@ impl Default for TextOutlineLayoutV1 {
     fn default() -> Self {
         Self {
             alignment: TextAlignmentV1::Left,
+            font_family: TextFontFamilyV1::Sans,
             font_weight: TextFontWeightV1::Regular,
             line_height: DEFAULT_TEXT_LINE_HEIGHT_EM,
         }
@@ -162,11 +176,10 @@ impl CompileFailure {
 
 /// Compiles bounded Unicode text with embedded, deterministic font faces.
 ///
-/// Printable ASCII keeps the existing `DejaVu Sans Regular` subset. Text that
-/// needs Japanese glyphs uses a `Noto Sans CJK JP` subset containing the 2,136
-/// Joyo kanji, kana, Japanese punctuation, full-width forms, and Latin text.
-/// Other scripts fail with `glyph-missing` instead of silently substituting a
-/// browser or system font.
+/// Sans text uses `DejaVu Sans` for printable ASCII and a `Noto Sans CJK JP` subset
+/// for Japanese. Mono text uses `DejaVu Sans Mono` for printable ASCII and fails
+/// with `glyph-missing` for unsupported scalars instead of silently changing
+/// families or loading a browser or system font.
 #[must_use]
 pub fn compile_text_outline_v1(request: &TextOutlineRequestV1) -> TextOutlineResultV1 {
     match compile_inner(request) {
@@ -177,30 +190,41 @@ pub fn compile_text_outline_v1(request: &TextOutlineRequestV1) -> TextOutlineRes
 
 fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1, CompileFailure> {
     let text = validate_request(request)?;
-    let (dejavu_bytes, japanese_bytes) = match request.layout.font_weight {
-        TextFontWeightV1::Bold => (DEJAVU_SANS_BOLD, NOTO_SANS_CJK_JP_BOLD_JOYO),
-        TextFontWeightV1::Regular => (DEJAVU_SANS_REGULAR, NOTO_SANS_CJK_JP_REGULAR_JOYO),
-    };
-    let dejavu = Face::parse(dejavu_bytes, 0).map_err(|_| {
+    let (primary_bytes, japanese_bytes) =
+        match (request.layout.font_family, request.layout.font_weight) {
+            (TextFontFamilyV1::Sans, TextFontWeightV1::Bold) => {
+                (DEJAVU_SANS_BOLD, Some(NOTO_SANS_CJK_JP_BOLD_JOYO))
+            }
+            (TextFontFamilyV1::Sans, TextFontWeightV1::Regular) => {
+                (DEJAVU_SANS_REGULAR, Some(NOTO_SANS_CJK_JP_REGULAR_JOYO))
+            }
+            (TextFontFamilyV1::Mono, TextFontWeightV1::Bold) => (DEJAVU_SANS_MONO_BOLD, None),
+            (TextFontFamilyV1::Mono, TextFontWeightV1::Regular) => (DEJAVU_SANS_MONO_REGULAR, None),
+        };
+    let primary = Face::parse(primary_bytes, 0).map_err(|_| {
         CompileFailure::new(
             TextOutlineUnsupportedCodeV1::InternalFailure,
-            "The embedded DejaVu Sans font could not be parsed",
+            "The selected embedded text font could not be parsed",
         )
     })?;
-    let japanese = Face::parse(japanese_bytes, 0).map_err(|_| {
-        CompileFailure::new(
-            TextOutlineUnsupportedCodeV1::InternalFailure,
-            "The embedded Japanese text font could not be parsed",
-        )
-    })?;
+    let japanese = japanese_bytes
+        .map(|bytes| {
+            Face::parse(bytes, 0).map_err(|_| {
+                CompileFailure::new(
+                    TextOutlineUnsupportedCodeV1::InternalFailure,
+                    "The embedded Japanese text font could not be parsed",
+                )
+            })
+        })
+        .transpose()?;
     let face = if text
         .chars()
         .filter(|character| *character != '\n')
-        .all(|character| dejavu.glyph_index(character).is_some())
+        .all(|character| primary.glyph_index(character).is_some())
     {
-        &dejavu
+        &primary
     } else {
-        &japanese
+        japanese.as_ref().unwrap_or(&primary)
     };
     let line_widths = text
         .split('\n')
@@ -499,6 +523,7 @@ mod tests {
             "Wide\ni",
             TextOutlineLayoutV1 {
                 alignment: TextAlignmentV1::Center,
+                font_family: TextFontFamilyV1::Sans,
                 font_weight: TextFontWeightV1::Regular,
                 line_height: DEFAULT_TEXT_LINE_HEIGHT_EM,
             },
@@ -507,6 +532,7 @@ mod tests {
             "Wide\ni",
             TextOutlineLayoutV1 {
                 alignment: TextAlignmentV1::Right,
+                font_family: TextFontFamilyV1::Sans,
                 font_weight: TextFontWeightV1::Regular,
                 line_height: 2.0,
             },
@@ -519,6 +545,7 @@ mod tests {
                 "Wide\ni",
                 TextOutlineLayoutV1 {
                     alignment: TextAlignmentV1::Right,
+                    font_family: TextFontFamilyV1::Sans,
                     font_weight: TextFontWeightV1::Regular,
                     line_height: 2.0,
                 },
@@ -557,6 +584,40 @@ mod tests {
         missing.layout = bold;
         assert!(matches!(
             compile_text_outline_v1(&missing),
+            TextOutlineResultV1::Unsupported(TextOutlineUnsupportedV1 {
+                code: TextOutlineUnsupportedCodeV1::GlyphMissing,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn sans_and_mono_use_distinct_real_faces_for_regular_and_bold_ascii() {
+        for font_weight in [TextFontWeightV1::Regular, TextFontWeightV1::Bold] {
+            let sans = compiled_with_layout(
+                "iiWW 0123",
+                TextOutlineLayoutV1 {
+                    font_family: TextFontFamilyV1::Sans,
+                    font_weight,
+                    ..TextOutlineLayoutV1::default()
+                },
+            );
+            let mono = compiled_with_layout(
+                "iiWW 0123",
+                TextOutlineLayoutV1 {
+                    font_family: TextFontFamilyV1::Mono,
+                    font_weight,
+                    ..TextOutlineLayoutV1::default()
+                },
+            );
+            assert_ne!(sans.path, mono.path);
+            validate_cubic_path_v1(&mono.path).expect("mono Text path must be valid");
+        }
+
+        let mut unsupported = TextOutlineRequestV1::new("日本語");
+        unsupported.layout.font_family = TextFontFamilyV1::Mono;
+        assert!(matches!(
+            compile_text_outline_v1(&unsupported),
             TextOutlineResultV1::Unsupported(TextOutlineUnsupportedV1 {
                 code: TextOutlineUnsupportedCodeV1::GlyphMissing,
                 ..

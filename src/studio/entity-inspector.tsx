@@ -134,6 +134,7 @@ export function EntityInspectorEditor({
           "y",
           "content",
           "textAlignment",
+          "textFontFamily",
           "textFontSize",
           "textFontWeight",
           "textLineHeight",
@@ -258,6 +259,23 @@ export function EntityInspectorEditor({
                       <option value="right">Right</option>
                     </select>
                     <FieldError entityId={entity.id} error={errors.textAlignment} field="textAlignment" />
+                  </label>
+                  <label className="text-[10px] text-zinc-500">
+                    Family
+                    <select
+                      aria-label={`Text font family of ${entityLabel(entity)}`}
+                      aria-describedby={errors.textFontFamily ? fieldErrorId(entity.id, "textFontFamily") : undefined}
+                      aria-invalid={errors.textFontFamily ? "true" : undefined}
+                      className={cn(inputClass, errors.textFontFamily && "border-red-800")}
+                      data-inspector-field="textFontFamily"
+                      onChange={(event) => update("textFontFamily", event.currentTarget.value)}
+                      ref={restoreFieldRef("textFontFamily", restoreFocus, onFocusRestored)}
+                      value={values.textFontFamily ?? "sans"}
+                    >
+                      <option value="sans">Sans</option>
+                      <option value="mono">Mono</option>
+                    </select>
+                    <FieldError entityId={entity.id} error={errors.textFontFamily} field="textFontFamily" />
                   </label>
                   <label className="text-[10px] text-zinc-500">
                     Size (scene units)

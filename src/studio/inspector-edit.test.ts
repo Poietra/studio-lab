@@ -29,7 +29,7 @@ function studioTextEntity() {
 }
 
 describe("Inspector field validation", () => {
-  it("offers only real Regular and Bold weights for Studio-created Text", () => {
+  it("offers only bundled Sans/Mono families and real Regular/Bold weights for Studio-created Text", () => {
     const markup = renderToStaticMarkup(
       createElement(EntityInspectorEditor, {
         entity: studioTextEntity(),
@@ -39,6 +39,9 @@ describe("Inspector field validation", () => {
       }),
     );
     expect(markup).toContain('aria-label="Text font weight of energy"');
+    expect(markup).toContain('aria-label="Text font family of energy"');
+    expect(markup).toContain('<option value="sans" selected="">Sans</option>');
+    expect(markup).toContain('<option value="mono">Mono</option>');
     expect(markup).toContain('<option value="regular" selected="">Regular</option>');
     expect(markup).toContain('<option value="bold">Bold</option>');
   });
@@ -75,7 +78,13 @@ describe("Inspector field validation", () => {
           displayLines: ["日本語で動画を作る", "こんにちは"],
           label: undefined,
           text: "日本語で動画を作る\nこんにちは",
-          textLayout: { alignment: "left", fontSize: 1, fontWeight: "regular", lineHeight: 1.2 },
+          textLayout: {
+            alignment: "left",
+            fontFamily: "sans",
+            fontSize: 1,
+            fontWeight: "regular",
+            lineHeight: 1.2,
+          },
         },
       },
       kind: "valid",
@@ -95,6 +104,7 @@ describe("Inspector field validation", () => {
         entity,
         values(entity, {
           textAlignment: "center",
+          textFontFamily: "mono",
           textFontSize: "1.5",
           textFontWeight: "bold",
           textLineHeight: "1.8",
@@ -106,7 +116,13 @@ describe("Inspector field validation", () => {
           displayLines: ["energy"],
           label: undefined,
           text: "energy",
-          textLayout: { alignment: "center", fontSize: 1.5, fontWeight: "bold", lineHeight: 1.8 },
+          textLayout: {
+            alignment: "center",
+            fontFamily: "mono",
+            fontSize: 1.5,
+            fontWeight: "bold",
+            lineHeight: 1.8,
+          },
         },
       },
       kind: "valid",
