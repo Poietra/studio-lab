@@ -181,6 +181,11 @@ import {
   type ShapeResizeKind,
   sameShapeGeometry,
 } from "./studio/shape-resize";
+import {
+  createSingleScaleResizeGesture,
+  resolveSingleScaleResize,
+  type SingleScaleResizeGesture,
+} from "./studio/single-scale-resize-gesture";
 import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimelineWithProjection } from "./studio/source-timeline";
 import { preparedGeometryBounds, verifiedPreviewGeometryForStudioEntity } from "./studio/studio-canvas";
 import { StudioExportControl } from "./studio/studio-export-control";
@@ -281,8 +286,7 @@ type CanvasResizeBase = Readonly<{
 }>;
 type CanvasScaleResizeState = CanvasResizeBase &
   Readonly<{
-    center: Readonly<{ x: number; y: number }>;
-    fromScale: number;
+    gesture: SingleScaleResizeGesture;
     mode: "scale";
   }>;
 type CanvasShapeResizeState = CanvasResizeBase &
@@ -332,19 +336,12 @@ function resolvedCanvasDrag(drag: CanvasDragState, point: Readonly<{ x: number; 
   });
 }
 
-function resizedEntityScale(resize: CanvasScaleResizeState, point: Readonly<{ x: number; y: number }>) {
-  const startVector = {
-    x: resize.start.x - resize.center.x,
-    y: resize.start.y - resize.center.y,
-  };
-  const pointerVector = {
-    x: point.x - resize.center.x,
-    y: point.y - resize.center.y,
-  };
-  const squaredLength = startVector.x ** 2 + startVector.y ** 2;
-  const ratio =
-    squaredLength > 1 ? (pointerVector.x * startVector.x + pointerVector.y * startVector.y) / squaredLength : 1;
-  return clamp(resize.fromScale * ratio, MIN_ENTITY_SCALE, MAX_ENTITY_SCALE);
+function resizedEntityScale(
+  resize: CanvasScaleResizeState,
+  point: Readonly<{ x: number; y: number }>,
+  disableSnap: boolean,
+) {
+  return resolveSingleScaleResize(resize.gesture, point, disableSnap);
 }
 
 function resizedShapeGeometry(resize: CanvasShapeResizeState, point: Readonly<{ x: number; y: number }>) {
@@ -3156,6 +3153,7 @@ export function App({
     event: PointerEvent<HTMLButtonElement>,
     entityId: string,
     direction: ResizeHandleDirection,
+    preparedResizeBasis: PreparedMoveSnapBasis | null,
   ) {
     event.stopPropagation();
     if (
@@ -3198,6 +3196,19 @@ export function App({
       setDraftError(`Studio cannot resize ${entityLabel(entity)} safely: ${unknownGeometry.reason}`);
       return;
     }
+    const shapeResizeAvailable =
+      shape !== null &&
+      entity.geometry.dimensions.kind === "known" &&
+      entity.geometry.position.kind === "known" &&
+      hasShapeDimensions(shape, entity.geometry.dimensions.value);
+    const preparedScaleResizeAvailable =
+      preparedResizeBasis !== null &&
+      preparedResizeBasis.entityIds.length === 1 &&
+      preparedResizeBasis.entityIds[0] === entityId;
+    if (!shapeResizeAvailable && !preparedScaleResizeAvailable) {
+      setDraftError(`Studio cannot resize ${entityLabel(entity)} until its prepared WebGPU bounds are available.`);
+      return;
+    }
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return;
     const sourceScene = projectRuntimeSceneToSourceTimeline(
@@ -3213,13 +3224,16 @@ export function App({
       targetEntityIds: [entityId],
     });
     if (!anchor) return;
-    const wrapper = event.currentTarget.closest<HTMLElement>("[data-studio-entity-wrapper]");
-    const object = wrapper?.querySelector<HTMLElement>("[data-studio-entity]");
-    const bounds = object?.getBoundingClientRect();
-    const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect();
-    if (!bounds || !canvasBounds) return;
+    const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]")?.getBoundingClientRect();
+    if (!canvasBounds) return;
     setSelectedObjectIds([entityId]);
     setIsPlaying(false);
+    const surfaceBounds = {
+      height: canvasBounds.height,
+      left: canvasBounds.left,
+      top: canvasBounds.top,
+      width: canvasBounds.width,
+    };
     const base = {
       canvasScale: {
         x: STUDIO_VIEWPORT.width / canvasBounds.width,
@@ -3231,12 +3245,7 @@ export function App({
       sourceAnchor: anchor.sourceTime,
       start: { x: event.clientX, y: event.clientY },
     } as const;
-    if (
-      shape &&
-      entity.geometry.dimensions.kind === "known" &&
-      entity.geometry.position.kind === "known" &&
-      hasShapeDimensions(shape, entity.geometry.dimensions.value)
-    ) {
+    if (shapeResizeAvailable && shape && entity.geometry.dimensions.kind === "known") {
       canvasResize.current = {
         ...base,
         cameraScale: Math.max(projection?.camera.scale ?? 1, Number.EPSILON),
@@ -3252,13 +3261,27 @@ export function App({
         position: entity.position,
       });
     } else {
+      if (!preparedResizeBasis) return;
+      const gesture = createSingleScaleResizeGesture({
+        basis: preparedResizeBasis,
+        entityId,
+        frame: { bottom: STUDIO_VIEWPORT.height, left: 0, right: STUDIO_VIEWPORT.width, top: 0 },
+        fromScale: entity.scale,
+        maximumScale: MAX_ENTITY_SCALE,
+        minimumScale: MIN_ENTITY_SCALE,
+        startClient: { x: event.clientX, y: event.clientY },
+        surfaceBounds,
+      });
+      if (!gesture) {
+        setDraftError(`Studio cannot resize ${entityLabel(entity)} until its prepared WebGPU bounds are available.`);
+        return;
+      }
       canvasResize.current = {
         ...base,
-        center: { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 },
-        fromScale: entity.scale,
+        gesture,
         mode: "scale",
       };
-      gesturePreviewStore.setScalePreview({ entityId, scale: entity.scale });
+      gesturePreviewStore.setScalePreview({ entityId, guides: [], scale: entity.scale });
     }
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -3271,9 +3294,10 @@ export function App({
       const geometry = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
       gesturePreviewStore.setGeometryPreview({ ...geometry, entityId: resize.entityId });
     } else {
+      const preview = resizedEntityScale(resize, { x: event.clientX, y: event.clientY }, event.altKey);
       gesturePreviewStore.setScalePreview({
         entityId: resize.entityId,
-        scale: resizedEntityScale(resize, { x: event.clientX, y: event.clientY }),
+        ...preview,
       });
     }
   }
@@ -3299,11 +3323,11 @@ export function App({
       );
       return;
     }
-    const targetScale = resizedEntityScale(resize, { x: event.clientX, y: event.clientY });
-    if (Math.abs(targetScale - resize.fromScale) < 0.01) return;
+    const targetScale = resizedEntityScale(resize, { x: event.clientX, y: event.clientY }, event.altKey).scale;
+    if (Math.abs(targetScale - resize.gesture.fromScale) < 0.01) return;
     installEntityScaleDraft(
       resize.entityId,
-      resize.fromScale,
+      resize.gesture.fromScale,
       targetScale,
       interactionMode === "animate",
       `studio-resize-${crypto.randomUUID()}`,

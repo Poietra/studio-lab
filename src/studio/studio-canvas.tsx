@@ -85,6 +85,7 @@ export type StudioCanvasProps = Readonly<{
     event: PointerEvent<HTMLButtonElement>,
     entityId: string,
     direction: ResizeHandleDirection,
+    basis: PreparedMoveSnapBasis | null,
   ) => void;
   onEntityResizePointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
@@ -289,6 +290,7 @@ const RESIZE_HANDLES: readonly Readonly<{
 ];
 
 function EntityResizeHandles({
+  basis,
   cameraScale,
   displayedScale,
   entity,
@@ -299,12 +301,18 @@ function EntityResizeHandles({
   onPointerUp,
   shape,
 }: Readonly<{
+  basis: PreparedMoveSnapBasis | null;
   cameraScale: number;
   displayedScale: number;
   entity: ProjectedEntity;
   onCancel: (event: PointerEvent<HTMLButtonElement>) => void;
   onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string, direction: ResizeHandleDirection) => void;
-  onPointerDown: (event: PointerEvent<HTMLButtonElement>, entityId: string, direction: ResizeHandleDirection) => void;
+  onPointerDown: (
+    event: PointerEvent<HTMLButtonElement>,
+    entityId: string,
+    direction: ResizeHandleDirection,
+    basis: PreparedMoveSnapBasis | null,
+  ) => void;
   onPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   shape: "circle" | "rectangle" | null;
@@ -336,11 +344,11 @@ function EntityResizeHandles({
         onKeyDown={(event) => onKeyDown(event, entity.id, handle.direction)}
         onLostPointerCapture={onCancel}
         onPointerCancel={onCancel}
-        onPointerDown={(event) => onPointerDown(event, entity.id, handle.direction)}
+        onPointerDown={(event) => onPointerDown(event, entity.id, handle.direction, basis)}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         style={{ scale: inverseResizeHandleScale(displayedScale, cameraScale) }}
-        title={`Drag ${handle.label} to resize · ${arrowKeys.replaceAll("Arrow", "")} adjust precisely`}
+        title={`Drag ${handle.label} to resize${shape === null ? " · Hold Alt/Option to bypass snapping" : ""} · ${arrowKeys.replaceAll("Arrow", "")} adjust precisely`}
         type="button"
       />
     );
@@ -894,6 +902,13 @@ export function StudioCanvas({
             // identity or a Runtime Trace candidate.
             const runtimeGeometry = preparedIdentity.geometry;
             const singleMoveSnapBounds = preparedGeometryBounds(runtimeGeometry, frame);
+            const singleResizeBasis: PreparedMoveSnapBasis | null = singleMoveSnapBounds
+              ? {
+                  bounds: singleMoveSnapBounds,
+                  entityIds: [entity.id],
+                  objects: preparedObjectSnapTargets?.filter(({ entityId }) => entityId !== entity.id),
+                }
+              : null;
             const moveSnapBasis =
               selected && selectedIds.size > 1
                 ? compositeMoveSnapBasis
@@ -942,7 +957,8 @@ export function StudioCanvas({
               !dimensionsUnknown &&
               !positionUnknown &&
               !scaleUnknown;
-            const resizeAvailable = !scaleUnknown && !runtimePositionOnly;
+            const resizeAvailable =
+              !scaleUnknown && !runtimePositionOnly && (shapeResizeAvailable || singleResizeBasis !== null);
             const remoteSelectorOrdinals = remoteSelectorOrdinalsByEntityId.get(entity.id) ?? [];
             return (
               <div
@@ -1050,6 +1066,7 @@ export function StudioCanvas({
                   </button>
                   {selected && selectedIds.size === 1 && !mutationLocked && resizeAvailable ? (
                     <EntityResizeHandles
+                      basis={singleResizeBasis}
                       cameraScale={cameraScale}
                       displayedScale={displayedScale}
                       entity={entity}
@@ -1086,7 +1103,7 @@ export function StudioCanvas({
             );
           })}
         </div>
-        <AlignmentGuides guides={dragPreview?.guides ?? groupResizePreview?.guides ?? []} />
+        <AlignmentGuides guides={dragPreview?.guides ?? groupResizePreview?.guides ?? scalePreview?.guides ?? []} />
         {compositeSelectionBounds ? (
           <div
             aria-label={`${selectedIds.size} objects selected`}

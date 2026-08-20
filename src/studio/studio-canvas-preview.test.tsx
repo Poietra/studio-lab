@@ -1160,6 +1160,17 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-studio-alignment-guide="frame-right"');
   });
 
+  it("renders the guide carried by a single scale preview", () => {
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        scalePreview={{ entityId: CIRCLE_ENTITY.id, guides: ["frame-bottom"], scale: 1.5 }}
+      />,
+    );
+
+    expect(markup).toContain('data-studio-alignment-guide="frame-bottom"');
+  });
+
   it("selects only the three LineJoints leaves without starting a source rewrite gesture", () => {
     const triangles = [lineJointsTriangle("t1", 120), lineJointsTriangle("t2", 320), lineJointsTriangle("t3", 520)];
     const selectionOnlyTriangles = triangles.map((entity) => ({ ...entity, present: false }));

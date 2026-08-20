@@ -18,7 +18,7 @@ describe("entityDragDelta", () => {
 
 describe("entityPreviewScale", () => {
   it("overrides only the entity being resized", () => {
-    const preview = { entityId: "circle", scale: 1.75 };
+    const preview = { entityId: "circle", guides: [], scale: 1.75 };
 
     expect(entityPreviewScale(preview, { id: "circle", scale: 1 })).toBe(1.75);
     expect(entityPreviewScale(preview, { id: "other", scale: 0.8 })).toBe(0.8);

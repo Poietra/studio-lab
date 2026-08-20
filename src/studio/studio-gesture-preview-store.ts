@@ -87,7 +87,12 @@ function sameGeometryPreview(left: EntityGeometryPreview | null, right: EntityGe
 }
 
 function sameScalePreview(left: EntityScalePreview | null, right: EntityScalePreview) {
-  return left !== null && left.entityId === right.entityId && sameNumber(left.scale, right.scale);
+  return (
+    left !== null &&
+    left.entityId === right.entityId &&
+    sameNumber(left.scale, right.scale) &&
+    sameAlignmentGuides(left.guides, right.guides)
+  );
 }
 
 function sameRotationPreview(left: EntityRotationPreview | null, right: EntityRotationPreview) {
