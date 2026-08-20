@@ -6,6 +6,7 @@ import {
   MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
   PROJECT_FRAGMENT_SHADER_ID_V1,
   PROJECT_FRAGMENT_SHADER_REVISION_V1,
+  STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
   STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "./fragment-material-registry";
@@ -40,6 +41,15 @@ describe("fragmentMaterialRegistryV1Schema", () => {
         ],
       }),
     ).toMatchObject({ materials: [{ textureSlot: "texture2d" }] });
+  });
+
+  it("reads both Gradient colors from the fixed eight-scalar host ABI", () => {
+    expect(STUDIO_GRADIENT_FRAGMENT_SOURCE_V1).toContain(
+      "vec3<f32>(host.parameters_0.z, host.parameters_0.w, host.parameters_1.x)",
+    );
+    expect(STUDIO_GRADIENT_FRAGMENT_SOURCE_V1).toContain(
+      "vec3<f32>(host.parameters_1.y, host.parameters_1.z, host.parameters_1.w)",
+    );
   });
 
   it("rejects reserved, duplicate, and oversized project sources", () => {

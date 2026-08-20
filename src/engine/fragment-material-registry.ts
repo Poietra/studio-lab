@@ -112,8 +112,8 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
         0.0,
         1.0
     );
-    let cool = vec3<f32>(0.2, 0.55, 1.0);
-    let warm = vec3<f32>(1.0, 0.3, 0.65);
+    let cool = vec3<f32>(host.parameters_0.z, host.parameters_0.w, host.parameters_1.x);
+    let warm = vec3<f32>(host.parameters_1.y, host.parameters_1.z, host.parameters_1.w);
     let tint = cool * (1.0 - amount) + warm * amount;
     return vec4<f32>(input.base_color.rgb * tint, input.base_color.a);
 }

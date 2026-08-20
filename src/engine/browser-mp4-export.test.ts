@@ -81,7 +81,11 @@ describe("runBrowserMp4ExportV1", () => {
               ...first.appearance,
               fill: {
                 ...first.appearance.fill,
-                fragmentMaterial: { parameters: [0.75, 2.25], revision: 1, shaderId: "project-material-1" },
+                fragmentMaterial: {
+                  parameters: [0.75, 2.25, 0.1, 0.2, 0.3, 0.9, 0.4, 0.1],
+                  revision: 1,
+                  shaderId: "project-material-1",
+                },
               },
             },
           },
@@ -108,7 +112,7 @@ describe("runBrowserMp4ExportV1", () => {
     const exportedBundle = sceneIrBundleV1Schema.parse(JSON.parse(new TextDecoder().decode(request.snapshotJson)));
     const exported = exportedBundle.scene.entities[0];
     expect(exported?.appearance.kind === "vector" ? exported.appearance.fill?.fragmentMaterial : null).toMatchObject({
-      parameters: [0.75, 2.25],
+      parameters: [0.75, 2.25, 0.1, 0.2, 0.3, 0.9, 0.4, 0.1],
       shaderId: "project-material-1",
     });
     expect(JSON.parse(new TextDecoder().decode(request.fragmentMaterialRegistryJson))).toEqual(registry);

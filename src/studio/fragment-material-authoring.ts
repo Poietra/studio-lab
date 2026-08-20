@@ -59,7 +59,31 @@ export type StudioFragmentMaterialF32ParameterV1 = Readonly<{
   type: "f32";
 }>;
 
-export type StudioFragmentMaterialParameterSchemaV1 = readonly StudioFragmentMaterialF32ParameterV1[];
+export type StudioFragmentMaterialRgbV1 = readonly [number, number, number];
+
+export type StudioFragmentMaterialRgbParameterV1 = Readonly<{
+  default: StudioFragmentMaterialRgbV1;
+  name: string;
+  type: "rgb";
+}>;
+
+export type StudioFragmentMaterialParameterV1 =
+  | StudioFragmentMaterialF32ParameterV1
+  | StudioFragmentMaterialRgbParameterV1;
+
+export type StudioFragmentMaterialParameterSchemaV1 = readonly StudioFragmentMaterialParameterV1[];
+export type StudioFragmentMaterialParameterValueV1 = number | StudioFragmentMaterialRgbV1;
+
+export function studioFragmentMaterialParameterLayoutV1(schema: StudioFragmentMaterialParameterSchemaV1) {
+  const defaults: number[] = [];
+  const entries: Readonly<{ offset: number; parameter: StudioFragmentMaterialParameterV1 }>[] = [];
+  for (const parameter of schema) {
+    entries.push({ offset: defaults.length, parameter });
+    if (parameter.type === "f32") defaults.push(parameter.default);
+    else defaults.push(...parameter.default);
+  }
+  return { defaults, entries } as const;
+}
 
 export type StudioFragmentMaterialPresetId = "gradient" | "pulse" | "wave";
 
@@ -92,15 +116,16 @@ const fragmentMaterialGlslSourceSchema = z
   .strict();
 
 const finiteF32Schema = z.number().finite().min(-MAX_FINITE_F32).max(MAX_FINITE_F32);
+const fragmentMaterialParameterNameSchema = z
+  .string()
+  .min(1)
+  .max(40)
+  .refine((name) => name === name.trim(), "Parameter names must not have surrounding whitespace.")
+  .refine((name) => !/[\u0000-\u001f\u007f]/.test(name), "Parameter names must not contain control characters.");
 const fragmentMaterialF32ParameterSchema = z
   .object({
     default: finiteF32Schema,
-    name: z
-      .string()
-      .min(1)
-      .max(40)
-      .refine((name) => name === name.trim(), "Parameter names must not have surrounding whitespace.")
-      .refine((name) => !/[\u0000-\u001f\u007f]/.test(name), "Parameter names must not contain control characters."),
+    name: fragmentMaterialParameterNameSchema,
     range: z
       .object({
         max: finiteF32Schema,
@@ -126,11 +151,26 @@ const fragmentMaterialF32ParameterSchema = z
       });
     }
   });
+const unitF32Schema = finiteF32Schema.min(0).max(1);
+const fragmentMaterialRgbParameterSchema = z
+  .object({
+    default: z.tuple([unitF32Schema, unitF32Schema, unitF32Schema]),
+    name: fragmentMaterialParameterNameSchema,
+    type: z.literal("rgb"),
+  })
+  .strict();
 
 const fragmentMaterialParameterSchema = z
-  .array(fragmentMaterialF32ParameterSchema)
+  .array(z.discriminatedUnion("type", [fragmentMaterialF32ParameterSchema, fragmentMaterialRgbParameterSchema]))
   .max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1)
   .superRefine((parameters, context) => {
+    const layout = studioFragmentMaterialParameterLayoutV1(parameters);
+    if (layout.defaults.length > MAX_FRAGMENT_MATERIAL_PARAMETERS_V1) {
+      context.addIssue({
+        code: "custom",
+        message: `Parameter schema accepts at most ${MAX_FRAGMENT_MATERIAL_PARAMETERS_V1} scalar values.`,
+      });
+    }
     const names = new Set<string>();
     for (const [index, parameter] of parameters.entries()) {
       const folded = parameter.name.toLowerCase();
@@ -154,6 +194,8 @@ export const STUDIO_GRADIENT_FRAGMENT_PARAMETER_SCHEMA_V1: StudioFragmentMateria
     type: "f32",
   }),
   Object.freeze({ default: 1.5, name: "Spread", range: Object.freeze({ max: 4, min: 0.25, step: 0.05 }), type: "f32" }),
+  Object.freeze({ default: Object.freeze([0.2, 0.55, 1] as const), name: "Cool", type: "rgb" }),
+  Object.freeze({ default: Object.freeze([1, 0.3, 0.65] as const), name: "Warm", type: "rgb" }),
 ]);
 
 export const STUDIO_PULSE_FRAGMENT_PARAMETER_SCHEMA_V1: StudioFragmentMaterialParameterSchemaV1 = Object.freeze([
@@ -248,21 +290,35 @@ export const projectFragmentMaterialStateV1Schema = rawProjectFragmentMaterialSt
           });
         }
         const parameterSchema = state.parameterSchemasByShaderId[assignment.shaderId];
-        if (parameterSchema && assignment.parameters.length !== parameterSchema.length) {
+        const parameterLayout = parameterSchema ? studioFragmentMaterialParameterLayoutV1(parameterSchema) : null;
+        if (parameterLayout && assignment.parameters.length !== parameterLayout.defaults.length) {
           context.addIssue({
             code: "custom",
-            message: "The material reference must contain one value for every declared parameter.",
+            message: "The material reference must contain every declared scalar parameter value.",
             path: ["assignmentsByScene", sceneId, entityId, "parameters"],
           });
         }
-        parameterSchema?.forEach((parameter, index) => {
-          const value = assignment.parameters[index];
-          if (value !== undefined && (value < parameter.range.min || value > parameter.range.max)) {
-            context.addIssue({
-              code: "custom",
-              message: `${parameter.name} must be between ${parameter.range.min} and ${parameter.range.max}.`,
-              path: ["assignmentsByScene", sceneId, entityId, "parameters", index],
-            });
+        parameterLayout?.entries.forEach(({ offset, parameter }) => {
+          if (parameter.type === "f32") {
+            const value = assignment.parameters[offset];
+            if (value === undefined || value < parameter.range.min || value > parameter.range.max) {
+              context.addIssue({
+                code: "custom",
+                message: `${parameter.name} must be between ${parameter.range.min} and ${parameter.range.max}.`,
+                path: ["assignmentsByScene", sceneId, entityId, "parameters", offset],
+              });
+            }
+            return;
+          }
+          for (let component = 0; component < 3; component += 1) {
+            const value = assignment.parameters[offset + component];
+            if (value === undefined || value < 0 || value > 1) {
+              context.addIssue({
+                code: "custom",
+                message: `${parameter.name} color components must be between 0 and 1.`,
+                path: ["assignmentsByScene", sceneId, entityId, "parameters", offset + component],
+              });
+            }
           }
         });
       }
@@ -625,9 +681,9 @@ export function assignStudioFragmentMaterialV1(
   assignmentsByScene[input.sceneId] = {
     ...assignmentsByScene[input.sceneId],
     [input.entityId]: {
-      parameters: state.parameterSchemasByShaderId[activeMaterial.shaderId]?.map((parameter) => parameter.default) ?? [
-        0.35, 8,
-      ],
+      parameters: state.parameterSchemasByShaderId[activeMaterial.shaderId]
+        ? studioFragmentMaterialParameterLayoutV1(state.parameterSchemasByShaderId[activeMaterial.shaderId]).defaults
+        : [0.35, 8],
       revision: activeMaterial.revision,
       shaderId: activeMaterial.shaderId,
       ...(input.texture ? { texture: input.texture } : {}),
@@ -670,23 +726,42 @@ export function updateStudioFragmentMaterialTextureV1(
 
 export function updateStudioFragmentMaterialParameterV1(
   state: ProjectFragmentMaterialStateV1,
-  input: Readonly<{ entityId: string; name: string; sceneId: string; value: number }>,
+  input: Readonly<{
+    entityId: string;
+    name: string;
+    sceneId: string;
+    value: StudioFragmentMaterialParameterValueV1;
+  }>,
 ): ProjectFragmentMaterialStateV1 {
   const assignment = state.assignmentsByScene[input.sceneId]?.[input.entityId];
   if (!assignment) throw new Error("The selected object no longer has a material.");
   const parameterSchema = state.parameterSchemasByShaderId[assignment.shaderId];
   if (!parameterSchema) throw new Error("This material does not declare editable parameters.");
-  const parameterIndex = parameterSchema.findIndex((parameter) => parameter.name === input.name);
-  if (parameterIndex < 0) throw new Error("The material parameter no longer exists.");
-  const parameter = parameterSchema[parameterIndex];
-  if (!parameter || !Number.isFinite(input.value) || Math.abs(input.value) > MAX_FINITE_F32) {
-    throw new Error("The material parameter must be a finite f32 value.");
+  const entry = studioFragmentMaterialParameterLayoutV1(parameterSchema).entries.find(
+    ({ parameter }) => parameter.name === input.name,
+  );
+  if (!entry) throw new Error("The material parameter no longer exists.");
+  const replacement =
+    entry.parameter.type === "f32" && typeof input.value === "number"
+      ? [input.value]
+      : entry.parameter.type === "rgb" && Array.isArray(input.value) && input.value.length === 3
+        ? [...input.value]
+        : null;
+  if (!replacement || replacement.some((value) => !Number.isFinite(value) || Math.abs(value) > MAX_FINITE_F32)) {
+    throw new Error("The material parameter value does not match its declared type.");
   }
-  if (input.value < parameter.range.min || input.value > parameter.range.max) {
-    throw new Error(`${parameter.name} must be between ${parameter.range.min} and ${parameter.range.max}.`);
+  if (entry.parameter.type === "f32") {
+    const value = replacement[0]!;
+    if (value < entry.parameter.range.min || value > entry.parameter.range.max) {
+      throw new Error(
+        `${entry.parameter.name} must be between ${entry.parameter.range.min} and ${entry.parameter.range.max}.`,
+      );
+    }
+  } else if (replacement.some((value) => value < 0 || value > 1)) {
+    throw new Error(`${entry.parameter.name} color components must be between 0 and 1.`);
   }
   const parameters = [...assignment.parameters];
-  parameters[parameterIndex] = input.value;
+  parameters.splice(entry.offset, replacement.length, ...replacement);
   return parseProjectFragmentMaterialState({
     ...state,
     assignmentsByScene: {

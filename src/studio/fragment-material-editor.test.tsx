@@ -1,7 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "../engine/fragment-material-registry";
+import {
+  STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
+  STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+} from "../engine/fragment-material-registry";
 import {
   FragmentMaterialEditor,
   type FragmentMaterialEditorItem,
@@ -147,6 +150,54 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain("WGSL compilation failed");
     expect(markup).toContain("material.glsl:2:12: expected &#x27;)&#x27;");
     expect(markup).toContain("void main( {");
+  });
+
+  it("renders native Cool and Warm color controls from their flat host parameter slots", () => {
+    const markup = renderToStaticMarkup(
+      <FragmentMaterialEditor
+        active
+        assignedParameters={[0.75, 1.5, 0.2, 0.55, 1, 1, 0.3, 0.65]}
+        assignedShaderId="gradient"
+        assignedTexture={null}
+        available
+        compileError={null}
+        materials={[
+          {
+            assignmentCount: 1,
+            glslSource: null,
+            name: "Gradient",
+            parameterSchema: [
+              { default: 0.75, name: "Angle", range: { max: 3.14, min: -3.14, step: 0.05 }, type: "f32" },
+              { default: 1.5, name: "Spread", range: { max: 4, min: 0.25, step: 0.05 }, type: "f32" },
+              { default: [0.2, 0.55, 1], name: "Cool", type: "rgb" },
+              { default: [1, 0.3, 0.65], name: "Warm", type: "rgb" },
+            ],
+            revision: 1,
+            shaderId: "gradient",
+            source: STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
+          },
+        ]}
+        onAssign={vi.fn()}
+        onCreate={vi.fn(() => null)}
+        onCreatePreset={vi.fn(() => null)}
+        onCreateTexturePreset={vi.fn(() => null)}
+        onDuplicate={vi.fn(() => null)}
+        onImportGlsl={vi.fn(async () => undefined)}
+        onRemoveAsset={vi.fn()}
+        onRename={vi.fn()}
+        onUpdateSource={vi.fn()}
+        onUpdateParameter={vi.fn()}
+        onUpdateTexture={vi.fn()}
+        textureAssets={[]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Cool material color"');
+    expect(markup).toContain('aria-label="Warm material color"');
+    expect(markup).toContain('type="color" value="#338cff"');
+    expect(markup).toContain('type="color" value="#ff4da6"');
+    expect(markup).toContain('aria-label="Angle material parameter"');
+    expect(markup).toContain('aria-label="Spread material parameter"');
   });
 
   it("shows the selected object's project PNG and sampler for a texture material", () => {
