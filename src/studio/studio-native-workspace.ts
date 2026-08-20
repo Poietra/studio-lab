@@ -72,30 +72,30 @@ function nativeSceneId(documentKey: string) {
 export function createStudioNativeBlankScene(documentKey: string): StudioNativeWorkspaceScene {
   assertDocumentKey(documentKey);
   const sceneId = nativeSceneId(documentKey);
-  return Object.freeze({
-    anchors: Object.freeze([]),
-    identity: Object.freeze({ documentKey, origin: "studio-native" }),
-    importOutcomes: Object.freeze([]),
+  return {
+    anchors: [],
+    identity: { documentKey, origin: "studio-native" },
+    importOutcomes: [],
     name: STUDIO_NATIVE_DEFAULT_SCENE_NAME,
     nextSceneId: null,
-    runtimeSceneState: Object.freeze({
-      constraintGraph: Object.freeze({ constraints: Object.freeze([]) }),
+    runtimeSceneState: {
+      constraintGraph: { constraints: [] },
       duration: STUDIO_NATIVE_DEFAULT_SCENE_DURATION,
-      eventTrack: Object.freeze({ events: Object.freeze([]) }),
-      objectGraph: Object.freeze({ entities: Object.freeze({}), lineage: Object.freeze([]) }),
-      propertyChannels: Object.freeze({}),
-      provenanceGraph: Object.freeze({ records: Object.freeze([]) }),
+      eventTrack: { events: [] },
+      objectGraph: { entities: {}, lineage: [] },
+      propertyChannels: {},
+      provenanceGraph: { records: [] },
       sceneId,
       version: STUDIO_STATE_VERSION,
-    }),
+    },
     sceneId,
-    sourceVariables: Object.freeze({}),
-    staticSemanticState: Object.freeze({
-      entities: Object.freeze([]),
-      unknowns: Object.freeze([]),
+    sourceVariables: {},
+    staticSemanticState: {
+      entities: [],
+      unknowns: [],
       version: STUDIO_STATE_VERSION,
-    }),
-  });
+    },
+  };
 }
 
 /**
@@ -110,28 +110,24 @@ export function projectStudioWorkspaceScenes(workspace: ManimWorkspaceView): Stu
       throw new TypeError("A Studio-native workspace cannot also expose imported Manim sources.");
     }
     const scene = createStudioNativeBlankScene(workspace.nativeDocument.documentKey);
-    return Object.freeze({
+    return {
       documentKey: workspace.nativeDocument.documentKey,
       kind: "studio-native",
-      scenes: Object.freeze([scene]) as readonly [StudioNativeWorkspaceScene],
-    });
+      scenes: [scene],
+    };
   }
-  return Object.freeze({
+  return {
     kind: "imported-manim",
-    scenes: Object.freeze(
-      workspaceScenes(workspace).map((scene) =>
-        Object.freeze({
-          ...scene,
-          identity: Object.freeze({
-            origin: "imported-manim" as const,
-            sceneName: scene.name,
-            sourceHash: scene.sourceHash,
-            sourcePath: scene.sourcePath,
-          }),
-        }),
-      ),
-    ),
-  });
+    scenes: workspaceScenes(workspace).map((scene) => ({
+      ...scene,
+      identity: {
+        origin: "imported-manim" as const,
+        sceneName: scene.name,
+        sourceHash: scene.sourceHash,
+        sourcePath: scene.sourcePath,
+      },
+    })),
+  };
 }
 
 export function studioNativeWorkingState(
