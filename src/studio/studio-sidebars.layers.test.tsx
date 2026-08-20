@@ -378,6 +378,7 @@ describe("WorkspaceSidebar Layers", () => {
         onLayerOrder={vi.fn()}
         onLayerReorder={vi.fn()}
         onRedo={vi.fn()}
+        onToggleLayerGroupLock={vi.fn()}
         onToggleLayerGroupVisibility={vi.fn()}
         onToggleEntity={vi.fn()}
         onUndo={vi.fn()}
@@ -389,6 +390,7 @@ describe("WorkspaceSidebar Layers", () => {
 
     expect(markup).not.toContain('draggable="true"');
     expect(markup).toContain('aria-label="Hide group of 2 objects"');
+    expect(markup).toMatch(/aria-label="Lock group of 2 objects"[^>]*aria-pressed="false"/);
     expect(markup).toContain('title="Hide group"');
     expect(markup).toMatch(/aria-label="Back outside"[^>]*disabled=""/);
     expect(markup).toContain("atomic group reordering is not available yet");

@@ -24,6 +24,7 @@ import {
   snapshotEditorSession,
   stageEditorDraft,
   toggleEditorEntityLock,
+  toggleEditorEntityLocks,
   undoEditorAction,
   undoEditorProgram,
 } from "./use-editor-controller";
@@ -462,6 +463,26 @@ describe("editor draft history", () => {
     expect(redone.lockedEntityIds).toEqual(["equation"]);
     expect(redone.appliedPrograms).toEqual([]);
     expect(redone.lockRedoEntries).toEqual([]);
+  });
+
+  it("locks a mixed group as one editor action and restores the mixed state with one Undo", () => {
+    let state = toggleEditorEntityLock(createInitialEditorState(), "first");
+
+    state = toggleEditorEntityLocks(state, ["first", "second"]);
+    expect(state.lockedEntityIds).toEqual(["first", "second"]);
+    expect(state.lockUndoEntries).toHaveLength(2);
+
+    state = undoEditorAction(state);
+    expect(state.lockedEntityIds).toEqual(["first"]);
+    expect(nextEditorRedoAction(state)).toBe("entity-lock");
+
+    state = redoEditorAction(state);
+    expect(state.lockedEntityIds).toEqual(["first", "second"]);
+
+    state = toggleEditorEntityLocks(state, ["first", "second"]);
+    expect(state.lockedEntityIds).toEqual([]);
+    state = undoEditorAction(state);
+    expect(state.lockedEntityIds).toEqual(["first", "second"]);
   });
 
   it("orders layer lock history between surrounding Program mutations", () => {

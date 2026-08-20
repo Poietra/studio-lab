@@ -49,8 +49,10 @@ export type {
 } from "./editor-session-store";
 
 export type EntityLockHistoryEntry = Readonly<{
-  entityId: string;
-  locked: boolean;
+  changes: readonly Readonly<{
+    entityId: string;
+    locked: boolean;
+  }>[];
   programDepth: number;
 }>;
 
@@ -165,18 +167,41 @@ export function nextEditorRedoAction(state: EditorControllerState): EditorHistor
   return program?.kind === "draft" ? "draft" : program ? "program" : null;
 }
 
-export function toggleEditorEntityLock(state: EditorControllerState, entityId: string): EditorControllerState {
+function setEditorEntityLocks(
+  state: EditorControllerState,
+  entityIds: readonly string[],
+  locked: boolean,
+): EditorControllerState {
   if (state.draftProgram) {
     return { ...state, draftError: "Apply or discard the current draft before changing layer locks." };
   }
-  const locked = !state.lockedEntityIds.includes(entityId);
+  const changes = [...new Set(entityIds)]
+    .filter((entityId) => state.lockedEntityIds.includes(entityId) !== locked)
+    .map((entityId) => ({ entityId, locked }));
+  if (changes.length === 0) return state;
+  let lockedEntityIds = state.lockedEntityIds;
+  for (const change of changes) {
+    lockedEntityIds = setEntityLock(lockedEntityIds, change.entityId, change.locked);
+  }
   return {
     ...state,
     lockRedoEntries: [],
-    lockUndoEntries: [...state.lockUndoEntries, { entityId, locked, programDepth: state.programUndoEntries.length }],
-    lockedEntityIds: toggleEntityLock(state.lockedEntityIds, entityId),
+    lockUndoEntries: [...state.lockUndoEntries, { changes, programDepth: state.programUndoEntries.length }],
+    lockedEntityIds,
     redoPrograms: [],
   };
+}
+
+export function toggleEditorEntityLock(state: EditorControllerState, entityId: string): EditorControllerState {
+  return setEditorEntityLocks(state, [entityId], !state.lockedEntityIds.includes(entityId));
+}
+
+export function toggleEditorEntityLocks(
+  state: EditorControllerState,
+  entityIds: readonly string[],
+): EditorControllerState {
+  const locked = entityIds.length > 0 && !entityIds.every((entityId) => state.lockedEntityIds.includes(entityId));
+  return setEditorEntityLocks(state, entityIds, locked);
 }
 
 function withoutSuggestion(state: EditorControllerState): EditorControllerState {
@@ -576,11 +601,15 @@ function setEntityLock(lockedEntityIds: readonly string[], entityId: string, loc
 export function undoEditorAction(state: EditorControllerState): EditorControllerState {
   if (nextEditorUndoAction(state) !== "entity-lock") return undoEditorProgram(state);
   const entry = state.lockUndoEntries.at(-1)!;
+  let lockedEntityIds = state.lockedEntityIds;
+  for (const change of entry.changes) {
+    lockedEntityIds = setEntityLock(lockedEntityIds, change.entityId, !change.locked);
+  }
   return {
     ...state,
     lockRedoEntries: [...state.lockRedoEntries, entry],
     lockUndoEntries: state.lockUndoEntries.slice(0, -1),
-    lockedEntityIds: setEntityLock(state.lockedEntityIds, entry.entityId, !entry.locked),
+    lockedEntityIds,
   };
 }
 
@@ -591,11 +620,15 @@ export function redoEditorAction(
   if (nextEditorRedoAction(state) !== "entity-lock") return redoEditorProgram(state, blockedReason);
   if (blockedReason) return { ...state, draftError: blockedReason };
   const entry = state.lockRedoEntries.at(-1)!;
+  let lockedEntityIds = state.lockedEntityIds;
+  for (const change of entry.changes) {
+    lockedEntityIds = setEntityLock(lockedEntityIds, change.entityId, change.locked);
+  }
   return {
     ...state,
     lockRedoEntries: state.lockRedoEntries.slice(0, -1),
     lockUndoEntries: [...state.lockUndoEntries, entry],
-    lockedEntityIds: setEntityLock(state.lockedEntityIds, entry.entityId, entry.locked),
+    lockedEntityIds,
   };
 }
 
@@ -869,6 +902,11 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     [update],
   );
 
+  const toggleEntityLocksWithHistory = useCallback(
+    (entityIds: readonly string[]) => update((current) => toggleEditorEntityLocks(current, entityIds)),
+    [update],
+  );
+
   const editAppliedProgram = useCallback(
     (record: ProgramRecord, index: number, input?: AppliedProgramEditInput) => {
       const appliedRecord = state.appliedPrograms[index];
@@ -976,6 +1014,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     state,
     suspend,
     toggleEntityLock: toggleEntityLockWithHistory,
+    toggleEntityLocks: toggleEntityLocksWithHistory,
     undoProgram,
   } as const;
 }
