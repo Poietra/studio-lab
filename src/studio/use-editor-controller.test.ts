@@ -8,17 +8,23 @@ import {
   applyEditorDraft,
   createInitialEditorState,
   discardEditorDraft,
+  type EditorControllerState,
   editEditorAppliedProgram,
   editorProgramRecord,
   initializeEditorScene,
   installAuthoritativeEditorPrograms,
   installCloudEditorSessionSnapshotV1,
   LatestRequestController,
+  nextEditorRedoAction,
+  nextEditorUndoAction,
+  redoEditorAction,
   redoEditorProgram,
   restoreEditorSession,
   snapshotCloudEditorSessionV1,
   snapshotEditorSession,
   stageEditorDraft,
+  toggleEditorEntityLock,
+  undoEditorAction,
   undoEditorProgram,
 } from "./use-editor-controller";
 
@@ -437,6 +443,97 @@ describe("editor draft history", () => {
     const redone = redoEditorProgram(undone);
     expect(redone.appliedPrograms).toEqual([first, latest]);
     expect(redone.selectedObjectIds).toEqual(["equation"]);
+  });
+
+  it("undoes and redoes a layer lock without changing canonical Programs", () => {
+    const initial = createInitialEditorState();
+    const locked = toggleEditorEntityLock(initial, "equation");
+
+    expect(locked.lockedEntityIds).toEqual(["equation"]);
+    expect(locked.appliedPrograms).toEqual([]);
+    expect(nextEditorUndoAction(locked)).toBe("entity-lock");
+
+    const undone = undoEditorAction(locked);
+    expect(undone.lockedEntityIds).toEqual([]);
+    expect(undone.appliedPrograms).toEqual([]);
+    expect(nextEditorRedoAction(undone)).toBe("entity-lock");
+
+    const redone = redoEditorAction(undone);
+    expect(redone.lockedEntityIds).toEqual(["equation"]);
+    expect(redone.appliedPrograms).toEqual([]);
+    expect(redone.lockRedoEntries).toEqual([]);
+  });
+
+  it("orders layer lock history between surrounding Program mutations", () => {
+    const first = editorProgramRecord(record("first", 4), null, []);
+    let state: EditorControllerState = {
+      ...createInitialEditorState(),
+      appliedPrograms: [first],
+      programUndoEntries: [{ index: 0, kind: "append" as const, value: first }],
+    };
+    state = toggleEditorEntityLock(state, "label");
+    state = applyEditorDraft(
+      stageEditorDraft(state, {
+        operation: null,
+        record: record("second", 6),
+      }),
+    );
+
+    expect(nextEditorUndoAction(state)).toBe("program");
+    state = undoEditorAction(state);
+    expect(state.appliedPrograms).toEqual([first]);
+    expect(nextEditorUndoAction(state)).toBe("entity-lock");
+    state = undoEditorAction(state);
+    expect(state.lockedEntityIds).toEqual([]);
+    expect(nextEditorUndoAction(state)).toBe("program");
+    state = undoEditorAction(state);
+    expect(state.appliedPrograms).toEqual([]);
+
+    expect(nextEditorRedoAction(state)).toBe("program");
+    state = redoEditorAction(state);
+    expect(state.appliedPrograms).toEqual([first]);
+    expect(nextEditorRedoAction(state)).toBe("entity-lock");
+    state = redoEditorAction(state);
+    expect(state.lockedEntityIds).toEqual(["label"]);
+    expect(nextEditorRedoAction(state)).toBe("program");
+    state = redoEditorAction(state);
+    expect(state.appliedPrograms.map((entry) => entry.program.transactionId)).toEqual(["first", "second"]);
+  });
+
+  it("invalidates both lock and Program redo when a new lock action branches history", () => {
+    const applied = editorProgramRecord(record("applied"), null, []);
+    const locked = toggleEditorEntityLock(
+      {
+        ...createInitialEditorState(),
+        appliedPrograms: [applied],
+        programUndoEntries: [{ index: 0, kind: "append" as const, value: applied }],
+      },
+      "equation",
+    );
+    const lockUndone = undoEditorAction(locked);
+    const programUndone = undoEditorAction(lockUndone);
+    expect(programUndone.lockRedoEntries).toHaveLength(1);
+    expect(programUndone.redoPrograms).toHaveLength(1);
+
+    const branched = toggleEditorEntityLock(programUndone, "label");
+    expect(branched.lockedEntityIds).toEqual(["label"]);
+    expect(branched.lockRedoEntries).toEqual([]);
+    expect(branched.redoPrograms).toEqual([]);
+  });
+
+  it("rejects a layer lock change while a draft is active", () => {
+    const draft = record("draft");
+    const unchanged = toggleEditorEntityLock(
+      {
+        ...createInitialEditorState(),
+        draftProgram: draft,
+      },
+      "equation",
+    );
+
+    expect(unchanged.lockedEntityIds).toEqual([]);
+    expect(unchanged.lockUndoEntries).toEqual([]);
+    expect(unchanged.draftError).toContain("Apply or discard");
   });
 
   it("replaces an edited Applied Program in place and preserves reversible history", () => {

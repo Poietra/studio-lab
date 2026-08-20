@@ -265,6 +265,36 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("Locked");
   });
 
+  it("exposes lock-only Undo and Redo history without requiring an applied Program", () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceSidebar
+        activeScene={activeScene()}
+        appliedProgramReadOnlyReasons={{}}
+        appliedEdits={[]}
+        appliedTransactionIds={new Set()}
+        draftActive={false}
+        duration={1}
+        durationError={null}
+        durationMinimum={0.1}
+        editingAppliedTransactionId={null}
+        entities={[]}
+        nextScene={null}
+        onDurationChange={vi.fn()}
+        onEditAppliedProgram={vi.fn()}
+        onRedo={vi.fn()}
+        onToggleEntity={vi.fn()}
+        onUndo={vi.fn()}
+        redoCount={1}
+        selectedIds={new Set()}
+        sourceImportOutcomes={[]}
+        undoAvailable
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Undo latest editor action"');
+    expect(markup).toContain('aria-label="Redo latest editor action"');
+  });
+
   it("keeps a hidden row selectable and exposes an accessible Show action", () => {
     const hidden = entity("hidden");
     const markup = renderToStaticMarkup(
