@@ -4,6 +4,7 @@ import {
   hasShapeDimensions,
   inverseResizeHandleScale,
   oppositeResizeCorner,
+  resizeHandleDeltaIsOutward,
   resizeHandleUsesDelta,
   resizeShapeByViewportDelta,
   sameShapeGeometry,
@@ -28,6 +29,16 @@ describe("shape-aware resize geometry", () => {
         { dimensions: { height: 2, width: 4 }, position: { x: 400, y: 200 } },
       ),
     ).toBe(true);
+  });
+
+  it("treats keyboard movement away from each corner as uniform growth", () => {
+    expect(resizeHandleDeltaIsOutward("nw", { x: -2, y: 0 })).toBe(true);
+    expect(resizeHandleDeltaIsOutward("nw", { x: 0, y: -2 })).toBe(true);
+    expect(resizeHandleDeltaIsOutward("ne", { x: 2, y: 0 })).toBe(true);
+    expect(resizeHandleDeltaIsOutward("sw", { x: 0, y: 2 })).toBe(true);
+    expect(resizeHandleDeltaIsOutward("se", { x: 0, y: 2 })).toBe(true);
+    expect(resizeHandleDeltaIsOutward("se", { x: -2, y: 0 })).toBe(false);
+    expect(resizeHandleDeltaIsOutward("se", { x: 0, y: -2 })).toBe(false);
   });
 
   it("uses the opposite prepared-bounds corner as the fixed uniform resize pivot", () => {

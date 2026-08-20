@@ -194,6 +194,7 @@ import {
 import {
   hasShapeDimensions,
   type ResizeHandleDirection,
+  resizeHandleDeltaIsOutward,
   resizeHandleUsesDelta,
   resizeKindForType,
   resizeShapeByViewportDelta,
@@ -4402,13 +4403,9 @@ export function App({
       );
       return;
     }
-    const direction = event.key === "ArrowUp" || event.key === "ArrowRight" ? 1 : -1;
+    const grow = resizeHandleDeltaIsOutward(handle, delta);
     const factor = event.shiftKey ? 1.25 : 1.05;
-    const targetScale = clamp(
-      direction > 0 ? entity.scale * factor : entity.scale / factor,
-      MIN_ENTITY_SCALE,
-      MAX_ENTITY_SCALE,
-    );
+    const targetScale = clamp(grow ? entity.scale * factor : entity.scale / factor, MIN_ENTITY_SCALE, MAX_ENTITY_SCALE);
     installEntityScaleDraft(
       entityId,
       entity.scale,

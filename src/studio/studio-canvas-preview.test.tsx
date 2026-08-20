@@ -1070,7 +1070,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(studioInlineTextBlurCommits(false)).toBe(true);
   });
 
-  it("keeps a verified ImageMobject selectable and aspect-resizable without semantic dimensions", () => {
+  it("keeps a verified ImageMobject selectable and aspect-resizable from every corner", () => {
     const imageEntity: ProjectedEntity = {
       ...CIRCLE_ENTITY,
       content: { displayLines: ["image"], label: "image" },
@@ -1116,8 +1116,10 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).not.toContain('aria-label="Move image" aria-pressed="true" disabled=""');
     expect(markup).toContain('data-studio-runtime-entity="scene:image/entity:0"');
     expect(markup).toContain("height:12.5cqh;width:14.0627");
-    expect(markup).toContain('aria-label="Resize image from bottom-right corner"');
-    expect(markup.match(/data-studio-resize-handle="entity:image"/g)).toHaveLength(1);
+    for (const corner of ["top-left", "top-right", "bottom-left", "bottom-right"]) {
+      expect(markup).toContain(`aria-label="Resize image from ${corner} corner"`);
+    }
+    expect(markup.match(/data-studio-resize-handle="entity:image"/g)).toHaveLength(4);
   });
 
   it("places the rotation handle on the same prepared selection bounds and previews its canonical angle", () => {
@@ -1416,8 +1418,8 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).not.toContain(`data-studio-entity="${otherId}"`);
     expect(markup).toContain(`data-studio-runtime-entity="${runtimeId}"`);
     expect(markup).toContain('data-studio-entity-width="2.0000"');
-    // The verified candidate root exposes exactly its uniform SE resize handle.
-    expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
+    // The verified candidate root exposes its four uniform corner handles.
+    expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(4);
     expect(markup).toContain(`data-studio-resize-handle="${squareId}"`);
     expect(markup.match(/data-resize-direction="se"/g)).toHaveLength(1);
 
