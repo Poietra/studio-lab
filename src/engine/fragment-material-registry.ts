@@ -177,8 +177,12 @@ struct FragmentInput {
 
 @fragment
 fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
-    let sampled = textureSample(material_texture, material_sampler, input.screen_position);
-    return sampled * input.base_color;
+    let tiles = max(host.parameters_0.xy, vec2<f32>(0.001, 0.001));
+    let offset = host.parameters_0.zw;
+    let uv = fract(input.screen_position * tiles + offset);
+    let sampled = textureSample(material_texture, material_sampler, uv);
+    let textured = sampled * input.base_color;
+    return mix(input.base_color, textured, clamp(host.parameters_1.x, 0.0, 1.0));
 }
 `;
 

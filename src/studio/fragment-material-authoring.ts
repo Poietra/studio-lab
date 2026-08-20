@@ -203,6 +203,14 @@ export const STUDIO_PULSE_FRAGMENT_PARAMETER_SCHEMA_V1: StudioFragmentMaterialPa
   Object.freeze({ default: 0.65, name: "Strength", range: Object.freeze({ max: 1, min: 0, step: 0.05 }), type: "f32" }),
 ]);
 
+export const STUDIO_TEXTURE_FRAGMENT_PARAMETER_SCHEMA_V1: StudioFragmentMaterialParameterSchemaV1 = Object.freeze([
+  Object.freeze({ default: 1, name: "Tiles X", range: Object.freeze({ max: 8, min: 0.25, step: 0.25 }), type: "f32" }),
+  Object.freeze({ default: 1, name: "Tiles Y", range: Object.freeze({ max: 8, min: 0.25, step: 0.25 }), type: "f32" }),
+  Object.freeze({ default: 0, name: "Offset X", range: Object.freeze({ max: 2, min: -2, step: 0.05 }), type: "f32" }),
+  Object.freeze({ default: 0, name: "Offset Y", range: Object.freeze({ max: 2, min: -2, step: 0.05 }), type: "f32" }),
+  Object.freeze({ default: 1, name: "Mix", range: Object.freeze({ max: 1, min: 0, step: 0.05 }), type: "f32" }),
+]);
+
 const rawProjectFragmentMaterialStateSchema = z
   .object({
     assignmentsByScene: z.record(sourceIdentityV1Schema, z.record(sourceIdentityV1Schema, fragmentMaterialV1Schema)),
@@ -460,7 +468,7 @@ export function createStudioTextureFragmentMaterialPresetV1(
 ): Readonly<{ shaderId: string; state: ProjectFragmentMaterialStateV1 }> {
   return createStudioFragmentMaterialV1(state, {
     name: uniquePresetName(state, "Screen texture"),
-    parameterSchema: null,
+    parameterSchema: STUDIO_TEXTURE_FRAGMENT_PARAMETER_SCHEMA_V1,
     source: STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
     textureSlot: "texture2d",
   });
