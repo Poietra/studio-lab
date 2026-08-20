@@ -388,7 +388,10 @@ export class EditorSessionStore {
 
   restore(identity: EditorSessionIdentity): EditorSessionRestoreResult {
     const native = parsedNativeIdentity(identity);
-    if (native) return { kind: "empty" };
+    if (native) {
+      const snapshot = this.memorySessions.get(nativeSessionKey(native));
+      return snapshot ? { kind: "restored", snapshot } : { kind: "empty" };
+    }
     const parsedIdentity = identitySchema.safeParse(identity);
     if (!parsedIdentity.success) return { kind: "empty" };
     const persistedIdentity = storedIdentity(parsedIdentity.data);
@@ -457,10 +460,10 @@ export class EditorSessionStore {
     const parsedSnapshot = parseLocalEditorSessionSnapshot(snapshot);
     if (!parsedSnapshot) return false;
     const native = parsedNativeIdentity(identity);
-    // Native assets are deliberately tab-local and cleared on project switch.
-    // Retaining Programs without their payloads would restore dangling asset
-    // references, so the active controller is the only native-session store.
-    if (native) return false;
+    if (native) {
+      this.memorySessions.set(nativeSessionKey(native), parsedSnapshot);
+      return true;
+    }
     const parsedIdentity = identitySchema.safeParse(identity);
     if (!parsedIdentity.success) return false;
     const persistedIdentity = storedIdentity(parsedIdentity.data);
