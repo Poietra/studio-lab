@@ -11,6 +11,7 @@ export type PropertyChannelKey =
   | "dimensions"
   | "fillColor"
   | "identity"
+  | `materialParameter:${string}:${number}`
   | "sourceZIndex"
   | "position"
   | "presence"

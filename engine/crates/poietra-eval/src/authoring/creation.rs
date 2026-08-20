@@ -2,9 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, ContractVersionV1, CubicPathV1, CubicSegmentV1,
-    CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1, IntervalV1, KeyframeV1, PointV1,
-    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCapabilityV1,
-    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, VectorAppearanceValueV1,
+    CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1, IntervalV1,
+    KeyframeV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1,
+    SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1,
+    VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +65,7 @@ struct CreateSceneEntity {
     geometry: CreateSceneEntityGeometry,
     id: String,
     lifetime: IntervalV1,
+    material_parameter_keyframes: Vec<KeyframeV1<FragmentMaterialV1>>,
     opacity_keyframes: Vec<KeyframeV1<f64>>,
     paint_opacity: f64,
     position: PointV1,
@@ -136,6 +138,13 @@ pub enum StudioCreationProjectedMutationKind {
     OpacityKeyframes {
         easing: StudioMotionEasing,
         from: f64,
+        to: f64,
+    },
+    MaterialParameterKeyframes {
+        easing: StudioMotionEasing,
+        from: f64,
+        name: String,
+        parameter_index: usize,
         to: f64,
     },
     FillColor {
@@ -226,6 +235,14 @@ pub enum StudioCreationOperationKind {
     OpacityKeyframes {
         easing: StudioMotionEasing,
         from: Option<f64>,
+        to: Option<f64>,
+    },
+    MaterialParameterKeyframes {
+        easing: StudioMotionEasing,
+        from: Option<f64>,
+        material: FragmentMaterialV1,
+        name: String,
+        parameter_index: usize,
         to: Option<f64>,
     },
     FillColor {
@@ -360,6 +377,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::Opacity { .. }
             | StudioCreationOperationKind::SourceZIndex { .. }
             | StudioCreationOperationKind::OpacityKeyframes { .. }
+            | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
             | StudioCreationOperationKind::FillColor { .. }
             | StudioCreationOperationKind::StrokeColor { .. }
             | StudioCreationOperationKind::Resize { .. }
@@ -500,6 +518,7 @@ struct PlannedStudioCreationEntity {
     has_position_or_resize_instant: bool,
     kind: StudioAuthoringEntityKind,
     lifetime: IntervalV1,
+    material_parameter_keyframes: Vec<KeyframeV1<FragmentMaterialV1>>,
     opacity_keyframes: Vec<KeyframeV1<f64>>,
     persistent_removal: Option<PersistentSceneRemoval>,
     position: PointV1,
@@ -842,6 +861,100 @@ fn closed_studio_opacity_track<'a>(
     Some((entity_id, operations))
 }
 
+fn closed_studio_material_parameter_track<'a>(
+    program: &'a StudioCreationEditInput,
+) -> Option<(&'a str, Vec<&'a StudioCreationOperation>)> {
+    if program.origin != StudioAuthoringOrigin::DirectManipulation
+        || program.requested_execution != SceneEditExecution::Sequence
+        || program.schedule_mode != SceneEditScheduleMode::Sequence
+        || program.operations.is_empty()
+    {
+        return None;
+    }
+    let operations = program
+        .schedule_order
+        .iter()
+        .filter_map(|operation_id| {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)?;
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+            )
+            .then_some(operation)
+        })
+        .collect::<Vec<_>>();
+    let first = *operations.first()?;
+    let entity_id = first.entity_id.as_deref()?;
+    let StudioCreationOperationKind::MaterialParameterKeyframes {
+        from: Some(first_from),
+        material: first_material,
+        name: first_name,
+        parameter_index: first_parameter_index,
+        ..
+    } = &first.kind
+    else {
+        return None;
+    };
+    if first.interval.start + TIMELINE_ANCHOR_EPSILON < program.anchor_resolved_seconds
+        || first_material.parameters.get(*first_parameter_index) != Some(first_from)
+        || first_name.is_empty()
+    {
+        return None;
+    }
+    for (index, operation) in operations.iter().enumerate() {
+        let StudioCreationOperationKind::MaterialParameterKeyframes {
+            from: Some(from),
+            material,
+            name,
+            parameter_index,
+            to: Some(to),
+            ..
+        } = &operation.kind
+        else {
+            return None;
+        };
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || operation.entity_id.as_deref() != Some(entity_id)
+            || material != first_material
+            || name != first_name
+            || parameter_index != first_parameter_index
+            || !from.is_finite()
+            || !to.is_finite()
+        {
+            return None;
+        }
+        if operations.len() == 1 && operation.interval.start == operation.interval.end {
+            if !close_transform_baseline_value(*from, *to) {
+                return None;
+            }
+            continue;
+        }
+        if operation.interval.end <= operation.interval.start + TIMELINE_ANCHOR_EPSILON {
+            return None;
+        }
+        if let Some(previous) = index.checked_sub(1).and_then(|prior| operations.get(prior)) {
+            let StudioCreationOperationKind::MaterialParameterKeyframes {
+                to: Some(previous_to),
+                ..
+            } = &previous.kind
+            else {
+                return None;
+            };
+            if !studio_timeline_semantic_values_match(
+                previous.interval.end,
+                operation.interval.start,
+            ) || !close_transform_baseline_value(*previous_to, *from)
+            {
+                return None;
+            }
+        }
+    }
+    Some((entity_id, operations))
+}
+
 fn closed_studio_group_rotation(
     program: &StudioCreationEditInput,
     entities: &[PlannedStudioCreationEntity],
@@ -997,6 +1110,7 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::Position { .. }
                         | StudioCreationOperationKind::FadeIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
+                        | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 )
             });
         let has_competing_appearance_or_removal =
@@ -1021,11 +1135,54 @@ fn plan_studio_creation_edits(
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
     }
+    let material_parameter_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| {
+            programs[*index].operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    for index in &material_parameter_programs {
+        let program = &programs[*index];
+        let Some((entity_id, _)) = closed_studio_material_parameter_track(program) else {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        };
+        let creates_target = program.operations.iter().any(|operation| {
+            matches!(
+                &operation.kind,
+                StudioCreationOperationKind::Create { entity } if entity.id == entity_id
+            )
+        });
+        let contains_only_creation_scaffold_or_property_tracks =
+            program.operations.iter().all(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::Create { .. }
+                        | StudioCreationOperationKind::Position { .. }
+                        | StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::OpacityKeyframes { .. }
+                        | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                )
+            });
+        if !creates_target || !contains_only_creation_scaffold_or_property_tracks {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+    }
     let followup_programs = timeline
         .ordered_programs
         .iter()
         .copied()
-        .filter(|index| !create_programs.contains(index) && !opacity_programs.contains(index))
+        .filter(|index| {
+            !create_programs.contains(index)
+                && !opacity_programs.contains(index)
+                && !material_parameter_programs.contains(index)
+        })
         .collect::<Vec<_>>();
 
     let mut create_records = Vec::new();
@@ -1084,7 +1241,8 @@ fn plan_studio_creation_edits(
                         )
                         || operation.interval.end <= operation.interval.start
                 }
-                StudioCreationOperationKind::OpacityKeyframes { .. } => operation
+                StudioCreationOperationKind::OpacityKeyframes { .. }
+                | StudioCreationOperationKind::MaterialParameterKeyframes { .. } => operation
                     .entity_id
                     .as_deref()
                     .is_none_or(|entity_id| !program_created_ids.contains(entity_id)),
@@ -1116,6 +1274,7 @@ fn plan_studio_creation_edits(
                 StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
+                | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                     if operation
                         .entity_id
                         .as_deref()
@@ -1123,6 +1282,7 @@ fn plan_studio_creation_edits(
                 StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
+                | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -1347,6 +1507,7 @@ fn plan_studio_creation_edits(
             instant_rotation: 0.0,
             kind: spec.kind,
             lifetime,
+            material_parameter_keyframes: Vec::new(),
             opacity_keyframes: Vec::new(),
             persistent_removal: None,
             position: initial_position.clone(),
@@ -1457,6 +1618,123 @@ fn plan_studio_creation_edits(
             }
         }
         state.opacity_keyframes = keyframes;
+    }
+
+    for program_index in material_parameter_programs {
+        let program = &programs[program_index];
+        let (entity_id, track_operations) = closed_studio_material_parameter_track(program)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let state = entities
+            .iter_mut()
+            .find(|state| state.spec.id == entity_id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let program_rank = timeline.ranks[program_index];
+        if state.creation_program_rank > program_rank
+            || (state.creation_program_rank == program_rank
+                && state.creation_transaction_id != program.transaction_id)
+            || !state.material_parameter_keyframes.is_empty()
+            || state.appearance_at.is_some()
+            || state.persistent_removal.is_some()
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut projected = Vec::with_capacity(track_operations.len());
+        for operation in track_operations {
+            let StudioCreationOperationKind::MaterialParameterKeyframes {
+                easing,
+                from: Some(from),
+                material,
+                name,
+                parameter_index,
+                to: Some(to),
+            } = &operation.kind
+            else {
+                unreachable!();
+            };
+            let mut interval = IntervalV1 {
+                end: operation.interval.end + timeline.offsets[program_index],
+                start: operation.interval.start + timeline.offsets[program_index],
+            };
+            if state.creation_program_rank == program_rank
+                && let Some((_, insertion)) = timeline
+                    .ranked_insertions
+                    .iter()
+                    .find(|(rank, _)| *rank == program_rank)
+            {
+                shift_interval_for_insertion(&mut interval, insertion);
+            }
+            for (rank, insertion) in &timeline.ranked_insertions {
+                if *rank > program_rank {
+                    shift_interval_for_insertion(&mut interval, insertion);
+                }
+            }
+            if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+                || state
+                    .fade_interval
+                    .as_ref()
+                    .is_some_and(|fade| interval.start <= fade.end + TIMELINE_ANCHOR_EPSILON)
+            {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            let schedule_index = program
+                .schedule_order
+                .iter()
+                .position(|operation_id| operation_id == &operation.id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            ranked_mutations.push((
+                program_rank,
+                schedule_index,
+                StudioCreationProjectedMutation {
+                    entity_id: entity_id.to_owned(),
+                    interval: interval.clone(),
+                    kind: StudioCreationProjectedMutationKind::MaterialParameterKeyframes {
+                        easing: *easing,
+                        from: *from,
+                        name: name.clone(),
+                        parameter_index: *parameter_index,
+                        to: *to,
+                    },
+                    operation_id: operation.id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                },
+            ));
+            projected.push((
+                interval,
+                *easing,
+                *from,
+                material.clone(),
+                *parameter_index,
+                *to,
+            ));
+        }
+        let mut keyframes = Vec::with_capacity(projected.len() + 1);
+        for (index, (interval, easing, from, material, parameter_index, to)) in
+            projected.iter().enumerate()
+        {
+            let mut from_material = material.clone();
+            let mut to_material = material.clone();
+            from_material.parameters[*parameter_index] = *from;
+            to_material.parameters[*parameter_index] = *to;
+            if index == 0 {
+                keyframes.push(KeyframeV1 {
+                    at: interval.start,
+                    easing_to_next: (interval.end > interval.start + TIMELINE_ANCHOR_EPSILON)
+                        .then(|| opacity_easing(*easing)),
+                    value: from_material,
+                });
+            }
+            if interval.end > interval.start + TIMELINE_ANCHOR_EPSILON {
+                keyframes.push(KeyframeV1 {
+                    at: interval.end,
+                    easing_to_next: projected
+                        .get(index + 1)
+                        .map(|(_, next_easing, ..)| opacity_easing(*next_easing)),
+                    value: to_material,
+                });
+            }
+        }
+        state.material_parameter_keyframes = keyframes;
     }
 
     let mut planned_motions = Vec::new();
@@ -1948,6 +2226,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Opacity { .. }
                 | StudioCreationOperationKind::SourceZIndex { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
+                | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
@@ -2290,6 +2569,26 @@ fn validate_create_scene_entities_command(
             .opacity_keyframes
             .windows(2)
             .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON);
+        let base_has_fill = matches!(
+            created_geometry_and_appearance(entity.geometry.clone()).1,
+            SceneAppearanceV1::Vector { fill: Some(_), .. }
+        );
+        let material_keyframes_are_valid =
+            entity.material_parameter_keyframes.iter().all(|keyframe| {
+                keyframe.at.is_finite()
+                    && keyframe.at >= entity.lifetime.start
+                    && keyframe.at <= entity.lifetime.end
+                    && !keyframe.value.parameters.is_empty()
+                    && keyframe
+                        .value
+                        .parameters
+                        .iter()
+                        .all(|value| value.is_finite())
+            }) && entity
+                .material_parameter_keyframes
+                .windows(2)
+                .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
+                && (entity.material_parameter_keyframes.is_empty() || base_has_fill);
         if !entity.paint_opacity.is_finite()
             || !(0.0..=1.0).contains(&entity.paint_opacity)
             || !entity.rotation.is_finite()
@@ -2302,12 +2601,20 @@ fn validate_create_scene_entities_command(
                 ))
             || (!rotation_is_noop(entity.rotation) && entity.instant_transform.is_some())
             || !opacity_keyframes_are_valid
+            || !material_keyframes_are_valid
             || entity.fade_in.as_ref().is_some_and(|fade| {
                 entity
                     .opacity_keyframes
                     .first()
                     .is_some_and(|keyframe| keyframe.at <= fade.end + TIMELINE_ANCHOR_EPSILON)
             })
+            || entity.fade_in.as_ref().is_some_and(|fade| {
+                entity
+                    .material_parameter_keyframes
+                    .first()
+                    .is_some_and(|keyframe| keyframe.at <= fade.end + TIMELINE_ANCHOR_EPSILON)
+            })
+            || (!entity.material_parameter_keyframes.is_empty() && entity.appearance_at.is_some())
             || (appearance_changed && entity.appearance_at.is_none())
             || entity.appearance_at.is_some_and(|at| {
                 !at.is_finite()
@@ -2333,7 +2640,7 @@ fn append_created_entity(
     scene_order: u32,
     source_z_index: f64,
     capabilities: &mut BTreeSet<SceneCapabilityV1>,
-) {
+) -> Result<(), CreateSceneEntitiesError> {
     let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
     if let Some(color) = &entity.fill_color {
         let SceneAppearanceV1::Vector { fill, .. } = &mut appearance else {
@@ -2346,6 +2653,15 @@ fn append_created_entity(
             fragment_material: None,
             rule: FillRuleV1::NonZero,
         });
+    }
+    if let Some(first) = entity.material_parameter_keyframes.first() {
+        let SceneAppearanceV1::Vector {
+            fill: Some(fill), ..
+        } = &mut appearance
+        else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        };
+        fill.fragment_material = Some(first.value.clone());
     }
     capabilities.insert(capability);
     let created_id = entity.id;
@@ -2397,6 +2713,45 @@ fn append_created_entity(
             keyframes: opacity_keyframes,
             provenance_id: provenance_id.to_owned(),
         });
+    }
+    if !entity.material_parameter_keyframes.is_empty() {
+        let SceneAppearanceV1::Vector { fill, stroke, .. } = appearance.clone() else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        };
+        let Some(fill) = fill else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        };
+        let keyframes = entity
+            .material_parameter_keyframes
+            .into_iter()
+            .map(|keyframe| {
+                let mut fill = fill.clone();
+                if keyframe.value.texture.is_some() {
+                    capabilities.insert(SceneCapabilityV1::PngImage);
+                }
+                fill.fragment_material = Some(keyframe.value);
+                KeyframeV1 {
+                    at: keyframe.at,
+                    easing_to_next: keyframe.easing_to_next,
+                    value: VectorAppearanceValueV1 {
+                        fill: Some(fill),
+                        stroke: stroke.clone(),
+                    },
+                }
+            })
+            .collect();
+        capabilities.insert(SceneCapabilityV1::FragmentMaterial);
+        capabilities.insert(SceneCapabilityV1::VectorAppearanceAnimation);
+        let channel_id =
+            unused_channel_id(scene, &format!("studio-material-parameter-{scene_order}"));
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::VectorAppearance {
+                entity_id: created_id.clone(),
+                id: channel_id,
+                keyframes,
+                provenance_id: provenance_id.to_owned(),
+            });
     }
     if let Some(at) = entity.appearance_at {
         if !close_transform_baseline_value(entity.paint_opacity, 1.0)
@@ -2510,6 +2865,7 @@ fn append_created_entity(
                 provenance_id: provenance_id.to_owned(),
             });
     }
+    Ok(())
 }
 
 impl EngineSessionV1 {
@@ -2571,7 +2927,7 @@ impl EngineSessionV1 {
                 scene_order,
                 entity_source_z_index,
                 &mut capabilities,
-            );
+            )?;
             source_z_index += 1.0;
         }
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
@@ -2800,6 +3156,7 @@ impl EngineSessionV1 {
                 id: state.spec.id.clone(),
                 instant_transform,
                 lifetime: state.lifetime.clone(),
+                material_parameter_keyframes: state.material_parameter_keyframes.clone(),
                 opacity_keyframes: state.opacity_keyframes.clone(),
                 paint_opacity: state.current_opacity,
                 position: studio_point_to_scene_point(
@@ -2918,6 +3275,7 @@ mod tests {
                         end: 2.5,
                         start: 0.5,
                     },
+                    material_parameter_keyframes: vec![],
                     paint_opacity: 1.0,
                     opacity_keyframes: vec![],
                     position: PointV1 { x: 2.0, y: -1.0 },
@@ -2940,6 +3298,7 @@ mod tests {
                         end: 2.5,
                         start: 0.5,
                     },
+                    material_parameter_keyframes: vec![],
                     paint_opacity: 1.0,
                     opacity_keyframes: vec![],
                     position: PointV1 { x: -2.0, y: 1.0 },
@@ -2965,6 +3324,7 @@ mod tests {
                         end: 2.5,
                         start: 0.5,
                     },
+                    material_parameter_keyframes: vec![],
                     paint_opacity: 1.0,
                     opacity_keyframes: vec![],
                     position: PointV1 { x: 0.0, y: 1.5 },
@@ -3228,6 +3588,42 @@ mod tests {
         });
         program.schedule_order.push("opacity-segment".to_owned());
         program.schedule_edge_count = 6;
+    }
+
+    fn add_creation_material_parameter_segment(
+        program: &mut StudioCreationEditInput,
+        entity_id: &str,
+        start: f64,
+        end: f64,
+    ) {
+        for operation in &mut program.operations {
+            operation.origin = StudioAuthoringOrigin::DirectManipulation;
+        }
+        program.origin = StudioAuthoringOrigin::DirectManipulation;
+        program.requested_execution = SceneEditExecution::Sequence;
+        program.schedule_mode = SceneEditScheduleMode::Sequence;
+        program.operations.push(StudioCreationOperation {
+            depends_on: vec![],
+            entity_id: Some(entity_id.to_owned()),
+            id: "material-segment".to_owned(),
+            interval: IntervalV1 { end, start },
+            kind: StudioCreationOperationKind::MaterialParameterKeyframes {
+                easing: StudioMotionEasing::Smooth,
+                from: Some(0.35),
+                material: FragmentMaterialV1 {
+                    parameters: vec![0.35, 8.0],
+                    revision: 1,
+                    shader_id: "project-wave".to_owned(),
+                    texture: None,
+                },
+                name: "amplitude".to_owned(),
+                parameter_index: 0,
+                to: Some(0.85),
+            },
+            origin: StudioAuthoringOrigin::DirectManipulation,
+        });
+        program.schedule_order.push("material-segment".to_owned());
+        program.schedule_edge_count = 2 * (program.operations.len() - 1);
     }
 
     fn studio_created_appearance_edit_input(
@@ -4449,6 +4845,116 @@ mod tests {
             .map(poietra_scene_ir::RenderDrawV1::opacity)
             .unwrap();
         assert!((alpha - 0.5).abs() < 1e-12, "sampled alpha: {alpha}");
+    }
+
+    #[test]
+    fn creation_material_parameter_track_emits_vector_appearance_and_coexists_with_opacity() {
+        let mut bundle = static_imported_bundle();
+        bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.kind = StudioAuthoringEntityKind::Arrow;
+        entity.dimensions = StudioAuthoringDimensions::default();
+        add_creation_opacity_segment(&mut command.programs[0], entity_id, 1.0, 1.4);
+        add_creation_material_parameter_segment(&mut command.programs[0], entity_id, 1.0, 1.4);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let material_channel = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::VectorAppearance {
+                    entity_id: candidate,
+                    keyframes,
+                    ..
+                } if candidate == entity_id => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(material_channel.len(), 2);
+        let first_material = material_channel[0]
+            .value
+            .fill
+            .as_ref()
+            .and_then(|fill| fill.fragment_material.as_ref())
+            .unwrap();
+        let final_material = material_channel[1]
+            .value
+            .fill
+            .as_ref()
+            .and_then(|fill| fill.fragment_material.as_ref())
+            .unwrap();
+        assert_eq!(first_material.shader_id, "project-wave");
+        assert_eq!(first_material.parameters, vec![0.35, 8.0]);
+        assert_eq!(final_material.parameters, vec![0.85, 8.0]);
+        let packet = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "material-track-midpoint",
+                sample_time: 1.6,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        let midpoint = packet
+            .draws
+            .iter()
+            .find_map(|draw| match draw {
+                poietra_scene_ir::RenderDrawV1::Path {
+                    entity_id: candidate,
+                    fill: Some(fill),
+                    ..
+                } if candidate == entity_id => fill.fragment_material.as_ref(),
+                _ => None,
+            })
+            .unwrap();
+        assert!((midpoint.parameters[0] - 0.60).abs() < 1e-12);
+        assert!(result.bundle.scene.animation_channels.iter().any(|channel| {
+            matches!(channel, AnimationChannelV1::Opacity { entity_id: candidate, .. } if candidate == entity_id)
+        }));
+        assert!(matches!(
+            result
+                .creation_projection
+                .as_ref()
+                .unwrap()
+                .mutations
+                .iter()
+                .find(|mutation| mutation.operation_id == "material-segment")
+                .map(|mutation| &mutation.kind),
+            Some(StudioCreationProjectedMutationKind::MaterialParameterKeyframes {
+                name,
+                parameter_index: 0,
+                ..
+            }) if name == "amplitude"
+        ));
+    }
+
+    #[test]
+    fn creation_material_parameter_track_rejects_a_fill_less_shape_without_panicking() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        add_creation_material_parameter_segment(&mut command.programs[0], entity_id, 1.0, 1.4);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Create(
+                CreateSceneEntitiesError::InvalidAppearanceEdit
+            ))
+        ));
     }
 
     #[test]

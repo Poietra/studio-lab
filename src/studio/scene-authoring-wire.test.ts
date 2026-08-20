@@ -178,6 +178,38 @@ describe("Studio creation wire", () => {
     });
   });
 
+  it("forwards named material f32 keyframes with their complete material identity", () => {
+    const material = { parameters: [0.35, 8], revision: 3, shaderId: "project-wave" } as const;
+    const operation = {
+      dependsOn: [],
+      easing: "smooth" as const,
+      entityId: "entity:Arrow",
+      from: 0.35,
+      id: "material:Arrow",
+      interval: { end: 2, start: 1 },
+      key: "appearance" as const,
+      kind: "AnimateProperty" as const,
+      materialParameter: { material, name: "Speed", parameterIndex: 0 },
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+      to: 0.8,
+    };
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 3,
+      programs: [creationProgram("Arrow"), followupProgram("material:Arrow", operation)],
+    });
+
+    expect(command.programs[1]?.operations[0]).toMatchObject({
+      entityId: "entity:Arrow",
+      from: 0.35,
+      kind: "material-parameter-keyframes",
+      material,
+      name: "Speed",
+      parameterIndex: 0,
+      to: 0.8,
+    });
+  });
+
   it("normalizes created-shape colors without accepting non-canonical values", () => {
     const entityId = "entity:Circle";
     const common = {

@@ -3,8 +3,9 @@ use std::path::PathBuf;
 
 use poietra_eval::{EngineSessionV1, SampleEngineSessionOptionsV1};
 use poietra_scene_ir::{
-    AnimationChannelV1, RenderDrawV1, SceneIrBundleV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
-    VectorAppearanceValueV1, ViewportV1, validate_scene_ir_v1,
+    AnimationChannelV1, FragmentMaterialV1, RenderDrawV1, SceneCapabilityV1, SceneIrBundleV1,
+    StrokeCapV1, StrokeJoinV1, StrokeStyleV1, VectorAppearanceValueV1, ViewportV1,
+    validate_scene_ir_v1,
 };
 use serde::Deserialize;
 
@@ -188,6 +189,68 @@ fn contract_rejects_implicit_cross_fades_and_samples_stroke_width() {
         panic!("expected a stroked path");
     };
     assert_close(stroke.width_world, 0.042_804_148_661_804_33);
+}
+
+#[test]
+fn contract_allows_only_parameter_changes_within_one_fragment_material_identity() {
+    let (_, mut bundle) = fixture();
+    let material = FragmentMaterialV1 {
+        parameters: vec![0.35, 8.0],
+        revision: 1,
+        shader_id: "project-wave".to_owned(),
+        texture: None,
+    };
+    let AnimationChannelV1::VectorAppearance { keyframes, .. } =
+        &mut bundle.scene.animation_channels[1]
+    else {
+        unreachable!()
+    };
+    for keyframe in keyframes.iter_mut() {
+        keyframe.value.fill.as_mut().unwrap().fragment_material = Some(material.clone());
+    }
+    keyframes[1]
+        .value
+        .fill
+        .as_mut()
+        .unwrap()
+        .fragment_material
+        .as_mut()
+        .unwrap()
+        .parameters[0] = 0.85;
+    let first_fill = keyframes[0].value.fill.clone();
+    let poietra_scene_ir::SceneAppearanceV1::Vector { fill, .. } =
+        &mut bundle.scene.entities[0].appearance
+    else {
+        unreachable!()
+    };
+    *fill = first_fill;
+    bundle
+        .scene
+        .required_capabilities
+        .push(SceneCapabilityV1::FragmentMaterial);
+    bundle.scene.required_capabilities.sort();
+
+    validate_scene_ir_v1(&bundle.scene).unwrap();
+    let mut changed_identity = bundle.scene.clone();
+    let AnimationChannelV1::VectorAppearance { keyframes, .. } =
+        &mut changed_identity.animation_channels[1]
+    else {
+        unreachable!()
+    };
+    keyframes[1]
+        .value
+        .fill
+        .as_mut()
+        .unwrap()
+        .fragment_material
+        .as_mut()
+        .unwrap()
+        .revision = 2;
+    assert!(
+        validate_scene_ir_v1(&changed_identity)
+            .unwrap_err()
+            .contains_message("fragment materials")
+    );
 }
 
 #[test]

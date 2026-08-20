@@ -255,6 +255,19 @@ function normalizedStudioCreationOperation(
     };
   }
   if (operation.kind === "AnimateProperty" && operation.key === "appearance") {
+    if (operation.materialParameter) {
+      return {
+        ...common,
+        easing: operation.easing,
+        entityId: operation.entityId,
+        from: typeof operation.from === "number" ? operation.from : null,
+        kind: "material-parameter-keyframes",
+        material: operation.materialParameter.material,
+        name: operation.materialParameter.name,
+        parameterIndex: operation.materialParameter.parameterIndex,
+        to: typeof operation.to === "number" ? operation.to : null,
+      };
+    }
     return {
       ...common,
       easing: operation.easing,

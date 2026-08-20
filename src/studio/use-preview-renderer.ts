@@ -62,6 +62,7 @@ import {
   EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
   type SceneFragmentMaterialStateV1,
 } from "./fragment-material-authoring";
+import { materialParameterAssignmentBlocker } from "./material-parameter-keyframe-edit";
 import type {
   ProgramRecord,
   ProjectedEntity,
@@ -1505,9 +1506,19 @@ export async function compileStudioPreviewSceneV1(
       sceneFragmentMaterials?: SceneFragmentMaterialStateV1;
     }>,
 ): ReturnType<typeof compileStudioPreviewSceneWithoutFragmentMaterialsV1> {
+  const sceneMaterials = input.sceneFragmentMaterials ?? EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1;
+  const materialTrackBlocker = materialParameterAssignmentBlocker(
+    sourceEditRecords(input.workingState).map(({ program }) => program),
+    sceneMaterials.assignments,
+  );
+  if (materialTrackBlocker) {
+    return {
+      error: materialTrackBlocker,
+      kind: "unsupported",
+    };
+  }
   const result = await compileStudioPreviewSceneWithoutFragmentMaterialsV1(input);
   if (result.kind !== "compiled") return result;
-  const sceneMaterials = input.sceneFragmentMaterials ?? EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1;
   const assignments = Object.entries(sceneMaterials.assignments);
   if (assignments.length === 0) {
     return {
