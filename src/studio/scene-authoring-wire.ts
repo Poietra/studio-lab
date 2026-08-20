@@ -284,6 +284,16 @@ function normalizedStudioCreationOperation(
     return { ...common, entityId: operation.entityId, kind: "persistent-remove", persistent: true };
   }
   if (operation.kind === "AnimateProperty" && operation.key === "scale") {
+    if (operation.timelineTrack === true) {
+      return {
+        ...common,
+        easing: operation.easing,
+        entityId: operation.entityId,
+        from: typeof operation.from === "number" ? operation.from : null,
+        kind: "uniform-scale-keyframes",
+        to: typeof operation.to === "number" ? operation.to : null,
+      };
+    }
     return {
       ...common,
       controlPresent: operation.control !== undefined,

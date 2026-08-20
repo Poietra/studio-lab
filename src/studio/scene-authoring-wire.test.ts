@@ -210,6 +210,35 @@ describe("Studio creation wire", () => {
     });
   });
 
+  it("distinguishes a Timeline scale track from an immediate relative scale", () => {
+    const operation = {
+      dependsOn: [],
+      easing: "linear" as const,
+      entityId: "entity:Arrow",
+      from: 1,
+      id: "scale-track:Arrow",
+      interval: { end: 2, start: 1 },
+      key: "scale" as const,
+      kind: "AnimateProperty" as const,
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+      timelineTrack: true as const,
+      to: 1.5,
+    };
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 3,
+      programs: [creationProgram("Arrow"), followupProgram("scale-track:Arrow", operation)],
+    });
+
+    expect(command.programs[1]?.operations[0]).toMatchObject({
+      easing: "linear",
+      entityId: "entity:Arrow",
+      from: 1,
+      kind: "uniform-scale-keyframes",
+      to: 1.5,
+    });
+  });
+
   it("normalizes created-shape colors without accepting non-canonical values", () => {
     const entityId = "entity:Circle";
     const common = {

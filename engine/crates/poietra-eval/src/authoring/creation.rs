@@ -71,6 +71,7 @@ struct CreateSceneEntity {
     position: PointV1,
     rotation: f64,
     scale: f64,
+    uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
     stroke_color: Option<RgbaColorV1>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
@@ -218,6 +219,11 @@ pub enum StudioCreationOperationKind {
         control_present: bool,
         from: Option<f64>,
         relative_factor: Option<f64>,
+        to: Option<f64>,
+    },
+    UniformScaleKeyframes {
+        easing: StudioMotionEasing,
+        from: Option<f64>,
         to: Option<f64>,
     },
     Rotation {
@@ -378,6 +384,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::SourceZIndex { .. }
             | StudioCreationOperationKind::OpacityKeyframes { .. }
             | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+            | StudioCreationOperationKind::UniformScaleKeyframes { .. }
             | StudioCreationOperationKind::FillColor { .. }
             | StudioCreationOperationKind::StrokeColor { .. }
             | StudioCreationOperationKind::Resize { .. }
@@ -523,6 +530,7 @@ struct PlannedStudioCreationEntity {
     persistent_removal: Option<PersistentSceneRemoval>,
     position: PointV1,
     scale: f64,
+    uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
     spec: StudioCreationEntitySpec,
 }
@@ -776,11 +784,89 @@ struct PlannedStudioGroupRotation {
     entity_ids: BTreeSet<String>,
 }
 
-fn opacity_easing(easing: StudioMotionEasing) -> EasingV1 {
+fn property_easing(easing: StudioMotionEasing) -> EasingV1 {
     match easing {
         StudioMotionEasing::Linear => EasingV1::Linear {},
         StudioMotionEasing::Smooth => EasingV1::ManimSmooth {},
     }
+}
+
+fn closed_studio_uniform_scale_track(
+    program: &StudioCreationEditInput,
+) -> Option<(&str, Vec<&StudioCreationOperation>)> {
+    if program.origin != StudioAuthoringOrigin::DirectManipulation
+        || program.requested_execution != SceneEditExecution::Sequence
+        || program.schedule_mode != SceneEditScheduleMode::Sequence
+        || program.operations.is_empty()
+    {
+        return None;
+    }
+    let operations = program
+        .schedule_order
+        .iter()
+        .filter_map(|operation_id| {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)?;
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::UniformScaleKeyframes { .. }
+            )
+            .then_some(operation)
+        })
+        .collect::<Vec<_>>();
+    let entity_id = operations.first()?.entity_id.as_deref()?;
+    if operations.first()?.interval.start + TIMELINE_ANCHOR_EPSILON
+        < program.anchor_resolved_seconds
+    {
+        return None;
+    }
+    for (index, operation) in operations.iter().enumerate() {
+        let StudioCreationOperationKind::UniformScaleKeyframes {
+            easing: _,
+            from: Some(from),
+            to: Some(to),
+        } = &operation.kind
+        else {
+            return None;
+        };
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || operation.entity_id.as_deref() != Some(entity_id)
+            || !from.is_finite()
+            || *from <= 0.0
+            || !to.is_finite()
+            || *to <= 0.0
+        {
+            return None;
+        }
+        if operations.len() == 1 && interval_is_exact_point(&operation.interval) {
+            if !close_transform_baseline_value(*from, *to) {
+                return None;
+            }
+            continue;
+        }
+        if operation.interval.end <= operation.interval.start + TIMELINE_ANCHOR_EPSILON {
+            return None;
+        }
+        if let Some(previous) = index.checked_sub(1).and_then(|prior| operations.get(prior)) {
+            let StudioCreationOperationKind::UniformScaleKeyframes {
+                to: Some(previous_to),
+                ..
+            } = &previous.kind
+            else {
+                return None;
+            };
+            if !studio_timeline_semantic_values_match(
+                previous.interval.end,
+                operation.interval.start,
+            ) || !close_transform_baseline_value(*previous_to, *from)
+            {
+                return None;
+            }
+        }
+    }
+    Some((entity_id, operations))
 }
 
 fn interval_is_exact_point(interval: &IntervalV1) -> bool {
@@ -1115,6 +1201,7 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::FadeIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                        | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                 )
             });
         let has_competing_appearance_or_removal =
@@ -1172,6 +1259,47 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::FadeIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                        | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                )
+            });
+        if !creates_target || !contains_only_creation_scaffold_or_property_tracks {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+    }
+    let uniform_scale_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| {
+            programs[*index].operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    for index in &uniform_scale_programs {
+        let program = &programs[*index];
+        let Some((entity_id, _)) = closed_studio_uniform_scale_track(program) else {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        };
+        let creates_target = program.operations.iter().any(|operation| {
+            matches!(
+                &operation.kind,
+                StudioCreationOperationKind::Create { entity } if entity.id == entity_id
+            )
+        });
+        let contains_only_creation_scaffold_or_property_tracks =
+            program.operations.iter().all(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::Create { .. }
+                        | StudioCreationOperationKind::Position { .. }
+                        | StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::OpacityKeyframes { .. }
+                        | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                        | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                 )
             });
         if !creates_target || !contains_only_creation_scaffold_or_property_tracks {
@@ -1186,6 +1314,7 @@ fn plan_studio_creation_edits(
             !create_programs.contains(index)
                 && !opacity_programs.contains(index)
                 && !material_parameter_programs.contains(index)
+                && !uniform_scale_programs.contains(index)
         })
         .collect::<Vec<_>>();
 
@@ -1246,7 +1375,8 @@ fn plan_studio_creation_edits(
                         || operation.interval.end <= operation.interval.start
                 }
                 StudioCreationOperationKind::OpacityKeyframes { .. }
-                | StudioCreationOperationKind::MaterialParameterKeyframes { .. } => operation
+                | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                | StudioCreationOperationKind::UniformScaleKeyframes { .. } => operation
                     .entity_id
                     .as_deref()
                     .is_none_or(|entity_id| !program_created_ids.contains(entity_id)),
@@ -1279,6 +1409,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                     if operation
                         .entity_id
                         .as_deref()
@@ -1287,6 +1418,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -1516,6 +1648,7 @@ fn plan_studio_creation_edits(
             persistent_removal: None,
             position: initial_position.clone(),
             scale: 1.0,
+            uniform_scale_keyframes: Vec::new(),
             source_z_index: None,
             spec: spec.clone(),
         });
@@ -1607,7 +1740,7 @@ fn plan_studio_creation_edits(
                 keyframes.push(KeyframeV1 {
                     at: interval.start,
                     easing_to_next: (interval.end > interval.start + TIMELINE_ANCHOR_EPSILON)
-                        .then(|| opacity_easing(*easing)),
+                        .then(|| property_easing(*easing)),
                     value: *from,
                 });
             }
@@ -1616,7 +1749,7 @@ fn plan_studio_creation_edits(
                     at: interval.end,
                     easing_to_next: projected
                         .get(index + 1)
-                        .map(|(_, next_easing, _, _)| opacity_easing(*next_easing)),
+                        .map(|(_, next_easing, _, _)| property_easing(*next_easing)),
                     value: *to,
                 });
             }
@@ -1723,7 +1856,7 @@ fn plan_studio_creation_edits(
                 keyframes.push(KeyframeV1 {
                     at: interval.start,
                     easing_to_next: (interval.end > interval.start + TIMELINE_ANCHOR_EPSILON)
-                        .then(|| opacity_easing(*easing)),
+                        .then(|| property_easing(*easing)),
                     value: from_material,
                 });
             }
@@ -1732,12 +1865,115 @@ fn plan_studio_creation_edits(
                     at: interval.end,
                     easing_to_next: projected
                         .get(index + 1)
-                        .map(|(_, next_easing, ..)| opacity_easing(*next_easing)),
+                        .map(|(_, next_easing, ..)| property_easing(*next_easing)),
                     value: to_material,
                 });
             }
         }
         state.material_parameter_keyframes = keyframes;
+    }
+
+    for program_index in uniform_scale_programs {
+        let program = &programs[program_index];
+        let (entity_id, track_operations) = closed_studio_uniform_scale_track(program)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let state = entities
+            .iter_mut()
+            .find(|state| state.spec.id == entity_id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let program_rank = timeline.ranks[program_index];
+        if state.creation_program_rank > program_rank
+            || (state.creation_program_rank == program_rank
+                && state.creation_transaction_id != program.transaction_id)
+            || !state.uniform_scale_keyframes.is_empty()
+            || state.persistent_removal.is_some()
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut projected = Vec::with_capacity(track_operations.len());
+        for operation in track_operations {
+            let StudioCreationOperationKind::UniformScaleKeyframes {
+                easing,
+                from: Some(from),
+                to: Some(to),
+            } = &operation.kind
+            else {
+                unreachable!();
+            };
+            let mut interval = IntervalV1 {
+                end: operation.interval.end + timeline.offsets[program_index],
+                start: operation.interval.start + timeline.offsets[program_index],
+            };
+            if state.creation_program_rank == program_rank
+                && let Some((_, insertion)) = timeline
+                    .ranked_insertions
+                    .iter()
+                    .find(|(rank, _)| *rank == program_rank)
+            {
+                shift_interval_for_insertion(&mut interval, insertion);
+            }
+            for (rank, insertion) in &timeline.ranked_insertions {
+                if *rank > program_rank {
+                    shift_interval_for_insertion(&mut interval, insertion);
+                }
+            }
+            if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+                || state
+                    .fade_interval
+                    .as_ref()
+                    .is_some_and(|fade| interval.start <= fade.end + TIMELINE_ANCHOR_EPSILON)
+            {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            let schedule_index = program
+                .schedule_order
+                .iter()
+                .position(|operation_id| operation_id == &operation.id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            ranked_mutations.push((
+                program_rank,
+                schedule_index,
+                StudioCreationProjectedMutation {
+                    entity_id: entity_id.to_owned(),
+                    interval: interval.clone(),
+                    kind: StudioCreationProjectedMutationKind::UniformScale {
+                        from: *from,
+                        to: *to,
+                    },
+                    operation_id: operation.id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                },
+            ));
+            projected.push((interval, *easing, *from, *to));
+        }
+        if projected
+            .first()
+            .is_none_or(|(_, _, from, _)| !close_transform_baseline_value(*from, state.scale))
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut keyframes = Vec::with_capacity(projected.len() + 1);
+        for (index, (interval, easing, from, to)) in projected.iter().enumerate() {
+            if index == 0 {
+                keyframes.push(KeyframeV1 {
+                    at: interval.start,
+                    easing_to_next: (interval.end > interval.start + TIMELINE_ANCHOR_EPSILON)
+                        .then(|| property_easing(*easing)),
+                    value: *from,
+                });
+            }
+            if interval.end > interval.start + TIMELINE_ANCHOR_EPSILON {
+                keyframes.push(KeyframeV1 {
+                    at: interval.end,
+                    easing_to_next: projected
+                        .get(index + 1)
+                        .map(|(_, next_easing, _, _)| property_easing(*next_easing)),
+                    value: *to,
+                });
+            }
+        }
+        state.uniform_scale_keyframes = keyframes;
     }
 
     let mut planned_motions = Vec::new();
@@ -2230,6 +2466,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::SourceZIndex { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
@@ -2243,7 +2480,11 @@ fn plan_studio_creation_edits(
     }
 
     for state in &entities {
-        if (!rotation_is_noop(state.current_rotation) && state.instant_at.is_some())
+        if (!state.uniform_scale_keyframes.is_empty()
+            && (state.instant_at.is_some()
+                || !rotation_is_noop(state.current_rotation)
+                || !rotation_is_noop(state.instant_rotation)))
+            || (!rotation_is_noop(state.current_rotation) && state.instant_at.is_some())
             || (!rotation_is_noop(state.instant_rotation) && state.instant_at.is_none())
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
@@ -2288,6 +2529,7 @@ fn plan_studio_creation_edits(
                 .ok_or(ProjectStudioCreationEditError::Unsupported)?;
             if !rotation_is_noop(state.current_rotation)
                 || !rotation_is_noop(state.instant_rotation)
+                || !state.uniform_scale_keyframes.is_empty()
                 || !studio_creation_motion_is_compatible(state, &motion.interval)
             {
                 return Err(ProjectStudioCreationEditError::Unsupported);
@@ -2528,6 +2770,20 @@ fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> boo
         .windows(2)
         .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
         && (entity.material_parameter_keyframes.is_empty() || base_has_fill);
+    let scale_is_valid = entity.uniform_scale_keyframes.iter().all(|keyframe| {
+        keyframe.at.is_finite()
+            && keyframe.at >= entity.lifetime.start
+            && keyframe.at <= entity.lifetime.end
+            && keyframe.value.is_finite()
+            && keyframe.value > 0.0
+    }) && entity
+        .uniform_scale_keyframes
+        .windows(2)
+        .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
+        && entity
+            .uniform_scale_keyframes
+            .first()
+            .is_none_or(|keyframe| close_transform_baseline_value(keyframe.value, entity.scale));
     let starts_after_fade = entity.fade_in.as_ref().is_none_or(|fade| {
         entity
             .opacity_keyframes
@@ -2537,8 +2793,12 @@ fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> boo
                 .material_parameter_keyframes
                 .first()
                 .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
+            && entity
+                .uniform_scale_keyframes
+                .first()
+                .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
     });
-    opacity_is_valid && material_is_valid && starts_after_fade
+    opacity_is_valid && material_is_valid && scale_is_valid && starts_after_fade
 }
 
 fn validate_create_scene_entities_command(
@@ -2616,6 +2876,8 @@ fn validate_create_scene_entities_command(
                         | CreateSceneEntityGeometry::Rectangle { .. }
                 ))
             || (!rotation_is_noop(entity.rotation) && entity.instant_transform.is_some())
+            || (!entity.uniform_scale_keyframes.is_empty()
+                && (!rotation_is_noop(entity.rotation) || entity.instant_transform.is_some()))
             || !create_entity_property_keyframes_are_valid(entity)
             || (!entity.material_parameter_keyframes.is_empty() && has_color_override)
             || (appearance_changed && entity.appearance_at.is_none())
@@ -2764,6 +3026,34 @@ fn append_created_entity(
                     provenance_id: provenance_id.to_owned(),
                 });
         }
+    }
+    if entity.uniform_scale_keyframes.len() >= 2 {
+        let keyframes = entity
+            .uniform_scale_keyframes
+            .iter()
+            .map(|keyframe| KeyframeV1 {
+                at: keyframe.at,
+                easing_to_next: keyframe.easing_to_next.clone(),
+                value: AffineTransformV1 {
+                    m11: keyframe.value,
+                    m12: 0.0,
+                    m21: 0.0,
+                    m22: keyframe.value,
+                    tx: entity.position.x,
+                    ty: entity.position.y,
+                },
+            })
+            .collect();
+        capabilities.insert(SceneCapabilityV1::AffineTransformAnimation);
+        let channel_id = unused_channel_id(scene, &format!("studio-scale-{scene_order}"));
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::AffineTransform {
+                entity_id: created_id.clone(),
+                id: channel_id,
+                keyframes,
+                provenance_id: provenance_id.to_owned(),
+            });
     }
     if let Some(at) = entity.appearance_at {
         if !has_material_parameter_keyframes
@@ -3179,6 +3469,7 @@ impl EngineSessionV1 {
                 ),
                 rotation: state.current_rotation,
                 scale: 1.0,
+                uniform_scale_keyframes: state.uniform_scale_keyframes.clone(),
                 source_z_index: state.source_z_index,
                 stroke_color,
             });
@@ -3297,6 +3588,7 @@ mod tests {
                     position: PointV1 { x: 2.0, y: -1.0 },
                     rotation: 0.0,
                     scale: 1.25,
+                    uniform_scale_keyframes: vec![],
                     source_z_index: None,
                     stroke_color: None,
                     instant_transform: None,
@@ -3320,6 +3612,7 @@ mod tests {
                     position: PointV1 { x: -2.0, y: 1.0 },
                     rotation: 0.0,
                     scale: 0.5,
+                    uniform_scale_keyframes: vec![],
                     source_z_index: None,
                     stroke_color: None,
                     instant_transform: Some(CreateSceneEntityInstantTransform {
@@ -3348,6 +3641,7 @@ mod tests {
                     position: PointV1 { x: 0.0, y: 1.5 },
                     rotation: 0.0,
                     scale: 2.0,
+                    uniform_scale_keyframes: vec![],
                     source_z_index: None,
                     stroke_color: None,
                     instant_transform: None,
@@ -3632,6 +3926,35 @@ mod tests {
             origin: StudioAuthoringOrigin::DirectManipulation,
         });
         program.schedule_order.push("material-segment".to_owned());
+        program.schedule_edge_count = 2 * (program.operations.len() - 1);
+    }
+
+    fn add_creation_uniform_scale_segment(
+        program: &mut StudioCreationEditInput,
+        entity_id: &str,
+        start: f64,
+        end: f64,
+        to: f64,
+    ) {
+        for operation in &mut program.operations {
+            operation.origin = StudioAuthoringOrigin::DirectManipulation;
+        }
+        program.origin = StudioAuthoringOrigin::DirectManipulation;
+        program.requested_execution = SceneEditExecution::Sequence;
+        program.schedule_mode = SceneEditScheduleMode::Sequence;
+        program.operations.push(StudioCreationOperation {
+            depends_on: vec![],
+            entity_id: Some(entity_id.to_owned()),
+            id: "scale-segment".to_owned(),
+            interval: IntervalV1 { end, start },
+            kind: StudioCreationOperationKind::UniformScaleKeyframes {
+                easing: StudioMotionEasing::Smooth,
+                from: Some(1.0),
+                to: Some(to),
+            },
+            origin: StudioAuthoringOrigin::DirectManipulation,
+        });
+        program.schedule_order.push("scale-segment".to_owned());
         program.schedule_edge_count = 2 * (program.operations.len() - 1);
     }
 
@@ -4691,7 +5014,11 @@ mod tests {
         assert_eq!(projection.motions.len(), 1);
         assert!(projection.mutations.iter().any(|mutation| matches!(
             mutation.kind,
-            StudioCreationProjectedMutationKind::UniformScale { from: 1.0, to: 1.5 }
+            StudioCreationProjectedMutationKind::UniformScale {
+                from: 1.0,
+                to: 1.5,
+                ..
+            }
         )));
         assert_eq!(projection.removals.len(), 1);
         assert_eq!(
@@ -4886,6 +5213,101 @@ mod tests {
             .map(poietra_scene_ir::RenderDrawV1::opacity)
             .unwrap();
         assert!((alpha - 0.5).abs() < 1e-12, "sampled alpha: {alpha}");
+    }
+
+    #[test]
+    fn creation_uniform_scale_track_uses_the_canonical_affine_evaluator() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        add_creation_uniform_scale_segment(&mut command.programs[0], entity_id, 1.0, 1.4, 2.0);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+
+        let projection = result.creation_projection.as_ref().unwrap();
+        let mutation = projection
+            .mutations
+            .iter()
+            .find(|mutation| mutation.operation_id == "scale-segment")
+            .unwrap();
+        assert!(matches!(
+            mutation.kind,
+            StudioCreationProjectedMutationKind::UniformScale { from: 1.0, to: 2.0 }
+        ));
+        let channel = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::AffineTransform {
+                    entity_id: candidate,
+                    keyframes,
+                    ..
+                } if candidate == entity_id => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(channel.len(), 2);
+        assert!((channel[0].value.m11 - 1.0).abs() < 1e-12);
+        assert!((channel[1].value.m11 - 2.0).abs() < 1e-12);
+
+        let packet = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "scale-track-midpoint",
+                sample_time: f64::midpoint(channel[0].at, channel[1].at),
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        let transform = packet
+            .draws
+            .iter()
+            .find_map(|draw| match draw {
+                poietra_scene_ir::RenderDrawV1::Path {
+                    entity_id: candidate,
+                    transform,
+                    ..
+                } if candidate == entity_id => Some(transform),
+                _ => None,
+            })
+            .unwrap();
+        assert!((transform.m11 - 1.5).abs() < 1e-12);
+        assert!((transform.m22 - 1.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn one_uniform_scale_marker_keeps_the_base_without_an_affine_channel() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        add_creation_uniform_scale_segment(&mut command.programs[0], entity_id, 1.0, 1.0, 1.0);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+
+        assert!(
+            !result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::AffineTransform {
+                            entity_id: candidate,
+                            ..
+                        } if candidate == entity_id
+                    )
+                })
+        );
     }
 
     #[test]
@@ -5648,7 +6070,7 @@ mod tests {
         );
         assert!(matches!(
             scale_projection.mutations.last().map(|mutation| &mutation.kind),
-            Some(StudioCreationProjectedMutationKind::UniformScale { from, to })
+            Some(StudioCreationProjectedMutationKind::UniformScale { from, to, .. })
                 if (*from - 1.0).abs() < 1e-12 && (*to - 1.5).abs() < 1e-12
         ));
         let mut scale_session = EngineSessionV1::new(bundle.clone()).unwrap();
