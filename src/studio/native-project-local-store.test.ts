@@ -15,6 +15,7 @@ import { createStudioNativeBlankScene, createStudioNativeBlankSceneIrBundle } fr
 const DOCUMENT_KEY = "d".repeat(64);
 const IDENTITY = { documentKey: DOCUMENT_KEY, projectId: "project-a" } as const;
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const PNG_2 = new Uint8Array([...PNG, 1]);
 
 function key(identity: NativeProjectLocalIdentity) {
   return `${identity.projectId}\0${identity.documentKey}`;
@@ -62,10 +63,15 @@ async function authoredState() {
     height: 8,
     width: 14.222,
   });
-  const ingested = await ingestNativeProjectPngV1({
+  const first = await ingestNativeProjectPngV1({
     decodeDimensions: async () => ({ pixelHeight: 1, pixelWidth: 2 }),
     source: { bytes: PNG.buffer.slice(0), kind: "bytes", mediaType: "image/png" },
     state: { assetPayloads: [], bundle },
+  });
+  const ingested = await ingestNativeProjectPngV1({
+    decodeDimensions: async () => ({ pixelHeight: 1, pixelWidth: 2 }),
+    source: { bytes: PNG_2.buffer.slice(0), kind: "bytes", mediaType: "image/png" },
+    state: first,
   });
   return {
     assetPayloads: ingested.assetPayloads,
@@ -75,17 +81,23 @@ async function authoredState() {
 }
 
 describe("Studio-native local project persistence", () => {
-  it("restores the verified PNG manifest, owned bytes, and material state", async () => {
+  it("restores the verified PNG manifest, all owned bytes, and material state", async () => {
     const adapter = new MemoryAdapter();
     const store = new NativeProjectLocalStore(adapter, async () => ({ pixelHeight: 1, pixelWidth: 2 }));
     const state = await authoredState();
+    const expectedBytes = new Map(
+      state.assetPayloads.map((payload) => [payload.sha256, new Uint8Array(payload.bytes).slice()]),
+    );
 
     await store.save(IDENTITY, state);
     new Uint8Array(state.assetPayloads[0]!.bytes)[0] = 0;
 
     const restored = await store.restore(IDENTITY);
     expect(restored?.bundle.assets).toEqual(state.bundle.assets);
-    expect(new Uint8Array(restored!.assetPayloads[0]!.bytes)).toEqual(PNG);
+    expect(restored?.assetPayloads).toHaveLength(2);
+    for (const payload of restored!.assetPayloads) {
+      expect(new Uint8Array(payload.bytes)).toEqual(expectedBytes.get(payload.sha256));
+    }
     expect(restored?.fragmentMaterials).toEqual(state.fragmentMaterials);
   });
 

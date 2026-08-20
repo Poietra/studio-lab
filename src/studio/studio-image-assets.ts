@@ -9,7 +9,7 @@ export type StudioNativeImageAssetV1 = Readonly<{
     localRect: Readonly<{ bottom: number; left: number; right: number; top: number }>;
     sampler: "linear" | "nearest";
   }>;
-  label: "image.png";
+  label: string;
   pixelHeight: number;
   pixelWidth: number;
 }>;
@@ -25,12 +25,12 @@ function defaultLocalRect(pixelWidth: number, pixelHeight: number) {
   return { bottom: -height / 2, left: -width / 2, right: width / 2, top: height / 2 };
 }
 
-/** Selects the one verified project image already installed in the canonical
- * Scene. It neither reads a URL nor invents a second asset registry. */
+/** Selects verified project images already installed in the canonical Scene.
+ * It neither reads a URL nor invents a second asset registry. */
 export function studioNativeImageAssetsV1(source: CanonicalImageSourceV1 | null): readonly StudioNativeImageAssetV1[] {
   if (!source) return [];
   const payloads = new Map(source.assetPayloads.map((payload) => [payload.assetId, payload]));
-  return source.bundle.assets.assets.slice(0, 1).flatMap((asset) => {
+  return source.bundle.assets.assets.flatMap((asset) => {
     const payload = payloads.get(asset.id);
     if (
       !payload ||
@@ -59,7 +59,7 @@ export function studioNativeImageAssetsV1(source: CanonicalImageSourceV1 | null)
               : defaultLocalRect(asset.pixelWidth, asset.pixelHeight),
           sampler: retainedPlacement?.kind === "image" ? retainedPlacement.sampler : "linear",
         },
-        label: "image.png",
+        label: `image-${asset.sha256.slice(0, 8)}.png`,
         pixelHeight: asset.pixelHeight,
         pixelWidth: asset.pixelWidth,
       },

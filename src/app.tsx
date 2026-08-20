@@ -1178,7 +1178,7 @@ export function App({
     organizationId: accountSession?.activeOrganization.id ?? null,
   });
 
-  async function importNativeProjectImageFile(file: File) {
+  async function importNativeProjectImageFiles(files: readonly File[]) {
     if (
       !activeProjectId ||
       !activeEditorScene ||
@@ -1186,7 +1186,8 @@ export function App({
       !nativeProjectState ||
       nativeProjectState.projectId !== activeProjectId ||
       nativeProjectState.documentKey !== activeEditorScene.identity.documentKey ||
-      nativeProjectAssetPending
+      nativeProjectAssetPending ||
+      files.length === 0
     )
       return;
     const generation = nativeProjectAssetGeneration.current;
@@ -1195,10 +1196,13 @@ export function App({
     setNativeProjectAssetPending(true);
     setNativeProjectAssetError(null);
     try {
-      const result = await ingestNativeProjectPngV1({
-        source: { file, kind: "file" },
-        state: nativeProjectState,
-      });
+      let result: NativeProjectAssetStateV1 = nativeProjectState;
+      for (const file of files) {
+        result = await ingestNativeProjectPngV1({
+          source: { file, kind: "file" },
+          state: result,
+        });
+      }
       if (nativeProjectAssetGeneration.current !== generation) return;
       const stateKey = tabLocalNativeProjectKey(projectId, documentKey);
       const retained = nativeProjectStates.current.get(stateKey);
@@ -1215,7 +1219,7 @@ export function App({
       setNativeProjectState(updated);
     } catch (cause) {
       if (nativeProjectAssetGeneration.current !== generation) return;
-      setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not import the selected PNG.");
+      setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not import the selected PNGs.");
     } finally {
       if (nativeProjectAssetGeneration.current === generation) setNativeProjectAssetPending(false);
     }
@@ -6853,7 +6857,7 @@ export function App({
               lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
               onGroup={groupLayerSelection}
-              onImportImageFile={nativeSceneActive ? (file) => void importNativeProjectImageFile(file) : undefined}
+              onImportImageFiles={nativeSceneActive ? (files) => void importNativeProjectImageFiles(files) : undefined}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onAddImageAsset={(asset) => {
                 setIsPlaying(false);

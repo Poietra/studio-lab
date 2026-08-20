@@ -191,7 +191,7 @@ export function WorkspaceSidebar({
   lockedEntityIds = new Set(),
   nextScene,
   onGroup,
-  onImportImageFile,
+  onImportImageFiles,
   onDurationChange,
   onAddImageAsset,
   onEditAppliedProgram,
@@ -234,7 +234,7 @@ export function WorkspaceSidebar({
   lockedEntityIds?: ReadonlySet<string>;
   nextScene: AuthorableWorkspaceScene | null;
   onGroup?: () => void;
-  onImportImageFile?: (file: File) => void;
+  onImportImageFiles?: (files: readonly File[]) => void;
   onDurationChange: (duration: number) => void;
   onAddImageAsset?: (asset: StudioNativeImageAssetV1) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
@@ -279,17 +279,18 @@ export function WorkspaceSidebar({
           </h2>
           <div className="flex items-center gap-2">
             <span className="tabular-nums text-[10px] text-zinc-600">{imageAssets.length}</span>
-            {onImportImageFile ? (
+            {onImportImageFiles ? (
               <>
                 <input
                   accept="image/png,.png"
                   className="sr-only"
                   disabled={!authoringAvailable || draftActive || imageImportPending}
                   onChange={(event) => {
-                    const file = event.currentTarget.files?.[0];
+                    const files = Array.from(event.currentTarget.files ?? []);
                     event.currentTarget.value = "";
-                    if (file) onImportImageFile(file);
+                    if (files.length > 0) onImportImageFiles(files);
                   }}
+                  multiple
                   ref={imageFileInput}
                   type="file"
                 />

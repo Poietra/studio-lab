@@ -132,7 +132,7 @@ describe("WorkspaceSidebar Layers", () => {
         nextScene={null}
         onDurationChange={vi.fn()}
         onEditAppliedProgram={vi.fn()}
-        onImportImageFile={vi.fn()}
+        onImportImageFiles={vi.fn()}
         onRedo={vi.fn()}
         onToggleEntity={vi.fn()}
         onUndo={vi.fn()}
@@ -144,6 +144,7 @@ describe("WorkspaceSidebar Layers", () => {
 
     expect(markup).toContain("+ Import PNG");
     expect(markup).toContain('accept="image/png,.png"');
+    expect(markup).toContain('multiple=""');
     expect(markup).toContain('role="alert"');
     expect(markup).toContain("The PNG could not be decoded.");
   });
