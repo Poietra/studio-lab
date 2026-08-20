@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const scopeNames = ["engine_core", "engine_wasm", "web", "tests", "storage", "browser", "electron", "tauri"];
+const scopeNames = ["code", "engine_core", "engine_wasm", "web", "tests", "storage", "browser", "electron", "tauri"];
 
 function emptyScopes() {
   return Object.fromEntries(scopeNames.map((name) => [name, false]));
@@ -14,6 +14,10 @@ function allScopes() {
 
 function enable(scopes, ...names) {
   for (const name of names) scopes[name] = true;
+}
+
+function normalizePath(path) {
+  return path.replaceAll("\\", "/");
 }
 
 function isDocumentation(path) {
@@ -39,8 +43,9 @@ export function classifyChangedPaths(paths) {
   const scopes = emptyScopes();
 
   for (const rawPath of paths) {
-    const path = rawPath.replaceAll("\\", "/");
+    const path = normalizePath(rawPath);
     if (!path || isDocumentation(path)) continue;
+    scopes.code = true;
     if (isGlobalConfiguration(path)) return allScopes();
 
     if (path.startsWith("src-tauri/")) {
@@ -92,6 +97,20 @@ export function classifyChangedPaths(paths) {
   return scopes;
 }
 
+export function selectScopes(paths, { forceAll = false, fullForCode = false } = {}) {
+  if (forceAll || paths === null) return allScopes();
+  if (
+    fullForCode &&
+    paths.some((rawPath) => {
+      const path = normalizePath(rawPath);
+      return path && !isDocumentation(path);
+    })
+  ) {
+    return allScopes();
+  }
+  return classifyChangedPaths(paths);
+}
+
 function changedPaths(baseSha, headSha) {
   if (!baseSha || !headSha || /^0+$/.test(baseSha)) return null;
   const result = spawnSync("git", ["diff", "--name-only", "--diff-filter=ACMRTUXB", "-z", baseSha, headSha], {
@@ -115,7 +134,13 @@ function writeOutputs(scopes, paths) {
 function main() {
   const forceAll = process.env.POIETRA_CI_FORCE_ALL === "true";
   const paths = forceAll ? null : changedPaths(process.env.POIETRA_CI_BASE_SHA, process.env.POIETRA_CI_HEAD_SHA);
-  writeOutputs(paths === null ? allScopes() : classifyChangedPaths(paths), paths);
+  writeOutputs(
+    selectScopes(paths, {
+      forceAll,
+      fullForCode: process.env.POIETRA_CI_FULL_FOR_CODE === "true",
+    }),
+    paths,
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();

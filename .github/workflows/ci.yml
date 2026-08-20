@@ -24,6 +24,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       browser: ${{ steps.scope.outputs.browser }}
+      code: ${{ steps.scope.outputs.code }}
       electron: ${{ steps.scope.outputs.electron }}
       engine_core: ${{ steps.scope.outputs.engine_core }}
       engine_wasm: ${{ steps.scope.outputs.engine_wasm }}
@@ -42,12 +43,15 @@ jobs:
         id: scope
         env:
           POIETRA_CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-          POIETRA_CI_FORCE_ALL: ${{ github.event_name != 'pull_request' }}
+          POIETRA_CI_FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' }}
+          POIETRA_CI_FULL_FOR_CODE: ${{ github.event_name == 'push' }}
           POIETRA_CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/ci-change-scope.mjs
 
   style:
     name: Style checks
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -375,7 +379,8 @@ jobs:
 
   native-render-validation:
     name: Full / Native WGPU reference
-    if: github.event_name != 'pull_request'
+    needs: changes
+    if: github.event_name != 'pull_request' && needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
