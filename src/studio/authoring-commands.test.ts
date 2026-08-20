@@ -17,6 +17,7 @@ import type { CanonicalEditOperation } from "./operations";
 import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
+import { STUDIO_STARTER_COMPOSITION_TITLE, studioStarterCompositionEntities } from "./starter-composition";
 import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
 import {
   createInitialEditorState,
@@ -416,6 +417,31 @@ describe("manual Studio authoring commands", () => {
     if (!appearance) return;
     expect(appearance.interval.end - appearance.interval.start).toBeCloseTo(STUDIO_STYLE_PROFILE.durationSeconds.brief);
     expect(result.validation.program.provenance.styleProfileRef).toEqual(styleProfileRef(STUDIO_STYLE_PROFILE));
+  });
+
+  it("creates the starter title card as ordinary editable entities with the standard fade-in", () => {
+    const result = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: studioStarterCompositionEntities(),
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "starter-title-card",
+    });
+
+    expect(result.validation.kind).toBe("valid");
+    expect(result.entityIds).toHaveLength(2);
+    expect(
+      result.validation.program.operations
+        .filter((operation) => operation.kind === "CreateEntity")
+        .map((operation) => ({ content: operation.entity.content?.text, type: operation.entity.type })),
+    ).toEqual([
+      { content: undefined, type: "Rectangle" },
+      { content: STUDIO_STARTER_COMPOSITION_TITLE, type: "Text" },
+    ]);
+    expect(
+      result.validation.program.operations.filter(
+        (operation) => operation.kind === "ChangePresence" && operation.effect === "fade-in",
+      ),
+    ).toHaveLength(2);
   });
 
   it("rejects creation dimensions that do not match the entity type", () => {

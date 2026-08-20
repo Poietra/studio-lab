@@ -747,6 +747,38 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).not.toContain("data-studio-preview-status");
   });
 
+  it("offers one canonical starter composition only on an empty interactive canvas", () => {
+    const presented = previewView({
+      frame: {
+        packetId: "empty-canvas",
+        revision: "a".repeat(64),
+        sampleTime: 0,
+        viewport: { heightPx: 360, widthPx: 640 },
+      },
+      phase: "presented",
+    });
+    const markup = renderToStaticMarkup(
+      <StudioCanvas {...baseProps()} entities={[]} onCreateStarterComposition={vi.fn()} preview={presented} />,
+    );
+
+    expect(markup).toContain("Add starter composition");
+    expect(markup).toContain("standard fade-in animation");
+    expect(
+      renderToStaticMarkup(<StudioCanvas {...baseProps()} onCreateStarterComposition={vi.fn()} preview={presented} />),
+    ).not.toContain("Add starter composition");
+    expect(
+      renderToStaticMarkup(
+        <StudioCanvas
+          {...baseProps()}
+          entities={[]}
+          onCreateStarterComposition={vi.fn()}
+          preview={presented}
+          readOnly
+        />,
+      ),
+    ).not.toContain("Add starter composition");
+  });
+
   it("exposes the whole-Scene failure without invoking a DOM renderer", () => {
     const markup = renderToStaticMarkup(
       <StudioCanvas

@@ -224,6 +224,7 @@ import {
   type SingleScaleResizeGesture,
 } from "./studio/single-scale-resize-gesture";
 import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimelineWithProjection } from "./studio/source-timeline";
+import { studioStarterCompositionEntities } from "./studio/starter-composition";
 import { preparedGeometryBounds, verifiedPreviewGeometryForStudioEntity } from "./studio/studio-canvas";
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
@@ -6407,6 +6408,10 @@ export function App({
               onCanvasPlace={(point) => {
                 if (insertTool === "Text") beginInlineTextCreation(point);
                 else void insertEntitiesAt(point);
+              }}
+              onCreateStarterComposition={() => {
+                setIsPlaying(false);
+                void insertEntitiesAt({ x: 320, y: 180 }, studioStarterCompositionEntities());
               }}
               onEntityKeyDown={nudgeEntity}
               onEntityPointerCancel={cancelEntityDrag}

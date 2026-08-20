@@ -68,6 +68,7 @@ export type StudioCanvasProps = Readonly<{
   lockedEntityIds?: ReadonlySet<string>;
   motionPaths: readonly StudioMotionPath[];
   onCanvasPlace: (point: Point) => void;
+  onCreateStarterComposition?: () => void;
   onEntityKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityPointerCancel: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityPointerDown: (
@@ -569,6 +570,7 @@ export function StudioCanvas({
   lockedEntityIds = new Set(),
   motionPaths,
   onCanvasPlace,
+  onCreateStarterComposition,
   onEntityKeyDown,
   onEntityPointerCancel,
   onEntityPointerDown,
@@ -834,6 +836,27 @@ export function StudioCanvas({
             key={`preview-${preview.epoch}`}
             ref={preview.attachCanvas}
           />
+        ) : null}
+        {onCreateStarterComposition &&
+        entities.length === 0 &&
+        showingCanvasPixels &&
+        preview?.interactionAuthority.kind === "interactive" &&
+        !readOnly &&
+        !boundaryActive &&
+        inlineTextEditor === null ? (
+          <div className="absolute left-1/2 top-1/2 z-30 w-72 -translate-x-1/2 -translate-y-1/2 border border-zinc-700 bg-zinc-950/95 p-4 text-center shadow-lg">
+            <p className="text-sm font-medium text-zinc-100">Start with an editable title card</p>
+            <p className="mt-1 text-pretty text-xs leading-5 text-zinc-400">
+              Adds Text and a Rectangle with the standard fade-in animation.
+            </p>
+            <button
+              className="mt-3 h-9 bg-sky-500 px-4 text-xs font-medium text-sky-950 hover:bg-sky-400"
+              onClick={onCreateStarterComposition}
+              type="button"
+            >
+              Add starter composition
+            </button>
+          </div>
         ) : null}
         <div className="absolute inset-0 origin-center" data-studio-transform-layer style={{ scale: cameraScale }}>
           <svg
