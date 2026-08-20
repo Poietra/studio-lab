@@ -337,7 +337,9 @@ fn install_channel_position(
         ))
     };
     let slot = match channel {
-        AnimationChannelV1::AffineTransform { .. } => &mut channels.affine[entity_index()?],
+        AnimationChannelV1::AffineTransform { .. } | AnimationChannelV1::Rotation { .. } => {
+            &mut channels.affine[entity_index()?]
+        }
         AnimationChannelV1::MotionPath { .. } => &mut channels.motion[entity_index()?],
         AnimationChannelV1::Opacity { .. } => &mut channels.opacity[entity_index()?],
         AnimationChannelV1::PathMorph { .. } => &mut channels.path_morph[entity_index()?],

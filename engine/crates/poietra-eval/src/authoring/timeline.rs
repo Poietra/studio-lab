@@ -253,6 +253,7 @@ pub(super) fn insert_scene_time(
                 shift_keyframes_for_insertion(keyframes, insertion);
             }
             AnimationChannelV1::Opacity { keyframes, .. }
+            | AnimationChannelV1::Rotation { keyframes, .. }
             | AnimationChannelV1::PathTrim { keyframes, .. }
             | AnimationChannelV1::MotionPath { keyframes, .. } => {
                 shift_keyframes_for_insertion(keyframes, insertion);
@@ -296,6 +297,7 @@ fn remove_scene_time(scene: &mut poietra_scene_ir::SceneIrV1, start: f64, end: f
                 }
             }
             AnimationChannelV1::Opacity { keyframes, .. }
+            | AnimationChannelV1::Rotation { keyframes, .. }
             | AnimationChannelV1::PathTrim { keyframes, .. }
             | AnimationChannelV1::MotionPath { keyframes, .. } => {
                 for keyframe in keyframes {

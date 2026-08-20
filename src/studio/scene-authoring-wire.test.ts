@@ -239,6 +239,35 @@ describe("Studio creation wire", () => {
     });
   });
 
+  it("distinguishes a Timeline rotation track from an immediate relative rotation", () => {
+    const operation = {
+      dependsOn: [],
+      easing: "smooth" as const,
+      entityId: "entity:Arrow",
+      from: 0,
+      id: "rotation-track:Arrow",
+      interval: { end: 2, start: 1 },
+      key: "rotation" as const,
+      kind: "AnimateProperty" as const,
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+      timelineTrack: true as const,
+      to: Math.PI,
+    };
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 3,
+      programs: [creationProgram("Arrow"), followupProgram("rotation-track:Arrow", operation)],
+    });
+
+    expect(command.programs[1]?.operations[0]).toMatchObject({
+      easing: "smooth",
+      entityId: "entity:Arrow",
+      from: 0,
+      kind: "rotation-keyframes",
+      to: Math.PI,
+    });
+  });
+
   it("normalizes created-shape colors without accepting non-canonical values", () => {
     const entityId = "entity:Circle";
     const common = {

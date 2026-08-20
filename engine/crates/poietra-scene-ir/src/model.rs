@@ -552,6 +552,16 @@ pub enum AnimationChannelV1 {
         #[serde(rename = "provenanceId")]
         provenance_id: String,
     },
+    #[serde(rename = "rotation")]
+    Rotation {
+        #[serde(rename = "entityId")]
+        entity_id: String,
+        id: String,
+        keyframes: Vec<KeyframeV1<f64>>,
+        pivot: PointV1,
+        #[serde(rename = "provenanceId")]
+        provenance_id: String,
+    },
     #[serde(rename = "opacity")]
     Opacity {
         #[serde(rename = "entityId")]
@@ -618,6 +628,7 @@ impl AnimationChannelV1 {
     pub fn id(&self) -> &str {
         match self {
             Self::AffineTransform { id, .. }
+            | Self::Rotation { id, .. }
             | Self::Opacity { id, .. }
             | Self::PathTrim { id, .. }
             | Self::PathMorph { id, .. }
@@ -631,6 +642,7 @@ impl AnimationChannelV1 {
     pub fn provenance_id(&self) -> &str {
         match self {
             Self::AffineTransform { provenance_id, .. }
+            | Self::Rotation { provenance_id, .. }
             | Self::Opacity { provenance_id, .. }
             | Self::PathTrim { provenance_id, .. }
             | Self::PathMorph { provenance_id, .. }
@@ -644,6 +656,7 @@ impl AnimationChannelV1 {
     pub fn entity_id(&self) -> Option<&str> {
         match self {
             Self::AffineTransform { entity_id, .. }
+            | Self::Rotation { entity_id, .. }
             | Self::Opacity { entity_id, .. }
             | Self::PathTrim { entity_id, .. }
             | Self::PathMorph { entity_id, .. }
@@ -657,6 +670,7 @@ impl AnimationChannelV1 {
     pub const fn kind_name(&self) -> &'static str {
         match self {
             Self::AffineTransform { .. } => "affine-transform",
+            Self::Rotation { .. } => "rotation",
             Self::Opacity { .. } => "opacity",
             Self::PathTrim { .. } => "path-trim",
             Self::PathMorph { .. } => "path-morph",

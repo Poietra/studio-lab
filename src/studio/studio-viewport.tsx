@@ -99,6 +99,8 @@ export function StudioViewport({
   motionPaths,
   opacityTrackEligibleIds,
   opacityTracks,
+  rotationTrackEligibleIds,
+  rotationTracks,
   scaleTrackEligibleIds,
   scaleTracks,
   onAppliedMotionClipChange,
@@ -135,6 +137,9 @@ export function StudioViewport({
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
+  onRotationKeyframeAdd,
+  onRotationKeyframeChange,
+  onRotationKeyframeDelete,
   onScaleKeyframeAdd,
   onScaleKeyframeChange,
   onScaleKeyframeDelete,
@@ -253,6 +258,8 @@ export function StudioViewport({
           objectTracks={projection.timeline.objectTracks}
           opacityTrackEligibleIds={opacityTrackEligibleIds}
           opacityTracks={opacityTracks}
+          rotationTrackEligibleIds={rotationTrackEligibleIds}
+          rotationTracks={rotationTracks}
           scaleTrackEligibleIds={scaleTrackEligibleIds}
           scaleTracks={scaleTracks}
           onAppliedMotionClipChange={onAppliedMotionClipChange}
@@ -266,6 +273,9 @@ export function StudioViewport({
           onOpacityKeyframeAdd={onOpacityKeyframeAdd}
           onOpacityKeyframeChange={onOpacityKeyframeChange}
           onOpacityKeyframeDelete={onOpacityKeyframeDelete}
+          onRotationKeyframeAdd={onRotationKeyframeAdd}
+          onRotationKeyframeChange={onRotationKeyframeChange}
+          onRotationKeyframeDelete={onRotationKeyframeDelete}
           onScaleKeyframeAdd={onScaleKeyframeAdd}
           onScaleKeyframeChange={onScaleKeyframeChange}
           onScaleKeyframeDelete={onScaleKeyframeDelete}

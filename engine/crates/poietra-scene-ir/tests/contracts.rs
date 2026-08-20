@@ -724,6 +724,69 @@ fn representative_scene_semantics_are_fail_closed() {
 }
 
 #[test]
+fn world_space_rotation_channels_reject_parented_entities() {
+    let mut scene = empty_scene();
+    let parent = SceneEntityV1 {
+        appearance: SceneAppearanceV1::Vector {
+            fill: Some(FillStyleV1 {
+                color: black(),
+                fragment_material: None,
+                rule: FillRuleV1::NonZero,
+            }),
+            opacity: 1.0,
+            stroke: None,
+        },
+        geometry: SceneGeometryV1::Circle {
+            center: PointV1 { x: 0.0, y: 0.0 },
+            radius: 1.0,
+        },
+        id: "parent".to_owned(),
+        lifetimes: vec![IntervalV1 {
+            end: scene.duration,
+            start: 0.0,
+        }],
+        parent_id: None,
+        provenance_id: "fixture:root".to_owned(),
+        scene_order: 0,
+        source_z_index: 0.0,
+        transform: AffineTransformV1::identity(),
+    };
+    let mut child = parent.clone();
+    child.id = "child".to_owned();
+    child.parent_id = Some(parent.id.clone());
+    child.scene_order = 1;
+    scene.entities = vec![parent, child];
+    scene.animation_channels.push(AnimationChannelV1::Rotation {
+        entity_id: "child".to_owned(),
+        id: "rotate-child".to_owned(),
+        keyframes: vec![
+            KeyframeV1 {
+                at: 0.0,
+                easing_to_next: Some(EasingV1::Linear {}),
+                value: 0.0,
+            },
+            KeyframeV1 {
+                at: scene.duration,
+                easing_to_next: None,
+                value: std::f64::consts::PI,
+            },
+        ],
+        pivot: PointV1 { x: 0.0, y: 0.0 },
+        provenance_id: "fixture:root".to_owned(),
+    });
+    scene.required_capabilities = vec![
+        SceneCapabilityV1::AffineTransformAnimation,
+        SceneCapabilityV1::ShapePrimitives,
+    ];
+
+    assert!(
+        validate_scene_ir_v1(&scene)
+            .unwrap_err()
+            .contains_message("world-space pivot require a root entity")
+    );
+}
+
+#[test]
 fn engine_frame_checks_digest_and_cross_document_identity() {
     let frame = EngineFrameV1 {
         assets: empty_manifest(),

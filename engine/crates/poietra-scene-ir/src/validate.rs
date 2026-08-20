@@ -768,7 +768,7 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
     }
     for channel in &scene.animation_channels {
         capabilities.insert(match channel {
-            AnimationChannelV1::AffineTransform { .. } => {
+            AnimationChannelV1::AffineTransform { .. } | AnimationChannelV1::Rotation { .. } => {
                 SceneCapabilityV1::AffineTransformAnimation
             }
             AnimationChannelV1::Camera { .. } => SceneCapabilityV1::CameraAnimation,
@@ -1211,7 +1211,17 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
         }
         let target = channel.entity_id().map_or_else(
             || "camera".to_owned(),
-            |id| format!("{id}/{}", channel.kind_name()),
+            |id| {
+                if matches!(
+                    channel,
+                    AnimationChannelV1::AffineTransform { .. }
+                        | AnimationChannelV1::Rotation { .. }
+                ) {
+                    format!("{id}/transform")
+                } else {
+                    format!("{id}/{}", channel.kind_name())
+                }
+            },
         );
         if !channel_targets.insert(target.clone()) {
             validator.issue(
@@ -1239,6 +1249,33 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                     &format!("{path}.keyframes"),
                     &mut validator,
                     validate_transform,
+                );
+            }
+            AnimationChannelV1::Rotation {
+                entity_id,
+                keyframes,
+                pivot,
+                ..
+            } => {
+                if let Some(entity_index) = entity_indexes.get(entity_id.as_str())
+                    && scene.entities[*entity_index].parent_id.is_some()
+                {
+                    validator.issue(
+                        format!("{path}.entityId"),
+                        "rotation channels with a world-space pivot require a root entity",
+                    );
+                }
+                validate_point(pivot, &format!("{path}.pivot"), &mut validator);
+                total_keyframes = total_keyframes.saturating_add(keyframes.len());
+                validate_keyframes(
+                    keyframes,
+                    MAX_KEYFRAMES_V1,
+                    scene.duration,
+                    &format!("{path}.keyframes"),
+                    &mut validator,
+                    |value, value_path, validator| {
+                        validate_finite(*value, value_path, validator);
+                    },
                 );
             }
             AnimationChannelV1::Opacity {
