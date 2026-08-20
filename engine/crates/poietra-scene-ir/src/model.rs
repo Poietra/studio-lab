@@ -7,6 +7,14 @@ const fn default_true() -> bool {
     true
 }
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires a borrowed field predicate"
+)]
+fn bool_is_true(value: &bool) -> bool {
+    *value
+}
+
 pub(crate) fn deserialize_js_safe_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
@@ -495,7 +503,7 @@ pub struct SceneEntityV1 {
     pub source_z_index: f64,
     pub transform: AffineTransformV1,
     /// Static document visibility. Older Scene IR omits this field and remains visible.
-    #[serde(default = "default_true")]
+    #[serde(default = "default_true", skip_serializing_if = "bool_is_true")]
     pub visible: bool,
 }
 

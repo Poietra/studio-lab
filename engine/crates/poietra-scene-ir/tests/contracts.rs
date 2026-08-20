@@ -754,8 +754,18 @@ fn missing_entity_visibility_defaults_to_visible() {
     let mut json = serde_json::to_value(entity).unwrap();
     json.as_object_mut().unwrap().remove("visible");
 
-    let parsed: SceneEntityV1 = serde_json::from_value(json).unwrap();
+    let mut parsed: SceneEntityV1 = serde_json::from_value(json).unwrap();
     assert!(parsed.visible);
+    assert!(
+        serde_json::to_value(&parsed)
+            .unwrap()
+            .get("visible")
+            .is_none(),
+        "legacy visible entities must not gain a wire field after round-trip"
+    );
+
+    parsed.visible = false;
+    assert_eq!(serde_json::to_value(&parsed).unwrap()["visible"], false);
 }
 
 #[test]
