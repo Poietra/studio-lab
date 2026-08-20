@@ -182,7 +182,7 @@ describe("Studio creation wire", () => {
     const material = { parameters: [0.35, 8], revision: 3, shaderId: "project-wave" } as const;
     const operation = {
       dependsOn: [],
-      easing: "smooth" as const,
+      easing: "ease-in" as const,
       entityId: "entity:Arrow",
       from: 0.35,
       id: "material:Arrow",
@@ -200,6 +200,7 @@ describe("Studio creation wire", () => {
     });
 
     expect(command.programs[1]?.operations[0]).toMatchObject({
+      easing: "ease-in",
       entityId: "entity:Arrow",
       from: 0.35,
       kind: "material-parameter-keyframes",
@@ -213,7 +214,7 @@ describe("Studio creation wire", () => {
   it("distinguishes a Timeline scale track from an immediate relative scale", () => {
     const operation = {
       dependsOn: [],
-      easing: "linear" as const,
+      easing: "ease-in-out" as const,
       entityId: "entity:Arrow",
       from: 1,
       id: "scale-track:Arrow",
@@ -231,7 +232,7 @@ describe("Studio creation wire", () => {
     });
 
     expect(command.programs[1]?.operations[0]).toMatchObject({
-      easing: "linear",
+      easing: "ease-in-out",
       entityId: "entity:Arrow",
       from: 1,
       kind: "uniform-scale-keyframes",
@@ -242,7 +243,7 @@ describe("Studio creation wire", () => {
   it("distinguishes a Timeline rotation track from an immediate relative rotation", () => {
     const operation = {
       dependsOn: [],
-      easing: "smooth" as const,
+      easing: "ease-out" as const,
       entityId: "entity:Arrow",
       from: 0,
       id: "rotation-track:Arrow",
@@ -260,7 +261,7 @@ describe("Studio creation wire", () => {
     });
 
     expect(command.programs[1]?.operations[0]).toMatchObject({
-      easing: "smooth",
+      easing: "ease-out",
       entityId: "entity:Arrow",
       from: 0,
       kind: "rotation-keyframes",

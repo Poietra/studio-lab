@@ -1,7 +1,9 @@
+import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
+
 const KEYFRAME_TIME_EPSILON = 0.0005;
 
 type PropertyKeyframe = Readonly<{
-  easing: "linear" | "smooth";
+  easing: StudioPropertyKeyframeEasing;
   time: number;
   value: number;
 }>;

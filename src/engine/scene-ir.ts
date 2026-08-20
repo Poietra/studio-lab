@@ -156,7 +156,7 @@ export const sceneEntityV1Schema = z
   })
   .strict();
 
-const easingV1Schema = z.discriminatedUnion("kind", [
+export const easingV1Schema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("linear") }).strict(),
   z.object({ kind: z.literal("smooth") }).strict(),
   z.object({ kind: z.literal("manim-smooth") }).strict(),
@@ -170,6 +170,8 @@ const easingV1Schema = z.discriminatedUnion("kind", [
     })
     .strict(),
 ]);
+
+export type SceneEasingV1 = z.infer<typeof easingV1Schema>;
 
 function keyframeV1Schema<T extends z.ZodType>(value: T) {
   return z

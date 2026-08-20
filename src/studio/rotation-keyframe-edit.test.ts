@@ -28,7 +28,7 @@ describe("rotation keyframe editing", () => {
       baseline: 0,
       entityId,
       keyframes: [
-        { easing: "linear", time: 2, value: 0 },
+        { easing: "ease-in", time: 2, value: 0 },
         { easing: "smooth", time: 4, value: 5 * Math.PI },
       ],
       scene: STUDIO_FIXTURE_SCENE,
@@ -38,7 +38,7 @@ describe("rotation keyframe editing", () => {
     expect(tracked.program.loweringStatus).toBe("unsupported");
     expect(insertedProgramDuration(tracked.program)).toBe(insertedProgramDuration(creation.validation.program));
     expect(rotationKeyframeTrackFromProgram(tracked.program, 0)?.keyframes).toEqual([
-      { easing: "linear", time: 2, value: 0 },
+      { easing: "ease-in", time: 2, value: 0 },
       { easing: "smooth", time: 4, value: 5 * Math.PI },
     ]);
     const sourceKeyframes = rotationKeyframeTrackFromProgram(tracked.program, 0)!.keyframes;
@@ -50,7 +50,7 @@ describe("rotation keyframe editing", () => {
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(rotationKeyframeTrackFromProgram(duplicated.program, 0)?.keyframes).toEqual([
-      { easing: "linear", time: 2, value: 0 },
+      { easing: "ease-in", time: 2, value: 0 },
       { easing: "smooth", time: 3, value: 5 * Math.PI },
       { easing: "smooth", time: 4, value: 5 * Math.PI },
     ]);

@@ -21,7 +21,7 @@ describe("opacity keyframe editing", () => {
       baseProgram: creation.validation.program,
       entityId,
       keyframes: [
-        { easing: "linear", time: 2, value: 1 },
+        { easing: "ease-in", time: 2, value: 1 },
         { easing: "smooth", time: 4, value: 0 },
       ],
       scene: STUDIO_FIXTURE_SCENE,
@@ -30,7 +30,7 @@ describe("opacity keyframe editing", () => {
     expect(result.kind, JSON.stringify(result.issues)).toBe("valid");
     expect(insertedProgramDuration(result.program)).toBe(insertedProgramDuration(creation.validation.program));
     expect(opacityKeyframeTrackFromProgram(result.program, 0)?.keyframes).toEqual([
-      { easing: "linear", time: 2, value: 1 },
+      { easing: "ease-in", time: 2, value: 1 },
       { easing: "smooth", time: 4, value: 0 },
     ]);
     const sourceKeyframes = opacityKeyframeTrackFromProgram(result.program, 0)!.keyframes;
@@ -41,7 +41,7 @@ describe("opacity keyframe editing", () => {
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(opacityKeyframeTrackFromProgram(duplicated.program, 0)?.keyframes).toEqual([
-      { easing: "linear", time: 2, value: 1 },
+      { easing: "ease-in", time: 2, value: 1 },
       { easing: "smooth", time: 3, value: 0 },
       { easing: "smooth", time: 4, value: 0 },
     ]);

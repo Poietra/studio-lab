@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { fragmentMaterialV1Schema } from "../engine/primitives";
+import { studioPropertyKeyframeEasingSchema } from "../engine/scene-authoring";
 import { styleProfileRefSchema } from "./style-profile";
 
 export const SCENE_EDIT_VERSION = 1 as const;
@@ -77,7 +78,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   }),
   operationBaseSchema.extend({
     control: pointSchema.optional(),
-    easing: z.enum(["linear", "smooth"]),
+    easing: studioPropertyKeyframeEasingSchema,
     entityId: z.string(),
     from: z.union([pointSchema, z.number()]).optional(),
     key: z.enum(["appearance", "position", "rotation", "scale"]),

@@ -208,7 +208,7 @@ describe("applied motion clip editing", () => {
     ]);
   });
 
-  it("samples linear easing consistently in the working preview", () => {
+  it("samples canonical easing consistently in the working preview", () => {
     const base = {
       from: 0,
       interval: { end: 1, start: 0 },
@@ -219,5 +219,8 @@ describe("applied motion clip editing", () => {
     expect(samplePropertyValue([{ ...base, easing: "linear" }], 0.25)).toBeCloseTo(25);
     expect(samplePropertyValue([{ ...base, easing: "smooth" }], 0.25)).toBeCloseTo(15.625);
     expect(samplePropertyValue([{ ...base, easing: "manim-smooth" }], 0.25)).toBeCloseTo(7.010371654);
+    expect(
+      samplePropertyValue([{ ...base, easing: { kind: "cubic-bezier", x1: 0.42, x2: 1, y1: 0, y2: 1 } }], 0.5),
+    ).toBeCloseTo(31.53568, 4);
   });
 });

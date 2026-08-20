@@ -6,6 +6,7 @@ function smooth(value: number) {
 }
 
 function easingProgress(sample: PropertyChannelSample, value: number) {
+  if (typeof sample.easing === "object") return applyEngineEasingV1(sample.easing, value);
   if (sample.easing === "linear") return value;
   if (sample.easing === "manim-smooth") return applyEngineEasingV1({ kind: "manim-smooth" }, value);
   return smooth(value);

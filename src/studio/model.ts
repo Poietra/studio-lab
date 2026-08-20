@@ -1,3 +1,4 @@
+import type { EngineEasingV1 } from "../engine/easing";
 import type { SceneEditValidationIssue } from "./operations";
 import type { SceneEdit } from "./scene-edit-contract";
 
@@ -8,6 +9,10 @@ export type Point = Readonly<{ x: number; y: number }>;
 export type Interval = Readonly<{ end: number; start: number }>;
 
 export type MotionEasing = "linear" | "smooth";
+
+export function isMotionEasing(value: string): value is MotionEasing {
+  return value === "linear" || value === "smooth";
+}
 
 export type Known<T> = Readonly<{ kind: "known"; value: T }>;
 
@@ -100,7 +105,7 @@ export type PropertyValue = boolean | number | string | Point | EntityDimensions
 
 export type PropertyChannelSample = Readonly<{
   control?: Point;
-  easing?: MotionEasing | "manim-smooth";
+  easing?: EngineEasingV1 | MotionEasing | "manim-smooth";
   from?: PropertyValue;
   interval: Interval;
   kind: "animated" | "exact";

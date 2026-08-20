@@ -1,5 +1,5 @@
 import { exactEntityScaleAt } from "./magic-edit-capabilities";
-import type { MotionEasing, RuntimeSceneState } from "./model";
+import { isMotionEasing, type MotionEasing, type RuntimeSceneState } from "./model";
 import {
   operationAccess,
   operationExecutionCapabilities,
@@ -79,7 +79,8 @@ function referencedEntityIds(operation: SceneEditOperation) {
 
 function sourceAnimationEasing(operation: SceneEditOperation): MotionEasing | null {
   if (operation.kind === "CreateMotion") return operation.easing;
-  if (operation.kind === "AnimateProperty" && operation.key === "scale") return operation.easing;
+  if (operation.kind === "AnimateProperty" && operation.key === "scale" && isMotionEasing(operation.easing))
+    return operation.easing;
   if (operation.kind === "ChangePresence" || operation.kind === "ResizeEntity" || operation.kind === "TransformContent")
     return "smooth";
   return null;

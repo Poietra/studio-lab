@@ -129,7 +129,17 @@ pub enum StudioCreationProjectedMutationKind {
         from: f64,
         to: f64,
     },
+    UniformScaleKeyframes {
+        easing: EasingV1,
+        from: f64,
+        to: f64,
+    },
     Rotation {
+        from: f64,
+        to: f64,
+    },
+    RotationKeyframes {
+        easing: EasingV1,
         from: f64,
         to: f64,
     },
@@ -143,12 +153,12 @@ pub enum StudioCreationProjectedMutationKind {
         visible: bool,
     },
     OpacityKeyframes {
-        easing: StudioMotionEasing,
+        easing: EasingV1,
         from: f64,
         to: f64,
     },
     MaterialParameterKeyframes {
-        easing: StudioMotionEasing,
+        easing: EasingV1,
         from: f64,
         name: String,
         parameter_index: usize,
@@ -205,6 +215,20 @@ pub struct StudioCreationEntitySpec {
     pub tex_parts: Option<Vec<String>>,
 }
 
+/// Easing presets admitted for scalar Studio property tracks.
+///
+/// Motion-path authoring deliberately keeps its smaller [`StudioMotionEasing`]
+/// contract; the additional CSS-compatible presets apply only to property keyframes.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioPropertyEasing {
+    Linear,
+    Smooth,
+    EaseIn,
+    EaseOut,
+    EaseInOut,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(
     tag = "kind",
@@ -228,12 +252,12 @@ pub enum StudioCreationOperationKind {
         to: Option<f64>,
     },
     UniformScaleKeyframes {
-        easing: StudioMotionEasing,
+        easing: StudioPropertyEasing,
         from: Option<f64>,
         to: Option<f64>,
     },
     RotationKeyframes {
-        easing: StudioMotionEasing,
+        easing: StudioPropertyEasing,
         from: Option<f64>,
         to: Option<f64>,
     },
@@ -253,12 +277,12 @@ pub enum StudioCreationOperationKind {
         visible: Option<bool>,
     },
     OpacityKeyframes {
-        easing: StudioMotionEasing,
+        easing: StudioPropertyEasing,
         from: Option<f64>,
         to: Option<f64>,
     },
     MaterialParameterKeyframes {
-        easing: StudioMotionEasing,
+        easing: StudioPropertyEasing,
         from: Option<f64>,
         material: FragmentMaterialV1,
         name: String,
@@ -803,10 +827,28 @@ struct PlannedStudioGroupRotation {
     entity_ids: BTreeSet<String>,
 }
 
-fn property_easing(easing: StudioMotionEasing) -> EasingV1 {
+fn property_easing(easing: StudioPropertyEasing) -> EasingV1 {
     match easing {
-        StudioMotionEasing::Linear => EasingV1::Linear {},
-        StudioMotionEasing::Smooth => EasingV1::ManimSmooth {},
+        StudioPropertyEasing::Linear => EasingV1::Linear {},
+        StudioPropertyEasing::Smooth => EasingV1::ManimSmooth {},
+        StudioPropertyEasing::EaseIn => EasingV1::CubicBezier {
+            x1: 0.42,
+            x2: 1.0,
+            y1: 0.0,
+            y2: 1.0,
+        },
+        StudioPropertyEasing::EaseOut => EasingV1::CubicBezier {
+            x1: 0.0,
+            x2: 0.58,
+            y1: 0.0,
+            y2: 1.0,
+        },
+        StudioPropertyEasing::EaseInOut => EasingV1::CubicBezier {
+            x1: 0.42,
+            x2: 0.58,
+            y1: 0.0,
+            y2: 1.0,
+        },
     }
 }
 
@@ -1866,7 +1908,7 @@ fn plan_studio_creation_edits(
                     entity_id: entity_id.to_owned(),
                     interval: interval.clone(),
                     kind: StudioCreationProjectedMutationKind::OpacityKeyframes {
-                        easing: *easing,
+                        easing: property_easing(*easing),
                         from: *from,
                         to: *to,
                     },
@@ -1972,7 +2014,7 @@ fn plan_studio_creation_edits(
                     entity_id: entity_id.to_owned(),
                     interval: interval.clone(),
                     kind: StudioCreationProjectedMutationKind::MaterialParameterKeyframes {
-                        easing: *easing,
+                        easing: property_easing(*easing),
                         from: *from,
                         name: name.clone(),
                         parameter_index: *parameter_index,
@@ -2084,7 +2126,8 @@ fn plan_studio_creation_edits(
                 StudioCreationProjectedMutation {
                     entity_id: entity_id.to_owned(),
                     interval: interval.clone(),
-                    kind: StudioCreationProjectedMutationKind::UniformScale {
+                    kind: StudioCreationProjectedMutationKind::UniformScaleKeyframes {
+                        easing: property_easing(*easing),
                         from: *from,
                         to: *to,
                     },
@@ -2188,7 +2231,8 @@ fn plan_studio_creation_edits(
                 StudioCreationProjectedMutation {
                     entity_id: entity_id.to_owned(),
                     interval: interval.clone(),
-                    kind: StudioCreationProjectedMutationKind::Rotation {
+                    kind: StudioCreationProjectedMutationKind::RotationKeyframes {
+                        easing: property_easing(*easing),
                         from: *from,
                         to: *to,
                     },
@@ -3857,6 +3901,47 @@ mod tests {
     use super::super::{StudioTextAlignment, StudioTextFontWeight, StudioTextLayout};
     use super::*;
 
+    #[test]
+    fn property_easing_input_names_expand_to_canonical_scene_easing() {
+        let cases = [
+            ("linear", EasingV1::Linear {}),
+            ("smooth", EasingV1::ManimSmooth {}),
+            (
+                "ease-in",
+                EasingV1::CubicBezier {
+                    x1: 0.42,
+                    x2: 1.0,
+                    y1: 0.0,
+                    y2: 1.0,
+                },
+            ),
+            (
+                "ease-out",
+                EasingV1::CubicBezier {
+                    x1: 0.0,
+                    x2: 0.58,
+                    y1: 0.0,
+                    y2: 1.0,
+                },
+            ),
+            (
+                "ease-in-out",
+                EasingV1::CubicBezier {
+                    x1: 0.42,
+                    x2: 0.58,
+                    y1: 0.0,
+                    y2: 1.0,
+                },
+            ),
+        ];
+
+        for (name, expected) in cases {
+            let easing: StudioPropertyEasing =
+                serde_json::from_str(&format!("\"{name}\"")).unwrap();
+            assert_eq!(property_easing(easing), expected);
+        }
+    }
+
     fn studio_persistent_remove_edit_input(
         entity_id: &str,
         start: f64,
@@ -4224,7 +4309,7 @@ mod tests {
             id: "opacity-segment".to_owned(),
             interval: IntervalV1 { end, start },
             kind: StudioCreationOperationKind::OpacityKeyframes {
-                easing: StudioMotionEasing::Linear,
+                easing: StudioPropertyEasing::Linear,
                 from: Some(1.0),
                 to: Some(0.0),
             },
@@ -4252,7 +4337,7 @@ mod tests {
             id: "material-segment".to_owned(),
             interval: IntervalV1 { end, start },
             kind: StudioCreationOperationKind::MaterialParameterKeyframes {
-                easing: StudioMotionEasing::Smooth,
+                easing: StudioPropertyEasing::Smooth,
                 from: Some(0.35),
                 material: FragmentMaterialV1 {
                     parameters: vec![0.35, 8.0],
@@ -4289,7 +4374,7 @@ mod tests {
             id: "scale-segment".to_owned(),
             interval: IntervalV1 { end, start },
             kind: StudioCreationOperationKind::UniformScaleKeyframes {
-                easing: StudioMotionEasing::Smooth,
+                easing: StudioPropertyEasing::EaseInOut,
                 from: Some(1.0),
                 to: Some(to),
             },
@@ -4318,7 +4403,7 @@ mod tests {
             id: "rotation-segment".to_owned(),
             interval: IntervalV1 { end, start },
             kind: StudioCreationOperationKind::RotationKeyframes {
-                easing: StudioMotionEasing::Linear,
+                easing: StudioPropertyEasing::Linear,
                 from: Some(0.0),
                 to: Some(to),
             },
@@ -5585,7 +5670,7 @@ mod tests {
         assert!(matches!(
             opacity.kind,
             StudioCreationProjectedMutationKind::OpacityKeyframes {
-                easing: StudioMotionEasing::Linear,
+                easing: EasingV1::Linear {},
                 from: 1.0,
                 to: 0.0,
             }
@@ -5609,6 +5694,10 @@ mod tests {
                 .iter()
                 .zip([0.5, 0.9, 1.4, 1.8])
                 .all(|(keyframe, expected)| (keyframe.at - expected).abs() < 1e-12)
+        );
+        assert_eq!(
+            channel_keyframes[2].easing_to_next,
+            Some(EasingV1::Linear {})
         );
         let packet = session
             .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
@@ -5648,8 +5737,17 @@ mod tests {
             .find(|mutation| mutation.operation_id == "scale-segment")
             .unwrap();
         assert!(matches!(
-            mutation.kind,
-            StudioCreationProjectedMutationKind::UniformScale { from: 1.0, to: 2.0 }
+            &mutation.kind,
+            StudioCreationProjectedMutationKind::UniformScaleKeyframes {
+                easing: EasingV1::CubicBezier {
+                    x1: 0.42,
+                    x2: 0.58,
+                    y1: 0.0,
+                    y2: 1.0,
+                },
+                from: 1.0,
+                to: 2.0,
+            }
         ));
         let channel = result
             .bundle
@@ -5666,6 +5764,15 @@ mod tests {
             })
             .unwrap();
         assert_eq!(channel.len(), 2);
+        assert_eq!(
+            channel[0].easing_to_next,
+            Some(EasingV1::CubicBezier {
+                x1: 0.42,
+                x2: 0.58,
+                y1: 0.0,
+                y2: 1.0,
+            })
+        );
         assert!((channel[0].value.m11 - 1.0).abs() < 1e-12);
         assert!((channel[1].value.m11 - 2.0).abs() < 1e-12);
 
@@ -5735,6 +5842,22 @@ mod tests {
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_creation_edit(command).unwrap();
+        let mutation = result
+            .creation_projection
+            .as_ref()
+            .unwrap()
+            .mutations
+            .iter()
+            .find(|mutation| mutation.operation_id == "rotation-segment")
+            .unwrap();
+        assert!(matches!(
+            mutation.kind,
+            StudioCreationProjectedMutationKind::RotationKeyframes {
+                easing: EasingV1::Linear {},
+                from: 0.0,
+                to,
+            } if (to - 5.0 * PI).abs() < 1e-12
+        ));
         let entity = result
             .bundle
             .scene
@@ -5758,6 +5881,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(keyframes.len(), 2);
+        assert_eq!(keyframes[0].easing_to_next, Some(EasingV1::Linear {}));
         assert!((pivot.x - entity.transform.tx).abs() < 1e-12);
         assert!((pivot.y - entity.transform.ty).abs() < 1e-12);
 
@@ -5931,6 +6055,10 @@ mod tests {
             })
             .unwrap();
         assert_eq!(material_channel.len(), 2);
+        assert_eq!(
+            material_channel[0].easing_to_next,
+            Some(EasingV1::ManimSmooth {})
+        );
         let first_material = material_channel[0]
             .value
             .fill
@@ -5983,6 +6111,7 @@ mod tests {
                 .find(|mutation| mutation.operation_id == "material-segment")
                 .map(|mutation| &mutation.kind),
             Some(StudioCreationProjectedMutationKind::MaterialParameterKeyframes {
+                easing: EasingV1::ManimSmooth {},
                 name,
                 parameter_index: 0,
                 ..

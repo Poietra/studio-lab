@@ -809,10 +809,10 @@ function appendProjectedMutation(
       kind: "exact",
       value: mutation.visible,
     });
-  } else if (mutation.kind === "rotation") {
+  } else if (mutation.kind === "rotation" || mutation.kind === "rotation-keyframes") {
     appendProjectedSample(draft.propertyChannels, entityId, "rotation", {
       ...metadata,
-      easing: "smooth",
+      easing: mutation.kind === "rotation-keyframes" ? mutation.easing : "smooth",
       from: mutation.from,
       interval: mutation.interval,
       kind: "animated",
@@ -833,10 +833,13 @@ function appendProjectedMutation(
       kind: "exact",
       value: mutation.to,
     });
-  } else if (mutation.kind === "uniform-scale") {
+  } else if (mutation.kind === "uniform-scale" || mutation.kind === "uniform-scale-keyframes") {
     appendProjectedSample(draft.propertyChannels, entityId, "scale", {
       ...metadata,
-      easing: ("easing" in mutation && mutation.easing) || "smooth",
+      easing:
+        mutation.kind === "uniform-scale-keyframes"
+          ? mutation.easing
+          : ("easing" in mutation && mutation.easing) || "smooth",
       from: mutation.from,
       interval: mutation.interval,
       kind: "animated",
