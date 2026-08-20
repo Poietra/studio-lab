@@ -115,10 +115,10 @@ import {
   planStudioLayerOrder,
   planStudioLayerReorder,
   projectStudioLayers,
-  selectedStudioLayerGroup,
-  selectionContainsGroupedChild,
   type StudioLayerOrderDirection,
   type StudioLayerOrderPlan,
+  selectedStudioLayerGroup,
+  selectionContainsGroupedChild,
 } from "./studio/layer-order";
 import {
   buildLifetimeEditControls,
@@ -5167,7 +5167,12 @@ export function App({
 
   function setEntityOpacityFromInspector(entityId: string, opacity: number) {
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
+    if (createdAuthority && entity?.type === "ImageMobject") {
+      setDraftError("Use Timeline opacity keyframes for Images.");
+      return false;
+    }
     const authority = runtimeTraceProjectionAuthorityFor(entityId);
     if (!createdAuthority && (!authority?.capabilities.paintOpacity || !("baseOpacity" in authority))) {
       setDraftError("Opacity requires a Studio-created object or one exact updater-free Runtime Trace binding.");
@@ -5177,7 +5182,6 @@ export function App({
       setDraftError("Opacity must be a number from 0 to 1.");
       return false;
     }
-    const entity = editableEntities.find((candidate) => candidate.id === entityId);
     const baseOpacity = createdAuthority
       ? (entity?.opacity ?? null)
       : authority && "baseOpacity" in authority
@@ -6036,6 +6040,8 @@ export function App({
     "baseOpacity" in selectedRuntimeTraceEditAuthority
       ? selectedRuntimeTraceEditAuthority
       : null;
+  const selectedStudioImageStaticOpacityUnavailable =
+    selectedStudioCreationAppearanceAuthority !== null && selectedEntity?.type === "ImageMobject";
   const appliedProgramReadOnlyReasons = Object.fromEntries(
     appliedEdits.map((record) => {
       const transactionId = record.program.transactionId;
@@ -6682,7 +6688,13 @@ export function App({
                   label: `${asset.id} (${asset.pixelWidth}×${asset.pixelHeight})`,
                 })),
               }}
-              opacityAvailable={selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null}
+              opacityAvailable={
+                !selectedStudioImageStaticOpacityUnavailable &&
+                (selectedStudioCreationAppearanceAtAnchor || selectedOpacityAuthority !== null)
+              }
+              opacityUnavailableReason={
+                selectedStudioImageStaticOpacityUnavailable ? "Use Timeline opacity keyframes for Images." : null
+              }
               opacityValue={
                 selectedStudioCreationAppearanceAtAnchor
                   ? (selectedEntity?.opacity ?? null)

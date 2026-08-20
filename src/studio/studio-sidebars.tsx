@@ -792,6 +792,7 @@ export function StudioInspector({
   renderSession,
   replacingAppliedProgram,
   opacityAvailable,
+  opacityUnavailableReason = null,
   opacityValue,
   rotationAvailable,
   selectedEntity,
@@ -858,6 +859,7 @@ export function StudioInspector({
   renderSession: RenderSessionView | null;
   replacingAppliedProgram: boolean;
   opacityAvailable: boolean;
+  opacityUnavailableReason?: string | null;
   opacityValue: number | null;
   rotationAvailable: boolean;
   selectedEntity: ProjectedEntity | null;
@@ -1013,7 +1015,8 @@ export function StudioInspector({
                       title={
                         opacityAvailable
                           ? "Set the object's absolute opacity"
-                          : "Opacity requires a Studio-created object or a static updater-free source binding"
+                          : (opacityUnavailableReason ??
+                            "Opacity requires a Studio-created object or a static updater-free source binding")
                       }
                       type="number"
                     />
