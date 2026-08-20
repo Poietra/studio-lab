@@ -197,9 +197,10 @@ embedded subset SHA-256 is
 `a8698cb395390eda245e0095537e5459598c16ff236f4d37330b9ef2b66cd4c4`.
 FontTools 4.61.1 selected the 2,136 Joyo kanji listed by the Agency for
 Cultural Affairs, plus ASCII, Latin-1, Japanese punctuation, hiragana,
-katakana, and full-width forms. It removed the GSUB, GPOS, and GDEF tables,
-which the Text outline compiler does not execute. Glyph outlines and metrics
-were not edited.
+katakana, and full-width forms. It removed the GSUB, GPOS, and GDEF tables.
+The Text outline compiler uses this face as a deterministic per-run fallback
+for scalars absent from the selected DejaVu face; it does not claim complex
+script shaping. Glyph outlines and metrics were not edited.
 
 Official Joyo index:
 https://www.bunka.go.jp/seisaku/kokugo_nihongo/kokugo_shisaku/joyokanjihyo_sakuin/index.html
