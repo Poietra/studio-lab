@@ -202,7 +202,7 @@ export function createStudioEntitiesProgram(
       {
         dependsOn: [],
         entity: {
-          content,
+          ...(content ? { content } : {}),
           ...(dimensions ? { dimensions } : {}),
           id: entityId,
           ...(entity.image ? { image: entity.image } : {}),

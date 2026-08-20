@@ -453,6 +453,8 @@ describe("manual Studio authoring commands", () => {
       entity: { image, type: "ImageMobject" },
       kind: "CreateEntity",
     });
+    expect(result.validation.program.operations[0]).not.toHaveProperty("entity.content");
+    expect(() => canonicalAppliedProgramsWorkingRevisionV1([result.validation.program])).not.toThrow();
   });
 
   it("creates the starter title card as ordinary editable entities with the standard fade-in", () => {
