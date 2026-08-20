@@ -107,7 +107,6 @@ describe("Studio-native project PNG ingress", () => {
     const file = {
       arrayBuffer: async () => PNG.slice().buffer,
       size: PNG.byteLength,
-      type: "image/png",
     };
     const second = await ingestNativeProjectPngV1({
       decodeDimensions: dimensions,
@@ -165,7 +164,6 @@ describe("Studio-native project PNG ingress", () => {
               throw new Error("must reject before reading");
             },
             size: MAX_NATIVE_PROJECT_PNG_BYTES_V1 + 1,
-            type: "image/png",
           },
           kind: "file",
         },

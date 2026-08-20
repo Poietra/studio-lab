@@ -28,7 +28,7 @@ export type NativeProjectAssetStateV1 = Readonly<{
 
 export type NativeProjectPngSourceV1 =
   | Readonly<{
-      file: Pick<File, "arrayBuffer" | "size" | "type">;
+      file: Pick<File, "arrayBuffer" | "size">;
       kind: "file";
     }>
   | Readonly<{
@@ -80,9 +80,8 @@ function assertPngSignature(bytes: ArrayBuffer) {
 }
 
 async function readOwnedPngBytes(source: NativeProjectPngSourceV1) {
-  const mediaType = source.kind === "file" ? source.file.type : source.mediaType;
   const declaredByteLength = source.kind === "file" ? source.file.size : source.bytes.byteLength;
-  assertPngMediaType(mediaType);
+  if (source.kind === "bytes") assertPngMediaType(source.mediaType);
   assertBoundedByteLength(declaredByteLength);
 
   let loaded: ArrayBuffer;
