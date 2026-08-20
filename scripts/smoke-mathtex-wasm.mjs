@@ -37,10 +37,10 @@ function compileWasm(request) {
   return responseBytes;
 }
 
-function encodeTextRequest(text) {
+function encodeTextRequest(text, fontWeight = "regular") {
   return encoder.encode(
     JSON.stringify({
-      layout: { alignment: "left", lineHeight: 1.2 },
+      layout: { alignment: "left", fontWeight, lineHeight: 1.2 },
       schema: "poietra.text-outline-request",
       text,
       version: 1,
@@ -185,6 +185,8 @@ const textRequests = [
   encodeTextRequest("日本語で動画を作る"),
   encodeTextRequest("こんにちは\nPoietra"),
   encodeTextRequest("こんにちは\r\nPoietra"),
+  encodeTextRequest("Bold AV", "bold"),
+  encodeTextRequest("日本語で動画を作る", "bold"),
   encodeTextRequest("tab\tcharacter"),
 ];
 const textWasmResponses = textRequests.map(compileTextWasm);
@@ -216,7 +218,7 @@ for (const [index, wasmResponse] of textWasmResponses.entries()) {
     `plain Text native and WASM response ${index} must be byte-identical`,
   );
 }
-for (const response of textWasmResponses.slice(0, 3)) {
+for (const response of textWasmResponses.slice(0, 5)) {
   const parsed = JSON.parse(decoder.decode(response));
   assert.equal(parsed.schema, "poietra.text-outline-response");
   assert.equal(parsed.version, 1);
@@ -229,7 +231,12 @@ assert.deepEqual(
   Buffer.from(textWasmResponses[2]),
   "LF and CRLF must compile to the same canonical Text outline",
 );
-const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[3]));
+assert.notDeepEqual(
+  JSON.parse(decoder.decode(textWasmResponses[0])).result.path,
+  JSON.parse(decoder.decode(textWasmResponses[4])).result.path,
+  "regular and bold Japanese must use distinct real font outlines",
+);
+const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[5]));
 assert.equal(unsupportedText.result.kind, "unsupported");
 assert.equal(unsupportedText.result.code, "character-unsupported");
 

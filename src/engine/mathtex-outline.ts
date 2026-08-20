@@ -144,6 +144,7 @@ const textOutlineContentV1Schema = z
 export const textOutlineLayoutV1Schema = z
   .object({
     alignment: z.enum(["center", "left", "right"]),
+    fontWeight: z.enum(["bold", "regular"]).default("regular"),
     lineHeight: z.number().finite().positive(),
   })
   .strict();
@@ -156,7 +157,7 @@ export function canonicalTextOutlineInputV1(text: unknown): string | null {
 
 const textOutlineRequestV1Schema = z
   .object({
-    layout: textOutlineLayoutV1Schema.default({ alignment: "left", lineHeight: 1.2 }),
+    layout: textOutlineLayoutV1Schema.default({ alignment: "left", fontWeight: "regular", lineHeight: 1.2 }),
     schema: z.literal("poietra.text-outline-request"),
     text: textOutlineContentV1Schema,
     version: z.literal(1),

@@ -3805,7 +3805,7 @@ mod tests {
     use super::super::tests::{
         NEXT_REVISION, fixture_bundle, imported_bundle, static_imported_bundle,
     };
-    use super::super::{StudioTextAlignment, StudioTextLayout};
+    use super::super::{StudioTextAlignment, StudioTextFontWeight, StudioTextLayout};
     use super::*;
 
     fn studio_persistent_remove_edit_input(
@@ -6650,6 +6650,7 @@ mod tests {
             layout: StudioTextLayout {
                 alignment: StudioTextAlignment::Right,
                 font_size: 1.5,
+                font_weight: StudioTextFontWeight::Bold,
                 line_height: 1.8,
             },
             text: "Wide\ni".to_owned(),

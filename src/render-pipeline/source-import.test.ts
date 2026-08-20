@@ -318,17 +318,20 @@ class ContentEdit(Scene):
         label = Text("before")
         self.add(label)
         self.wait(1)
-        # poietra:content {"content":{"displayLines":["after"],"text":"after"},"type":"Text","variable":"label","version":1}
-        label.become(Text("after").match_style(label).match_height(label).move_to(label.get_center()))
+        # poietra:content {"content":{"displayLines":["after"],"text":"after","textLayout":{"alignment":"left","fontSize":1,"fontWeight":"bold","lineHeight":1.2}},"type":"Text","variable":"label","version":1}
+        label.become(Text("after", weight=BOLD).match_style(label).match_height(label).move_to(label.get_center()))
         self.wait(1)
 `;
     const imported = importManimScene(edited, "scene.py", "ContentEdit");
     const entityId = "source:scene.py#ContentEdit:label";
 
     expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/content`]?.samples).toHaveLength(2);
-    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.content?.text).toBe("after");
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.content).toMatchObject({
+      text: "after",
+      textLayout: { fontWeight: "bold" },
+    });
 
-    const tampered = edited.replace('Text("after").match_style', 'Text("other").match_style');
+    const tampered = edited.replace('Text("after", weight=BOLD).match_style', 'Text("other").match_style');
     const rejected = importManimScene(tampered, "scene.py", "ContentEdit");
     expect(rejected?.runtimeSceneState.propertyChannels[`${entityId}/content`]?.samples).toHaveLength(2);
     expect(rejected?.runtimeSceneState.objectGraph.entities[entityId]?.content).toBeUndefined();

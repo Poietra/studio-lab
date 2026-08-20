@@ -288,7 +288,7 @@ describe("Canonical EditProgram source lowering", () => {
             content: {
               displayLines: ["Hello, Poietra!"],
               text: "Hello, Poietra!",
-              textLayout: { alignment: "left", fontSize: 1.5, lineHeight: 1.2 },
+              textLayout: { alignment: "left", fontSize: 1.5, fontWeight: "bold", lineHeight: 1.2 },
             },
             id: entityId,
             lifetime: { end: null, start: 7 },
@@ -303,7 +303,7 @@ describe("Canonical EditProgram source lowering", () => {
     const lowered = lowerCanonicalProgramSource(source, request(create, []), { height: 8, width: 14.222 }, null);
 
     expect(lowered.insertedCode).toContain(
-      'Text("Hello, Poietra!", font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1.5)',
+      'Text("Hello, Poietra!", font="DejaVu Sans", weight=BOLD, disable_ligatures=True).scale_to_fit_height(1.5)',
     );
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
     expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
@@ -320,7 +320,20 @@ describe("Canonical EditProgram source lowering", () => {
           {
             ...operationBase("create-unicode-text", 7),
             entity: {
-              content: { displayLines: text.split("\n"), text },
+              content: {
+                displayLines: text.split("\n"),
+                text,
+                ...(text === "こんにちは"
+                  ? {
+                      textLayout: {
+                        alignment: "left" as const,
+                        fontSize: 1,
+                        fontWeight: "bold" as const,
+                        lineHeight: 1.2,
+                      },
+                    }
+                  : {}),
+              },
               id: "tx:unicode-text/entity:label",
               lifetime: { end: null, start: 7 },
               type: "Text",
@@ -346,7 +359,7 @@ describe("Canonical EditProgram source lowering", () => {
             content: {
               displayLines: ["Wide"],
               text: "Wide",
-              textLayout: { alignment: "right", fontSize: 1, lineHeight: 1.8 },
+              textLayout: { alignment: "right", fontSize: 1, fontWeight: "regular", lineHeight: 1.8 },
             },
             id: "tx:layout-text/entity:label",
             lifetime: { end: null, start: 7 },

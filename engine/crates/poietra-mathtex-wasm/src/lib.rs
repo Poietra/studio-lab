@@ -310,6 +310,12 @@ mod tests {
         );
         assert_eq!(decode(&japanese)["result"]["kind"], "compiled");
 
+        let bold = compile_text_outline_json_v1(
+            br#"{"layout":{"alignment":"left","fontWeight":"bold","lineHeight":1.2},"schema":"poietra.text-outline-request","version":1,"text":"Hello AV"}"#,
+        );
+        assert_eq!(decode(&bold)["result"]["kind"], "compiled");
+        assert_ne!(decode(&bold)["result"]["path"], decoded["result"]["path"]);
+
         let mathtex = compile_mathtex_outline_json_v1(
             br#"{"schema":"poietra.mathtex-outline-request","version":1,"texParts":["E = mc^2"]}"#,
         );

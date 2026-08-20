@@ -240,6 +240,7 @@ export function createInspectorEntityEditProgram(
       after &&
       (after.alignment !== before.alignment ||
         after.fontSize !== before.fontSize ||
+        after.fontWeight !== before.fontWeight ||
         after.lineHeight !== before.lineHeight)
     ) {
       throw new Error("Typography editing is available only for Studio-created Text.");

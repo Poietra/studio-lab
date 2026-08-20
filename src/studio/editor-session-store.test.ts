@@ -284,7 +284,7 @@ describe("durable editor session storage", () => {
     });
   });
 
-  it("restores canonical Studio Text font size from the editor session", () => {
+  it("restores canonical Studio Text font size and weight from the editor session", () => {
     const adapter = new MemoryAdapter();
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 2,
@@ -304,7 +304,7 @@ describe("durable editor session storage", () => {
         displayLines: ["Sized Text"],
         label: "Sized Text",
         text: "Sized Text",
-        textLayout: { alignment: "left", fontSize: 1.75, lineHeight: 1.2 },
+        textLayout: { alignment: "left", fontSize: 1.75, fontWeight: "bold", lineHeight: 1.2 },
       },
       entityId: creation.entityIds[0]!,
       owner,
@@ -330,6 +330,7 @@ describe("durable editor session storage", () => {
     expect(create?.kind === "CreateEntity" ? create.entity.content?.textLayout : null).toEqual({
       alignment: "left",
       fontSize: 1.75,
+      fontWeight: "bold",
       lineHeight: 1.2,
     });
   });

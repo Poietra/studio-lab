@@ -742,7 +742,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
               };
             }
             textOutlineInputByKey.set(
-              `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontSize}\u0000${content.layout.lineHeight}`,
+              `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}`,
               { content, entityId: operation.entity.id },
             );
           }
@@ -786,7 +786,11 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
           entityId,
           response: textOutlineResponseV1Schema.parse(
             await compiler({
-              layout: { alignment: content.layout.alignment, lineHeight: content.layout.lineHeight },
+              layout: {
+                alignment: content.layout.alignment,
+                fontWeight: content.layout.fontWeight,
+                lineHeight: content.layout.lineHeight,
+              },
               text: content.text,
             }),
           ),

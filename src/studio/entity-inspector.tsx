@@ -129,7 +129,18 @@ export function EntityInspectorEditor({
       setErrors(validation.errors);
       setMessage("Fix the highlighted fields before creating a draft.");
       const firstInvalid = (
-        ["x", "y", "content", "textAlignment", "textFontSize", "textLineHeight", "radius", "width", "height"] as const
+        [
+          "x",
+          "y",
+          "content",
+          "textAlignment",
+          "textFontSize",
+          "textFontWeight",
+          "textLineHeight",
+          "radius",
+          "width",
+          "height",
+        ] as const
       ).find((field) => validation.errors[field] !== undefined);
       if (firstInvalid) {
         event.currentTarget.querySelector<HTMLElement>(`[data-inspector-field="${firstInvalid}"]`)?.focus();
@@ -265,6 +276,23 @@ export function EntityInspectorEditor({
                       value={values.textFontSize ?? ""}
                     />
                     <FieldError entityId={entity.id} error={errors.textFontSize} field="textFontSize" />
+                  </label>
+                  <label className="text-[10px] text-zinc-500">
+                    Weight
+                    <select
+                      aria-label={`Text font weight of ${entityLabel(entity)}`}
+                      aria-describedby={errors.textFontWeight ? fieldErrorId(entity.id, "textFontWeight") : undefined}
+                      aria-invalid={errors.textFontWeight ? "true" : undefined}
+                      className={cn(inputClass, errors.textFontWeight && "border-red-800")}
+                      data-inspector-field="textFontWeight"
+                      onChange={(event) => update("textFontWeight", event.currentTarget.value)}
+                      ref={restoreFieldRef("textFontWeight", restoreFocus, onFocusRestored)}
+                      value={values.textFontWeight ?? "regular"}
+                    >
+                      <option value="regular">Regular</option>
+                      <option value="bold">Bold</option>
+                    </select>
+                    <FieldError entityId={entity.id} error={errors.textFontWeight} field="textFontWeight" />
                   </label>
                   <label className="text-[10px] text-zinc-500">
                     Line height (em)

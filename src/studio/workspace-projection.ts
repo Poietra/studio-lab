@@ -364,6 +364,7 @@ function correlateCreationProjection(
       ? entity.text !== expectedTextContent.text ||
         projectedLayout.alignment !== expectedTextContent.layout.alignment ||
         !sameProjectionNumber(projectedLayout.fontSize, expectedTextContent.layout.fontSize) ||
+        projectedLayout.fontWeight !== expectedTextContent.layout.fontWeight ||
         !sameProjectionNumber(projectedLayout.lineHeight, expectedTextContent.layout.lineHeight)
       : entity.text !== undefined || entity.layout !== undefined;
     if (

@@ -243,12 +243,22 @@ pub enum StudioTextAlignment {
     Right,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioTextFontWeight {
+    Bold,
+    #[default]
+    Regular,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioTextLayout {
     pub alignment: StudioTextAlignment,
     #[serde(default = "default_studio_text_font_size")]
     pub font_size: f64,
+    #[serde(default)]
+    pub font_weight: StudioTextFontWeight,
     pub line_height: f64,
 }
 
@@ -261,6 +271,7 @@ impl Default for StudioTextLayout {
         Self {
             alignment: StudioTextAlignment::Left,
             font_size: default_studio_text_font_size(),
+            font_weight: StudioTextFontWeight::Regular,
             line_height: 1.2,
         }
     }

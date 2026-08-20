@@ -477,6 +477,7 @@ const studioTextLayoutV1Schema = z
   .object({
     alignment: z.enum(["center", "left", "right"]),
     fontSize: finiteNumberSchema.positive(),
+    fontWeight: z.enum(["bold", "regular"]),
     lineHeight: finiteNumberSchema.positive(),
   })
   .strict();
@@ -807,7 +808,12 @@ const studioTimelineProjectionV1Schema = z
 type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StudioCreationEntityKindV1 = "arrow" | "circle" | "image" | "line" | "math-tex" | "other" | "rectangle" | "text";
 type StudioTextContentV1 = Readonly<{
-  layout: Readonly<{ alignment: "center" | "left" | "right"; fontSize: number; lineHeight: number }>;
+  layout: Readonly<{
+    alignment: "center" | "left" | "right";
+    fontSize: number;
+    fontWeight: "bold" | "regular";
+    lineHeight: number;
+  }>;
   text: string;
 }>;
 type StudioCreationOperationV1 = Readonly<{

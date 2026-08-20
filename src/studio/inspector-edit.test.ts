@@ -1,5 +1,7 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { entityInspectorKey } from "./entity-inspector";
+import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
 import { projectProposedState } from "./evaluator";
 import { createFixtureProposedState } from "./fixture";
 import { type InspectorEditValues, initialInspectorEditValues, validateInspectorEdits } from "./inspector-edit";
@@ -27,6 +29,20 @@ function studioTextEntity() {
 }
 
 describe("Inspector field validation", () => {
+  it("offers only real Regular and Bold weights for Studio-created Text", () => {
+    const markup = renderToStaticMarkup(
+      createElement(EntityInspectorEditor, {
+        entity: studioTextEntity(),
+        onCreateDraft: () => true,
+        onFocusRestored: () => undefined,
+        restoreFocus: null,
+      }),
+    );
+    expect(markup).toContain('aria-label="Text font weight of energy"');
+    expect(markup).toContain('<option value="regular" selected="">Regular</option>');
+    expect(markup).toContain('<option value="bold">Bold</option>');
+  });
+
   it("returns only changed position and valid MathTex fields", () => {
     const entity = fixtureEntity("equation_1");
     const result = validateInspectorEdits(
@@ -59,7 +75,7 @@ describe("Inspector field validation", () => {
           displayLines: ["日本語で動画を作る", "こんにちは"],
           label: undefined,
           text: "日本語で動画を作る\nこんにちは",
-          textLayout: { alignment: "left", fontSize: 1, lineHeight: 1.2 },
+          textLayout: { alignment: "left", fontSize: 1, fontWeight: "regular", lineHeight: 1.2 },
         },
       },
       kind: "valid",
@@ -72,12 +88,17 @@ describe("Inspector field validation", () => {
     expect(initialInspectorEditValues(restored).content).toBe("日本語で動画を作る\nこんにちは");
   });
 
-  it("validates Text size, alignment, and line height as one content edit", () => {
+  it("validates Text size, alignment, real weight, and line height as one content edit", () => {
     const entity = studioTextEntity();
     expect(
       validateInspectorEdits(
         entity,
-        values(entity, { textAlignment: "center", textFontSize: "1.5", textLineHeight: "1.8" }),
+        values(entity, {
+          textAlignment: "center",
+          textFontSize: "1.5",
+          textFontWeight: "bold",
+          textLineHeight: "1.8",
+        }),
       ),
     ).toEqual({
       edits: {
@@ -85,7 +106,7 @@ describe("Inspector field validation", () => {
           displayLines: ["energy"],
           label: undefined,
           text: "energy",
-          textLayout: { alignment: "center", fontSize: 1.5, lineHeight: 1.8 },
+          textLayout: { alignment: "center", fontSize: 1.5, fontWeight: "bold", lineHeight: 1.8 },
         },
       },
       kind: "valid",

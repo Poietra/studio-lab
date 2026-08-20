@@ -13,6 +13,7 @@ export const STUDIO_CREATION_TEXT_MAX_LENGTH = MAX_TEXT_OUTLINE_SCALARS;
 export const STUDIO_TEXT_DEFAULT_LAYOUT = Object.freeze({
   alignment: "left",
   fontSize: 1,
+  fontWeight: "regular",
   lineHeight: 1.2,
 }) satisfies TextLayout;
 export const STUDIO_CREATION_TEXT_CONTRACT =
@@ -22,14 +23,20 @@ function canonicalTextLayout(value: unknown): TextLayout | null {
   if (value === undefined) return STUDIO_TEXT_DEFAULT_LAYOUT;
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const record = value as Readonly<Record<string, unknown>>;
-  if (!Object.keys(record).every((key) => key === "alignment" || key === "fontSize" || key === "lineHeight"))
+  if (
+    !Object.keys(record).every(
+      (key) => key === "alignment" || key === "fontSize" || key === "fontWeight" || key === "lineHeight",
+    )
+  )
     return null;
   if (record.alignment !== "left" && record.alignment !== "center" && record.alignment !== "right") return null;
   const fontSize = record.fontSize ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontSize;
   if (typeof fontSize !== "number" || !Number.isFinite(fontSize) || fontSize <= 0) return null;
+  const fontWeight = record.fontWeight ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontWeight;
+  if (fontWeight !== "bold" && fontWeight !== "regular") return null;
   if (typeof record.lineHeight !== "number" || !Number.isFinite(record.lineHeight) || record.lineHeight <= 0)
     return null;
-  return { alignment: record.alignment, fontSize, lineHeight: record.lineHeight };
+  return { alignment: record.alignment, fontSize, fontWeight, lineHeight: record.lineHeight };
 }
 
 /**
