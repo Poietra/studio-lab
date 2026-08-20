@@ -21,6 +21,15 @@ export type FragmentMaterialEditorItem = Readonly<{
   textureSlot?: "texture2d";
 }>;
 
+export function fragmentMaterialsMatchingName(
+  materials: readonly FragmentMaterialEditorItem[],
+  query: string,
+): readonly FragmentMaterialEditorItem[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length === 0) return materials;
+  return materials.filter(({ name }) => name.toLowerCase().includes(normalizedQuery));
+}
+
 export function FragmentMaterialEditor({
   active,
   assignedParameters,
@@ -66,6 +75,7 @@ export function FragmentMaterialEditor({
   textureAssets: readonly Readonly<{ assetId: string; label: string }>[];
 }>) {
   const [inputError, setInputError] = useState<string | null>(null);
+  const [materialSearchQuery, setMaterialSearchQuery] = useState("");
   const [editingShaderId, setEditingShaderId] = useState<string | null>(
     () => assignedShaderId ?? materials[0]?.shaderId ?? null,
   );
@@ -77,6 +87,10 @@ export function FragmentMaterialEditor({
   const editingMaterial = materials.find(({ shaderId }) => shaderId === effectiveEditingShaderId) ?? null;
   const assignedMaterial = materials.find(({ shaderId }) => shaderId === assignedShaderId) ?? null;
   const assigned = assignedShaderId !== null;
+  const matchingMaterials = fragmentMaterialsMatchingName(materials, materialSearchQuery);
+  const editingMaterialMatches = editingMaterial
+    ? matchingMaterials.some(({ shaderId }) => shaderId === editingMaterial.shaderId)
+    : false;
 
   return (
     <section className="mt-4 border-t border-zinc-800 pt-4">
@@ -278,19 +292,51 @@ export function FragmentMaterialEditor({
         </div>
       </div>
 
-      <div className="mt-3 grid grid-cols-[1fr_auto_auto] gap-1.5">
+      <label className="mt-3 block text-[10px] font-medium text-zinc-500" htmlFor="fragment-material-search">
+        Project materials
+      </label>
+      <input
+        aria-controls="fragment-material-asset"
+        aria-describedby="fragment-material-search-status"
+        aria-label="Search project materials"
+        className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
+        id="fragment-material-search"
+        onChange={(event) => setMaterialSearchQuery(event.currentTarget.value)}
+        placeholder="Search by name"
+        type="search"
+        value={materialSearchQuery}
+      />
+      <p className="mt-1 text-[10px] text-zinc-600" id="fragment-material-search-status" role="status">
+        {materialSearchQuery.trim().length === 0
+          ? `${materials.length} project material${materials.length === 1 ? "" : "s"}`
+          : matchingMaterials.length === 0
+            ? `No materials match “${materialSearchQuery.trim()}”.`
+            : `${matchingMaterials.length} matching material${matchingMaterials.length === 1 ? "" : "s"}`}
+      </p>
+
+      <div className="mt-1.5 grid grid-cols-[1fr_auto_auto] gap-1.5">
         <select
           aria-label="Material asset"
           className="h-8 min-w-0 border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
+          id="fragment-material-asset"
           onChange={(event) => setEditingShaderId(event.currentTarget.value || null)}
           value={effectiveEditingShaderId ?? ""}
         >
           {materials.length === 0 ? <option value="">No materials</option> : null}
-          {materials.map((material) => (
-            <option key={material.shaderId} value={material.shaderId}>
-              {material.name}
-            </option>
-          ))}
+          {editingMaterial && !editingMaterialMatches ? (
+            <optgroup label="Currently editing">
+              <option value={editingMaterial.shaderId}>{editingMaterial.name}</option>
+            </optgroup>
+          ) : null}
+          {matchingMaterials.length > 0 ? (
+            <optgroup label={materialSearchQuery.trim().length > 0 ? "Matches" : "All materials"}>
+              {matchingMaterials.map((material) => (
+                <option key={material.shaderId} value={material.shaderId}>
+                  {material.name}
+                </option>
+              ))}
+            </optgroup>
+          ) : null}
         </select>
         <button
           className="h-8 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
