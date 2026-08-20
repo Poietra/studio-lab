@@ -36,6 +36,8 @@ export type StudioTimelineProps = Readonly<{
   objectTracks: readonly TimelineObjectTrack[];
   opacityTrackEligibleIds: ReadonlySet<string>;
   opacityTracks: readonly StudioOpacityTimelineTrack[];
+  scaleTrackEligibleIds: ReadonlySet<string>;
+  scaleTracks: readonly StudioScaleTimelineTrack[];
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
   onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
@@ -55,6 +57,13 @@ export type StudioTimelineProps = Readonly<{
     patch: Partial<Pick<StudioOpacityTimelineKeyframe, "easing" | "time" | "value">>,
   ) => void;
   onOpacityKeyframeDelete: (track: StudioOpacityTimelineTrack, index: number) => void;
+  onScaleKeyframeAdd: (entityId: string) => void;
+  onScaleKeyframeChange: (
+    track: StudioScaleTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioScaleTimelineKeyframe, "easing" | "time" | "value">>,
+  ) => void;
+  onScaleKeyframeDelete: (track: StudioScaleTimelineTrack, index: number) => void;
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
@@ -79,6 +88,16 @@ export type StudioOpacityTimelineTrack = Readonly<{
 }>;
 
 export type StudioMaterialParameterTimelineKeyframe = StudioOpacityTimelineKeyframe;
+export type StudioScaleTimelineKeyframe = StudioOpacityTimelineKeyframe;
+
+export type StudioScaleTimelineTrack = Readonly<{
+  entityId: string;
+  keyframes: readonly StudioScaleTimelineKeyframe[];
+  label: string;
+  programIndex: number;
+  readOnlyReason: string | null;
+  transactionId: string;
+}>;
 
 export type StudioMaterialParameterTimelineTrack = Readonly<{
   assignmentChanged: boolean;
@@ -149,7 +168,7 @@ function PropertyKeyframeMarker({
   duration: number;
   index: number;
   keyframe: StudioOpacityTimelineKeyframe;
-  kind: "material" | "opacity";
+  kind: "material" | "opacity" | "scale";
   locked: boolean;
   onChange: (patch: Partial<Pick<StudioOpacityTimelineKeyframe, "time">>) => void;
   onSelect: () => void;
@@ -171,24 +190,30 @@ function PropertyKeyframeMarker({
   }
 
   const displayedTime = previewTime ?? keyframe.time;
+  const propertyLabel = kind === "material" ? "Material parameter" : kind === "scale" ? "Scale" : "Opacity";
   return (
     <button
-      aria-label={`${kind === "material" ? "Material parameter" : "Opacity"} keyframe ${index + 1} at ${keyframe.time.toFixed(2)} seconds`}
+      aria-label={`${propertyLabel} keyframe ${index + 1} at ${keyframe.time.toFixed(2)} seconds`}
       aria-pressed={selected}
       className={cn(
         "absolute z-40 size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 border",
-        kind === "material" ? "top-1/4" : "top-1/2",
+        kind === "material" ? "top-1/4" : kind === "scale" ? "top-3/4" : "top-1/2",
         selected
           ? kind === "material"
             ? "border-fuchsia-100 bg-fuchsia-400"
-            : "border-sky-100 bg-sky-400"
+            : kind === "scale"
+              ? "border-emerald-100 bg-emerald-400"
+              : "border-sky-100 bg-sky-400"
           : kind === "material"
             ? "border-fuchsia-300 bg-fuchsia-800"
-            : "border-sky-300 bg-sky-700",
+            : kind === "scale"
+              ? "border-emerald-300 bg-emerald-800"
+              : "border-sky-300 bg-sky-700",
         locked ? "cursor-not-allowed opacity-50" : "cursor-ew-resize",
       )}
       data-property-keyframe={kind}
       data-opacity-keyframe={kind === "opacity" ? "" : undefined}
+      data-scale-keyframe={kind === "scale" ? "" : undefined}
       disabled={locked}
       onClick={(event) => {
         event.stopPropagation();
@@ -220,7 +245,7 @@ function PropertyKeyframeMarker({
         onChange({ time });
       }}
       style={{ left: `${timelinePositionPercent(displayedTime, duration)}%`, touchAction: "none" }}
-      title={`${kind === "material" ? "Material" : "Opacity"} ${keyframe.value.toFixed(2)} · ${keyframe.easing}`}
+      title={`${propertyLabel} ${keyframe.value.toFixed(2)} · ${keyframe.easing}`}
       type="button"
     />
   );
@@ -479,6 +504,8 @@ export function StudioTimeline({
   objectTracks,
   opacityTrackEligibleIds,
   opacityTracks,
+  scaleTrackEligibleIds,
+  scaleTracks,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
   onInteractionModeChange,
@@ -490,6 +517,9 @@ export function StudioTimeline({
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
+  onScaleKeyframeAdd,
+  onScaleKeyframeChange,
+  onScaleKeyframeDelete,
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
@@ -504,6 +534,7 @@ export function StudioTimeline({
   >({});
   const [selectedMaterialKeyframe, setSelectedMaterialKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedOpacityKeyframe, setSelectedOpacityKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
+  const [selectedScaleKeyframe, setSelectedScaleKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const selectedLifetimeTrack =
     selectedLifetime && selectedIds.has(selectedLifetime.entityId)
       ? objectTracks.find((track) => track.entityId === selectedLifetime.entityId)
@@ -529,6 +560,10 @@ export function StudioTimeline({
     ? (materialParameterTracks.find((track) => track.transactionId === selectedMaterialKeyframe.transactionId) ?? null)
     : null;
   const selectedMaterialMarker = selectedMaterialTrack?.keyframes[selectedMaterialKeyframe?.index ?? -1] ?? null;
+  const selectedScaleTrack = selectedScaleKeyframe
+    ? (scaleTracks.find((track) => track.transactionId === selectedScaleKeyframe.transactionId) ?? null)
+    : null;
+  const selectedScaleMarker = selectedScaleTrack?.keyframes[selectedScaleKeyframe?.index ?? -1] ?? null;
   return (
     <section className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
       <div className="flex items-center gap-3">
@@ -718,6 +753,88 @@ export function StudioTimeline({
           ) : null}
         </div>
       ) : null}
+      {selectedScaleTrack && selectedScaleMarker ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="max-w-48 truncate text-emerald-300" title={selectedScaleTrack.label}>
+            Scale · {selectedScaleTrack.label}
+          </span>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Time
+            <input
+              aria-label="Scale keyframe time"
+              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-emerald-500"
+              disabled={selectedScaleTrack.readOnlyReason !== null}
+              max={duration}
+              min="0"
+              onChange={(event) =>
+                onScaleKeyframeChange(selectedScaleTrack, selectedScaleKeyframe!.index, {
+                  time: Number(event.currentTarget.value),
+                })
+              }
+              step="0.05"
+              type="number"
+              value={selectedScaleMarker.time}
+            />
+            s
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Value
+            <input
+              aria-label="Scale keyframe value"
+              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-emerald-500"
+              disabled={selectedScaleTrack.readOnlyReason !== null || selectedScaleKeyframe!.index === 0}
+              max="8"
+              min="0.1"
+              onChange={(event) =>
+                onScaleKeyframeChange(selectedScaleTrack, selectedScaleKeyframe!.index, {
+                  value: Number(event.currentTarget.value),
+                })
+              }
+              step="0.05"
+              type="number"
+              value={selectedScaleMarker.value}
+            />
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label="Scale segment easing"
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-emerald-500"
+              disabled={
+                selectedScaleTrack.readOnlyReason !== null ||
+                selectedScaleKeyframe!.index === selectedScaleTrack.keyframes.length - 1
+              }
+              onChange={(event) =>
+                onScaleKeyframeChange(selectedScaleTrack, selectedScaleKeyframe!.index, {
+                  easing: event.currentTarget.value as "linear" | "smooth",
+                })
+              }
+              value={selectedScaleMarker.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={
+              selectedScaleTrack.readOnlyReason !== null ||
+              (selectedScaleKeyframe!.index === 0 && selectedScaleTrack.keyframes.length > 1)
+            }
+            onClick={() => {
+              if (selectedScaleKeyframe!.index === 0 && selectedScaleTrack.keyframes.length > 1) return;
+              onScaleKeyframeDelete(selectedScaleTrack, selectedScaleKeyframe!.index);
+              setSelectedScaleKeyframe(null);
+            }}
+            type="button"
+          >
+            Delete keyframe
+          </button>
+          {selectedScaleTrack.readOnlyReason ? (
+            <span className="text-amber-500">{selectedScaleTrack.readOnlyReason}</span>
+          ) : null}
+        </div>
+      ) : null}
       {selectedMaterialTrack && selectedMaterialMarker ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
           <span className="max-w-48 truncate text-fuchsia-300" title={selectedMaterialTrack.label}>
@@ -888,6 +1005,7 @@ export function StudioTimeline({
                 ? requestedMaterialName
                 : (materialTracks[0]?.parameterName ?? materialOptions[0]?.name ?? "");
             const opacityTrack = opacityTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
+            const scaleTrack = scaleTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackMotionOperationIds = new Set(trackMotionClips.map((clip) => clip.operationId));
             const locked =
@@ -924,6 +1042,18 @@ export function StudioTimeline({
                       type="button"
                     >
                       +
+                    </button>
+                  ) : null}
+                  {selected && scaleTrackEligibleIds.has(track.entityId) ? (
+                    <button
+                      aria-label={`Add scale keyframe for ${track.label}`}
+                      className="mr-1 h-5 shrink-0 px-1 text-[9px] leading-none text-emerald-400 hover:bg-emerald-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+                      disabled={locked || readOnly}
+                      onClick={() => onScaleKeyframeAdd(track.entityId)}
+                      title="Add uniform scale keyframe at the playhead"
+                      type="button"
+                    >
+                      S+
                     </button>
                   ) : null}
                   {staleMaterialTrack ? (
@@ -1017,11 +1147,34 @@ export function StudioTimeline({
                       onChange={(patch) => onOpacityKeyframeChange(opacityTrack, index, patch)}
                       onSelect={() => {
                         onSelectEntity(track.entityId);
+                        setSelectedMaterialKeyframe(null);
+                        setSelectedScaleKeyframe(null);
                         setSelectedOpacityKeyframe({ index, transactionId: opacityTrack.transactionId });
                       }}
                       selected={
                         selectedOpacityKeyframe?.transactionId === opacityTrack.transactionId &&
                         selectedOpacityKeyframe.index === index
+                      }
+                    />
+                  ))}
+                  {scaleTrack?.keyframes.map((keyframe, index) => (
+                    <PropertyKeyframeMarker
+                      duration={duration}
+                      index={index}
+                      key={`${scaleTrack.transactionId}/${index}`}
+                      keyframe={keyframe}
+                      kind="scale"
+                      locked={locked || readOnly || scaleTrack.readOnlyReason !== null}
+                      onChange={(patch) => onScaleKeyframeChange(scaleTrack, index, patch)}
+                      onSelect={() => {
+                        onSelectEntity(track.entityId);
+                        setSelectedMaterialKeyframe(null);
+                        setSelectedOpacityKeyframe(null);
+                        setSelectedScaleKeyframe({ index, transactionId: scaleTrack.transactionId });
+                      }}
+                      selected={
+                        selectedScaleKeyframe?.transactionId === scaleTrack.transactionId &&
+                        selectedScaleKeyframe.index === index
                       }
                     />
                   ))}
@@ -1037,6 +1190,8 @@ export function StudioTimeline({
                         onChange={(patch) => onMaterialParameterKeyframeChange(materialTrack, index, patch)}
                         onSelect={() => {
                           onSelectEntity(track.entityId);
+                          setSelectedOpacityKeyframe(null);
+                          setSelectedScaleKeyframe(null);
                           setSelectedMaterialParameterByEntity((current) => ({
                             ...current,
                             [track.entityId]: materialTrack.parameterName,

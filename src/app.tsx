@@ -196,6 +196,15 @@ import {
   type SingleScaleResizeGesture,
 } from "./studio/single-scale-resize-gesture";
 import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimelineWithProjection } from "./studio/source-timeline";
+import {
+  appendScaleKeyframe,
+  MAX_TIMELINE_SCALE,
+  MIN_TIMELINE_SCALE,
+  replaceScaleKeyframe,
+  replaceScaleKeyframeProgram,
+  type ScaleKeyframe,
+  scaleKeyframeTrackFromProgram,
+} from "./studio/scale-keyframe-edit";
 import { preparedGeometryBounds, verifiedPreviewGeometryForStudioEntity } from "./studio/studio-canvas";
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
@@ -208,6 +217,7 @@ import type {
   StudioMaterialParameterTimelineOption,
   StudioMaterialParameterTimelineTrack,
   StudioOpacityTimelineTrack,
+  StudioScaleTimelineTrack,
 } from "./studio/studio-timeline";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
@@ -1247,6 +1257,85 @@ export function App({
       },
     ];
   });
+  const scaleTrackEligibleIds = new Set(
+    workspaceCreationProjection?.entities.flatMap(({ entityId, transactionId }) => {
+      const owner = previewAppliedEdits.find(({ program }) =>
+        program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
+      );
+      if (!owner) return [];
+      const existingTrack = scaleKeyframeTrackFromProgram(owner.program, 0);
+      const draftAllowsOwner = !draftEdit || editingAppliedProgram?.original.program.transactionId === transactionId;
+      const hasCompetingTransform = previewAppliedEdits.some(({ program }) =>
+        program.operations.some((operation) => {
+          if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entityId);
+          if (!("entityId" in operation) || operation.entityId !== entityId) return false;
+          if (operation.kind === "ResizeEntity") return true;
+          if (operation.kind === "AnimateProperty") {
+            return operation.key === "rotation" || (operation.key === "scale" && operation.timelineTrack !== true);
+          }
+          return (
+            operation.kind === "SetProperty" &&
+            operation.key === "position" &&
+            program.transactionId !== owner.program.transactionId
+          );
+        }),
+      );
+      const sharedProgramAllowsEntity = !existingTrack || existingTrack.entityId === entityId;
+      return draftAllowsOwner && !hasCompetingTransform && sharedProgramAllowsEntity ? [entityId] : [];
+    }) ?? [],
+  );
+  const scaleTracks: readonly StudioScaleTimelineTrack[] = previewAppliedEdits.flatMap((record, programIndex) => {
+    const track = scaleKeyframeTrackFromProgram(record.program, programIndex);
+    if (!track || !workspaceCreationProjection) return [];
+    const operations = record.program.operations.filter(
+      (operation) =>
+        operation.kind === "AnimateProperty" &&
+        operation.key === "scale" &&
+        operation.timelineTrack === true &&
+        operation.entityId === track.entityId,
+    );
+    const mutations = operations.map((operation) =>
+      workspaceCreationProjection.mutations.find(
+        (mutation) => mutation.kind === "uniform-scale" && mutation.operationId === operation.id,
+      ),
+    );
+    if (mutations.some((mutation) => !mutation)) return [];
+    const projectedMutations = mutations as readonly Extract<
+      (typeof workspaceCreationProjection.mutations)[number],
+      { kind: "uniform-scale" }
+    >[];
+    const workingTimes =
+      projectedMutations.length === 1 &&
+      Math.abs(projectedMutations[0]!.interval.end - projectedMutations[0]!.interval.start) < 0.0005
+        ? [projectedMutations[0]!.interval.start]
+        : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
+    if (workingTimes.length !== track.keyframes.length) return [];
+    const label =
+      workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === track.entityId)
+        ?.label ?? track.entityId;
+    const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
+    return [
+      {
+        entityId: track.entityId,
+        keyframes: track.keyframes.map((keyframe, index) => ({
+          ...keyframe,
+          sourceTime: keyframe.time,
+          time: workingTimes[index]!,
+        })),
+        label,
+        programIndex,
+        readOnlyReason:
+          draftEdit && !activeDraftIsThisTrack ? "Apply or discard the current draft before editing scale." : null,
+        transactionId: track.transactionId,
+      },
+    ];
+  });
+  const scaleTrackEntityIds = new Set(
+    previewAppliedEdits.flatMap((record, programIndex) => {
+      const track = scaleKeyframeTrackFromProgram(record.program, programIndex);
+      return track ? [track.entityId] : [];
+    }),
+  );
   const materialParameterOptions: readonly StudioMaterialParameterTimelineOption[] = workspaceCreationProjection
     ? Object.entries(activeSceneFragmentMaterials.assignments).flatMap(([entityId, assignment]) => {
         const owner = previewAppliedEdits.find(({ program }) =>
@@ -2451,7 +2540,7 @@ export function App({
     }
   }
 
-  function opacityProgramOwner(entityId: string) {
+  function studioCreationProgramOwner(entityId: string) {
     const programIndex = previewAppliedEdits.findIndex((record) =>
       record.program.operations.some(
         (operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId,
@@ -2462,7 +2551,7 @@ export function App({
   }
 
   function addOpacityKeyframe(entityId: string) {
-    const owner = opacityProgramOwner(entityId);
+    const owner = studioCreationProgramOwner(entityId);
     if (!owner) {
       setDraftError("Opacity keyframes currently support only Studio-created objects.");
       return;
@@ -2518,7 +2607,7 @@ export function App({
     index: number,
     patch: Partial<Pick<StudioOpacityTimelineTrack["keyframes"][number], "easing" | "time" | "value">>,
   ) {
-    const owner = opacityProgramOwner(track.entityId);
+    const owner = studioCreationProgramOwner(track.entityId);
     if (!owner || owner.record.program.transactionId !== track.transactionId) {
       setDraftError("The opacity track no longer matches the Studio-created object.");
       return;
@@ -2546,7 +2635,7 @@ export function App({
   }
 
   function deleteOpacityKeyframe(track: StudioOpacityTimelineTrack, index: number) {
-    const owner = opacityProgramOwner(track.entityId);
+    const owner = studioCreationProgramOwner(track.entityId);
     const sourceTrack = owner ? opacityKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
     if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
       setDraftError("The opacity track no longer matches the Studio-created object.");
@@ -2557,6 +2646,145 @@ export function App({
       return;
     }
     stageOpacityKeyframes(
+      track.entityId,
+      owner.programIndex,
+      owner.record.program,
+      sourceTrack.keyframes.filter((_, candidate) => candidate !== index),
+    );
+  }
+
+  function scaleBaseline(entityId: string) {
+    return workspaceCreationProjection?.entities.find((entity) => entity.entityId === entityId)?.initialScale ?? null;
+  }
+
+  function stageScaleKeyframes(
+    entityId: string,
+    programIndex: number,
+    baseProgram: SceneEdit,
+    keyframes: readonly ScaleKeyframe[],
+  ) {
+    if (!projectedActiveScene) return false;
+    const original = appliedEdits[programIndex];
+    const baseline = scaleBaseline(entityId);
+    if (!original || original.program.transactionId !== baseProgram.transactionId || baseline === null) {
+      setDraftError("The scale track no longer matches the applied Studio-created object.");
+      return false;
+    }
+    try {
+      const validation = replaceScaleKeyframeProgram({
+        baseProgram,
+        baseline,
+        entityId,
+        keyframes,
+        scene: projectedActiveScene.runtimeSceneState,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return stageDraft({
+        appliedEdit: { index: programIndex, original },
+        clearSuggestion: true,
+        currentTime,
+        operation: null,
+        record: validated.record,
+        selectedObjectIds: [entityId],
+        stopPlayback: true,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The scale keyframe could not be edited.");
+      setIsPlaying(false);
+      return false;
+    }
+  }
+
+  function addScaleKeyframe(entityId: string) {
+    const owner = studioCreationProgramOwner(entityId);
+    const baseline = scaleBaseline(entityId);
+    if (!owner || baseline === null) {
+      setDraftError("Scale keyframes currently support only Studio-created objects.");
+      return;
+    }
+    try {
+      const sourceTime = workingTimeToSourceTime(previewAppliedSceneEdits, currentTime);
+      const track = scaleKeyframeTrackFromProgram(owner.record.program, owner.programIndex);
+      if (!track && !scaleTrackEligibleIds.has(entityId)) {
+        throw new Error(
+          "Scale keyframes cannot overlap this object's existing move, resize, rotation, or motion edit.",
+        );
+      }
+      if (track && track.entityId !== entityId) {
+        throw new Error("This shared creation Program already owns another object's scale track.");
+      }
+      const fadeEnd = Math.max(
+        owner.record.program.anchor.resolvedSeconds,
+        ...owner.record.program.operations.flatMap((operation) =>
+          operation.kind === "ChangePresence" && operation.effect === "fade-in" && operation.entityId === entityId
+            ? [operation.interval.end]
+            : [],
+        ),
+      );
+      if (!track && sourceTime <= fadeEnd + 0.0005) {
+        throw new Error("Add the first scale keyframe after the object's initial fade has finished.");
+      }
+      if (track?.keyframes.some((keyframe) => Math.abs(keyframe.time - sourceTime) < 0.0005)) {
+        throw new Error("A scale keyframe already exists at the playhead.");
+      }
+      stageScaleKeyframes(
+        entityId,
+        owner.programIndex,
+        owner.record.program,
+        appendScaleKeyframe(track?.keyframes ?? [], sourceTime, baseline),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The scale keyframe could not be added.");
+    }
+  }
+
+  function changeScaleKeyframe(
+    track: StudioScaleTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioScaleTimelineTrack["keyframes"][number], "easing" | "time" | "value">>,
+  ) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? scaleKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The scale track no longer matches the Studio-created object.");
+      return;
+    }
+    try {
+      if (index === 0 && patch.value !== undefined) {
+        throw new Error("The first scale keyframe preserves the object's baseline scale.");
+      }
+      if (patch.value !== undefined && (patch.value < MIN_TIMELINE_SCALE || patch.value > MAX_TIMELINE_SCALE)) {
+        throw new Error(`Scale must be between ${MIN_TIMELINE_SCALE} and ${MAX_TIMELINE_SCALE}.`);
+      }
+      const sourcePatch: Partial<ScaleKeyframe> = {
+        ...(patch.easing === undefined ? {} : { easing: patch.easing }),
+        ...(patch.time === undefined ? {} : { time: workingTimeToSourceTime(previewAppliedSceneEdits, patch.time) }),
+        ...(patch.value === undefined ? {} : { value: patch.value }),
+      };
+      stageScaleKeyframes(
+        track.entityId,
+        owner.programIndex,
+        owner.record.program,
+        replaceScaleKeyframe(sourceTrack.keyframes, index, sourcePatch),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The scale keyframe could not be changed.");
+    }
+  }
+
+  function deleteScaleKeyframe(track: StudioScaleTimelineTrack, index: number) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? scaleKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The scale track no longer matches the Studio-created object.");
+      return;
+    }
+    if (index === 0 && sourceTrack.keyframes.length > 1) {
+      setDraftError("Delete the later scale keyframes before deleting the fixed first marker.");
+      return;
+    }
+    stageScaleKeyframes(
       track.entityId,
       owner.programIndex,
       owner.record.program,
@@ -2610,7 +2838,7 @@ export function App({
   }
 
   function addMaterialParameterKeyframe(entityId: string, name: string) {
-    const owner = opacityProgramOwner(entityId);
+    const owner = studioCreationProgramOwner(entityId);
     const assignment = activeSceneFragmentMaterials.assignments[entityId];
     const schema = assignment ? activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId] : null;
     const parameterIndex = schema?.findIndex((parameter) => parameter.name === name) ?? -1;
@@ -2664,7 +2892,7 @@ export function App({
     index: number,
     patch: Partial<Pick<StudioMaterialParameterTimelineTrack["keyframes"][number], "easing" | "time" | "value">>,
   ) {
-    const owner = opacityProgramOwner(track.entityId);
+    const owner = studioCreationProgramOwner(track.entityId);
     const sourceTrack = owner
       ? materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex)
       : null;
@@ -2700,7 +2928,7 @@ export function App({
   }
 
   function deleteMaterialParameterKeyframe(track: StudioMaterialParameterTimelineTrack, index: number) {
-    const owner = opacityProgramOwner(track.entityId);
+    const owner = studioCreationProgramOwner(track.entityId);
     const sourceTrack = owner
       ? materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex)
       : null;
@@ -2731,7 +2959,7 @@ export function App({
   }
 
   function removeMaterialParameterTrack(sourceTrack: MaterialParameterKeyframeTrack) {
-    const owner = opacityProgramOwner(sourceTrack.entityId);
+    const owner = studioCreationProgramOwner(sourceTrack.entityId);
     if (!owner || owner.record.program.transactionId !== sourceTrack.transactionId) {
       setDraftError("The material parameter track no longer matches the Studio-created object.");
       return;
@@ -3281,6 +3509,15 @@ export function App({
     return anchor;
   }
 
+  function blockTransformWhileScaleTrackExists(targetEntityIds: readonly string[], action: string) {
+    const blockedEntityId = targetEntityIds.find((entityId) => scaleTrackEntityIds.has(entityId));
+    if (!blockedEntityId) return false;
+    setSelectedObjectIds([blockedEntityId]);
+    setDraftError(`Remove this object's scale keyframe track before ${action}.`);
+    setIsPlaying(false);
+    return true;
+  }
+
   function beginEntityDrag(
     event: PointerEvent<HTMLButtonElement>,
     entityId: string,
@@ -3330,6 +3567,13 @@ export function App({
       entityId,
       boundedRuntimeEditTargetIds.has(entityId),
     );
+    if (
+      blockTransformWhileScaleTrackExists(
+        targetEntityIds,
+        interactionMode === "animate" ? "creating a motion clip" : "moving it",
+      )
+    )
+      return;
     event.currentTarget.setPointerCapture(event.pointerId);
     const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]")?.getBoundingClientRect();
     const snapTargetIds = new Set(preparedSnapBasis?.entityIds ?? []);
@@ -3476,6 +3720,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return;
     }
+    if (blockTransformWhileScaleTrackExists([entityId], "resizing it")) return;
     const runtimeTraceEditCandidate = runtimeTraceEditCandidateFor(entityId);
     if (runtimeTraceEditCandidate && !runtimeTraceEditCandidate.capabilities.uniformScale) {
       setSelectedObjectIds([entityId]);
@@ -3665,6 +3910,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing the selection.");
       return null;
     }
+    if (blockTransformWhileScaleTrackExists(selectedObjectIds, "resizing the selection")) return null;
     if (interactionMode !== "position" || previewSelectionOnly || boundedRuntimeEditTargetIds.size > 0) return null;
     const selectedEntities = selectedObjectIds.flatMap((entityId) => {
       const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
@@ -4136,6 +4382,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return false;
     }
+    if (blockTransformWhileScaleTrackExists([entityId], "resizing it")) return false;
     if (
       !hasShapeDimensions(shape, target.dimensions) ||
       !Number.isFinite(target.position.x) ||
@@ -4200,6 +4447,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return false;
     }
+    if (blockTransformWhileScaleTrackExists([entityId], "resizing it")) return false;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return false;
     if (entity.geometry.scale.kind === "unknown") {
@@ -4456,6 +4704,9 @@ export function App({
     const runtimeTraceTransformAuthority = runtimeTraceProjectionAuthorityFor(entityId);
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     if (!entity || (!entity.present && runtimeTraceTransformAuthority?.studioEntityId !== entityId)) return false;
+    if ((edits.position || edits.dimensions) && blockTransformWhileScaleTrackExists([entityId], "transforming it")) {
+      return false;
+    }
     const replacesStudioTextContent =
       edits.content !== undefined &&
       entity.type === "Text" &&
@@ -4606,6 +4857,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before moving another object.");
       return false;
     }
+    if (blockTransformWhileScaleTrackExists(targetIds, "moving it")) return false;
     if (!gestureContext.proposedState || !projection) return false;
     const projected = absolutePositions
       ? { kind: "valid" as const, positions: absolutePositions }
@@ -5152,7 +5404,11 @@ export function App({
       selectedRuntimeTraceEditCapabilities?.rotation === true)
       ? selectedEntity.id
       : null;
-  const groupResizeEligibleIds = groupResizeEligibleCreationEntityIds(workspaceCreationProjection);
+  const groupResizeEligibleIds = new Set(
+    [...groupResizeEligibleCreationEntityIds(workspaceCreationProjection)].filter(
+      (entityId) => !scaleTrackEntityIds.has(entityId),
+    ),
+  );
   const groupRotationEligibleIds = new Set(
     selectedObjectIds.filter((entityId) => {
       const authority = studioCreationAppearanceAuthorityFor(entityId);
@@ -5629,6 +5885,8 @@ export function App({
               motionPaths={motionPaths}
               opacityTrackEligibleIds={opacityTrackEligibleIds}
               opacityTracks={opacityTracks}
+              scaleTrackEligibleIds={scaleTrackEligibleIds}
+              scaleTracks={scaleTracks}
               onAppliedMotionClipChange={changeAppliedMotionClip}
               onAppliedMotionClipSelect={editAppliedMotionClip}
               onCanvasPlace={(point) => {
@@ -5672,6 +5930,9 @@ export function App({
               onOpacityKeyframeAdd={addOpacityKeyframe}
               onOpacityKeyframeChange={changeOpacityKeyframe}
               onOpacityKeyframeDelete={deleteOpacityKeyframe}
+              onScaleKeyframeAdd={addScaleKeyframe}
+              onScaleKeyframeChange={changeScaleKeyframe}
+              onScaleKeyframeDelete={deleteScaleKeyframe}
               onPresenceCursorChange={(cursor) => editorDocumentAuthority.updatePresence({ cursor })}
               onSelectionResizeCancel={cancelSelectionResize}
               onSelectionResizeKeyDown={nudgeSelectionResize}
