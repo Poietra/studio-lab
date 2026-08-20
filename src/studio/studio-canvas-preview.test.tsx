@@ -108,6 +108,7 @@ function baseProps(): StudioCanvasProps {
     groupRotationPreview: null,
     groupResizeEligibleIds: new Set<string>(),
     groupResizePreview: null,
+    groupTransformOrigins: new Map<string, { x: number; y: number }>(),
     incomingSceneName: null,
     inlineTextEditor: null,
     insertTool: "select",
@@ -412,7 +413,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(snapBasis?.objects[0]?.bounds.right).toBeCloseTo(622.5, 1);
   });
 
-  it("adds group handles only when every selected Rust-created target is unrotated", () => {
+  it("keeps group handles after a prior admitted rigid rotation but rejects standalone rotation", () => {
     const circle: ProjectedEntity = {
       ...CIRCLE_ENTITY,
       id: "tx:create-circle/entity:circle",
@@ -443,6 +444,12 @@ describe("StudioCanvas retained preview layer", () => {
             ],
           }}
           groupResizeEligibleIds={groupResizeEligibleIds}
+          groupTransformOrigins={
+            new Map([
+              [circle.id, { x: 240, y: 260 }],
+              [rectangle.id, { x: 400, y: 100 }],
+            ])
+          }
           preview={previewView(
             {
               frame: {
@@ -480,7 +487,89 @@ describe("StudioCanvas retained preview layer", () => {
     const rotatedMarkup = renderSelection(rotatedEligible, rotatedEligible);
     expect(rotatedMarkup).not.toContain("data-studio-selection-resize-handle");
     expect(rotatedMarkup).not.toContain("data-studio-selection-rotation-handle");
+
+    const groupRotatedEligible = groupResizeEligibleCreationEntityIds({
+      entities,
+      mutations: [
+        { entityId: circle.id, kind: "position", transactionId: "group-rotation" },
+        { entityId: rectangle.id, kind: "position", transactionId: "group-rotation" },
+        { entityId: circle.id, kind: "rotation", to: Math.PI / 2, transactionId: "group-rotation" },
+        { entityId: rectangle.id, kind: "rotation", to: Math.PI / 2, transactionId: "group-rotation" },
+      ],
+    });
+    const groupRotatedMarkup = renderSelection(groupRotatedEligible, groupRotatedEligible);
+    expect(groupRotatedMarkup.match(/data-studio-selection-resize-handle=/g)).toHaveLength(4);
+    expect(groupRotatedMarkup.match(/data-studio-selection-rotation-handle=/g)).toHaveLength(1);
+
+    const motionBlockedEligible = groupResizeEligibleCreationEntityIds({
+      entities,
+      motions: [{ targetEntityId: circle.id }],
+      mutations: [],
+    });
+    const motionBlockedMarkup = renderSelection(motionBlockedEligible, motionBlockedEligible);
+    expect(motionBlockedMarkup).not.toContain("data-studio-selection-resize-handle");
+    expect(motionBlockedMarkup).not.toContain("data-studio-selection-rotation-handle");
   });
+
+  it.each(["Text", "MathTex"] as const)(
+    "keeps prepared %s bounds on a previously rotated Studio-created selection",
+    (type) => {
+      const first: ProjectedEntity = {
+        ...CIRCLE_ENTITY,
+        content:
+          type === "Text" ? { displayLines: ["First"], text: "First" } : { displayLines: ["x"], texParts: ["x"] },
+        id: `tx:create-${type.toLowerCase()}-first/entity:first`,
+        sourceIdentity: { kind: "unknown", reason: "Studio-created entity." },
+        transactionId: `create-${type.toLowerCase()}-first`,
+        type,
+      };
+      const second: ProjectedEntity = {
+        ...first,
+        content:
+          type === "Text" ? { displayLines: ["Second"], text: "Second" } : { displayLines: ["y"], texParts: ["y"] },
+        id: `tx:create-${type.toLowerCase()}-second/entity:second`,
+        position: { x: 440, y: 180 },
+        transactionId: `create-${type.toLowerCase()}-second`,
+      };
+      const entityIds = [first.id, second.id];
+      const eligible = new Set(entityIds);
+      const markup = renderToStaticMarkup(
+        <StudioCanvas
+          {...baseProps()}
+          appliedTransactionIds={new Set([first.transactionId!, second.transactionId!])}
+          entities={[first, second]}
+          groupResizeEligibleIds={eligible}
+          groupRotationEligibleIds={eligible}
+          groupTransformOrigins={
+            new Map([
+              [first.id, { x: 200, y: 180 }],
+              [second.id, { x: 440, y: 180 }],
+            ])
+          }
+          preview={previewView(
+            {
+              frame: {
+                packetId: `canvas:rotated-${type.toLowerCase()}`,
+                revision: "a".repeat(64),
+                sampleTime: 0,
+                viewport: { heightPx: 360, widthPx: 640 },
+              },
+              phase: "presented",
+            },
+            new Map([
+              [first.id, { dimensions: { height: 1, width: 2 }, position: { x: 200, y: 180 } }],
+              [second.id, { dimensions: { height: 1, width: 2 }, position: { x: 440, y: 180 } }],
+            ]),
+          )}
+          selectedIds={new Set(entityIds)}
+        />,
+      );
+
+      expect(markup).toContain('data-studio-composite-selection="2"');
+      expect(markup.match(/data-studio-selection-resize-handle=/g)).toHaveLength(4);
+      expect(markup.match(/data-studio-selection-rotation-handle=/g)).toHaveLength(1);
+    },
+  );
 
   it("keeps movement unsnapped when any selected target lacks complete prepared bounds", () => {
     const second = {

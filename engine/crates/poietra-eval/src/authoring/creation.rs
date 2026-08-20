@@ -1217,11 +1217,11 @@ fn closed_studio_group_rotation(
     let sine = angle_radians.sin();
     for (entity_id, target) in &positions {
         let state = entities.iter().find(|state| state.spec.id == *entity_id)?;
-        if !rotation_is_noop(state.current_rotation)
-            || !rotation_is_noop(state.instant_rotation)
-            || state.instant_at.is_some()
-            || state.persistent_removal.is_some()
-        {
+        // A prior rigid group transform is retained in `instant_rotation` at
+        // the same authoring anchor. It may receive another rigid delta; a
+        // standalone appearance rotation still uses a different channel and
+        // remains outside this closed composition.
+        if !rotation_is_noop(state.current_rotation) || state.persistent_removal.is_some() {
             return None;
         }
         let from_x = state.position.x - first_state.position.x;
@@ -2442,7 +2442,12 @@ fn plan_studio_creation_edits(
                 }) =>
                 {
                     record_planned_studio_creation_instant(state, instant_at)?;
-                    state.instant_rotation = *relative_delta;
+                    let projected_from = state.current_rotation + state.instant_rotation;
+                    let projected_to = projected_from + relative_delta;
+                    if !projected_to.is_finite() {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                    state.instant_rotation = projected_to - state.current_rotation;
                     ranked_mutations.push((
                         timeline.ranks[program_index],
                         schedule_index,
@@ -2450,8 +2455,8 @@ fn plan_studio_creation_edits(
                             entity_id: entity_id.to_owned(),
                             interval: instant_interval,
                             kind: StudioCreationProjectedMutationKind::Rotation {
-                                from: 0.0,
-                                to: *relative_delta,
+                                from: projected_from,
+                                to: projected_to,
                             },
                             operation_id: operation.id.clone(),
                             transaction_id: program.transaction_id.clone(),
@@ -6476,6 +6481,109 @@ mod tests {
                 entity_id,
                 &expected,
             );
+        }
+        assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn normalized_creation_reuses_one_rust_transform_for_group_resize_and_rotation() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let first_id = "tx:create/entity:circle";
+        let second_id = "tx:second/entity:rectangle";
+        command
+            .programs
+            .push(second_group_resize_creation(&command.programs[0]));
+
+        let first_rotation_targets = [
+            (first_id, PointV1 { x: 400.0, y: 260.0 }),
+            (second_id, PointV1 { x: 400.0, y: 100.0 }),
+        ];
+        command.programs.push(studio_group_rotation_edit_input(
+            &first_rotation_targets,
+            FRAC_PI_2,
+        ));
+
+        let resize_targets = [
+            (first_id, PointV1 { x: 400.0, y: 300.0 }),
+            (second_id, PointV1 { x: 400.0, y: 60.0 }),
+        ];
+        let mut resize = studio_group_resize_edit_input(&resize_targets);
+        for operation in &mut resize.operations {
+            operation.id = format!("resize-{}", operation.id);
+        }
+        resize.schedule_order = resize
+            .operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect();
+        command.programs.push(resize);
+
+        let final_targets = [
+            (first_id, PointV1 { x: 520.0, y: 180.0 }),
+            (second_id, PointV1 { x: 280.0, y: 180.0 }),
+        ];
+        let mut second_rotation = studio_group_rotation_edit_input(&final_targets, FRAC_PI_2);
+        second_rotation.transaction_id = "group-rotation-2".to_owned();
+        for operation in &mut second_rotation.operations {
+            operation.id = format!("second-{}", operation.id);
+        }
+        second_rotation.schedule_order = second_rotation
+            .operations
+            .iter()
+            .map(|operation| operation.id.clone())
+            .collect();
+        command.programs.push(second_rotation);
+
+        let expected = final_targets.map(|(entity_id, position)| {
+            (
+                entity_id,
+                studio_point_to_scene_point(
+                    &position,
+                    command.frame,
+                    command.viewport,
+                    &bundle.scene.camera.view.center,
+                ),
+            )
+        });
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let projection = result.creation_projection.as_ref().unwrap();
+
+        for (entity_id, expected) in expected {
+            let transform = result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .find_map(|channel| match channel {
+                    AnimationChannelV1::AffineTransform {
+                        entity_id: candidate,
+                        keyframes,
+                        ..
+                    } if candidate == entity_id => {
+                        keyframes.first().map(|keyframe| &keyframe.value)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert!((transform.m11 + 1.5).abs() < 1e-12);
+            assert!(transform.m12.abs() < 1e-12);
+            assert!(transform.m21.abs() < 1e-12);
+            assert!((transform.m22 + 1.5).abs() < 1e-12);
+            assert!((transform.tx - expected.x).abs() < 1e-12);
+            assert!((transform.ty - expected.y).abs() < 1e-12);
+            assert!(projection.mutations.iter().any(|mutation| {
+                mutation.entity_id == entity_id
+                    && mutation.transaction_id == "group-rotation-2"
+                    && matches!(
+                        mutation.kind,
+                        StudioCreationProjectedMutationKind::Rotation { from, to }
+                            if (from - FRAC_PI_2).abs() < 1e-12
+                                && (to - std::f64::consts::PI).abs() < 1e-12
+                    )
+            }));
         }
         assert_eq!(session.scene(), &result.bundle.scene);
     }

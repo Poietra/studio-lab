@@ -30,7 +30,13 @@ export type SelectionResizeGesture = Readonly<{
 
 type CreationRotationAuthority = Readonly<{
   entities: readonly Readonly<{ entityId: string }>[];
-  mutations: readonly Readonly<{ entityId: string; kind: string; to?: number }>[];
+  motions?: readonly Readonly<{ targetEntityId: string }>[];
+  mutations: readonly Readonly<{
+    entityId: string;
+    kind: string;
+    to?: number;
+    transactionId?: string;
+  }>[];
 }>;
 
 function validSelectionBounds(bounds: PreparedSelectionResizeBasis["bounds"]) {
@@ -48,13 +54,44 @@ export function groupResizeEligibleCreationEntityIds(
   projection: CreationRotationAuthority | null | undefined,
 ): ReadonlySet<string> {
   if (!projection) return new Set();
-  const rotationByEntity = new Map<string, number>();
+  const positionsByTransaction = new Map<string, Set<string>>();
+  const rotationsByTransaction = new Map<string, Set<string>>();
   for (const mutation of projection.mutations) {
-    if (mutation.kind === "rotation") rotationByEntity.set(mutation.entityId, mutation.to ?? Number.NaN);
+    if (!mutation.transactionId) continue;
+    const target =
+      mutation.kind === "position"
+        ? positionsByTransaction
+        : mutation.kind === "rotation"
+          ? rotationsByTransaction
+          : null;
+    if (!target) continue;
+    const entityIds = target.get(mutation.transactionId) ?? new Set<string>();
+    entityIds.add(mutation.entityId);
+    target.set(mutation.transactionId, entityIds);
   }
+  const admittedGroupRotationTransactions = new Set(
+    [...rotationsByTransaction].flatMap(([transactionId, rotationEntityIds]) => {
+      const positionEntityIds = positionsByTransaction.get(transactionId);
+      return rotationEntityIds.size >= 2 &&
+        positionEntityIds &&
+        [...rotationEntityIds].every((entityId) => positionEntityIds.has(entityId))
+        ? [transactionId]
+        : [];
+    }),
+  );
+  const unsupportedRotatedEntityIds = new Set(
+    projection.mutations.flatMap((mutation) =>
+      mutation.kind === "rotation" &&
+      (mutation.to ?? Number.NaN) !== 0 &&
+      (!mutation.transactionId || !admittedGroupRotationTransactions.has(mutation.transactionId))
+        ? [mutation.entityId]
+        : [],
+    ),
+  );
+  const motionTargetEntityIds = new Set(projection.motions?.map(({ targetEntityId }) => targetEntityId) ?? []);
   return new Set(
     projection.entities
-      .filter(({ entityId }) => (rotationByEntity.get(entityId) ?? 0) === 0)
+      .filter(({ entityId }) => !unsupportedRotatedEntityIds.has(entityId) && !motionTargetEntityIds.has(entityId))
       .map(({ entityId }) => entityId),
   );
 }

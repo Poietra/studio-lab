@@ -197,6 +197,7 @@ import {
 } from "./studio/selection-resize-gesture";
 import {
   createSelectionRotationGesture,
+  currentCreationTransformForEntity,
   latestCreationPositionForEntity,
   type SelectionRotationGesture,
   selectionRotationCommandTargets,
@@ -4241,13 +4242,14 @@ export function App({
     if (interactionMode !== "position" || previewSelectionOnly || boundedRuntimeEditTargetIds.size > 0) return null;
     const selectedEntities = selectedObjectIds.flatMap((entityId) => {
       const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
-      return entity ? [entity] : [];
+      const transform = currentCreationTransformForEntity(workspaceCreationProjection, entityId);
+      return entity && transform ? [{ entity, transform }] : [];
     });
     if (
       selectedEntities.length < 2 ||
       selectedEntities.length !== selectedObjectIds.length ||
       selectedEntities.some(
-        (entity) =>
+        ({ entity }) =>
           studioCreationProjectionEntityFor(entity.id) === null ||
           entity.geometry.position.kind === "unknown" ||
           entity.geometry.scale.kind === "unknown" ||
@@ -4282,9 +4284,9 @@ export function App({
       sourceAnchor: anchor.sourceTime,
       start,
       surfaceBounds,
-      targets: selectedEntities.map((entity) => ({
+      targets: selectedEntities.map(({ entity, transform }) => ({
         entityId: entity.id,
-        fromPosition: entity.position,
+        fromPosition: transform.transformOrigin,
         fromScale: entity.scale,
       })),
     });
@@ -4377,7 +4379,7 @@ export function App({
     const resize = selectionResizeState(basis, direction, -1, start, canvasBounds);
     if (!resize) return;
     const step = event.shiftKey ? 1.25 : 1.05;
-    const grows = event.key === "ArrowUp" || event.key === "ArrowRight";
+    const grows = resizeHandleDeltaIsOutward(direction, NUDGE_DELTAS[event.key]!);
     const factor = clamp(grows ? step : 1 / step, resize.minimumFactor, resize.maximumFactor);
     if (Math.abs(factor - 1) < 0.01) return;
     installSelectionResizeDraft(resize, selectionResizePreviewAtFactor(resize, factor));
@@ -5751,11 +5753,14 @@ export function App({
         rotationKeyframeTransformConflictEntity(transformTrackPrograms, [entityId]) === null,
     ),
   );
-  const groupRotationEligibleIds = new Set(
-    selectedObjectIds.filter((entityId) => {
-      const authority = studioCreationAppearanceAuthorityFor(entityId);
-      return authority?.rotationAvailable === true && groupResizeEligibleIds.has(entityId);
+  const groupTransformOrigins = new Map(
+    [...groupResizeEligibleIds].flatMap((entityId) => {
+      const transform = currentCreationTransformForEntity(workspaceCreationProjection, entityId);
+      return transform ? [[entityId, transform.transformOrigin] as const] : [];
     }),
+  );
+  const groupRotationEligibleIds = new Set(
+    selectedObjectIds.filter((entityId) => groupResizeEligibleIds.has(entityId) && groupTransformOrigins.has(entityId)),
   );
   const selectedOpacityAuthority =
     selectedRuntimeTraceEditAuthority &&
@@ -6216,6 +6221,7 @@ export function App({
               gesturePreviewStore={gesturePreviewStore}
               groupRotationEligibleIds={groupRotationEligibleIds}
               groupResizeEligibleIds={groupResizeEligibleIds}
+              groupTransformOrigins={groupTransformOrigins}
               incomingSceneName={nextScene?.name ?? null}
               inlineTextEditor={inlineTextEditor}
               insertTool={insertTool}
