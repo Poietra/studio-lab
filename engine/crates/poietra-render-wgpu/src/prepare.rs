@@ -251,12 +251,13 @@ impl PreparedMaterialV1 {
 }
 
 /// Indexed triangle range for one paint phase, kept in packet paint order.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct PreparedDrawV1 {
     draw_id: String,
     entity_id: String,
     index_range: Range<u32>,
     material_index: u32,
+    object_uv_from_screen: Option<[f32; 8]>,
     vertex_range: Range<u32>,
 }
 
@@ -366,6 +367,10 @@ impl PreparedDrawV1 {
     #[must_use]
     pub const fn material_index(&self) -> u32 {
         self.material_index
+    }
+
+    pub(crate) const fn object_uv_from_screen(&self) -> Option<[f32; 8]> {
+        self.object_uv_from_screen
     }
 
     #[must_use]
@@ -691,6 +696,7 @@ impl PreparedFrameV1 {
                     entity_id: "entity:test".to_owned(),
                     index_range: 0..3,
                     material_index: 0,
+                    object_uv_from_screen: None,
                     vertex_range: 0..3,
                 }],
                 image_draws: Vec::new(),
@@ -822,6 +828,122 @@ fn world_to_clip(
     checked_f32(clip.x, Some(draw_id), "clip x")?;
     checked_f32(clip.y, Some(draw_id), "clip y")?;
     Ok(clip)
+}
+
+fn include_local_control_point(
+    bounds: &mut Option<[f64; 4]>,
+    point: &PointV1,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    if !point.x.is_finite() || !point.y.is_finite() {
+        return Err(numeric_error(Some(draw_id), "local UV control point"));
+    }
+    *bounds = Some(bounds.map_or(
+        [point.x, point.y, point.x, point.y],
+        |[left, bottom, right, top]| {
+            [
+                left.min(point.x),
+                bottom.min(point.y),
+                right.max(point.x),
+                top.max(point.y),
+            ]
+        },
+    ));
+    Ok(())
+}
+
+/// Returns the normalized-screen to normalized-local UV affine for one path.
+///
+/// The local bounds are the deterministic cubic control hull: every subpath
+/// start plus every control and end point. It contains the rendered curve and
+/// avoids introducing a second curve-extrema implementation solely for UVs.
+/// `u` runs left-to-right and `v` top-to-bottom before the existing material
+/// tiles and offsets it.
+fn object_uv_from_screen(
+    path: &poietra_scene_ir::CubicPathV1,
+    transform: &AffineTransformV1,
+    camera: &RenderCameraV1,
+    draw_id: &str,
+) -> Result<[f32; 8], PrepareFrameErrorV1> {
+    let mut bounds = None;
+    for subpath in &path.subpaths {
+        include_local_control_point(&mut bounds, &subpath.start, draw_id)?;
+        for segment in &subpath.segments {
+            include_local_control_point(&mut bounds, &segment.control1, draw_id)?;
+            include_local_control_point(&mut bounds, &segment.control2, draw_id)?;
+            include_local_control_point(&mut bounds, &segment.end, draw_id)?;
+        }
+    }
+    let Some([left, bottom, right, top]) = bounds else {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::DegenerateFill,
+        });
+    };
+    if right <= left || top <= bottom {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::DegenerateFill,
+        });
+    }
+    let transform_determinant = transform.m11 * transform.m22 - transform.m12 * transform.m21;
+    if !transform_determinant.is_finite() || transform_determinant == 0.0 {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::DegenerateFill,
+        });
+    }
+
+    let local_to_screen = |point: PointV1| -> Result<PointF64, PrepareFrameErrorV1> {
+        let clip = world_to_clip(
+            transform_to_world(&point, transform, draw_id)?,
+            camera,
+            draw_id,
+        )?;
+        // Build the inverse from the same f32 clip and f32 screen arithmetic
+        // used by the uploaded vertex and host vertex shader, not ideal f64
+        // coordinates that could drift for a tiny object in a large camera.
+        let clip_x = checked_f32(clip.x, Some(draw_id), "object UV clip x")?;
+        let clip_y = checked_f32(clip.y, Some(draw_id), "object UV clip y")?;
+        Ok(PointF64 {
+            x: f64::from(clip_x * 0.5 + 0.5),
+            y: f64::from(0.5 - clip_y * 0.5),
+        })
+    };
+    let origin = local_to_screen(PointV1 { x: left, y: top })?;
+    let u_corner = local_to_screen(PointV1 { x: right, y: top })?;
+    let v_corner = local_to_screen(PointV1 { x: left, y: bottom })?;
+    let u_axis = PointF64 {
+        x: u_corner.x - origin.x,
+        y: u_corner.y - origin.y,
+    };
+    let v_axis = PointF64 {
+        x: v_corner.x - origin.x,
+        y: v_corner.y - origin.y,
+    };
+    let determinant = u_axis.x * v_axis.y - u_axis.y * v_axis.x;
+    if !determinant.is_finite() || determinant == 0.0 {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::DegenerateFill,
+        });
+    }
+
+    let values = [
+        v_axis.y / determinant,
+        -v_axis.x / determinant,
+        (v_axis.x * origin.y - v_axis.y * origin.x) / determinant,
+        0.0,
+        -u_axis.y / determinant,
+        u_axis.x / determinant,
+        (u_axis.y * origin.x - u_axis.x * origin.y) / determinant,
+        0.0,
+    ];
+    let mut prepared = [0.0_f32; 8];
+    for (index, value) in values.into_iter().enumerate() {
+        prepared[index] = checked_f32(value, Some(draw_id), "object UV affine")?;
+    }
+    Ok(prepared)
 }
 
 fn point_key(point: PointF64) -> (u64, u64) {
@@ -2359,6 +2481,14 @@ struct PreparedFrameAccumulatorV1<'resources> {
     vertices: Vec<PreparedGeometryVertexV1>,
 }
 
+#[derive(Clone, Copy)]
+struct PreparedPaintPhaseInputV1<'a> {
+    color: &'a RgbaColorV1,
+    fragment_material: Option<&'a FragmentMaterialV1>,
+    object_uv_from_screen: Option<[f32; 8]>,
+    opacity: f64,
+}
+
 impl<'resources> PreparedFrameAccumulatorV1<'resources> {
     fn with_phase_capacity(
         phase_capacity: usize,
@@ -2382,18 +2512,16 @@ impl<'resources> PreparedFrameAccumulatorV1<'resources> {
         &mut self,
         draw_id: &str,
         entity_id: &str,
-        color: &RgbaColorV1,
-        fragment_material: Option<&FragmentMaterialV1>,
-        opacity: f64,
+        paint: PreparedPaintPhaseInputV1<'_>,
         prepare_geometry: impl FnOnce(
             &mut Vec<PreparedGeometryVertexV1>,
             &mut Vec<u32>,
         ) -> Result<(), PrepareFrameErrorV1>,
     ) -> Result<(usize, usize), PrepareFrameErrorV1> {
         let material = prepare_material(
-            color,
-            fragment_material,
-            opacity,
+            paint.color,
+            paint.fragment_material,
+            paint.opacity,
             draw_id,
             self.assets,
             self.fragment_materials,
@@ -2422,6 +2550,7 @@ impl<'resources> PreparedFrameAccumulatorV1<'resources> {
             entity_id: entity_id.to_owned(),
             index_range: index_start..index_end,
             material_index,
+            object_uv_from_screen: paint.object_uv_from_screen,
             vertex_range: vertex_start..vertex_end,
         });
         let draw_index =
@@ -2463,9 +2592,7 @@ impl<'resources> PreparedFrameAccumulatorV1<'resources> {
         &mut self,
         draw_id: &str,
         entity_id: &str,
-        color: &RgbaColorV1,
-        fragment_material: Option<&FragmentMaterialV1>,
-        opacity: f64,
+        paint: PreparedPaintPhaseInputV1<'_>,
         geometry: &CachedPhaseGeometryV1,
     ) -> Result<(), PrepareFrameErrorV1> {
         let vertex_start_len = self.vertices.len();
@@ -2479,9 +2606,9 @@ impl<'resources> PreparedFrameAccumulatorV1<'resources> {
             });
         }
         let material = prepare_material(
-            color,
-            fragment_material,
-            opacity,
+            paint.color,
+            paint.fragment_material,
+            paint.opacity,
             draw_id,
             self.assets,
             self.fragment_materials,
@@ -2513,6 +2640,7 @@ impl<'resources> PreparedFrameAccumulatorV1<'resources> {
             index_range: index_start
                 ..u32::try_from(self.indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
             material_index,
+            object_uv_from_screen: paint.object_uv_from_screen,
             vertex_range: vertex_start
                 ..u32::try_from(vertex_end_len).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
         });
@@ -2582,25 +2710,34 @@ fn append_fill_phase_v1(
     if fill.color.alpha == 0.0 || input.opacity == 0.0 {
         return Ok(());
     }
+    let object_uv_from_screen = fill
+        .fragment_material
+        .as_ref()
+        .map(|_| {
+            object_uv_from_screen(
+                input.cache.path,
+                input.cache.transform,
+                input.cache.camera,
+                input.cache.draw_id,
+            )
+        })
+        .transpose()?;
+    let paint = PreparedPaintPhaseInputV1 {
+        color: &fill.color,
+        fragment_material: fill.fragment_material.as_ref(),
+        object_uv_from_screen,
+        opacity: input.opacity,
+    };
     if let Some(cached) = cache
         .as_deref_mut()
         .and_then(|cache| cache.lookup_fill(input.cache, fill.rule))
     {
-        return prepared.append_cached_phase(
-            input.cache.draw_id,
-            input.entity_id,
-            &fill.color,
-            fill.fragment_material.as_ref(),
-            input.opacity,
-            cached,
-        );
+        return prepared.append_cached_phase(input.cache.draw_id, input.entity_id, paint, cached);
     }
     let (index_start, vertex_start) = prepared.append_phase(
         input.cache.draw_id,
         input.entity_id,
-        &fill.color,
-        fill.fragment_material.as_ref(),
-        input.opacity,
+        paint,
         |vertices, indices| {
             prepare_fill_geometry(
                 vertices,
@@ -2645,25 +2782,22 @@ fn append_stroke_phase_v1(
     {
         return Ok(());
     }
+    let paint = PreparedPaintPhaseInputV1 {
+        color: &stroke.color,
+        fragment_material: None,
+        object_uv_from_screen: None,
+        opacity: input.opacity,
+    };
     if let Some(cached) = cache
         .as_deref_mut()
         .and_then(|cache| cache.lookup_stroke(input.cache, stroke))
     {
-        return prepared.append_cached_phase(
-            input.cache.draw_id,
-            input.entity_id,
-            &stroke.color,
-            None,
-            input.opacity,
-            cached,
-        );
+        return prepared.append_cached_phase(input.cache.draw_id, input.entity_id, paint, cached);
     }
     let (index_start, vertex_start) = prepared.append_phase(
         input.cache.draw_id,
         input.entity_id,
-        &stroke.color,
-        None,
-        input.opacity,
+        paint,
         |vertices, indices| {
             prepare_stroke_geometry(
                 vertices,
@@ -3304,14 +3438,17 @@ mod tests {
         let error = prepared.append_phase(
             "draw:rollback",
             "entity:rollback",
-            &RgbaColorV1 {
-                alpha: 1.0,
-                blue: 0.0,
-                green: 0.0,
-                red: 1.0,
+            PreparedPaintPhaseInputV1 {
+                color: &RgbaColorV1 {
+                    alpha: 1.0,
+                    blue: 0.0,
+                    green: 0.0,
+                    red: 1.0,
+                },
+                fragment_material: None,
+                object_uv_from_screen: None,
+                opacity: 1.0,
             },
-            None,
-            1.0,
             |vertices, indices| {
                 vertices.push(PreparedGeometryVertexV1 {
                     position: [0.0, 0.0],
@@ -3367,6 +3504,157 @@ mod tests {
                 })
             ));
         }
+    }
+
+    #[test]
+    fn object_uv_stays_local_through_transform_and_camera_changes() {
+        let path = poietra_scene_ir::CubicPathV1 {
+            subpaths: vec![CubicSubpathV1 {
+                closed: true,
+                segments: vec![
+                    CubicSegmentV1 {
+                        control1: PointV1 { x: 4.0, y: -1.0 },
+                        control2: PointV1 { x: 4.0, y: -1.0 },
+                        end: PointV1 { x: 4.0, y: -1.0 },
+                    },
+                    CubicSegmentV1 {
+                        control1: PointV1 { x: 4.0, y: 3.0 },
+                        control2: PointV1 { x: 4.0, y: 3.0 },
+                        end: PointV1 { x: 4.0, y: 3.0 },
+                    },
+                    CubicSegmentV1 {
+                        control1: PointV1 { x: -2.0, y: 3.0 },
+                        control2: PointV1 { x: -2.0, y: 3.0 },
+                        end: PointV1 { x: -2.0, y: 3.0 },
+                    },
+                    CubicSegmentV1 {
+                        control1: PointV1 { x: -2.0, y: -1.0 },
+                        control2: PointV1 { x: -2.0, y: -1.0 },
+                        end: PointV1 { x: -2.0, y: -1.0 },
+                    },
+                ],
+                start: PointV1 { x: -2.0, y: -1.0 },
+            }],
+        };
+        let camera = RenderCameraV1 {
+            bottom: -7.0,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            kind: poietra_scene_ir::RenderCameraKindV1::Orthographic2d,
+            left: -11.0,
+            right: 13.0,
+            top: 9.0,
+        };
+        let transforms = [
+            AffineTransformV1::identity(),
+            AffineTransformV1 {
+                m11: 0.4,
+                m12: -1.5,
+                m21: 2.0,
+                m22: 0.25,
+                tx: 3.5,
+                ty: -2.25,
+            },
+        ];
+        let samples = [
+            (PointV1 { x: -2.0, y: 3.0 }, [0.0_f32, 0.0]),
+            (PointV1 { x: 4.0, y: 3.0 }, [1.0_f32, 0.0]),
+            (PointV1 { x: -2.0, y: -1.0 }, [0.0_f32, 1.0]),
+            (PointV1 { x: 1.0, y: 1.0 }, [0.5_f32, 0.5]),
+        ];
+
+        for transform in transforms {
+            let affine = object_uv_from_screen(&path, &transform, &camera, "draw:uv")
+                .expect("non-degenerate path and transform must produce local UVs");
+            for (local, expected) in &samples {
+                let world_x = transform.m11 * local.x + transform.m12 * local.y + transform.tx;
+                let world_y = transform.m21 * local.x + transform.m22 * local.y + transform.ty;
+                let screen = [
+                    checked_f32(
+                        (world_x - camera.left) / (camera.right - camera.left),
+                        None,
+                        "test screen x",
+                    )
+                    .unwrap(),
+                    checked_f32(
+                        (camera.top - world_y) / (camera.top - camera.bottom),
+                        None,
+                        "test screen y",
+                    )
+                    .unwrap(),
+                ];
+                let actual = [
+                    affine[0] * screen[0] + affine[1] * screen[1] + affine[2],
+                    affine[4] * screen[0] + affine[5] * screen[1] + affine[6],
+                ];
+                for (actual, expected) in actual.into_iter().zip(*expected) {
+                    assert!(
+                        (actual - expected).abs() <= 2.0e-6,
+                        "{actual} != {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn object_uv_rejects_degenerate_local_bounds_and_transform() {
+        let path = poietra_scene_ir::CubicPathV1 {
+            subpaths: vec![CubicSubpathV1 {
+                closed: true,
+                segments: vec![CubicSegmentV1 {
+                    control1: PointV1 { x: 1.0, y: 2.0 },
+                    control2: PointV1 { x: 1.0, y: 3.0 },
+                    end: PointV1 { x: 1.0, y: 4.0 },
+                }],
+                start: PointV1 { x: 1.0, y: 1.0 },
+            }],
+        };
+        let camera = RenderCameraV1 {
+            bottom: -5.0,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            kind: poietra_scene_ir::RenderCameraKindV1::Orthographic2d,
+            left: -8.0,
+            right: 8.0,
+            top: 5.0,
+        };
+        assert!(matches!(
+            object_uv_from_screen(&path, &AffineTransformV1::identity(), &camera, "draw:uv"),
+            Err(PrepareFrameErrorV1::Unsupported {
+                reason: UnsupportedDrawReasonV1::DegenerateFill,
+                ..
+            })
+        ));
+        let mut nondegenerate = path;
+        nondegenerate.subpaths[0].start.x = 0.0;
+        assert!(matches!(
+            object_uv_from_screen(
+                &nondegenerate,
+                &AffineTransformV1 {
+                    m11: 1.0,
+                    m12: 2.0,
+                    m21: 0.5,
+                    m22: 1.0,
+                    tx: 0.0,
+                    ty: 0.0,
+                },
+                &camera,
+                "draw:uv",
+            ),
+            Err(PrepareFrameErrorV1::Unsupported {
+                reason: UnsupportedDrawReasonV1::DegenerateFill,
+                ..
+            })
+        ));
     }
 
     #[test]

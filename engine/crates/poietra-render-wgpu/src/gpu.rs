@@ -24,8 +24,8 @@ use wasm_bindgen_futures::JsFuture;
 const VERTEX_STRIDE: wgpu::BufferAddress = VERTEX_ENCODED_SIZE_V1 as wgpu::BufferAddress;
 const RGBA8_BYTES_PER_SAMPLE_V1: u64 = 4;
 const PORTABLE_AA_SCALE_V1: u32 = 2;
-const FRAGMENT_MATERIAL_UNIFORM_FLOATS_V1: usize = 12;
-const FRAGMENT_MATERIAL_UNIFORM_BYTES_V1: u64 = 48;
+const FRAGMENT_MATERIAL_UNIFORM_FLOATS_V1: usize = 20;
+const FRAGMENT_MATERIAL_UNIFORM_BYTES_V1: u64 = 80;
 pub const MAX_PROJECT_FRAGMENT_MATERIALS_V1: usize = 8;
 pub const MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1: usize = 16 * 1024;
 
@@ -294,7 +294,7 @@ fn create_fragment_material_pipeline_v1(
         entries: &[
             wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -746,7 +746,13 @@ impl FragmentMaterialFrameGpuV1 {
             values[0] = width_px as f32;
             values[1] = height_px as f32;
             values[2] = frame.sample_time();
-            values[4..].copy_from_slice(material.parameters());
+            values[4..12].copy_from_slice(material.parameters());
+            let object_uv_from_screen =
+                draw.object_uv_from_screen()
+                    .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                        "fragment material draw has no object-local UV affine",
+                    ))?;
+            values[12..].copy_from_slice(&object_uv_from_screen);
             let mut bytes = Vec::with_capacity(FRAGMENT_MATERIAL_UNIFORM_FLOATS_V1 * 4);
             for value in values {
                 bytes.extend_from_slice(&value.to_le_bytes());

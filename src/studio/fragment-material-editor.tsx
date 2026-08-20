@@ -374,9 +374,9 @@ export function FragmentMaterialEditor({
       <div className="mt-2 border border-sky-950 bg-sky-950/20 p-2">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-[10px] font-medium text-sky-200">Screen texture preset</p>
+            <p className="text-[10px] font-medium text-sky-200">Texture preset</p>
             <p className="mt-0.5 text-pretty text-[10px] leading-4 text-zinc-500">
-              Samples one verified project PNG in top-left screen UV space through the fixed WGSL texture slot.
+              Samples one verified project PNG in top-left object-local UV space through the fixed WGSL texture slot.
             </p>
           </div>
           <button
