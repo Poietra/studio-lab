@@ -882,11 +882,11 @@ export function StudioTimeline({
             const materialOptions = materialParameterOptions.filter(
               (candidate) => candidate.entityId === track.entityId,
             );
+            const requestedMaterialName = selectedMaterialParameterByEntity[track.entityId];
             const selectedMaterialName =
-              selectedMaterialParameterByEntity[track.entityId] ??
-              materialTracks[0]?.parameterName ??
-              materialOptions[0]?.name ??
-              "";
+              requestedMaterialName !== undefined && materialOptions.some(({ name }) => name === requestedMaterialName)
+                ? requestedMaterialName
+                : (materialTracks[0]?.parameterName ?? materialOptions[0]?.name ?? "");
             const opacityTrack = opacityTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackMotionOperationIds = new Set(trackMotionClips.map((clip) => clip.operationId));
