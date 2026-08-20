@@ -254,7 +254,7 @@ describe("project-local fragment material authoring", () => {
     expect(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1.registry.materials).toEqual([]);
   });
 
-  it("authors scalar slots for custom WGSL and applies their defaults without changing the render ABI", () => {
+  it("authors scalar and RGB slots for custom WGSL and applies their defaults without changing the render ABI", () => {
     const created = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Custom" });
     const custom = updateStudioFragmentMaterialSourceV1(created.state, {
       shaderId: created.shaderId,
@@ -263,6 +263,7 @@ describe("project-local fragment material authoring", () => {
     const parameterSchema = [
       { default: 0.4, name: "Amplitude", range: { max: 1, min: 0, step: 0.05 }, type: "f32" as const },
       { default: 3, name: "Frequency", range: { max: 12, min: 1, step: 0.5 }, type: "f32" as const },
+      { default: [0.2, 0.4, 0.8] as const, name: "Tint", type: "rgb" as const },
     ];
     const authored = updateStudioFragmentMaterialParameterSchemaV1(custom, {
       parameterSchema,
@@ -277,7 +278,9 @@ describe("project-local fragment material authoring", () => {
       sceneId: "scene-a",
       shaderId: created.shaderId,
     });
-    expect(projectFragmentMaterialsForSceneV1(assigned, "scene-a").assignments.circle?.parameters).toEqual([0.4, 3]);
+    expect(projectFragmentMaterialsForSceneV1(assigned, "scene-a").assignments.circle?.parameters).toEqual([
+      0.4, 3, 0.2, 0.4, 0.8,
+    ]);
     expect(() =>
       updateStudioFragmentMaterialParameterSchemaV1(assigned, {
         parameterSchema: parameterSchema.slice(0, 1),
@@ -300,7 +303,7 @@ describe("project-local fragment material authoring", () => {
     ).toThrow("Parameter names must be unique");
     expect(() =>
       updateStudioFragmentMaterialParameterSchemaV1(custom, {
-        parameterSchema: [{ ...parameterSchema[0]!, range: { max: 0, min: 1, step: 0.05 } }],
+        parameterSchema: [{ default: 0.4, name: "Amplitude", range: { max: 0, min: 1, step: 0.05 }, type: "f32" }],
         shaderId: created.shaderId,
       }),
     ).toThrow("Parameter range max must be greater than min");

@@ -603,6 +603,7 @@ function fragmentMaterialHostSlots(offset: number, width: number) {
 }
 
 type ScalarParameter = Extract<StudioFragmentMaterialParameterSchemaV1[number], Readonly<{ type: "f32" }>>;
+type RgbParameter = Extract<StudioFragmentMaterialParameterSchemaV1[number], Readonly<{ type: "rgb" }>>;
 
 function scalarParameterFromForm(form: HTMLFormElement): ScalarParameter {
   const data = new FormData(form);
@@ -615,6 +616,17 @@ function scalarParameterFromForm(form: HTMLFormElement): ScalarParameter {
       step: Number(data.get("step")),
     },
     type: "f32",
+  };
+}
+
+function rgbParameterFromForm(form: HTMLFormElement): RgbParameter {
+  const data = new FormData(form);
+  const defaultColor = hexColorToRgb(String(data.get("defaultColor") ?? ""));
+  if (!defaultColor) throw new Error("Choose a valid default color.");
+  return {
+    default: defaultColor,
+    name: String(data.get("name") ?? ""),
+    type: "rgb",
   };
 }
 
@@ -658,6 +670,36 @@ function ScalarParameterFields({ disabled, parameter }: Readonly<{ disabled: boo
   );
 }
 
+function RgbParameterFields({ disabled, parameter }: Readonly<{ disabled: boolean; parameter: RgbParameter }>) {
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-2">
+      <label className="text-[10px] text-zinc-500">
+        Name
+        <input
+          className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+          defaultValue={parameter.name}
+          disabled={disabled}
+          maxLength={40}
+          name="name"
+          placeholder="Tint"
+          required
+        />
+      </label>
+      <label className="text-[10px] text-zinc-500">
+        Default
+        <input
+          aria-label="Default RGB parameter color"
+          className="mt-1 h-8 w-full cursor-pointer border border-zinc-700 bg-zinc-950 p-1 disabled:cursor-not-allowed"
+          defaultValue={rgbToHexColor(parameter.default)}
+          disabled={disabled}
+          name="defaultColor"
+          type="color"
+        />
+      </label>
+    </div>
+  );
+}
+
 function FragmentMaterialParameterSchemaEditor({
   material,
   onUpdate,
@@ -669,6 +711,7 @@ function FragmentMaterialParameterSchemaEditor({
   const layout = studioFragmentMaterialParameterLayoutV1(material.parameterSchema);
   const inUse = material.assignmentCount > 0;
   const full = layout.defaults.length >= MAX_FRAGMENT_MATERIAL_PARAMETERS_V1;
+  const rgbFull = layout.defaults.length > MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 - 3;
   const errorId = "fragment-material-parameter-schema-error";
 
   function update(parameterSchema: StudioFragmentMaterialParameterSchemaV1) {
@@ -683,7 +726,7 @@ function FragmentMaterialParameterSchemaEditor({
     <fieldset className="mt-3 border border-zinc-800 p-2" aria-describedby={schemaError ? errorId : undefined}>
       <legend className="px-1 text-[10px] font-medium text-zinc-400">Shader parameter schema</legend>
       <p className="text-pretty text-[10px] leading-4 text-zinc-600">
-        Map up to eight scalar values to the existing WGSL host uniform. Schema changes do not rewrite shader code.
+        Map scalar and RGB controls to the eight existing WGSL host slots. Schema changes do not rewrite shader code.
       </p>
       {inUse ? (
         <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-500" role="status">
@@ -694,21 +737,50 @@ function FragmentMaterialParameterSchemaEditor({
       {layout.entries.length === 0 ? (
         <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
           No object parameters are declared. Add one scalar parameter to expose its default when the material is
-          assigned.
+          assigned, or one RGB parameter for a native color control.
         </p>
       ) : (
         <div className="mt-2 space-y-2">
           {layout.entries.map(({ offset, parameter }, index) =>
             parameter.type === "rgb" ? (
-              <div className="border border-zinc-800 p-2" key={`${parameter.name}/${offset}`}>
-                <div className="flex items-start justify-between gap-2 text-[10px]">
-                  <span className="font-medium text-zinc-400">{parameter.name}</span>
-                  <code className="text-right text-zinc-600">{fragmentMaterialHostSlots(offset, 3)}</code>
+              <form
+                className="border border-zinc-800 p-2"
+                key={`${parameter.name}/${parameter.default.join("/")}`}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const replacement = rgbParameterFromForm(event.currentTarget);
+                  update(
+                    material.parameterSchema.map((candidate, candidateIndex) =>
+                      candidateIndex === index ? replacement : candidate,
+                    ),
+                  );
+                }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-medium text-zinc-400">RGB parameter</span>
+                  <code className="text-right text-[10px] text-zinc-600">{fragmentMaterialHostSlots(offset, 3)}</code>
                 </div>
-                <p className="mt-1 text-pretty text-[10px] leading-4 text-zinc-600">
-                  RGB preset metadata is fixed here; this editor only changes scalar f32 parameters.
-                </p>
-              </div>
+                <RgbParameterFields disabled={inUse} parameter={parameter} />
+                <div className="mt-2 flex gap-2">
+                  <button
+                    className="h-8 flex-1 border border-sky-800 bg-sky-950/50 px-2 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+                    disabled={inUse}
+                    type="submit"
+                  >
+                    Save parameter
+                  </button>
+                  <button
+                    className="h-8 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
+                    disabled={inUse}
+                    onClick={() =>
+                      update(material.parameterSchema.filter((_, candidateIndex) => candidateIndex !== index))
+                    }
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </form>
             ) : (
               <form
                 className="border border-zinc-800 p-2"
@@ -776,6 +848,32 @@ function FragmentMaterialParameterSchemaEditor({
           type="submit"
         >
           Add parameter
+        </button>
+      </form>
+
+      <form
+        className="mt-2 border border-zinc-800 p-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          update([...material.parameterSchema, rgbParameterFromForm(event.currentTarget)]);
+        }}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-medium text-zinc-400">Add RGB parameter</span>
+          <code className="text-right text-[10px] text-zinc-600">
+            {rgbFull ? "3 contiguous slots required" : fragmentMaterialHostSlots(layout.defaults.length, 3)}
+          </code>
+        </div>
+        <RgbParameterFields
+          disabled={inUse || rgbFull}
+          parameter={{ default: [0.25, 0.65, 1], name: "", type: "rgb" }}
+        />
+        <button
+          className="mt-2 h-8 w-full border border-sky-800 bg-sky-950/50 text-xs text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+          disabled={inUse || rgbFull}
+          type="submit"
+        >
+          Add color parameter
         </button>
       </form>
 
