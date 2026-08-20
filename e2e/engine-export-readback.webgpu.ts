@@ -132,7 +132,12 @@ function screenTextureExportFixture(fixture: SceneIrBundleV1, assets: SceneIrBun
   if (fixture.scene.source.kind !== "studio-edit-program") {
     throw new Error("The Screen texture fixture lost its authored revision source.");
   }
-  const entity = (id: string, centerY: number, sampler: "linear" | "nearest", sceneOrder: number) => ({
+  const entity = (
+    id: string,
+    center: Readonly<{ x: number; y: number }>,
+    sampler: "linear" | "nearest",
+    sceneOrder: number,
+  ) => ({
     ...base,
     appearance: {
       ...base.appearance,
@@ -150,7 +155,7 @@ function screenTextureExportFixture(fixture: SceneIrBundleV1, assets: SceneIrBun
         },
       },
     },
-    geometry: { ...base.geometry, center: { x: -0.8, y: centerY }, radius: 1 },
+    geometry: { ...base.geometry, center, radius: 1 },
     id,
     lifetimes: [{ end: FRAGMENT_EXPORT_DURATION, start: 0 }],
     sceneOrder,
@@ -163,7 +168,12 @@ function screenTextureExportFixture(fixture: SceneIrBundleV1, assets: SceneIrBun
       animationChannels: [],
       assetManifest: { manifestDigest: assets.manifestDigest, manifestId: assets.manifestId },
       duration: FRAGMENT_EXPORT_DURATION,
-      entities: [entity("nearest-texture", 1.35, "nearest", 0), entity("linear-texture", -1.35, "linear", 1)],
+      entities: [
+        entity("nearest-texture", { x: -0.8, y: 1.35 }, "nearest", 0),
+        entity("linear-texture", { x: -0.8, y: -1.35 }, "linear", 1),
+        entity("local-left", { x: -4, y: 0 }, "nearest", 2),
+        entity("local-right", { x: 4, y: 0 }, "nearest", 3),
+      ],
       requiredCapabilities: ["fragment-material", "png-image", "shape-primitives"],
       sceneId: "fixture:screen-texture-export",
       source: { ...fixture.scene.source, revisionHash: "e".repeat(64) },
@@ -578,8 +588,16 @@ test("a project PNG material stays pixel-equivalent between Preview and decoded 
     fps: FRAGMENT_EXPORT_FPS,
     fragmentMaterialRegistry,
     sampleFractions: [
-      { fractionX: 0.45, fractionY: 0.35 },
-      { fractionX: 0.45, fractionY: 0.65 },
+      // Both samples address the same inner-left object-local UV after the two
+      // circles move to different y positions. Nearest stays on the opaque
+      // texel while linear filtering crosses the PNG's alpha edge.
+      { fractionX: 0.44375, fractionY: 0.35 },
+      { fractionX: 0.44375, fractionY: 0.65 },
+      // These circles occupy different screen X ranges but address the same
+      // inner-left local UV. A screen-space regression makes the right sample
+      // hit the PNG's transparent texel instead.
+      { fractionX: 0.225, fractionY: 0.5 },
+      { fractionX: 0.725, fractionY: 0.5 },
     ],
     snapshot,
     viewport: FRAGMENT_READBACK_VIEWPORT,
@@ -592,12 +610,16 @@ test("a project PNG material stays pixel-equivalent between Preview and decoded 
   if (proof.kind === "refused") {
     throw new Error(`Browser MP4 export refused with ${proof.reason}: ${proof.message}`);
   }
-  expect(proof.previewPixels).toHaveLength(2);
-  expect(proof.decodedPixels).toHaveLength(2);
+  expect(proof.previewPixels).toHaveLength(4);
+  expect(proof.decodedPixels).toHaveLength(4);
   expect(proof.previewPixels[0]?.[0]).toBeGreaterThan(245);
   expect(proof.previewPixels[1]?.[0]).toBeLessThan(230);
   expect((proof.previewPixels[0]?.[0] ?? 0) - (proof.previewPixels[1]?.[0] ?? 0)).toBeGreaterThan(20);
+  expectPixelClose(proof.previewPixels[2] ?? [], [255, 0, 0, 255], 0);
+  expectPixelClose(proof.previewPixels[3] ?? [], proof.previewPixels[2] ?? [], 0);
   for (const [index, previewPixel] of proof.previewPixels.entries()) {
-    expectPixelClose(proof.decodedPixels[index] ?? [], previewPixel, 4);
+    // H.264 may shift a channel by up to 6/255 at this deliberate one-pixel
+    // alpha edge; the nearest/linear semantic assertions above stay strict.
+    expectPixelClose(proof.decodedPixels[index] ?? [], previewPixel, 6);
   }
 });

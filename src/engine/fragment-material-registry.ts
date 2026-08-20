@@ -151,7 +151,7 @@ fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
 }
 `;
 
-/** One fixed-slot material that samples a verified project PNG in screen UV space. */
+/** One fixed-slot material that samples a verified project PNG in normalized object-local UV space. */
 export const STUDIO_TEXTURE_FRAGMENT_SOURCE_V1 = `struct FragmentHostUniform {
     // xy = logical viewport pixels, z = Scene time, w = reserved.
     viewport_and_time: vec4<f32>,
@@ -173,13 +173,15 @@ struct FragmentInput {
     @location(0) base_color: vec4<f32>,
     // Normalized screen coordinates, top-left origin.
     @location(1) screen_position: vec2<f32>,
+    // Normalized local control-hull coordinates, top-left origin.
+    @location(2) object_uv: vec2<f32>,
 };
 
 @fragment
 fn fs_main(input: FragmentInput) -> @location(0) vec4<f32> {
     let tiles = max(host.parameters_0.xy, vec2<f32>(0.001, 0.001));
     let offset = host.parameters_0.zw;
-    let uv = fract(input.screen_position * tiles + offset);
+    let uv = fract(input.object_uv * tiles + offset);
     let sampled = textureSample(material_texture, material_sampler, uv);
     let textured = sampled * input.base_color;
     return mix(input.base_color, textured, clamp(host.parameters_1.x, 0.0, 1.0));

@@ -265,6 +265,7 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain('aria-label="Mix material parameter"');
     expect(markup).toContain("0.7");
     expect(markup).toContain("Diagram (640×360)");
+    expect(markup).toContain("object-local UV space");
     expect(markup).toContain('<option value="nearest" selected="">Nearest</option>');
     expect(markup).toContain("Texture materials use canonical WGSL");
   });

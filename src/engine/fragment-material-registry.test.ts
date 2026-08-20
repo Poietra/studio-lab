@@ -41,7 +41,8 @@ describe("fragmentMaterialRegistryV1Schema", () => {
         ],
       }),
     ).toMatchObject({ materials: [{ textureSlot: "texture2d" }] });
-    expect(STUDIO_TEXTURE_FRAGMENT_SOURCE_V1).toContain("fract(input.screen_position * tiles + offset)");
+    expect(STUDIO_TEXTURE_FRAGMENT_SOURCE_V1).toContain("@location(2) object_uv: vec2<f32>");
+    expect(STUDIO_TEXTURE_FRAGMENT_SOURCE_V1).toContain("fract(input.object_uv * tiles + offset)");
     expect(STUDIO_TEXTURE_FRAGMENT_SOURCE_V1).toContain(
       "mix(input.base_color, textured, clamp(host.parameters_1.x, 0.0, 1.0))",
     );
