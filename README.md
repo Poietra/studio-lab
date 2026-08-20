@@ -62,6 +62,17 @@ reason.
 Poietra is not a port of Python or Manim into WebAssembly. It separates authoring,
 animation semantics, frame evaluation, and drawing behind strict contracts:
 
+<p align="center">
+  <img
+    src="./docs/assets/poietra-architecture.png"
+    width="100%"
+    alt="Poietra architecture: authoring flows into Scene IR, deterministic evaluation, WebGPU, and canvas plus MP4 output"
+  />
+</p>
+
+<details>
+<summary>Text representation</summary>
+
 ```text
 direct manipulation / structured edits / imported Manim
                          │
@@ -79,6 +90,8 @@ direct manipulation / structured edits / imported Manim
                    ▼
         interactive canvas / local MP4
 ```
+
+</details>
 
 The core boundaries are intentionally narrow:
 
