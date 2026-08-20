@@ -17,6 +17,7 @@ export type SelectionRotationGesture = Readonly<{
 }>;
 
 type CreationPositionAuthority = Readonly<{
+  entities?: readonly Readonly<{ entityId: string }>[];
   mutations: readonly Readonly<{
     entityId: string;
     kind: string;
@@ -45,6 +46,25 @@ export function latestCreationPositionForEntity(
     }
   }
   return null;
+}
+
+/** Selects the final transform facts already resolved by the Rust creation
+ * planner. This is correlation only; gesture code does not reconstruct Scene
+ * geometry or replay authoring operations. */
+export function currentCreationTransformForEntity(
+  projection: CreationPositionAuthority | null | undefined,
+  entityId: string,
+): Readonly<{ rotation: number; transformOrigin: Point }> | null {
+  if (!projection?.entities?.some((entity) => entity.entityId === entityId)) return null;
+  const transformOrigin = latestCreationPositionForEntity(projection, entityId);
+  if (!transformOrigin) return null;
+  let rotation = 0;
+  for (const mutation of projection.mutations) {
+    if (mutation.entityId !== entityId || mutation.kind !== "rotation" || !("to" in mutation)) continue;
+    if (typeof mutation.to !== "number" || !Number.isFinite(mutation.to)) return null;
+    rotation = mutation.to;
+  }
+  return { rotation, transformOrigin };
 }
 
 export function createSelectionRotationGesture(

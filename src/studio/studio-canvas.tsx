@@ -60,6 +60,7 @@ export type StudioCanvasProps = Readonly<{
   groupRotationPreview: EntityGroupRotationPreview | null;
   groupResizeEligibleIds: ReadonlySet<string>;
   groupResizePreview: EntityGroupResizePreview | null;
+  groupTransformOrigins: ReadonlyMap<string, Point>;
   incomingSceneName: string | null;
   inlineTextEditor: StudioInlineTextEditorSession | null;
   insertTool: StudioTool;
@@ -560,6 +561,7 @@ export function StudioCanvas({
   groupRotationPreview,
   groupResizeEligibleIds,
   groupResizePreview,
+  groupTransformOrigins,
   incomingSceneName,
   inlineTextEditor,
   insertTool,
@@ -724,7 +726,10 @@ export function StudioCanvas({
             compositeSelectionBounds.position.y -
             (compositeSelectionBounds.dimensions.height / frame.height) * (STUDIO_VIEWPORT.height / 2),
         },
-        entities: preparedSelectedGeometries.map(({ entityId, position }) => ({ center: position, entityId })),
+        entities: preparedSelectedGeometries.map(({ entityId, position }) => ({
+          center: groupTransformOrigins.get(entityId) ?? position,
+          entityId,
+        })),
         frame: { bottom: STUDIO_VIEWPORT.height, left: 0, right: STUDIO_VIEWPORT.width, top: 0 },
         objects: preparedObjectSnapTargets?.filter(({ entityId }) => !selectedIds.has(entityId)),
       }
@@ -752,6 +757,7 @@ export function StudioCanvas({
         (entity) =>
           entity.present &&
           groupResizeEligibleIds.has(entity.id) &&
+          groupTransformOrigins.has(entity.id) &&
           entity.geometry.position.kind === "known" &&
           entity.geometry.scale.kind === "known" &&
           (!entity.provisional || Boolean(entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
@@ -770,6 +776,7 @@ export function StudioCanvas({
         (entity) =>
           entity.present &&
           groupRotationEligibleIds.has(entity.id) &&
+          groupTransformOrigins.has(entity.id) &&
           entity.geometry.position.kind === "known" &&
           (!entity.provisional || Boolean(entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
       );

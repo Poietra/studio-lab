@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createSelectionRotationGesture,
+  currentCreationTransformForEntity,
   latestCreationPositionForEntity,
   selectionRotationCommandTargets,
   selectionRotationPreviewAtAngle,
@@ -28,6 +29,24 @@ describe("selection rotation gesture", () => {
     expect(latestCreationPositionForEntity(projection, "left")).toEqual({ x: 120, y: 220 });
     expect(latestCreationPositionForEntity(projection, "right")).toEqual({ x: 300, y: 200 });
     expect(latestCreationPositionForEntity(projection, "missing")).toBeNull();
+  });
+
+  it("selects the final Rust-projected transform without replaying geometry", () => {
+    const projection = {
+      entities: [{ entityId: "left" }],
+      mutations: [
+        { entityId: "left", kind: "position", value: { x: 100, y: 200 } },
+        { entityId: "left", kind: "rotation", to: Math.PI / 2 },
+        { entityId: "left", kind: "position", value: { x: 120, y: 220 } },
+        { entityId: "left", kind: "rotation", to: Math.PI },
+      ],
+    };
+
+    expect(currentCreationTransformForEntity(projection, "left")).toEqual({
+      rotation: Math.PI,
+      transformOrigin: { x: 120, y: 220 },
+    });
+    expect(currentCreationTransformForEntity(projection, "missing")).toBeNull();
   });
 
   it("rotates prepared centers around their aggregate pivot but commits from Rust-projected positions", () => {

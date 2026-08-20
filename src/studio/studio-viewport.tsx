@@ -83,6 +83,7 @@ export function StudioViewport({
   gesturePreviewStore,
   groupRotationEligibleIds,
   groupResizeEligibleIds,
+  groupTransformOrigins,
   incomingSceneName,
   inlineTextEditor,
   insertTool,
@@ -192,6 +193,7 @@ export function StudioViewport({
         gesturePreviewStore={gesturePreviewStore}
         groupRotationEligibleIds={groupRotationEligibleIds}
         groupResizeEligibleIds={groupResizeEligibleIds}
+        groupTransformOrigins={groupTransformOrigins}
         incomingSceneName={incomingSceneName}
         inlineTextEditor={inlineTextEditor}
         insertTool={insertTool}

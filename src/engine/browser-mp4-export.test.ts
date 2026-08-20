@@ -148,7 +148,10 @@ describe("runBrowserMp4ExportV1", () => {
     await expect(outcomePromise).resolves.toMatchObject({ kind: "exported" });
   });
 
-  it("forwards the canonical Text cubic outline to the WebCodecs worker unchanged", async () => {
+  it.each([
+    ["Text", "studio:text:japanese-multiline"],
+    ["MathTex", "studio:mathtex:equation"],
+  ] as const)("forwards canonical rotated %s geometry to the WebCodecs worker unchanged", async (_type, entityId) => {
     const base = await fixtureBundle();
     const source = base.scene.entities[0];
     if (!source) throw new Error("missing export fixture entity");
@@ -181,11 +184,34 @@ describe("runBrowserMp4ExportV1", () => {
           {
             ...source,
             geometry: { kind: "cubic-path", path: outline },
-            id: "studio:text:japanese-multiline",
+            id: entityId,
             sceneOrder: base.scene.entities.length,
           },
         ],
-        requiredCapabilities: [...new Set([...base.scene.requiredCapabilities, "cubic-path-geometry"])],
+        animationChannels: [
+          ...base.scene.animationChannels,
+          {
+            entityId,
+            id: `studio-transform:${entityId}`,
+            keyframes: [
+              {
+                at: 0,
+                easingToNext: { kind: "linear" },
+                value: { m11: 0, m12: -1.5, m21: 1.5, m22: 0, tx: 1, ty: 2 },
+              },
+              {
+                at: base.scene.duration,
+                easingToNext: null,
+                value: { m11: 0, m12: -1.5, m21: 1.5, m22: 0, tx: 1, ty: 2 },
+              },
+            ],
+            kind: "affine-transform",
+            provenanceId: "studio-group-transform",
+          },
+        ],
+        requiredCapabilities: [
+          ...new Set([...base.scene.requiredCapabilities, "affine-transform-animation", "cubic-path-geometry"]),
+        ],
       },
     });
     const worker = new FakeWorker();
@@ -200,10 +226,15 @@ describe("runBrowserMp4ExportV1", () => {
     const forwarded = sceneIrBundleV1Schema.parse(
       JSON.parse(new TextDecoder().decode(new Uint8Array(request.snapshotJson))),
     );
-    expect(forwarded.scene.entities.find(({ id }) => id === "studio:text:japanese-multiline")?.geometry).toEqual({
+    expect(forwarded.scene.entities.find(({ id }) => id === entityId)?.geometry).toEqual({
       kind: "cubic-path",
       path: outline,
     });
+    expect(
+      forwarded.scene.animationChannels.find((channel) => "entityId" in channel && channel.entityId === entityId),
+    ).toEqual(
+      snapshot.scene.animationChannels.find((channel) => "entityId" in channel && channel.entityId === entityId),
+    );
     worker.emitMessage({
       bytes: new Uint8Array([0, 0, 0, 8]).buffer,
       kind: "export-finished",
