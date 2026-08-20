@@ -1267,7 +1267,14 @@ export function App({
     const track = materialParameterKeyframeTrackFromProgram(record.program, programIndex);
     if (!track) return [];
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
-    return !assignment || JSON.stringify(assignment) !== JSON.stringify(track.material) ? [track] : [];
+    const parameter =
+      activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId]?.[track.parameterIndex];
+    const materialOrSchemaChanged =
+      !assignment ||
+      JSON.stringify(assignment) !== JSON.stringify(track.material) ||
+      !parameter ||
+      parameter.name !== track.name;
+    return materialOrSchemaChanged ? [track] : [];
   });
   const materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = previewAppliedEdits.flatMap(
     (record, programIndex) => {
@@ -1276,6 +1283,11 @@ export function App({
       const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
       const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
       const parameter = schema?.[track.parameterIndex];
+      const assignmentChanged =
+        !assignment ||
+        JSON.stringify(assignment) !== JSON.stringify(track.material) ||
+        !parameter ||
+        parameter.name !== track.name;
       const operations = record.program.operations.filter(
         (operation) =>
           operation.kind === "AnimateProperty" &&
@@ -1287,7 +1299,7 @@ export function App({
           (mutation) => mutation.kind === "material-parameter-keyframes" && mutation.operationId === operation.id,
         ),
       );
-      if (!parameter || parameter.name !== track.name || mutations.some((mutation) => !mutation)) return [];
+      if (mutations.some((mutation) => !mutation)) return [];
       const projectedMutations = mutations as readonly Extract<
         (typeof workspaceCreationProjection.mutations)[number],
         { kind: "material-parameter-keyframes" }
@@ -1299,7 +1311,7 @@ export function App({
           : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
       if (workingTimes.length !== track.keyframes.length) return [];
       const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
-      const assignmentChanged = !assignment || JSON.stringify(assignment) !== JSON.stringify(track.material);
+      const baseline = track.material.parameters[track.parameterIndex] ?? 0;
       return [
         {
           assignmentChanged,
@@ -1317,7 +1329,7 @@ export function App({
           parameterIndex: track.parameterIndex,
           parameterName: track.name,
           programIndex,
-          range: parameter.range,
+          range: parameter?.name === track.name ? parameter.range : { max: baseline, min: baseline, step: 1 },
           readOnlyReason: assignmentChanged
             ? "The assigned material changed. Restore it or remove this track."
             : draftEdit && !activeDraftIsThisTrack
@@ -2692,7 +2704,8 @@ export function App({
       setDraftError("The material parameter track no longer matches the Studio-created object.");
       return;
     }
-    const assignmentChanged = !assignment || JSON.stringify(assignment) !== JSON.stringify(sourceTrack.material);
+    const assignmentChanged =
+      track.assignmentChanged || !assignment || JSON.stringify(assignment) !== JSON.stringify(sourceTrack.material);
     if (assignmentChanged) {
       removeMaterialParameterTrack(sourceTrack);
       return;
