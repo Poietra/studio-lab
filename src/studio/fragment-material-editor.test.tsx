@@ -99,6 +99,8 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain("parameters_0.x");
     expect(markup).toContain("parameters_0.y");
     expect(markup).toContain("Add scalar parameter");
+    expect(markup).toContain("Add RGB parameter");
+    expect(markup).toContain('aria-label="Default RGB parameter color"');
     expect(markup).toContain('name="default"');
     expect(markup).toContain('name="min"');
     expect(markup).toContain('name="max"');
@@ -209,6 +211,8 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain('type="color" value="#ff4da6"');
     expect(markup).toContain('aria-label="Angle material parameter"');
     expect(markup).toContain('aria-label="Spread material parameter"');
+    expect(markup).toContain("RGB parameter");
+    expect(markup).toContain('name="defaultColor"');
     expect(markup).toContain("parameters_0.x");
     expect(markup).toContain("parameters_1.w");
     expect(markup).toContain("All 8 slots used");
