@@ -38,6 +38,7 @@ export function FragmentMaterialEditor({
   available,
   compileError,
   materials,
+  objectEditingDisabled = false,
   onAssign,
   onCreate,
   onCreatePreset,
@@ -61,6 +62,7 @@ export function FragmentMaterialEditor({
   available: boolean;
   compileError: string | null;
   materials: readonly FragmentMaterialEditorItem[];
+  objectEditingDisabled?: boolean;
   onAssign: (shaderId: string | null) => void;
   onCreate: (name: string) => string | null;
   onCreatePreset: (preset: StudioFragmentMaterialPresetId) => string | null;
@@ -113,21 +115,23 @@ export function FragmentMaterialEditor({
       <select
         aria-label="Assigned fragment material"
         className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
-        disabled={!available && !assigned}
+        disabled={objectEditingDisabled || (!available && !assigned)}
         id="fragment-material-assignment"
         onChange={(event) => onAssign(event.currentTarget.value || null)}
         value={assignedShaderId ?? ""}
       >
         <option value="">None</option>
         {materials.map((material) => (
-          <option disabled={!available} key={material.shaderId} value={material.shaderId}>
+          <option disabled={objectEditingDisabled || !available} key={material.shaderId} value={material.shaderId}>
             {material.name}
           </option>
         ))}
       </select>
       {!available ? (
         <p className="mt-1 text-pretty text-[10px] leading-4 text-zinc-600">
-          Select a vector object with an existing fill to assign a material.
+          {objectEditingDisabled
+            ? "Unlock this object in Layers before changing its material."
+            : "Select a vector object with an existing fill to assign a material."}
         </p>
       ) : null}
 
@@ -147,7 +151,7 @@ export function FragmentMaterialEditor({
                     <input
                       aria-label={`${parameter.name} material parameter`}
                       className="mt-1 w-full accent-sky-500"
-                      disabled={!available}
+                      disabled={objectEditingDisabled || !available}
                       max={parameter.range.max}
                       min={parameter.range.min}
                       onChange={(event) => onUpdateParameter(parameter.name, event.currentTarget.valueAsNumber)}
@@ -179,7 +183,11 @@ export function FragmentMaterialEditor({
             }
             aria-invalid={assignedTexture && !assignedTextureAvailable ? true : undefined}
             className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
-            disabled={textureAssets.length === 0 || (!available && (!assignedTexture || assignedTextureAvailable))}
+            disabled={
+              objectEditingDisabled ||
+              textureAssets.length === 0 ||
+              (!available && (!assignedTexture || assignedTextureAvailable))
+            }
             id="fragment-material-texture-asset"
             onChange={(event) => onUpdateTexture(event.currentTarget.value, assignedTexture?.sampler ?? "linear")}
             value={assignedTextureAvailable ? assignedTexture?.asset.assetId : ""}
@@ -209,7 +217,7 @@ export function FragmentMaterialEditor({
           </label>
           <select
             className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
-            disabled={!available || !assignedTexture || !assignedTextureAvailable}
+            disabled={objectEditingDisabled || !available || !assignedTexture || !assignedTextureAvailable}
             id="fragment-material-texture-filter"
             onChange={(event) =>
               assignedTexture &&

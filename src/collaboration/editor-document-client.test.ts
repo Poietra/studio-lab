@@ -30,6 +30,7 @@ const sessionSnapshot = {
   editingAppliedProgram: null,
   insertTool: "select",
   interactionMode: "position",
+  lockedEntityIds: [],
   motionDuration: 1,
   programUndoEntries: [],
   redoPrograms: [],

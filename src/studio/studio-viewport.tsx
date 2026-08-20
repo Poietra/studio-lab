@@ -92,6 +92,7 @@ export function StudioViewport({
   lifetimeControls,
   lifetimeEditMessage,
   lifetimeTrimDisabled,
+  lockedEntityIds,
   materialParameterOptions,
   materialParameterTracks,
   motionDuration,
@@ -190,6 +191,7 @@ export function StudioViewport({
         inlineTextEditor={inlineTextEditor}
         insertTool={insertTool}
         interactionMode={interactionMode}
+        lockedEntityIds={lockedEntityIds}
         motionPaths={motionPaths}
         onCanvasPlace={onCanvasPlace}
         onEntityKeyDown={onEntityKeyDown}
@@ -244,6 +246,7 @@ export function StudioViewport({
           lifetimeControls={lifetimeControls}
           lifetimeEditMessage={lifetimeEditMessage}
           lifetimeTrimDisabled={lifetimeTrimDisabled}
+          lockedEntityIds={lockedEntityIds}
           materialParameterOptions={materialParameterOptions}
           materialParameterTracks={materialParameterTracks}
           motionDuration={motionDuration}

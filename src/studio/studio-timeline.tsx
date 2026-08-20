@@ -1,6 +1,7 @@
 import { type KeyboardEvent, type PointerEvent, useRef, useState } from "react";
 
 import { cn } from "../lib/cn";
+import { LOCKED_ENTITY_MUTATION_MESSAGE } from "./entity-lock";
 import {
   lifetimeControlKey,
   type LifetimeEditControls as StudioLifetimeControls,
@@ -30,6 +31,7 @@ export type StudioTimelineProps = Readonly<{
   lifetimeControls: Readonly<Record<string, StudioLifetimeControls>>;
   lifetimeEditMessage: string | null;
   lifetimeTrimDisabled: boolean;
+  lockedEntityIds?: ReadonlySet<string>;
   motionDuration: number;
   materialParameterOptions: readonly StudioMaterialParameterTimelineOption[];
   materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[];
@@ -498,6 +500,7 @@ export function StudioTimeline({
   lifetimeControls,
   lifetimeEditMessage,
   lifetimeTrimDisabled,
+  lockedEntityIds = new Set(),
   materialParameterOptions,
   materialParameterTracks,
   motionDuration,
@@ -564,6 +567,10 @@ export function StudioTimeline({
     ? (scaleTracks.find((track) => track.transactionId === selectedScaleKeyframe.transactionId) ?? null)
     : null;
   const selectedScaleMarker = selectedScaleTrack?.keyframes[selectedScaleKeyframe?.index ?? -1] ?? null;
+  const selectedLifetimeLocked = Boolean(selectedLifetime && lockedEntityIds.has(selectedLifetime.entityId));
+  const selectedOpacityLocked = Boolean(selectedOpacityTrack && lockedEntityIds.has(selectedOpacityTrack.entityId));
+  const selectedMaterialLocked = Boolean(selectedMaterialTrack && lockedEntityIds.has(selectedMaterialTrack.entityId));
+  const selectedScaleLocked = Boolean(selectedScaleTrack && lockedEntityIds.has(selectedScaleTrack.entityId));
   return (
     <section className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
       <div className="flex items-center gap-3">
@@ -635,7 +642,7 @@ export function StudioTimeline({
           </span>
           <LifetimeTargetForm
             controls={selectedLifetimeControls}
-            disabled={lifetimeTrimDisabled}
+            disabled={lifetimeTrimDisabled || selectedLifetimeLocked}
             edge="start"
             interval={selectedLifetimeInterval}
             onChange={onLifetimeChange}
@@ -643,7 +650,7 @@ export function StudioTimeline({
           />
           <LifetimeTargetForm
             controls={selectedLifetimeControls}
-            disabled={lifetimeTrimDisabled}
+            disabled={lifetimeTrimDisabled || selectedLifetimeLocked}
             edge="end"
             interval={selectedLifetimeInterval}
             onChange={onLifetimeChange}
@@ -664,6 +671,9 @@ export function StudioTimeline({
           {lifetimeTrimDisabled ? (
             <span className="text-pretty text-zinc-600">Apply or discard the current draft first.</span>
           ) : null}
+          {selectedLifetimeLocked ? (
+            <span className="text-pretty text-amber-500">{LOCKED_ENTITY_MUTATION_MESSAGE}</span>
+          ) : null}
           {lifetimeEditMessage ? (
             <span className="text-pretty text-red-300" role="alert">
               {lifetimeEditMessage}
@@ -681,7 +691,7 @@ export function StudioTimeline({
             <input
               aria-label="Opacity keyframe time"
               className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-sky-500"
-              disabled={selectedOpacityTrack.readOnlyReason !== null}
+              disabled={selectedOpacityLocked || selectedOpacityTrack.readOnlyReason !== null}
               max={duration}
               min="0"
               onChange={(event) =>
@@ -700,7 +710,11 @@ export function StudioTimeline({
             <input
               aria-label="Opacity keyframe value"
               className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-sky-500"
-              disabled={selectedOpacityTrack.readOnlyReason !== null || selectedOpacityKeyframe!.index === 0}
+              disabled={
+                selectedOpacityLocked ||
+                selectedOpacityTrack.readOnlyReason !== null ||
+                selectedOpacityKeyframe!.index === 0
+              }
               max="1"
               min="0"
               onChange={(event) =>
@@ -719,6 +733,7 @@ export function StudioTimeline({
               aria-label="Opacity segment easing"
               className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-sky-500"
               disabled={
+                selectedOpacityLocked ||
                 selectedOpacityTrack.readOnlyReason !== null ||
                 selectedOpacityKeyframe!.index === selectedOpacityTrack.keyframes.length - 1
               }
@@ -736,6 +751,7 @@ export function StudioTimeline({
           <button
             className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
             disabled={
+              selectedOpacityLocked ||
               selectedOpacityTrack.readOnlyReason !== null ||
               (selectedOpacityKeyframe!.index === 0 && selectedOpacityTrack.keyframes.length > 1)
             }
@@ -751,6 +767,7 @@ export function StudioTimeline({
           {selectedOpacityTrack.readOnlyReason ? (
             <span className="text-amber-500">{selectedOpacityTrack.readOnlyReason}</span>
           ) : null}
+          {selectedOpacityLocked ? <span className="text-amber-500">{LOCKED_ENTITY_MUTATION_MESSAGE}</span> : null}
         </div>
       ) : null}
       {selectedScaleTrack && selectedScaleMarker ? (
@@ -763,7 +780,7 @@ export function StudioTimeline({
             <input
               aria-label="Scale keyframe time"
               className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-emerald-500"
-              disabled={selectedScaleTrack.readOnlyReason !== null}
+              disabled={selectedScaleLocked || selectedScaleTrack.readOnlyReason !== null}
               max={duration}
               min="0"
               onChange={(event) =>
@@ -782,7 +799,9 @@ export function StudioTimeline({
             <input
               aria-label="Scale keyframe value"
               className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-emerald-500"
-              disabled={selectedScaleTrack.readOnlyReason !== null || selectedScaleKeyframe!.index === 0}
+              disabled={
+                selectedScaleLocked || selectedScaleTrack.readOnlyReason !== null || selectedScaleKeyframe!.index === 0
+              }
               max="8"
               min="0.1"
               onChange={(event) =>
@@ -801,6 +820,7 @@ export function StudioTimeline({
               aria-label="Scale segment easing"
               className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-emerald-500"
               disabled={
+                selectedScaleLocked ||
                 selectedScaleTrack.readOnlyReason !== null ||
                 selectedScaleKeyframe!.index === selectedScaleTrack.keyframes.length - 1
               }
@@ -818,6 +838,7 @@ export function StudioTimeline({
           <button
             className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
             disabled={
+              selectedScaleLocked ||
               selectedScaleTrack.readOnlyReason !== null ||
               (selectedScaleKeyframe!.index === 0 && selectedScaleTrack.keyframes.length > 1)
             }
@@ -833,6 +854,7 @@ export function StudioTimeline({
           {selectedScaleTrack.readOnlyReason ? (
             <span className="text-amber-500">{selectedScaleTrack.readOnlyReason}</span>
           ) : null}
+          {selectedScaleLocked ? <span className="text-amber-500">{LOCKED_ENTITY_MUTATION_MESSAGE}</span> : null}
         </div>
       ) : null}
       {selectedMaterialTrack && selectedMaterialMarker ? (
@@ -845,7 +867,7 @@ export function StudioTimeline({
             <input
               aria-label="Material parameter keyframe time"
               className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-fuchsia-500"
-              disabled={selectedMaterialTrack.readOnlyReason !== null}
+              disabled={selectedMaterialLocked || selectedMaterialTrack.readOnlyReason !== null}
               max={duration}
               min="0"
               onChange={(event) =>
@@ -864,7 +886,11 @@ export function StudioTimeline({
             <input
               aria-label="Material parameter keyframe value"
               className="h-7 w-24 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-fuchsia-500"
-              disabled={selectedMaterialTrack.readOnlyReason !== null || selectedMaterialKeyframe!.index === 0}
+              disabled={
+                selectedMaterialLocked ||
+                selectedMaterialTrack.readOnlyReason !== null ||
+                selectedMaterialKeyframe!.index === 0
+              }
               max={selectedMaterialTrack.range.max}
               min={selectedMaterialTrack.range.min}
               onChange={(event) =>
@@ -883,6 +909,7 @@ export function StudioTimeline({
               aria-label="Material parameter segment easing"
               className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-fuchsia-500"
               disabled={
+                selectedMaterialLocked ||
                 selectedMaterialTrack.readOnlyReason !== null ||
                 selectedMaterialKeyframe!.index === selectedMaterialTrack.keyframes.length - 1
               }
@@ -900,6 +927,7 @@ export function StudioTimeline({
           <button
             className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
             disabled={
+              selectedMaterialLocked ||
               (selectedMaterialTrack.readOnlyReason !== null && !selectedMaterialTrack.assignmentChanged) ||
               (!selectedMaterialTrack.assignmentChanged &&
                 selectedMaterialKeyframe!.index === 0 &&
@@ -922,6 +950,7 @@ export function StudioTimeline({
           {selectedMaterialTrack.readOnlyReason ? (
             <span className="text-amber-500">{selectedMaterialTrack.readOnlyReason}</span>
           ) : null}
+          {selectedMaterialLocked ? <span className="text-amber-500">{LOCKED_ENTITY_MUTATION_MESSAGE}</span> : null}
         </div>
       ) : null}
       {editingMotionClip ? (
@@ -1008,9 +1037,11 @@ export function StudioTimeline({
             const scaleTrack = scaleTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackMotionOperationIds = new Set(trackMotionClips.map((clip) => clip.operationId));
-            const locked =
+            const selectionLocked =
               readOnly ||
               (track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId)));
+            const authoringLocked = lockedEntityIds.has(track.entityId);
+            const mutationLocked = selectionLocked || authoringLocked;
             return (
               <div
                 className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 last:border-b-0 sm:grid-cols-[8rem_minmax(0,1fr)]"
@@ -1022,12 +1053,12 @@ export function StudioTimeline({
                     aria-pressed={selected}
                     className={cn(
                       "min-w-0 flex-1 truncate px-2 text-left text-[10px]",
-                      locked ? "cursor-not-allowed text-zinc-700" : "hover:bg-zinc-800",
+                      selectionLocked ? "cursor-not-allowed text-zinc-700" : "hover:bg-zinc-800",
                       selected ? "text-sky-300" : "text-zinc-500",
                     )}
-                    disabled={locked}
+                    disabled={selectionLocked}
                     onClick={() => onSelectEntity(track.entityId)}
-                    title={`${track.label} · ${track.type}`}
+                    title={authoringLocked ? `${track.label} · Locked in Layers` : `${track.label} · ${track.type}`}
                     type="button"
                   >
                     {track.label}
@@ -1036,7 +1067,7 @@ export function StudioTimeline({
                     <button
                       aria-label={`Add opacity keyframe for ${track.label}`}
                       className="mr-1 size-5 shrink-0 text-sm leading-none text-sky-400 hover:bg-sky-900 disabled:cursor-not-allowed disabled:text-zinc-600"
-                      disabled={locked || readOnly}
+                      disabled={mutationLocked}
                       onClick={() => onOpacityKeyframeAdd(track.entityId)}
                       title="Add opacity keyframe at the playhead"
                       type="button"
@@ -1048,7 +1079,7 @@ export function StudioTimeline({
                     <button
                       aria-label={`Add scale keyframe for ${track.label}`}
                       className="mr-1 h-5 shrink-0 px-1 text-[9px] leading-none text-emerald-400 hover:bg-emerald-950 disabled:cursor-not-allowed disabled:text-zinc-600"
-                      disabled={locked || readOnly}
+                      disabled={mutationLocked}
                       onClick={() => onScaleKeyframeAdd(track.entityId)}
                       title="Add uniform scale keyframe at the playhead"
                       type="button"
@@ -1060,7 +1091,7 @@ export function StudioTimeline({
                     <button
                       aria-label={`Remove stale material track for ${track.label}`}
                       className="mr-1 h-5 shrink-0 border border-red-900 px-1 text-[9px] text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
-                      disabled={locked || readOnly}
+                      disabled={mutationLocked}
                       onClick={() => onMaterialParameterKeyframeDelete(staleMaterialTrack, 0)}
                       title="Remove the material parameter track whose assignment changed"
                       type="button"
@@ -1090,7 +1121,7 @@ export function StudioTimeline({
                       <button
                         aria-label={`Add ${selectedMaterialName} material keyframe for ${track.label}`}
                         className="size-5 shrink-0 text-sm leading-none text-fuchsia-400 hover:bg-fuchsia-950 disabled:cursor-not-allowed disabled:text-zinc-600"
-                        disabled={locked || readOnly || selectedMaterialName === ""}
+                        disabled={mutationLocked || selectedMaterialName === ""}
                         onClick={() => onMaterialParameterKeyframeAdd(track.entityId, selectedMaterialName)}
                         title="Add material parameter keyframe at the playhead"
                         type="button"
@@ -1109,7 +1140,7 @@ export function StudioTimeline({
                         controls={
                           lifetimeControls[lifetimeControlKey(track.entityId, index)] ?? EMPTY_LIFETIME_CONTROLS
                         }
-                        disabled={locked || lifetimeTrimDisabled}
+                        disabled={mutationLocked || lifetimeTrimDisabled}
                         duration={duration}
                         interval={interval}
                         key={`${track.entityId}/lifetime/${index}`}
@@ -1120,7 +1151,7 @@ export function StudioTimeline({
                         }}
                         onChange={(target) => onLifetimeChange(track.entityId, interval.start, target)}
                         provisional={track.provisional}
-                        selectDisabled={locked}
+                        selectDisabled={selectionLocked}
                         selected={lifetimeSelected}
                       />
                     );
@@ -1143,7 +1174,7 @@ export function StudioTimeline({
                       key={`${opacityTrack.transactionId}/${index}`}
                       keyframe={keyframe}
                       kind="opacity"
-                      locked={locked || readOnly || opacityTrack.readOnlyReason !== null}
+                      locked={mutationLocked || opacityTrack.readOnlyReason !== null}
                       onChange={(patch) => onOpacityKeyframeChange(opacityTrack, index, patch)}
                       onSelect={() => {
                         onSelectEntity(track.entityId);
@@ -1164,7 +1195,7 @@ export function StudioTimeline({
                       key={`${scaleTrack.transactionId}/${index}`}
                       keyframe={keyframe}
                       kind="scale"
-                      locked={locked || readOnly || scaleTrack.readOnlyReason !== null}
+                      locked={mutationLocked || scaleTrack.readOnlyReason !== null}
                       onChange={(patch) => onScaleKeyframeChange(scaleTrack, index, patch)}
                       onSelect={() => {
                         onSelectEntity(track.entityId);
@@ -1186,7 +1217,7 @@ export function StudioTimeline({
                         key={`${materialTrack.transactionId}/${materialTrack.parameterName}/${index}`}
                         keyframe={keyframe}
                         kind="material"
-                        locked={locked || readOnly || materialTrack.readOnlyReason !== null}
+                        locked={mutationLocked || materialTrack.readOnlyReason !== null}
                         onChange={(patch) => onMaterialParameterKeyframeChange(materialTrack, index, patch)}
                         onSelect={() => {
                           onSelectEntity(track.entityId);
@@ -1207,7 +1238,10 @@ export function StudioTimeline({
                   )}
                   {trackMotionClips.map((clip) => (
                     <TimelineMotionClip
-                      clip={clip}
+                      clip={{
+                        ...clip,
+                        readOnlyReason: authoringLocked ? LOCKED_ENTITY_MUTATION_MESSAGE : clip.readOnlyReason,
+                      }}
                       duration={duration}
                       editing={editingAppliedTransactionId === clip.transactionId}
                       key={`${clip.operationId}/${clip.entityId}`}

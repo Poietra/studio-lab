@@ -120,6 +120,7 @@ export function createInitialEditorState(): EditorControllerState {
     instruction: "",
     interactionMode: "animate",
     isPlaying: false,
+    lockedEntityIds: [],
     motionDuration: STUDIO_STYLE_PROFILE.durationSeconds.deliberate,
     pendingClarification: null,
     programUndoEntries: [],
@@ -159,6 +160,7 @@ export function snapshotEditorSession(state: EditorControllerState): EditorSessi
     insertValue: state.insertValue,
     instruction: state.instruction,
     interactionMode: state.interactionMode,
+    lockedEntityIds: state.lockedEntityIds,
     motionDuration: state.motionDuration,
     programUndoEntries: state.programUndoEntries,
     redoPrograms: state.redoPrograms,
@@ -225,6 +227,7 @@ export function installCloudEditorSessionSnapshotV1(
     draftError: null,
     insertValue: "",
     instruction: "",
+    lockedEntityIds: parsed.lockedEntityIds ?? [],
   };
   return { kind: "installed", state: restoreEditorSession(state, snapshot) };
 }
@@ -237,6 +240,7 @@ export function initializeEditorScene(
     ...createInitialEditorState(),
     currentTime: input.currentTime,
     interactionMode: state.interactionMode,
+    lockedEntityIds: [],
     motionDuration: state.motionDuration,
     selectedObjectIds: input.selectedObjectIds,
   };
@@ -876,6 +880,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     setInstruction: (value: SetStateAction<string>) => setField("instruction", value),
     setInteractionMode: (value: SetStateAction<InteractionMode>) => setField("interactionMode", value),
     setIsPlaying: (value: SetStateAction<boolean>) => setField("isPlaying", value),
+    setLockedEntityIds: (value: SetStateAction<readonly string[]>) => setField("lockedEntityIds", value),
     setMotionDuration: (value: SetStateAction<number>) => setField("motionDuration", value),
     setPendingClarification: (value: SetStateAction<PendingClarification | null>) =>
       setField("pendingClarification", value),

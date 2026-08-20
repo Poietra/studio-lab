@@ -162,11 +162,14 @@ export function WorkspaceSidebar({
   durationMinimum,
   entities,
   layers,
+  lockToggleDisabled = false,
+  lockedEntityIds = new Set(),
   nextScene,
   onDurationChange,
   onEditAppliedProgram,
   onLayerOrder,
   onLayerReorder,
+  onToggleEntityLock,
   onRedo,
   onToggleEntity,
   onUndo,
@@ -187,11 +190,14 @@ export function WorkspaceSidebar({
   durationMinimum: number;
   entities: readonly ProjectedEntity[];
   layers?: readonly StudioLayerEntry[];
+  lockToggleDisabled?: boolean;
+  lockedEntityIds?: ReadonlySet<string>;
   nextScene: ManimWorkspaceScene | null;
   onDurationChange: (duration: number) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
+  onToggleEntityLock?: (entityId: string) => void;
   onRedo: () => void;
   onToggleEntity: (entityId: string, selected: boolean) => void;
   onUndo: () => void;
@@ -223,18 +229,21 @@ export function WorkspaceSidebar({
         {layerEntries.map((layer, layerIndex) => {
           const entity = layer.entity;
           const selected = selectedIds.has(entity.id);
-          const locked =
+          const provisionalLocked =
             entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId));
+          const authoringLocked = lockedEntityIds.has(entity.id);
           const dragUnavailableReason =
             onLayerReorder === undefined
               ? "Layer drag reordering is unavailable."
               : !authoringAvailable
                 ? "Wait for the canonical preview before reordering layers."
-                : locked
+                : provisionalLocked
                   ? "Apply this provisional object before reordering it."
-                  : !entity.present
-                    ? "This object is not present at the current time."
-                    : layer.readOnlyReason;
+                  : authoringLocked
+                    ? "Unlock this object before reordering it."
+                    : !entity.present
+                      ? "This object is not present at the current time."
+                      : layer.readOnlyReason;
           const draggable = onLayerReorder !== undefined && dragUnavailableReason === null;
           const updateDropBoundary = (event: DragEvent<HTMLLIElement>) => {
             if (!layerDrag) return null;
@@ -278,32 +287,66 @@ export function WorkspaceSidebar({
               }}
               title={dragUnavailableReason ?? "Drag to reorder this layer"}
             >
-              <label
+              <div
                 className={cn(
                   "flex items-center gap-2 px-2 py-1.5 text-xs",
-                  locked ? "cursor-not-allowed text-zinc-600" : "cursor-pointer",
                   selected ? "bg-sky-950 text-sky-200" : "text-zinc-400 hover:bg-zinc-900",
                 )}
               >
-                <input
-                  aria-label={`Select ${entityLabel(entity)}`}
-                  checked={selected}
-                  className="size-3.5 accent-sky-400"
-                  disabled={locked || !entity.present}
-                  onChange={() => onToggleEntity(entity.id, selected)}
-                  type="checkbox"
-                />
-                <span
-                  aria-hidden="true"
-                  className={cn("shrink-0 text-zinc-600", draggable ? "cursor-grab" : "opacity-40")}
+                <label
+                  className={cn(
+                    "flex min-w-0 flex-1 items-center gap-2",
+                    provisionalLocked ? "cursor-not-allowed text-zinc-600" : "cursor-pointer",
+                  )}
                 >
-                  ⠿
-                </span>
-                <span className="min-w-0 flex-1 truncate">{entityLabel(entity)}</span>
+                  <input
+                    aria-label={`Select ${entityLabel(entity)}`}
+                    checked={selected}
+                    className="size-3.5 accent-sky-400"
+                    disabled={provisionalLocked || !entity.present}
+                    onChange={() => onToggleEntity(entity.id, selected)}
+                    type="checkbox"
+                  />
+                  <span
+                    aria-hidden="true"
+                    className={cn("shrink-0 text-zinc-600", draggable ? "cursor-grab" : "opacity-40")}
+                  >
+                    ⠿
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{entityLabel(entity)}</span>
+                </label>
+                {onToggleEntityLock ? (
+                  <button
+                    aria-label={`${authoringLocked ? "Unlock" : "Lock"} ${entityLabel(entity)}`}
+                    aria-pressed={authoringLocked}
+                    className="size-6 shrink-0 border border-transparent text-[11px] text-zinc-500 hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:border-transparent disabled:hover:bg-transparent"
+                    disabled={provisionalLocked || lockToggleDisabled}
+                    draggable={false}
+                    onDragStart={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onToggleEntityLock(entity.id);
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    title={
+                      lockToggleDisabled
+                        ? "Wait for the current Program apply to finish"
+                        : authoringLocked
+                          ? "Unlock object editing"
+                          : "Lock object editing"
+                    }
+                    type="button"
+                  >
+                    <span aria-hidden="true">{authoringLocked ? "🔒" : "🔓"}</span>
+                  </button>
+                ) : null}
                 <span className="shrink-0 text-[10px] text-zinc-600" title={layer.readOnlyReason ?? undefined}>
-                  {layer.readOnlyReason ? "Read-only" : entity.type}
+                  {authoringLocked ? "Locked" : layer.readOnlyReason ? "Read-only" : entity.type}
                 </span>
-              </label>
+              </div>
               {selected && onLayerOrder ? (
                 <div
                   className="grid grid-cols-4 border-x border-b border-zinc-800"
@@ -321,7 +364,12 @@ export function WorkspaceSidebar({
                     <button
                       aria-label={`${label} ${entityLabel(entity)}`}
                       className="h-7 border-r border-zinc-800 text-[11px] text-zinc-400 last:border-r-0 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
-                      disabled={!authoringAvailable || layer.readOnlyReason !== null || !layer.canMove[direction]}
+                      disabled={
+                        !authoringAvailable ||
+                        authoringLocked ||
+                        layer.readOnlyReason !== null ||
+                        !layer.canMove[direction]
+                      }
                       key={direction}
                       onClick={() => onLayerOrder(entity.id, direction)}
                       title={layer.readOnlyReason ?? label}
@@ -572,6 +620,7 @@ export function StudioInspector({
   opacityValue,
   rotationAvailable,
   selectedEntity,
+  selectedEntityLocked = false,
   inspectorReturnFocus,
   sourceExport,
   sourceExportBlocker = null,
@@ -633,6 +682,7 @@ export function StudioInspector({
   opacityValue: number | null;
   rotationAvailable: boolean;
   selectedEntity: ProjectedEntity | null;
+  selectedEntityLocked?: boolean;
   inspectorReturnFocus: InspectorEditField | null;
   sourceExport: OriginalManimSourceExportRequest | null;
   sourceExportBlocker?: string | null;
@@ -658,7 +708,7 @@ export function StudioInspector({
         <>
           <DraftInspector
             applyLabel={replacingAppliedProgram ? "Replace program" : "Apply program"}
-            editingDisabled={!authoringAvailable}
+            editingDisabled={!authoringAvailable || selectedEntityLocked}
             error={draftError}
             isApplying={draftApplyPending}
             onApply={onApplyDraft}
@@ -667,7 +717,10 @@ export function StudioInspector({
             operation={draftOperation}
             record={draftEdit}
           />
-          <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={!authoringAvailable}>
+          <fieldset
+            className="m-0 min-w-0 border-0 p-0 disabled:opacity-60"
+            disabled={!authoringAvailable || selectedEntityLocked}
+          >
             {draftPosition && selectedEntity ? (
               <DraftPositionRefinement
                 entity={selectedEntity}
@@ -684,7 +737,10 @@ export function StudioInspector({
         <section>
           <h2 className="text-balance text-sm font-medium text-zinc-100">Inspector</h2>
           {selectedEntity ? (
-            <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={!authoringAvailable}>
+            <fieldset
+              className="m-0 min-w-0 border-0 p-0 disabled:opacity-60"
+              disabled={!authoringAvailable || selectedEntityLocked}
+            >
               <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-2 text-xs">
                 <dt className="text-zinc-600">Object</dt>
                 <dd className="truncate text-zinc-300">{entityLabel(selectedEntity)}</dd>
@@ -859,7 +915,12 @@ export function StudioInspector({
               </p>
             </div>
           )}
-          <FragmentMaterialEditor {...fragmentMaterial} />
+          {selectedEntityLocked ? (
+            <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-500" role="status">
+              Unlock this object in Layers before editing it.
+            </p>
+          ) : null}
+          <FragmentMaterialEditor {...fragmentMaterial} objectEditingDisabled={selectedEntityLocked} />
           {geometryUnknowns.length > 0 ? (
             <section
               className="mt-3 border border-amber-950 bg-amber-950/20 p-2"

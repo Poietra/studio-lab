@@ -117,6 +117,7 @@ function snapshot() {
     editingAppliedProgram: { index: 0, original: applied },
     insertTool: "Circle",
     interactionMode: "position",
+    lockedEntityIds: ["equation"],
     motionDuration: 2.5,
     programUndoEntries: [{ index: 0, kind: "append", value: applied }],
     redoPrograms: [{ edit: null, kind: "draft", value: draftRecord("redo") }],
@@ -130,6 +131,8 @@ describe("editor session snapshot V1 contract", () => {
     const value = snapshot();
 
     expect(parseEditorSessionSnapshotV1(value)).toEqual(value);
+    const { lockedEntityIds: _legacyMissingLockState, ...legacyValue } = value;
+    expect(parseEditorSessionSnapshotV1(legacyValue).lockedEntityIds).toEqual([]);
     expect(value.draftProgram).toMatchObject({
       program: { intentCount: 0, operations: [] },
       validation: { status: "invalid" },

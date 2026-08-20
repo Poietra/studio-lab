@@ -83,6 +83,7 @@ export type EditorSessionSnapshotV1 = Readonly<{
   editingAppliedProgram: AppliedProgramEdit | null;
   insertTool: StudioTool;
   interactionMode: InteractionMode;
+  lockedEntityIds?: readonly string[];
   motionDuration: number;
   programUndoEntries: readonly AppliedProgramMutation[];
   redoPrograms: readonly RedoProgramEntry[];
@@ -207,6 +208,7 @@ const editorSessionSnapshotBaseSchemaV1 = z
     editingAppliedProgram: appliedProgramEditSchema.nullable(),
     insertTool: z.enum(["select", "Text", "MathTex", "Rectangle", "Circle", "Line", "Arrow"]),
     interactionMode: z.enum(["animate", "position"]),
+    lockedEntityIds: selectionSchema.optional().default([]),
     motionDuration: finiteNumber.min(0.1).max(600),
     programUndoEntries: z.array(appliedProgramMutationSchema).max(32),
     redoPrograms: z.array(redoProgramEntrySchema).max(32),

@@ -241,4 +241,49 @@ describe("FragmentMaterialEditor", () => {
     expect(texturePicker).not.toContain(' disabled=""');
     expect(markup).toContain('disabled="" id="fragment-material-texture-filter"');
   });
+
+  it("does not let a missing texture repair bypass an object lock", () => {
+    const markup = renderToStaticMarkup(
+      <FragmentMaterialEditor
+        active={false}
+        assignedParameters={[]}
+        assignedShaderId="screen-texture"
+        assignedTexture={{
+          asset: { assetId: "asset:deleted", sha256: "a".repeat(64) },
+          sampler: "linear",
+        }}
+        available={false}
+        compileError="The material texture asset is unavailable."
+        materials={[
+          {
+            assignmentCount: 1,
+            glslSource: null,
+            name: "Screen texture",
+            parameterSchema: [],
+            revision: 1,
+            shaderId: "screen-texture",
+            source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+            textureSlot: "texture2d",
+          },
+        ]}
+        objectEditingDisabled
+        onAssign={vi.fn()}
+        onCreate={vi.fn(() => null)}
+        onCreatePreset={vi.fn(() => null)}
+        onCreateTexturePreset={vi.fn(() => null)}
+        onDuplicate={vi.fn(() => null)}
+        onImportGlsl={vi.fn(async () => undefined)}
+        onRemoveAsset={vi.fn()}
+        onRename={vi.fn()}
+        onUpdateSource={vi.fn()}
+        onUpdateParameter={vi.fn()}
+        onUpdateTexture={vi.fn()}
+        textureAssets={[{ assetId: "asset:replacement", label: "Replacement (320×180)" }]}
+      />,
+    );
+
+    const texturePicker = markup.match(/<select[^>]*id="fragment-material-texture-asset"[^>]*>/)?.[0];
+    expect(texturePicker).toContain('disabled=""');
+    expect(markup).toContain("Unlock this object in Layers before changing its material.");
+  });
 });
