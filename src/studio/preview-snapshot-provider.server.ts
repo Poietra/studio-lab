@@ -29,8 +29,8 @@ import {
 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { fastManimSourceBindingIdentityPayloadV1 } from "../render-pipeline/source-runtime-identity-preimage";
 import {
+  type ImportedStudioPreviewSceneIdentityV1,
   PRISTINE_WORKING_REVISION,
-  type StudioPreviewSceneIdentityV1,
   StudioPreviewSnapshotLoadErrorV1,
   type StudioPreviewSnapshotProviderV1,
 } from "./preview-snapshot-provider";
@@ -99,7 +99,7 @@ function assertEqual(label: string, actual: string, expected: string) {
   if (actual !== expected) throw providerError(`The verified Scene snapshot has stale ${label} correlation.`);
 }
 
-async function expectedSceneId(identity: StudioPreviewSceneIdentityV1) {
+async function expectedSceneId(identity: ImportedStudioPreviewSceneIdentityV1) {
   const bytes = new TextEncoder().encode(`${identity.sourcePath}\u0000${identity.sceneName}`);
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -241,7 +241,7 @@ async function loadSnapshotAssetPayloads(
   return payloads;
 }
 
-async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneIdentityV1, requestId: string) {
+async function validateVerifiedRun(value: unknown, identity: ImportedStudioPreviewSceneIdentityV1, requestId: string) {
   const status = runStatusSchema.safeParse(value);
   if (!status.success) throw providerError("The Scene snapshot endpoint returned a malformed run state.", status.error);
   if (status.data.status !== "verified") {
@@ -339,7 +339,7 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
 
 async function validateVerifiedRuntimeTraceRun(
   value: unknown,
-  identity: StudioPreviewSceneIdentityV1,
+  identity: ImportedStudioPreviewSceneIdentityV1,
   requestId: string,
 ) {
   const parsed = fastManimRuntimeTraceRunViewSchema.safeParse(value);

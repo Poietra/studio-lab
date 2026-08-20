@@ -2,30 +2,58 @@ import type { CanvasPngAssetTransferV1 } from "../engine/canvas-png-assets";
 import type { CanvasWorkerClientEvidenceAdapterV1 } from "../engine/canvas-worker-client";
 import type { SceneIrBundleV1 } from "../engine/contracts";
 
-export type StudioPreviewSceneIdentityV1 = Readonly<{
+export type ImportedStudioPreviewSceneIdentityV1 = Readonly<{
+  documentKey?: never;
+  origin?: never;
   projectId: string;
   sceneName: string;
   sourceHash: string;
   sourcePath: string;
 }>;
 
+export type StudioNativePreviewSceneIdentityV1 = Readonly<{
+  documentKey: string;
+  origin: "studio-native";
+  projectId: string;
+  sceneName?: never;
+  sceneId: string;
+  sourceHash?: never;
+  sourcePath?: never;
+}>;
+
+/**
+ * Preview ownership is either imported Python source or one source-free
+ * Studio document. The disjoint source/document keys keep callers from
+ * fabricating Python identity for a native Scene.
+ */
+export type StudioPreviewSceneIdentityV1 = ImportedStudioPreviewSceneIdentityV1 | StudioNativePreviewSceneIdentityV1;
+
 export const PRISTINE_WORKING_REVISION = "pristine" as const;
 
-export type StudioPreviewEditingContextV1 = StudioPreviewSceneIdentityV1 &
-  Readonly<{
-    /**
-     * Conservative duration projected by Studio's source importer before any
-     * edits. A verified server snapshot may carry a different duration because
-     * fast-manim execution, not static source analysis, is authoritative for
-     * imported Python Scenes.
-     */
-    sourceDuration: number;
-    /**
-     * Canonical identity of applied, draft, edit, and redo state on top of the
-     * imported source. `PRISTINE_WORKING_REVISION` means no Studio edit history.
-     */
-    workingRevision: string;
-  }>;
+type StudioPreviewEditingStateV1 = Readonly<{
+  /** Imported source estimate or canonical native Scene duration. */
+  sourceDuration: number;
+  /** Canonical identity of applied, draft, edit, and redo state. */
+  workingRevision: string;
+}>;
+
+export type ImportedStudioPreviewEditingContextV1 = ImportedStudioPreviewSceneIdentityV1 & StudioPreviewEditingStateV1;
+
+export type StudioNativePreviewEditingContextV1 = StudioNativePreviewSceneIdentityV1 & StudioPreviewEditingStateV1;
+
+export type StudioPreviewEditingContextV1 = ImportedStudioPreviewEditingContextV1 | StudioNativePreviewEditingContextV1;
+
+export function isStudioNativePreviewSceneIdentityV1(
+  identity: StudioPreviewSceneIdentityV1,
+): identity is StudioNativePreviewSceneIdentityV1 {
+  return identity.origin === "studio-native";
+}
+
+export function isImportedStudioPreviewSceneIdentityV1(
+  identity: StudioPreviewSceneIdentityV1,
+): identity is ImportedStudioPreviewSceneIdentityV1 {
+  return "sourcePath" in identity;
+}
 
 /**
  * Correlation evidence carried by every verified snapshot. `engineRevisionHash`
@@ -154,13 +182,21 @@ export function loadStudioPreviewSnapshotMetadataV1(
   }>,
 ): Promise<StudioVerifiedPreviewSnapshotV1 | null> {
   if (!input.provider || !input.context) return Promise.resolve(null);
+  const identity: StudioPreviewSceneIdentityV1 = isStudioNativePreviewSceneIdentityV1(input.context)
+    ? {
+        documentKey: input.context.documentKey,
+        origin: "studio-native",
+        projectId: input.context.projectId,
+        sceneId: input.context.sceneId,
+      }
+    : {
+        projectId: input.context.projectId,
+        sceneName: input.context.sceneName,
+        sourceHash: input.context.sourceHash,
+        sourcePath: input.context.sourcePath,
+      };
   return input.provider.loadVerifiedSnapshot({
-    identity: {
-      projectId: input.context.projectId,
-      sceneName: input.context.sceneName,
-      sourceHash: input.context.sourceHash,
-      sourcePath: input.context.sourcePath,
-    },
+    identity,
     signal: input.signal,
   });
 }
@@ -175,7 +211,9 @@ export function loadStudioPreviewSnapshotMetadataV1(
  * churning the retained worker (incremental deltas are issue #67's boundary).
  */
 export function studioPreviewWorkspaceKeyV1(context: StudioPreviewEditingContextV1) {
-  return JSON.stringify([context.projectId, context.sourcePath, context.sceneName, context.sourceHash]);
+  return isStudioNativePreviewSceneIdentityV1(context)
+    ? JSON.stringify([context.projectId, "studio-native", context.documentKey, context.sceneId])
+    : JSON.stringify([context.projectId, context.sourcePath, context.sceneName, context.sourceHash]);
 }
 
 /**

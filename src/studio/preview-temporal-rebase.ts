@@ -7,7 +7,11 @@ import {
 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type { Point, ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
-import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
+import {
+  isStudioNativePreviewSceneIdentityV1,
+  PRISTINE_WORKING_REVISION,
+  type StudioVerifiedPreviewSnapshotV1,
+} from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
 export type StudioPreviewTemporalRebaseIssueCode = "source-correlation-invalid" | "target-edit-unsupported";
@@ -82,6 +86,7 @@ function closeEnough(left: number, right: number) {
 function genericRuntimeTraceSnapshotCorrelationIsExact(snapshot: StudioVerifiedPreviewSnapshotV1) {
   const { correlation, snapshot: bundle } = snapshot;
   const source = bundle.scene.source;
+  if (isStudioNativePreviewSceneIdentityV1(correlation.context)) return false;
   return (
     source.kind === "imported-manim-runtime-trace" &&
     sceneIrSourceRevisionHash(bundle.scene) === correlation.engineRevisionHash &&
@@ -173,6 +178,7 @@ export function studioPreviewRuntimeTraceEditCandidates(
     return [];
   }
   const context = snapshot.correlation.context;
+  if (isStudioNativePreviewSceneIdentityV1(context)) return [];
   // The provider enforces one-to-one source/runtime identity; a synthetic map
   // that aliases one runtime root under two names is never edit evidence.
   const mappedEntityIds = [...identity.values()].map(({ entityId }) => entityId);
@@ -517,6 +523,9 @@ export async function compileStudioPreviewRuntimeTraceEdit(
   }
   const scene = input.snapshot.snapshot.scene;
   const context = input.snapshot.correlation.context;
+  if (isStudioNativePreviewSceneIdentityV1(context)) {
+    return unsupported("source-correlation-invalid", "A Studio-native Scene has no Runtime Trace source binding.");
+  }
   const base = input.workingState;
   const correlation = candidates[0]!;
   if (

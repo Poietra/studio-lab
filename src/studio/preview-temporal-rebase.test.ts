@@ -9,7 +9,11 @@ import type {
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { programRecord } from "./evaluator";
 import { type RuntimeEntity, type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
-import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
+import {
+  isStudioNativePreviewSceneIdentityV1,
+  PRISTINE_WORKING_REVISION,
+  type StudioVerifiedPreviewSnapshotV1,
+} from "./preview-snapshot-provider";
 import {
   compileStudioPreviewRuntimeTraceEdit,
   projectStudioPreviewRuntimeTraceEntityPresence,
@@ -41,6 +45,8 @@ function importedSquareEntity(id: string): RuntimeEntity {
 }
 
 function workingState(scene: RuntimeSceneState, snapshot: StudioVerifiedPreviewSnapshotV1): WorkingState {
+  const context = snapshot.correlation.context;
+  if (isStudioNativePreviewSceneIdentityV1(context)) throw new Error("Runtime Trace fixtures require source identity.");
   return {
     appliedEdits: [],
     editorContext: {
@@ -52,9 +58,9 @@ function workingState(scene: RuntimeSceneState, snapshot: StudioVerifiedPreviewS
     },
     runtimeSceneState: scene,
     sourceSnapshot: {
-      configId: snapshot.correlation.context.projectId,
-      hash: `sha256:${snapshot.correlation.context.sourceHash}`,
-      sourceId: snapshot.correlation.context.sourcePath,
+      configId: context.projectId,
+      hash: `sha256:${context.sourceHash}`,
+      sourceId: context.sourcePath,
       version: STUDIO_STATE_VERSION,
     },
     stagedEdits: [],

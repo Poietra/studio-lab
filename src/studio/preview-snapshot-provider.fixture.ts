@@ -8,8 +8,9 @@ import {
   manimSourcePathSchema,
 } from "../render-pipeline/manim-identity-contract";
 import {
+  type ImportedStudioPreviewSceneIdentityV1,
+  isImportedStudioPreviewSceneIdentityV1,
   PRISTINE_WORKING_REVISION,
-  type StudioPreviewSceneIdentityV1,
   type StudioPreviewSnapshotProviderV1,
 } from "./preview-snapshot-provider";
 
@@ -41,7 +42,7 @@ const mathTexFixtureHarnessManifestSchema = z
   })
   .strict();
 
-function sameSceneIdentity(left: StudioPreviewSceneIdentityV1, right: StudioPreviewSceneIdentityV1) {
+function sameSceneIdentity(left: ImportedStudioPreviewSceneIdentityV1, right: ImportedStudioPreviewSceneIdentityV1) {
   return (
     left.projectId === right.projectId &&
     left.sceneName === right.sceneName &&
@@ -67,7 +68,7 @@ export function createFixturePreviewSnapshotProviderV1(): StudioPreviewSnapshotP
       signal?.throwIfAborted();
       const harnessModule = await import("../../fixtures/engine-v1/shared-circle-opacity.harness.json");
       const harness = fixtureHarnessManifestSchema.parse(harnessModule.default);
-      if (!sameSceneIdentity(identity, harness.expectedIdentity)) {
+      if (!isImportedStudioPreviewSceneIdentityV1(identity) || !sameSceneIdentity(identity, harness.expectedIdentity)) {
         throw new Error(
           `The fixture snapshot provider only serves its checked-in harness Scene ${harness.expectedIdentity.projectId}/${harness.expectedIdentity.sceneName}.`,
         );
@@ -206,7 +207,7 @@ export function createMathTexFixturePreviewSnapshotProviderV1(): StudioPreviewSn
       signal?.throwIfAborted();
       const harnessModule = await import("../../fixtures/engine-v1/studio-mathtex-preview.harness.json");
       const harness = mathTexFixtureHarnessManifestSchema.parse(harnessModule.default);
-      if (!sameSceneIdentity(identity, harness.expectedIdentity)) {
+      if (!isImportedStudioPreviewSceneIdentityV1(identity) || !sameSceneIdentity(identity, harness.expectedIdentity)) {
         throw new Error(
           `The MathTex fixture snapshot provider only serves its checked-in harness Scene ${harness.expectedIdentity.projectId}/${harness.expectedIdentity.sceneName}.`,
         );
