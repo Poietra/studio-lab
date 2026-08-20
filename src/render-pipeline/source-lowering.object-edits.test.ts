@@ -640,6 +640,65 @@ class GroupedEquation(Scene):
     });
   });
 
+  it("round-trips one imported multi-root position Program without splitting its transaction", () => {
+    const groupSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        left = Circle()
+        right = Circle()
+        self.add(left, right)
+        # poietra:anchor 0.000
+        self.wait(1)
+`;
+    const frame = { height: 8, width: 14.222 };
+    const imported = importManimScene(groupSource, "examples/relativity.py", "GroupedEquation", frame);
+    const leftId = "source:examples/relativity.py#GroupedEquation:left";
+    const rightId = "source:examples/relativity.py#GroupedEquation:right";
+    const left = imported?.runtimeSceneState.objectGraph.entities[leftId];
+    const right = imported?.runtimeSceneState.objectGraph.entities[rightId];
+    if (!imported || left?.geometry?.position.kind !== "known" || right?.geometry?.position.kind !== "known") {
+      throw new Error("Imported group move fixture did not retain exact root positions.");
+    }
+    const delta = { x: 40, y: -20 };
+    const validation = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta,
+      positions: {
+        [leftId]: left.geometry.position.value,
+        [rightId]: right.geometry.position.value,
+      },
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targetEntityIds: [leftId, rightId],
+      transactionId: "move-imported-selection",
+    });
+    if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+
+    const lowered = lowerCanonicalProgramSource(
+      groupSource,
+      request(validation.program, [
+        { entityId: leftId, sourceVariable: "left" },
+        { entityId: rightId, sourceVariable: "right" },
+      ]),
+      frame,
+      null,
+    );
+    const reimported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation", frame);
+
+    expect(lowered.insertedCode.match(/# poietra:position/g)).toHaveLength(2);
+    expect(lowered.insertedCode).toContain("left.move_to(");
+    expect(lowered.insertedCode).toContain("right.move_to(");
+    expect(reimported?.runtimeSceneState.objectGraph.entities[leftId]?.geometry?.position).toEqual({
+      kind: "known",
+      value: { x: left.geometry.position.value.x + delta.x, y: left.geometry.position.value.y + delta.y },
+    });
+    expect(reimported?.runtimeSceneState.objectGraph.entities[rightId]?.geometry?.position).toEqual({
+      kind: "known",
+      value: { x: right.geometry.position.value.x + delta.x, y: right.geometry.position.value.y + delta.y },
+    });
+  });
+
   it("round-trips viewport positions as world-space move_to calls through a non-origin camera", () => {
     const frame = { height: 8, width: 14.222 };
     const cameraCenter = { x: 2.5, y: -1.25 };

@@ -196,7 +196,10 @@ pub(super) fn rotation_is_noop(angle_radians: f64) -> bool {
     normalized.abs() <= ROTATION_NOOP_EPSILON
 }
 
-fn apply_world_translation(transform: &mut poietra_scene_ir::AffineTransformV1, delta: &PointV1) {
+pub(super) fn apply_world_translation(
+    transform: &mut poietra_scene_ir::AffineTransformV1,
+    delta: &PointV1,
+) {
     transform.tx += delta.x;
     transform.ty += delta.y;
 }
