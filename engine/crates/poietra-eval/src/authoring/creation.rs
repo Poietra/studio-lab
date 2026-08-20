@@ -3898,7 +3898,9 @@ mod tests {
     use super::super::tests::{
         NEXT_REVISION, fixture_bundle, imported_bundle, static_imported_bundle,
     };
-    use super::super::{StudioTextAlignment, StudioTextFontWeight, StudioTextLayout};
+    use super::super::{
+        StudioTextAlignment, StudioTextFontFamily, StudioTextFontWeight, StudioTextLayout,
+    };
     use super::*;
 
     #[test]
@@ -6982,6 +6984,7 @@ mod tests {
         let updated = StudioTextContent {
             layout: StudioTextLayout {
                 alignment: StudioTextAlignment::Right,
+                font_family: StudioTextFontFamily::Mono,
                 font_size: 1.5,
                 font_weight: StudioTextFontWeight::Bold,
                 line_height: 1.8,

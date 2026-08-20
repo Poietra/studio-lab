@@ -3,7 +3,7 @@
 //! The v1 surface accepts a bounded, versioned `MathTex` subset through `RaTeX`.
 //! It embeds the required `KaTeX` fonts, exposes no filesystem or network loader, and returns
 //! renderer-native cubic paths instead of SVG or executable markup.
-//! A sibling plain-text surface uses one embedded `DejaVu Sans Regular` face.
+//! A sibling plain-text surface uses closed embedded `DejaVu Sans` and `DejaVu Sans Mono` faces.
 
 mod compile;
 mod digest;
@@ -33,7 +33,7 @@ pub use segmented::{
 pub use text::{
     DEFAULT_TEXT_LINE_HEIGHT_EM, MAX_TEXT_CHARACTERS_V1, MAX_TEXT_CUBIC_SEGMENTS_V1,
     MAX_TEXT_LINE_CHARACTERS_V1, MAX_TEXT_LINES_V1, TEXT_OUTLINE_REQUEST_SCHEMA_V1,
-    TEXT_OUTLINE_RESPONSE_SCHEMA_V1, TEXT_OUTLINE_VERSION_V1, TextAlignmentV1,
+    TEXT_OUTLINE_RESPONSE_SCHEMA_V1, TEXT_OUTLINE_VERSION_V1, TextAlignmentV1, TextFontFamilyV1,
     TextOutlineArtifactV1, TextOutlineBoundsV1, TextOutlineLayoutV1, TextOutlineRequestSchemaV1,
     TextOutlineRequestV1, TextOutlineResultV1, TextOutlineUnsupportedCodeV1,
     TextOutlineUnsupportedV1, compile_text_outline_v1,

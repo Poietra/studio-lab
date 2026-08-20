@@ -2,7 +2,7 @@ import { z } from "zod";
 import { coordinateV1Schema, countCubicPathSegments, cubicPathV1Schema, sha256V1Schema } from "./primitives";
 
 export const POIETRA_MATHTEX_OUTLINE_ABI_VERSION = 1 as const;
-export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 3 as const;
+export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 4 as const;
 const MAX_MATHTEX_PARTS = 16;
 const MAX_MATHTEX_CONTENT_LENGTH = 2_000;
 const MAX_MATHTEX_REQUEST_JSON_BYTES = 16 * 1024;
@@ -144,6 +144,7 @@ const textOutlineContentV1Schema = z
 export const textOutlineLayoutV1Schema = z
   .object({
     alignment: z.enum(["center", "left", "right"]),
+    fontFamily: z.enum(["mono", "sans"]).default("sans"),
     fontWeight: z.enum(["bold", "regular"]).default("regular"),
     lineHeight: z.number().finite().positive(),
   })
@@ -157,7 +158,12 @@ export function canonicalTextOutlineInputV1(text: unknown): string | null {
 
 const textOutlineRequestV1Schema = z
   .object({
-    layout: textOutlineLayoutV1Schema.default({ alignment: "left", fontWeight: "regular", lineHeight: 1.2 }),
+    layout: textOutlineLayoutV1Schema.default({
+      alignment: "left",
+      fontFamily: "sans",
+      fontWeight: "regular",
+      lineHeight: 1.2,
+    }),
     schema: z.literal("poietra.text-outline-request"),
     text: textOutlineContentV1Schema,
     version: z.literal(1),

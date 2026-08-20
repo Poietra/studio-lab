@@ -167,7 +167,13 @@ describe("snapshot MathTex authorization", () => {
           content: {
             displayLines: ["Sized Text"],
             text: "Sized Text",
-            textLayout: { alignment: "left", fontSize: 1.75, fontWeight: "bold", lineHeight: 1.2 },
+            textLayout: {
+              alignment: "left",
+              fontFamily: "mono",
+              fontSize: 1.75,
+              fontWeight: "bold",
+              lineHeight: 1.2,
+            },
           },
           position: { x: 320, y: 180 },
           type: "Text",
@@ -209,14 +215,20 @@ describe("snapshot MathTex authorization", () => {
 
     await expect(result).resolves.toBeDefined();
     expect(compilers.textOutline).toHaveBeenCalledWith({
-      layout: { alignment: "left", fontWeight: "bold", lineHeight: 1.2 },
+      layout: { alignment: "left", fontFamily: "mono", fontWeight: "bold", lineHeight: 1.2 },
       text: "Sized Text",
     });
     expect(compilers.creation.mock.calls[0]?.[1]).toMatchObject({
       textOutlines: [
         {
           entityId: creation.entityIds[0],
-          layout: { alignment: "left", fontSize: 1.75, fontWeight: "bold", lineHeight: 1.2 },
+          layout: {
+            alignment: "left",
+            fontFamily: "mono",
+            fontSize: 1.75,
+            fontWeight: "bold",
+            lineHeight: 1.2,
+          },
         },
       ],
     });

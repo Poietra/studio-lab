@@ -364,6 +364,8 @@ function correlateCreationProjection(
     const textContentMismatch = expectedTextContent
       ? entity.text !== expectedTextContent.text ||
         projectedLayout.alignment !== expectedTextContent.layout.alignment ||
+        (projectedLayout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) !==
+          (expectedTextContent.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) ||
         !sameProjectionNumber(projectedLayout.fontSize, expectedTextContent.layout.fontSize) ||
         projectedLayout.fontWeight !== expectedTextContent.layout.fontWeight ||
         !sameProjectionNumber(projectedLayout.lineHeight, expectedTextContent.layout.lineHeight)

@@ -305,7 +305,13 @@ describe("durable editor session storage", () => {
         displayLines: ["Sized Text"],
         label: "Sized Text",
         text: "Sized Text",
-        textLayout: { alignment: "left", fontSize: 1.75, fontWeight: "bold", lineHeight: 1.2 },
+        textLayout: {
+          alignment: "left",
+          fontFamily: "mono",
+          fontSize: 1.75,
+          fontWeight: "bold",
+          lineHeight: 1.2,
+        },
       },
       entityId: creation.entityIds[0]!,
       owner,
@@ -330,6 +336,7 @@ describe("durable editor session storage", () => {
     );
     expect(create?.kind === "CreateEntity" ? create.entity.content?.textLayout : null).toEqual({
       alignment: "left",
+      fontFamily: "mono",
       fontSize: 1.75,
       fontWeight: "bold",
       lineHeight: 1.2,

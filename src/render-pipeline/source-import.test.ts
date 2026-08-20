@@ -328,7 +328,7 @@ class ContentEdit(Scene):
     expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/content`]?.samples).toHaveLength(2);
     expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.content).toMatchObject({
       text: "after",
-      textLayout: { fontWeight: "bold" },
+      textLayout: { fontFamily: "sans", fontWeight: "bold" },
     });
 
     const tampered = edited.replace('Text("after", weight=BOLD).match_style', 'Text("other").match_style');

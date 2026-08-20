@@ -14,7 +14,7 @@ assert.equal(outline.poietraMathTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileMathTexOutlineV1, "function");
 assert.equal(outline.poietraSegmentedTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileSegmentedTexOutlineV1, "function");
-assert.equal(outline.poietraTextOutlineAbiVersion(), 3);
+assert.equal(outline.poietraTextOutlineAbiVersion(), 4);
 assert.equal(typeof outline.compileTextOutlineV1, "function");
 
 const encoder = new TextEncoder();
@@ -37,10 +37,10 @@ function compileWasm(request) {
   return responseBytes;
 }
 
-function encodeTextRequest(text, fontWeight = "regular") {
+function encodeTextRequest(text, fontWeight = "regular", fontFamily = "sans") {
   return encoder.encode(
     JSON.stringify({
-      layout: { alignment: "left", fontWeight, lineHeight: 1.2 },
+      layout: { alignment: "left", fontFamily, fontWeight, lineHeight: 1.2 },
       schema: "poietra.text-outline-request",
       text,
       version: 1,
@@ -187,6 +187,8 @@ const textRequests = [
   encodeTextRequest("こんにちは\r\nPoietra"),
   encodeTextRequest("Bold AV", "bold"),
   encodeTextRequest("日本語で動画を作る", "bold"),
+  encodeTextRequest("Mono AV 0123", "regular", "mono"),
+  encodeTextRequest("Mono AV 0123", "bold", "mono"),
   encodeTextRequest("tab\tcharacter"),
 ];
 const textWasmResponses = textRequests.map(compileTextWasm);
@@ -218,7 +220,7 @@ for (const [index, wasmResponse] of textWasmResponses.entries()) {
     `plain Text native and WASM response ${index} must be byte-identical`,
   );
 }
-for (const response of textWasmResponses.slice(0, 5)) {
+for (const response of textWasmResponses.slice(0, 7)) {
   const parsed = JSON.parse(decoder.decode(response));
   assert.equal(parsed.schema, "poietra.text-outline-response");
   assert.equal(parsed.version, 1);
@@ -236,7 +238,12 @@ assert.notDeepEqual(
   JSON.parse(decoder.decode(textWasmResponses[4])).result.path,
   "regular and bold Japanese must use distinct real font outlines",
 );
-const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[5]));
+assert.notDeepEqual(
+  JSON.parse(decoder.decode(textWasmResponses[5])).result.path,
+  JSON.parse(decoder.decode(textWasmResponses[6])).result.path,
+  "regular and bold Mono must use distinct real font outlines",
+);
+const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[7]));
 assert.equal(unsupportedText.result.kind, "unsupported");
 assert.equal(unsupportedText.result.code, "character-unsupported");
 

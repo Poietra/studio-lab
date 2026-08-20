@@ -480,6 +480,7 @@ const studioStaticRootDimensionsV1Schema = z
 const studioTextLayoutV1Schema = z
   .object({
     alignment: z.enum(["center", "left", "right"]),
+    fontFamily: z.enum(["mono", "sans"]).default("sans"),
     fontSize: finiteNumberSchema.positive(),
     fontWeight: z.enum(["bold", "regular"]),
     lineHeight: finiteNumberSchema.positive(),
@@ -848,6 +849,7 @@ type StudioCreationEntityKindV1 = "arrow" | "circle" | "image" | "line" | "math-
 type StudioTextContentV1 = Readonly<{
   layout: Readonly<{
     alignment: "center" | "left" | "right";
+    fontFamily: "mono" | "sans";
     fontSize: number;
     fontWeight: "bold" | "regular";
     lineHeight: number;

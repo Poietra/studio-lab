@@ -38,6 +38,7 @@ export type EntityStyle = Readonly<{
 
 export type TextLayout = Readonly<{
   alignment: "center" | "left" | "right";
+  fontFamily: "mono" | "sans";
   fontSize: number;
   fontWeight: "bold" | "regular";
   lineHeight: number;

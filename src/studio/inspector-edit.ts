@@ -13,6 +13,7 @@ export type InspectorEditField =
   | "height"
   | "radius"
   | "textAlignment"
+  | "textFontFamily"
   | "textFontSize"
   | "textFontWeight"
   | "textLineHeight"
@@ -25,6 +26,7 @@ export type InspectorEditValues = Readonly<{
   height: string | null;
   radius: string | null;
   textAlignment: "center" | "left" | "right" | null;
+  textFontFamily: "mono" | "sans" | null;
   textFontSize: string | null;
   textFontWeight: "bold" | "regular" | null;
   textLineHeight: string | null;
@@ -111,6 +113,7 @@ function validateContent(
   value: string,
   textLayout: Readonly<{
     alignment: "center" | "left" | "right";
+    fontFamily: "mono" | "sans";
     fontSize: number;
     fontWeight: "bold" | "regular";
     lineHeight: number;
@@ -174,6 +177,8 @@ export function initialInspectorEditValues(entity: ProjectedEntity): InspectorEd
     radius: dimensions.radius === undefined ? null : formattedNumber(dimensions.radius, 2),
     textAlignment:
       textContent?.layout.alignment ?? (entity.type === "Text" ? STUDIO_TEXT_DEFAULT_LAYOUT.alignment : null),
+    textFontFamily:
+      textContent?.layout.fontFamily ?? (entity.type === "Text" ? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily : null),
     textFontSize:
       entity.type === "Text"
         ? formattedNumber(textContent?.layout.fontSize ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontSize, 2)
@@ -213,12 +218,14 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
   if (values.content !== null && (entity.type === "Text" || entity.type === "MathTex")) {
     let textLayout: Readonly<{
       alignment: "center" | "left" | "right";
+      fontFamily: "mono" | "sans";
       fontSize: number;
       fontWeight: "bold" | "regular";
       lineHeight: number;
     }> | null = null;
     if (entity.type === "Text") {
       if (!values.textAlignment) errors.textAlignment = "Choose a Text alignment.";
+      if (!values.textFontFamily) errors.textFontFamily = "Choose a Text font family.";
       if (!values.textFontWeight) errors.textFontWeight = "Choose a Text font weight.";
       const fontSize =
         values.textFontSize === null ? null : parseFiniteNumber(values.textFontSize, "textFontSize", errors);
@@ -231,12 +238,19 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
         errors.textLineHeight = "Line height must be greater than zero.";
       } else if (
         values.textAlignment &&
+        values.textFontFamily &&
         values.textFontWeight &&
         fontSize !== null &&
         errors.textFontSize === undefined &&
         lineHeight !== null
       ) {
-        textLayout = { alignment: values.textAlignment, fontSize, fontWeight: values.textFontWeight, lineHeight };
+        textLayout = {
+          alignment: values.textAlignment,
+          fontFamily: values.textFontFamily,
+          fontSize,
+          fontWeight: values.textFontWeight,
+          lineHeight,
+        };
       }
     }
     const currentText = studioCreationTextContent(entity.content);
@@ -244,6 +258,7 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
       entity.type === "Text" &&
       textLayout !== null &&
       (currentText?.layout.alignment !== textLayout.alignment ||
+        (currentText?.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) !== textLayout.fontFamily ||
         currentText?.layout.fontSize !== textLayout.fontSize ||
         currentText?.layout.fontWeight !== textLayout.fontWeight ||
         currentText?.layout.lineHeight !== textLayout.lineHeight);
@@ -252,6 +267,8 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
     if (layoutChanged && !studioCreated) {
       const message = "Typography editing is available only for Studio-created Text.";
       if (currentText?.layout.alignment !== textLayout?.alignment) errors.textAlignment = message;
+      else if ((currentText?.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) !== textLayout?.fontFamily)
+        errors.textFontFamily = message;
       else if (currentText?.layout.fontSize !== textLayout?.fontSize) errors.textFontSize = message;
       else if (currentText?.layout.fontWeight !== textLayout?.fontWeight) errors.textFontWeight = message;
       else errors.textLineHeight = message;

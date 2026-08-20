@@ -35,8 +35,8 @@ describe("MathTex outline WASM initialization", () => {
 });
 
 describe("plain Text outline input", () => {
-  it("pins the font-weight request ABI", () => {
-    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(3);
+  it("pins the closed font-family and weight request ABI", () => {
+    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(4);
   });
 
   it("accepts bounded Japanese multiline text and canonicalizes CRLF", () => {
