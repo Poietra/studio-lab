@@ -189,6 +189,15 @@ function remapOperation(operation: SceneEditOperation, offset: number, maps: IdM
         sourceEntityId: remapEntity(operation.sourceEntityId, maps),
         targetEntityId: remapEntity(operation.targetEntityId, maps),
       };
+    case "GroupEntities":
+      return {
+        ...operation,
+        ...base,
+        childEntityIds: operation.childEntityIds.map((id) => remapEntity(id, maps)),
+        groupId: remapEntity(operation.groupId, maps),
+      };
+    case "UngroupEntity":
+      return { ...operation, ...base, groupId: remapEntity(operation.groupId, maps) };
     case "InsertSceneBoundary":
       return { ...operation, ...base, at: operation.at + offset };
     case "InsertTimelineEvent":

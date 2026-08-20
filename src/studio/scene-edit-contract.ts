@@ -130,6 +130,15 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     targetEntityId: z.string(),
   }),
   operationBaseSchema.extend({
+    childEntityIds: z.array(z.string().min(1)).min(2).max(64),
+    groupId: z.string().min(1),
+    kind: z.literal("GroupEntities"),
+  }),
+  operationBaseSchema.extend({
+    groupId: z.string().min(1),
+    kind: z.literal("UngroupEntity"),
+  }),
+  operationBaseSchema.extend({
     effect: z.enum(["cover", "fade-in", "remove", "reveal"]),
     entityId: z.string(),
     kind: z.literal("ChangePresence"),

@@ -83,6 +83,7 @@ struct CreateSceneEntity {
 struct CreateSceneEntitiesCommand {
     entities: Vec<CreateSceneEntity>,
     expected_base_revision: String,
+    groups: Vec<PlannedStudioLogicalGroup>,
     motions: Vec<PlannedSceneMotion>,
     next_revision: String,
     persistent_removals: Vec<PersistentSceneRemoval>,
@@ -312,6 +313,13 @@ pub enum StudioCreationOperationKind {
         easing: StudioMotionEasing,
         target_entity_ids: Vec<String>,
     },
+    Group {
+        child_entity_ids: Vec<String>,
+        group_id: String,
+    },
+    Ungroup {
+        group_id: String,
+    },
     Unsupported,
 }
 
@@ -376,6 +384,10 @@ pub enum CreateSceneEntitiesError {
     InvalidInstantTransform,
     #[error("a created entity appearance edit must be finite, timed, and supported")]
     InvalidAppearanceEdit,
+    #[error(
+        "Studio grouping requires visible contiguous Studio-created root leaves without rotation keyframes"
+    )]
+    InvalidHierarchy,
     #[error(transparent)]
     Motion(#[from] ApplyStudioMotionEditError),
     #[error(transparent)]
@@ -430,6 +442,8 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::Resize { .. }
             | StudioCreationOperationKind::PersistentRemove { .. }
             | StudioCreationOperationKind::CreateMotion { .. }
+            | StudioCreationOperationKind::Group { .. }
+            | StudioCreationOperationKind::Ungroup { .. }
             | StudioCreationOperationKind::Unsupported => None,
         })
         .collect::<Vec<_>>();
@@ -717,9 +731,17 @@ fn shift_studio_creation_time(
 
 struct StudioCreationPlan {
     entities: Vec<PlannedStudioCreationEntity>,
+    groups: Vec<PlannedStudioLogicalGroup>,
     motion_projection: StudioMotionProjection,
     mutations: Vec<StudioCreationProjectedMutation>,
     timeline_insertions: Vec<SceneTimelineInsertion>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedStudioLogicalGroup {
+    child_entity_ids: Vec<String>,
+    group_id: String,
+    lifetimes: Vec<IntervalV1>,
 }
 
 impl StudioCreationPlan {
@@ -1487,6 +1509,23 @@ fn plan_studio_creation_edits(
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
     }
+    let hierarchy_programs = programs
+        .iter()
+        .enumerate()
+        .filter_map(|(index, program)| {
+            program
+                .operations
+                .iter()
+                .any(|operation| {
+                    matches!(
+                        operation.kind,
+                        StudioCreationOperationKind::Group { .. }
+                            | StudioCreationOperationKind::Ungroup { .. }
+                    )
+                })
+                .then_some(index)
+        })
+        .collect::<Vec<_>>();
     let followup_programs = timeline
         .ordered_programs
         .iter()
@@ -1497,6 +1536,7 @@ fn plan_studio_creation_edits(
                 && !material_parameter_programs.contains(index)
                 && !uniform_scale_programs.contains(index)
                 && !rotation_programs.contains(index)
+                && !hierarchy_programs.contains(index)
         })
         .collect::<Vec<_>>();
 
@@ -1573,6 +1613,8 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::Group { .. }
+                | StudioCreationOperationKind::Ungroup { .. }
                 | StudioCreationOperationKind::Unsupported => true,
             })
         {
@@ -1615,6 +1657,8 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::Group { .. }
+                | StudioCreationOperationKind::Ungroup { .. }
                 | StudioCreationOperationKind::Unsupported => {
                     return Err(ProjectStudioCreationEditError::Unsupported);
                 }
@@ -2802,6 +2846,8 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::Group { .. }
+                | StudioCreationOperationKind::Ungroup { .. }
                 | StudioCreationOperationKind::Unsupported => {
                     return Err(ProjectStudioCreationEditError::Unsupported);
                 }
@@ -2856,6 +2902,123 @@ fn plan_studio_creation_edits(
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
     }
+    let mut active_groups = BTreeMap::<String, Vec<String>>::new();
+    let mut parent_by_child = BTreeMap::<String, String>::new();
+    for program_index in hierarchy_programs {
+        let program = &programs[program_index];
+        if program.origin != StudioAuthoringOrigin::DirectManipulation
+            || program.requested_execution != SceneEditExecution::Parallel
+            || program.schedule_mode != SceneEditScheduleMode::Parallel
+            || program.schedule_edge_count != 0
+            || program.intent_count != 1
+            || program.operations.len() != 1
+            || program.schedule_order != [program.operations[0].id.clone()]
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let operation = &program.operations[0];
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || operation.entity_id.is_some()
+            || !interval_is_exact_point(&operation.interval)
+            || !studio_timeline_semantic_values_match(
+                operation.interval.start,
+                program.anchor_resolved_seconds,
+            )
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        match &operation.kind {
+            StudioCreationOperationKind::Group {
+                child_entity_ids,
+                group_id,
+            } => {
+                let group_at = shift_studio_creation_time(
+                    program.anchor_resolved_seconds + timeline.offsets[program_index],
+                    timeline.ranks[program_index],
+                    &timeline.ranked_insertions,
+                );
+                let unique_children = child_entity_ids.iter().collect::<BTreeSet<_>>();
+                if child_entity_ids.len() < 2
+                    || unique_children.len() != child_entity_ids.len()
+                    || !group_id.starts_with(&format!("tx:{}/entity:", program.transaction_id))
+                    || active_groups.contains_key(group_id)
+                {
+                    return Err(ProjectStudioCreationEditError::Unsupported);
+                }
+                for child_id in child_entity_ids {
+                    let child = entities
+                        .iter()
+                        .find(|state| state.spec.id == *child_id)
+                        .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                    if !child.visible
+                        || !child.rotation_keyframes.is_empty()
+                        || parent_by_child.contains_key(child_id)
+                        || group_at < child.lifetime.start
+                        || group_at
+                            >= child
+                                .persistent_removal
+                                .as_ref()
+                                .map_or(child.lifetime.end, |removal| removal.interval.end)
+                    {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                }
+                for child_id in child_entity_ids {
+                    parent_by_child.insert(child_id.clone(), group_id.clone());
+                }
+                active_groups.insert(group_id.clone(), child_entity_ids.clone());
+            }
+            StudioCreationOperationKind::Ungroup { group_id } => {
+                let children = active_groups
+                    .remove(group_id)
+                    .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                for child_id in children {
+                    if parent_by_child.remove(&child_id).as_deref() != Some(group_id.as_str()) {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                }
+            }
+            _ => return Err(ProjectStudioCreationEditError::Unsupported),
+        }
+    }
+    let groups = active_groups
+        .into_iter()
+        .map(|(group_id, child_entity_ids)| {
+            let mut lifetimes = child_entity_ids
+                .iter()
+                .map(|child_id| {
+                    entities
+                        .iter()
+                        .find(|state| state.spec.id == *child_id)
+                        .map(|state| {
+                            let mut lifetime = state.lifetime.clone();
+                            if let Some(removal) = &state.persistent_removal {
+                                lifetime.end = removal.interval.end;
+                            }
+                            lifetime
+                        })
+                        .ok_or(ProjectStudioCreationEditError::Unsupported)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            lifetimes.sort_by(|left, right| left.start.total_cmp(&right.start));
+            let mut union = Vec::<IntervalV1>::new();
+            for lifetime in lifetimes {
+                if let Some(last) = union.last_mut()
+                    && lifetime.start <= last.end + TIMELINE_ANCHOR_EPSILON
+                {
+                    last.end = last.end.max(lifetime.end);
+                } else {
+                    union.push(lifetime);
+                }
+            }
+            Ok(PlannedStudioLogicalGroup {
+                child_entity_ids,
+                group_id,
+                lifetimes: union,
+            })
+        })
+        .collect::<Result<Vec<_>, ProjectStudioCreationEditError>>()?;
+
     for motion in &planned_motions {
         for entity_id in &motion.target_entity_ids {
             let state = entities
@@ -2897,6 +3060,7 @@ fn plan_studio_creation_edits(
     ranked_mutations.sort_by_key(|(rank, schedule_index, _)| (*rank, *schedule_index));
     Ok(StudioCreationPlan {
         entities,
+        groups,
         motion_projection,
         mutations: ranked_mutations
             .into_iter()
@@ -3543,6 +3707,153 @@ fn append_created_entity(
     Ok(())
 }
 
+fn validate_studio_logical_group(
+    scene: &poietra_scene_ir::SceneIrV1,
+    group: &PlannedStudioLogicalGroup,
+    created_entity_ids: &BTreeSet<String>,
+    root_paint_order: &[String],
+    rotation_targets: &BTreeSet<String>,
+) -> Result<(BTreeSet<String>, f64, Vec<IntervalV1>), CreateSceneEntitiesError> {
+    let child_ids = group
+        .child_entity_ids
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if child_ids.len() != group.child_entity_ids.len() || group.child_entity_ids.len() < 2 {
+        return Err(CreateSceneEntitiesError::InvalidHierarchy);
+    }
+    let mut paint_indexes = Vec::with_capacity(group.child_entity_ids.len());
+    let mut lifetimes = Vec::new();
+    for child_id in &group.child_entity_ids {
+        if !created_entity_ids.contains(child_id) || rotation_targets.contains(child_id) {
+            return Err(CreateSceneEntitiesError::InvalidHierarchy);
+        }
+        let child = scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == *child_id)
+            .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
+        if child.parent_id.is_some()
+            || !child.visible
+            || matches!(child.geometry, SceneGeometryV1::Group {})
+        {
+            return Err(CreateSceneEntitiesError::InvalidHierarchy);
+        }
+        paint_indexes.push(
+            root_paint_order
+                .iter()
+                .position(|id| id == child_id)
+                .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?,
+        );
+        lifetimes.extend(child.lifetimes.iter().cloned());
+    }
+    paint_indexes.sort_unstable();
+    if paint_indexes
+        .windows(2)
+        .any(|pair| pair[1] != pair[0].saturating_add(1))
+    {
+        return Err(CreateSceneEntitiesError::InvalidHierarchy);
+    }
+    lifetimes.sort_by(|left, right| left.start.total_cmp(&right.start));
+    let mut union = Vec::<IntervalV1>::new();
+    for lifetime in lifetimes {
+        if let Some(last) = union.last_mut()
+            && lifetime.start <= last.end + TIMELINE_ANCHOR_EPSILON
+        {
+            last.end = last.end.max(lifetime.end);
+        } else {
+            union.push(lifetime);
+        }
+    }
+    if union != group.lifetimes {
+        return Err(CreateSceneEntitiesError::InvalidHierarchy);
+    }
+    let source_z_index = scene
+        .entities
+        .iter()
+        .find(|entity| entity.id == group.child_entity_ids[0])
+        .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?
+        .source_z_index;
+    Ok((child_ids, source_z_index, union))
+}
+
+fn append_studio_logical_groups(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    groups: &[PlannedStudioLogicalGroup],
+    created_entity_ids: &BTreeSet<String>,
+    provenance_id: &str,
+) -> Result<(), CreateSceneEntitiesError> {
+    let mut roots = scene
+        .entities
+        .iter()
+        .filter(|entity| {
+            entity.parent_id.is_none() && !matches!(entity.geometry, SceneGeometryV1::Group {})
+        })
+        .map(|entity| (entity.id.clone(), entity.source_z_index, entity.scene_order))
+        .collect::<Vec<_>>();
+    roots.sort_by(|left, right| left.1.total_cmp(&right.1).then(left.2.cmp(&right.2)));
+    let root_paint_order = roots.into_iter().map(|(id, _, _)| id).collect::<Vec<_>>();
+    let rotation_targets = scene
+        .animation_channels
+        .iter()
+        .filter_map(|channel| match channel {
+            AnimationChannelV1::Rotation { entity_id, .. } => Some(entity_id.clone()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    for group in groups {
+        if scene
+            .entities
+            .iter()
+            .any(|entity| entity.id == group.group_id)
+        {
+            return Err(CreateSceneEntitiesError::InvalidHierarchy);
+        }
+        let (child_ids, source_z_index, union) = validate_studio_logical_group(
+            scene,
+            group,
+            created_entity_ids,
+            &root_paint_order,
+            &rotation_targets,
+        )?;
+        let scene_order = scene
+            .entities
+            .iter()
+            .map(|entity| entity.scene_order)
+            .max()
+            .and_then(|maximum| maximum.checked_add(1))
+            .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
+        for entity in &mut scene.entities {
+            if child_ids.contains(&entity.id) {
+                entity.parent_id = Some(group.group_id.clone());
+            }
+        }
+        scene.entities.push(SceneEntityV1 {
+            appearance: SceneAppearanceV1::Group { opacity: 1.0 },
+            geometry: SceneGeometryV1::Group {},
+            id: group.group_id.clone(),
+            lifetimes: union,
+            parent_id: None,
+            provenance_id: provenance_id.to_owned(),
+            scene_order,
+            source_z_index,
+            transform: AffineTransformV1::identity(),
+            visible: true,
+        });
+    }
+    if !groups.is_empty()
+        && !scene
+            .required_capabilities
+            .contains(&SceneCapabilityV1::LogicalGroup)
+    {
+        scene
+            .required_capabilities
+            .push(SceneCapabilityV1::LogicalGroup);
+        scene.required_capabilities.sort();
+    }
+    Ok(())
+}
+
 impl EngineSessionV1 {
     /// Authorizes normalized Studio duration edits and applies them atomically.
     fn create_scene_entities(
@@ -3592,6 +3903,11 @@ impl EngineSessionV1 {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
+        let created_entity_ids = command
+            .entities
+            .iter()
+            .map(|entity| entity.id.clone())
+            .collect::<BTreeSet<_>>();
 
         for (scene_order, entity) in (first_scene_order..).zip(command.entities) {
             let entity_source_z_index = entity.source_z_index.unwrap_or(source_z_index);
@@ -3621,6 +3937,12 @@ impl EngineSessionV1 {
                 &command.provenance.id,
             )?
         };
+        append_studio_logical_groups(
+            &mut candidate.scene,
+            &command.groups,
+            &created_entity_ids,
+            &command.provenance.id,
+        )?;
         candidate.scene.source = SceneSourceV1::StudioEditProgram {
             edit_program_version: ContractVersionV1,
             revision_hash: command.next_revision,
@@ -3873,6 +4195,7 @@ impl EngineSessionV1 {
         let mut result = self.create_scene_entities(CreateSceneEntitiesCommand {
             entities,
             expected_base_revision,
+            groups: plan.groups,
             motions,
             next_revision: next_revision.clone(),
             persistent_removals,
@@ -4076,6 +4399,7 @@ mod tests {
                 },
             ],
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            groups: vec![],
             motions: vec![],
             next_revision: NEXT_REVISION.to_owned(),
             persistent_removals: vec![],
@@ -4518,6 +4842,45 @@ mod tests {
             .map(|operation| operation.id.clone())
             .collect();
         creation
+    }
+
+    fn studio_hierarchy_edit_input(
+        transaction_id: &str,
+        at: f64,
+        kind: StudioCreationOperationKind,
+    ) -> StudioCreationEditInput {
+        let operation_id = format!("{transaction_id}-hierarchy");
+        StudioCreationEditInput {
+            anchor_captured_playhead: at,
+            anchor_resolved_seconds: at,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(at),
+            },
+            intent_count: 1,
+            lowering_supported: false,
+            operations: vec![StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: None,
+                id: operation_id.clone(),
+                interval: IntervalV1 { end: at, start: at },
+                kind,
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            }],
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Parallel,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Parallel,
+            schedule_order: vec![operation_id],
+            transaction_id: transaction_id.to_owned(),
+        }
+    }
+
+    fn bundle_contains_entity(bundle: &SceneIrBundleV1, entity_id: &str) -> bool {
+        bundle
+            .scene
+            .entities
+            .iter()
+            .any(|entity| entity.id == entity_id)
     }
 
     fn studio_group_resize_edit_input(targets: &[(&str, PointV1)]) -> StudioCreationEditInput {
@@ -6617,6 +6980,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // One end-to-end transform/hierarchy regression scenario.
     fn normalized_creation_reuses_one_rust_transform_for_group_resize_and_rotation() {
         let bundle = static_imported_bundle();
         let mut command = studio_creation_command(&bundle);
@@ -6666,6 +7030,15 @@ mod tests {
             .map(|operation| operation.id.clone())
             .collect();
         command.programs.push(second_rotation);
+        let group_id = "tx:transformed-group/entity:group";
+        command.programs.push(studio_hierarchy_edit_input(
+            "transformed-group",
+            0.95,
+            StudioCreationOperationKind::Group {
+                child_entity_ids: vec![first_id.to_owned(), second_id.to_owned()],
+                group_id: group_id.to_owned(),
+            },
+        ));
 
         let expected = final_targets.map(|(entity_id, position)| {
             (
@@ -6716,7 +7089,151 @@ mod tests {
                     )
             }));
         }
+        let group = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == group_id)
+            .unwrap();
+        assert_eq!(group.transform, AffineTransformV1::identity());
+        assert!(result.bundle.scene.entities.iter().any(|entity| {
+            entity.id == first_id && entity.parent_id.as_deref() == Some(group_id)
+        }));
+        assert!(result.bundle.scene.entities.iter().any(|entity| {
+            entity.id == second_id && entity.parent_id.as_deref() == Some(group_id)
+        }));
         assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn normalized_creation_replays_group_and_ungroup_history_across_reverse_playheads() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command
+            .programs
+            .push(second_group_resize_creation(&command.programs[0]));
+        let child_ids = vec![
+            "tx:create/entity:circle".to_owned(),
+            "tx:second/entity:rectangle".to_owned(),
+        ];
+        let group_id = "tx:studio-group/entity:group".to_owned();
+        command.programs.push(studio_hierarchy_edit_input(
+            "studio-group",
+            1.0,
+            StudioCreationOperationKind::Group {
+                child_entity_ids: child_ids.clone(),
+                group_id: group_id.clone(),
+            },
+        ));
+        let grouped_history = command.clone();
+
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+        let grouped = session.apply_studio_creation_edit(command.clone()).unwrap();
+        let group = grouped
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == group_id)
+            .unwrap();
+        assert_eq!(group.geometry, SceneGeometryV1::Group {});
+        assert_eq!(group.appearance, SceneAppearanceV1::Group { opacity: 1.0 });
+        assert_eq!(group.transform, AffineTransformV1::identity());
+        let maximum_child_end = child_ids
+            .iter()
+            .filter_map(|child_id| {
+                grouped
+                    .bundle
+                    .scene
+                    .entities
+                    .iter()
+                    .find(|entity| entity.id == *child_id)
+                    .and_then(|entity| entity.lifetimes.last())
+                    .map(|lifetime| lifetime.end)
+            })
+            .fold(0.0_f64, f64::max);
+        assert_eq!(
+            group.lifetimes,
+            vec![IntervalV1 {
+                start: 0.5,
+                end: maximum_child_end,
+            }]
+        );
+        assert!(child_ids.iter().all(|child_id| {
+            grouped
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == *child_id)
+                .is_some_and(|entity| entity.parent_id.as_deref() == Some(group_id.as_str()))
+        }));
+
+        command.programs.push(studio_hierarchy_edit_input(
+            "studio-ungroup",
+            0.5,
+            StudioCreationOperationKind::Ungroup {
+                group_id: group_id.clone(),
+            },
+        ));
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let ungrouped = session.apply_studio_creation_edit(command.clone()).unwrap();
+        assert!(!bundle_contains_entity(&ungrouped.bundle, &group_id));
+        assert!(child_ids.iter().all(|child_id| {
+            ungrouped
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == *child_id)
+                .is_some_and(|entity| entity.parent_id.is_none())
+        }));
+
+        let base = static_imported_bundle();
+        let mut undo_session = EngineSessionV1::new(base.clone()).unwrap();
+        let undo = undo_session
+            .apply_studio_creation_edit(grouped_history)
+            .unwrap();
+        assert!(bundle_contains_entity(&undo.bundle, &group_id));
+
+        let mut redo_session = EngineSessionV1::new(base).unwrap();
+        let redo = redo_session.apply_studio_creation_edit(command).unwrap();
+        assert!(!bundle_contains_entity(&redo.bundle, &group_id));
+    }
+
+    #[test]
+    fn normalized_creation_rejects_grouping_a_rotation_keyframe_target() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        add_creation_rotation_segment(
+            &mut command.programs[0],
+            "tx:create/entity:circle",
+            1.0,
+            1.2,
+            FRAC_PI_2,
+        );
+        command.programs.push(second_group_resize_creation(
+            &studio_creation_command(&bundle).programs[0],
+        ));
+        command.programs.push(studio_hierarchy_edit_input(
+            "rotation-keyframe-group",
+            1.3,
+            StudioCreationOperationKind::Group {
+                child_entity_ids: vec![
+                    "tx:create/entity:circle".to_owned(),
+                    "tx:second/entity:rectangle".to_owned(),
+                ],
+                group_id: "tx:rotation-keyframe-group/entity:group".to_owned(),
+            },
+        ));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
     }
 
     #[test]

@@ -356,6 +356,17 @@ function normalizedStudioCreationOperation(
       targetEntityIds: operation.targetEntityIds,
     };
   }
+  if (operation.kind === "GroupEntities") {
+    return {
+      ...common,
+      childEntityIds: operation.childEntityIds,
+      groupId: operation.groupId,
+      kind: "group",
+    };
+  }
+  if (operation.kind === "UngroupEntity") {
+    return { ...common, groupId: operation.groupId, kind: "ungroup" };
+  }
   return { ...common, kind: "unsupported" };
 }
 

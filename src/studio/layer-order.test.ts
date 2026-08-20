@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   filterStudioCanvasEntitiesByVisibility,
+  planStudioLayerGroup,
   planStudioLayerOrder,
   planStudioLayerReorder,
   projectStudioLayers,
+  selectedStudioLayerGroup,
+  selectionContainsGroupedChild,
 } from "./layer-order";
 import type { ProjectedEntity } from "./model";
 
@@ -191,5 +194,87 @@ describe("Studio Layers paint order", () => {
         [{ id: "studio:visible" }, { id: "studio:hidden", visible: false }],
       ).map(({ id }) => id),
     ).toEqual(["studio:visible"]);
+  });
+
+  it("projects one-level groups and plans only contiguous visible root leaves", () => {
+    const projected = projectStudioLayers({
+      canonicalEntities: [
+        { geometry: { kind: "group" }, id: "tx:group/entity:group", parentId: null, sceneOrder: 3, sourceZIndex: 1 },
+        { id: "studio:a", parentId: "tx:group/entity:group", sceneOrder: 0, sourceZIndex: 0 },
+        { id: "studio:b", parentId: "tx:group/entity:group", sceneOrder: 1, sourceZIndex: 1 },
+        { id: "studio:c", parentId: null, sceneOrder: 2, sourceZIndex: 2 },
+      ],
+      creationSourceAnchors: new Map([
+        ["studio:a", 0],
+        ["studio:b", 0],
+        ["studio:c", 0],
+      ]),
+      entities: [
+        entity("studio:a", { kind: "unknown", reason: "Studio-created" }),
+        entity("studio:b", { kind: "unknown", reason: "Studio-created" }),
+        entity("studio:c", { kind: "unknown", reason: "Studio-created" }),
+      ],
+      sourceRuntimeIdentity: null,
+    });
+
+    expect(projected.map((entry) => (entry.isGroup ? entry.groupId : entry.entity.id))).toEqual([
+      "studio:c",
+      "tx:group/entity:group",
+      "studio:b",
+      "studio:a",
+    ]);
+    const selected = new Set(["studio:a", "studio:b"]);
+    expect(selectedStudioLayerGroup(projected, selected)?.groupId).toBe("tx:group/entity:group");
+    expect(selectionContainsGroupedChild(projected, new Set(["studio:a"]))).toBe(true);
+    expect(planStudioLayerGroup(projected, selected)).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/nested/i),
+    });
+    const outsideRoot = projected.find(({ entity: item }) => item.id === "studio:c");
+    expect(outsideRoot?.canMove).toEqual({ back: false, backward: false, forward: false, front: false });
+    expect(outsideRoot?.orderingReadOnlyReason).toMatch(/atomic group reordering/i);
+    expect(planStudioLayerOrder(projected, "studio:c", "back")).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/atomic group reordering/i),
+    });
+    expect(planStudioLayerReorder(projected, "studio:c", 0)).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/atomic group reordering/i),
+    });
+  });
+
+  it("rejects hidden, rotation-keyframed, and non-contiguous grouping targets", () => {
+    const projected = layers();
+    expect(planStudioLayerGroup(projected, new Set(["studio:b", "imported"]))).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/round-trip/i),
+    });
+    const rotationBlocked = projectStudioLayers({
+      canonicalEntities: [
+        { id: "studio:a", sceneOrder: 0, sourceZIndex: 0 },
+        { id: "studio:b", sceneOrder: 1, sourceZIndex: 1 },
+        { id: "studio:c", sceneOrder: 2, sourceZIndex: 2 },
+      ],
+      creationSourceAnchors: new Map([
+        ["studio:a", 0],
+        ["studio:b", 0],
+        ["studio:c", 0],
+      ]),
+      entities: [
+        entity("studio:a", { kind: "unknown", reason: "Studio-created" }),
+        entity("studio:b", { kind: "unknown", reason: "Studio-created" }),
+        entity("studio:c", { kind: "unknown", reason: "Studio-created" }),
+      ],
+      rotationKeyframeEntityIds: new Set(["studio:b"]),
+      sourceRuntimeIdentity: null,
+    });
+    expect(planStudioLayerGroup(rotationBlocked, new Set(["studio:a", "studio:b"]))).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/rotation keyframes/i),
+    });
+    expect(planStudioLayerGroup(rotationBlocked, new Set(["studio:a", "studio:c"]))).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/contiguous/i),
+    });
   });
 });

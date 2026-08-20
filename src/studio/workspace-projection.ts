@@ -314,6 +314,8 @@ function correlateCreationProjection(
       ({ operation }) =>
         operation.kind !== "CreateEntity" &&
         operation.kind !== "CreateMotion" &&
+        operation.kind !== "GroupEntities" &&
+        operation.kind !== "UngroupEntity" &&
         creationMutationKind(operation) === null &&
         !(operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent),
     ) ||

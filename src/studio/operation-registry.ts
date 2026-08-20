@@ -911,6 +911,31 @@ export const OPERATION_REGISTRY = {
     validate: (operation, scene) =>
       entityIssues([operation.sourceEntityId, operation.targetEntityId], operation, scene),
   } satisfies Capability<"SetRelation">,
+  GroupEntities: {
+    access: (operation) => ({
+      reads: operation.childEntityIds.map((entityId) => ({ channel: "identity" as const, entityId })),
+      writes: operation.childEntityIds.map((entityId) => ({ channel: "identity" as const, entityId })),
+    }),
+    execution: () => CLIENT_ONLY_EXECUTION,
+    validate: (operation, scene) => {
+      const issues = entityIssues(operation.childEntityIds, operation, scene);
+      if (new Set(operation.childEntityIds).size !== operation.childEntityIds.length) {
+        issues.push({
+          code: "schema-invalid",
+          field: "childEntityIds",
+          message: "A group must contain unique child objects.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"GroupEntities">,
+  UngroupEntity: {
+    access: () => ({ reads: [], writes: [] }),
+    execution: () => CLIENT_ONLY_EXECUTION,
+    validate: (operation, scene) => baseIssues(operation, scene),
+  } satisfies Capability<"UngroupEntity">,
   ChangePresence: {
     access: (operation) => ({
       reads: [{ channel: "presence", entityId: operation.entityId }],

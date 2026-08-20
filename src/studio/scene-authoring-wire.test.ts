@@ -78,6 +78,47 @@ describe("Studio creation wire", () => {
     expect(projection.programs[0]?.operations[0]).toMatchObject({ entity: { kind: "arrow" }, kind: "create" });
   });
 
+  it("normalizes GroupEntities for the Rust creation authority", () => {
+    const operation = {
+      childEntityIds: ["entity:Circle", "entity:Square"],
+      dependsOn: [],
+      groupId: "group:shapes",
+      id: "group:shapes",
+      interval: { end: 0, start: 0 },
+      kind: "GroupEntities" as const,
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+    };
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 1,
+      programs: [followupProgram("group:shapes", operation)],
+    });
+
+    expect(command.programs[0]?.operations[0]).toMatchObject({
+      childEntityIds: ["entity:Circle", "entity:Square"],
+      groupId: "group:shapes",
+      kind: "group",
+    });
+  });
+
+  it("normalizes UngroupEntity for the Rust creation authority", () => {
+    const operation = {
+      dependsOn: [],
+      groupId: "group:shapes",
+      id: "ungroup:shapes",
+      interval: { end: 0, start: 0 },
+      kind: "UngroupEntity" as const,
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+    };
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 1,
+      programs: [followupProgram("ungroup:shapes", operation)],
+    });
+
+    expect(command.programs[0]?.operations[0]).toMatchObject({ groupId: "group:shapes", kind: "ungroup" });
+  });
+
   it("normalizes bounded Japanese multiline Text to LF as a first-class creation kind", () => {
     const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs: [creationProgram("Text")] });
 

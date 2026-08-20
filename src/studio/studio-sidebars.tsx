@@ -42,6 +42,8 @@ const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
   "distribute-vertical",
   "undo",
   "redo",
+  "group",
+  "ungroup",
   "duplicate",
   "delete",
   "copy",
@@ -165,21 +167,26 @@ export function WorkspaceSidebar({
   durationError,
   durationMinimum,
   entities,
+  groupUnavailableReason = "Select at least two contiguous Studio-created objects.",
   layers,
   lockToggleDisabled = false,
   lockedEntityIds = new Set(),
   nextScene,
+  onGroup,
   onDurationChange,
   onEditAppliedProgram,
   onLayerOrder,
   onLayerReorder,
+  onToggleLayerGroup,
   onToggleEntityLock,
   onToggleEntityVisibility,
+  onUngroup,
   onRedo,
   onToggleEntity,
   onUndo,
   redoCount,
   selectedIds,
+  selectedGroupId = null,
   sourceImportOutcomes,
 }: Readonly<{
   activeScene: ManimWorkspaceScene;
@@ -194,21 +201,26 @@ export function WorkspaceSidebar({
   durationError: string | null;
   durationMinimum: number;
   entities: readonly ProjectedEntity[];
+  groupUnavailableReason?: string | null;
   layers?: readonly StudioLayerEntry[];
   lockToggleDisabled?: boolean;
   lockedEntityIds?: ReadonlySet<string>;
   nextScene: ManimWorkspaceScene | null;
+  onGroup?: () => void;
   onDurationChange: (duration: number) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
+  onToggleLayerGroup?: (childEntityIds: readonly string[], selected: boolean) => void;
   onToggleEntityLock?: (entityId: string) => void;
   onToggleEntityVisibility?: (entityId: string, visible: boolean) => void;
+  onUngroup?: (groupId: string) => void;
   onRedo: () => void;
   onToggleEntity: (entityId: string, selected: boolean) => void;
   onUndo: () => void;
   redoCount: number;
   selectedIds: ReadonlySet<string>;
+  selectedGroupId?: string | null;
   sourceImportOutcomes: readonly ManimSourceImportOutcome[];
 }>) {
   const [layerDrag, setLayerDrag] = useState<Readonly<{ boundary: number; entityId: string }> | null>(null);
@@ -228,18 +240,70 @@ export function WorkspaceSidebar({
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-balance text-xs font-medium text-zinc-300">Layers</h2>
-        <span className="tabular-nums text-[10px] text-zinc-600">{layerEntries.length}</span>
+        <div className="flex items-center gap-1">
+          <button
+            aria-keyshortcuts="Control+G Meta+G"
+            className="border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
+            disabled={!onGroup || groupUnavailableReason !== null}
+            onClick={onGroup}
+            title={groupUnavailableReason ?? "Group selected objects · Mod+G"}
+            type="button"
+          >
+            Group
+          </button>
+          <button
+            aria-keyshortcuts="Control+Shift+G Meta+Shift+G"
+            className="border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
+            disabled={!onUngroup || selectedGroupId === null}
+            onClick={() => selectedGroupId && onUngroup?.(selectedGroupId)}
+            title={selectedGroupId ? "Ungroup selected group · Mod+Shift+G" : "Select one group row to ungroup."}
+            type="button"
+          >
+            Ungroup
+          </button>
+          <span className="ml-1 tabular-nums text-[10px] text-zinc-600">{layerEntries.length}</span>
+        </div>
       </div>
       <p className="mt-1 truncate text-[10px] text-zinc-600" title={activeScene.sceneId}>
         {activeScene.name}
       </p>
       <ul className="mt-3 space-y-1">
         {layerEntries.map((layer, layerIndex) => {
+          if (layer.isGroup && layer.groupId && layer.childEntityIds) {
+            const selected =
+              layer.childEntityIds.length > 0 &&
+              layer.childEntityIds.length === selectedIds.size &&
+              layer.childEntityIds.every((entityId) => selectedIds.has(entityId));
+            return (
+              <li className="border border-zinc-800 bg-zinc-900/50" key={layer.groupId}>
+                <label
+                  className={cn(
+                    "flex cursor-pointer items-center gap-2 px-2 py-1.5 text-xs",
+                    selected ? "bg-sky-950 text-sky-200" : "text-zinc-300 hover:bg-zinc-900",
+                  )}
+                >
+                  <input
+                    aria-label={`Select group of ${layer.childEntityIds.length} objects`}
+                    checked={selected}
+                    className="size-3.5 accent-sky-400"
+                    onChange={() => onToggleLayerGroup?.(layer.childEntityIds!, selected)}
+                    type="checkbox"
+                  />
+                  <span aria-hidden="true" className="text-zinc-500">
+                    ⧉
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">Group</span>
+                  <span className="tabular-nums text-[10px] text-zinc-600">{layer.childEntityIds.length}</span>
+                </label>
+              </li>
+            );
+          }
           const entity = layer.entity;
           const selected = selectedIds.has(entity.id);
           const provisionalLocked =
             entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId));
           const authoringLocked = lockedEntityIds.has(entity.id);
+          const orderingReadOnlyReason = layer.orderingReadOnlyReason ?? layer.readOnlyReason;
           const visibilityUnavailableReason =
             onToggleEntityVisibility === undefined
               ? "Layer visibility is unavailable."
@@ -259,7 +323,7 @@ export function WorkspaceSidebar({
                     ? "Unlock this object before reordering it."
                     : !entity.present
                       ? "This object is not present at the current time."
-                      : layer.readOnlyReason;
+                      : orderingReadOnlyReason;
           const draggable = onLayerReorder !== undefined && dragUnavailableReason === null;
           const updateDropBoundary = (event: DragEvent<HTMLLIElement>) => {
             if (!layerDrag) return null;
@@ -306,6 +370,7 @@ export function WorkspaceSidebar({
               <div
                 className={cn(
                   "flex items-center gap-2 px-2 py-1.5 text-xs",
+                  layer.depth === 1 && "ml-4 border-l border-zinc-800",
                   selected ? "bg-sky-950 text-sky-200" : "text-zinc-400 hover:bg-zinc-900",
                 )}
               >
@@ -411,12 +476,12 @@ export function WorkspaceSidebar({
                       disabled={
                         !authoringAvailable ||
                         authoringLocked ||
-                        layer.readOnlyReason !== null ||
+                        orderingReadOnlyReason !== null ||
                         !layer.canMove[direction]
                       }
                       key={direction}
                       onClick={() => onLayerOrder(entity.id, direction)}
-                      title={layer.readOnlyReason ?? label}
+                      title={orderingReadOnlyReason ?? label}
                       type="button"
                     >
                       {glyph}
