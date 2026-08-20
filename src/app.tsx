@@ -371,6 +371,7 @@ type CanvasRotationState = Readonly<{
 type TabLocalNativeProjectState = NativeProjectAssetStateV1 &
   Readonly<{
     documentKey: string;
+    fragmentMaterials: ProjectFragmentMaterialStateV1;
     projectId: string;
   }>;
 function detectShell(): Shell {
@@ -652,7 +653,13 @@ export function App({
     void createStudioNativeBlankSceneIrBundle(activeEditorScene, workspace.frame).then(
       (bundle) => {
         if (nativeProjectAssetGeneration.current !== generation) return;
-        setNativeProjectState({ assetPayloads: [], bundle, documentKey, projectId });
+        setNativeProjectState({
+          assetPayloads: [],
+          bundle,
+          documentKey,
+          fragmentMaterials: EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
+          projectId,
+        });
         setNativeProjectAssetPending(false);
       },
       (cause: unknown) => {
@@ -971,6 +978,7 @@ export function App({
     activeScene?.runtimeSceneState.eventTrack.events.some(
       (event) => event.kind === "scene-boundary" && event.at !== undefined && event.at <= currentTime,
     ) ?? false;
+  const nativeSceneActive = activeEditorScene !== null && isStudioNativeWorkspaceScene(activeEditorScene);
   // Imported boundaries still gate the canvas directly. Studio-authored
   // boundaries are already fail-closed by their non-pristine revision.
   const sourceLifecycle = resolveEditorSourceLifecycle({
@@ -1014,7 +1022,6 @@ export function App({
     activeSessionIdentity !== null &&
     targetEditorSessionIdentity !== null &&
     editorSessionIdentityKey(activeSessionIdentity) === editorSessionIdentityKey(targetEditorSessionIdentity);
-  const nativeSceneActive = activeEditorScene !== null && isStudioNativeWorkspaceScene(activeEditorScene);
   const editorDocumentPresentationReady = nativeSceneActive
     ? editorSessionReady
     : importedEditorDocumentPresentationReady;
@@ -1051,9 +1058,11 @@ export function App({
           stagedEdits: editingAppliedProgram || !draftEdit ? [] : [draftEdit],
         })
       : null;
-  const activeProjectFragmentMaterials = activeProjectId
-    ? (projectFragmentMaterials[activeProjectId] ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1)
-    : EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
+  const activeProjectFragmentMaterials = nativeSceneActive
+    ? (nativeProjectState?.fragmentMaterials ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1)
+    : activeProjectId
+      ? (projectFragmentMaterials[activeProjectId] ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1)
+      : EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
   const activeProjectNamedFragmentMaterials = useMemo(
     () =>
       listStudioFragmentMaterialsV1(activeProjectFragmentMaterials).map((material) => ({
@@ -1089,20 +1098,31 @@ export function App({
         : null,
     [activeEditorScene, editorRevision.workingRevision, nativePreviewIdentity],
   );
+  const nativePreviewBundle = nativeProjectState?.bundle ?? null;
+  const nativePreviewAssetPayloads = nativeProjectState?.assetPayloads ?? null;
+  const nativePreviewProjectId = nativeProjectState?.projectId ?? null;
+  const nativePreviewDocumentKey = nativeProjectState?.documentKey ?? null;
   const nativePreviewProvider = useMemo(() => {
     if (
       !nativePreviewIdentity ||
-      !nativeProjectState ||
-      nativeProjectState.projectId !== nativePreviewIdentity.projectId ||
-      nativeProjectState.documentKey !== nativePreviewIdentity.documentKey
+      !nativePreviewBundle ||
+      !nativePreviewAssetPayloads ||
+      nativePreviewProjectId !== nativePreviewIdentity.projectId ||
+      nativePreviewDocumentKey !== nativePreviewIdentity.documentKey
     )
       return null;
     return createStudioNativePreviewSnapshotProviderV1({
-      assetPayloads: nativeProjectState.assetPayloads,
-      bundle: nativeProjectState.bundle,
+      assetPayloads: nativePreviewAssetPayloads,
+      bundle: nativePreviewBundle,
       identity: nativePreviewIdentity,
     });
-  }, [nativePreviewIdentity, nativeProjectState]);
+  }, [
+    nativePreviewAssetPayloads,
+    nativePreviewBundle,
+    nativePreviewDocumentKey,
+    nativePreviewIdentity,
+    nativePreviewProjectId,
+  ]);
   const {
     activate: activatePreviewAuthority,
     activationAllowed: previewActivationAllowed,
@@ -1156,6 +1176,7 @@ export function App({
         assetPayloads: result.assetPayloads,
         bundle: result.bundle,
         documentKey,
+        fragmentMaterials: nativeProjectState.fragmentMaterials,
         projectId,
       });
     } catch (cause) {
@@ -1759,11 +1780,14 @@ export function App({
     readDurationBlocker,
     renderPipelineLifecycleBlocker,
   } = useEditorRevisionController({
-    candidate: previewRenderer?.verifiedSourceDuration ?? null,
+    // Native Scene duration is part of the canonical local document. The
+    // source-duration adoption policy exists only to reconcile imported
+    // Python estimates with a verified runtime snapshot.
+    candidate: nativeSceneActive ? null : (previewRenderer?.verifiedSourceDuration ?? null),
     lifecycle: sourceLifecycle,
-    metadataPhase: previewRenderer?.sourceMetadataPhase ?? null,
-    providerPending: previewProviderPending,
-    retained: verifiedSourceDurationBasis,
+    metadataPhase: nativeSceneActive ? null : (previewRenderer?.sourceMetadataPhase ?? null),
+    providerPending: nativeSceneActive ? false : previewProviderPending,
+    retained: nativeSceneActive ? null : verifiedSourceDurationBasis,
     revision: editorRevision,
     setVerifiedSourceDurationBasis,
   });
@@ -1860,6 +1884,7 @@ export function App({
     }
     const preservedAnchor = input.preserveAppliedProgram?.program.anchor.resolvedSeconds;
     if (
+      !nativeSceneActive &&
       preservedAnchor !== undefined &&
       !activeEditorScene?.anchors.some((anchor) => Math.abs(anchor - preservedAnchor) < 0.0005)
     ) {
@@ -5879,6 +5904,21 @@ export function App({
   }
 
   function commitActiveProjectFragmentMaterials(next: ProjectFragmentMaterialStateV1) {
+    if (nativeSceneActive) {
+      if (!activeProjectId || !activeEditorScene || !isStudioNativeWorkspaceScene(activeEditorScene)) return false;
+      const documentKey = activeEditorScene.identity.documentKey;
+      if (
+        !nativeProjectState ||
+        nativeProjectState.projectId !== activeProjectId ||
+        nativeProjectState.documentKey !== documentKey
+      )
+        return false;
+      setNativeProjectState((current) => {
+        if (!current || current.projectId !== activeProjectId || current.documentKey !== documentKey) return current;
+        return { ...current, fragmentMaterials: next };
+      });
+      return true;
+    }
     return activeProjectId ? commitProjectFragmentMaterials(activeProjectId, next) : false;
   }
 
