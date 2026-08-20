@@ -85,6 +85,10 @@ describe("Studio creation wire", () => {
 
     expect(apply.programs[0]?.operations[0]).toMatchObject({ entity: { kind: "arrow" }, kind: "create" });
     expect(projection.programs[0]?.operations[0]).toMatchObject({ entity: { kind: "arrow" }, kind: "create" });
+    const applyOperation = apply.programs[0]?.operations[0];
+    const projectionOperation = projection.programs[0]?.operations[0];
+    expect(applyOperation?.kind === "create" ? applyOperation.entity : null).not.toHaveProperty("image");
+    expect(projectionOperation?.kind === "create" ? projectionOperation.entity : null).not.toHaveProperty("image");
   });
 
   it("normalizes GroupEntities for the Rust creation authority", () => {
@@ -153,6 +157,13 @@ describe("Studio creation wire", () => {
       entity: { image: expected, kind: "image" },
       kind: "create",
     });
+    const applyOperation = apply.programs[0]?.operations[0];
+    const projectionOperation = projection.programs[0]?.operations[0];
+    expect(applyOperation?.kind === "create" ? applyOperation.entity : null).toHaveProperty("image", expected);
+    expect(projectionOperation?.kind === "create" ? projectionOperation.entity : null).toHaveProperty(
+      "image",
+      expected,
+    );
   });
 
   it("normalizes bounded Japanese multiline Text to LF as a first-class creation kind", () => {
