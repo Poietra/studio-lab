@@ -364,12 +364,14 @@ describe("durable editor session storage", () => {
     expect(store.restore(identity())).toEqual({ kind: "restored", snapshot: snapshot() });
   });
 
-  it("keeps Studio-native sessions transient without inventing a source hash", () => {
+  it("restores Studio-native sessions within one tab without persisting them", () => {
     const adapter = new MemoryAdapter();
     const store = new EditorSessionStore(adapter);
+    const nativeSnapshot = snapshot();
 
-    expect(store.save(nativeIdentity(), snapshot())).toBe(false);
-    expect(store.restore(nativeIdentity())).toEqual({ kind: "empty" });
+    expect(store.save(nativeIdentity(), nativeSnapshot)).toBe(true);
+    expect(store.restore(nativeIdentity())).toEqual({ kind: "restored", snapshot: nativeSnapshot });
+    expect(store.restore(nativeIdentity("e".repeat(64)))).toEqual({ kind: "empty" });
     expect(adapter.value).toBeNull();
     expect(new EditorSessionStore(adapter).restore(nativeIdentity())).toEqual({ kind: "empty" });
   });
@@ -756,11 +758,13 @@ describe("durable editor session storage", () => {
     store.save(identity("a.py#Scene"), snapshot());
     store.save(identity("b.py#Scene", "b".repeat(64)), snapshot());
     store.save(identity("other.py#Scene", "c".repeat(64), "project-b"), snapshot());
+    store.save(nativeIdentity(), snapshot());
     store.saveProjectFragmentMaterials("project-a", assignedFragmentMaterials("scene-a", "circle"));
 
     store.clearProject("project-a");
 
     const reloaded = new EditorSessionStore(adapter);
+    expect(store.restore(nativeIdentity())).toEqual({ kind: "empty" });
     expect(reloaded.restore(identity("a.py#Scene"))).toEqual({ kind: "empty" });
     expect(reloaded.restore(identity("other.py#Scene", "c".repeat(64), "project-b"))).toMatchObject({
       kind: "restored",

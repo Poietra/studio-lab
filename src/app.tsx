@@ -374,6 +374,11 @@ type TabLocalNativeProjectState = NativeProjectAssetStateV1 &
     fragmentMaterials: ProjectFragmentMaterialStateV1;
     projectId: string;
   }>;
+
+function tabLocalNativeProjectKey(projectId: string, documentKey: string) {
+  return JSON.stringify([projectId, documentKey]);
+}
+
 function detectShell(): Shell {
   if ("__TAURI_INTERNALS__" in window) return "Tauri";
   if (window.poietraDesktop || navigator.userAgent.includes("Electron")) return "Electron";
@@ -623,6 +628,7 @@ export function App({
   const sourceTimingResolutionDialog = useRef<HTMLDialogElement | null>(null);
   const sourceTimingResolutionTarget = useRef<string | null>(null);
   const nativeProjectAssetGeneration = useRef(0);
+  const nativeProjectStates = useRef(new Map<string, TabLocalNativeProjectState>());
   const workspaceBounds = useRef<HTMLElement | null>(null);
   const appliedSceneEdits = appliedEdits.map((record) => record.program);
   const appliedProgramTransactionIds = useMemo(
@@ -649,17 +655,25 @@ export function App({
       return;
     const projectId = activeProjectId;
     const documentKey = activeEditorScene.identity.documentKey;
+    const stateKey = tabLocalNativeProjectKey(projectId, documentKey);
+    const retained = nativeProjectStates.current.get(stateKey);
+    if (retained) {
+      setNativeProjectState(retained);
+      return;
+    }
     setNativeProjectAssetPending(true);
     void createStudioNativeBlankSceneIrBundle(activeEditorScene, workspace.frame).then(
       (bundle) => {
         if (nativeProjectAssetGeneration.current !== generation) return;
-        setNativeProjectState({
+        const initialized = {
           assetPayloads: [],
           bundle,
           documentKey,
           fragmentMaterials: EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
           projectId,
-        });
+        };
+        nativeProjectStates.current.set(stateKey, initialized);
+        setNativeProjectState(initialized);
         setNativeProjectAssetPending(false);
       },
       (cause: unknown) => {
@@ -698,6 +712,9 @@ export function App({
     if (workspaceStatus !== "ready") return;
     const registeredProjectIds = new Set(projects.map((project) => project.id));
     pruneSessions(registeredProjectIds);
+    for (const [key, state] of nativeProjectStates.current) {
+      if (!registeredProjectIds.has(state.projectId)) nativeProjectStates.current.delete(key);
+    }
     setRenderSessions((current) => {
       const next = Object.fromEntries(
         Object.entries(current).filter(([projectId]) => registeredProjectIds.has(projectId)),
@@ -1172,13 +1189,17 @@ export function App({
         state: nativeProjectState,
       });
       if (nativeProjectAssetGeneration.current !== generation) return;
-      setNativeProjectState({
+      const stateKey = tabLocalNativeProjectKey(projectId, documentKey);
+      const retained = nativeProjectStates.current.get(stateKey);
+      const updated = {
         assetPayloads: result.assetPayloads,
         bundle: result.bundle,
         documentKey,
-        fragmentMaterials: nativeProjectState.fragmentMaterials,
+        fragmentMaterials: retained?.fragmentMaterials ?? nativeProjectState.fragmentMaterials,
         projectId,
-      });
+      };
+      nativeProjectStates.current.set(stateKey, updated);
+      setNativeProjectState(updated);
     } catch (cause) {
       if (nativeProjectAssetGeneration.current !== generation) return;
       setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not import the selected PNG.");
@@ -5913,10 +5934,9 @@ export function App({
         nativeProjectState.documentKey !== documentKey
       )
         return false;
-      setNativeProjectState((current) => {
-        if (!current || current.projectId !== activeProjectId || current.documentKey !== documentKey) return current;
-        return { ...current, fragmentMaterials: next };
-      });
+      const updated = { ...nativeProjectState, fragmentMaterials: next };
+      nativeProjectStates.current.set(tabLocalNativeProjectKey(activeProjectId, documentKey), updated);
+      setNativeProjectState(updated);
       return true;
     }
     return activeProjectId ? commitProjectFragmentMaterials(activeProjectId, next) : false;
