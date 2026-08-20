@@ -1252,8 +1252,19 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                 );
             }
             AnimationChannelV1::Rotation {
-                keyframes, pivot, ..
+                entity_id,
+                keyframes,
+                pivot,
+                ..
             } => {
+                if let Some(entity_index) = entity_indexes.get(entity_id.as_str())
+                    && scene.entities[*entity_index].parent_id.is_some()
+                {
+                    validator.issue(
+                        format!("{path}.entityId"),
+                        "rotation channels with a world-space pivot require a root entity",
+                    );
+                }
                 validate_point(pivot, &format!("{path}.pivot"), &mut validator);
                 total_keyframes = total_keyframes.saturating_add(keyframes.len());
                 validate_keyframes(
