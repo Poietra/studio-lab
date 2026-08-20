@@ -1,0 +1,126 @@
+import { readFile } from "node:fs/promises";
+
+import { expect, test } from "@playwright/test";
+
+import { encodeRgbaPngV1 } from "./png-rgba";
+import { cleanupFixtureWorkspace } from "./workspace";
+
+const PNG = encodeRgbaPngV1(
+  Uint8Array.from([255, 64, 64, 255, 64, 255, 64, 255, 64, 64, 255, 255, 255, 255, 255, 255]),
+  2,
+  2,
+);
+
+test("restores a Studio-native Image and MP4 export after a page reload", async ({ page }) => {
+  test.setTimeout(180_000);
+  let projectId: string | null = null;
+  try {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Add workspace" }).click();
+    const addDialog = page.getByRole("dialog", { name: "Add workspace" });
+    await expect(addDialog.getByRole("radio", { name: /Blank Scene/ })).toBeChecked();
+    await addDialog.getByRole("textbox", { name: "Workspace name" }).fill("Native reload fixture");
+    const createResponsePromise = page.waitForResponse(
+      (response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/projects",
+    );
+    await addDialog.getByRole("button", { name: "Create workspace" }).click();
+    const createResponse = await createResponsePromise;
+    expect(createResponse.request().postDataJSON()).toEqual({ kind: "studio-native", name: "Native reload fixture" });
+    projectId = ((await createResponse.json()) as { project: { id: string } }).project.id;
+
+    await expect(page.getByLabel("Current workspace")).toHaveText("Native reload fixture");
+    const assets = page.getByRole("region", { name: "Assets" });
+    await expect(assets.getByRole("button", { name: "+ Import PNG" })).toBeEnabled();
+    await assets.locator("input[type=file]").setInputFiles({
+      buffer: Buffer.from(PNG),
+      mimeType: "image/png",
+      name: "image.png",
+    });
+    await expect(page.getByRole("list", { name: "Project images" })).toContainText("image.png");
+    await page.getByRole("button", { name: "+ Add" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toBeVisible();
+    await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
+
+    const localStorageText = await page.evaluate(() =>
+      Object.keys(localStorage)
+        .map((key) => localStorage.getItem(key) ?? "")
+        .join("\n"),
+    );
+    expect(localStorageText).not.toContain(Buffer.from(PNG).toString("base64"));
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Native reload fixture workspace" }).click();
+    await expect(page.getByLabel("Current workspace")).toHaveText("Native reload fixture");
+    await expect(page.getByRole("list", { name: "Project images" })).toContainText("image.png");
+    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move insert-0" })).toBeVisible();
+    await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
+
+    const exportControl = page.locator("[data-studio-export-mp4-state]");
+    const exportButton = page.getByRole("button", { name: "Export MP4" });
+    await expect(exportButton).toBeEnabled();
+    const downloadPromise = page.waitForEvent("download", { timeout: 90_000 }).catch(() => null);
+    await exportButton.click();
+    await expect
+      .poll(async () => exportControl.getAttribute("data-studio-export-mp4-state"), { timeout: 90_000 })
+      .toMatch(/^(done|refused)$/u);
+    if ((await exportControl.getAttribute("data-studio-export-mp4-state")) === "refused") {
+      const reason = await exportControl.getAttribute("data-studio-export-mp4-reason");
+      test.skip(reason === "unsupported-codec", "This Chromium build has no supported H.264 WebCodecs encoder.");
+      throw new Error(`The restored native MP4 export was refused: ${reason ?? "unknown"}.`);
+    }
+    const download = await downloadPromise;
+    expect(download).not.toBeNull();
+    expect(download!.suggestedFilename()).toMatch(/\.mp4$/u);
+    const path = await download!.path();
+    if (!path) throw new Error("The restored native MP4 download was not persisted by Playwright.");
+    expect((await readFile(path)).byteLength).toBeGreaterThan(0);
+
+    const deletedProjectId = projectId;
+    await page.getByRole("button", { name: "Back to workspaces" }).click();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Delete Native reload fixture workspace" }).click();
+    const deleteResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "DELETE" &&
+        new URL(response.url()).pathname === `/api/projects/${deletedProjectId}`,
+    );
+    await page.getByRole("alertdialog").getByRole("button", { name: "Delete workspace" }).click();
+    await deleteResponse;
+    await expect(page.getByRole("button", { name: "Open Native reload fixture workspace" })).toHaveCount(0);
+    const retainedLocalDocuments = await page.evaluate(
+      ({ databaseName, projectId }) =>
+        new Promise<number>((resolve, reject) => {
+          const open = indexedDB.open(databaseName, 1);
+          open.onerror = () => reject(open.error);
+          open.onsuccess = () => {
+            const database = open.result;
+            const request = database
+              .transaction("documents")
+              .objectStore("documents")
+              .index("projectId")
+              .count(projectId);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              database.close();
+              resolve(request.result);
+            };
+          };
+        }),
+      { databaseName: "poietra-studio-native-projects", projectId: deletedProjectId },
+    );
+    expect(retainedLocalDocuments).toBe(0);
+    expect(
+      await page.evaluate(
+        (deletedId) => Object.keys(localStorage).some((key) => (localStorage.getItem(key) ?? "").includes(deletedId)),
+        deletedProjectId,
+      ),
+    ).toBe(false);
+    projectId = null;
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});

@@ -149,6 +149,7 @@ import {
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { ingestNativeProjectPngV1, type NativeProjectAssetStateV1 } from "./studio/native-project-assets";
+import { browserNativeProjectLocalStore } from "./studio/native-project-local-store";
 import {
   type OpacityKeyframe,
   opacityKeyframeTrackFromProgram,
@@ -608,6 +609,7 @@ export function App({
   const [nativeProjectAssetError, setNativeProjectAssetError] = useState<string | null>(null);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
+  const nativeProjectLocalStore = useMemo(browserNativeProjectLocalStore, []);
   const gesturePreviewStore = useMemo(createStudioGesturePreviewStore, []);
   const readGesturePreviewKind = useCallback(() => gesturePreviewStore.getSnapshot().kind, [gesturePreviewStore]);
   const gesturePreviewKind = useSyncExternalStore(
@@ -666,29 +668,30 @@ export function App({
       return;
     }
     setNativeProjectAssetPending(true);
-    void createStudioNativeBlankSceneIrBundle(activeEditorScene, workspace.frame).then(
-      (bundle) => {
-        if (nativeProjectAssetGeneration.current !== generation) return;
-        const initialized = {
-          assetPayloads: [],
-          bundle,
-          documentKey,
-          fragmentMaterials: EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
-          projectId,
-        };
-        nativeProjectStates.current.set(stateKey, initialized);
-        setNativeProjectState(initialized);
-        setNativeProjectAssetPending(false);
-      },
-      (cause: unknown) => {
-        if (nativeProjectAssetGeneration.current !== generation) return;
-        setNativeProjectAssetError(
-          cause instanceof Error ? cause.message : "Studio could not initialize this native project.",
-        );
-        setNativeProjectAssetPending(false);
-      },
-    );
-  }, [activeEditorScene, activeProjectId, workspace]);
+    void (async () => {
+      const restored = await nativeProjectLocalStore?.restore({ documentKey, projectId });
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      const initialized = restored
+        ? { ...restored, documentKey, projectId }
+        : {
+            assetPayloads: [],
+            bundle: await createStudioNativeBlankSceneIrBundle(activeEditorScene, workspace.frame),
+            documentKey,
+            fragmentMaterials: EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
+            projectId,
+          };
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      nativeProjectStates.current.set(stateKey, initialized);
+      setNativeProjectState(initialized);
+      setNativeProjectAssetPending(false);
+    })().catch((cause: unknown) => {
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      setNativeProjectAssetError(
+        cause instanceof Error ? cause.message : "Studio could not restore this native project.",
+      );
+      setNativeProjectAssetPending(false);
+    });
+  }, [activeEditorScene, activeProjectId, nativeProjectLocalStore, workspace]);
 
   function activeEditorSessionIdentity(): EditorSessionIdentity | null {
     if (!activeProjectId || !activeEditorScene) return null;
@@ -1202,6 +1205,8 @@ export function App({
         fragmentMaterials: retained?.fragmentMaterials ?? nativeProjectState.fragmentMaterials,
         projectId,
       };
+      await nativeProjectLocalStore?.save({ documentKey, projectId }, updated);
+      if (nativeProjectAssetGeneration.current !== generation) return;
       nativeProjectStates.current.set(stateKey, updated);
       setNativeProjectState(updated);
     } catch (cause) {
@@ -5981,6 +5986,11 @@ export function App({
       const updated = { ...nativeProjectState, fragmentMaterials: next };
       nativeProjectStates.current.set(tabLocalNativeProjectKey(activeProjectId, documentKey), updated);
       setNativeProjectState(updated);
+      void nativeProjectLocalStore
+        ?.save({ documentKey, projectId: activeProjectId }, updated)
+        .catch((cause: unknown) => {
+          setDraftError(cause instanceof Error ? cause.message : "The native project materials could not be saved.");
+        });
       return true;
     }
     return activeProjectId ? commitProjectFragmentMaterials(activeProjectId, next) : false;
@@ -6347,6 +6357,16 @@ export function App({
   async function unregisterWorkspaceAndClearSession(workspaceId: string) {
     if (!(await unregisterWorkspace(workspaceId))) return false;
     clearProjectSessions(workspaceId);
+    for (const [key, state] of nativeProjectStates.current) {
+      if (state.projectId === workspaceId) nativeProjectStates.current.delete(key);
+    }
+    try {
+      await nativeProjectLocalStore?.deleteProject(workspaceId);
+    } catch (cause) {
+      setNativeProjectAssetError(
+        cause instanceof Error ? cause.message : "The deleted workspace's local assets could not be cleared.",
+      );
+    }
     setProjectFragmentMaterials((current) => {
       if (!(workspaceId in current)) return current;
       const next = { ...current };
