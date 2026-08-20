@@ -4,6 +4,7 @@ import { createStudioEntitiesProgram } from "./authoring-commands";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
+import { duplicatePropertyKeyframeAtTime } from "./property-keyframe-duplicate";
 import {
   appendScaleKeyframe,
   replaceScaleKeyframeProgram,
@@ -39,6 +40,28 @@ describe("uniform scale keyframe editing", () => {
       { easing: "linear", time: 2, value: 1 },
       { easing: "smooth", time: 4, value: 2 },
     ]);
+    const sourceKeyframes = scaleKeyframeTrackFromProgram(tracked.program, 0)!.keyframes;
+    const duplicated = replaceScaleKeyframeProgram({
+      baseProgram: tracked.program,
+      baseline: 1,
+      entityId,
+      keyframes: duplicatePropertyKeyframeAtTime(sourceKeyframes, 1, 3),
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(scaleKeyframeTrackFromProgram(duplicated.program, 0)?.keyframes).toEqual([
+      { easing: "linear", time: 2, value: 1 },
+      { easing: "smooth", time: 3, value: 2 },
+      { easing: "smooth", time: 4, value: 2 },
+    ]);
+    expect(() =>
+      replaceScaleKeyframeProgram({
+        baseProgram: tracked.program,
+        baseline: 1,
+        entityId,
+        keyframes: duplicatePropertyKeyframeAtTime(sourceKeyframes, 1, STUDIO_FIXTURE_SCENE.duration + 1),
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/inside the Scene/i);
     expect(scaleKeyframeTransformConflictEntity([tracked.program], [entityId])).toBe(entityId);
     expect(scaleKeyframeTransformConflictEntity([tracked.program], ["another-entity"])).toBeNull();
 

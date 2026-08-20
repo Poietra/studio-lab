@@ -133,17 +133,21 @@ export function StudioViewport({
   onMaterialParameterKeyframeAdd,
   onMaterialParameterKeyframeChange,
   onMaterialParameterKeyframeDelete,
+  onMaterialParameterKeyframeDuplicate,
   onMotionControlChange,
   onMotionDurationChange,
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
+  onOpacityKeyframeDuplicate,
   onRotationKeyframeAdd,
   onRotationKeyframeChange,
   onRotationKeyframeDelete,
+  onRotationKeyframeDuplicate,
   onScaleKeyframeAdd,
   onScaleKeyframeChange,
   onScaleKeyframeDelete,
+  onScaleKeyframeDuplicate,
   onPresenceCursorChange,
   onSelectionResizeCancel,
   onSelectionResizeKeyDown,
@@ -271,16 +275,20 @@ export function StudioViewport({
           onMaterialParameterKeyframeAdd={onMaterialParameterKeyframeAdd}
           onMaterialParameterKeyframeChange={onMaterialParameterKeyframeChange}
           onMaterialParameterKeyframeDelete={onMaterialParameterKeyframeDelete}
+          onMaterialParameterKeyframeDuplicate={onMaterialParameterKeyframeDuplicate}
           onMotionDurationChange={onMotionDurationChange}
           onOpacityKeyframeAdd={onOpacityKeyframeAdd}
           onOpacityKeyframeChange={onOpacityKeyframeChange}
           onOpacityKeyframeDelete={onOpacityKeyframeDelete}
+          onOpacityKeyframeDuplicate={onOpacityKeyframeDuplicate}
           onRotationKeyframeAdd={onRotationKeyframeAdd}
           onRotationKeyframeChange={onRotationKeyframeChange}
           onRotationKeyframeDelete={onRotationKeyframeDelete}
+          onRotationKeyframeDuplicate={onRotationKeyframeDuplicate}
           onScaleKeyframeAdd={onScaleKeyframeAdd}
           onScaleKeyframeChange={onScaleKeyframeChange}
           onScaleKeyframeDelete={onScaleKeyframeDelete}
+          onScaleKeyframeDuplicate={onScaleKeyframeDuplicate}
           onSelectEntity={onSelectEntity}
           onTimeChange={onTimeChange}
           onTogglePlayback={onTogglePlayback}

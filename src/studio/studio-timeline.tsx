@@ -54,6 +54,7 @@ export type StudioTimelineProps = Readonly<{
     patch: Partial<Pick<StudioMaterialParameterTimelineKeyframe, "easing" | "time" | "value">>,
   ) => void;
   onMaterialParameterKeyframeDelete: (track: StudioMaterialParameterTimelineTrack, index: number) => void;
+  onMaterialParameterKeyframeDuplicate: (track: StudioMaterialParameterTimelineTrack, index: number) => number | null;
   onOpacityKeyframeAdd: (entityId: string) => void;
   onOpacityKeyframeChange: (
     track: StudioOpacityTimelineTrack,
@@ -61,6 +62,7 @@ export type StudioTimelineProps = Readonly<{
     patch: Partial<Pick<StudioOpacityTimelineKeyframe, "easing" | "time" | "value">>,
   ) => void;
   onOpacityKeyframeDelete: (track: StudioOpacityTimelineTrack, index: number) => void;
+  onOpacityKeyframeDuplicate: (track: StudioOpacityTimelineTrack, index: number) => number | null;
   onRotationKeyframeAdd: (entityId: string) => void;
   onRotationKeyframeChange: (
     track: StudioRotationTimelineTrack,
@@ -68,6 +70,7 @@ export type StudioTimelineProps = Readonly<{
     patch: Partial<Pick<StudioRotationTimelineKeyframe, "easing" | "time" | "value">>,
   ) => void;
   onRotationKeyframeDelete: (track: StudioRotationTimelineTrack, index: number) => void;
+  onRotationKeyframeDuplicate: (track: StudioRotationTimelineTrack, index: number) => number | null;
   onScaleKeyframeAdd: (entityId: string) => void;
   onScaleKeyframeChange: (
     track: StudioScaleTimelineTrack,
@@ -75,6 +78,7 @@ export type StudioTimelineProps = Readonly<{
     patch: Partial<Pick<StudioScaleTimelineKeyframe, "easing" | "time" | "value">>,
   ) => void;
   onScaleKeyframeDelete: (track: StudioScaleTimelineTrack, index: number) => void;
+  onScaleKeyframeDuplicate: (track: StudioScaleTimelineTrack, index: number) => number | null;
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
@@ -175,6 +179,36 @@ const EMPTY_LIFETIME_CONTROLS: StudioLifetimeControls = {
   reason: null,
   startTargets: [],
 };
+
+function DuplicateKeyframeButton({
+  disabledReason,
+  onClick,
+  propertyLabel,
+}: Readonly<{
+  disabledReason: string | null;
+  onClick: () => void;
+  propertyLabel: string;
+}>) {
+  const label = `Duplicate ${propertyLabel} keyframe at the playhead`;
+  return (
+    <button
+      aria-label={label}
+      className="h-7 border border-zinc-700 px-2 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
+      disabled={disabledReason !== null}
+      onClick={onClick}
+      title={disabledReason ?? label}
+      type="button"
+    >
+      Duplicate at playhead
+    </button>
+  );
+}
+
+function keyframeDuplicateDisabledReason(readOnly: boolean, locked: boolean, trackReason: string | null) {
+  if (readOnly) return "Timeline editing is unavailable in read-only mode.";
+  if (locked) return LOCKED_ENTITY_MUTATION_MESSAGE;
+  return trackReason;
+}
 
 function PropertyKeyframeMarker({
   duration,
@@ -550,16 +584,20 @@ export function StudioTimeline({
   onMaterialParameterKeyframeAdd,
   onMaterialParameterKeyframeChange,
   onMaterialParameterKeyframeDelete,
+  onMaterialParameterKeyframeDuplicate,
   onMotionDurationChange,
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
+  onOpacityKeyframeDuplicate,
   onRotationKeyframeAdd,
   onRotationKeyframeChange,
   onRotationKeyframeDelete,
+  onRotationKeyframeDuplicate,
   onScaleKeyframeAdd,
   onScaleKeyframeChange,
   onScaleKeyframeDelete,
+  onScaleKeyframeDuplicate,
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
@@ -791,6 +829,19 @@ export function StudioTimeline({
               <option value="smooth">Smooth</option>
             </select>
           </label>
+          <DuplicateKeyframeButton
+            disabledReason={keyframeDuplicateDisabledReason(
+              readOnly,
+              selectedOpacityLocked,
+              selectedOpacityTrack.readOnlyReason,
+            )}
+            onClick={() => {
+              const index = onOpacityKeyframeDuplicate(selectedOpacityTrack, selectedOpacityKeyframe!.index);
+              if (index !== null)
+                setSelectedOpacityKeyframe({ index, transactionId: selectedOpacityTrack.transactionId });
+            }}
+            propertyLabel="opacity"
+          />
           <button
             className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
             disabled={
@@ -878,6 +929,18 @@ export function StudioTimeline({
               <option value="smooth">Smooth</option>
             </select>
           </label>
+          <DuplicateKeyframeButton
+            disabledReason={keyframeDuplicateDisabledReason(
+              readOnly,
+              selectedScaleLocked,
+              selectedScaleTrack.readOnlyReason,
+            )}
+            onClick={() => {
+              const index = onScaleKeyframeDuplicate(selectedScaleTrack, selectedScaleKeyframe!.index);
+              if (index !== null) setSelectedScaleKeyframe({ index, transactionId: selectedScaleTrack.transactionId });
+            }}
+            propertyLabel="scale"
+          />
           <button
             className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
             disabled={
@@ -966,6 +1029,19 @@ export function StudioTimeline({
               <option value="smooth">Smooth</option>
             </select>
           </label>
+          <DuplicateKeyframeButton
+            disabledReason={keyframeDuplicateDisabledReason(
+              readOnly,
+              selectedRotationLocked,
+              selectedRotationTrack.readOnlyReason,
+            )}
+            onClick={() => {
+              const index = onRotationKeyframeDuplicate(selectedRotationTrack, selectedRotationKeyframe!.index);
+              if (index !== null)
+                setSelectedRotationKeyframe({ index, transactionId: selectedRotationTrack.transactionId });
+            }}
+            propertyLabel="rotation"
+          />
           <button
             className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
             disabled={
@@ -1055,6 +1131,22 @@ export function StudioTimeline({
               <option value="smooth">Smooth</option>
             </select>
           </label>
+          <DuplicateKeyframeButton
+            disabledReason={keyframeDuplicateDisabledReason(
+              readOnly,
+              selectedMaterialLocked,
+              selectedMaterialTrack.readOnlyReason,
+            )}
+            onClick={() => {
+              const index = onMaterialParameterKeyframeDuplicate(
+                selectedMaterialTrack,
+                selectedMaterialKeyframe!.index,
+              );
+              if (index !== null)
+                setSelectedMaterialKeyframe({ index, transactionId: selectedMaterialTrack.transactionId });
+            }}
+            propertyLabel="material parameter"
+          />
           <button
             className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
             disabled={
