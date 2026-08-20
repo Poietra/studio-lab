@@ -111,6 +111,19 @@ function animatePropertyExecution(
   operation: Extract<SceneEditOperation, { kind: "AnimateProperty" }>,
 ): OperationExecutionCapabilities {
   if (
+    operation.key === "scale" &&
+    operation.timelineTrack === true &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number" &&
+    Number.isFinite(operation.from) &&
+    Number.isFinite(operation.to) &&
+    operation.from > 0 &&
+    operation.to > 0 &&
+    (operation.interval.end > operation.interval.start || operation.from === operation.to)
+  ) {
+    return CLIENT_ONLY_EXECUTION;
+  }
+  if (
     operation.key === "appearance" &&
     operation.materialParameter !== undefined &&
     typeof operation.from === "number" &&
@@ -202,7 +215,7 @@ function sourceAnimationEnd(operation: SceneEditOperation) {
     operation.kind === "CreateMotion" ||
     operation.kind === "ResizeEntity" ||
     operation.kind === "TransformContent" ||
-    (operation.kind === "AnimateProperty" && operation.key === "scale")
+    (operation.kind === "AnimateProperty" && operation.key === "scale" && operation.timelineTrack !== true)
   )
     return operation.interval.end;
   return null;
@@ -544,6 +557,42 @@ export const OPERATION_REGISTRY = {
     execution: animatePropertyExecution,
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
+      if (operation.timelineTrack === true) {
+        const entity = scene.objectGraph.entities[operation.entityId];
+        if (
+          operation.key !== "scale" ||
+          operation.control !== undefined ||
+          operation.materialParameter !== undefined ||
+          operation.relativeDelta !== undefined ||
+          operation.relativeFactor !== undefined ||
+          typeof operation.from !== "number" ||
+          typeof operation.to !== "number" ||
+          !Number.isFinite(operation.from) ||
+          operation.from <= 0 ||
+          !Number.isFinite(operation.to) ||
+          operation.to <= 0 ||
+          (operation.interval.start === operation.interval.end && operation.from !== operation.to)
+        ) {
+          issues.push({
+            code: "schema-invalid",
+            field: "timelineTrack",
+            message:
+              "A scale Timeline track requires finite positive absolute values and no relative transform fields.",
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
+        if (entity && !entity.transactionId) {
+          issues.push({
+            code: "lowering-unsupported",
+            field: "entityId",
+            message: "Scale Timeline keyframes currently support only Studio-created objects.",
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
+        return issues;
+      }
       if (operation.materialParameter && operation.key !== "appearance") {
         issues.push({
           code: "schema-invalid",

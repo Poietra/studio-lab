@@ -212,6 +212,39 @@ describe("Canonical EditProgram source lowering", () => {
     );
   });
 
+  it("keeps client scale keyframes out of Manim source export", () => {
+    const entityId = "tx:client-scale/entity:circle";
+    const program = canonicalProgram(
+      [
+        {
+          ...operationBase("create-client-scale", 7),
+          entity: {
+            dimensions: { radius: 1 },
+            id: entityId,
+            lifetime: { end: null, start: 7 },
+            type: "Circle",
+          },
+          kind: "CreateEntity",
+        },
+        {
+          ...operationBase("client-scale-segment", 7.5, 8),
+          easing: "smooth",
+          entityId,
+          from: 1,
+          key: "scale",
+          kind: "AnimateProperty",
+          timelineTrack: true,
+          to: 2,
+        },
+      ],
+      "client-scale",
+    );
+
+    expect(() => lowerCanonicalProgramSource(source, request(program, []), { height: 8, width: 14.222 }, null)).toThrow(
+      /scale keyframes are available in the canonical client preview and video export, but not Manim source export/i,
+    );
+  });
+
   it("lowers Studio-created Text with the preview font and canonical size", () => {
     const entityId = "tx:created-text/entity:label";
     const create = canonicalProgram(

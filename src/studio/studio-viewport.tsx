@@ -98,6 +98,8 @@ export function StudioViewport({
   motionPaths,
   opacityTrackEligibleIds,
   opacityTracks,
+  scaleTrackEligibleIds,
+  scaleTracks,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
   onCanvasPlace,
@@ -132,6 +134,9 @@ export function StudioViewport({
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
+  onScaleKeyframeAdd,
+  onScaleKeyframeChange,
+  onScaleKeyframeDelete,
   onPresenceCursorChange,
   onSelectionResizeCancel,
   onSelectionResizeKeyDown,
@@ -245,6 +250,8 @@ export function StudioViewport({
           objectTracks={projection.timeline.objectTracks}
           opacityTrackEligibleIds={opacityTrackEligibleIds}
           opacityTracks={opacityTracks}
+          scaleTrackEligibleIds={scaleTrackEligibleIds}
+          scaleTracks={scaleTracks}
           onAppliedMotionClipChange={onAppliedMotionClipChange}
           onAppliedMotionClipSelect={onAppliedMotionClipSelect}
           onInteractionModeChange={onInteractionModeChange}
@@ -256,6 +263,9 @@ export function StudioViewport({
           onOpacityKeyframeAdd={onOpacityKeyframeAdd}
           onOpacityKeyframeChange={onOpacityKeyframeChange}
           onOpacityKeyframeDelete={onOpacityKeyframeDelete}
+          onScaleKeyframeAdd={onScaleKeyframeAdd}
+          onScaleKeyframeChange={onScaleKeyframeChange}
+          onScaleKeyframeDelete={onScaleKeyframeDelete}
           onSelectEntity={onSelectEntity}
           onTimeChange={onTimeChange}
           onTogglePlayback={onTogglePlayback}

@@ -862,6 +862,13 @@ type StudioCreationOperationV1 = Readonly<{
       }>
     | Readonly<{ entityId: string; kind: "persistent-remove"; persistent: boolean }>
     | Readonly<{
+        easing: "linear" | "smooth";
+        entityId: string;
+        from: number | null;
+        kind: "uniform-scale-keyframes";
+        to: number | null;
+      }>
+    | Readonly<{
         controlPresent: boolean;
         entityId: string;
         from: number | null;

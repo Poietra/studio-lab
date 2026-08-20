@@ -15,7 +15,7 @@ export function insertedProgramDuration(program: SceneEdit) {
       operation.kind === "CreateMotion" ||
       operation.kind === "ResizeEntity" ||
       operation.kind === "TransformContent" ||
-      (operation.kind === "AnimateProperty" && operation.key === "scale") ||
+      (operation.kind === "AnimateProperty" && operation.key === "scale" && operation.timelineTrack !== true) ||
       (operation.kind === "InsertTimelineEvent" &&
         !isSceneDurationOperation(operation) &&
         operation.eventKind === "wait"),

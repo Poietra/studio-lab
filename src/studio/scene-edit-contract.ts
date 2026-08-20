@@ -90,6 +90,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
       .optional(),
     relativeDelta: z.number().optional(),
     relativeFactor: z.number().positive().optional(),
+    timelineTrack: z.literal(true).optional(),
     to: z.union([pointSchema, z.number()]),
   }),
   operationBaseSchema.extend({

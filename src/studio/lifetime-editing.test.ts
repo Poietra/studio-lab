@@ -11,6 +11,7 @@ import { programRecord, projectProposedState } from "./evaluator";
 import { projectPersistentRemoveFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { buildLifetimeEditControls, findImportedLifetimeEdit, lifetimeControlKey } from "./lifetime-editing";
 import { insertedProgramDuration } from "./program-composition";
+import { replaceScaleKeyframeProgram } from "./scale-keyframe-edit";
 
 describe("lifetime editing controls", () => {
   it("keeps an imported start read-only while offering safe end trims", () => {
@@ -159,6 +160,58 @@ describe("lifetime editing controls", () => {
       { end: 3, start: 1 },
       { end: 7, start: 5 },
     ]);
+  });
+
+  it("does not treat a scale property track as inserted lifetime time", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 3,
+      entities: [
+        {
+          content: defaultEntityContent("Circle", ""),
+          position: { x: 200, y: 120 },
+          type: "Circle",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "owned-scale-lifetime",
+    });
+    const entityId = creation.entityIds[0]!;
+    const scale = replaceScaleKeyframeProgram({
+      baseProgram: creation.validation.program,
+      baseline: 1,
+      entityId,
+      keyframes: [
+        { easing: "linear", time: 4, value: 1 },
+        { easing: "smooth", time: 7, value: 2 },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    const record = programRecord(scale.program, scale);
+    const controls = buildLifetimeEditControls({
+      anchors: [1, 3, 5, 7],
+      baseScene: STUDIO_FIXTURE_SCENE,
+      programs: [record],
+      sourceDuration: STUDIO_FIXTURE_SCENE.duration,
+      tracks: [
+        {
+          animatedChannels: [],
+          entityId,
+          label: "Circle",
+          lifetimes: [
+            {
+              end: STUDIO_FIXTURE_SCENE.duration + insertedProgramDuration(scale.program),
+              start: 3,
+            },
+          ],
+          provisional: false,
+          type: "Circle",
+        },
+      ],
+    })[lifetimeControlKey(entityId, 0)]!;
+
+    expect(scale.kind, JSON.stringify(scale.issues)).toBe("valid");
+    expect(controls.reason).toBeNull();
+    expect(controls.endTargets.length).toBeGreaterThan(0);
   });
 
   it("defers to a later Delete Program that owns a Studio-created lifetime end", () => {

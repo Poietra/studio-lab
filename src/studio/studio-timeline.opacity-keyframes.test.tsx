@@ -42,6 +42,9 @@ function props(): StudioTimelineProps {
     onOpacityKeyframeAdd: vi.fn(),
     onOpacityKeyframeChange: vi.fn(),
     onOpacityKeyframeDelete: vi.fn(),
+    onScaleKeyframeAdd: vi.fn(),
+    onScaleKeyframeChange: vi.fn(),
+    onScaleKeyframeDelete: vi.fn(),
     onSelectEntity: vi.fn(),
     onTimeChange: vi.fn(),
     onTogglePlayback: vi.fn(),
@@ -56,6 +59,8 @@ function props(): StudioTimelineProps {
         transactionId: "create-circle",
       },
     ],
+    scaleTrackEligibleIds: new Set(["circle"]),
+    scaleTracks: [],
     readOnly: false,
     selectedIds: new Set(["circle"]),
   };
@@ -99,6 +104,28 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain('data-property-keyframe="material"');
     expect(markup).toContain("Material parameter for Circle");
     expect(markup).toContain("amplitude");
+  });
+
+  it("renders uniform scale through the shared property marker lane", () => {
+    const base = props();
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...base}
+        scaleTracks={[
+          {
+            entityId: "circle",
+            keyframes: [{ easing: "linear", sourceTime: 2.5, time: 2.9, value: 1 }],
+            label: "Circle",
+            programIndex: 0,
+            readOnlyReason: null,
+            transactionId: "create-circle",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-property-keyframe="scale"');
+    expect(markup).toContain('aria-label="Add scale keyframe for Circle"');
   });
 
   it("keeps an explicit whole-track recovery action when the material assignment changed", () => {
