@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
-import { STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "../engine/fragment-material-registry";
+import {
+  STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
+  STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+} from "../engine/fragment-material-registry";
 import { createStudioEntitiesProgram, replaceStudioTextContentProgram } from "./authoring-commands";
 import { resolveVerifiedSourceDurationBasis } from "./editor-revision-policy";
 import {
@@ -21,6 +24,7 @@ import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
+  createStudioGradientFragmentMaterialPresetV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   projectFragmentMaterialsForSceneV1,
   recordStudioFragmentMaterialGlslDiagnosticV1,
@@ -388,6 +392,36 @@ describe("durable editor session storage", () => {
     const reopened = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
     expect(projectFragmentMaterialsForSceneV1(reopened, "scene.py#SceneA").assignments).toEqual({});
     expect(reopened.registry.materials[0]?.source).toBe(STUDIO_WAVE_FRAGMENT_SOURCE_V1);
+  });
+
+  it("restores Gradient RGB parameters through the existing flat material ABI", () => {
+    const adapter = new MemoryAdapter();
+    const gradient = createStudioGradientFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
+    const assigned = assignStudioFragmentMaterialV1(gradient.state, {
+      entityId: "circle",
+      sceneId: "scene.py#SceneA",
+      shaderId: gradient.shaderId,
+    });
+    const recolored = updateStudioFragmentMaterialParameterV1(assigned, {
+      entityId: "circle",
+      name: "Warm",
+      sceneId: "scene.py#SceneA",
+      value: [0.9, 0.4, 0.1],
+    });
+
+    expect(new EditorSessionStore(adapter).saveProjectFragmentMaterials("project-a", recolored)).toBe(true);
+    const restored = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
+
+    expect(restored.registry.materials[0]?.source).toBe(STUDIO_GRADIENT_FRAGMENT_SOURCE_V1);
+    expect(restored.parameterSchemasByShaderId[gradient.shaderId]).toMatchObject([
+      { name: "Angle", type: "f32" },
+      { name: "Spread", type: "f32" },
+      { default: [0.2, 0.55, 1], name: "Cool", type: "rgb" },
+      { default: [1, 0.3, 0.65], name: "Warm", type: "rgb" },
+    ]);
+    expect(projectFragmentMaterialsForSceneV1(restored, "scene.py#SceneA").assignments.circle?.parameters).toEqual([
+      0.75, 1.5, 0.2, 0.55, 1, 0.9, 0.4, 0.1,
+    ]);
   });
 
   it("restores a pre-named-material envelope without clearing other editor storage", () => {

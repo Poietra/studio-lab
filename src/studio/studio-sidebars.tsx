@@ -12,7 +12,10 @@ import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../rende
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { DraftInspector } from "./draft-inspector";
 import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
-import type { StudioFragmentMaterialPresetId } from "./fragment-material-authoring";
+import type {
+  StudioFragmentMaterialParameterValueV1,
+  StudioFragmentMaterialPresetId,
+} from "./fragment-material-authoring";
 import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragment-material-editor";
 import type { ManimWorkspaceScene } from "./imported-workspace";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
@@ -657,7 +660,7 @@ export function StudioInspector({
     onRemoveAsset: (shaderId: string) => void;
     onRename: (shaderId: string, name: string) => void;
     onUpdateSource: (shaderId: string, source: string) => void;
-    onUpdateParameter: (name: string, value: number) => void;
+    onUpdateParameter: (name: string, value: StudioFragmentMaterialParameterValueV1) => void;
     onUpdateTexture: (assetId: string, sampler: "linear" | "nearest") => void;
     textureAssets: readonly Readonly<{ assetId: string; label: string }>[];
   }>;

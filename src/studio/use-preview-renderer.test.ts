@@ -1182,12 +1182,20 @@ describe("compileStudioPreviewSceneV1", () => {
       shaderId: material.shaderId,
     });
     const sceneFragmentMaterials = projectFragmentMaterialsForSceneV1(
-      updateStudioFragmentMaterialParameterV1(assignedMaterial, {
-        entityId: "source:circle",
-        name: "Spread",
-        sceneId: "studio:circle-scene",
-        value: 2.25,
-      }),
+      updateStudioFragmentMaterialParameterV1(
+        updateStudioFragmentMaterialParameterV1(assignedMaterial, {
+          entityId: "source:circle",
+          name: "Spread",
+          sceneId: "studio:circle-scene",
+          value: 2.25,
+        }),
+        {
+          entityId: "source:circle",
+          name: "Cool",
+          sceneId: "studio:circle-scene",
+          value: [0.1, 0.2, 0.3],
+        },
+      ),
       "studio:circle-scene",
     );
     const commands: ApplyStudioFragmentMaterialsWireCommandV1[] = [];
@@ -1210,7 +1218,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(commands[0]?.assignments).toEqual([
       expect.objectContaining({
         entityId: "earlier",
-        material: expect.objectContaining({ parameters: [0.75, 2.25], revision: 1 }),
+        material: expect.objectContaining({ parameters: [0.75, 2.25, 0.1, 0.2, 0.3, 1, 0.3, 0.65], revision: 1 }),
       }),
     ]);
     expect(result.scene.fragmentMaterialInput).toBe(sceneFragmentMaterials);
@@ -1219,7 +1227,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const assigned = result.scene.bundle.scene.entities.find(({ id }) => id === "earlier");
     const collided = result.scene.bundle.scene.entities.find(({ id }) => id === "source:circle");
     expect(assigned?.appearance.kind === "vector" ? assigned.appearance.fill?.fragmentMaterial : null).toMatchObject({
-      parameters: [0.75, 2.25],
+      parameters: [0.75, 2.25, 0.1, 0.2, 0.3, 1, 0.3, 0.65],
       revision: 1,
       shaderId: material.shaderId,
     });

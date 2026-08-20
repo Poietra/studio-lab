@@ -16,6 +16,7 @@ import {
   duplicateStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   listStudioFragmentMaterialsV1,
+  projectFragmentMaterialStateV1Schema,
   projectFragmentMaterialsForSceneV1,
   recordStudioFragmentMaterialGlslDiagnosticV1,
   removeStudioFragmentMaterialAssetV1,
@@ -23,6 +24,7 @@ import {
   renameStudioFragmentMaterialV1,
   sceneHasFragmentMaterialAssignmentsV1,
   studioFragmentMaterialCompileErrorV1,
+  studioFragmentMaterialParameterLayoutV1,
   updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
@@ -121,6 +123,8 @@ describe("project-local fragment material authoring", () => {
         parameterSchema: [
           { default: 0.75, name: "Angle", range: { max: 3.14, min: -3.14, step: 0.05 }, type: "f32" },
           { default: 1.5, name: "Spread", range: { max: 4, min: 0.25, step: 0.05 }, type: "f32" },
+          { default: [0.2, 0.55, 1], name: "Cool", type: "rgb" },
+          { default: [1, 0.3, 0.65], name: "Warm", type: "rgb" },
         ],
         source: STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
       },
@@ -145,8 +149,60 @@ describe("project-local fragment material authoring", () => {
       sceneId: "scene-a",
       value: 2.25,
     });
+    const recolored = updateStudioFragmentMaterialParameterV1(changed, {
+      entityId: "circle",
+      name: "Cool",
+      sceneId: "scene-a",
+      value: [0.1, 0.2, 0.3],
+    });
 
-    expect(changed.assignmentsByScene["scene-a"]?.circle?.parameters).toEqual([0.75, 2.25]);
+    expect(studioFragmentMaterialParameterLayoutV1(pulse.state.parameterSchemasByShaderId[gradient.shaderId]!)).toEqual(
+      {
+        defaults: [0.75, 1.5, 0.2, 0.55, 1, 1, 0.3, 0.65],
+        entries: [
+          expect.objectContaining({ offset: 0, parameter: expect.objectContaining({ name: "Angle" }) }),
+          expect.objectContaining({ offset: 1, parameter: expect.objectContaining({ name: "Spread" }) }),
+          expect.objectContaining({ offset: 2, parameter: expect.objectContaining({ name: "Cool" }) }),
+          expect.objectContaining({ offset: 5, parameter: expect.objectContaining({ name: "Warm" }) }),
+        ],
+      },
+    );
+    expect(recolored.assignmentsByScene["scene-a"]?.circle?.parameters).toEqual([
+      0.75, 2.25, 0.1, 0.2, 0.3, 1, 0.3, 0.65,
+    ]);
+    expect(() =>
+      updateStudioFragmentMaterialParameterV1(recolored, {
+        entityId: "circle",
+        name: "Warm",
+        sceneId: "scene-a",
+        value: [1.1, 0.2, 0.3],
+      }),
+    ).toThrow("Warm color components must be between 0 and 1");
+    expect(
+      projectFragmentMaterialStateV1Schema.safeParse({
+        ...recolored,
+        assignmentsByScene: {
+          "scene-a": {
+            circle: {
+              ...recolored.assignmentsByScene["scene-a"]!.circle!,
+              parameters: [0.75, 2.25, 0.1, 0.2, 1.1, 1, 0.3, 0.65],
+            },
+          },
+        },
+      }).success,
+    ).toBe(false);
+
+    const duplicated = duplicateStudioFragmentMaterialV1(recolored, gradient.shaderId);
+    expect(duplicated.state.parameterSchemasByShaderId[duplicated.shaderId]).toEqual(
+      recolored.parameterSchemasByShaderId[gradient.shaderId],
+    );
+    expect(
+      assignStudioFragmentMaterialV1(duplicated.state, {
+        entityId: "copy",
+        sceneId: "scene-a",
+        shaderId: duplicated.shaderId,
+      }).assignmentsByScene["scene-a"]?.copy?.parameters,
+    ).toEqual([0.75, 1.5, 0.2, 0.55, 1, 1, 0.3, 0.65]);
   });
 
   it("rejects invalid authoring schemas before they can replace project state", () => {
@@ -156,6 +212,16 @@ describe("project-local fragment material authoring", () => {
         parameterSchema: [{ default: 2, name: "Strength", range: { max: 1, min: 0, step: 0.1 }, type: "f32" }],
       }),
     ).toThrow("Parameter default must be inside its range");
+    expect(() =>
+      createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, {
+        name: "Too many colors",
+        parameterSchema: [
+          { default: [0, 0, 0], name: "First", type: "rgb" },
+          { default: [0, 0, 0], name: "Second", type: "rgb" },
+          { default: [0, 0, 0], name: "Third", type: "rgb" },
+        ],
+      }),
+    ).toThrow("at most 8 scalar values");
     expect(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1.registry.materials).toEqual([]);
   });
 

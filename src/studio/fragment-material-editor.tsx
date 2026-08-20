@@ -7,8 +7,10 @@ import {
 import type {
   StudioFragmentMaterialGlslSource,
   StudioFragmentMaterialParameterSchemaV1,
+  StudioFragmentMaterialParameterValueV1,
   StudioFragmentMaterialPresetId,
 } from "./fragment-material-authoring";
+import { studioFragmentMaterialParameterLayoutV1 } from "./fragment-material-authoring";
 
 export type FragmentMaterialEditorItem = Readonly<{
   assignmentCount: number;
@@ -28,6 +30,38 @@ export function fragmentMaterialsMatchingName(
   const normalizedQuery = query.trim().toLowerCase();
   if (normalizedQuery.length === 0) return materials;
   return materials.filter(({ name }) => name.toLowerCase().includes(normalizedQuery));
+}
+
+function rgbToHexColor(rgb: readonly [number, number, number]) {
+  return `#${rgb
+    .map((component) =>
+      Math.round(component * 255)
+        .toString(16)
+        .padStart(2, "0"),
+    )
+    .join("")}`;
+}
+
+function hexColorToRgb(value: string): readonly [number, number, number] | null {
+  const match = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value);
+  return match
+    ? [Number.parseInt(match[1]!, 16) / 255, Number.parseInt(match[2]!, 16) / 255, Number.parseInt(match[3]!, 16) / 255]
+    : null;
+}
+
+function assignedRgb(parameters: readonly number[], offset: number) {
+  const red = parameters[offset];
+  const green = parameters[offset + 1];
+  const blue = parameters[offset + 2];
+  if (
+    red === undefined ||
+    green === undefined ||
+    blue === undefined ||
+    ![red, green, blue].every((component) => Number.isFinite(component) && component >= 0 && component <= 1)
+  ) {
+    return null;
+  }
+  return [red, green, blue] as const;
 }
 
 export function FragmentMaterialEditor({
@@ -72,7 +106,7 @@ export function FragmentMaterialEditor({
   onRemoveAsset: (shaderId: string) => void;
   onRename: (shaderId: string, name: string) => void;
   onUpdateSource: (shaderId: string, source: string) => void;
-  onUpdateParameter: (name: string, value: number) => void;
+  onUpdateParameter: (name: string, value: StudioFragmentMaterialParameterValueV1) => void;
   onUpdateTexture: (assetId: string, sampler: "linear" | "nearest") => void;
   textureAssets: readonly Readonly<{ assetId: string; label: string }>[];
 }>) {
@@ -140,28 +174,61 @@ export function FragmentMaterialEditor({
           <fieldset className="mt-3 border border-zinc-800 p-2" aria-label="Material parameters">
             <legend className="px-1 text-[10px] font-medium text-zinc-400">Object parameters</legend>
             <div className="space-y-2">
-              {assignedMaterial.parameterSchema.map((parameter, index) => {
-                const value = assignedParameters[index] ?? parameter.default;
-                return (
-                  <label className="block" key={parameter.name}>
-                    <span className="flex items-center justify-between gap-2 text-[10px] text-zinc-500">
-                      <span>{parameter.name}</span>
-                      <output>{value}</output>
-                    </span>
-                    <input
-                      aria-label={`${parameter.name} material parameter`}
-                      className="mt-1 w-full accent-sky-500"
-                      disabled={objectEditingDisabled || !available}
-                      max={parameter.range.max}
-                      min={parameter.range.min}
-                      onChange={(event) => onUpdateParameter(parameter.name, event.currentTarget.valueAsNumber)}
-                      step={parameter.range.step}
-                      type="range"
-                      value={value}
-                    />
-                  </label>
-                );
-              })}
+              {studioFragmentMaterialParameterLayoutV1(assignedMaterial.parameterSchema).entries.map(
+                ({ offset, parameter }) => {
+                  if (parameter.type === "rgb") {
+                    const assignedValue = assignedRgb(assignedParameters, offset);
+                    const colorValue = rgbToHexColor(assignedValue ?? parameter.default);
+                    const errorId = `fragment-material-${assignedMaterial.shaderId}-${parameter.name}-error`;
+                    return (
+                      <label className="block" key={parameter.name}>
+                        <span className="flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+                          <span>{parameter.name}</span>
+                          <output className="font-mono">{colorValue}</output>
+                        </span>
+                        <input
+                          aria-describedby={assignedValue ? undefined : errorId}
+                          aria-invalid={assignedValue ? undefined : true}
+                          aria-label={`${parameter.name} material color`}
+                          className="mt-1 h-8 w-full cursor-pointer border border-zinc-700 bg-zinc-950 p-1 disabled:cursor-not-allowed"
+                          disabled={objectEditingDisabled || !available || assignedValue === null}
+                          onChange={(event) => {
+                            const value = hexColorToRgb(event.currentTarget.value);
+                            if (value) onUpdateParameter(parameter.name, value);
+                          }}
+                          type="color"
+                          value={colorValue}
+                        />
+                        {assignedValue ? null : (
+                          <p className="mt-1 text-pretty text-[10px] leading-4 text-red-300" id={errorId} role="alert">
+                            This color assignment is incomplete. Reassign the material to restore its defaults.
+                          </p>
+                        )}
+                      </label>
+                    );
+                  }
+                  const value = assignedParameters[offset] ?? parameter.default;
+                  return (
+                    <label className="block" key={parameter.name}>
+                      <span className="flex items-center justify-between gap-2 text-[10px] text-zinc-500">
+                        <span>{parameter.name}</span>
+                        <output>{value}</output>
+                      </span>
+                      <input
+                        aria-label={`${parameter.name} material parameter`}
+                        className="mt-1 w-full accent-sky-500"
+                        disabled={objectEditingDisabled || !available}
+                        max={parameter.range.max}
+                        min={parameter.range.min}
+                        onChange={(event) => onUpdateParameter(parameter.name, event.currentTarget.valueAsNumber)}
+                        step={parameter.range.step}
+                        type="range"
+                        value={value}
+                      />
+                    </label>
+                  );
+                },
+              )}
             </div>
           </fieldset>
         ) : (
@@ -259,7 +326,7 @@ export function FragmentMaterialEditor({
           <div>
             <p className="text-[10px] font-medium text-sky-200">Gradient preset</p>
             <p className="mt-0.5 text-pretty text-[10px] leading-4 text-zinc-500">
-              Directional cool-to-warm tint with Angle and Spread controls. No shader code required.
+              Directional tint with Angle, Spread, Cool, and Warm controls. No shader code required.
             </p>
           </div>
           <button

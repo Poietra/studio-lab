@@ -81,10 +81,12 @@ import {
   removeStudioFragmentMaterialAssetV1,
   removeStudioFragmentMaterialV1,
   renameStudioFragmentMaterialV1,
+  type StudioFragmentMaterialParameterValueV1,
   type StudioFragmentMaterialPresetId,
   sceneHasFragmentMaterialAssignmentsV1,
   studioFragmentMaterialAssignmentCountV1,
   studioFragmentMaterialCompileErrorV1,
+  studioFragmentMaterialParameterLayoutV1,
   updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
@@ -1436,8 +1438,10 @@ export function App({
         const materialName = activeProjectFragmentMaterials.namesByShaderId[assignment.shaderId] ?? assignment.shaderId;
         const existing = materialParameterKeyframeTrackFromProgram(owner.program, 0);
         if (!schema || (existing && JSON.stringify(existing.material) !== JSON.stringify(assignment))) return [];
-        return schema.flatMap((parameter, index) =>
-          Number.isFinite(assignment.parameters[index]) && (!existing || existing.name === parameter.name)
+        return studioFragmentMaterialParameterLayoutV1(schema).entries.flatMap(({ offset, parameter }) =>
+          parameter.type === "f32" &&
+          Number.isFinite(assignment.parameters[offset]) &&
+          (!existing || existing.name === parameter.name)
             ? [{ entityId, materialName, name: parameter.name }]
             : [],
         );
@@ -1447,8 +1451,13 @@ export function App({
     const track = materialParameterKeyframeTrackFromProgram(record.program, programIndex);
     if (!track) return [];
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
-    const parameter =
-      activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId]?.[track.parameterIndex];
+    const parameterSchema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
+    const parameterEntry = parameterSchema
+      ? studioFragmentMaterialParameterLayoutV1(parameterSchema).entries.find(
+          ({ offset }) => offset === track.parameterIndex,
+        )
+      : null;
+    const parameter = parameterEntry?.parameter.type === "f32" ? parameterEntry.parameter : null;
     const materialOrSchemaChanged =
       !assignment ||
       JSON.stringify(assignment) !== JSON.stringify(track.material) ||
@@ -1462,7 +1471,10 @@ export function App({
       if (!track || !workspaceCreationProjection) return [];
       const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
       const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
-      const parameter = schema?.[track.parameterIndex];
+      const parameterEntry = schema
+        ? studioFragmentMaterialParameterLayoutV1(schema).entries.find(({ offset }) => offset === track.parameterIndex)
+        : null;
+      const parameter = parameterEntry?.parameter.type === "f32" ? parameterEntry.parameter : null;
       const assignmentChanged =
         !assignment ||
         JSON.stringify(assignment) !== JSON.stringify(track.material) ||
@@ -3100,8 +3112,13 @@ export function App({
     const owner = studioCreationProgramOwner(entityId);
     const assignment = activeSceneFragmentMaterials.assignments[entityId];
     const schema = assignment ? activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId] : null;
-    const parameterIndex = schema?.findIndex((parameter) => parameter.name === name) ?? -1;
-    const parameter = parameterIndex >= 0 ? schema?.[parameterIndex] : null;
+    const parameterEntry = schema
+      ? studioFragmentMaterialParameterLayoutV1(schema).entries.find(
+          ({ parameter }) => parameter.type === "f32" && parameter.name === name,
+        )
+      : null;
+    const parameterIndex = parameterEntry?.offset ?? -1;
+    const parameter = parameterEntry?.parameter.type === "f32" ? parameterEntry.parameter : null;
     if (!owner || !assignment || !parameter) {
       setDraftError("This Studio-created object no longer has that editable material parameter.");
       return;
@@ -5653,7 +5670,7 @@ export function App({
     }
   }
 
-  function updateSelectedFragmentMaterialParameter(name: string, value: number) {
+  function updateSelectedFragmentMaterialParameter(name: string, value: StudioFragmentMaterialParameterValueV1) {
     if (
       !activeScene ||
       !selectedFragmentMaterialEntity ||
