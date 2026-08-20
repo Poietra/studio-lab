@@ -907,6 +907,93 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source).toContain("equation.move_to((0, 0, 0))");
   });
 
+  it("authorizes and lowers repeated imported selection moves as one ordered final-render history", async () => {
+    const groupSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        left = Circle()
+        right = Circle()
+        self.add(left, right)
+        # poietra:anchor 0.000
+        self.wait(1)
+`;
+    const leftId = "source:scene.py#GroupedEquation:left";
+    const rightId = "source:scene.py#GroupedEquation:right";
+    const groupProgram = (
+      transactionId: string,
+      left: Readonly<{ x: number; y: number }>,
+      right: Readonly<{ x: number; y: number }>,
+    ): CanonicalEditProgram => {
+      const operations: CanonicalEditOperation[] = [
+        {
+          dependsOn: [],
+          entityId: leftId,
+          id: `tx:${transactionId}/operation:left-position`,
+          interval: { end: 0, start: 0 },
+          key: "position",
+          kind: "SetProperty",
+          provenance: { evidence: ["selection move"], origin: "direct-manipulation" },
+          value: left,
+        },
+        {
+          dependsOn: [],
+          entityId: rightId,
+          id: `tx:${transactionId}/operation:right-position`,
+          interval: { end: 0, start: 0 },
+          key: "position",
+          kind: "SetProperty",
+          provenance: { evidence: ["selection move"], origin: "direct-manipulation" },
+          value: right,
+        },
+      ];
+      return {
+        anchor: {
+          capturedPlayhead: 0,
+          evidence: ["captured-playhead:0.000"],
+          resolvedSeconds: 0,
+          source: { kind: "playhead", referenceSeconds: 0 },
+        },
+        intentCount: 1,
+        loweringStatus: "supported",
+        operations,
+        provenance: { evidence: ["selection move"], origin: "direct-manipulation" },
+        requestedExecution: "parallel",
+        schedule: { edges: [], mode: "parallel", order: operations.map(({ id }) => id) },
+        transactionId,
+        version: 1,
+      };
+    };
+    const first = groupProgram("move-selection", { x: 340, y: 170 }, { x: 420, y: 170 });
+    const second = groupProgram("move-selection-again", { x: 370, y: 190 }, { x: 450, y: 190 });
+    const programs = [first, second];
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+
+    const result = await lower(
+      {
+        ...request(first),
+        programs,
+        sourceBindings: [
+          { entityId: leftId, sourceVariable: "left" },
+          { entityId: rightId, sourceVariable: "right" },
+        ],
+        sourceHash: createHash("sha256").update(groupSource).digest("hex"),
+      },
+      groupSource,
+      async (input) => {
+        authorizations.push(input);
+      },
+    );
+
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual(programs);
+    expect(result.lowered.insertedCode.match(/left\.move_to\(/g)).toHaveLength(2);
+    expect(result.lowered.insertedCode.match(/right\.move_to\(/g)).toHaveLength(2);
+    expect(result.lowered.insertedCode.indexOf('poietra:transaction "move-selection"')).toBeLessThan(
+      result.lowered.insertedCode.indexOf('poietra:transaction "move-selection-again"'),
+    );
+  });
+
   it("routes an imported static transform followed by motion through one snapshot authorization", async () => {
     const transform = staticRootMoveProgram("static-before-motion", 0);
     const movement = motionProgram(7, "motion-after-static");
