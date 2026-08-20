@@ -81,6 +81,7 @@ import {
   removeStudioFragmentMaterialAssetV1,
   removeStudioFragmentMaterialV1,
   renameStudioFragmentMaterialV1,
+  type StudioFragmentMaterialParameterSchemaV1,
   type StudioFragmentMaterialParameterValueV1,
   type StudioFragmentMaterialPresetId,
   sceneHasFragmentMaterialAssignmentsV1,
@@ -88,6 +89,7 @@ import {
   studioFragmentMaterialCompileErrorV1,
   studioFragmentMaterialParameterLayoutV1,
   updateStudioFragmentMaterialFromGlslV1,
+  updateStudioFragmentMaterialParameterSchemaV1,
   updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
   updateStudioFragmentMaterialTextureV1,
@@ -5576,6 +5578,23 @@ export function App({
     }
   }
 
+  function updateFragmentMaterialParameterSchema(
+    shaderId: string,
+    parameterSchema: StudioFragmentMaterialParameterSchemaV1,
+  ) {
+    try {
+      const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, { shaderId });
+      if (blocker) throw new Error(blocker);
+      const next = updateStudioFragmentMaterialParameterSchemaV1(activeProjectFragmentMaterials, {
+        parameterSchema,
+        shaderId,
+      });
+      return commitActiveProjectFragmentMaterials(next) ? null : "The material parameter schema could not be saved.";
+    } catch (error) {
+      return error instanceof Error ? error.message : "The material parameter schema could not be updated.";
+    }
+  }
+
   async function importFragmentMaterialGlsl(shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) {
     if (!activeProjectId) throw new Error("No project is open.");
     const projectId = activeProjectId;
@@ -6383,6 +6402,7 @@ export function App({
                 onImportGlsl: importFragmentMaterialGlsl,
                 onRemoveAsset: removeFragmentMaterialAsset,
                 onRename: renameFragmentMaterial,
+                onUpdateParameterSchema: updateFragmentMaterialParameterSchema,
                 onUpdateSource: updateFragmentMaterialSource,
                 onUpdateParameter: updateSelectedFragmentMaterialParameter,
                 onUpdateTexture: updateSelectedFragmentMaterialTexture,

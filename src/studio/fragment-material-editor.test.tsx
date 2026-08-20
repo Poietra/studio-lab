@@ -92,6 +92,15 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain("Warm glow");
     expect(markup).toContain("Assigned to 2 object(s). Unassign all uses before deleting.");
     expect(markup).toContain("Unassign this material from 2 object(s) before deleting it.");
+    expect(markup).toContain("Shader parameter schema");
+    expect(markup).toContain("Unassign this material from 2 object(s) before editing its parameter schema.");
+    expect(markup).toContain("parameters_0.x");
+    expect(markup).toContain("parameters_0.y");
+    expect(markup).toContain("Add scalar parameter");
+    expect(markup).toContain('name="default"');
+    expect(markup).toContain('name="min"');
+    expect(markup).toContain('name="max"');
+    expect(markup).toContain('name="step"');
     expect(markup).toContain('aria-label="Fragment material WGSL source"');
     expect(markup).toContain("Built-in presets");
     expect(markup).toContain("Wave preset");
@@ -198,6 +207,9 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain('type="color" value="#ff4da6"');
     expect(markup).toContain('aria-label="Angle material parameter"');
     expect(markup).toContain('aria-label="Spread material parameter"');
+    expect(markup).toContain("parameters_0.x");
+    expect(markup).toContain("parameters_1.w");
+    expect(markup).toContain("All 8 slots used");
   });
 
   it("shows the selected object's project PNG and sampler for a texture material", () => {

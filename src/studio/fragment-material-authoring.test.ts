@@ -26,6 +26,7 @@ import {
   studioFragmentMaterialCompileErrorV1,
   studioFragmentMaterialParameterLayoutV1,
   updateStudioFragmentMaterialFromGlslV1,
+  updateStudioFragmentMaterialParameterSchemaV1,
   updateStudioFragmentMaterialParameterV1,
   updateStudioFragmentMaterialSourceV1,
   updateStudioFragmentMaterialTextureV1,
@@ -223,6 +224,69 @@ describe("project-local fragment material authoring", () => {
       }),
     ).toThrow("at most 8 scalar values");
     expect(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1.registry.materials).toEqual([]);
+  });
+
+  it("authors scalar slots for custom WGSL and applies their defaults without changing the render ABI", () => {
+    const created = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Custom" });
+    const custom = updateStudioFragmentMaterialSourceV1(created.state, {
+      shaderId: created.shaderId,
+      source: `${STUDIO_WAVE_FRAGMENT_SOURCE_V1}\n// custom host.parameters_0`,
+    });
+    const parameterSchema = [
+      { default: 0.4, name: "Amplitude", range: { max: 1, min: 0, step: 0.05 }, type: "f32" as const },
+      { default: 3, name: "Frequency", range: { max: 12, min: 1, step: 0.5 }, type: "f32" as const },
+    ];
+    const authored = updateStudioFragmentMaterialParameterSchemaV1(custom, {
+      parameterSchema,
+      shaderId: created.shaderId,
+    });
+    expect(authored.parameterSchemasByShaderId[created.shaderId]).toEqual(parameterSchema);
+
+    const duplicated = duplicateStudioFragmentMaterialV1(authored, created.shaderId);
+    expect(duplicated.state.parameterSchemasByShaderId[duplicated.shaderId]).toEqual(parameterSchema);
+    const assigned = assignStudioFragmentMaterialV1(duplicated.state, {
+      entityId: "circle",
+      sceneId: "scene-a",
+      shaderId: created.shaderId,
+    });
+    expect(projectFragmentMaterialsForSceneV1(assigned, "scene-a").assignments.circle?.parameters).toEqual([0.4, 3]);
+    expect(() =>
+      updateStudioFragmentMaterialParameterSchemaV1(assigned, {
+        parameterSchema: parameterSchema.slice(0, 1),
+        shaderId: created.shaderId,
+      }),
+    ).toThrow("Unassign this material from 1 object(s) before editing its parameter schema");
+
+    const unassigned = removeStudioFragmentMaterialV1(assigned, { entityId: "circle", sceneId: "scene-a" });
+    expect(
+      updateStudioFragmentMaterialParameterSchemaV1(unassigned, {
+        parameterSchema: parameterSchema.slice(0, 1),
+        shaderId: created.shaderId,
+      }).parameterSchemasByShaderId[created.shaderId],
+    ).toEqual(parameterSchema.slice(0, 1));
+    expect(() =>
+      updateStudioFragmentMaterialParameterSchemaV1(custom, {
+        parameterSchema: [parameterSchema[0]!, { ...parameterSchema[1]!, name: "amplitude" }],
+        shaderId: created.shaderId,
+      }),
+    ).toThrow("Parameter names must be unique");
+    expect(() =>
+      updateStudioFragmentMaterialParameterSchemaV1(custom, {
+        parameterSchema: [{ ...parameterSchema[0]!, range: { max: 0, min: 1, step: 0.05 } }],
+        shaderId: created.shaderId,
+      }),
+    ).toThrow("Parameter range max must be greater than min");
+    expect(() =>
+      updateStudioFragmentMaterialParameterSchemaV1(custom, {
+        parameterSchema: Array.from({ length: 9 }, (_, index) => ({
+          default: 0,
+          name: `Value ${index + 1}`,
+          range: { max: 1, min: 0, step: 0.1 },
+          type: "f32" as const,
+        })),
+        shaderId: created.shaderId,
+      }),
+    ).toThrow("at most 8 scalar values");
   });
 
   it("does not invent Wave parameter metadata while duplicating a schema-less material", () => {

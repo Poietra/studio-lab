@@ -13,6 +13,7 @@ import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { DraftInspector } from "./draft-inspector";
 import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
 import type {
+  StudioFragmentMaterialParameterSchemaV1,
   StudioFragmentMaterialParameterValueV1,
   StudioFragmentMaterialPresetId,
 } from "./fragment-material-authoring";
@@ -637,6 +638,7 @@ export function StudioInspector({
     onImportGlsl: async () => undefined,
     onRemoveAsset: () => undefined,
     onRename: () => undefined,
+    onUpdateParameterSchema: () => null,
     onUpdateSource: () => undefined,
     onUpdateParameter: () => undefined,
     onUpdateTexture: () => undefined,
@@ -699,6 +701,10 @@ export function StudioInspector({
     onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
     onRemoveAsset: (shaderId: string) => void;
     onRename: (shaderId: string, name: string) => void;
+    onUpdateParameterSchema: (
+      shaderId: string,
+      parameterSchema: StudioFragmentMaterialParameterSchemaV1,
+    ) => string | null;
     onUpdateSource: (shaderId: string, source: string) => void;
     onUpdateParameter: (name: string, value: StudioFragmentMaterialParameterValueV1) => void;
     onUpdateTexture: (assetId: string, sampler: "linear" | "nearest") => void;

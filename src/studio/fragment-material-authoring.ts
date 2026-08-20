@@ -513,6 +513,32 @@ export function studioFragmentMaterialAssignmentCountV1(state: ProjectFragmentMa
   );
 }
 
+export function updateStudioFragmentMaterialParameterSchemaV1(
+  state: ProjectFragmentMaterialStateV1,
+  input: Readonly<{
+    parameterSchema: StudioFragmentMaterialParameterSchemaV1;
+    shaderId: string;
+  }>,
+): ProjectFragmentMaterialStateV1 {
+  if (!state.registry.materials.some((material) => material.shaderId === input.shaderId)) {
+    throw new Error("The material no longer exists.");
+  }
+  const parameterSchema = fragmentMaterialParameterSchema.parse(input.parameterSchema);
+  const current = state.parameterSchemasByShaderId[input.shaderId] ?? [];
+  if (JSON.stringify(current) === JSON.stringify(parameterSchema)) return state;
+  const assignmentCount = studioFragmentMaterialAssignmentCountV1(state, input.shaderId);
+  if (assignmentCount > 0) {
+    throw new Error(`Unassign this material from ${assignmentCount} object(s) before editing its parameter schema.`);
+  }
+  const parameterSchemasByShaderId = { ...state.parameterSchemasByShaderId };
+  if (parameterSchema.length === 0) delete parameterSchemasByShaderId[input.shaderId];
+  else parameterSchemasByShaderId[input.shaderId] = parameterSchema;
+  return parseProjectFragmentMaterialState({
+    ...state,
+    parameterSchemasByShaderId,
+  });
+}
+
 export type RemoveStudioFragmentMaterialResultV1 =
   | Readonly<{ assignmentCount: number; kind: "in-use" }>
   | Readonly<{ kind: "removed"; state: ProjectFragmentMaterialStateV1 }>;

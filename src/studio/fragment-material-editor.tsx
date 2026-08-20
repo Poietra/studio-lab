@@ -4,6 +4,7 @@ import {
   MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
   MAX_PROJECT_FRAGMENT_MATERIALS_V1,
 } from "../engine/fragment-material-registry";
+import { MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 } from "../engine/primitives";
 import type {
   StudioFragmentMaterialGlslSource,
   StudioFragmentMaterialParameterSchemaV1,
@@ -81,6 +82,7 @@ export function FragmentMaterialEditor({
   onImportGlsl,
   onRemoveAsset,
   onRename,
+  onUpdateParameterSchema = () => null,
   onUpdateSource,
   onUpdateParameter,
   onUpdateTexture,
@@ -105,6 +107,10 @@ export function FragmentMaterialEditor({
   onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
   onRemoveAsset: (shaderId: string) => void;
   onRename: (shaderId: string, name: string) => void;
+  onUpdateParameterSchema?: (
+    shaderId: string,
+    parameterSchema: StudioFragmentMaterialParameterSchemaV1,
+  ) => string | null;
   onUpdateSource: (shaderId: string, source: string) => void;
   onUpdateParameter: (name: string, value: StudioFragmentMaterialParameterValueV1) => void;
   onUpdateTexture: (assetId: string, sampler: "linear" | "nearest") => void;
@@ -522,6 +528,11 @@ export function FragmentMaterialEditor({
               Assigned to {editingMaterial.assignmentCount} object(s). Unassign all uses before deleting.
             </p>
           ) : null}
+          <FragmentMaterialParameterSchemaEditor
+            key={editingMaterial.shaderId}
+            material={editingMaterial}
+            onUpdate={(parameterSchema) => onUpdateParameterSchema(editingMaterial.shaderId, parameterSchema)}
+          />
           <form
             className="mt-2"
             onSubmit={(event) => {
@@ -576,6 +587,204 @@ export function FragmentMaterialEditor({
         </p>
       ) : null}
     </section>
+  );
+}
+
+const FRAGMENT_MATERIAL_SLOT_COMPONENTS = ["x", "y", "z", "w"] as const;
+
+function fragmentMaterialHostSlot(offset: number) {
+  const vector = Math.floor(offset / 4);
+  const component = FRAGMENT_MATERIAL_SLOT_COMPONENTS[offset % 4];
+  return `parameters_${vector}.${component}`;
+}
+
+function fragmentMaterialHostSlots(offset: number, width: number) {
+  return Array.from({ length: width }, (_, component) => fragmentMaterialHostSlot(offset + component)).join(", ");
+}
+
+type ScalarParameter = Extract<StudioFragmentMaterialParameterSchemaV1[number], Readonly<{ type: "f32" }>>;
+
+function scalarParameterFromForm(form: HTMLFormElement): ScalarParameter {
+  const data = new FormData(form);
+  return {
+    default: Number(data.get("default")),
+    name: String(data.get("name") ?? ""),
+    range: {
+      max: Number(data.get("max")),
+      min: Number(data.get("min")),
+      step: Number(data.get("step")),
+    },
+    type: "f32",
+  };
+}
+
+function ScalarParameterFields({ disabled, parameter }: Readonly<{ disabled: boolean; parameter: ScalarParameter }>) {
+  const numericFields = [
+    ["Default", "default", parameter.default],
+    ["Min", "min", parameter.range.min],
+    ["Max", "max", parameter.range.max],
+    ["Step", "step", parameter.range.step],
+  ] as const;
+  return (
+    <div className="mt-2 grid grid-cols-2 gap-2">
+      <label className="text-[10px] text-zinc-500">
+        Name
+        <input
+          className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+          defaultValue={parameter.name}
+          disabled={disabled}
+          maxLength={40}
+          name="name"
+          placeholder="Amplitude"
+          required
+        />
+      </label>
+      {numericFields.map(([label, name, value]) => (
+        <label className="text-[10px] text-zinc-500" key={name}>
+          {label}
+          <input
+            className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs tabular-nums text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+            defaultValue={value}
+            disabled={disabled}
+            min={name === "step" ? Number.MIN_VALUE : undefined}
+            name={name}
+            required
+            step="any"
+            type="number"
+          />
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function FragmentMaterialParameterSchemaEditor({
+  material,
+  onUpdate,
+}: Readonly<{
+  material: FragmentMaterialEditorItem;
+  onUpdate: (parameterSchema: StudioFragmentMaterialParameterSchemaV1) => string | null;
+}>) {
+  const [schemaError, setSchemaError] = useState<string | null>(null);
+  const layout = studioFragmentMaterialParameterLayoutV1(material.parameterSchema);
+  const inUse = material.assignmentCount > 0;
+  const full = layout.defaults.length >= MAX_FRAGMENT_MATERIAL_PARAMETERS_V1;
+  const errorId = "fragment-material-parameter-schema-error";
+
+  function update(parameterSchema: StudioFragmentMaterialParameterSchemaV1) {
+    try {
+      setSchemaError(onUpdate(parameterSchema));
+    } catch (error) {
+      setSchemaError(error instanceof Error ? error.message : "The parameter schema could not be updated.");
+    }
+  }
+
+  return (
+    <fieldset className="mt-3 border border-zinc-800 p-2" aria-describedby={schemaError ? errorId : undefined}>
+      <legend className="px-1 text-[10px] font-medium text-zinc-400">Shader parameter schema</legend>
+      <p className="text-pretty text-[10px] leading-4 text-zinc-600">
+        Map up to eight scalar values to the existing WGSL host uniform. Schema changes do not rewrite shader code.
+      </p>
+      {inUse ? (
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-500" role="status">
+          Unassign this material from {material.assignmentCount} object(s) before editing its parameter schema.
+        </p>
+      ) : null}
+
+      {layout.entries.length === 0 ? (
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+          No object parameters are declared. Add one scalar parameter to expose its default when the material is
+          assigned.
+        </p>
+      ) : (
+        <div className="mt-2 space-y-2">
+          {layout.entries.map(({ offset, parameter }, index) =>
+            parameter.type === "rgb" ? (
+              <div className="border border-zinc-800 p-2" key={`${parameter.name}/${offset}`}>
+                <div className="flex items-start justify-between gap-2 text-[10px]">
+                  <span className="font-medium text-zinc-400">{parameter.name}</span>
+                  <code className="text-right text-zinc-600">{fragmentMaterialHostSlots(offset, 3)}</code>
+                </div>
+                <p className="mt-1 text-pretty text-[10px] leading-4 text-zinc-600">
+                  RGB preset metadata is fixed here; this editor only changes scalar f32 parameters.
+                </p>
+              </div>
+            ) : (
+              <form
+                className="border border-zinc-800 p-2"
+                key={`${parameter.name}/${parameter.default}/${parameter.range.min}/${parameter.range.max}/${parameter.range.step}`}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const replacement = scalarParameterFromForm(event.currentTarget);
+                  update(
+                    material.parameterSchema.map((candidate, candidateIndex) =>
+                      candidateIndex === index ? replacement : candidate,
+                    ),
+                  );
+                }}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-medium text-zinc-400">Scalar parameter</span>
+                  <code className="text-[10px] text-zinc-600">{fragmentMaterialHostSlot(offset)}</code>
+                </div>
+                <ScalarParameterFields disabled={inUse} parameter={parameter} />
+                <div className="mt-2 flex gap-2">
+                  <button
+                    className="h-8 flex-1 border border-sky-800 bg-sky-950/50 px-2 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+                    disabled={inUse}
+                    type="submit"
+                  >
+                    Save parameter
+                  </button>
+                  <button
+                    className="h-8 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
+                    disabled={inUse}
+                    onClick={() =>
+                      update(material.parameterSchema.filter((_, candidateIndex) => candidateIndex !== index))
+                    }
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                </div>
+              </form>
+            ),
+          )}
+        </div>
+      )}
+
+      <form
+        className="mt-2 border border-zinc-800 p-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          update([...material.parameterSchema, scalarParameterFromForm(event.currentTarget)]);
+        }}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[10px] font-medium text-zinc-400">Add scalar parameter</span>
+          <code className="text-[10px] text-zinc-600">
+            {full ? "All 8 slots used" : fragmentMaterialHostSlot(layout.defaults.length)}
+          </code>
+        </div>
+        <ScalarParameterFields
+          disabled={inUse || full}
+          parameter={{ default: 0.5, name: "", range: { max: 1, min: 0, step: 0.05 }, type: "f32" }}
+        />
+        <button
+          className="mt-2 h-8 w-full border border-sky-800 bg-sky-950/50 text-xs text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+          disabled={inUse || full}
+          type="submit"
+        >
+          Add parameter
+        </button>
+      </form>
+
+      {schemaError ? (
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-red-300" id={errorId} role="alert">
+          {schemaError}
+        </p>
+      ) : null}
+    </fieldset>
   );
 }
 
