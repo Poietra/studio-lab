@@ -193,4 +193,52 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain('<option value="nearest" selected="">Nearest</option>');
     expect(markup).toContain("Texture materials use canonical WGSL");
   });
+
+  it("identifies a missing project PNG and keeps replacement available", () => {
+    const markup = renderToStaticMarkup(
+      <FragmentMaterialEditor
+        active={false}
+        assignedParameters={[]}
+        assignedShaderId="screen-texture"
+        assignedTexture={{
+          asset: { assetId: "asset:deleted", sha256: "a".repeat(64) },
+          sampler: "linear",
+        }}
+        available={false}
+        compileError="The material texture asset is unavailable."
+        materials={[
+          {
+            assignmentCount: 1,
+            glslSource: null,
+            name: "Screen texture",
+            parameterSchema: [],
+            revision: 1,
+            shaderId: "screen-texture",
+            source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+            textureSlot: "texture2d",
+          },
+        ]}
+        onAssign={vi.fn()}
+        onCreate={vi.fn(() => null)}
+        onCreatePreset={vi.fn(() => null)}
+        onCreateTexturePreset={vi.fn(() => null)}
+        onDuplicate={vi.fn(() => null)}
+        onImportGlsl={vi.fn(async () => undefined)}
+        onRemoveAsset={vi.fn()}
+        onRename={vi.fn()}
+        onUpdateSource={vi.fn()}
+        onUpdateParameter={vi.fn()}
+        onUpdateTexture={vi.fn()}
+        textureAssets={[{ assetId: "asset:replacement", label: "Replacement (320×180)" }]}
+      />,
+    );
+
+    expect(markup).toContain('aria-invalid="true"');
+    expect(markup).toContain("Missing PNG: asset:deleted");
+    expect(markup).toContain("Choose an available project PNG to repair this material.");
+    expect(markup).toContain("Replacement (320×180)");
+    const texturePicker = markup.match(/<select[^>]*id="fragment-material-texture-asset"[^>]*>/)?.[0];
+    expect(texturePicker).not.toContain(' disabled=""');
+    expect(markup).toContain('disabled="" id="fragment-material-texture-filter"');
+  });
 });
