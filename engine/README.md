@@ -45,7 +45,8 @@ node scripts/regenerate-mathtex-manim-parity.mjs
 The sibling plain-Text ABI lays out at most 256 Unicode scalars across eight
 lines with left, center, or right alignment and a positive finite line height
 (1.2 em by default), then normalizes the complete block's ink to centered unit
-height. Sans/Mono and Regular/Bold select distinct embedded DejaVu faces;
+height. Input is normalized to Unicode NFC before glyph layout so canonically
+equivalent IME input produces the same outline. Sans/Mono and Regular/Bold select distinct embedded DejaVu faces;
 synthetic bold is not used. Missing scalars fall back per left-to-right font run
 to the matching-weight Noto Sans CJK JP subset, whose font units are normalized
 to the selected DejaVu em. The subset contains kana, Japanese punctuation,

@@ -93,7 +93,7 @@ export function canonicalEditableContent(value: unknown, type: EditableContentTy
   return value as EntityContent;
 }
 
-/** The bounded LF-canonical text shared by browser outlining, Rust creation, and Python export. */
+/** The bounded LF/NFC-canonical text shared by browser outlining, Rust creation, and Python export. */
 export function studioCreationText(value: unknown): string | null {
   const content = canonicalEditableContent(value, "Text");
   return content?.text ?? null;

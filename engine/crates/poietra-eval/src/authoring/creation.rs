@@ -8,6 +8,7 @@ use poietra_scene_ir::{
     SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
+use unicode_normalization::is_nfc;
 
 use crate::{EngineSessionV1, EvaluationError};
 
@@ -852,6 +853,7 @@ fn studio_creation_text_is_canonical(text: &str) -> bool {
         && text
             .chars()
             .all(|character| character == '\n' || !character.is_control())
+        && is_nfc(text)
         && !text.trim().is_empty()
 }
 
@@ -7760,6 +7762,7 @@ mod tests {
             "   ".to_owned(),
             "two\r\nlines".to_owned(),
             "tab\tcharacter".to_owned(),
+            "Cafe\u{301}".to_owned(),
             ["a"; 9].join("\n"),
             "a".repeat(129),
             "a".repeat(257),
@@ -7773,6 +7776,7 @@ mod tests {
         }
         for valid_text in [
             "日本語で動画を作る".to_owned(),
+            "Caf\u{e9}".to_owned(),
             "こんにちは\nPoietra".to_owned(),
             "a".repeat(128),
         ] {

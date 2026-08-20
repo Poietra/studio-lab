@@ -2,7 +2,7 @@ import { z } from "zod";
 import { coordinateV1Schema, countCubicPathSegments, cubicPathV1Schema, sha256V1Schema } from "./primitives";
 
 export const POIETRA_MATHTEX_OUTLINE_ABI_VERSION = 1 as const;
-export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 5 as const;
+export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 6 as const;
 const MAX_MATHTEX_PARTS = 16;
 const MAX_MATHTEX_CONTENT_LENGTH = 2_000;
 const MAX_MATHTEX_REQUEST_JSON_BYTES = 16 * 1024;
@@ -117,7 +117,7 @@ function hasUnpairedUtf16Surrogate(text: string) {
 
 const textOutlineContentV1Schema = z
   .string()
-  .transform((text) => text.replaceAll("\r\n", "\n"))
+  .transform((text) => text.replaceAll("\r\n", "\n").normalize("NFC"))
   .superRefine((text, context) => {
     const scalars = [...text];
     const lines = text.split("\n");
@@ -150,7 +150,7 @@ export const textOutlineLayoutV1Schema = z
   })
   .strict();
 
-/** Returns the LF-normalized bounded text accepted by the Rust outline request. */
+/** Returns the LF- and NFC-normalized bounded text accepted by the Rust outline request. */
 export function canonicalTextOutlineInputV1(text: unknown): string | null {
   const parsed = textOutlineContentV1Schema.safeParse(text);
   return parsed.success ? parsed.data : null;

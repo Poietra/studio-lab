@@ -36,11 +36,12 @@ describe("MathTex outline WASM initialization", () => {
 
 describe("plain Text outline input", () => {
   it("pins the closed font-family and weight request ABI", () => {
-    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(5);
+    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(6);
   });
 
-  it("accepts bounded Japanese multiline text and canonicalizes CRLF", () => {
+  it("accepts bounded Japanese multiline text and canonicalizes line endings and Unicode", () => {
     expect(canonicalTextOutlineInputV1("日本語で動画を作る\r\nこんにちは")).toBe("日本語で動画を作る\nこんにちは");
+    expect(canonicalTextOutlineInputV1("Cafe\u0301")).toBe("Caf\u00e9");
     expect(canonicalTextOutlineInputV1("supplementary: 🚀")).toBe("supplementary: 🚀");
   });
 

@@ -1,6 +1,7 @@
 use poietra_scene_ir::{CubicPathV1, CubicSubpathV1, FillRuleV1};
 use serde::{Deserialize, Serialize};
 use ttf_parser::{Face, GlyphId};
+use unicode_normalization::UnicodeNormalization;
 
 use crate::MathTexOutlineBoundsV1;
 use crate::outline::{OutlineFailureV1, glyph_outline_subpaths, normalize_outline_subpaths};
@@ -11,7 +12,7 @@ pub const TEXT_OUTLINE_REQUEST_SCHEMA_V1: &str = "poietra.text-outline-request";
 pub const TEXT_OUTLINE_RESPONSE_SCHEMA_V1: &str = "poietra.text-outline-response";
 /// Contract version shared by the core and WASM wrapper.
 pub const TEXT_OUTLINE_VERSION_V1: u32 = 1;
-/// Maximum number of Unicode scalar values accepted after CRLF normalization.
+/// Maximum number of Unicode scalar values accepted after CRLF and NFC normalization.
 pub const MAX_TEXT_CHARACTERS_V1: usize = 256;
 /// Maximum number of lines accepted by the plain-text compiler.
 pub const MAX_TEXT_LINES_V1: usize = 8;
@@ -429,6 +430,7 @@ fn validate_request(request: &TextOutlineRequestV1) -> Result<String, CompileFai
             normalized.push(character);
         }
     }
+    let normalized = normalized.nfc().collect::<String>();
     if normalized.chars().count() > MAX_TEXT_CHARACTERS_V1 {
         return Err(CompileFailure::new(
             TextOutlineUnsupportedCodeV1::RequestTooLarge,
@@ -547,6 +549,15 @@ mod tests {
         assert!((multiline.bounds.bottom + multiline.bounds.top).abs() <= 0.000_002);
         assert_eq!(multiline, compiled("こんにちは\r\nPoietra"));
         validate_cubic_path_v1(&multiline.path).expect("multiline text path must be valid");
+    }
+
+    #[test]
+    fn canonicalizes_decomposed_unicode_before_glyph_layout() {
+        let composed = compiled("Caf\u{e9}");
+        let decomposed = compiled("Cafe\u{301}");
+
+        assert_eq!(decomposed, composed);
+        validate_cubic_path_v1(&decomposed.path).expect("NFC-normalized Text path must be valid");
     }
 
     #[test]

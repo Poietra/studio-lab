@@ -14,7 +14,7 @@ assert.equal(outline.poietraMathTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileMathTexOutlineV1, "function");
 assert.equal(outline.poietraSegmentedTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileSegmentedTexOutlineV1, "function");
-assert.equal(outline.poietraTextOutlineAbiVersion(), 5);
+assert.equal(outline.poietraTextOutlineAbiVersion(), 6);
 assert.equal(typeof outline.compileTextOutlineV1, "function");
 
 const encoder = new TextEncoder();
@@ -190,6 +190,8 @@ const textRequests = [
   encodeTextRequest("Mono AV 0123", "regular", "mono"),
   encodeTextRequest("Mono AV 0123", "bold", "mono"),
   encodeTextRequest("Mono日本語", "regular", "mono"),
+  encodeTextRequest("Caf\u00e9"),
+  encodeTextRequest("Cafe\u0301"),
   encodeTextRequest("tab\tcharacter"),
 ];
 const textWasmResponses = textRequests.map(compileTextWasm);
@@ -221,7 +223,7 @@ for (const [index, wasmResponse] of textWasmResponses.entries()) {
     `plain Text native and WASM response ${index} must be byte-identical`,
   );
 }
-for (const response of textWasmResponses.slice(0, 8)) {
+for (const response of textWasmResponses.slice(0, 10)) {
   const parsed = JSON.parse(decoder.decode(response));
   assert.equal(parsed.schema, "poietra.text-outline-response");
   assert.equal(parsed.version, 1);
@@ -234,6 +236,11 @@ assert.deepEqual(
   Buffer.from(textWasmResponses[2]),
   "LF and CRLF must compile to the same canonical Text outline",
 );
+assert.deepEqual(
+  Buffer.from(textWasmResponses[8]),
+  Buffer.from(textWasmResponses[9]),
+  "composed and decomposed Unicode must compile to the same canonical Text outline",
+);
 assert.notDeepEqual(
   JSON.parse(decoder.decode(textWasmResponses[0])).result.path,
   JSON.parse(decoder.decode(textWasmResponses[4])).result.path,
@@ -244,7 +251,7 @@ assert.notDeepEqual(
   JSON.parse(decoder.decode(textWasmResponses[6])).result.path,
   "regular and bold Mono must use distinct real font outlines",
 );
-const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[8]));
+const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[10]));
 assert.equal(unsupportedText.result.kind, "unsupported");
 assert.equal(unsupportedText.result.code, "character-unsupported");
 
