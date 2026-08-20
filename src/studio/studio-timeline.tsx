@@ -38,6 +38,8 @@ export type StudioTimelineProps = Readonly<{
   objectTracks: readonly TimelineObjectTrack[];
   opacityTrackEligibleIds: ReadonlySet<string>;
   opacityTracks: readonly StudioOpacityTimelineTrack[];
+  rotationTrackEligibleIds: ReadonlySet<string>;
+  rotationTracks: readonly StudioRotationTimelineTrack[];
   scaleTrackEligibleIds: ReadonlySet<string>;
   scaleTracks: readonly StudioScaleTimelineTrack[];
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
@@ -59,6 +61,13 @@ export type StudioTimelineProps = Readonly<{
     patch: Partial<Pick<StudioOpacityTimelineKeyframe, "easing" | "time" | "value">>,
   ) => void;
   onOpacityKeyframeDelete: (track: StudioOpacityTimelineTrack, index: number) => void;
+  onRotationKeyframeAdd: (entityId: string) => void;
+  onRotationKeyframeChange: (
+    track: StudioRotationTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioRotationTimelineKeyframe, "easing" | "time" | "value">>,
+  ) => void;
+  onRotationKeyframeDelete: (track: StudioRotationTimelineTrack, index: number) => void;
   onScaleKeyframeAdd: (entityId: string) => void;
   onScaleKeyframeChange: (
     track: StudioScaleTimelineTrack,
@@ -90,7 +99,17 @@ export type StudioOpacityTimelineTrack = Readonly<{
 }>;
 
 export type StudioMaterialParameterTimelineKeyframe = StudioOpacityTimelineKeyframe;
+export type StudioRotationTimelineKeyframe = StudioOpacityTimelineKeyframe;
 export type StudioScaleTimelineKeyframe = StudioOpacityTimelineKeyframe;
+
+export type StudioRotationTimelineTrack = Readonly<{
+  entityId: string;
+  keyframes: readonly StudioRotationTimelineKeyframe[];
+  label: string;
+  programIndex: number;
+  readOnlyReason: string | null;
+  transactionId: string;
+}>;
 
 export type StudioScaleTimelineTrack = Readonly<{
   entityId: string;
@@ -170,7 +189,7 @@ function PropertyKeyframeMarker({
   duration: number;
   index: number;
   keyframe: StudioOpacityTimelineKeyframe;
-  kind: "material" | "opacity" | "scale";
+  kind: "material" | "opacity" | "rotation" | "scale";
   locked: boolean;
   onChange: (patch: Partial<Pick<StudioOpacityTimelineKeyframe, "time">>) => void;
   onSelect: () => void;
@@ -192,29 +211,42 @@ function PropertyKeyframeMarker({
   }
 
   const displayedTime = previewTime ?? keyframe.time;
-  const propertyLabel = kind === "material" ? "Material parameter" : kind === "scale" ? "Scale" : "Opacity";
+  const propertyLabel =
+    kind === "material"
+      ? "Material parameter"
+      : kind === "rotation"
+        ? "Rotation"
+        : kind === "scale"
+          ? "Scale"
+          : "Opacity";
+  const displayedValue = kind === "rotation" ? `${keyframe.value.toFixed(1)}°` : keyframe.value.toFixed(2);
   return (
     <button
       aria-label={`${propertyLabel} keyframe ${index + 1} at ${keyframe.time.toFixed(2)} seconds`}
       aria-pressed={selected}
       className={cn(
         "absolute z-40 size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 border",
-        kind === "material" ? "top-1/4" : kind === "scale" ? "top-3/4" : "top-1/2",
+        kind === "material" ? "top-1/4" : kind === "scale" || kind === "rotation" ? "top-3/4" : "top-1/2",
         selected
           ? kind === "material"
             ? "border-fuchsia-100 bg-fuchsia-400"
-            : kind === "scale"
-              ? "border-emerald-100 bg-emerald-400"
-              : "border-sky-100 bg-sky-400"
+            : kind === "rotation"
+              ? "border-amber-100 bg-amber-400"
+              : kind === "scale"
+                ? "border-emerald-100 bg-emerald-400"
+                : "border-sky-100 bg-sky-400"
           : kind === "material"
             ? "border-fuchsia-300 bg-fuchsia-800"
-            : kind === "scale"
-              ? "border-emerald-300 bg-emerald-800"
-              : "border-sky-300 bg-sky-700",
+            : kind === "rotation"
+              ? "border-amber-300 bg-amber-800"
+              : kind === "scale"
+                ? "border-emerald-300 bg-emerald-800"
+                : "border-sky-300 bg-sky-700",
         locked ? "cursor-not-allowed opacity-50" : "cursor-ew-resize",
       )}
       data-property-keyframe={kind}
       data-opacity-keyframe={kind === "opacity" ? "" : undefined}
+      data-rotation-keyframe={kind === "rotation" ? "" : undefined}
       data-scale-keyframe={kind === "scale" ? "" : undefined}
       disabled={locked}
       onClick={(event) => {
@@ -247,7 +279,7 @@ function PropertyKeyframeMarker({
         onChange({ time });
       }}
       style={{ left: `${timelinePositionPercent(displayedTime, duration)}%`, touchAction: "none" }}
-      title={`${propertyLabel} ${keyframe.value.toFixed(2)} · ${keyframe.easing}`}
+      title={`${propertyLabel} ${displayedValue} · ${keyframe.easing}`}
       type="button"
     />
   );
@@ -507,6 +539,8 @@ export function StudioTimeline({
   objectTracks,
   opacityTrackEligibleIds,
   opacityTracks,
+  rotationTrackEligibleIds,
+  rotationTracks,
   scaleTrackEligibleIds,
   scaleTracks,
   onAppliedMotionClipChange,
@@ -520,6 +554,9 @@ export function StudioTimeline({
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
+  onRotationKeyframeAdd,
+  onRotationKeyframeChange,
+  onRotationKeyframeDelete,
   onScaleKeyframeAdd,
   onScaleKeyframeChange,
   onScaleKeyframeDelete,
@@ -537,6 +574,7 @@ export function StudioTimeline({
   >({});
   const [selectedMaterialKeyframe, setSelectedMaterialKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedOpacityKeyframe, setSelectedOpacityKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
+  const [selectedRotationKeyframe, setSelectedRotationKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedScaleKeyframe, setSelectedScaleKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const selectedLifetimeTrack =
     selectedLifetime && selectedIds.has(selectedLifetime.entityId)
@@ -567,10 +605,15 @@ export function StudioTimeline({
     ? (scaleTracks.find((track) => track.transactionId === selectedScaleKeyframe.transactionId) ?? null)
     : null;
   const selectedScaleMarker = selectedScaleTrack?.keyframes[selectedScaleKeyframe?.index ?? -1] ?? null;
+  const selectedRotationTrack = selectedRotationKeyframe
+    ? (rotationTracks.find((track) => track.transactionId === selectedRotationKeyframe.transactionId) ?? null)
+    : null;
+  const selectedRotationMarker = selectedRotationTrack?.keyframes[selectedRotationKeyframe?.index ?? -1] ?? null;
   const selectedLifetimeLocked = Boolean(selectedLifetime && lockedEntityIds.has(selectedLifetime.entityId));
   const selectedOpacityLocked = Boolean(selectedOpacityTrack && lockedEntityIds.has(selectedOpacityTrack.entityId));
   const selectedMaterialLocked = Boolean(selectedMaterialTrack && lockedEntityIds.has(selectedMaterialTrack.entityId));
   const selectedScaleLocked = Boolean(selectedScaleTrack && lockedEntityIds.has(selectedScaleTrack.entityId));
+  const selectedRotationLocked = Boolean(selectedRotationTrack && lockedEntityIds.has(selectedRotationTrack.entityId));
   return (
     <section className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
       <div className="flex items-center gap-3">
@@ -857,6 +900,94 @@ export function StudioTimeline({
           {selectedScaleLocked ? <span className="text-amber-500">{LOCKED_ENTITY_MUTATION_MESSAGE}</span> : null}
         </div>
       ) : null}
+      {selectedRotationTrack && selectedRotationMarker ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="max-w-48 truncate text-amber-300" title={selectedRotationTrack.label}>
+            Rotation · {selectedRotationTrack.label}
+          </span>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Time
+            <input
+              aria-label="Rotation keyframe time"
+              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-amber-500"
+              disabled={selectedRotationLocked || selectedRotationTrack.readOnlyReason !== null}
+              max={duration}
+              min="0"
+              onChange={(event) =>
+                onRotationKeyframeChange(selectedRotationTrack, selectedRotationKeyframe!.index, {
+                  time: Number(event.currentTarget.value),
+                })
+              }
+              step="0.05"
+              type="number"
+              value={selectedRotationMarker.time}
+            />
+            s
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Degrees
+            <input
+              aria-label="Rotation keyframe value (degrees)"
+              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-amber-500"
+              disabled={
+                selectedRotationLocked ||
+                selectedRotationTrack.readOnlyReason !== null ||
+                selectedRotationKeyframe!.index === 0
+              }
+              onChange={(event) =>
+                onRotationKeyframeChange(selectedRotationTrack, selectedRotationKeyframe!.index, {
+                  value: Number(event.currentTarget.value),
+                })
+              }
+              step="1"
+              type="number"
+              value={selectedRotationMarker.value}
+            />
+            °
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label="Rotation segment easing"
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-amber-500"
+              disabled={
+                selectedRotationLocked ||
+                selectedRotationTrack.readOnlyReason !== null ||
+                selectedRotationKeyframe!.index === selectedRotationTrack.keyframes.length - 1
+              }
+              onChange={(event) =>
+                onRotationKeyframeChange(selectedRotationTrack, selectedRotationKeyframe!.index, {
+                  easing: event.currentTarget.value as "linear" | "smooth",
+                })
+              }
+              value={selectedRotationMarker.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={
+              selectedRotationLocked ||
+              selectedRotationTrack.readOnlyReason !== null ||
+              (selectedRotationKeyframe!.index === 0 && selectedRotationTrack.keyframes.length > 1)
+            }
+            onClick={() => {
+              if (selectedRotationKeyframe!.index === 0 && selectedRotationTrack.keyframes.length > 1) return;
+              onRotationKeyframeDelete(selectedRotationTrack, selectedRotationKeyframe!.index);
+              setSelectedRotationKeyframe(null);
+            }}
+            type="button"
+          >
+            Delete keyframe
+          </button>
+          {selectedRotationTrack.readOnlyReason ? (
+            <span className="text-amber-500">{selectedRotationTrack.readOnlyReason}</span>
+          ) : null}
+          {selectedRotationLocked ? <span className="text-amber-500">{LOCKED_ENTITY_MUTATION_MESSAGE}</span> : null}
+        </div>
+      ) : null}
       {selectedMaterialTrack && selectedMaterialMarker ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
           <span className="max-w-48 truncate text-fuchsia-300" title={selectedMaterialTrack.label}>
@@ -1034,6 +1165,7 @@ export function StudioTimeline({
                 ? requestedMaterialName
                 : (materialTracks[0]?.parameterName ?? materialOptions[0]?.name ?? "");
             const opacityTrack = opacityTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
+            const rotationTrack = rotationTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const scaleTrack = scaleTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackMotionOperationIds = new Set(trackMotionClips.map((clip) => clip.operationId));
@@ -1085,6 +1217,18 @@ export function StudioTimeline({
                       type="button"
                     >
                       S+
+                    </button>
+                  ) : null}
+                  {selected && rotationTrackEligibleIds.has(track.entityId) ? (
+                    <button
+                      aria-label={`Add rotation keyframe for ${track.label}`}
+                      className="mr-1 h-5 shrink-0 px-1 text-[9px] leading-none text-amber-400 hover:bg-amber-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+                      disabled={mutationLocked}
+                      onClick={() => onRotationKeyframeAdd(track.entityId)}
+                      title="Add rotation keyframe at the playhead"
+                      type="button"
+                    >
+                      R+
                     </button>
                   ) : null}
                   {staleMaterialTrack ? (
@@ -1179,6 +1323,7 @@ export function StudioTimeline({
                       onSelect={() => {
                         onSelectEntity(track.entityId);
                         setSelectedMaterialKeyframe(null);
+                        setSelectedRotationKeyframe(null);
                         setSelectedScaleKeyframe(null);
                         setSelectedOpacityKeyframe({ index, transactionId: opacityTrack.transactionId });
                       }}
@@ -1201,11 +1346,34 @@ export function StudioTimeline({
                         onSelectEntity(track.entityId);
                         setSelectedMaterialKeyframe(null);
                         setSelectedOpacityKeyframe(null);
+                        setSelectedRotationKeyframe(null);
                         setSelectedScaleKeyframe({ index, transactionId: scaleTrack.transactionId });
                       }}
                       selected={
                         selectedScaleKeyframe?.transactionId === scaleTrack.transactionId &&
                         selectedScaleKeyframe.index === index
+                      }
+                    />
+                  ))}
+                  {rotationTrack?.keyframes.map((keyframe, index) => (
+                    <PropertyKeyframeMarker
+                      duration={duration}
+                      index={index}
+                      key={`${rotationTrack.transactionId}/${index}`}
+                      keyframe={keyframe}
+                      kind="rotation"
+                      locked={mutationLocked || rotationTrack.readOnlyReason !== null}
+                      onChange={(patch) => onRotationKeyframeChange(rotationTrack, index, patch)}
+                      onSelect={() => {
+                        onSelectEntity(track.entityId);
+                        setSelectedMaterialKeyframe(null);
+                        setSelectedOpacityKeyframe(null);
+                        setSelectedScaleKeyframe(null);
+                        setSelectedRotationKeyframe({ index, transactionId: rotationTrack.transactionId });
+                      }}
+                      selected={
+                        selectedRotationKeyframe?.transactionId === rotationTrack.transactionId &&
+                        selectedRotationKeyframe.index === index
                       }
                     />
                   ))}
@@ -1222,6 +1390,7 @@ export function StudioTimeline({
                         onSelect={() => {
                           onSelectEntity(track.entityId);
                           setSelectedOpacityKeyframe(null);
+                          setSelectedRotationKeyframe(null);
                           setSelectedScaleKeyframe(null);
                           setSelectedMaterialParameterByEntity((current) => ({
                             ...current,

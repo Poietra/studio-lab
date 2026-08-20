@@ -158,6 +158,14 @@ import {
 } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
 import {
+  appendRotationKeyframe,
+  type RotationKeyframe,
+  replaceRotationKeyframe,
+  replaceRotationKeyframeProgram,
+  rotationKeyframeTrackFromProgram,
+  rotationKeyframeTransformConflictEntity,
+} from "./studio/rotation-keyframe-edit";
+import {
   appendScaleKeyframe,
   MAX_TIMELINE_SCALE,
   MIN_TIMELINE_SCALE,
@@ -220,6 +228,7 @@ import type {
   StudioMaterialParameterTimelineOption,
   StudioMaterialParameterTimelineTrack,
   StudioOpacityTimelineTrack,
+  StudioRotationTimelineTrack,
   StudioScaleTimelineTrack,
 } from "./studio/studio-timeline";
 import type { StudioTool } from "./studio/studio-toolbar";
@@ -1338,7 +1347,81 @@ export function App({
       },
     ];
   });
-  const scaleTrackPrograms = previewAppliedEdits.map(({ program }) => program);
+  const rotationTrackEligibleIds = new Set(
+    workspaceCreationProjection?.entities.flatMap(({ entityId, transactionId }) => {
+      const owner = previewAppliedEdits.find(({ program }) =>
+        program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
+      );
+      if (!owner) return [];
+      const existingTrack = rotationKeyframeTrackFromProgram(owner.program, 0);
+      const draftAllowsOwner = !draftEdit || editingAppliedProgram?.original.program.transactionId === transactionId;
+      const hasCompetingTransform = previewAppliedEdits.some(({ program }) =>
+        program.operations.some((operation) => {
+          if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entityId);
+          if (!("entityId" in operation) || operation.entityId !== entityId) return false;
+          if (operation.kind === "ResizeEntity") return true;
+          if (operation.kind === "AnimateProperty") {
+            return operation.key === "scale" || (operation.key === "rotation" && operation.timelineTrack !== true);
+          }
+          return (
+            operation.kind === "SetProperty" &&
+            operation.key === "position" &&
+            program.transactionId !== owner.program.transactionId
+          );
+        }),
+      );
+      const sharedProgramAllowsEntity = !existingTrack || existingTrack.entityId === entityId;
+      return draftAllowsOwner && !hasCompetingTransform && sharedProgramAllowsEntity ? [entityId] : [];
+    }) ?? [],
+  );
+  const rotationTracks: readonly StudioRotationTimelineTrack[] = previewAppliedEdits.flatMap((record, programIndex) => {
+    const track = rotationKeyframeTrackFromProgram(record.program, programIndex);
+    if (!track || !workspaceCreationProjection) return [];
+    const operations = record.program.operations.filter(
+      (operation) =>
+        operation.kind === "AnimateProperty" &&
+        operation.key === "rotation" &&
+        operation.timelineTrack === true &&
+        operation.entityId === track.entityId,
+    );
+    const mutations = operations.map((operation) =>
+      workspaceCreationProjection.mutations.find(
+        (mutation) => mutation.kind === "rotation" && mutation.operationId === operation.id,
+      ),
+    );
+    if (mutations.some((mutation) => !mutation)) return [];
+    const projectedMutations = mutations as readonly Extract<
+      (typeof workspaceCreationProjection.mutations)[number],
+      { kind: "rotation" }
+    >[];
+    const workingTimes =
+      projectedMutations.length === 1 &&
+      Math.abs(projectedMutations[0]!.interval.end - projectedMutations[0]!.interval.start) < 0.0005
+        ? [projectedMutations[0]!.interval.start]
+        : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
+    if (workingTimes.length !== track.keyframes.length) return [];
+    const label =
+      workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === track.entityId)
+        ?.label ?? track.entityId;
+    const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
+    return [
+      {
+        entityId: track.entityId,
+        keyframes: track.keyframes.map((keyframe, index) => ({
+          ...keyframe,
+          sourceTime: keyframe.time,
+          time: workingTimes[index]!,
+          value: (keyframe.value * 180) / Math.PI,
+        })),
+        label,
+        programIndex,
+        readOnlyReason:
+          draftEdit && !activeDraftIsThisTrack ? "Apply or discard the current draft before editing rotation." : null,
+        transactionId: track.transactionId,
+      },
+    ];
+  });
+  const transformTrackPrograms = previewAppliedEdits.map(({ program }) => program);
   const materialParameterOptions: readonly StudioMaterialParameterTimelineOption[] = workspaceCreationProjection
     ? Object.entries(activeSceneFragmentMaterials.assignments).flatMap(([entityId, assignment]) => {
         const owner = previewAppliedEdits.find(({ program }) =>
@@ -2830,6 +2913,144 @@ export function App({
     );
   }
 
+  function rotationBaseline(entityId: string) {
+    return (
+      workspaceCreationProjection?.entities.find((entity) => entity.entityId === entityId)?.initialRotation ?? null
+    );
+  }
+
+  function stageRotationKeyframes(
+    entityId: string,
+    programIndex: number,
+    baseProgram: SceneEdit,
+    keyframes: readonly RotationKeyframe[],
+  ) {
+    if (!projectedActiveScene) return false;
+    const original = appliedEdits[programIndex];
+    const baseline = rotationBaseline(entityId);
+    if (!original || original.program.transactionId !== baseProgram.transactionId || baseline === null) {
+      setDraftError("The rotation track no longer matches the applied Studio-created object.");
+      return false;
+    }
+    try {
+      const validation = replaceRotationKeyframeProgram({
+        baseProgram,
+        baseline,
+        entityId,
+        keyframes,
+        scene: projectedActiveScene.runtimeSceneState,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return stageDraft({
+        appliedEdit: { index: programIndex, original },
+        clearSuggestion: true,
+        currentTime,
+        operation: null,
+        record: validated.record,
+        selectedObjectIds: [entityId],
+        stopPlayback: true,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The rotation keyframe could not be edited.");
+      setIsPlaying(false);
+      return false;
+    }
+  }
+
+  function addRotationKeyframe(entityId: string) {
+    const owner = studioCreationProgramOwner(entityId);
+    const baseline = rotationBaseline(entityId);
+    if (!owner || baseline === null) {
+      setDraftError("Rotation keyframes currently support only Studio-created objects.");
+      return;
+    }
+    try {
+      const sourceTime = workingTimeToSourceTime(previewAppliedSceneEdits, currentTime);
+      const track = rotationKeyframeTrackFromProgram(owner.record.program, owner.programIndex);
+      if (!track && !rotationTrackEligibleIds.has(entityId)) {
+        throw new Error(
+          "Rotation keyframes cannot overlap this object's existing move, resize, scale, rotation, or motion edit.",
+        );
+      }
+      if (track && track.entityId !== entityId) {
+        throw new Error("This shared creation Program already owns another object's rotation track.");
+      }
+      const fadeEnd = Math.max(
+        owner.record.program.anchor.resolvedSeconds,
+        ...owner.record.program.operations.flatMap((operation) =>
+          operation.kind === "ChangePresence" && operation.effect === "fade-in" && operation.entityId === entityId
+            ? [operation.interval.end]
+            : [],
+        ),
+      );
+      if (!track && sourceTime <= fadeEnd + 0.0005) {
+        throw new Error("Add the first rotation keyframe after the object's initial fade has finished.");
+      }
+      if (track?.keyframes.some((keyframe) => Math.abs(keyframe.time - sourceTime) < 0.0005)) {
+        throw new Error("A rotation keyframe already exists at the playhead.");
+      }
+      stageRotationKeyframes(
+        entityId,
+        owner.programIndex,
+        owner.record.program,
+        appendRotationKeyframe(track?.keyframes ?? [], sourceTime, baseline),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The rotation keyframe could not be added.");
+    }
+  }
+
+  function changeRotationKeyframe(
+    track: StudioRotationTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioRotationTimelineTrack["keyframes"][number], "easing" | "time" | "value">>,
+  ) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? rotationKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The rotation track no longer matches the Studio-created object.");
+      return;
+    }
+    try {
+      if (index === 0 && patch.value !== undefined) {
+        throw new Error("The first rotation keyframe preserves the object's baseline rotation.");
+      }
+      const sourcePatch: Partial<RotationKeyframe> = {
+        ...(patch.easing === undefined ? {} : { easing: patch.easing }),
+        ...(patch.time === undefined ? {} : { time: workingTimeToSourceTime(previewAppliedSceneEdits, patch.time) }),
+        ...(patch.value === undefined ? {} : { value: (patch.value * Math.PI) / 180 }),
+      };
+      stageRotationKeyframes(
+        track.entityId,
+        owner.programIndex,
+        owner.record.program,
+        replaceRotationKeyframe(sourceTrack.keyframes, index, sourcePatch),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The rotation keyframe could not be changed.");
+    }
+  }
+
+  function deleteRotationKeyframe(track: StudioRotationTimelineTrack, index: number) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? rotationKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The rotation track no longer matches the Studio-created object.");
+      return;
+    }
+    if (index === 0 && sourceTrack.keyframes.length > 1) {
+      setDraftError("Delete the later rotation keyframes before deleting the fixed first marker.");
+      return;
+    }
+    stageRotationKeyframes(
+      track.entityId,
+      owner.programIndex,
+      owner.record.program,
+      sourceTrack.keyframes.filter((_, candidate) => candidate !== index),
+    );
+  }
+
   function stageMaterialParameterKeyframes(
     track: Readonly<{
       entityId: string;
@@ -3561,11 +3782,15 @@ export function App({
     return anchor;
   }
 
-  function blockTransformWhileScaleTrackExists(targetEntityIds: readonly string[], action: string) {
-    const blockedEntityId = scaleKeyframeTransformConflictEntity(scaleTrackPrograms, targetEntityIds);
+  function blockTransformWhileTransformTrackExists(targetEntityIds: readonly string[], action: string) {
+    const scaleBlockedEntityId = scaleKeyframeTransformConflictEntity(transformTrackPrograms, targetEntityIds);
+    const rotationBlockedEntityId = rotationKeyframeTransformConflictEntity(transformTrackPrograms, targetEntityIds);
+    const blockedEntityId = scaleBlockedEntityId ?? rotationBlockedEntityId;
     if (!blockedEntityId) return false;
     setSelectedObjectIds([blockedEntityId]);
-    setDraftError(`Remove this object's scale keyframe track before ${action}.`);
+    setDraftError(
+      `Remove this object's ${scaleBlockedEntityId ? "scale" : "rotation"} keyframe track before ${action}.`,
+    );
     setIsPlaying(false);
     return true;
   }
@@ -3620,7 +3845,7 @@ export function App({
       boundedRuntimeEditTargetIds.has(entityId),
     );
     if (
-      blockTransformWhileScaleTrackExists(
+      blockTransformWhileTransformTrackExists(
         targetEntityIds,
         interactionMode === "animate" ? "creating a motion clip" : "moving it",
       )
@@ -3772,7 +3997,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return;
     }
-    if (blockTransformWhileScaleTrackExists([entityId], "resizing it")) return;
+    if (blockTransformWhileTransformTrackExists([entityId], "resizing it")) return;
     const runtimeTraceEditCandidate = runtimeTraceEditCandidateFor(entityId);
     if (runtimeTraceEditCandidate && !runtimeTraceEditCandidate.capabilities.uniformScale) {
       setSelectedObjectIds([entityId]);
@@ -3962,7 +4187,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing the selection.");
       return null;
     }
-    if (blockTransformWhileScaleTrackExists(selectedObjectIds, "resizing the selection")) return null;
+    if (blockTransformWhileTransformTrackExists(selectedObjectIds, "resizing the selection")) return null;
     if (interactionMode !== "position" || previewSelectionOnly || boundedRuntimeEditTargetIds.size > 0) return null;
     const selectedEntities = selectedObjectIds.flatMap((entityId) => {
       const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
@@ -4177,6 +4402,13 @@ export function App({
   }
 
   function installSelectionRotationDraft(rotation: SelectionRotationGesture, angleRadians: number) {
+    if (
+      blockTransformWhileTransformTrackExists(
+        rotation.entities.map(({ entityId }) => entityId),
+        "rotating the selection",
+      )
+    )
+      return false;
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return false;
     const sourceScene = projectRuntimeSceneToSourceTimeline(
@@ -4430,7 +4662,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return false;
     }
-    if (blockTransformWhileScaleTrackExists([entityId], "resizing it")) return false;
+    if (blockTransformWhileTransformTrackExists([entityId], "resizing it")) return false;
     if (
       !hasShapeDimensions(shape, target.dimensions) ||
       !Number.isFinite(target.position.x) ||
@@ -4495,7 +4727,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return false;
     }
-    if (blockTransformWhileScaleTrackExists([entityId], "resizing it")) return false;
+    if (blockTransformWhileTransformTrackExists([entityId], "resizing it")) return false;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return false;
     if (entity.geometry.scale.kind === "unknown") {
@@ -4585,6 +4817,7 @@ export function App({
 
   function rotateEntityFromInspector(entityId: string, angleRadians: number) {
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    if (blockTransformWhileTransformTrackExists([entityId], "rotating it")) return false;
     const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
     const authority = runtimeTraceProjectionAuthorityFor(entityId);
     if (createdAuthority && !createdAuthority.rotationAvailable) {
@@ -4752,7 +4985,10 @@ export function App({
     const runtimeTraceTransformAuthority = runtimeTraceProjectionAuthorityFor(entityId);
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     if (!entity || (!entity.present && runtimeTraceTransformAuthority?.studioEntityId !== entityId)) return false;
-    if ((edits.position || edits.dimensions) && blockTransformWhileScaleTrackExists([entityId], "transforming it")) {
+    if (
+      (edits.position || edits.dimensions) &&
+      blockTransformWhileTransformTrackExists([entityId], "transforming it")
+    ) {
       return false;
     }
     const replacesStudioTextContent =
@@ -4905,7 +5141,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before moving another object.");
       return false;
     }
-    if (blockTransformWhileScaleTrackExists(targetIds, "moving it")) return false;
+    if (blockTransformWhileTransformTrackExists(targetIds, "moving it")) return false;
     if (!gestureContext.proposedState || !projection) return false;
     const projected = absolutePositions
       ? { kind: "valid" as const, positions: absolutePositions }
@@ -5452,13 +5688,17 @@ export function App({
   const rotationHandleEntityId =
     selectedObjectIds.length === 1 &&
     selectedEntity !== null &&
+    scaleKeyframeTransformConflictEntity(transformTrackPrograms, [selectedEntity.id]) === null &&
+    rotationKeyframeTransformConflictEntity(transformTrackPrograms, [selectedEntity.id]) === null &&
     ((selectedStudioCreationAppearanceAtAnchor && selectedStudioCreationAppearanceAuthority.rotationAvailable) ||
       selectedRuntimeTraceEditCapabilities?.rotation === true)
       ? selectedEntity.id
       : null;
   const groupResizeEligibleIds = new Set(
     [...groupResizeEligibleCreationEntityIds(workspaceCreationProjection)].filter(
-      (entityId) => scaleKeyframeTransformConflictEntity(scaleTrackPrograms, [entityId]) === null,
+      (entityId) =>
+        scaleKeyframeTransformConflictEntity(transformTrackPrograms, [entityId]) === null &&
+        rotationKeyframeTransformConflictEntity(transformTrackPrograms, [entityId]) === null,
     ),
   );
   const groupRotationEligibleIds = new Set(
@@ -5941,6 +6181,8 @@ export function App({
               motionPaths={motionPaths}
               opacityTrackEligibleIds={opacityTrackEligibleIds}
               opacityTracks={opacityTracks}
+              rotationTrackEligibleIds={rotationTrackEligibleIds}
+              rotationTracks={rotationTracks}
               scaleTrackEligibleIds={scaleTrackEligibleIds}
               scaleTracks={scaleTracks}
               onAppliedMotionClipChange={changeAppliedMotionClip}
@@ -5986,6 +6228,9 @@ export function App({
               onOpacityKeyframeAdd={addOpacityKeyframe}
               onOpacityKeyframeChange={changeOpacityKeyframe}
               onOpacityKeyframeDelete={deleteOpacityKeyframe}
+              onRotationKeyframeAdd={addRotationKeyframe}
+              onRotationKeyframeChange={changeRotationKeyframe}
+              onRotationKeyframeDelete={deleteRotationKeyframe}
               onScaleKeyframeAdd={addScaleKeyframe}
               onScaleKeyframeChange={changeScaleKeyframe}
               onScaleKeyframeDelete={deleteScaleKeyframe}

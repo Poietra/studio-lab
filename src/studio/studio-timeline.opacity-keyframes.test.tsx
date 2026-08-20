@@ -42,6 +42,9 @@ function props(): StudioTimelineProps {
     onOpacityKeyframeAdd: vi.fn(),
     onOpacityKeyframeChange: vi.fn(),
     onOpacityKeyframeDelete: vi.fn(),
+    onRotationKeyframeAdd: vi.fn(),
+    onRotationKeyframeChange: vi.fn(),
+    onRotationKeyframeDelete: vi.fn(),
     onScaleKeyframeAdd: vi.fn(),
     onScaleKeyframeChange: vi.fn(),
     onScaleKeyframeDelete: vi.fn(),
@@ -59,6 +62,8 @@ function props(): StudioTimelineProps {
         transactionId: "create-circle",
       },
     ],
+    rotationTrackEligibleIds: new Set(["circle"]),
+    rotationTracks: [],
     scaleTrackEligibleIds: new Set(["circle"]),
     scaleTracks: [],
     readOnly: false,
@@ -128,6 +133,29 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain('aria-label="Add scale keyframe for Circle"');
   });
 
+  it("renders rotation in degrees without normalizing multiple turns", () => {
+    const base = props();
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...base}
+        rotationTracks={[
+          {
+            entityId: "circle",
+            keyframes: [{ easing: "linear", sourceTime: 2.5, time: 2.9, value: 720 }],
+            label: "Circle",
+            programIndex: 0,
+            readOnlyReason: null,
+            transactionId: "create-circle",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-property-keyframe="rotation"');
+    expect(markup).toContain('aria-label="Add rotation keyframe for Circle"');
+    expect(markup).toContain("Rotation 720.0° · linear");
+  });
+
   it("keeps an explicit whole-track recovery action when the material assignment changed", () => {
     const base = props();
     const markup = renderToStaticMarkup(
@@ -160,6 +188,7 @@ describe("StudioTimeline opacity keyframes", () => {
 
     expect(markup).toMatch(/aria-pressed="true"[^>]*title="Circle · Locked in Layers"/);
     expect(markup).toMatch(/aria-label="Add opacity keyframe for Circle"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Add rotation keyframe for Circle"[^>]*disabled=""/);
     expect(markup).toMatch(/aria-label="Add scale keyframe for Circle"[^>]*disabled=""/);
     expect(markup).toMatch(/aria-label="Opacity keyframe 1[^>]*disabled=""/);
   });
