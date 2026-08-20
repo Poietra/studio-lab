@@ -6,6 +6,7 @@ export type StudioCommandId =
   | "delete"
   | "duplicate"
   | "escape"
+  | "group"
   | "insert-arrow"
   | "insert-circle"
   | "insert-line"
@@ -17,7 +18,8 @@ export type StudioCommandId =
   | "redo"
   | "select-all"
   | "select-tool"
-  | "undo";
+  | "undo"
+  | "ungroup";
 
 export type StudioCommandDefinition = Readonly<{
   id: StudioCommandId;
@@ -43,6 +45,8 @@ export const STUDIO_COMMANDS: readonly StudioCommandDefinition[] = [
   { id: "distribute-vertical", label: "Distribute vertically", shortcut: "Alt+Shift+V" },
   { id: "undo", label: "Undo", shortcut: "Mod+Z" },
   { id: "redo", label: "Redo", shortcut: "Mod+Shift+Z" },
+  { id: "group", label: "Group", shortcut: "Mod+G" },
+  { id: "ungroup", label: "Ungroup", shortcut: "Mod+Shift+G" },
   { id: "delete", label: "Delete", shortcut: "Delete" },
   { id: "duplicate", label: "Duplicate", shortcut: "Mod+D" },
   { id: "copy", label: "Copy", shortcut: "Mod+C" },
@@ -97,6 +101,7 @@ export function commandForShortcut(event: ShortcutEvent): StudioCommandId | null
     );
   }
   if (mod) {
+    if (key === "g") return event.shiftKey ? "ungroup" : "group";
     if (key === "z") return event.shiftKey ? "redo" : "undo";
     if (key === "y" && !event.shiftKey) return "redo";
     if (event.shiftKey) return null;

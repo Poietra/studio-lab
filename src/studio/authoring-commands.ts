@@ -107,6 +107,63 @@ function appearanceEnd(scene: RuntimeSceneState, start: number) {
   return Math.min(scene.duration, start + STUDIO_STYLE_PROFILE.durationSeconds.brief);
 }
 
+export function createStudioGroupProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    childEntityIds: readonly string[];
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): Readonly<{ groupId: string; validation: SceneEditValidationResult }> {
+  const groupId = provisionalEntityId(input.transactionId, "group");
+  const operation: SceneEditOperation = {
+    childEntityIds: [...input.childEntityIds],
+    dependsOn: [],
+    groupId,
+    id: operationId(input.transactionId, "group"),
+    interval: { end: input.capturedPlayhead, start: input.capturedPlayhead },
+    kind: "GroupEntities",
+    provenance: provenance("direct-manipulation", ["Layers panel", "canonical logical hierarchy"]),
+  };
+  return {
+    groupId,
+    validation: authoringProgram([operation], {
+      capturedPlayhead: input.capturedPlayhead,
+      origin: "direct-manipulation",
+      scene: input.scene,
+      transactionId: input.transactionId,
+    }),
+  };
+}
+
+export function createStudioUngroupProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    groupId: string;
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  return authoringProgram(
+    [
+      {
+        dependsOn: [],
+        groupId: input.groupId,
+        id: operationId(input.transactionId, "ungroup"),
+        interval: { end: input.capturedPlayhead, start: input.capturedPlayhead },
+        kind: "UngroupEntity",
+        provenance: provenance("direct-manipulation", ["Layers panel", "canonical logical hierarchy"]),
+      },
+    ],
+    {
+      capturedPlayhead: input.capturedPlayhead,
+      origin: "direct-manipulation",
+      scene: input.scene,
+      transactionId: input.transactionId,
+    },
+  );
+}
+
 export function createStudioEntitiesProgram(
   input: Readonly<{
     capturedPlayhead: number;

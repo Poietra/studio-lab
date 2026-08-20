@@ -956,6 +956,8 @@ type StudioCreationOperationV1 = Readonly<{
         kind: "create-motion";
         targetEntityIds: readonly string[];
       }>
+    | Readonly<{ childEntityIds: readonly string[]; groupId: string; kind: "group" }>
+    | Readonly<{ groupId: string; kind: "ungroup" }>
     | Readonly<{ kind: "unsupported" }>
   );
 

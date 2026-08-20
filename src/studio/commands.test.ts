@@ -26,6 +26,8 @@ describe("Studio command shortcuts", () => {
     expect(key("z", { ctrlKey: true })).toBe("undo");
     expect(key("z", { metaKey: true, shiftKey: true })).toBe("redo");
     expect(key("a", { ctrlKey: true })).toBe("select-all");
+    expect(key("g", { ctrlKey: true })).toBe("group");
+    expect(key("g", { metaKey: true, shiftKey: true })).toBe("ungroup");
     expect(key("a")).toBe("insert-arrow");
   });
 

@@ -37,6 +37,8 @@ import {
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
+  createStudioGroupProgram,
+  createStudioUngroupProgram,
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
@@ -109,9 +111,12 @@ import {
 } from "./studio/inspector-edit";
 import {
   filterStudioCanvasEntitiesByVisibility,
+  planStudioLayerGroup,
   planStudioLayerOrder,
   planStudioLayerReorder,
   projectStudioLayers,
+  selectedStudioLayerGroup,
+  selectionContainsGroupedChild,
   type StudioLayerOrderDirection,
   type StudioLayerOrderPlan,
 } from "./studio/layer-order";
@@ -1357,6 +1362,9 @@ export function App({
       },
     ];
   });
+  const canonicalGroupedChildIds = new Set(
+    previewRenderer?.canonicalScene?.bundle.scene.entities.flatMap(({ id, parentId }) => (parentId ? [id] : [])) ?? [],
+  );
   const rotationTrackEligibleIds = new Set(
     workspaceCreationProjection?.entities.flatMap(({ entityId, transactionId }) => {
       const owner = previewAppliedEdits.find(({ program }) =>
@@ -1381,7 +1389,12 @@ export function App({
         }),
       );
       const sharedProgramAllowsEntity = !existingTrack || existingTrack.entityId === entityId;
-      return draftAllowsOwner && !hasCompetingTransform && sharedProgramAllowsEntity ? [entityId] : [];
+      return draftAllowsOwner &&
+        !hasCompetingTransform &&
+        sharedProgramAllowsEntity &&
+        !canonicalGroupedChildIds.has(entityId)
+        ? [entityId]
+        : [];
     }) ?? [],
   );
   const rotationTracks: readonly StudioRotationTimelineTrack[] = previewAppliedEdits.flatMap((record, programIndex) => {
@@ -1949,9 +1962,25 @@ export function App({
     canonicalEntities: previewRenderer?.canonicalScene?.bundle.scene.entities ?? null,
     creationSourceAnchors,
     entities: editableEntities,
+    rotationKeyframeEntityIds: new Set(
+      previewRenderer?.canonicalScene?.bundle.scene.animationChannels.flatMap((channel) =>
+        channel.kind === "rotation" ? [channel.entityId] : [],
+      ) ?? [],
+    ),
     sourceRuntimeIdentity: previewRenderer?.sourceRuntimeIdentity ?? null,
   });
   const selectedSet = new Set(selectedObjectIds);
+  const selectedLayerGroup = selectedStudioLayerGroup(studioLayers, selectedSet);
+  const layerGroupPlan = planStudioLayerGroup(studioLayers, selectedSet);
+  const layerGroupUnavailableReason = studioAuthoringLocked
+    ? (readDurationBlocker() ?? EDITOR_SESSION_LOADING_BLOCKER)
+    : draftEdit || editingAppliedProgram
+      ? "Apply or discard the current draft before grouping."
+      : selectedObjectIds.some((entityId) => lockedEntityIdSet.has(entityId))
+        ? "Unlock every selected object before grouping."
+        : layerGroupPlan.kind === "unavailable"
+          ? layerGroupPlan.reason
+          : null;
   const selectedEntityLocked = selectedObjectIds.some((entityId) => lockedEntityIdSet.has(entityId));
   const selectedLayoutIds = [...selectedSet];
   let selectionLayoutUnavailableReason: string | null = null;
@@ -3072,6 +3101,10 @@ export function App({
   }
 
   function addRotationKeyframe(entityId: string) {
+    if (canonicalGroupedChildIds.has(entityId)) {
+      setDraftError("Ungroup this object in Layers before adding rotation keyframes.");
+      return;
+    }
     const owner = studioCreationProgramOwner(entityId);
     const baseline = rotationBaseline(entityId);
     if (!owner || baseline === null) {
@@ -3726,6 +3759,10 @@ export function App({
   function deleteSelection() {
     if (rejectSelectionOnlyPreviewMutation()) return false;
     if (!draftBaseState || !draftSourceScene || selectedObjectIds.length === 0) return false;
+    if (selectedLayerGroup || selectionContainsGroupedChild(studioLayers, selectedSet)) {
+      setDraftError("Grouped child delete is not supported in this vertical slice. Ungroup it first.");
+      return false;
+    }
     if (draftEdit) {
       const ownsSelectedDraftEntity = selectedObjectIds.some((entityId) =>
         entityId.startsWith(`tx:${draftEdit.program.transactionId}/entity:`),
@@ -3869,8 +3906,72 @@ export function App({
     return stageLayerOrder(entityId, planStudioLayerReorder(studioLayers, entityId, frontFirstIndex));
   }
 
+  function groupLayerSelection() {
+    if (layerGroupUnavailableReason || layerGroupPlan.kind !== "planned" || !draftSourceScene) {
+      if (layerGroupUnavailableReason) setDraftError(layerGroupUnavailableReason);
+      return false;
+    }
+    const anchor = manualAuthoringAnchor({
+      action: "grouping",
+      requireAlignedPlayhead: true,
+      scene: draftSourceScene,
+      sourcePrograms: appliedSceneEdits,
+      targetEntityIds: layerGroupPlan.childEntityIds,
+    });
+    if (!anchor) return false;
+    try {
+      const { validation } = createStudioGroupProgram({
+        capturedPlayhead: anchor.sourceTime,
+        childEntityIds: layerGroupPlan.childEntityIds,
+        scene: draftSourceScene,
+        transactionId: `studio-group-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record, layerGroupPlan.childEntityIds);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The selected objects could not be grouped.");
+      return false;
+    }
+  }
+
+  function ungroupLayer(groupId: string) {
+    if (!draftSourceScene || draftEdit || editingAppliedProgram) {
+      setDraftError("Apply or discard the current draft before ungrouping.");
+      return false;
+    }
+    const group = studioLayers.find((layer) => layer.isGroup && layer.groupId === groupId);
+    if (!group?.childEntityIds) return false;
+    if (group.childEntityIds.some((entityId) => lockedEntityIdSet.has(entityId))) {
+      setDraftError("Unlock every grouped object before ungrouping.");
+      return false;
+    }
+    const anchor = manualAuthoringAnchor({
+      action: "ungrouping",
+      requireAlignedPlayhead: true,
+      scene: draftSourceScene,
+      sourcePrograms: appliedSceneEdits,
+      targetEntityIds: group.childEntityIds,
+    });
+    if (!anchor) return false;
+    try {
+      const validation = createStudioUngroupProgram({
+        capturedPlayhead: anchor.sourceTime,
+        groupId,
+        scene: draftSourceScene,
+        transactionId: `studio-ungroup-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record, group.childEntityIds);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The selected group could not be ungrouped.");
+      return false;
+    }
+  }
+
   function toggleLayerVisibility(entityId: string, visible: boolean) {
-    const layer = studioLayers.find(({ entity }) => entity.id === entityId);
+    const layer = studioLayers.find(({ entity, isGroup }) => !isGroup && entity.id === entityId);
     if (!layer || layer.visibilityReadOnlyReason || layer.sourceAnchor === null) {
       setDraftError(layer?.visibilityReadOnlyReason ?? "This layer visibility cannot be changed yet.");
       return false;
@@ -5502,6 +5603,10 @@ export function App({
       return true;
     }
     if (command === "redo") return redoProgram();
+    if (command === "group") return groupLayerSelection();
+    if (command === "ungroup") {
+      return selectedLayerGroup?.groupId ? ungroupLayer(selectedLayerGroup.groupId) : false;
+    }
     if (isSelectionLayoutCommand(command)) return arrangeSelection(command);
     if (command === "delete") return deleteSelection();
     if (command === "duplicate") return duplicateSelection();
@@ -6345,16 +6450,22 @@ export function App({
               durationError={durationError}
               durationMinimum={durationTrimAvailability.minimumDuration}
               entities={editableEntities}
+              groupUnavailableReason={layerGroupUnavailableReason}
               layers={studioLayers}
               lockToggleDisabled={draftApplyPending}
               lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
+              onGroup={groupLayerSelection}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onEditAppliedProgram={editAppliedProgram}
               onLayerOrder={changeLayerOrder}
               onLayerReorder={reorderLayer}
+              onToggleLayerGroup={(childEntityIds, selected) =>
+                setSelectedObjectIds(selected ? [] : [...childEntityIds])
+              }
               onToggleEntityLock={toggleLayerLock}
               onToggleEntityVisibility={toggleLayerVisibility}
+              onUngroup={ungroupLayer}
               onRedo={() => void redoProgram()}
               onToggleEntity={(entityId, selected) =>
                 setSelectedObjectIds((selection) =>
@@ -6364,6 +6475,7 @@ export function App({
               onUndo={undoProgramCommitFirst}
               redoCount={redoPrograms.length}
               selectedIds={selectedSet}
+              selectedGroupId={selectedLayerGroup?.groupId ?? null}
               sourceImportOutcomes={activeScene.importOutcomes}
             />
 

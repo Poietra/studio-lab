@@ -65,6 +65,7 @@ function producedEntityIds(program: SceneEdit) {
     program.operations.flatMap((operation) => {
       if (operation.kind === "CreateEntity") return [operation.entity.id];
       if (operation.kind === "TransformContent") return [operation.targetEntityId];
+      if (operation.kind === "GroupEntities") return [operation.groupId];
       return [];
     }),
   );
@@ -174,7 +175,9 @@ export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeScene
         ? operation.entity.id
         : operation.kind === "TransformContent"
           ? operation.targetEntityId
-          : null;
+          : operation.kind === "GroupEntities"
+            ? operation.groupId
+            : null;
     if (!entityId) continue;
     if (producerIds.has(entityId)) {
       issues.push({
@@ -189,7 +192,12 @@ export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeScene
     if (!entityId.startsWith(`tx:${input.transactionId}/entity:`)) {
       issues.push({
         code: "provisional-id-invalid",
-        field: operation.kind === "CreateEntity" ? "entity.id" : "targetEntityId",
+        field:
+          operation.kind === "CreateEntity"
+            ? "entity.id"
+            : operation.kind === "GroupEntities"
+              ? "groupId"
+              : "targetEntityId",
         message: `Produced identity ${entityId} must belong to transaction ${input.transactionId}.`,
         operationId: operation.id,
         severity: "error",
@@ -198,7 +206,12 @@ export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeScene
     if (scene.objectGraph.entities[entityId]) {
       issues.push({
         code: "provisional-id-invalid",
-        field: operation.kind === "CreateEntity" ? "entity.id" : "targetEntityId",
+        field:
+          operation.kind === "CreateEntity"
+            ? "entity.id"
+            : operation.kind === "GroupEntities"
+              ? "groupId"
+              : "targetEntityId",
         message: `Produced identity ${entityId} would overwrite an existing entity.`,
         operationId: operation.id,
         severity: "error",
@@ -349,6 +362,7 @@ export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeScene
   for (const operation of input.operations) {
     if (operation.kind === "CreateEntity") producerByEntity.set(operation.entity.id, operation.id);
     if (operation.kind === "TransformContent") producerByEntity.set(operation.targetEntityId, operation.id);
+    if (operation.kind === "GroupEntities") producerByEntity.set(operation.groupId, operation.id);
   }
   for (const operation of input.operations) {
     for (const entityId of referencedEntityIds(operation)) {
