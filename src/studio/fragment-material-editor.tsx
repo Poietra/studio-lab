@@ -529,6 +529,7 @@ export function FragmentMaterialEditor({
             </p>
           ) : null}
           <FragmentMaterialParameterSchemaEditor
+            key={editingMaterial.shaderId}
             material={editingMaterial}
             onUpdate={(parameterSchema) => onUpdateParameterSchema(editingMaterial.shaderId, parameterSchema)}
           />
