@@ -30,6 +30,7 @@ import {
   recordStudioFragmentMaterialGlslDiagnosticV1,
   removeStudioFragmentMaterialV1,
   updateStudioFragmentMaterialFromGlslV1,
+  updateStudioFragmentMaterialParameterSchemaV1,
   updateStudioFragmentMaterialParameterV1,
 } from "./fragment-material-authoring";
 import type { ProgramRecord } from "./model";
@@ -393,6 +394,33 @@ describe("durable editor session storage", () => {
     const reopened = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
     expect(projectFragmentMaterialsForSceneV1(reopened, "scene.py#SceneA").assignments).toEqual({});
     expect(reopened.registry.materials[0]?.source).toBe(STUDIO_WAVE_FRAGMENT_SOURCE_V1);
+  });
+
+  it("restores a custom scalar schema and its assignment defaults through the existing storage authority", () => {
+    const adapter = new MemoryAdapter();
+    const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Custom" });
+    const authored = updateStudioFragmentMaterialParameterSchemaV1(material.state, {
+      parameterSchema: [
+        { default: 0.25, name: "Amount", range: { max: 1, min: 0, step: 0.05 }, type: "f32" },
+        { default: 6, name: "Count", range: { max: 16, min: 1, step: 1 }, type: "f32" },
+      ],
+      shaderId: material.shaderId,
+    });
+    const assigned = assignStudioFragmentMaterialV1(authored, {
+      entityId: "circle",
+      sceneId: "scene.py#SceneA",
+      shaderId: material.shaderId,
+    });
+
+    expect(new EditorSessionStore(adapter).saveProjectFragmentMaterials("project-a", assigned)).toBe(true);
+    const restored = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
+
+    expect(restored.parameterSchemasByShaderId[material.shaderId]).toEqual(
+      authored.parameterSchemasByShaderId[material.shaderId],
+    );
+    expect(projectFragmentMaterialsForSceneV1(restored, "scene.py#SceneA").assignments.circle?.parameters).toEqual([
+      0.25, 6,
+    ]);
   });
 
   it("restores Gradient RGB parameters through the existing flat material ABI", () => {
