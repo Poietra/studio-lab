@@ -30,6 +30,7 @@ export type SelectionResizeGesture = Readonly<{
 
 type CreationRotationAuthority = Readonly<{
   entities: readonly Readonly<{ entityId: string }>[];
+  motions?: readonly Readonly<{ targetEntityId: string }>[];
   mutations: readonly Readonly<{
     entityId: string;
     kind: string;
@@ -87,9 +88,10 @@ export function groupResizeEligibleCreationEntityIds(
         : [],
     ),
   );
+  const motionTargetEntityIds = new Set(projection.motions?.map(({ targetEntityId }) => targetEntityId) ?? []);
   return new Set(
     projection.entities
-      .filter(({ entityId }) => !unsupportedRotatedEntityIds.has(entityId))
+      .filter(({ entityId }) => !unsupportedRotatedEntityIds.has(entityId) && !motionTargetEntityIds.has(entityId))
       .map(({ entityId }) => entityId),
   );
 }

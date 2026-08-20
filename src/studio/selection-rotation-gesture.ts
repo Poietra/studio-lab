@@ -21,8 +21,27 @@ type CreationPositionAuthority = Readonly<{
   mutations: readonly Readonly<{
     entityId: string;
     kind: string;
+    to?: unknown;
+    toPosition?: unknown;
+    value?: unknown;
   }>[];
 }>;
+
+function finiteProjectedPoint(value: unknown): Point | null {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("x" in value) ||
+    !("y" in value) ||
+    typeof value.x !== "number" ||
+    !Number.isFinite(value.x) ||
+    typeof value.y !== "number" ||
+    !Number.isFinite(value.y)
+  ) {
+    return null;
+  }
+  return { x: value.x, y: value.y };
+}
 
 export function latestCreationPositionForEntity(
   projection: CreationPositionAuthority | null | undefined,
@@ -31,19 +50,9 @@ export function latestCreationPositionForEntity(
   if (!projection) return null;
   for (let index = projection.mutations.length - 1; index >= 0; index -= 1) {
     const mutation = projection.mutations[index];
-    if (mutation?.entityId === entityId && mutation.kind === "position" && "value" in mutation) {
-      const value = mutation.value;
-      if (
-        typeof value === "object" &&
-        value !== null &&
-        "x" in value &&
-        "y" in value &&
-        typeof value.x === "number" &&
-        typeof value.y === "number"
-      ) {
-        return { x: value.x, y: value.y };
-      }
-    }
+    if (mutation?.entityId !== entityId) continue;
+    if (mutation.kind === "position") return finiteProjectedPoint(mutation.value);
+    if (mutation.kind === "resize") return finiteProjectedPoint(mutation.toPosition);
   }
   return null;
 }
@@ -60,7 +69,7 @@ export function currentCreationTransformForEntity(
   if (!transformOrigin) return null;
   let rotation = 0;
   for (const mutation of projection.mutations) {
-    if (mutation.entityId !== entityId || mutation.kind !== "rotation" || !("to" in mutation)) continue;
+    if (mutation.entityId !== entityId || mutation.kind !== "rotation") continue;
     if (typeof mutation.to !== "number" || !Number.isFinite(mutation.to)) return null;
     rotation = mutation.to;
   }

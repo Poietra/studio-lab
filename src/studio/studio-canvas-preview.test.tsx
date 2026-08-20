@@ -500,6 +500,15 @@ describe("StudioCanvas retained preview layer", () => {
     const groupRotatedMarkup = renderSelection(groupRotatedEligible, groupRotatedEligible);
     expect(groupRotatedMarkup.match(/data-studio-selection-resize-handle=/g)).toHaveLength(4);
     expect(groupRotatedMarkup.match(/data-studio-selection-rotation-handle=/g)).toHaveLength(1);
+
+    const motionBlockedEligible = groupResizeEligibleCreationEntityIds({
+      entities,
+      motions: [{ targetEntityId: circle.id }],
+      mutations: [],
+    });
+    const motionBlockedMarkup = renderSelection(motionBlockedEligible, motionBlockedEligible);
+    expect(motionBlockedMarkup).not.toContain("data-studio-selection-resize-handle");
+    expect(motionBlockedMarkup).not.toContain("data-studio-selection-rotation-handle");
   });
 
   it.each(["Text", "MathTex"] as const)(

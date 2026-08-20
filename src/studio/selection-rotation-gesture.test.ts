@@ -22,11 +22,16 @@ describe("selection rotation gesture", () => {
       mutations: [
         { entityId: "left", kind: "position", value: { x: 100, y: 200 } },
         { entityId: "right", kind: "position", value: { x: 300, y: 200 } },
-        { entityId: "left", kind: "position", value: { x: 120, y: 220 } },
+        {
+          entityId: "left",
+          fromPosition: { x: 100, y: 200 },
+          kind: "resize",
+          toPosition: { x: 140, y: 230 },
+        },
       ],
     };
 
-    expect(latestCreationPositionForEntity(projection, "left")).toEqual({ x: 120, y: 220 });
+    expect(latestCreationPositionForEntity(projection, "left")).toEqual({ x: 140, y: 230 });
     expect(latestCreationPositionForEntity(projection, "right")).toEqual({ x: 300, y: 200 });
     expect(latestCreationPositionForEntity(projection, "missing")).toBeNull();
   });
@@ -37,7 +42,7 @@ describe("selection rotation gesture", () => {
       mutations: [
         { entityId: "left", kind: "position", value: { x: 100, y: 200 } },
         { entityId: "left", kind: "rotation", to: Math.PI / 2 },
-        { entityId: "left", kind: "position", value: { x: 120, y: 220 } },
+        { entityId: "left", kind: "resize", toPosition: { x: 120, y: 220 } },
         { entityId: "left", kind: "rotation", to: Math.PI },
       ],
     };
@@ -49,7 +54,21 @@ describe("selection rotation gesture", () => {
     expect(currentCreationTransformForEntity(projection, "missing")).toBeNull();
   });
 
-  it("rotates prepared centers around their aggregate pivot but commits from Rust-projected positions", () => {
+  it("rotates prepared centers from the Rust-projected origin after an asymmetric shape resize", () => {
+    const projection = {
+      entities: [{ entityId: "left" }, { entityId: "right" }],
+      mutations: [
+        { entityId: "left", kind: "position", value: { x: 200, y: 180 } },
+        { entityId: "right", kind: "position", value: { x: 440, y: 180 } },
+        { entityId: "left", kind: "resize", toPosition: { x: 250, y: 170 } },
+        { entityId: "right", kind: "resize", toPosition: { x: 370, y: 170 } },
+      ],
+    };
+    const targets = ["left", "right"].flatMap((entityId) => {
+      const transform = currentCreationTransformForEntity(projection, entityId);
+      return transform ? [{ entityId, fromPosition: transform.transformOrigin }] : [];
+    });
+    expect(targets).toHaveLength(2);
     const gesture = createSelectionRotationGesture({
       basis,
       cameraScale: 2,
@@ -57,10 +76,7 @@ describe("selection rotation gesture", () => {
       sourceAnchor: 1,
       start: { x: 320, y: 100 },
       surfaceBounds: { height: 360, left: 0, top: 0, width: 640 },
-      targets: [
-        { entityId: "left", fromPosition: { x: 250, y: 170 } },
-        { entityId: "right", fromPosition: { x: 370, y: 170 } },
-      ],
+      targets,
     });
     expect(gesture).not.toBeNull();
     if (!gesture) return;
