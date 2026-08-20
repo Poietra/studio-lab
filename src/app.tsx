@@ -266,6 +266,7 @@ import {
   createDirectManipulationColorProgram,
   createDirectManipulationGroupResizeProgram,
   createDirectManipulationGroupRotationProgram,
+  createDirectManipulationGroupVisibilityProgram,
   createDirectManipulationLayerOrderProgram,
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
@@ -4211,6 +4212,46 @@ export function App({
     }
   }
 
+  function toggleLayerGroupVisibility(groupId: string, visible: boolean) {
+    const group = studioLayers.find((layer) => layer.isGroup && layer.groupId === groupId);
+    if (!group?.childEntityIds || group.visibilityReadOnlyReason) {
+      setDraftError(group?.visibilityReadOnlyReason ?? "This group visibility cannot be changed yet.");
+      return false;
+    }
+    if (group.childEntityIds.some((entityId) => lockedEntityIdSet.has(entityId))) {
+      setDraftError("Unlock every grouped object before changing group visibility.");
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const groupOwner = gestureContext.sourcePrograms.find(({ operations }) =>
+      operations.some((operation) => operation.kind === "GroupEntities" && operation.groupId === groupId),
+    );
+    if (!groupOwner) {
+      setDraftError("The canonical Group Program is unavailable; ungroup and group these objects again.");
+      return false;
+    }
+    const sourceAnchor = groupOwner.anchor.resolvedSeconds;
+    try {
+      const validation = createDirectManipulationGroupVisibilityProgram({
+        capturedPlayhead: sourceAnchor,
+        entityIds: group.childEntityIds,
+        scene: sourceScene,
+        start: sourceAnchor,
+        transactionId: `studio-group-visibility-${crypto.randomUUID()}`,
+        visible,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The group visibility could not be changed.");
+      return false;
+    }
+  }
+
   function toggleLayerLock(entityId: string) {
     if (draftEdit) {
       setDraftError("Apply or discard the current draft before changing layer locks.");
@@ -6723,6 +6764,7 @@ export function App({
               onToggleLayerGroup={(childEntityIds, selected) =>
                 setSelectedObjectIds(selected ? [] : [...childEntityIds])
               }
+              onToggleLayerGroupVisibility={toggleLayerGroupVisibility}
               onToggleEntityLock={toggleLayerLock}
               onToggleEntityVisibility={toggleLayerVisibility}
               onUngroup={ungroupLayer}

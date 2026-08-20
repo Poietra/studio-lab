@@ -1109,13 +1109,12 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
             }
         }
         if !entity.visible
-            && (entity.parent_id.is_some()
-                || matches!(entity.geometry, SceneGeometryV1::Group {})
+            && (matches!(entity.geometry, SceneGeometryV1::Group {})
                 || parent_ids.contains(entity.id.as_str()))
         {
             validator.issue(
                 format!("{path}.visible"),
-                "static hidden visibility currently requires a root drawable leaf entity",
+                "static hidden visibility requires a drawable leaf entity",
             );
         }
         if entity.lifetimes.is_empty() || entity.lifetimes.len() > 64 {

@@ -9,6 +9,7 @@ import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
 import {
   createDirectManipulationColorProgram,
   createDirectManipulationGroupRotationProgram,
+  createDirectManipulationGroupVisibilityProgram,
   createDirectManipulationLayerOrderProgram,
   createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
@@ -593,6 +594,63 @@ describe("Studio draft validation boundary", () => {
       issues: expect.arrayContaining([expect.objectContaining({ code: "lowering-unsupported", field: "entityId" })]),
       kind: "invalid",
     });
+  });
+
+  it("creates one parallel visibility Program for unique Studio-created group children", () => {
+    const entityIds = ["tx:visibility/entity:circle", "tx:visibility/entity:rectangle"];
+    const scene = {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          ...Object.fromEntries(
+            entityIds.map((entityId) => [
+              entityId,
+              {
+                id: entityId,
+                lifetime: [{ end: STUDIO_FIXTURE_SCENE.duration, start: 0 }],
+                provisional: false,
+                sourceIdentity: { kind: "unknown" as const, reason: "Studio-created entity." },
+                transactionId: "visibility",
+                type: entityId.endsWith("circle") ? "Circle" : "Rectangle",
+              },
+            ]),
+          ),
+        },
+      },
+    };
+
+    const validation = createDirectManipulationGroupVisibilityProgram({
+      capturedPlayhead: 1,
+      entityIds,
+      scene,
+      start: 1,
+      transactionId: "hide-group",
+      visible: false,
+    });
+
+    expect(validation).toMatchObject({
+      kind: "valid",
+      program: {
+        loweringStatus: "unsupported",
+        operations: [
+          { entityId: entityIds[0], key: "visibility", value: false },
+          { entityId: entityIds[1], key: "visibility", value: false },
+        ],
+        requestedExecution: "parallel",
+      },
+    });
+    expect(() =>
+      createDirectManipulationGroupVisibilityProgram({
+        capturedPlayhead: 1,
+        entityIds: [entityIds[0]!, entityIds[0]!],
+        scene,
+        start: 1,
+        transactionId: "invalid-group",
+        visible: false,
+      }),
+    ).toThrow(/unique/i);
   });
 
   it("creates a canonical color edit only for a Studio-created shape", () => {
