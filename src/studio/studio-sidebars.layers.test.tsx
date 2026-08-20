@@ -95,4 +95,53 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain('aria-label="Backward front"');
     expect(markup).toMatch(/aria-label="Front front"[^>]*disabled=""/);
   });
+
+  it("keeps a user-locked row selectable and disables its authoring controls", () => {
+    const front = entity("front");
+    const markup = renderToStaticMarkup(
+      <WorkspaceSidebar
+        activeScene={activeScene()}
+        appliedProgramReadOnlyReasons={{}}
+        appliedEdits={[]}
+        appliedTransactionIds={new Set()}
+        draftActive={false}
+        duration={1}
+        durationError={null}
+        durationMinimum={0.1}
+        editingAppliedTransactionId={null}
+        entities={[front]}
+        layers={[
+          {
+            canMove: { back: true, backward: true, forward: true, front: true },
+            entity: front,
+            readOnlyReason: null,
+            sceneOrder: 0,
+            sourceAnchor: 0,
+            sourceZIndex: 1,
+          },
+        ]}
+        lockedEntityIds={new Set(["front"])}
+        nextScene={null}
+        onDurationChange={vi.fn()}
+        onEditAppliedProgram={vi.fn()}
+        onLayerOrder={vi.fn()}
+        onLayerReorder={vi.fn()}
+        onRedo={vi.fn()}
+        onToggleEntity={vi.fn()}
+        onToggleEntityLock={vi.fn()}
+        onUndo={vi.fn()}
+        redoCount={0}
+        selectedIds={new Set(["front"])}
+        sourceImportOutcomes={[]}
+      />,
+    );
+
+    const lockButton = markup.match(/<button aria-label="Unlock front"[^>]*>/)?.[0];
+    expect(lockButton).toContain('aria-pressed="true"');
+    expect(lockButton).toContain('draggable="false"');
+    expect(markup).toMatch(/aria-label="Select front"[^>]*checked=""/);
+    expect(markup).toMatch(/aria-label="Back front"[^>]*disabled=""/);
+    expect(markup).toContain("Unlock this object before reordering it.");
+    expect(markup).toContain("Locked");
+  });
 });

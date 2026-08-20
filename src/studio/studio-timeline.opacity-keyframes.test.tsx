@@ -154,4 +154,13 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain('aria-label="Remove stale material track for Circle"');
     expect(markup).toContain("Remove track");
   });
+
+  it("keeps a locked object selectable while disabling timeline mutations", () => {
+    const markup = renderToStaticMarkup(<StudioTimeline {...props()} lockedEntityIds={new Set(["circle"])} />);
+
+    expect(markup).toMatch(/aria-pressed="true"[^>]*title="Circle · Locked in Layers"/);
+    expect(markup).toMatch(/aria-label="Add opacity keyframe for Circle"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Add scale keyframe for Circle"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Opacity keyframe 1[^>]*disabled=""/);
+  });
 });

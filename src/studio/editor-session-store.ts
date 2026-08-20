@@ -32,12 +32,13 @@ export const MAX_STORED_EDITOR_SESSIONS = 20;
 export const MAX_STORED_EDITOR_SESSION_BYTES = MAX_EDITOR_SESSION_SNAPSHOT_BYTES_V1;
 export const MAX_EDITOR_SESSION_STORAGE_BYTES = 2 * 1024 * 1024;
 
-export type EditorSessionSnapshot = EditorSessionSnapshotV1 &
+export type EditorSessionSnapshot = Omit<EditorSessionSnapshotV1, "lockedEntityIds"> &
   Readonly<{
     durationError: string | null;
     draftError: string | null;
     insertValue: string;
     instruction: string;
+    lockedEntityIds: readonly string[];
   }>;
 
 export type EditorSessionIdentity = Readonly<{
@@ -197,7 +198,8 @@ function parseLocalEditorSessionSnapshot(value: unknown): EditorSessionSnapshot 
   });
   if (!transient.success) return null;
   try {
-    return { ...parseEditorSessionSnapshotV1(durableValue), ...transient.data };
+    const parsed = parseEditorSessionSnapshotV1(durableValue);
+    return { ...parsed, ...transient.data, lockedEntityIds: parsed.lockedEntityIds ?? [] };
   } catch {
     return null;
   }
@@ -216,6 +218,7 @@ export function durableEditorSessionSnapshotV1(snapshot: EditorSessionSnapshot):
     editingAppliedProgram: snapshot.editingAppliedProgram,
     insertTool: snapshot.insertTool,
     interactionMode: snapshot.interactionMode,
+    lockedEntityIds: snapshot.lockedEntityIds,
     motionDuration: snapshot.motionDuration,
     programUndoEntries: snapshot.programUndoEntries,
     redoPrograms: snapshot.redoPrograms,
@@ -231,6 +234,7 @@ function restoredDurableSnapshot(snapshot: EditorSessionSnapshotV1): EditorSessi
     draftError: null,
     insertValue: "",
     instruction: "",
+    lockedEntityIds: snapshot.lockedEntityIds ?? [],
   };
 }
 

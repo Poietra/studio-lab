@@ -64,6 +64,7 @@ export type StudioCanvasProps = Readonly<{
   inlineTextEditor: StudioInlineTextEditorSession | null;
   insertTool: StudioTool;
   interactionMode: InteractionMode;
+  lockedEntityIds?: ReadonlySet<string>;
   motionPaths: readonly StudioMotionPath[];
   onCanvasPlace: (point: Point) => void;
   onEntityKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
@@ -567,6 +568,7 @@ export function StudioCanvas({
   inlineTextEditor,
   insertTool,
   interactionMode,
+  lockedEntityIds = new Set(),
   motionPaths,
   onCanvasPlace,
   onEntityKeyDown,
@@ -629,6 +631,7 @@ export function StudioCanvas({
   );
   const boundedRuntimeEditTargetIds = new Set(runtimeTraceEditCandidates.map(({ studioEntityId }) => studioEntityId));
   const boundedRuntimeEditActive = boundedRuntimeEditTargetIds.size > 0;
+  const selectedEntityLocked = [...selectedIds].some((entityId) => lockedEntityIds.has(entityId));
   const remotePeers = orderedStudioPeersV1(presenceParticipants);
   const remoteSelectorOrdinalsByEntityId = new Map<string, number[]>();
   remotePeers.forEach((participant, index) => {
@@ -746,6 +749,7 @@ export function StudioCanvas({
     !displayOnlyPreview &&
     !selectionOnlyPreview &&
     !boundedRuntimeEditActive &&
+    !selectedEntityLocked &&
     entities
       .filter((entity) => selectedIds.has(entity.id))
       .every(
@@ -763,6 +767,7 @@ export function StudioCanvas({
     !displayOnlyPreview &&
     !selectionOnlyPreview &&
     !boundedRuntimeEditActive &&
+    !selectedEntityLocked &&
     entities
       .filter((entity) => selectedIds.has(entity.id))
       .every(
@@ -845,7 +850,7 @@ export function StudioCanvas({
           {showingCanvasPixels ? (
             <StudioMotionOverlay
               dragPreview={dragPreview}
-              editableMotionIds={editableMotionIds}
+              editableMotionIds={new Set([...editableMotionIds].filter((entityId) => !lockedEntityIds.has(entityId)))}
               entities={entities}
               interactionMode={interactionMode}
               motionPaths={motionPaths}
@@ -893,7 +898,9 @@ export function StudioCanvas({
               (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
             const runtimeMutationLocked = boundedRuntimeEditActive && !boundedRuntimeEditTargetIds.has(entity.id);
             const selectionOnlyEntity = selectionOnlyPreview || runtimeMutationLocked;
-            const mutationLocked = selectionLocked || selectionOnlyEntity;
+            const authoringLocked = lockedEntityIds.has(entity.id) || (selected && selectedEntityLocked);
+            const mutationLocked = selectionLocked || selectionOnlyEntity || authoringLocked;
+            const selectorOnlyEntity = selectionOnlyEntity || authoringLocked;
             const positionUnknown = entity.geometry.position.kind === "unknown";
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
@@ -986,14 +993,14 @@ export function StudioCanvas({
                   style={{ rotate: `${-displayedRotation}rad`, scale: displayedScale }}
                 >
                   <button
-                    aria-label={`Move ${entityLabel(entity)}`}
+                    aria-label={`${authoringLocked ? "Select" : "Move"} ${entityLabel(entity)}`}
                     aria-pressed={selected}
                     className={cn(
                       "block border outline-none",
                       "box-border p-0",
                       moveLocked
                         ? "pointer-events-none border-dashed border-sky-800"
-                        : selectionOnlyEntity
+                        : selectorOnlyEntity
                           ? "cursor-pointer"
                           : "cursor-grab active:cursor-grabbing",
                       selected
@@ -1001,9 +1008,10 @@ export function StudioCanvas({
                         : "border-transparent hover:border-zinc-600",
                     )}
                     data-studio-entity={entity.id}
+                    data-studio-entity-locked={authoringLocked ? "" : undefined}
                     disabled={moveLocked}
                     onKeyDown={(event) => {
-                      if (!selectionOnlyEntity) {
+                      if (!selectorOnlyEntity) {
                         onEntityKeyDown(event, entity.id);
                         return;
                       }
@@ -1011,7 +1019,7 @@ export function StudioCanvas({
                       event.preventDefault();
                       onSelectEntity(entity.id, "single");
                     }}
-                    onLostPointerCapture={selectionOnlyEntity ? undefined : onEntityPointerCancel}
+                    onLostPointerCapture={selectorOnlyEntity ? undefined : onEntityPointerCancel}
                     onDoubleClick={
                       entity.type === "Text" &&
                       !mutationLocked &&
@@ -1031,7 +1039,7 @@ export function StudioCanvas({
                           }
                         : undefined
                     }
-                    onPointerCancel={selectionOnlyEntity ? undefined : onEntityPointerCancel}
+                    onPointerCancel={selectorOnlyEntity ? undefined : onEntityPointerCancel}
                     onPointerDown={(event) => {
                       if (event.shiftKey || event.metaKey || event.ctrlKey) {
                         event.preventDefault();
@@ -1039,24 +1047,26 @@ export function StudioCanvas({
                         onSelectEntity(entity.id, "toggle");
                         return;
                       }
-                      if (!selectionOnlyEntity) {
+                      if (!selectorOnlyEntity) {
                         onEntityPointerDown(event, entity.id, moveSnapBasis);
                         return;
                       }
                       event.stopPropagation();
                       onSelectEntity(entity.id, "single");
                     }}
-                    onPointerMove={selectionOnlyEntity ? undefined : onEntityPointerMove}
-                    onPointerUp={selectionOnlyEntity ? undefined : onEntityPointerUp}
+                    onPointerMove={selectorOnlyEntity ? undefined : onEntityPointerMove}
+                    onPointerUp={selectorOnlyEntity ? undefined : onEntityPointerUp}
                     style={entityDimensionStyle(previewGeometry.dimensions, frame)}
                     title={
-                      selectionOnlyEntity
-                        ? "This verified object can be selected, but source rewriting is unavailable."
-                        : positionUnknown
-                          ? entity.geometry.position.reason
-                          : interactionMode === "position"
-                            ? "Drag to move · Hold Alt or Option to temporarily disable snapping"
-                            : "Drag to create motion"
+                      authoringLocked
+                        ? "Locked in Layers. Select to inspect or unlock it."
+                        : selectionOnlyEntity
+                          ? "This verified object can be selected, but source rewriting is unavailable."
+                          : positionUnknown
+                            ? entity.geometry.position.reason
+                            : interactionMode === "position"
+                              ? "Drag to move · Hold Alt or Option to temporarily disable snapping"
+                              : "Drag to create motion"
                     }
                     type="button"
                   >

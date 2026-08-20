@@ -64,6 +64,7 @@ import {
   SOURCE_TIMING_LOADING_BLOCKER,
   WORKSPACE_REIMPORT_BLOCKER,
 } from "./studio/editor-revision-policy";
+import { LOCKED_ENTITY_MUTATION_MESSAGE, lockedEntityMutationTargets, toggleEntityLock } from "./studio/entity-lock";
 import {
   assignStudioFragmentMaterialV1,
   createStudioFragmentMaterialV1,
@@ -156,6 +157,16 @@ import {
   workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline,
 } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
+import {
+  appendScaleKeyframe,
+  MAX_TIMELINE_SCALE,
+  MIN_TIMELINE_SCALE,
+  replaceScaleKeyframe,
+  replaceScaleKeyframeProgram,
+  type ScaleKeyframe,
+  scaleKeyframeTrackFromProgram,
+  scaleKeyframeTransformConflictEntity,
+} from "./studio/scale-keyframe-edit";
 import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-authoring-wire";
 import type { SceneEdit } from "./studio/scene-edit-contract";
 import {
@@ -196,16 +207,6 @@ import {
   type SingleScaleResizeGesture,
 } from "./studio/single-scale-resize-gesture";
 import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimelineWithProjection } from "./studio/source-timeline";
-import {
-  appendScaleKeyframe,
-  MAX_TIMELINE_SCALE,
-  MIN_TIMELINE_SCALE,
-  replaceScaleKeyframe,
-  replaceScaleKeyframeProgram,
-  type ScaleKeyframe,
-  scaleKeyframeTrackFromProgram,
-  scaleKeyframeTransformConflictEntity,
-} from "./studio/scale-keyframe-edit";
 import { preparedGeometryBounds, verifiedPreviewGeometryForStudioEntity } from "./studio/studio-canvas";
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
@@ -477,6 +478,7 @@ export function App({
     setInstruction,
     setInteractionMode,
     setIsPlaying,
+    setLockedEntityIds,
     setMotionDuration,
     setPendingClarification,
     setSelectedObjectIds,
@@ -502,6 +504,7 @@ export function App({
     instruction,
     interactionMode,
     isPlaying,
+    lockedEntityIds,
     motionDuration,
     pendingClarification,
     programUndoEntries,
@@ -512,6 +515,9 @@ export function App({
     suggestionStatus,
     verifiedSourceDurationBasis,
   } = editorState;
+  const lockedEntityIdSet = useMemo(() => new Set(lockedEntityIds), [lockedEntityIds]);
+  const lockedEntityIdsRef = useRef<ReadonlySet<string>>(lockedEntityIdSet);
+  lockedEntityIdsRef.current = lockedEntityIdSet;
   const cloudEditorSessionSnapshot = useMemo(
     () => (accountSession ? snapshotCloudEditorSessionV1(editorState) : null),
     [accountSession, editorState],
@@ -1541,6 +1547,18 @@ export function App({
     return true;
   }
 
+  function rejectLockedEntityMutation(entityId: string) {
+    if (!lockedEntityIdsRef.current.has(entityId)) return false;
+    setDraftError(LOCKED_ENTITY_MUTATION_MESSAGE);
+    setIsPlaying(false);
+    return true;
+  }
+
+  function rejectLockedProgramMutation(program: SceneEdit) {
+    const lockedTarget = lockedEntityMutationTargets(program, lockedEntityIdsRef.current)[0];
+    return lockedTarget === undefined ? false : rejectLockedEntityMutation(lockedTarget);
+  }
+
   function stageDraft(input: Parameters<typeof stageEditorDraft>[0]) {
     // This is the common authoring boundary for pointer, Inspector, timeline,
     // keyboard, Magic Edit, and insertion drafts. Selection-only mappings are
@@ -1559,6 +1577,12 @@ export function App({
     if (editorDocumentAuthority.enabled && input.preserveAppliedProgram) {
       setDraftError("Apply or discard the current draft before continuing this edit in shared mode.");
       setIsPlaying(false);
+      return false;
+    }
+    if (
+      (input.preserveAppliedProgram && rejectLockedProgramMutation(input.preserveAppliedProgram.program)) ||
+      rejectLockedProgramMutation(input.record.program)
+    ) {
       return false;
     }
     const preservedAnchor = input.preserveAppliedProgram?.program.anchor.resolvedSeconds;
@@ -1582,6 +1606,13 @@ export function App({
   function redoProgram() {
     const entry = redoPrograms.at(-1);
     if (draftEdit || !entry) return false;
+    const lockedRedoPrograms =
+      entry.kind === "draft"
+        ? [entry.value.program]
+        : entry.mutation.kind === "append"
+          ? [entry.mutation.value.program]
+          : [entry.mutation.previous.program, entry.mutation.value.program];
+    if (lockedRedoPrograms.some(rejectLockedProgramMutation)) return false;
     if (!previewPaintAvailable) {
       setDraftError("Wait for the canonical WebGPU preview before editing the Scene.");
       return false;
@@ -1602,9 +1633,13 @@ export function App({
   }
 
   function undoProgramCommitFirst() {
-    if (!editorDocumentAuthority.enabled || draftEdit) return undoProgram();
+    if (draftEdit) return undoProgram();
     const mutation = programUndoEntries.at(-1);
     if (!mutation) return false;
+    const lockedUndoPrograms =
+      mutation.kind === "append" ? [mutation.value.program] : [mutation.previous.program, mutation.value.program];
+    if (lockedUndoPrograms.some(rejectLockedProgramMutation)) return false;
+    if (!editorDocumentAuthority.enabled) return undoProgram();
     const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker || !editorDocumentAuthority.canAuthor()) {
       setDraftError(lifecycleBlocker ?? editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
@@ -1801,6 +1836,7 @@ export function App({
     sourceRuntimeIdentity: previewRenderer?.sourceRuntimeIdentity ?? null,
   });
   const selectedSet = new Set(selectedObjectIds);
+  const selectedEntityLocked = selectedObjectIds.some((entityId) => lockedEntityIdSet.has(entityId));
   const selectedLayoutIds = [...selectedSet];
   let selectionLayoutUnavailableReason: string | null = null;
   const selectionLayoutTargets: SelectionLayoutTarget[] = [];
@@ -2312,6 +2348,7 @@ export function App({
         precedingPrograms,
         metadata.selection,
       );
+      if (rejectLockedProgramMutation(validated.record.program)) return false;
       const replacement = replaceAppliedProgram(
         appliedEdits,
         transactionId,
@@ -2390,6 +2427,7 @@ export function App({
 
   async function applyDraft() {
     if (!draftEdit || draftApplyPending) return;
+    if (rejectLockedProgramMutation(draftEdit.program)) return;
     if (!previewPaintAvailable) {
       setDraftError("Wait for the canonical WebGPU preview or discard this draft.");
       return;
@@ -2435,6 +2473,9 @@ export function App({
         await exportManimSource(renderCandidateRequest(sourcePreflightCandidate), revisionRequest.controller.signal);
       });
       if (!isEditorRevisionRequestCurrent(revisionRequest)) return;
+      // Lock state can change while source preflight is in flight. Re-read the
+      // current metadata immediately before either local or shared commit.
+      if (rejectLockedProgramMutation(draftEdit.program)) return;
       const resolvedLifecycleBlocker = readDurationBlocker();
       if (resolvedLifecycleBlocker) {
         setDraftError(resolvedLifecycleBlocker);
@@ -3437,6 +3478,20 @@ export function App({
 
   function reorderLayer(entityId: string, frontFirstIndex: number) {
     return stageLayerOrder(entityId, planStudioLayerReorder(studioLayers, entityId, frontFirstIndex));
+  }
+
+  function toggleLayerLock(entityId: string) {
+    const willLock = !lockedEntityIdsRef.current.has(entityId);
+    if (willLock && draftEdit && lockedEntityMutationTargets(draftEdit.program, new Set([entityId])).length > 0) {
+      discardDraft();
+    }
+    setLockedEntityIds((current) => {
+      const next = toggleEntityLock(current, entityId);
+      lockedEntityIdsRef.current = new Set(next);
+      return next;
+    });
+    if (inlineTextEditor?.entityId === entityId) setInlineTextEditor(null);
+    setDraftError((current) => (current === LOCKED_ENTITY_MUTATION_MESSAGE ? null : current));
   }
 
   function manualAuthoringAnchor(
@@ -5097,6 +5152,7 @@ export function App({
   const selectedFragmentMaterialAssigned = selectedFragmentMaterialAssignment !== null;
   const selectedFragmentMaterialAvailable =
     previewMutationAvailable &&
+    !selectedEntityLocked &&
     selectedFragmentMaterialEntity !== null &&
     selectedFragmentMaterialEntity.geometry.style.kind === "known" &&
     selectedFragmentMaterialEntity.geometry.style.value.fillColor !== undefined &&
@@ -5294,6 +5350,7 @@ export function App({
     if (!activeScene || !selectedFragmentMaterialEntity || (shaderId !== null && !selectedFragmentMaterialAvailable)) {
       return;
     }
+    if (rejectLockedEntityMutation(selectedFragmentMaterialEntity.id)) return;
     try {
       const material = shaderId
         ? activeProjectFragmentMaterials.registry.materials.find((candidate) => candidate.shaderId === shaderId)
@@ -5340,6 +5397,7 @@ export function App({
 
   function updateSelectedFragmentMaterialTexture(assetId: string, sampler: "linear" | "nearest") {
     if (!activeScene || !selectedFragmentMaterialEntity || !selectedFragmentMaterialAssignment) return;
+    if (rejectLockedEntityMutation(selectedFragmentMaterialEntity.id)) return;
     const asset = activeFragmentMaterialTextureAssets.find(({ id }) => id === assetId);
     if (!asset) {
       setDraftError("The selected project PNG is no longer available.");
@@ -5370,6 +5428,7 @@ export function App({
       !selectedFragmentMaterialAvailable
     )
       return;
+    if (rejectLockedEntityMutation(selectedFragmentMaterialEntity.id)) return;
     try {
       const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
         entityId: selectedFragmentMaterialEntity.id,
@@ -5834,11 +5893,14 @@ export function App({
               durationMinimum={durationTrimAvailability.minimumDuration}
               entities={editableEntities}
               layers={studioLayers}
+              lockToggleDisabled={draftApplyPending}
+              lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onEditAppliedProgram={editAppliedProgram}
               onLayerOrder={changeLayerOrder}
               onLayerReorder={reorderLayer}
+              onToggleEntityLock={toggleLayerLock}
               onRedo={() => void redoProgram()}
               onToggleEntity={(entityId, selected) =>
                 setSelectedObjectIds((selection) =>
@@ -5875,6 +5937,7 @@ export function App({
               lifetimeControls={lifetimeControls}
               lifetimeEditMessage={lifetimeEditMessage}
               lifetimeTrimDisabled={draftEdit !== null}
+              lockedEntityIds={lockedEntityIdSet}
               materialParameterOptions={materialParameterOptions}
               materialParameterTracks={materialParameterTracks}
               motionDuration={motionDuration}
@@ -6041,6 +6104,7 @@ export function App({
                 selectedRuntimeTraceEditCapabilities?.rotation === true
               }
               selectedEntity={selectedEntity}
+              selectedEntityLocked={selectedEntityLocked}
               strokeColorValue={
                 selectedEntity?.geometry.style.kind === "known"
                   ? (selectedEntity.geometry.style.value.strokeColor ??

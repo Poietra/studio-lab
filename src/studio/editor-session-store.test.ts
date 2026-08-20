@@ -181,6 +181,7 @@ function snapshot(): EditorSessionSnapshot {
     insertValue: "draft content",
     instruction: "move the selected object",
     interactionMode: "position",
+    lockedEntityIds: ["equation"],
     motionDuration: 2.5,
     redoPrograms: [{ edit: null, kind: "draft", value: draftRecord("redo") }],
     selectedObjectIds: ["equation"],

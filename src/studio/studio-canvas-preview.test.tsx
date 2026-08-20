@@ -163,6 +163,7 @@ function renderSelectedInspector(
   colorAvailable = false,
   fillColorValue: string | null = null,
   strokeColorValue: string | null = null,
+  selectedEntityLocked = false,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
@@ -195,6 +196,7 @@ function renderSelectedInspector(
       opacityValue={opacityValue}
       rotationAvailable={rotationAvailable}
       selectedEntity={entity}
+      selectedEntityLocked={selectedEntityLocked}
       sourceExport={null}
       strokeColorValue={strokeColorValue}
       suggestion={null}
@@ -841,6 +843,44 @@ describe("StudioCanvas retained preview layer", () => {
     expect(fallbackMarkup).not.toContain("data-studio-runtime-entity");
   });
 
+  it("keeps a locked entity selectable without exposing Canvas mutation handles", () => {
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        lockedEntityIds={new Set([CIRCLE_ENTITY.id])}
+        rotationHandleEntityId={CIRCLE_ENTITY.id}
+        selectedIds={new Set([CIRCLE_ENTITY.id])}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:locked",
+              revision: "a".repeat(64),
+              sampleTime: 1,
+              viewport: { heightPx: 360, widthPx: 640 },
+            },
+            phase: "presented",
+          },
+          new Map([["scene:runtime/entity:0", { dimensions: { radius: 1 }, position: { x: 320, y: 180 } }]]),
+          new Map([
+            [
+              "circle_1",
+              {
+                bindingId: `source-binding:${"b".repeat(64)}`,
+                entityId: "scene:runtime/entity:0",
+                sourceName: "circle_1",
+              },
+            ],
+          ]),
+        )}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Select circle_1"');
+    expect(markup).toContain('data-studio-entity-locked=""');
+    expect(markup).not.toContain('aria-label="Resize circle_1');
+    expect(markup).not.toContain('aria-label="Rotate circle_1"');
+  });
+
   it("sizes non-shape move targets from prepared visual bounds", () => {
     const textEntity: ProjectedEntity = {
       ...CIRCLE_ENTITY,
@@ -1447,6 +1487,25 @@ describe("StudioCanvas retained preview layer", () => {
     expect(disabled.match(counterclockwise)?.[0]).toContain('disabled=""');
     expect(enabled.match(clockwise)?.[0]).not.toContain('disabled=""');
     expect(enabled.match(counterclockwise)?.[0]).not.toContain('disabled=""');
+  });
+
+  it("keeps a locked Inspector visible but disables object mutations", () => {
+    const markup = renderSelectedInspector(
+      CIRCLE_ENTITY,
+      null,
+      null,
+      true,
+      true,
+      0.5,
+      true,
+      "#123456",
+      "#abcdef",
+      true,
+    );
+
+    expect(markup).toContain("Unlock this object in Layers before editing it.");
+    expect(markup.match(/<fieldset[^>]*disabled=""[^>]*>/u)?.[0]).toBeDefined();
+    expect(markup).toMatch(/<fieldset[^>]*disabled=""[^>]*>[\s\S]*aria-label="Opacity circle_1"/u);
   });
 
   it("enables opacity only for a static-paint generic Runtime Trace target", () => {
