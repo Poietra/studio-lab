@@ -4,6 +4,7 @@ import { createStudioEntitiesProgram } from "./authoring-commands";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { opacityKeyframeTrackFromProgram, replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
+import { duplicatePropertyKeyframeAtTime } from "./property-keyframe-duplicate";
 
 describe("opacity keyframe editing", () => {
   it("replaces the Studio creation Program without inserting Scene time", () => {
@@ -32,6 +33,26 @@ describe("opacity keyframe editing", () => {
       { easing: "linear", time: 2, value: 1 },
       { easing: "smooth", time: 4, value: 0 },
     ]);
+    const sourceKeyframes = opacityKeyframeTrackFromProgram(result.program, 0)!.keyframes;
+    const duplicated = replaceOpacityKeyframeProgram({
+      baseProgram: result.program,
+      entityId,
+      keyframes: duplicatePropertyKeyframeAtTime(sourceKeyframes, 1, 3),
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(opacityKeyframeTrackFromProgram(duplicated.program, 0)?.keyframes).toEqual([
+      { easing: "linear", time: 2, value: 1 },
+      { easing: "smooth", time: 3, value: 0 },
+      { easing: "smooth", time: 4, value: 0 },
+    ]);
+    expect(() =>
+      replaceOpacityKeyframeProgram({
+        baseProgram: result.program,
+        entityId,
+        keyframes: duplicatePropertyKeyframeAtTime(sourceKeyframes, 1, STUDIO_FIXTURE_SCENE.duration + 1),
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/inside the Scene/i);
     const dragged = replaceOpacityKeyframeProgram({
       baseProgram: result.program,
       entityId,

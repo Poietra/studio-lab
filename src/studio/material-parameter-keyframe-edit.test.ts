@@ -11,6 +11,7 @@ import {
 } from "./material-parameter-keyframe-edit";
 import { opacityKeyframeTrackFromProgram, replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
+import { duplicatePropertyKeyframeAtTime } from "./property-keyframe-duplicate";
 
 const material = {
   parameters: [0.35, 8],
@@ -53,6 +54,32 @@ describe("material parameter keyframe editing", () => {
       name: "amplitude",
       parameterIndex: 0,
     });
+    const sourceKeyframes = materialParameterKeyframeTrackFromProgram(result.program, 0)!.keyframes;
+    const duplicated = replaceMaterialParameterKeyframeProgram({
+      baseProgram: result.program,
+      entityId,
+      keyframes: duplicatePropertyKeyframeAtTime(sourceKeyframes, 1, 3),
+      material,
+      name: "amplitude",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(materialParameterKeyframeTrackFromProgram(duplicated.program, 0)?.keyframes).toEqual([
+      { easing: "linear", time: 2, value: 0.35 },
+      { easing: "smooth", time: 3, value: 0.8 },
+      { easing: "smooth", time: 4, value: 0.8 },
+    ]);
+    expect(() =>
+      replaceMaterialParameterKeyframeProgram({
+        baseProgram: result.program,
+        entityId,
+        keyframes: duplicatePropertyKeyframeAtTime(sourceKeyframes, 1, STUDIO_FIXTURE_SCENE.duration + 1),
+        material,
+        name: "amplitude",
+        parameterIndex: 0,
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/inside the Scene/i);
     const removed = replaceMaterialParameterKeyframeProgram({
       baseProgram: result.program,
       entityId,

@@ -4,6 +4,7 @@ import { createStudioEntitiesProgram } from "./authoring-commands";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
+import { duplicatePropertyKeyframeAtTime } from "./property-keyframe-duplicate";
 import {
   appendRotationKeyframe,
   replaceRotationKeyframeProgram,
@@ -40,6 +41,28 @@ describe("rotation keyframe editing", () => {
       { easing: "linear", time: 2, value: 0 },
       { easing: "smooth", time: 4, value: 5 * Math.PI },
     ]);
+    const sourceKeyframes = rotationKeyframeTrackFromProgram(tracked.program, 0)!.keyframes;
+    const duplicated = replaceRotationKeyframeProgram({
+      baseProgram: tracked.program,
+      baseline: 0,
+      entityId,
+      keyframes: duplicatePropertyKeyframeAtTime(sourceKeyframes, 1, 3),
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(rotationKeyframeTrackFromProgram(duplicated.program, 0)?.keyframes).toEqual([
+      { easing: "linear", time: 2, value: 0 },
+      { easing: "smooth", time: 3, value: 5 * Math.PI },
+      { easing: "smooth", time: 4, value: 5 * Math.PI },
+    ]);
+    expect(() =>
+      replaceRotationKeyframeProgram({
+        baseProgram: tracked.program,
+        baseline: 0,
+        entityId,
+        keyframes: duplicatePropertyKeyframeAtTime(sourceKeyframes, 1, STUDIO_FIXTURE_SCENE.duration + 1),
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/inside the Scene/i);
     expect(rotationKeyframeTransformConflictEntity([tracked.program], [entityId])).toBe(entityId);
     expect(rotationKeyframeTransformConflictEntity([tracked.program], ["another-entity"])).toBeNull();
 

@@ -161,6 +161,7 @@ import {
   sourceTimeToWorkingTime as sourceTimeToWorkingTimeWithoutTimeline,
   workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline,
 } from "./studio/program-composition";
+import { duplicatePropertyKeyframeAtTime } from "./studio/property-keyframe-duplicate";
 import { samplePropertyValue } from "./studio/property-sampling";
 import {
   appendRotationKeyframe,
@@ -1655,6 +1656,15 @@ export function App({
     return true;
   }
 
+  function rejectPropertyTrackMutation(entityId: string, readOnlyReason: string | null) {
+    if (readOnlyReason) {
+      setDraftError(readOnlyReason);
+      setIsPlaying(false);
+      return true;
+    }
+    return rejectLockedEntityMutation(entityId);
+  }
+
   function rejectLockedProgramMutation(program: SceneEdit) {
     const lockedTarget = lockedEntityMutationTargets(program, lockedEntityIdsRef.current)[0];
     return lockedTarget === undefined ? false : rejectLockedEntityMutation(lockedTarget);
@@ -2691,6 +2701,51 @@ export function App({
     return programIndex >= 0 && record ? { programIndex, record } : null;
   }
 
+  function duplicateStudioPropertyKeyframe<
+    TKeyframe extends Readonly<{ easing: "linear" | "smooth"; time: number; value: number }>,
+    TSourceTrack extends Readonly<{
+      keyframes: readonly TKeyframe[];
+      transactionId: string;
+    }>,
+  >(input: {
+    conflictReason: string | null;
+    index: number;
+    label: string;
+    mismatchMessage: string;
+    owner: ReturnType<typeof studioCreationProgramOwner>;
+    sourceTrack: TSourceTrack | null;
+    stage: (
+      keyframes: readonly TKeyframe[],
+      owner: NonNullable<ReturnType<typeof studioCreationProgramOwner>>,
+      sourceTrack: TSourceTrack,
+    ) => boolean;
+    track: Readonly<{ entityId: string; readOnlyReason: string | null; transactionId: string }>;
+  }) {
+    if (rejectPropertyTrackMutation(input.track.entityId, input.track.readOnlyReason)) return null;
+    const { owner, sourceTrack } = input;
+    if (!owner || !sourceTrack || owner.record.program.transactionId !== input.track.transactionId) {
+      setDraftError(input.mismatchMessage);
+      return null;
+    }
+    if (input.conflictReason) {
+      setDraftError(input.conflictReason);
+      return null;
+    }
+    if (!projectedActiveScene) {
+      setDraftError(`Wait for the canonical Scene before duplicating a ${input.label} keyframe.`);
+      return null;
+    }
+    try {
+      const sourceTime = workingTimeToSourceTime(previewAppliedSceneEdits, currentTime);
+      const keyframes = duplicatePropertyKeyframeAtTime(sourceTrack.keyframes, input.index, sourceTime);
+      const duplicatedIndex = keyframes.findIndex((keyframe) => keyframe.time === sourceTime);
+      return input.stage(keyframes, owner, sourceTrack) ? duplicatedIndex : null;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : `The ${input.label} keyframe could not be duplicated.`);
+      return null;
+    }
+  }
+
   function addOpacityKeyframe(entityId: string) {
     const owner = studioCreationProgramOwner(entityId);
     if (!owner) {
@@ -2741,6 +2796,24 @@ export function App({
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The opacity keyframe could not be added.");
     }
+  }
+
+  function duplicateOpacityKeyframe(track: StudioOpacityTimelineTrack, index: number) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? opacityKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    return duplicateStudioPropertyKeyframe({
+      conflictReason: opacityTrackEligibleIds.has(track.entityId)
+        ? null
+        : "Opacity keyframes cannot overlap this object's existing appearance or removal edit.",
+      index,
+      label: "opacity",
+      mismatchMessage: "The opacity track no longer matches the Studio-created object.",
+      owner,
+      sourceTrack,
+      stage: (keyframes, canonicalOwner) =>
+        stageOpacityKeyframes(track.entityId, canonicalOwner.programIndex, canonicalOwner.record.program, keyframes),
+      track,
+    });
   }
 
   function changeOpacityKeyframe(
@@ -2878,6 +2951,24 @@ export function App({
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The scale keyframe could not be added.");
     }
+  }
+
+  function duplicateScaleKeyframe(track: StudioScaleTimelineTrack, index: number) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? scaleKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    return duplicateStudioPropertyKeyframe({
+      conflictReason: scaleTrackEligibleIds.has(track.entityId)
+        ? null
+        : "Scale keyframes cannot overlap this object's existing move, resize, rotation, or motion edit.",
+      index,
+      label: "scale",
+      mismatchMessage: "The scale track no longer matches the Studio-created object.",
+      owner,
+      sourceTrack,
+      stage: (keyframes, canonicalOwner) =>
+        stageScaleKeyframes(track.entityId, canonicalOwner.programIndex, canonicalOwner.record.program, keyframes),
+      track,
+    });
   }
 
   function changeScaleKeyframe(
@@ -3019,6 +3110,24 @@ export function App({
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The rotation keyframe could not be added.");
     }
+  }
+
+  function duplicateRotationKeyframe(track: StudioRotationTimelineTrack, index: number) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? rotationKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    return duplicateStudioPropertyKeyframe({
+      conflictReason: rotationTrackEligibleIds.has(track.entityId)
+        ? null
+        : "Rotation keyframes cannot overlap this object's existing move, resize, scale, or motion edit.",
+      index,
+      label: "rotation",
+      mismatchMessage: "The rotation track no longer matches the Studio-created object.",
+      owner,
+      sourceTrack,
+      stage: (keyframes, canonicalOwner) =>
+        stageRotationKeyframes(track.entityId, canonicalOwner.programIndex, canonicalOwner.record.program, keyframes),
+      track,
+    });
   }
 
   function changeRotationKeyframe(
@@ -3169,6 +3278,37 @@ export function App({
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The material parameter keyframe could not be added.");
     }
+  }
+
+  function duplicateMaterialParameterKeyframe(track: StudioMaterialParameterTimelineTrack, index: number) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner
+      ? materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex)
+      : null;
+    const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+    if (!owner || !sourceTrack || !assignment || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The material parameter track no longer matches the Studio-created object.");
+      return null;
+    }
+    return duplicateStudioPropertyKeyframe({
+      conflictReason: null,
+      index,
+      label: "material parameter",
+      mismatchMessage: "The material parameter track no longer matches the Studio-created object.",
+      owner,
+      sourceTrack,
+      stage: (keyframes, canonicalOwner, canonicalTrack) =>
+        stageMaterialParameterKeyframes({
+          entityId: track.entityId,
+          keyframes,
+          material: assignment,
+          name: canonicalTrack.name,
+          parameterIndex: canonicalTrack.parameterIndex,
+          program: canonicalOwner.record.program,
+          programIndex: canonicalOwner.programIndex,
+        }),
+      track,
+    });
   }
 
   function changeMaterialParameterKeyframe(
@@ -6299,17 +6439,21 @@ export function App({
               onMaterialParameterKeyframeAdd={addMaterialParameterKeyframe}
               onMaterialParameterKeyframeChange={changeMaterialParameterKeyframe}
               onMaterialParameterKeyframeDelete={deleteMaterialParameterKeyframe}
+              onMaterialParameterKeyframeDuplicate={duplicateMaterialParameterKeyframe}
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}
               onOpacityKeyframeAdd={addOpacityKeyframe}
               onOpacityKeyframeChange={changeOpacityKeyframe}
               onOpacityKeyframeDelete={deleteOpacityKeyframe}
+              onOpacityKeyframeDuplicate={duplicateOpacityKeyframe}
               onRotationKeyframeAdd={addRotationKeyframe}
               onRotationKeyframeChange={changeRotationKeyframe}
               onRotationKeyframeDelete={deleteRotationKeyframe}
+              onRotationKeyframeDuplicate={duplicateRotationKeyframe}
               onScaleKeyframeAdd={addScaleKeyframe}
               onScaleKeyframeChange={changeScaleKeyframe}
               onScaleKeyframeDelete={deleteScaleKeyframe}
+              onScaleKeyframeDuplicate={duplicateScaleKeyframe}
               onPresenceCursorChange={(cursor) => editorDocumentAuthority.updatePresence({ cursor })}
               onSelectionResizeCancel={cancelSelectionResize}
               onSelectionResizeKeyDown={nudgeSelectionResize}
