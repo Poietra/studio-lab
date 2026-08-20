@@ -198,6 +198,7 @@ export function WorkspaceSidebar({
   onLayerOrder,
   onLayerReorder,
   onToggleLayerGroup,
+  onToggleLayerGroupLock,
   onToggleLayerGroupVisibility,
   onToggleEntityLock,
   onToggleEntityVisibility,
@@ -239,6 +240,7 @@ export function WorkspaceSidebar({
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
   onToggleLayerGroup?: (childEntityIds: readonly string[], selected: boolean) => void;
+  onToggleLayerGroupLock?: (childEntityIds: readonly string[]) => void;
   onToggleLayerGroupVisibility?: (groupId: string, visible: boolean) => void;
   onToggleEntityLock?: (entityId: string) => void;
   onToggleEntityVisibility?: (entityId: string, visible: boolean) => void;
@@ -381,6 +383,9 @@ export function WorkspaceSidebar({
               layer.childEntityIds.length > 0 &&
               layer.childEntityIds.length === selectedIds.size &&
               layer.childEntityIds.every((entityId) => selectedIds.has(entityId));
+            const groupLocked =
+              layer.childEntityIds.length > 0 &&
+              layer.childEntityIds.every((entityId) => lockedEntityIds.has(entityId));
             const visibilityUnavailableReason =
               onToggleLayerGroupVisibility === undefined
                 ? "Group visibility is unavailable."
@@ -423,6 +428,29 @@ export function WorkspaceSidebar({
                   >
                     <span aria-hidden="true">{layer.visible ? "◉" : "○"}</span>
                   </button>
+                  {onToggleLayerGroupLock ? (
+                    <button
+                      aria-label={`${groupLocked ? "Unlock" : "Lock"} group of ${layer.childEntityIds.length} objects`}
+                      aria-pressed={groupLocked}
+                      className="size-6 shrink-0 border border-transparent text-[11px] text-zinc-500 hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:border-transparent disabled:hover:bg-transparent"
+                      disabled={lockToggleDisabled}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        onToggleLayerGroupLock(layer.childEntityIds!);
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      title={
+                        lockToggleDisabled
+                          ? "Apply or discard the current draft before changing layer locks"
+                          : groupLocked
+                            ? "Unlock every object in this group"
+                            : "Lock every object in this group"
+                      }
+                      type="button"
+                    >
+                      <span aria-hidden="true">{groupLocked ? "🔒" : "🔓"}</span>
+                    </button>
+                  ) : null}
                   <span className="tabular-nums text-[10px] text-zinc-600">{layer.childEntityIds.length}</span>
                 </div>
               </li>

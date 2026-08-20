@@ -543,6 +543,7 @@ export function App({
     setVerifiedSourceDurationBasis,
     suspend: suspendEditor,
     toggleEntityLock: toggleEditorEntityLock,
+    toggleEntityLocks: toggleEditorEntityLocks,
     undoProgram,
   } = editorController;
   const {
@@ -4269,6 +4270,24 @@ export function App({
     return true;
   }
 
+  function toggleLayerGroupLock(entityIds: readonly string[]) {
+    if (draftEdit) {
+      setDraftError("Apply or discard the current draft before changing layer locks.");
+      return false;
+    }
+    const locked = !entityIds.every((entityId) => lockedEntityIdsRef.current.has(entityId));
+    const nextLockedEntityIds = new Set(lockedEntityIdsRef.current);
+    for (const entityId of entityIds) {
+      if (locked) nextLockedEntityIds.add(entityId);
+      else nextLockedEntityIds.delete(entityId);
+    }
+    lockedEntityIdsRef.current = nextLockedEntityIds;
+    toggleEditorEntityLocks(entityIds);
+    if (inlineTextEditor?.entityId && entityIds.includes(inlineTextEditor.entityId)) setInlineTextEditor(null);
+    setDraftError((current) => (current === LOCKED_ENTITY_MUTATION_MESSAGE ? null : current));
+    return true;
+  }
+
   function manualAuthoringAnchor(
     input: Readonly<{
       action: string;
@@ -6784,6 +6803,7 @@ export function App({
               onToggleLayerGroup={(childEntityIds, selected) =>
                 setSelectedObjectIds(selected ? [] : [...childEntityIds])
               }
+              onToggleLayerGroupLock={toggleLayerGroupLock}
               onToggleLayerGroupVisibility={toggleLayerGroupVisibility}
               onToggleEntityLock={toggleLayerLock}
               onToggleEntityVisibility={toggleLayerVisibility}
