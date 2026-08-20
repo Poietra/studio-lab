@@ -24,6 +24,15 @@ function creationProgram(type: string): SceneEdit {
                 },
               }
             : {}),
+          ...(type === "ImageMobject"
+            ? {
+                image: {
+                  asset: { assetId: "image-scene/asset:image.png", sha256: "4".repeat(64) },
+                  localRect: { bottom: -0.5, left: -1, right: 1, top: 0.5 },
+                  sampler: "nearest" as const,
+                },
+              }
+            : {}),
           id: `entity:${type}`,
           lifetime: { end: null, start: 0 },
           type,
@@ -117,6 +126,33 @@ describe("Studio creation wire", () => {
     });
 
     expect(command.programs[0]?.operations[0]).toMatchObject({ groupId: "group:shapes", kind: "ungroup" });
+  });
+
+  it("preserves an Image asset reference and placement in apply and projection commands", () => {
+    const programs = [creationProgram("ImageMobject")];
+    const apply = buildStudioCreationEditCommand({
+      expectedBaseRevision: "a".repeat(64),
+      frame: { height: 9, width: 16 },
+      mathTexOutlines: [],
+      nextRevision: "b".repeat(64),
+      programs,
+      viewport: { height: 360, width: 640 },
+    });
+    const projection = buildStudioCreationProjectionCommand({ baseDuration: 1, programs });
+    const expected = {
+      asset: { assetId: "image-scene/asset:image.png", sha256: "4".repeat(64) },
+      localRect: { bottom: -0.5, left: -1, right: 1, top: 0.5 },
+      sampler: "nearest",
+    };
+
+    expect(apply.programs[0]?.operations[0]).toMatchObject({
+      entity: { image: expected, kind: "image" },
+      kind: "create",
+    });
+    expect(projection.programs[0]?.operations[0]).toMatchObject({
+      entity: { image: expected, kind: "image" },
+      kind: "create",
+    });
   });
 
   it("normalizes bounded Japanese multiline Text to LF as a first-class creation kind", () => {

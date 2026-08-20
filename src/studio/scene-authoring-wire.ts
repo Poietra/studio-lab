@@ -197,6 +197,7 @@ function normalizedStudioCreationOperation(
       entity: {
         dimensions: operation.entity.dimensions ?? {},
         id: operation.entity.id,
+        image: operation.entity.image ?? null,
         kind:
           type === "Arrow"
             ? "arrow"

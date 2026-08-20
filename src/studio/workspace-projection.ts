@@ -261,11 +261,28 @@ export function selectMotionProjection(
 function creationEntityKind(type: string): StudioCreationProjectionV1["entities"][number]["kind"] | null {
   if (type === "Arrow") return "arrow";
   if (type === "Circle") return "circle";
+  if (type === "ImageMobject") return "image";
   if (type === "Line") return "line";
   if (type === "MathTex") return "math-tex";
   if (type === "Rectangle") return "rectangle";
   if (type === "Text") return "text";
   return null;
+}
+
+function sameCreationImage(
+  projected: StudioCreationProjectionV1["entities"][number]["image"],
+  expected: Extract<SceneEditOperation, { kind: "CreateEntity" }>["entity"]["image"],
+) {
+  if (!projected || !expected) return projected === undefined && expected === undefined;
+  return (
+    projected.asset.assetId === expected.asset.assetId &&
+    projected.asset.sha256 === expected.asset.sha256 &&
+    projected.sampler === expected.sampler &&
+    sameProjectionNumber(projected.localRect.bottom, expected.localRect.bottom) &&
+    sameProjectionNumber(projected.localRect.left, expected.localRect.left) &&
+    sameProjectionNumber(projected.localRect.right, expected.localRect.right) &&
+    sameProjectionNumber(projected.localRect.top, expected.localRect.top)
+  );
 }
 
 function creationMutationKind(operation: SceneEditOperation): StudioCreationProjectionMutationV1["kind"] | null {
@@ -363,6 +380,7 @@ function correlateCreationProjection(
         ? (studioCreationTextContent(operation.entity.content) ?? undefined)
         : undefined;
     const projectedLayout = entity.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
+    const expectedImage = operation?.kind === "CreateEntity" ? operation.entity.image : undefined;
     const textContentMismatch = expectedTextContent
       ? entity.text !== expectedTextContent.text ||
         projectedLayout.alignment !== expectedTextContent.layout.alignment ||
@@ -379,6 +397,7 @@ function correlateCreationProjection(
       entity.transactionId !== expected.program.transactionId ||
       entity.entityId !== operation.entity.id ||
       entity.kind !== expectedKind ||
+      !sameCreationImage(entity.image, expectedImage) ||
       seenEntityIds.has(entity.entityId) ||
       seenEntityOperationIds.has(entity.operationId) ||
       (expectedTexParts

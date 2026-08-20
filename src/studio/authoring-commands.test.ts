@@ -13,6 +13,7 @@ import {
 import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import { programRecord, projectProposedState } from "./evaluator";
 import { createFixtureProposedState, projectPersistentRemoveFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { programExecutionCapabilities } from "./operation-registry";
 import type { CanonicalEditOperation } from "./operations";
 import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
@@ -427,6 +428,31 @@ describe("manual Studio authoring commands", () => {
     if (!appearance) return;
     expect(appearance.interval.end - appearance.interval.start).toBeCloseTo(STUDIO_STYLE_PROFILE.durationSeconds.brief);
     expect(result.validation.program.provenance.styleProfileRef).toEqual(styleProfileRef(STUDIO_STYLE_PROFILE));
+  });
+
+  it("creates a manifest-backed Image through the canonical Program while reporting source export unsupported", () => {
+    const image = {
+      asset: { assetId: "image-scene/asset:image.png", sha256: "4".repeat(64) },
+      localRect: { bottom: -0.5, left: -1, right: 1, top: 0.5 },
+      sampler: "nearest" as const,
+    };
+    const result = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ image, position: { x: 320, y: 180 }, type: "ImageMobject" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "insert-native-image",
+    });
+
+    expect(result.validation.kind).toBe("valid");
+    expect(result.validation.program.loweringStatus).toBe("unsupported");
+    expect(programExecutionCapabilities(result.validation.program)).toMatchObject({
+      apply: "supported",
+      lowering: "unsupported",
+    });
+    expect(result.validation.program.operations[0]).toMatchObject({
+      entity: { image, type: "ImageMobject" },
+      kind: "CreateEntity",
+    });
   });
 
   it("creates the starter title card as ordinary editable entities with the standard fade-in", () => {

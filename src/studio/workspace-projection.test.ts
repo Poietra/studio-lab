@@ -32,6 +32,7 @@ import {
 } from "./suggestion-program";
 import {
   projectStudioWorkspace,
+  selectCreationProjection,
   selectMathTexTransformProjection,
   selectMotionProjection,
   selectStaticRootProjection,
@@ -271,6 +272,77 @@ function mathTexTransformMotionFixture(sourceEntityId: string, splitMotionProgra
 }
 
 describe("Studio workspace projection", () => {
+  it("correlates Image placement structurally and rejects a stale asset reference", () => {
+    const imported = workspaceScene("First", null);
+    const image = {
+      asset: { assetId: "image-scene/asset:image.png", sha256: "4".repeat(64) },
+      localRect: { bottom: -0.5, left: -1, right: 1, top: 0.5 },
+      sampler: "nearest" as const,
+    };
+    const program: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
+      intentCount: 1,
+      loweringStatus: "unsupported",
+      operations: [
+        {
+          dependsOn: [],
+          entity: {
+            id: "tx:image/entity:image",
+            image,
+            lifetime: { end: null, start: 0 },
+            type: "ImageMobject",
+          },
+          id: "tx:image/operation:create",
+          interval: { end: 0, start: 0 },
+          kind: "CreateEntity",
+          provenance: { evidence: [], origin: "studio-default" },
+        },
+      ],
+      provenance: { evidence: [], origin: "studio-default" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: ["tx:image/operation:create"] },
+      transactionId: "tx:image",
+      version: 1,
+    };
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
+          entityId: "tx:image/entity:image",
+          image: {
+            localRect: { top: 0.5, right: 1, left: -1, bottom: -0.5 },
+            sampler: "nearest",
+            asset: { sha256: "4".repeat(64), assetId: "image-scene/asset:image.png" },
+          },
+          initialDimensions: {},
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "image",
+          operationId: "tx:image/operation:create",
+          transactionId: "tx:image",
+        },
+      ],
+      insertions: [],
+      motions: [],
+      mutations: [],
+      projectedDuration: imported.runtimeSceneState.duration,
+      removals: [],
+    };
+
+    expect(selectCreationProjection(imported.runtimeSceneState.duration, [program], projection)).toBe(projection);
+    expect(() =>
+      selectCreationProjection(imported.runtimeSceneState.duration, [program], {
+        ...projection,
+        entities: [
+          {
+            ...projection.entities[0]!,
+            image: { ...image, asset: { ...image.asset, sha256: "5".repeat(64) } },
+          },
+        ],
+      }),
+    ).toThrow(/not correlated/);
+  });
+
   it("installs one standalone motion only from correlated Rust facts", () => {
     const imported = workspaceScene("First", null);
     const [entityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);

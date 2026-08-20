@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use poietra_scene_ir::{
-    AffineTransformV1, AnimationChannelV1, ContractVersionV1, CubicPathV1, CubicSegmentV1,
-    CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1, IntervalV1,
-    KeyframeV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1,
-    SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1,
-    VectorAppearanceValueV1,
+    AffineTransformV1, AnimationChannelV1, AssetReferenceV1, ContractVersionV1, CubicPathV1,
+    CubicSegmentV1, CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1,
+    FragmentMaterialV1, ImageLocalRectV1, ImageSamplerV1, IntervalV1, KeyframeV1, PointV1,
+    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCapabilityV1,
+    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
 
@@ -37,10 +37,22 @@ use super::{
 #[derive(Clone, Debug, PartialEq)]
 enum CreateSceneEntityGeometry {
     Arrow,
-    Circle { radius: f64 },
+    Circle {
+        radius: f64,
+    },
+    Image {
+        asset: AssetReferenceV1,
+        local_rect: ImageLocalRectV1,
+        sampler: ImageSamplerV1,
+    },
     Line,
-    Rectangle { height: f64, width: f64 },
-    CubicOutline { path: CubicPathV1 },
+    Rectangle {
+        height: f64,
+        width: f64,
+    },
+    CubicOutline {
+        path: CubicPathV1,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -102,6 +114,8 @@ pub struct StudioProjectedCreationEntity {
     pub initial_scale: f64,
     pub kind: StudioAuthoringEntityKind,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub image: Option<StudioCreationImageSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<StudioTextLayout>,
     pub operation_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,6 +123,15 @@ pub struct StudioProjectedCreationEntity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tex_parts: Option<Vec<String>>,
     pub transaction_id: String,
+}
+
+/// One closed PNG placement carried by a Studio Image creation Program.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioCreationImageSpec {
+    pub asset: AssetReferenceV1,
+    pub local_rect: ImageLocalRectV1,
+    pub sampler: ImageSamplerV1,
 }
 
 /// One exact property mutation resolved by the shared creation planner.
@@ -207,6 +230,8 @@ pub struct StudioCreationProjection {
 pub struct StudioCreationEntitySpec {
     pub dimensions: StudioAuthoringDimensions,
     pub id: String,
+    #[serde(default)]
+    pub image: Option<StudioCreationImageSpec>,
     pub kind: StudioAuthoringEntityKind,
     #[serde(default)]
     pub layout: Option<StudioTextLayout>,
@@ -758,6 +783,7 @@ impl StudioCreationPlan {
                     initial_rotation: 0.0,
                     initial_scale: 1.0,
                     kind: state.kind,
+                    image: state.spec.image.clone(),
                     layout: initial_text.as_ref().and_then(|content| {
                         (content.layout != StudioTextLayout::default()).then_some(content.layout)
                     }),
@@ -1680,6 +1706,7 @@ fn plan_studio_creation_edits(
                     entity.kind,
                     StudioAuthoringEntityKind::Arrow
                         | StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::Image
                         | StudioAuthoringEntityKind::Line
                         | StudioAuthoringEntityKind::MathTex
                         | StudioAuthoringEntityKind::Rectangle
@@ -1739,35 +1766,59 @@ fn plan_studio_creation_edits(
             }
         }
         let initial_text_content = studio_creation_spec_text_content(spec);
-        let creation_payload_is_valid = match spec.kind {
-            StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
-                spec.text.is_none()
-                    && spec.layout.is_none()
-                    && spec.tex_parts.is_none()
-                    && studio_authoring_shape_size(spec.kind, spec.dimensions).is_some()
-            }
-            StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
-                spec.text.is_none()
-                    && spec.layout.is_none()
-                    && spec.tex_parts.is_none()
-                    && spec.dimensions == StudioAuthoringDimensions::default()
-            }
-            StudioAuthoringEntityKind::MathTex => {
-                spec.text.is_none()
-                    && spec.layout.is_none()
-                    && spec.tex_parts.as_ref().is_some_and(|parts| {
-                        !parts.is_empty() && parts.iter().all(|part| !part.trim().is_empty())
-                    })
-            }
-            StudioAuthoringEntityKind::Text => {
-                spec.tex_parts.is_none()
-                    && initial_text_content
-                        .as_ref()
-                        .is_some_and(studio_text_content_is_canonical)
-                    && spec.dimensions == StudioAuthoringDimensions::default()
-            }
-            StudioAuthoringEntityKind::Image | StudioAuthoringEntityKind::Other => false,
-        };
+        let creation_payload_is_valid =
+            match spec.kind {
+                StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
+                    spec.image.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && studio_authoring_shape_size(spec.kind, spec.dimensions).is_some()
+                }
+                StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
+                    spec.image.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && spec.dimensions == StudioAuthoringDimensions::default()
+                }
+                StudioAuthoringEntityKind::MathTex => {
+                    spec.image.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.as_ref().is_some_and(|parts| {
+                            !parts.is_empty() && parts.iter().all(|part| !part.trim().is_empty())
+                        })
+                }
+                StudioAuthoringEntityKind::Text => {
+                    spec.image.is_none()
+                        && spec.tex_parts.is_none()
+                        && initial_text_content
+                            .as_ref()
+                            .is_some_and(studio_text_content_is_canonical)
+                        && spec.dimensions == StudioAuthoringDimensions::default()
+                }
+                StudioAuthoringEntityKind::Image => {
+                    spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && spec.dimensions == StudioAuthoringDimensions::default()
+                        && spec.image.as_ref().is_some_and(|image| {
+                            !image.asset.asset_id.is_empty()
+                                && image.asset.sha256.len() == 64
+                                && image.asset.sha256.bytes().all(|byte| {
+                                    byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                                })
+                                && image.local_rect.left.is_finite()
+                                && image.local_rect.right.is_finite()
+                                && image.local_rect.bottom.is_finite()
+                                && image.local_rect.top.is_finite()
+                                && image.local_rect.right > image.local_rect.left
+                                && image.local_rect.top > image.local_rect.bottom
+                        })
+                }
+                StudioAuthoringEntityKind::Other => false,
+            };
         if !lifetime.start.is_finite()
             || !lifetime.end.is_finite()
             || lifetime.end <= lifetime.start
@@ -3214,6 +3265,19 @@ fn created_geometry_and_appearance(
             studio_shape_appearance(),
             SceneCapabilityV1::ShapePrimitives,
         ),
+        CreateSceneEntityGeometry::Image {
+            asset,
+            local_rect,
+            sampler,
+        } => (
+            SceneGeometryV1::Image {
+                asset,
+                local_rect,
+                sampler,
+            },
+            SceneAppearanceV1::Image { opacity: 1.0 },
+            SceneCapabilityV1::PngImage,
+        ),
         CreateSceneEntityGeometry::Line => (
             SceneGeometryV1::Line {
                 end: PointV1 { x: 1.0, y: 0.0 },
@@ -3386,10 +3450,15 @@ fn validate_create_scene_entities_command(
         let appearance_changed = !close_transform_baseline_value(entity.paint_opacity, 1.0)
             || !rotation_is_noop(entity.rotation)
             || has_color_override;
+        let unsupported_image_paint =
+            matches!(entity.geometry, CreateSceneEntityGeometry::Image { .. })
+                && (!close_transform_baseline_value(entity.paint_opacity, 1.0)
+                    || has_color_override);
         if !entity.paint_opacity.is_finite()
             || !(0.0..=1.0).contains(&entity.paint_opacity)
             || !entity.rotation.is_finite()
             || !colors_are_valid
+            || unsupported_image_paint
             || (has_color_override
                 && !matches!(
                     &entity.geometry,
@@ -4042,6 +4111,24 @@ impl EngineSessionV1 {
                         radius: size.width / 2.0,
                     }
                 }
+                StudioAuthoringEntityKind::Image => {
+                    let image = state
+                        .spec
+                        .image
+                        .as_ref()
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    let asset_exists = self.assets().assets.iter().any(|asset| {
+                        asset.id == image.asset.asset_id && asset.sha256 == image.asset.sha256
+                    });
+                    if !asset_exists {
+                        return Err(ApplyStudioCreationEditError::Unsupported);
+                    }
+                    CreateSceneEntityGeometry::Image {
+                        asset: image.asset.clone(),
+                        local_rect: image.local_rect.clone(),
+                        sampler: image.sampler,
+                    }
+                }
                 StudioAuthoringEntityKind::Line => CreateSceneEntityGeometry::Line,
                 StudioAuthoringEntityKind::Rectangle => {
                     let size = studio_authoring_shape_size(state.kind, state.initial_dimensions)
@@ -4082,7 +4169,7 @@ impl EngineSessionV1 {
                         path: scale_cubic_path(&outline.path, font_size),
                     }
                 }
-                StudioAuthoringEntityKind::Image | StudioAuthoringEntityKind::Other => {
+                StudioAuthoringEntityKind::Other => {
                     return Err(ApplyStudioCreationEditError::Unsupported);
                 }
             };
@@ -4101,10 +4188,11 @@ impl EngineSessionV1 {
                         )
                     }
                     StudioAuthoringEntityKind::Arrow
+                    | StudioAuthoringEntityKind::Image
                     | StudioAuthoringEntityKind::Line
                     | StudioAuthoringEntityKind::MathTex
                     | StudioAuthoringEntityKind::Text => (1.0, 1.0),
-                    StudioAuthoringEntityKind::Image | StudioAuthoringEntityKind::Other => {
+                    StudioAuthoringEntityKind::Other => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
                 };
@@ -4466,6 +4554,7 @@ mod tests {
                                         width: None,
                                     },
                                     id: entity_id.to_owned(),
+                                    image: None,
                                     kind: StudioAuthoringEntityKind::Circle,
                                     layout: None,
                                     lifetime_end: None,
@@ -4580,6 +4669,37 @@ mod tests {
             path: mathtex_fixture_path(),
             text: text.to_owned(),
         }];
+        command
+    }
+
+    fn studio_image_creation_command(bundle: &SceneIrBundleV1) -> ApplyStudioCreationEditCommand {
+        let asset = bundle
+            .assets
+            .assets
+            .first()
+            .expect("the PNG creation fixture must expose one manifest asset");
+        let mut command = studio_creation_command(bundle);
+        command.programs.truncate(1);
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.dimensions = StudioAuthoringDimensions::default();
+        entity.image = Some(StudioCreationImageSpec {
+            asset: AssetReferenceV1 {
+                asset_id: asset.id.clone(),
+                sha256: asset.sha256.clone(),
+            },
+            local_rect: ImageLocalRectV1 {
+                bottom: -1.0,
+                left: -1.5,
+                right: 1.5,
+                top: 1.0,
+            },
+            sampler: ImageSamplerV1::Linear,
+        });
+        entity.kind = StudioAuthoringEntityKind::Image;
         command
     }
 
@@ -6799,6 +6919,7 @@ mod tests {
                                 width: Some(2.0),
                             },
                             id: second_id.to_owned(),
+                            image: None,
                             kind: StudioAuthoringEntityKind::Rectangle,
                             layout: None,
                             lifetime_end: Some(1.0),
@@ -7926,6 +8047,72 @@ mod tests {
         let at = sample_transform(1.25);
         assert_eq!((at.m11, at.m22, at.tx, at.ty), (0.75, 1.0, -1.0, 0.5));
         assert_eq!(sample_transform(2.0), at);
+    }
+
+    #[test]
+    fn creates_one_manifest_backed_image_through_the_canonical_session() {
+        let bundle = fixture_bundle("png-alpha-edge-camera.json");
+        let command = studio_image_creation_command(&bundle);
+        let expected_image = {
+            let StudioCreationOperationKind::Create { entity } =
+                &command.programs[0].operations[0].kind
+            else {
+                unreachable!();
+            };
+            entity.image.clone().unwrap()
+        };
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result.bundle.scene.entities.last().unwrap();
+
+        assert_eq!(result.bundle.assets, bundle.assets);
+        assert!(
+            result
+                .bundle
+                .scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::PngImage)
+        );
+        assert!(matches!(
+            &created.geometry,
+            SceneGeometryV1::Image { asset, local_rect, sampler }
+                if asset == &expected_image.asset
+                    && local_rect == &expected_image.local_rect
+                    && sampler == &expected_image.sampler
+        ));
+        assert!(matches!(
+            created.appearance,
+            SceneAppearanceV1::Image { opacity: 1.0 }
+        ));
+        let projection = result.creation_projection.unwrap();
+        assert_eq!(
+            projection.entities[0].kind,
+            StudioAuthoringEntityKind::Image
+        );
+        assert_eq!(projection.entities[0].image.as_ref(), Some(&expected_image));
+        assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn rejects_an_image_reference_outside_the_installed_manifest_atomically() {
+        let bundle = fixture_bundle("png-alpha-edge-camera.json");
+        let mut command = studio_image_creation_command(&bundle);
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.image.as_mut().unwrap().asset.sha256 = "f".repeat(64);
+        let expected = bundle.scene.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &expected);
+        assert_eq!(session.retained_index_stats().build_count, 1);
     }
 
     #[test]
