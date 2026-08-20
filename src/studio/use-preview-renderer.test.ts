@@ -1968,6 +1968,116 @@ describe("compileStudioPreviewSceneV1", () => {
     },
   );
 
+  it("passes one imported multi-root move as an atomic static-root Program", async () => {
+    const fixture = await editedStaticRootPreviewInput();
+    const firstRuntime = fixture.snapshot.snapshot.scene.entities[0];
+    const firstStudio = fixture.workingState.runtimeSceneState.objectGraph.entities["source:circle"];
+    if (!firstRuntime || !firstStudio?.geometry) throw new Error("Static root move fixture is incomplete.");
+    const snapshotBundle = await parseVerifiedSceneIrBundleV1({
+      ...fixture.snapshot.snapshot,
+      scene: {
+        ...fixture.snapshot.snapshot.scene,
+        entities: [
+          ...fixture.snapshot.snapshot.scene.entities,
+          { ...firstRuntime, id: "second-root", sceneOrder: firstRuntime.sceneOrder + 1 },
+        ],
+      },
+    });
+    const secondStudio = {
+      ...firstStudio,
+      geometry: {
+        ...firstStudio.geometry,
+        position: { kind: "known" as const, value: { x: 400, y: 180 } },
+      },
+      id: "source:second",
+      sourceIdentity: { kind: "known" as const, value: "second" },
+    };
+    const workingBase: WorkingState = {
+      ...fixture.workingState,
+      appliedEdits: [],
+      editorContext: {
+        ...fixture.workingState.editorContext,
+        selection: ["source:circle", "source:second"],
+      },
+      runtimeSceneState: {
+        ...fixture.workingState.runtimeSceneState,
+        objectGraph: {
+          ...fixture.workingState.runtimeSceneState.objectGraph,
+          entities: {
+            ...fixture.workingState.runtimeSceneState.objectGraph.entities,
+            "source:second": secondStudio,
+          },
+        },
+      },
+      staticSemanticState: {
+        ...fixture.workingState.staticSemanticState,
+        entities: [
+          ...fixture.workingState.staticSemanticState.entities,
+          {
+            runtimeIdentities: { kind: "known", value: ["source:second"] },
+            sourceIdentity: "second",
+            type: { kind: "known", value: "Circle" },
+          },
+        ],
+      },
+    };
+    const validation = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 20, y: -10 },
+      positions: {
+        "source:circle": { x: 320, y: 180 },
+        "source:second": { x: 400, y: 180 },
+      },
+      scene: workingBase.runtimeSceneState,
+      start: 0,
+      targetEntityIds: ["source:circle", "source:second"],
+      transactionId: "move-imported-selection",
+    });
+    if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+    const record = {
+      ...programRecord(validation.program, validation),
+      validation: { issues: validation.issues, status: "valid" as const },
+    };
+    const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(
+        commands,
+        compileApplyStaticRootTransformEdit,
+      ),
+      frame: { height: 9, width: 16 },
+      snapshot: {
+        ...fixture.snapshot,
+        snapshot: snapshotBundle,
+        sourceRuntimeIdentity: new Map([
+          ["circle", { bindingId: "binding:circle", entityId: "earlier", sourceName: "circle" }],
+          ["second", { bindingId: "binding:second", entityId: "second-root", sourceName: "second" }],
+        ]),
+      },
+      workingState: { ...workingBase, appliedEdits: [record] },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits: [record],
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.editAuthority).toBe("static-imported-root");
+    expect(result.scene.staticRootProjection?.mutations).toEqual([
+      expect.objectContaining({ entityId: "source:circle", kind: "position" }),
+      expect.objectContaining({ entityId: "source:second", kind: "position" }),
+    ]);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.programs).toHaveLength(1);
+    expect(commands[0]?.programs[0]?.operations).toMatchObject([
+      { entityId: "source:circle", kind: "position", position: { x: 340, y: 170 } },
+      { entityId: "source:second", kind: "position", position: { x: 420, y: 170 } },
+    ]);
+    expect(result.scene.interactionEntityIds).toEqual(["earlier", "second-root"]);
+  });
+
   it("routes an imported static move followed by motion through one static-root Rust command", async () => {
     const fixture = await editedStaticRootPreviewInput();
     const motion = validateMotionProgramFixture({

@@ -26,8 +26,8 @@ use super::timeline::{SceneTimelineInsertion, insert_scene_time};
 use super::transform::{
     SceneEntityAxisFactors, TransformSceneEntityCommand, TransformSceneEntityError,
     TransformSceneEntityExpectedBaseline, TransformSceneEntityIntent, apply_world_axis_scale,
-    fit_cubic_path_to_local_height_and_center, has_animated_transform, resolve_transform_intent,
-    scene_entity_local_bounds,
+    apply_world_translation, fit_cubic_path_to_local_height_and_center, has_animated_transform,
+    resolve_transform_intent, scene_entity_local_bounds,
 };
 use super::{
     SceneEditAnchorSource, SceneEditExecution, SceneEditOperationFacts, SceneEditScheduleMode,
@@ -740,6 +740,224 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
+    /// Applies one direct-manipulation move to two or more independent imported roots.
+    ///
+    /// The browser already emits one parallel Program and the source lowerer already writes every
+    /// absolute `move_to`. This narrow core admission keeps Preview/MP4 on that same canonical
+    /// result without broadening the static-root contract to mixed transforms or nested targets.
+    #[allow(
+        clippy::float_cmp,
+        clippy::too_many_lines,
+        reason = "exact frame identity and the plan-before-commit batch admission stay in one atomic path"
+    )]
+    fn apply_static_root_group_position_edit(
+        &mut self,
+        command: ApplyStaticRootTransformEditCommand,
+    ) -> Result<StudioAuthoringEditResult, ApplyStaticRootTransformEditError> {
+        let ApplyStaticRootTransformEditCommand {
+            expected_base_revision,
+            frame,
+            math_tex_outlines,
+            next_revision,
+            programs,
+            source_runtime_bindings,
+            studio_entities,
+            viewport,
+        } = command;
+        let scene = self.scene();
+        if scene.source.revision_hash() != expected_base_revision {
+            return Err(TransformSceneEntityError::StaleBaseRevision.into());
+        }
+        if next_revision == expected_base_revision {
+            return Err(TransformSceneEntityError::RevisionDidNotAdvance.into());
+        }
+        if !matches!(
+            scene.source,
+            SceneSourceV1::ImportedManimServerSnapshot { .. }
+        ) || !studio_authoring_size_is_positive(frame)
+            || !studio_authoring_size_is_positive(viewport)
+            || frame.width != scene.camera.view.frame_width
+            || frame.height != scene.camera.view.frame_height
+            || !math_tex_outlines.is_empty()
+            || !scene.animation_channels.is_empty()
+            || programs.len() != 1
+        {
+            return Err(ApplyStaticRootTransformEditError::Unsupported);
+        }
+        let program = &programs[0];
+        if !(2..=16).contains(&program.operations.len())
+            || !program.lowering_supported
+            || program.transaction_id.is_empty()
+            || program.intent_count != 1
+            || program.origin != StudioAuthoringOrigin::DirectManipulation
+            || program.requested_execution != SceneEditExecution::Parallel
+            || program.schedule_mode != SceneEditScheduleMode::Parallel
+            || !scene_edit_anchor_is_closed(
+                &program.anchor_source,
+                program.anchor_captured_playhead,
+                program.anchor_resolved_seconds,
+                scene.duration,
+            )
+            || !studio_timeline_semantic_values_match(program.anchor_resolved_seconds, 0.0)
+            || !static_root_transform_edit_input_is_closed(program)
+            || program
+                .operations
+                .iter()
+                .any(|operation| operation.origin != program.origin)
+        {
+            return Err(ApplyStaticRootTransformEditError::Unsupported);
+        }
+
+        let provenance_id = format!("studio-static-transform:{next_revision}");
+        if scene
+            .provenance
+            .iter()
+            .any(|record| record.id == provenance_id)
+        {
+            return Err(TransformSceneEntityError::ProvenanceConflict(provenance_id).into());
+        }
+        let mut operation_ids = BTreeSet::new();
+        let mut studio_entity_ids = BTreeSet::new();
+        let mut runtime_entity_ids = BTreeSet::new();
+        let mut planned = Vec::with_capacity(program.operations.len());
+        let mut mutations = Vec::with_capacity(program.operations.len());
+        for scheduled_id in &program.schedule_order {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *scheduled_id)
+                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            let StaticRootTransformOperationKind::Position {
+                position: Some(position),
+            } = &operation.kind
+            else {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            };
+            let studio_entity_id = operation
+                .entity_id
+                .as_deref()
+                .filter(|entity_id| !entity_id.is_empty())
+                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            if operation.id.is_empty()
+                || !operation_ids.insert(operation.id.clone())
+                || !studio_entity_ids.insert(studio_entity_id.to_owned())
+                || !studio_authoring_point_is_finite(position)
+                || !studio_timeline_semantic_values_match(operation.interval.start, 0.0)
+                || !studio_timeline_semantic_values_match(operation.interval.end, 0.0)
+            {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            }
+            let (studio_entity, runtime_entity) = resolve_static_root_binding(
+                scene,
+                &studio_entities,
+                &source_runtime_bindings,
+                studio_entity_id,
+            )
+            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            if !runtime_entity_ids.insert(runtime_entity.id.clone())
+                || runtime_entity.parent_id.is_some()
+                || !static_transform_geometry_matches(studio_entity.kind, runtime_entity)
+                || has_animated_transform(scene, &runtime_entity.id)
+            {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            }
+            let target =
+                studio_point_to_scene_point(position, frame, viewport, &scene.camera.view.center);
+            let intent = if matches!(
+                studio_entity.kind,
+                StaticRootTransformEntityKind::Image | StaticRootTransformEntityKind::MathTex
+            ) {
+                TransformSceneEntityIntent::FromBaseline {
+                    expected_baseline: TransformSceneEntityExpectedBaseline::CurrentCenter,
+                    scale: None,
+                    target_center: Some(target),
+                }
+            } else {
+                let semantic_position = studio_entity
+                    .position
+                    .as_ref()
+                    .filter(|position| studio_authoring_point_is_finite(position))
+                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                let baseline = studio_point_to_scene_point(
+                    semantic_position,
+                    frame,
+                    viewport,
+                    &scene.camera.view.center,
+                );
+                TransformSceneEntityIntent::Relative {
+                    delta: PointV1 {
+                        x: target.x - baseline.x,
+                        y: target.y - baseline.y,
+                    },
+                    scale: None,
+                }
+            };
+            let (delta, scale) = resolve_transform_intent(runtime_entity, intent)?;
+            if scale.is_some() {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            }
+            planned.push((runtime_entity.id.clone(), delta));
+            mutations.push(StudioStaticRootProjectedMutation {
+                mutation: StudioStaticRootMutation::Position {
+                    entity_id: studio_entity_id.to_owned(),
+                    interval: operation.interval.clone(),
+                    value: position.clone(),
+                },
+                operation_id: operation.id.clone(),
+                transaction_id: program.transaction_id.clone(),
+            });
+        }
+        if planned.len() != program.operations.len() {
+            return Err(ApplyStaticRootTransformEditError::Unsupported);
+        }
+
+        let mut candidate = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: scene.clone(),
+        };
+        for (runtime_entity_id, delta) in planned {
+            let target = candidate
+                .scene
+                .entities
+                .iter_mut()
+                .find(|entity| entity.id == runtime_entity_id)
+                .ok_or_else(|| {
+                    TransformSceneEntityError::TargetMissing(runtime_entity_id.clone())
+                })?;
+            apply_world_translation(&mut target.transform, &delta);
+            target.provenance_id.clone_from(&provenance_id);
+        }
+        candidate.scene.provenance.push(ProvenanceRecordV1 {
+            evidence: operation_ids
+                .into_iter()
+                .map(|operation_id| format!("authorized operation {operation_id}"))
+                .chain(std::iter::once(
+                    "Studio imported-root group position edit".to_owned(),
+                ))
+                .collect(),
+            id: provenance_id,
+            origin: ProvenanceOriginV1::StudioEditProgram,
+        });
+        candidate.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: next_revision,
+        };
+        let result = StudioAuthoringEditResult {
+            bundle: candidate.clone(),
+            creation_projection: None,
+            math_tex_transform_projection: None,
+            motion_projection: None,
+            persistent_remove_projection: StudioPersistentRemoveProjection::default(),
+            static_root_projection: Some(StudioStaticRootProjection {
+                insertions: vec![],
+                mutations,
+                projected_duration: candidate.scene.duration,
+            }),
+        };
+        self.replace_snapshot(candidate)?;
+        Ok(result)
+    }
+
     /// Applies the closed imported-root static edit subset.
     ///
     /// The caller serializes every edit operation, including unsupported ones. This method is
@@ -784,6 +1002,17 @@ impl EngineSessionV1 {
             })
         {
             return self.apply_animated_scale_then_remove_edit(command);
+        }
+        if command.programs.len() == 1
+            && command.programs[0].operations.len() >= 2
+            && command.programs[0].operations.iter().all(|operation| {
+                matches!(
+                    operation.kind,
+                    StaticRootTransformOperationKind::Position { .. }
+                )
+            })
+        {
+            return self.apply_static_root_group_position_edit(command);
         }
         let ApplyStaticRootTransformEditCommand {
             expected_base_revision,
@@ -1481,6 +1710,45 @@ mod tests {
     use super::super::transform::scene_entity_world_center;
     use super::*;
 
+    fn static_root_group_position_command() -> ApplyStaticRootTransformEditCommand {
+        let mut command = static_root_position_command();
+        let mut earlier_move = command.programs[0].operations[0].clone();
+        earlier_move.entity_id = Some("source:earlier".to_owned());
+        earlier_move.id = "move-earlier".to_owned();
+        earlier_move.kind = StaticRootTransformOperationKind::Position {
+            position: Some(PointV1 { x: 240.0, y: 180.0 }),
+        };
+        command.programs[0].operations.push(earlier_move);
+        command.programs[0]
+            .schedule_order
+            .push("move-earlier".to_owned());
+        command
+            .source_runtime_bindings
+            .push(StaticRootTransformSourceBinding {
+                source_identity_key: "earlier".to_owned(),
+                runtime_entity_id: "earlier".to_owned(),
+                source_name: "earlier".to_owned(),
+            });
+        command
+            .studio_entities
+            .push(StaticRootTransformStudioEntity {
+                dimensions: StaticRootTransformDimensions {
+                    height: None,
+                    radius: Some(1.0),
+                    width: None,
+                },
+                id: "source:earlier".to_owned(),
+                kind: StaticRootTransformEntityKind::Circle,
+                object_graph_key: "source:earlier".to_owned(),
+                position: Some(PointV1 { x: 280.0, y: 180.0 }),
+                provisional: false,
+                scale: Some(1.0),
+                source_identity: Some("earlier".to_owned()),
+                transaction_id: None,
+            });
+        command
+    }
+
     fn static_root_math_tex_content_command() -> ApplyStaticRootTransformEditCommand {
         let content = StudioMathTexContent {
             display_lines: vec!["F = ma".to_owned()],
@@ -1576,6 +1844,74 @@ mod tests {
         );
         assert_eq!(result.scene.state_sampling.frame_rate, None);
         assert!(result.scene.state_sampling.retains_terminal_state);
+    }
+
+    #[test]
+    fn applies_one_atomic_position_program_to_independent_imported_roots() {
+        let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
+
+        let result = session
+            .apply_static_root_transform_edit(static_root_group_position_command())
+            .unwrap();
+
+        assert_eq!(
+            result
+                .static_root_projection
+                .as_ref()
+                .map(|projection| projection.mutations.len()),
+            Some(2)
+        );
+        let later = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        let earlier = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "earlier")
+            .unwrap();
+        assert!((later.transform.tx - 1.0).abs() < f64::EPSILON);
+        assert!((earlier.transform.tx + 1.0).abs() < f64::EPSILON);
+        assert_eq!(later.provenance_id, earlier.provenance_id);
+        assert_eq!(result.bundle.scene.source.revision_hash(), NEXT_REVISION);
+    }
+
+    #[test]
+    fn rejects_group_position_for_nested_or_mixed_transform_targets_atomically() {
+        let mut nested_bundle = static_imported_bundle();
+        nested_bundle
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "earlier")
+            .unwrap()
+            .parent_id = Some("later".to_owned());
+        let mut nested = EngineSessionV1::new(nested_bundle).unwrap();
+        assert!(matches!(
+            nested.apply_static_root_transform_edit(static_root_group_position_command()),
+            Err(ApplyStaticRootTransformEditError::Unsupported)
+        ));
+        assert_eq!(nested.scene().source.revision_hash(), BASE_REVISION);
+
+        let mut mixed_command = static_root_group_position_command();
+        mixed_command.programs[0].operations[1].kind =
+            StaticRootTransformOperationKind::UniformScale {
+                control_present: false,
+                from: Some(1.0),
+                relative_factor: Some(2.0),
+                to: Some(2.0),
+            };
+        let mut mixed = EngineSessionV1::new(static_imported_bundle()).unwrap();
+        assert!(matches!(
+            mixed.apply_static_root_transform_edit(mixed_command),
+            Err(ApplyStaticRootTransformEditError::Unsupported)
+        ));
+        assert_eq!(mixed.scene().source.revision_hash(), BASE_REVISION);
     }
 
     #[test]
