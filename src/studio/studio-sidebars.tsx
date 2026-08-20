@@ -1,4 +1,4 @@
-import { type DragEvent, useState } from "react";
+import { type DragEvent, useEffect, useState } from "react";
 import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggestions";
 import { cn } from "../lib/cn";
 import type {
@@ -22,6 +22,7 @@ import type { ManimWorkspaceScene } from "./imported-workspace";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity } from "./model";
+import type { StudioNativeImageAssetV1 } from "./studio-image-assets";
 import { entityLabel } from "./studio-viewport";
 
 const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
@@ -51,6 +52,20 @@ const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
   "select-all",
   "play-pause",
 ];
+
+function NativeImageThumbnail({ asset }: Readonly<{ asset: StudioNativeImageAssetV1 }>) {
+  const [source, setSource] = useState<string | null>(null);
+  useEffect(() => {
+    const objectUrl = URL.createObjectURL(new Blob([asset.bytes], { type: "image/png" }));
+    setSource(objectUrl);
+    return () => URL.revokeObjectURL(objectUrl);
+  }, [asset.bytes]);
+  return (
+    <div className="flex size-11 shrink-0 items-center justify-center overflow-hidden border border-zinc-800 bg-zinc-900">
+      <img alt={asset.label} className="size-full object-contain" src={source ?? undefined} />
+    </div>
+  );
+}
 
 function dimensionSummary(entity: ProjectedEntity) {
   if (entity.geometry.dimensions.kind === "unknown") return "Runtime-dependent";
@@ -168,12 +183,14 @@ export function WorkspaceSidebar({
   durationMinimum,
   entities,
   groupUnavailableReason = "Select at least two contiguous Studio-created objects.",
+  imageAssets = [],
   layers,
   lockToggleDisabled = false,
   lockedEntityIds = new Set(),
   nextScene,
   onGroup,
   onDurationChange,
+  onAddImageAsset,
   onEditAppliedProgram,
   onLayerOrder,
   onLayerReorder,
@@ -202,12 +219,14 @@ export function WorkspaceSidebar({
   durationMinimum: number;
   entities: readonly ProjectedEntity[];
   groupUnavailableReason?: string | null;
+  imageAssets?: readonly StudioNativeImageAssetV1[];
   layers?: readonly StudioLayerEntry[];
   lockToggleDisabled?: boolean;
   lockedEntityIds?: ReadonlySet<string>;
   nextScene: ManimWorkspaceScene | null;
   onGroup?: () => void;
   onDurationChange: (duration: number) => void;
+  onAddImageAsset?: (asset: StudioNativeImageAssetV1) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
@@ -238,6 +257,52 @@ export function WorkspaceSidebar({
     }));
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
+      <section className="mb-4 border-b border-zinc-800 pb-4" aria-labelledby="studio-assets-heading">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-balance text-xs font-medium text-zinc-300" id="studio-assets-heading">
+            Assets
+          </h2>
+          <span className="tabular-nums text-[10px] text-zinc-600">{imageAssets.length}</span>
+        </div>
+        <h3 className="mt-2 text-[10px] font-medium text-zinc-500">Images</h3>
+        {imageAssets.length === 0 ? (
+          <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+            No verified project image is available in this Scene.
+          </p>
+        ) : (
+          <ul className="mt-2 space-y-1" aria-label="Project images">
+            {imageAssets.map((asset) => (
+              <li
+                className="border border-zinc-800 p-2"
+                key={`${asset.image.asset.assetId}:${asset.image.asset.sha256}`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <NativeImageThumbnail asset={asset} />
+                    <div className="min-w-0">
+                      <p className="truncate text-xs text-zinc-300">{asset.label}</p>
+                      <p className="mt-0.5 tabular-nums text-[10px] text-zinc-600">
+                        {asset.pixelWidth} × {asset.pixelHeight}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    className="h-7 shrink-0 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                    disabled={!authoringAvailable || draftActive || onAddImageAsset === undefined}
+                    onClick={() => onAddImageAsset?.(asset)}
+                    type="button"
+                  >
+                    + Add
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+          Studio-native Images use canonical Preview and MP4 export. Manim source export is unsupported.
+        </p>
+      </section>
       <div className="flex items-center justify-between gap-2">
         <h2 className="text-balance text-xs font-medium text-zinc-300">Layers</h2>
         <div className="flex items-center gap-1">

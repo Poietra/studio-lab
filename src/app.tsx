@@ -234,6 +234,7 @@ import { preparedGeometryBounds, verifiedPreviewGeometryForStudioEntity } from "
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
+import { studioNativeImageAssetsV1 } from "./studio/studio-image-assets";
 import type { StudioInlineTextEditorSession } from "./studio/studio-inline-text-editor";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
@@ -1012,6 +1013,7 @@ export function App({
     workingState: previewWorkingState,
   });
   const studioExportSource = previewRenderer?.canonicalScene ?? null;
+  const studioImageAssets = studioNativeImageAssetsV1(studioExportSource);
   const activeFragmentMaterialTextureAssets = studioExportSource?.bundle.assets.assets ?? [];
   const studioExportPublication = resolveStudioExportPublicationAvailabilityV1({
     exportSource: studioExportSource,
@@ -6451,12 +6453,19 @@ export function App({
               durationMinimum={durationTrimAvailability.minimumDuration}
               entities={editableEntities}
               groupUnavailableReason={layerGroupUnavailableReason}
+              imageAssets={studioImageAssets}
               layers={studioLayers}
               lockToggleDisabled={draftApplyPending}
               lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
               onGroup={groupLayerSelection}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
+              onAddImageAsset={(asset) => {
+                setIsPlaying(false);
+                void insertEntitiesAt({ x: 320, y: 180 }, [
+                  { image: asset.image, position: { x: 320, y: 180 }, type: "ImageMobject" },
+                ]);
+              }}
               onEditAppliedProgram={editAppliedProgram}
               onLayerOrder={changeLayerOrder}
               onLayerReorder={reorderLayer}
