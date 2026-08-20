@@ -2,9 +2,36 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import { STUDIO_WAVE_FRAGMENT_SOURCE_V1 } from "../engine/fragment-material-registry";
-import { FragmentMaterialEditor } from "./fragment-material-editor";
+import {
+  FragmentMaterialEditor,
+  type FragmentMaterialEditorItem,
+  fragmentMaterialsMatchingName,
+} from "./fragment-material-editor";
+
+const searchableMaterials = [
+  { name: "Ocean Wave", shaderId: "wave" },
+  { name: "warm GLOW", shaderId: "glow" },
+  { name: "Paper", shaderId: "paper" },
+].map(
+  ({ name, shaderId }): FragmentMaterialEditorItem => ({
+    assignmentCount: 0,
+    glslSource: null,
+    name,
+    parameterSchema: [],
+    revision: 1,
+    shaderId,
+    source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+  }),
+);
 
 describe("FragmentMaterialEditor", () => {
+  it("filters project materials by name without changing their identity", () => {
+    expect(fragmentMaterialsMatchingName(searchableMaterials, "  WAvE ")).toEqual([searchableMaterials[0]]);
+    expect(fragmentMaterialsMatchingName(searchableMaterials, "glow")).toEqual([searchableMaterials[1]]);
+    expect(fragmentMaterialsMatchingName(searchableMaterials, "missing")).toEqual([]);
+    expect(fragmentMaterialsMatchingName(searchableMaterials, " ")).toBe(searchableMaterials);
+  });
+
   it("renders named assets, object assignment, and the in-use deletion guard", () => {
     const markup = renderToStaticMarkup(
       <FragmentMaterialEditor
@@ -53,6 +80,10 @@ describe("FragmentMaterialEditor", () => {
     );
 
     expect(markup).toContain('aria-label="Assigned fragment material"');
+    expect(markup).toContain('aria-label="Search project materials"');
+    expect(markup).toContain('aria-controls="fragment-material-asset"');
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain("2 project materials");
     expect(markup).toContain('aria-label="Material asset"');
     expect(markup).toContain("Ocean wave");
     expect(markup).toContain("Warm glow");
