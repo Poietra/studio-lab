@@ -334,6 +334,22 @@ fn validate_fragment_material(
     }
 }
 
+fn fragment_materials_share_animation_identity(
+    left: Option<&FragmentMaterialV1>,
+    right: Option<&FragmentMaterialV1>,
+) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(left), Some(right)) => {
+            left.shader_id == right.shader_id
+                && left.revision == right.revision
+                && left.texture == right.texture
+                && left.parameters.len() == right.parameters.len()
+        }
+        (None, Some(_)) | (Some(_), None) => false,
+    }
+}
+
 fn validate_stroke_inner(
     stroke: &StrokeStyleV1,
     path: &str,
@@ -1409,7 +1425,10 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                             } else if let (Some(fill), Some(first_fill)) =
                                 (&value.fill, &first.fill)
                                 && (fill.rule != first_fill.rule
-                                    || fill.fragment_material != first_fill.fragment_material)
+                                    || !fragment_materials_share_animation_identity(
+                                        fill.fragment_material.as_ref(),
+                                        first_fill.fragment_material.as_ref(),
+                                    ))
                             {
                                 validator.issue(
                                     format!("{value_path}.fill"),

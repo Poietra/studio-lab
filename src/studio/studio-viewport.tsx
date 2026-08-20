@@ -92,6 +92,8 @@ export function StudioViewport({
   lifetimeControls,
   lifetimeEditMessage,
   lifetimeTrimDisabled,
+  materialParameterOptions,
+  materialParameterTracks,
   motionDuration,
   motionPaths,
   opacityTrackEligibleIds,
@@ -122,6 +124,9 @@ export function StudioViewport({
   onInsertToolChange,
   onInsertValueChange,
   onLifetimeChange,
+  onMaterialParameterKeyframeAdd,
+  onMaterialParameterKeyframeChange,
+  onMaterialParameterKeyframeDelete,
   onMotionControlChange,
   onMotionDurationChange,
   onOpacityKeyframeAdd,
@@ -234,6 +239,8 @@ export function StudioViewport({
           lifetimeControls={lifetimeControls}
           lifetimeEditMessage={lifetimeEditMessage}
           lifetimeTrimDisabled={lifetimeTrimDisabled}
+          materialParameterOptions={materialParameterOptions}
+          materialParameterTracks={materialParameterTracks}
           motionDuration={motionDuration}
           objectTracks={projection.timeline.objectTracks}
           opacityTrackEligibleIds={opacityTrackEligibleIds}
@@ -242,6 +249,9 @@ export function StudioViewport({
           onAppliedMotionClipSelect={onAppliedMotionClipSelect}
           onInteractionModeChange={onInteractionModeChange}
           onLifetimeChange={onLifetimeChange}
+          onMaterialParameterKeyframeAdd={onMaterialParameterKeyframeAdd}
+          onMaterialParameterKeyframeChange={onMaterialParameterKeyframeChange}
+          onMaterialParameterKeyframeDelete={onMaterialParameterKeyframeDelete}
           onMotionDurationChange={onMotionDurationChange}
           onOpacityKeyframeAdd={onOpacityKeyframeAdd}
           onOpacityKeyframeChange={onOpacityKeyframeChange}

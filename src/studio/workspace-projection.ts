@@ -271,7 +271,9 @@ function creationEntityKind(type: string): StudioCreationProjectionV1["entities"
 function creationMutationKind(operation: SceneEditOperation): StudioCreationProjectionMutationV1["kind"] | null {
   if (operation.kind === "SetProperty" && operation.key === "position") return "position";
   if (operation.kind === "SetProperty" && operation.key === "appearance") return "opacity";
-  if (operation.kind === "AnimateProperty" && operation.key === "appearance") return "opacity-keyframes";
+  if (operation.kind === "AnimateProperty" && operation.key === "appearance") {
+    return operation.materialParameter ? "material-parameter-keyframes" : "opacity-keyframes";
+  }
   if (operation.kind === "SetProperty" && operation.key === "fillColor") return "fill-color";
   if (operation.kind === "SetProperty" && operation.key === "strokeColor") return "stroke-color";
   if (operation.kind === "SetProperty" && operation.key === "sourceZIndex") return "source-z-index";
@@ -776,6 +778,9 @@ function appendProjectedMutation(
       kind: mutation.interval.end > mutation.interval.start ? "animated" : "exact",
       value: mutation.to,
     });
+  } else if (mutation.kind === "material-parameter-keyframes") {
+    // The canonical VectorAppearance channel is sampled in Rust; this correlated mutation
+    // only supplies working-time marker positions to the timeline.
   } else if (mutation.kind === "fill-color" || mutation.kind === "stroke-color") {
     appendProjectedSample(
       draft.propertyChannels,

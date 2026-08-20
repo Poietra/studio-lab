@@ -31,6 +31,8 @@ export type StudioTimelineProps = Readonly<{
   lifetimeEditMessage: string | null;
   lifetimeTrimDisabled: boolean;
   motionDuration: number;
+  materialParameterOptions: readonly StudioMaterialParameterTimelineOption[];
+  materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[];
   objectTracks: readonly TimelineObjectTrack[];
   opacityTrackEligibleIds: ReadonlySet<string>;
   opacityTracks: readonly StudioOpacityTimelineTrack[];
@@ -39,6 +41,13 @@ export type StudioTimelineProps = Readonly<{
   onInteractionModeChange: (mode: InteractionMode) => void;
   onLifetimeChange: (entityId: string, lifetimeStart: number, target: Interval) => void;
   onMotionDurationChange: (duration: number) => void;
+  onMaterialParameterKeyframeAdd: (entityId: string, name: string) => void;
+  onMaterialParameterKeyframeChange: (
+    track: StudioMaterialParameterTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioMaterialParameterTimelineKeyframe, "easing" | "time" | "value">>,
+  ) => void;
+  onMaterialParameterKeyframeDelete: (track: StudioMaterialParameterTimelineTrack, index: number) => void;
   onOpacityKeyframeAdd: (entityId: string) => void;
   onOpacityKeyframeChange: (
     track: StudioOpacityTimelineTrack,
@@ -67,6 +76,28 @@ export type StudioOpacityTimelineTrack = Readonly<{
   programIndex: number;
   readOnlyReason: string | null;
   transactionId: string;
+}>;
+
+export type StudioMaterialParameterTimelineKeyframe = StudioOpacityTimelineKeyframe;
+
+export type StudioMaterialParameterTimelineTrack = Readonly<{
+  assignmentChanged: boolean;
+  entityId: string;
+  keyframes: readonly StudioMaterialParameterTimelineKeyframe[];
+  label: string;
+  materialName: string;
+  parameterIndex: number;
+  parameterName: string;
+  programIndex: number;
+  range: Readonly<{ max: number; min: number; step: number }>;
+  readOnlyReason: string | null;
+  transactionId: string;
+}>;
+
+export type StudioMaterialParameterTimelineOption = Readonly<{
+  entityId: string;
+  materialName: string;
+  name: string;
 }>;
 
 function TimelinePlayhead({
@@ -105,10 +136,11 @@ const EMPTY_LIFETIME_CONTROLS: StudioLifetimeControls = {
   startTargets: [],
 };
 
-function OpacityKeyframeMarker({
+function PropertyKeyframeMarker({
   duration,
   index,
   keyframe,
+  kind,
   locked,
   onChange,
   onSelect,
@@ -117,6 +149,7 @@ function OpacityKeyframeMarker({
   duration: number;
   index: number;
   keyframe: StudioOpacityTimelineKeyframe;
+  kind: "material" | "opacity";
   locked: boolean;
   onChange: (patch: Partial<Pick<StudioOpacityTimelineKeyframe, "time">>) => void;
   onSelect: () => void;
@@ -140,14 +173,22 @@ function OpacityKeyframeMarker({
   const displayedTime = previewTime ?? keyframe.time;
   return (
     <button
-      aria-label={`Opacity keyframe ${index + 1} at ${keyframe.time.toFixed(2)} seconds`}
+      aria-label={`${kind === "material" ? "Material parameter" : "Opacity"} keyframe ${index + 1} at ${keyframe.time.toFixed(2)} seconds`}
       aria-pressed={selected}
       className={cn(
-        "absolute top-1/2 z-40 size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 border",
-        selected ? "border-sky-100 bg-sky-400" : "border-sky-300 bg-sky-700",
+        "absolute z-40 size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 border",
+        kind === "material" ? "top-1/4" : "top-1/2",
+        selected
+          ? kind === "material"
+            ? "border-fuchsia-100 bg-fuchsia-400"
+            : "border-sky-100 bg-sky-400"
+          : kind === "material"
+            ? "border-fuchsia-300 bg-fuchsia-800"
+            : "border-sky-300 bg-sky-700",
         locked ? "cursor-not-allowed opacity-50" : "cursor-ew-resize",
       )}
-      data-opacity-keyframe
+      data-property-keyframe={kind}
+      data-opacity-keyframe={kind === "opacity" ? "" : undefined}
       disabled={locked}
       onClick={(event) => {
         event.stopPropagation();
@@ -179,7 +220,7 @@ function OpacityKeyframeMarker({
         onChange({ time });
       }}
       style={{ left: `${timelinePositionPercent(displayedTime, duration)}%`, touchAction: "none" }}
-      title={`Opacity ${keyframe.value.toFixed(2)} · ${keyframe.easing}`}
+      title={`${kind === "material" ? "Material" : "Opacity"} ${keyframe.value.toFixed(2)} · ${keyframe.easing}`}
       type="button"
     />
   );
@@ -432,6 +473,8 @@ export function StudioTimeline({
   lifetimeControls,
   lifetimeEditMessage,
   lifetimeTrimDisabled,
+  materialParameterOptions,
+  materialParameterTracks,
   motionDuration,
   objectTracks,
   opacityTrackEligibleIds,
@@ -440,6 +483,9 @@ export function StudioTimeline({
   onAppliedMotionClipSelect,
   onInteractionModeChange,
   onLifetimeChange,
+  onMaterialParameterKeyframeAdd,
+  onMaterialParameterKeyframeChange,
+  onMaterialParameterKeyframeDelete,
   onMotionDurationChange,
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
@@ -453,6 +499,10 @@ export function StudioTimeline({
   markStudioRenderBoundary("timeline");
   const intervalEvents = events.flatMap((event) => (event.interval ? [{ event, interval: event.interval }] : []));
   const [selectedLifetime, setSelectedLifetime] = useState<SelectedLifetime | null>(null);
+  const [selectedMaterialParameterByEntity, setSelectedMaterialParameterByEntity] = useState<
+    Readonly<Record<string, string>>
+  >({});
+  const [selectedMaterialKeyframe, setSelectedMaterialKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedOpacityKeyframe, setSelectedOpacityKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const selectedLifetimeTrack =
     selectedLifetime && selectedIds.has(selectedLifetime.entityId)
@@ -475,6 +525,10 @@ export function StudioTimeline({
     ? (opacityTracks.find((track) => track.transactionId === selectedOpacityKeyframe.transactionId) ?? null)
     : null;
   const selectedOpacityMarker = selectedOpacityTrack?.keyframes[selectedOpacityKeyframe?.index ?? -1] ?? null;
+  const selectedMaterialTrack = selectedMaterialKeyframe
+    ? (materialParameterTracks.find((track) => track.transactionId === selectedMaterialKeyframe.transactionId) ?? null)
+    : null;
+  const selectedMaterialMarker = selectedMaterialTrack?.keyframes[selectedMaterialKeyframe?.index ?? -1] ?? null;
   return (
     <section className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
       <div className="flex items-center gap-3">
@@ -664,6 +718,95 @@ export function StudioTimeline({
           ) : null}
         </div>
       ) : null}
+      {selectedMaterialTrack && selectedMaterialMarker ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="max-w-48 truncate text-fuchsia-300" title={selectedMaterialTrack.label}>
+            {selectedMaterialTrack.materialName} · {selectedMaterialTrack.parameterName}
+          </span>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Time
+            <input
+              aria-label="Material parameter keyframe time"
+              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-fuchsia-500"
+              disabled={selectedMaterialTrack.readOnlyReason !== null}
+              max={duration}
+              min="0"
+              onChange={(event) =>
+                onMaterialParameterKeyframeChange(selectedMaterialTrack, selectedMaterialKeyframe!.index, {
+                  time: Number(event.currentTarget.value),
+                })
+              }
+              step="0.05"
+              type="number"
+              value={selectedMaterialMarker.time}
+            />
+            s
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Value
+            <input
+              aria-label="Material parameter keyframe value"
+              className="h-7 w-24 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-fuchsia-500"
+              disabled={selectedMaterialTrack.readOnlyReason !== null || selectedMaterialKeyframe!.index === 0}
+              max={selectedMaterialTrack.range.max}
+              min={selectedMaterialTrack.range.min}
+              onChange={(event) =>
+                onMaterialParameterKeyframeChange(selectedMaterialTrack, selectedMaterialKeyframe!.index, {
+                  value: Number(event.currentTarget.value),
+                })
+              }
+              step={selectedMaterialTrack.range.step}
+              type="number"
+              value={selectedMaterialMarker.value}
+            />
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label="Material parameter segment easing"
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-fuchsia-500"
+              disabled={
+                selectedMaterialTrack.readOnlyReason !== null ||
+                selectedMaterialKeyframe!.index === selectedMaterialTrack.keyframes.length - 1
+              }
+              onChange={(event) =>
+                onMaterialParameterKeyframeChange(selectedMaterialTrack, selectedMaterialKeyframe!.index, {
+                  easing: event.currentTarget.value as "linear" | "smooth",
+                })
+              }
+              value={selectedMaterialMarker.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={
+              (selectedMaterialTrack.readOnlyReason !== null && !selectedMaterialTrack.assignmentChanged) ||
+              (!selectedMaterialTrack.assignmentChanged &&
+                selectedMaterialKeyframe!.index === 0 &&
+                selectedMaterialTrack.keyframes.length > 1)
+            }
+            onClick={() => {
+              if (
+                !selectedMaterialTrack.assignmentChanged &&
+                selectedMaterialKeyframe!.index === 0 &&
+                selectedMaterialTrack.keyframes.length > 1
+              )
+                return;
+              onMaterialParameterKeyframeDelete(selectedMaterialTrack, selectedMaterialKeyframe!.index);
+              setSelectedMaterialKeyframe(null);
+            }}
+            type="button"
+          >
+            {selectedMaterialTrack.assignmentChanged ? "Remove track" : "Delete keyframe"}
+          </button>
+          {selectedMaterialTrack.readOnlyReason ? (
+            <span className="text-amber-500">{selectedMaterialTrack.readOnlyReason}</span>
+          ) : null}
+        </div>
+      ) : null}
       {editingMotionClip ? (
         <p className="mt-2 border-t border-zinc-800 pt-2 text-pretty text-[10px] leading-4 text-zinc-500" role="status">
           Editing {editingMotionClip.label} motion. The body and left edge snap to safe amber source anchors; the right
@@ -734,6 +877,16 @@ export function StudioTimeline({
           </div>
           {objectTracks.map((track) => {
             const selected = selectedIds.has(track.entityId);
+            const materialTracks = materialParameterTracks.filter((candidate) => candidate.entityId === track.entityId);
+            const staleMaterialTrack = materialTracks.find(({ assignmentChanged }) => assignmentChanged) ?? null;
+            const materialOptions = materialParameterOptions.filter(
+              (candidate) => candidate.entityId === track.entityId,
+            );
+            const requestedMaterialName = selectedMaterialParameterByEntity[track.entityId];
+            const selectedMaterialName =
+              requestedMaterialName !== undefined && materialOptions.some(({ name }) => name === requestedMaterialName)
+                ? requestedMaterialName
+                : (materialTracks[0]?.parameterName ?? materialOptions[0]?.name ?? "");
             const opacityTrack = opacityTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackMotionOperationIds = new Set(trackMotionClips.map((clip) => clip.operationId));
@@ -773,6 +926,49 @@ export function StudioTimeline({
                       +
                     </button>
                   ) : null}
+                  {staleMaterialTrack ? (
+                    <button
+                      aria-label={`Remove stale material track for ${track.label}`}
+                      className="mr-1 h-5 shrink-0 border border-red-900 px-1 text-[9px] text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+                      disabled={locked || readOnly}
+                      onClick={() => onMaterialParameterKeyframeDelete(staleMaterialTrack, 0)}
+                      title="Remove the material parameter track whose assignment changed"
+                      type="button"
+                    >
+                      Remove track
+                    </button>
+                  ) : null}
+                  {selected && materialOptions.length > 0 ? (
+                    <div className="mr-1 flex min-w-0 items-center">
+                      <select
+                        aria-label={`Material parameter for ${track.label}`}
+                        className="h-5 max-w-20 border border-zinc-700 bg-zinc-950 px-1 text-[9px] text-fuchsia-300"
+                        onChange={(event) =>
+                          setSelectedMaterialParameterByEntity((current) => ({
+                            ...current,
+                            [track.entityId]: event.currentTarget.value,
+                          }))
+                        }
+                        value={selectedMaterialName}
+                      >
+                        {materialOptions.map((option) => (
+                          <option key={option.name} value={option.name}>
+                            {option.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        aria-label={`Add ${selectedMaterialName} material keyframe for ${track.label}`}
+                        className="size-5 shrink-0 text-sm leading-none text-fuchsia-400 hover:bg-fuchsia-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+                        disabled={locked || readOnly || selectedMaterialName === ""}
+                        onClick={() => onMaterialParameterKeyframeAdd(track.entityId, selectedMaterialName)}
+                        title="Add material parameter keyframe at the playhead"
+                        type="button"
+                      >
+                        +
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
                 <div className="relative h-7 min-w-0 overflow-hidden" data-timeline-lane>
                   {track.lifetimes.map((interval, index) => {
@@ -811,11 +1007,12 @@ export function StudioTimeline({
                     ),
                   )}
                   {opacityTrack?.keyframes.map((keyframe, index) => (
-                    <OpacityKeyframeMarker
+                    <PropertyKeyframeMarker
                       duration={duration}
                       index={index}
                       key={`${opacityTrack.transactionId}/${index}`}
                       keyframe={keyframe}
+                      kind="opacity"
                       locked={locked || readOnly || opacityTrack.readOnlyReason !== null}
                       onChange={(patch) => onOpacityKeyframeChange(opacityTrack, index, patch)}
                       onSelect={() => {
@@ -828,6 +1025,31 @@ export function StudioTimeline({
                       }
                     />
                   ))}
+                  {materialTracks.flatMap((materialTrack) =>
+                    materialTrack.keyframes.map((keyframe, index) => (
+                      <PropertyKeyframeMarker
+                        duration={duration}
+                        index={index}
+                        key={`${materialTrack.transactionId}/${materialTrack.parameterName}/${index}`}
+                        keyframe={keyframe}
+                        kind="material"
+                        locked={locked || readOnly || materialTrack.readOnlyReason !== null}
+                        onChange={(patch) => onMaterialParameterKeyframeChange(materialTrack, index, patch)}
+                        onSelect={() => {
+                          onSelectEntity(track.entityId);
+                          setSelectedMaterialParameterByEntity((current) => ({
+                            ...current,
+                            [track.entityId]: materialTrack.parameterName,
+                          }));
+                          setSelectedMaterialKeyframe({ index, transactionId: materialTrack.transactionId });
+                        }}
+                        selected={
+                          selectedMaterialKeyframe?.transactionId === materialTrack.transactionId &&
+                          selectedMaterialKeyframe.index === index
+                        }
+                      />
+                    )),
+                  )}
                   {trackMotionClips.map((clip) => (
                     <TimelineMotionClip
                       clip={clip}

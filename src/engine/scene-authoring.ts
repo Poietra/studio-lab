@@ -582,6 +582,20 @@ const studioCreationProjectionV1Schema = z
           .strict(),
         z
           .object({
+            easing: z.enum(["linear", "smooth"]),
+            entityId: z.string().min(1),
+            from: finiteNumberSchema,
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("material-parameter-keyframes"),
+            name: z.string().min(1),
+            operationId: z.string().min(1),
+            parameterIndex: z.number().int().nonnegative().max(7),
+            to: finiteNumberSchema,
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
             entityId: z.string().min(1),
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("opacity"),
@@ -826,6 +840,24 @@ type StudioCreationOperationV1 = Readonly<{
         entityId: string;
         from: number | null;
         kind: "opacity-keyframes";
+        to: number | null;
+      }>
+    | Readonly<{
+        easing: "linear" | "smooth";
+        entityId: string;
+        from: number | null;
+        kind: "material-parameter-keyframes";
+        material: Readonly<{
+          parameters: readonly number[];
+          revision: number;
+          shaderId: string;
+          texture?: Readonly<{
+            asset: Readonly<{ assetId: string; sha256: string }>;
+            sampler: "linear" | "nearest";
+          }>;
+        }>;
+        name: string;
+        parameterIndex: number;
         to: number | null;
       }>
     | Readonly<{ entityId: string; kind: "persistent-remove"; persistent: boolean }>

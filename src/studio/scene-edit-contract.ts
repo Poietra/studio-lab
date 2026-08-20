@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { fragmentMaterialV1Schema } from "../engine/primitives";
 import { styleProfileRefSchema } from "./style-profile";
 
 export const SCENE_EDIT_VERSION = 1 as const;
@@ -79,6 +80,14 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     from: z.union([pointSchema, z.number()]).optional(),
     key: z.enum(["appearance", "position", "rotation", "scale"]),
     kind: z.literal("AnimateProperty"),
+    materialParameter: z
+      .object({
+        material: fragmentMaterialV1Schema,
+        name: z.string().min(1).max(40),
+        parameterIndex: z.number().int().nonnegative().max(7),
+      })
+      .strict()
+      .optional(),
     relativeDelta: z.number().optional(),
     relativeFactor: z.number().positive().optional(),
     to: z.union([pointSchema, z.number()]),

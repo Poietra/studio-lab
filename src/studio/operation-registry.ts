@@ -112,6 +112,18 @@ function animatePropertyExecution(
 ): OperationExecutionCapabilities {
   if (
     operation.key === "appearance" &&
+    operation.materialParameter !== undefined &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number" &&
+    Number.isFinite(operation.from) &&
+    Number.isFinite(operation.to) &&
+    (operation.interval.end > operation.interval.start || operation.from === operation.to)
+  ) {
+    return CLIENT_ONLY_EXECUTION;
+  }
+  if (
+    operation.key === "appearance" &&
+    operation.materialParameter === undefined &&
     typeof operation.from === "number" &&
     typeof operation.to === "number" &&
     Number.isFinite(operation.from) &&
@@ -519,23 +531,62 @@ export const OPERATION_REGISTRY = {
     validate: setPropertyIssues,
   } satisfies Capability<"SetProperty">,
   AnimateProperty: {
-    access: (operation) => ({
-      reads: [{ channel: operation.key, entityId: operation.entityId }],
-      writes: [{ channel: operation.key, entityId: operation.entityId }],
-    }),
+    access: (operation) => {
+      const channel =
+        operation.key === "appearance" && operation.materialParameter
+          ? (`materialParameter:${operation.materialParameter.name}:${operation.materialParameter.parameterIndex}` as const)
+          : operation.key;
+      return {
+        reads: [{ channel, entityId: operation.entityId }],
+        writes: [{ channel, entityId: operation.entityId }],
+      };
+    },
     execution: animatePropertyExecution,
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
+      if (operation.materialParameter && operation.key !== "appearance") {
+        issues.push({
+          code: "schema-invalid",
+          field: "materialParameter",
+          message: "Material parameter metadata belongs only to an appearance animation.",
+          operationId: operation.id,
+          severity: "error",
+        });
+        return issues;
+      }
       if (operation.key === "appearance") {
         const entity = scene.objectGraph.entities[operation.entityId];
+        const materialParameter = operation.materialParameter;
         if (entity && !entity.transactionId) {
           issues.push({
             code: "lowering-unsupported",
             field: "entityId",
-            message: "Opacity keyframes currently support only Studio-created objects.",
+            message: `${materialParameter ? "Material parameter" : "Opacity"} keyframes currently support only Studio-created objects.`,
             operationId: operation.id,
             severity: "error",
           });
+        }
+        if (materialParameter) {
+          const baseValue = materialParameter.material.parameters[materialParameter.parameterIndex];
+          if (
+            typeof operation.from !== "number" ||
+            typeof operation.to !== "number" ||
+            !Number.isFinite(operation.from) ||
+            !Number.isFinite(operation.to) ||
+            baseValue === undefined ||
+            !Number.isFinite(baseValue) ||
+            (operation.interval.start === operation.interval.end && operation.from !== operation.to)
+          ) {
+            issues.push({
+              code: "schema-invalid",
+              field: "appearance",
+              message:
+                "Material parameter keyframes require one existing finite f32 parameter and a point marker must keep one value.",
+              operationId: operation.id,
+              severity: "error",
+            });
+          }
+          return issues;
         }
         if (
           typeof operation.from !== "number" ||

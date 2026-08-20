@@ -327,11 +327,33 @@ fn interpolate_vector_appearance(
 ) -> Result<VectorAppearanceValueV1, EvaluationError> {
     let fill = match (&left.fill, &right.fill) {
         (None, None) => None,
-        (Some(left), Some(right)) => Some(FillStyleV1 {
-            color: interpolate_color(&left.color, &right.color, progress),
-            fragment_material: left.fragment_material.clone(),
-            rule: left.rule,
-        }),
+        (Some(left), Some(right)) => {
+            let fragment_material = match (&left.fragment_material, &right.fragment_material) {
+                (None, None) => None,
+                (Some(left), Some(right))
+                    if left.shader_id == right.shader_id
+                        && left.revision == right.revision
+                        && left.texture == right.texture
+                        && left.parameters.len() == right.parameters.len() =>
+                {
+                    let mut material = left.clone();
+                    for (value, right) in material.parameters.iter_mut().zip(&right.parameters) {
+                        *value += (*right - *value) * progress;
+                    }
+                    Some(material)
+                }
+                (None | Some(_), Some(_)) | (Some(_), None) => {
+                    return Err(EvaluationError::MalformedScene(
+                        "vector-appearance fragment material identity changed after validation",
+                    ));
+                }
+            };
+            Some(FillStyleV1 {
+                color: interpolate_color(&left.color, &right.color, progress),
+                fragment_material,
+                rule: left.rule,
+            })
+        }
         (None, Some(_)) | (Some(_), None) => {
             return Err(EvaluationError::MalformedScene(
                 "vector-appearance fill presence changed after validation",

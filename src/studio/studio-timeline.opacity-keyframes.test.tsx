@@ -17,6 +17,8 @@ function props(): StudioTimelineProps {
     lifetimeControls: {},
     lifetimeEditMessage: null,
     lifetimeTrimDisabled: false,
+    materialParameterOptions: [],
+    materialParameterTracks: [],
     motionDuration: 1,
     objectTracks: [
       {
@@ -33,6 +35,9 @@ function props(): StudioTimelineProps {
     onAppliedMotionClipSelect: vi.fn(),
     onInteractionModeChange: vi.fn(),
     onLifetimeChange: vi.fn(),
+    onMaterialParameterKeyframeAdd: vi.fn(),
+    onMaterialParameterKeyframeChange: vi.fn(),
+    onMaterialParameterKeyframeDelete: vi.fn(),
     onMotionDurationChange: vi.fn(),
     onOpacityKeyframeAdd: vi.fn(),
     onOpacityKeyframeChange: vi.fn(),
@@ -65,5 +70,61 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain("z-40");
     expect(markup).toContain("pointer-events-none");
     expect(markup).toContain('aria-label="Add opacity keyframe for Circle"');
+  });
+
+  it("renders a named material parameter picker and marker with the shared keyframe controls", () => {
+    const base = props();
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...base}
+        materialParameterOptions={[{ entityId: "circle", materialName: "Wave", name: "amplitude" }]}
+        materialParameterTracks={[
+          {
+            assignmentChanged: false,
+            entityId: "circle",
+            keyframes: [{ easing: "smooth", sourceTime: 2.5, time: 2.9, value: 0.35 }],
+            label: "Circle",
+            materialName: "Wave",
+            parameterIndex: 0,
+            parameterName: "amplitude",
+            programIndex: 0,
+            range: { max: 1, min: 0, step: 0.05 },
+            readOnlyReason: null,
+            transactionId: "create-circle",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-property-keyframe="material"');
+    expect(markup).toContain("Material parameter for Circle");
+    expect(markup).toContain("amplitude");
+  });
+
+  it("keeps an explicit whole-track recovery action when the material assignment changed", () => {
+    const base = props();
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...base}
+        materialParameterTracks={[
+          {
+            assignmentChanged: true,
+            entityId: "circle",
+            keyframes: [{ easing: "smooth", sourceTime: 2.5, time: 2.9, value: 0.35 }],
+            label: "Circle",
+            materialName: "Wave",
+            parameterIndex: 0,
+            parameterName: "amplitude",
+            programIndex: 0,
+            range: { max: 1, min: 0, step: 0.05 },
+            readOnlyReason: "The assigned material changed. Restore it or remove this track.",
+            transactionId: "create-circle",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Remove stale material track for Circle"');
+    expect(markup).toContain("Remove track");
   });
 });

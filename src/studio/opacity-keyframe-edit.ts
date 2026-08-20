@@ -120,6 +120,7 @@ export function replaceOpacityKeyframeProgram(
         !(
           operation.kind === "AnimateProperty" &&
           operation.key === "appearance" &&
+          operation.materialParameter === undefined &&
           operation.entityId === input.entityId
         ),
     )
@@ -165,7 +166,10 @@ function opacityTrackOperations(program: SceneEdit) {
     return null;
   }
   const appearanceAnimations = program.operations.filter(
-    (operation) => operation.kind === "AnimateProperty" && operation.key === "appearance",
+    (operation) =>
+      operation.kind === "AnimateProperty" &&
+      operation.key === "appearance" &&
+      operation.materialParameter === undefined,
   );
   const opacityOperations = appearanceAnimations.filter(
     (
@@ -173,6 +177,7 @@ function opacityTrackOperations(program: SceneEdit) {
     ): operation is Extract<SceneEditOperation, { kind: "AnimateProperty" }> & Readonly<{ from: number; to: number }> =>
       operation.kind === "AnimateProperty" &&
       operation.key === "appearance" &&
+      operation.materialParameter === undefined &&
       typeof operation.from === "number" &&
       typeof operation.to === "number",
   );

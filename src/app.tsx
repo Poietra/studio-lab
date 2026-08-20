@@ -118,6 +118,15 @@ import {
 } from "./studio/lifetime-editing";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE, magicEditCapabilities } from "./studio/magic-edit-capabilities";
 import { MagicEditPanel } from "./studio/magic-edit-panel";
+import {
+  appendMaterialParameterKeyframe,
+  type MaterialParameterKeyframe,
+  type MaterialParameterKeyframeTrack,
+  materialParameterIdentityEditBlocker,
+  materialParameterKeyframeTrackFromProgram,
+  replaceMaterialParameterKeyframe,
+  replaceMaterialParameterKeyframeProgram,
+} from "./studio/material-parameter-keyframe-edit";
 import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./studio/model";
 import {
   adjustAppliedMotionClipControl,
@@ -195,7 +204,11 @@ import type { StudioInlineTextEditorSession } from "./studio/studio-inline-text-
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
-import type { StudioOpacityTimelineTrack } from "./studio/studio-timeline";
+import type {
+  StudioMaterialParameterTimelineOption,
+  StudioMaterialParameterTimelineTrack,
+  StudioOpacityTimelineTrack,
+} from "./studio/studio-timeline";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
 import { clientPointToViewport, rotationDeltaFromClientPoints } from "./studio/studio-viewport-geometry";
@@ -1075,6 +1088,8 @@ export function App({
     return projectRuntimeSceneToSourceTimelineWithProjection(scene, programs, timelineProjection);
   }
   const previewEditRecords = [...previewAppliedEdits, ...(editingAppliedProgram || !draftEdit ? [] : [draftEdit])];
+  const latestPreviewEditPrograms = useRef<readonly SceneEdit[]>([]);
+  latestPreviewEditPrograms.current = previewEditRecords.map(({ program }) => program);
   function workspaceEditAuthorityForRecords(records: readonly ProgramRecord[]) {
     return selectStudioWorkspaceEditAuthority(records, previewEditRecords, previewRenderer?.editAuthority ?? null);
   }
@@ -1186,7 +1201,10 @@ export function App({
     if (!track || !workspaceCreationProjection) return [];
     const operations = record.program.operations.filter(
       (operation) =>
-        operation.kind === "AnimateProperty" && operation.key === "appearance" && operation.entityId === track.entityId,
+        operation.kind === "AnimateProperty" &&
+        operation.key === "appearance" &&
+        operation.materialParameter === undefined &&
+        operation.entityId === track.entityId,
     );
     const mutations = operations.map((operation) =>
       workspaceCreationProjection.mutations.find(
@@ -1224,6 +1242,104 @@ export function App({
       },
     ];
   });
+  const materialParameterOptions: readonly StudioMaterialParameterTimelineOption[] = workspaceCreationProjection
+    ? Object.entries(activeSceneFragmentMaterials.assignments).flatMap(([entityId, assignment]) => {
+        const owner = previewAppliedEdits.find(({ program }) =>
+          program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
+        );
+        if (!owner) return [];
+        const projectedEntity = workspaceCreationProjection.entities.find((entity) => entity.entityId === entityId);
+        if (!projectedEntity || !["arrow", "math-tex", "text"].includes(projectedEntity.kind)) return [];
+        if (draftEdit && editingAppliedProgram?.original.program.transactionId !== owner.program.transactionId)
+          return [];
+        const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId];
+        const materialName = activeProjectFragmentMaterials.namesByShaderId[assignment.shaderId] ?? assignment.shaderId;
+        const existing = materialParameterKeyframeTrackFromProgram(owner.program, 0);
+        if (!schema || (existing && JSON.stringify(existing.material) !== JSON.stringify(assignment))) return [];
+        return schema.flatMap((parameter, index) =>
+          Number.isFinite(assignment.parameters[index]) && (!existing || existing.name === parameter.name)
+            ? [{ entityId, materialName, name: parameter.name }]
+            : [],
+        );
+      })
+    : [];
+  const staleMaterialParameterTracks = previewAppliedEdits.flatMap((record, programIndex) => {
+    const track = materialParameterKeyframeTrackFromProgram(record.program, programIndex);
+    if (!track) return [];
+    const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+    const parameter =
+      activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId]?.[track.parameterIndex];
+    const materialOrSchemaChanged =
+      !assignment ||
+      JSON.stringify(assignment) !== JSON.stringify(track.material) ||
+      !parameter ||
+      parameter.name !== track.name;
+    return materialOrSchemaChanged ? [track] : [];
+  });
+  const materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = previewAppliedEdits.flatMap(
+    (record, programIndex) => {
+      const track = materialParameterKeyframeTrackFromProgram(record.program, programIndex);
+      if (!track || !workspaceCreationProjection) return [];
+      const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+      const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
+      const parameter = schema?.[track.parameterIndex];
+      const assignmentChanged =
+        !assignment ||
+        JSON.stringify(assignment) !== JSON.stringify(track.material) ||
+        !parameter ||
+        parameter.name !== track.name;
+      const operations = record.program.operations.filter(
+        (operation) =>
+          operation.kind === "AnimateProperty" &&
+          operation.materialParameter !== undefined &&
+          operation.entityId === track.entityId,
+      );
+      const mutations = operations.map((operation) =>
+        workspaceCreationProjection.mutations.find(
+          (mutation) => mutation.kind === "material-parameter-keyframes" && mutation.operationId === operation.id,
+        ),
+      );
+      if (mutations.some((mutation) => !mutation)) return [];
+      const projectedMutations = mutations as readonly Extract<
+        (typeof workspaceCreationProjection.mutations)[number],
+        { kind: "material-parameter-keyframes" }
+      >[];
+      const workingTimes =
+        projectedMutations.length === 1 &&
+        Math.abs(projectedMutations[0]!.interval.end - projectedMutations[0]!.interval.start) < 0.0005
+          ? [projectedMutations[0]!.interval.start]
+          : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
+      if (workingTimes.length !== track.keyframes.length) return [];
+      const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
+      const baseline = track.material.parameters[track.parameterIndex] ?? 0;
+      return [
+        {
+          assignmentChanged,
+          entityId: track.entityId,
+          keyframes: track.keyframes.map((keyframe, index) => ({
+            ...keyframe,
+            sourceTime: keyframe.time,
+            time: workingTimes[index]!,
+          })),
+          label:
+            workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === track.entityId)
+              ?.label ?? track.entityId,
+          materialName:
+            activeProjectFragmentMaterials.namesByShaderId[track.material.shaderId] ?? track.material.shaderId,
+          parameterIndex: track.parameterIndex,
+          parameterName: track.name,
+          programIndex,
+          range: parameter?.name === track.name ? parameter.range : { max: baseline, min: baseline, step: 1 },
+          readOnlyReason: assignmentChanged
+            ? "The assigned material changed. Restore it or remove this track."
+            : draftEdit && !activeDraftIsThisTrack
+              ? "Apply or discard the current draft before editing this material track."
+              : null,
+          transactionId: track.transactionId,
+        },
+      ];
+    },
+  );
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
   const runtimeTraceEditCandidates = previewRenderer?.runtimeTraceEditCandidates ?? [];
   const runtimeTraceEditCandidateFor = (entityId: string | null | undefined) =>
@@ -2441,6 +2557,189 @@ export function App({
       owner.record.program,
       sourceTrack.keyframes.filter((_, candidate) => candidate !== index),
     );
+  }
+
+  function stageMaterialParameterKeyframes(
+    track: Readonly<{
+      entityId: string;
+      keyframes: readonly MaterialParameterKeyframe[];
+      material: NonNullable<(typeof activeSceneFragmentMaterials.assignments)[string]>;
+      name: string;
+      parameterIndex: number;
+      programIndex: number;
+      program: SceneEdit;
+    }>,
+  ) {
+    if (!projectedActiveScene) return false;
+    const original = appliedEdits[track.programIndex];
+    if (!original || original.program.transactionId !== track.program.transactionId) {
+      setDraftError("The material track no longer matches the applied Program history.");
+      return false;
+    }
+    try {
+      const validation = replaceMaterialParameterKeyframeProgram({
+        baseProgram: track.program,
+        entityId: track.entityId,
+        keyframes: track.keyframes,
+        material: track.material,
+        name: track.name,
+        parameterIndex: track.parameterIndex,
+        scene: projectedActiveScene.runtimeSceneState,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return stageDraft({
+        appliedEdit: { index: track.programIndex, original },
+        clearSuggestion: true,
+        currentTime,
+        operation: null,
+        record: validated.record,
+        selectedObjectIds: [track.entityId],
+        stopPlayback: true,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material parameter keyframe could not be edited.");
+      setIsPlaying(false);
+      return false;
+    }
+  }
+
+  function addMaterialParameterKeyframe(entityId: string, name: string) {
+    const owner = opacityProgramOwner(entityId);
+    const assignment = activeSceneFragmentMaterials.assignments[entityId];
+    const schema = assignment ? activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId] : null;
+    const parameterIndex = schema?.findIndex((parameter) => parameter.name === name) ?? -1;
+    const parameter = parameterIndex >= 0 ? schema?.[parameterIndex] : null;
+    if (!owner || !assignment || !parameter) {
+      setDraftError("This Studio-created object no longer has that editable material parameter.");
+      return;
+    }
+    try {
+      const sourceTime = workingTimeToSourceTime(previewAppliedSceneEdits, currentTime);
+      const track = materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex);
+      if (track && (track.name !== name || track.entityId !== entityId)) {
+        throw new Error("This creation Program already owns another material parameter track.");
+      }
+      if (track && JSON.stringify(track.material) !== JSON.stringify(assignment)) {
+        throw new Error("The assigned material changed. Restore it or remove the existing track first.");
+      }
+      const fadeEnd = Math.max(
+        owner.record.program.anchor.resolvedSeconds,
+        ...owner.record.program.operations.flatMap((operation) =>
+          operation.kind === "ChangePresence" && operation.effect === "fade-in" && operation.entityId === entityId
+            ? [operation.interval.end]
+            : [],
+        ),
+      );
+      if (!track && sourceTime <= fadeEnd + 0.0005) {
+        throw new Error("Add the first material keyframe after the object's initial fade has finished.");
+      }
+      if (track?.keyframes.some((keyframe) => Math.abs(keyframe.time - sourceTime) < 0.0005)) {
+        throw new Error("A material parameter keyframe already exists at the playhead.");
+      }
+      const baseValue = assignment.parameters[parameterIndex];
+      if (baseValue === undefined) throw new Error("The selected material parameter no longer exists.");
+      const keyframes = appendMaterialParameterKeyframe(track?.keyframes ?? [], sourceTime, baseValue);
+      stageMaterialParameterKeyframes({
+        entityId,
+        keyframes,
+        material: assignment,
+        name,
+        parameterIndex,
+        program: owner.record.program,
+        programIndex: owner.programIndex,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material parameter keyframe could not be added.");
+    }
+  }
+
+  function changeMaterialParameterKeyframe(
+    track: StudioMaterialParameterTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioMaterialParameterTimelineTrack["keyframes"][number], "easing" | "time" | "value">>,
+  ) {
+    const owner = opacityProgramOwner(track.entityId);
+    const sourceTrack = owner
+      ? materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex)
+      : null;
+    const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+    if (!owner || !sourceTrack || !assignment || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The material parameter track no longer matches the Studio-created object.");
+      return;
+    }
+    try {
+      if (index === 0 && patch.value !== undefined) {
+        throw new Error("The first material keyframe preserves the assigned parameter value.");
+      }
+      if (patch.value !== undefined && (patch.value < track.range.min || patch.value > track.range.max)) {
+        throw new Error(`${track.parameterName} must be between ${track.range.min} and ${track.range.max}.`);
+      }
+      const sourcePatch: Partial<MaterialParameterKeyframe> = {
+        ...(patch.easing === undefined ? {} : { easing: patch.easing }),
+        ...(patch.time === undefined ? {} : { time: workingTimeToSourceTime(previewAppliedSceneEdits, patch.time) }),
+        ...(patch.value === undefined ? {} : { value: patch.value }),
+      };
+      stageMaterialParameterKeyframes({
+        entityId: track.entityId,
+        keyframes: replaceMaterialParameterKeyframe(sourceTrack.keyframes, index, sourcePatch),
+        material: assignment,
+        name: sourceTrack.name,
+        parameterIndex: sourceTrack.parameterIndex,
+        program: owner.record.program,
+        programIndex: owner.programIndex,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material parameter keyframe could not be changed.");
+    }
+  }
+
+  function deleteMaterialParameterKeyframe(track: StudioMaterialParameterTimelineTrack, index: number) {
+    const owner = opacityProgramOwner(track.entityId);
+    const sourceTrack = owner
+      ? materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex)
+      : null;
+    const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+    if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The material parameter track no longer matches the Studio-created object.");
+      return;
+    }
+    const assignmentChanged =
+      track.assignmentChanged || !assignment || JSON.stringify(assignment) !== JSON.stringify(sourceTrack.material);
+    if (assignmentChanged) {
+      removeMaterialParameterTrack(sourceTrack);
+      return;
+    }
+    if (index === 0 && sourceTrack.keyframes.length > 1) {
+      setDraftError("Delete the later material keyframes before deleting the fixed first marker.");
+      return;
+    }
+    stageMaterialParameterKeyframes({
+      entityId: track.entityId,
+      keyframes: sourceTrack.keyframes.filter((_, candidate) => candidate !== index),
+      material: sourceTrack.material,
+      name: sourceTrack.name,
+      parameterIndex: sourceTrack.parameterIndex,
+      program: owner.record.program,
+      programIndex: owner.programIndex,
+    });
+  }
+
+  function removeMaterialParameterTrack(sourceTrack: MaterialParameterKeyframeTrack) {
+    const owner = opacityProgramOwner(sourceTrack.entityId);
+    if (!owner || owner.record.program.transactionId !== sourceTrack.transactionId) {
+      setDraftError("The material parameter track no longer matches the Studio-created object.");
+      return;
+    }
+    stageMaterialParameterKeyframes({
+      entityId: sourceTrack.entityId,
+      keyframes: [],
+      material: sourceTrack.material,
+      name: sourceTrack.name,
+      parameterIndex: sourceTrack.parameterIndex,
+      program: owner.record.program,
+      programIndex: owner.programIndex,
+    });
   }
 
   function insertEntitiesAt(point: Point, entities?: readonly StudioEntityInput[]) {
@@ -4583,6 +4882,12 @@ export function App({
 
   function createFragmentMaterialPreset(preset: StudioFragmentMaterialPresetId) {
     try {
+      if (activeScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
+        const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
+          entityId: selectedFragmentMaterialEntity.id,
+        });
+        if (blocker) throw new Error(blocker);
+      }
       const created =
         preset === "gradient"
           ? createStudioGradientFragmentMaterialPresetV1(activeProjectFragmentMaterials)
@@ -4606,6 +4911,12 @@ export function App({
 
   function createTextureFragmentMaterialPreset() {
     try {
+      if (activeScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
+        const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
+          entityId: selectedFragmentMaterialEntity.id,
+        });
+        if (blocker) throw new Error(blocker);
+      }
       const created = createStudioTextureFragmentMaterialPresetV1(activeProjectFragmentMaterials);
       const asset = activeFragmentMaterialTextureAssets[0];
       const next =
@@ -4646,6 +4957,8 @@ export function App({
 
   function removeFragmentMaterialAsset(shaderId: string) {
     try {
+      const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, { shaderId });
+      if (blocker) throw new Error(blocker);
       const result = removeStudioFragmentMaterialAssetV1(activeProjectFragmentMaterials, shaderId);
       if (result.kind === "in-use") {
         setDraftError(`Unassign this material from ${result.assignmentCount} object(s) before deleting it.`);
@@ -4659,6 +4972,8 @@ export function App({
 
   function updateFragmentMaterialSource(shaderId: string, source: string) {
     try {
+      const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, { shaderId });
+      if (blocker) throw new Error(blocker);
       commitActiveProjectFragmentMaterials(
         updateStudioFragmentMaterialSourceV1(activeProjectFragmentMaterials, { shaderId, source }),
       );
@@ -4674,6 +4989,8 @@ export function App({
       (material) => material.shaderId === shaderId,
     );
     if (!expectedMaterial) throw new Error("The material no longer exists.");
+    const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, { shaderId });
+    if (blocker) throw new Error(blocker);
     if (expectedMaterial.textureSlot) throw new Error("Texture materials currently accept canonical WGSL only.");
     const expectedGlsl = activeProjectFragmentMaterials.glslSourcesByShaderId[shaderId] ?? null;
     const compilation = await compileFragmentMaterialGlsl(input).then(
@@ -4713,6 +5030,8 @@ export function App({
       shaderId,
       wgsl: compilation.wgsl,
     });
+    const commitBlocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, { shaderId });
+    if (commitBlocker) throw new Error(commitBlocker);
     if (!commitProjectFragmentMaterials(projectId, next)) {
       throw new Error("The compiled GLSL material could not be saved.");
     }
@@ -4750,6 +5069,16 @@ export function App({
             entityId: selectedFragmentMaterialEntity.id,
             sceneId: activeScene.sceneId,
           });
+      const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
+        entityId: selectedFragmentMaterialEntity.id,
+      });
+      if (
+        blocker &&
+        JSON.stringify(next.assignmentsByScene[activeScene.sceneId]?.[selectedFragmentMaterialEntity.id]) !==
+          JSON.stringify(selectedFragmentMaterialAssignment)
+      ) {
+        throw new Error(blocker);
+      }
       commitActiveProjectFragmentMaterials(next);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The material assignment could not be updated.");
@@ -4764,6 +5093,10 @@ export function App({
       return;
     }
     try {
+      const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
+        entityId: selectedFragmentMaterialEntity.id,
+      });
+      if (blocker) throw new Error(blocker);
       commitActiveProjectFragmentMaterials(
         updateStudioFragmentMaterialTextureV1(activeProjectFragmentMaterials, {
           entityId: selectedFragmentMaterialEntity.id,
@@ -4785,6 +5118,10 @@ export function App({
     )
       return;
     try {
+      const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
+        entityId: selectedFragmentMaterialEntity.id,
+      });
+      if (blocker) throw new Error(blocker);
       commitActiveProjectFragmentMaterials(
         updateStudioFragmentMaterialParameterV1(activeProjectFragmentMaterials, {
           entityId: selectedFragmentMaterialEntity.id,
@@ -5170,7 +5507,20 @@ export function App({
                 The canonical Rust core has not accepted the current timeline edit yet. Retry the preview, or remove the
                 edit that cannot be projected.
               </p>
-              {draftEdit ? (
+              {staleMaterialParameterTracks.length > 0 ? (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {staleMaterialParameterTracks.map((track) => (
+                    <button
+                      className="border border-red-800 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-950/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
+                      key={track.transactionId}
+                      onClick={() => removeMaterialParameterTrack(track)}
+                      type="button"
+                    >
+                      Remove stale {track.name} track
+                    </button>
+                  ))}
+                </div>
+              ) : draftEdit ? (
                 <button
                   className="mt-4 border border-amber-700 px-3 py-1.5 text-xs font-medium text-amber-100 hover:bg-amber-900/50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500"
                   onClick={discardDraft}
@@ -5268,6 +5618,8 @@ export function App({
               lifetimeControls={lifetimeControls}
               lifetimeEditMessage={lifetimeEditMessage}
               lifetimeTrimDisabled={draftEdit !== null}
+              materialParameterOptions={materialParameterOptions}
+              materialParameterTracks={materialParameterTracks}
               motionDuration={motionDuration}
               motionPaths={motionPaths}
               opacityTrackEligibleIds={opacityTrackEligibleIds}
@@ -5307,6 +5659,9 @@ export function App({
               onLifetimeChange={(entityId, lifetimeStart, target) => {
                 void editEntityLifetime(entityId, lifetimeStart, target);
               }}
+              onMaterialParameterKeyframeAdd={addMaterialParameterKeyframe}
+              onMaterialParameterKeyframeChange={changeMaterialParameterKeyframe}
+              onMaterialParameterKeyframeDelete={deleteMaterialParameterKeyframe}
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}
               onOpacityKeyframeAdd={addOpacityKeyframe}
