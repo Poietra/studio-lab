@@ -41,11 +41,22 @@ export type EditorSessionSnapshot = Omit<EditorSessionSnapshotV1, "lockedEntityI
     lockedEntityIds: readonly string[];
   }>;
 
-export type EditorSessionIdentity = Readonly<{
+export type ImportedEditorSessionIdentity = Readonly<{
+  /** Kept undiscriminated so the persisted v1 imported-session wire is byte-compatible. */
+  origin?: never;
   projectId: string;
   sceneId: string;
   sourceHash: string;
 }>;
+
+export type NativeEditorSessionIdentity = Readonly<{
+  documentKey: string;
+  origin: "studio-native";
+  projectId: string;
+  sceneId: string;
+}>;
+
+export type EditorSessionIdentity = ImportedEditorSessionIdentity | NativeEditorSessionIdentity;
 
 export type EditorSessionRestoreResult =
   | Readonly<{ kind: "empty" }>
@@ -117,6 +128,14 @@ const identitySchema = z
     sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
   })
   .strict();
+const nativeIdentitySchema = z
+  .object({
+    documentKey: z.string().regex(/^[0-9a-f]{64}$/),
+    origin: z.literal("studio-native"),
+    projectId: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
+    sceneId: z.string().min(1).max(1_000),
+  })
+  .strict();
 const projectIdSchema = z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/);
 const storedIdentitySchema = z
   .object({
@@ -162,7 +181,7 @@ function opaqueSceneKey(sceneId: string) {
   return `scene-${sceneId.length.toString(36)}-${hash.toString(16).padStart(16, "0")}`;
 }
 
-function storedIdentity(identity: EditorSessionIdentity): StoredIdentity {
+function storedIdentity(identity: ImportedEditorSessionIdentity): StoredIdentity {
   return {
     projectId: identity.projectId,
     sceneKey: opaqueSceneKey(identity.sceneId),
@@ -174,11 +193,23 @@ function sessionKey(identity: StoredIdentity) {
   return JSON.stringify([identity.projectId, identity.sceneKey, identity.sourceHash]);
 }
 
+function nativeSessionKey(identity: NativeEditorSessionIdentity) {
+  return JSON.stringify([identity.projectId, opaqueSceneKey(identity.sceneId), "studio-native", identity.documentKey]);
+}
+
+function parsedNativeIdentity(identity: EditorSessionIdentity) {
+  if (identity.origin !== "studio-native") return null;
+  const parsed = nativeIdentitySchema.safeParse(identity);
+  return parsed.success ? parsed.data : null;
+}
+
 /**
  * Opaque, storage-safe identity for state that must be ignored during the
  * render between an active Scene switch and its `openSession` effect.
  */
 export function editorSessionIdentityKey(identity: EditorSessionIdentity) {
+  const native = parsedNativeIdentity(identity);
+  if (native) return nativeSessionKey(native);
   const parsed = identitySchema.safeParse(identity);
   return parsed.success ? sessionKey(storedIdentity(parsed.data)) : null;
 }
@@ -280,6 +311,11 @@ export class EditorSessionStore {
   }
 
   clear(identity: EditorSessionIdentity) {
+    const native = parsedNativeIdentity(identity);
+    if (native) {
+      this.memorySessions.delete(nativeSessionKey(native));
+      return;
+    }
     const parsedIdentity = identitySchema.safeParse(identity);
     if (!parsedIdentity.success) return;
     const key = sessionKey(storedIdentity(parsedIdentity.data));
@@ -351,6 +387,8 @@ export class EditorSessionStore {
   }
 
   restore(identity: EditorSessionIdentity): EditorSessionRestoreResult {
+    const native = parsedNativeIdentity(identity);
+    if (native) return { kind: "empty" };
     const parsedIdentity = identitySchema.safeParse(identity);
     if (!parsedIdentity.success) return { kind: "empty" };
     const persistedIdentity = storedIdentity(parsedIdentity.data);
@@ -416,9 +454,15 @@ export class EditorSessionStore {
   }
 
   save(identity: EditorSessionIdentity, snapshot: EditorSessionSnapshot) {
-    const parsedIdentity = identitySchema.safeParse(identity);
     const parsedSnapshot = parseLocalEditorSessionSnapshot(snapshot);
-    if (!parsedIdentity.success || !parsedSnapshot) return false;
+    if (!parsedSnapshot) return false;
+    const native = parsedNativeIdentity(identity);
+    // Native assets are deliberately tab-local and cleared on project switch.
+    // Retaining Programs without their payloads would restore dangling asset
+    // references, so the active controller is the only native-session store.
+    if (native) return false;
+    const parsedIdentity = identitySchema.safeParse(identity);
+    if (!parsedIdentity.success) return false;
     const persistedIdentity = storedIdentity(parsedIdentity.data);
     const key = sessionKey(persistedIdentity);
     if (this.cloudManagedSessions.has(key)) return false;

@@ -18,11 +18,11 @@ import type {
   StudioFragmentMaterialPresetId,
 } from "./fragment-material-authoring";
 import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragment-material-editor";
-import type { ManimWorkspaceScene } from "./imported-workspace";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity } from "./model";
 import type { StudioNativeImageAssetV1 } from "./studio-image-assets";
+import type { AuthorableWorkspaceScene } from "./studio-native-workspace";
 import { entityLabel } from "./studio-viewport";
 
 const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
@@ -209,7 +209,7 @@ export function WorkspaceSidebar({
   selectedGroupId = null,
   sourceImportOutcomes,
 }: Readonly<{
-  activeScene: ManimWorkspaceScene;
+  activeScene: AuthorableWorkspaceScene;
   appliedProgramReadOnlyReasons: Readonly<Record<string, string | null>>;
   appliedEdits: readonly ProgramRecord[];
   appliedTransactionIds: ReadonlySet<string>;
@@ -228,7 +228,7 @@ export function WorkspaceSidebar({
   layers?: readonly StudioLayerEntry[];
   lockToggleDisabled?: boolean;
   lockedEntityIds?: ReadonlySet<string>;
-  nextScene: ManimWorkspaceScene | null;
+  nextScene: AuthorableWorkspaceScene | null;
   onGroup?: () => void;
   onImportImageFile?: (file: File) => void;
   onDurationChange: (duration: number) => void;
