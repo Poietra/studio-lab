@@ -330,6 +330,8 @@ function EntityResizeHandles({
         : handle.direction === "e" || handle.direction === "w"
           ? "ArrowLeft ArrowRight"
           : "ArrowUp ArrowDown";
+    const aspectRatioHint =
+      shape === "rectangle" && handle.direction.length === 2 ? " · Hold Shift to preserve aspect ratio" : "";
     return (
       <button
         aria-keyshortcuts={arrowKeys}
@@ -348,7 +350,7 @@ function EntityResizeHandles({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         style={{ scale: inverseResizeHandleScale(displayedScale, cameraScale) }}
-        title={`Drag ${handle.label} to resize${shape === null ? " · Hold Alt/Option to bypass snapping" : ""} · ${arrowKeys.replaceAll("Arrow", "")} adjust precisely`}
+        title={`Drag ${handle.label} to resize${aspectRatioHint}${shape === null ? " · Hold Alt/Option to bypass snapping" : ""} · ${arrowKeys.replaceAll("Arrow", "")} adjust precisely`}
         type="button"
       />
     );

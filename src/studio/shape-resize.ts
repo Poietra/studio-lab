@@ -83,6 +83,7 @@ export function resizeShapeByViewportDelta(
     direction: ResizeHandleDirection;
     frame: Readonly<{ height: number; width: number }>;
     from: ShapeGeometry;
+    preserveAspectRatio?: boolean;
     scale: number;
     shape: ShapeResizeKind;
     viewport: Readonly<{ height: number; width: number }>;
@@ -124,14 +125,35 @@ export function resizeShapeByViewportDelta(
 
   const width = input.from.dimensions.width ?? MIN_DIMENSION;
   const height = input.from.dimensions.height ?? MIN_DIMENSION;
-  const targetWidth =
+  let targetWidth =
     horizontal === 0
       ? width
       : Math.max(MIN_DIMENSION, width + (horizontal * input.viewportDelta.x) / pixelsPerUnit.x / renderedScale);
-  const targetHeight =
+  let targetHeight =
     vertical === 0
       ? height
       : Math.max(MIN_DIMENSION, height + (vertical * input.viewportDelta.y) / pixelsPerUnit.y / renderedScale);
+  if (input.preserveAspectRatio && horizontal !== 0 && vertical !== 0) {
+    const startDiagonal = {
+      x: horizontal * width * pixelsPerUnit.x * renderedScale,
+      y: vertical * height * pixelsPerUnit.y * renderedScale,
+    };
+    const currentDiagonal = {
+      x: startDiagonal.x + input.viewportDelta.x,
+      y: startDiagonal.y + input.viewportDelta.y,
+    };
+    const squaredLength = startDiagonal.x ** 2 + startDiagonal.y ** 2;
+    const minimumFactor = Math.max(MIN_DIMENSION / width, MIN_DIMENSION / height);
+    const factor =
+      squaredLength > Number.EPSILON
+        ? Math.max(
+            minimumFactor,
+            (currentDiagonal.x * startDiagonal.x + currentDiagonal.y * startDiagonal.y) / squaredLength,
+          )
+        : 1;
+    targetWidth = width * factor;
+    targetHeight = height * factor;
+  }
   const appliedHorizontalDelta = horizontal * (targetWidth - width) * pixelsPerUnit.x * entityScale;
   const appliedVerticalDelta = vertical * (targetHeight - height) * pixelsPerUnit.y * entityScale;
   return {

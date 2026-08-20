@@ -357,12 +357,17 @@ function resizedEntityScale(
   return resolveSingleScaleResize(resize.gesture, point, disableSnap);
 }
 
-function resizedShapeGeometry(resize: CanvasShapeResizeState, point: Readonly<{ x: number; y: number }>) {
+function resizedShapeGeometry(
+  resize: CanvasShapeResizeState,
+  point: Readonly<{ x: number; y: number }>,
+  preserveAspectRatio: boolean,
+) {
   return resizeShapeByViewportDelta({
     cameraScale: resize.cameraScale,
     direction: resize.direction,
     frame: resize.frame,
     from: resize.from,
+    preserveAspectRatio,
     scale: resize.scale,
     shape: resize.shape,
     viewport: STUDIO_VIEWPORT,
@@ -3590,7 +3595,7 @@ export function App({
     const resize = canvasResize.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
     if (resize.mode === "shape") {
-      const geometry = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
+      const geometry = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY }, event.shiftKey);
       gesturePreviewStore.setGeometryPreview({ ...geometry, entityId: resize.entityId });
     } else {
       const preview = resizedEntityScale(resize, { x: event.clientX, y: event.clientY }, event.altKey);
@@ -3608,7 +3613,7 @@ export function App({
     canvasResize.current = null;
     gesturePreviewStore.clear();
     if (resize.mode === "shape") {
-      const target = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
+      const target = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY }, event.shiftKey);
       if (sameShapeGeometry(target, resize.from)) return;
       installEntityGeometryDraft(
         resize.entityId,

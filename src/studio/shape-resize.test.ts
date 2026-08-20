@@ -89,6 +89,44 @@ describe("shape-aware resize geometry", () => {
     });
   });
 
+  it("preserves Rectangle's pointerdown aspect ratio around the opposite corner when requested", () => {
+    expect(
+      resizeShapeByViewportDelta({
+        cameraScale: 1,
+        direction: "se",
+        frame,
+        from: { dimensions: { height: 2, width: 4 }, position: { x: 400, y: 200 } },
+        preserveAspectRatio: true,
+        scale: 1,
+        shape: "rectangle",
+        viewport,
+        viewportDelta: { x: 100, y: 0 },
+      }),
+    ).toEqual({
+      dimensions: { height: 2.8, width: 5.6 },
+      position: { x: 440, y: 220 },
+    });
+  });
+
+  it("leaves Rectangle edge resize independent while aspect preservation is requested", () => {
+    expect(
+      resizeShapeByViewportDelta({
+        cameraScale: 1,
+        direction: "e",
+        frame,
+        from: { dimensions: { height: 2, width: 4 }, position: { x: 400, y: 200 } },
+        preserveAspectRatio: true,
+        scale: 1,
+        shape: "rectangle",
+        viewport,
+        viewportDelta: { x: 100, y: 50 },
+      }),
+    ).toEqual({
+      dimensions: { height: 2, width: 6 },
+      position: { x: 450, y: 200 },
+    });
+  });
+
   it("keeps Circle aspect and its opposite corner anchored", () => {
     expect(
       resizeShapeByViewportDelta({
