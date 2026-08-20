@@ -2715,10 +2715,8 @@ fn plan_studio_creation_edits(
                         operation.interval.end,
                         program.anchor_resolved_seconds,
                     )
-                    && studio_timeline_semantic_values_match(
-                        program.anchor_resolved_seconds,
-                        state.spec.lifetime_start,
-                    )
+                    && instant_at >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                    && instant_at < state.lifetime.end
                     && state.persistent_removal.is_none() =>
                 {
                     state.visible = *visible;
@@ -3003,7 +3001,24 @@ fn plan_studio_creation_edits(
                         .iter()
                         .find(|state| state.spec.id == *child_id)
                         .ok_or(ProjectStudioCreationEditError::Unsupported)?;
-                    if !child.visible
+                    let visible_at_group = ranked_mutations
+                        .iter()
+                        .filter_map(|(rank, schedule_index, mutation)| {
+                            if *rank >= timeline.ranks[program_index]
+                                || mutation.entity_id != *child_id
+                            {
+                                return None;
+                            }
+                            let StudioCreationProjectedMutationKind::Visibility { visible } =
+                                mutation.kind
+                            else {
+                                return None;
+                            };
+                            Some((*rank, *schedule_index, visible))
+                        })
+                        .max_by_key(|(rank, schedule_index, _)| (*rank, *schedule_index))
+                        .map_or(true, |(_, _, visible)| visible);
+                    if !visible_at_group
                         || !child.rotation_keyframes.is_empty()
                         || parent_by_child.contains_key(child_id)
                         || group_at < child.lifetime.start
@@ -3804,10 +3819,10 @@ fn validate_studio_logical_group(
             .iter()
             .find(|entity| entity.id == *child_id)
             .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
-        if child.parent_id.is_some()
-            || !child.visible
-            || matches!(child.geometry, SceneGeometryV1::Group {})
-        {
+        // Visibility is a document property, not hierarchy membership. The
+        // planner already proves that each child was visible when Group was
+        // authored; a later Hide must not invalidate the retained group.
+        if child.parent_id.is_some() || matches!(child.geometry, SceneGeometryV1::Group {}) {
             return Err(CreateSceneEntitiesError::InvalidHierarchy);
         }
         paint_indexes.push(
@@ -7323,6 +7338,94 @@ mod tests {
         let mut redo_session = EngineSessionV1::new(base).unwrap();
         let redo = redo_session.apply_studio_creation_edit(command).unwrap();
         assert!(!bundle_contains_entity(&redo.bundle, &group_id));
+    }
+
+    #[test]
+    fn normalized_creation_keeps_group_hierarchy_when_a_later_program_hides_every_child() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command
+            .programs
+            .push(second_group_resize_creation(&command.programs[0]));
+        let child_ids = vec![
+            "tx:create/entity:circle".to_owned(),
+            "tx:second/entity:rectangle".to_owned(),
+        ];
+        let group_id = "tx:visible-group/entity:group".to_owned();
+        command.programs.push(studio_hierarchy_edit_input(
+            "visible-group",
+            1.0,
+            StudioCreationOperationKind::Group {
+                child_entity_ids: child_ids.clone(),
+                group_id: group_id.clone(),
+            },
+        ));
+        let operations = child_ids
+            .iter()
+            .enumerate()
+            .map(|(index, entity_id)| StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some(entity_id.clone()),
+                id: format!("hide-group-child-{index}"),
+                interval: IntervalV1 {
+                    end: 1.1,
+                    start: 1.1,
+                },
+                kind: StudioCreationOperationKind::Visibility {
+                    visible: Some(false),
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            })
+            .collect::<Vec<_>>();
+        command.programs.push(StudioCreationEditInput {
+            anchor_captured_playhead: 1.1,
+            anchor_resolved_seconds: 1.1,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(1.1),
+            },
+            intent_count: 1,
+            lowering_supported: false,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Parallel,
+            schedule_order: operations
+                .iter()
+                .map(|operation| operation.id.clone())
+                .collect(),
+            operations,
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Parallel,
+            transaction_id: "hide-visible-group".to_owned(),
+        });
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+
+        assert!(bundle_contains_entity(&result.bundle, &group_id));
+        assert!(child_ids.iter().all(|child_id| {
+            result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == *child_id)
+                .is_some_and(|entity| {
+                    !entity.visible && entity.parent_id.as_deref() == Some(group_id.as_str())
+                })
+        }));
+        assert_eq!(
+            result
+                .creation_projection
+                .as_ref()
+                .unwrap()
+                .mutations
+                .iter()
+                .filter(|mutation| matches!(
+                    mutation.kind,
+                    StudioCreationProjectedMutationKind::Visibility { visible: false }
+                ))
+                .count(),
+            2
+        );
     }
 
     #[test]

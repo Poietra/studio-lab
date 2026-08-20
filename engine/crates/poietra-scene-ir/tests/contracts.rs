@@ -802,12 +802,16 @@ fn world_space_rotation_channels_reject_parented_entities() {
     child.parent_id = Some(parent.id.clone());
     child.scene_order = 1;
     scene.entities = vec![parent, child];
+    let mut hidden_child = scene.clone();
+    hidden_child.entities[1].visible = false;
+    hidden_child.required_capabilities = vec![SceneCapabilityV1::ShapePrimitives];
+    validate_scene_ir_v1(&hidden_child).unwrap();
     let mut hidden_non_leaf = scene.clone();
     hidden_non_leaf.entities[0].visible = false;
     assert!(
         validate_scene_ir_v1(&hidden_non_leaf)
             .unwrap_err()
-            .contains_message("root drawable leaf")
+            .contains_message("drawable leaf")
     );
     scene.animation_channels.push(AnimationChannelV1::Rotation {
         entity_id: "child".to_owned(),

@@ -198,6 +198,7 @@ export function WorkspaceSidebar({
   onLayerOrder,
   onLayerReorder,
   onToggleLayerGroup,
+  onToggleLayerGroupVisibility,
   onToggleEntityLock,
   onToggleEntityVisibility,
   onUngroup,
@@ -238,6 +239,7 @@ export function WorkspaceSidebar({
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
   onToggleLayerGroup?: (childEntityIds: readonly string[], selected: boolean) => void;
+  onToggleLayerGroupVisibility?: (groupId: string, visible: boolean) => void;
   onToggleEntityLock?: (entityId: string) => void;
   onToggleEntityVisibility?: (entityId: string, visible: boolean) => void;
   onUngroup?: (groupId: string) => void;
@@ -379,27 +381,50 @@ export function WorkspaceSidebar({
               layer.childEntityIds.length > 0 &&
               layer.childEntityIds.length === selectedIds.size &&
               layer.childEntityIds.every((entityId) => selectedIds.has(entityId));
+            const visibilityUnavailableReason =
+              onToggleLayerGroupVisibility === undefined
+                ? "Group visibility is unavailable."
+                : layer.childEntityIds.some((entityId) => lockedEntityIds.has(entityId))
+                  ? "Unlock every grouped object before changing group visibility."
+                  : layer.visibilityReadOnlyReason;
             return (
               <li className="border border-zinc-800 bg-zinc-900/50" key={layer.groupId}>
-                <label
+                <div
                   className={cn(
                     "flex cursor-pointer items-center gap-2 px-2 py-1.5 text-xs",
                     selected ? "bg-sky-950 text-sky-200" : "text-zinc-300 hover:bg-zinc-900",
                   )}
                 >
-                  <input
-                    aria-label={`Select group of ${layer.childEntityIds.length} objects`}
-                    checked={selected}
-                    className="size-3.5 accent-sky-400"
-                    onChange={() => onToggleLayerGroup?.(layer.childEntityIds!, selected)}
-                    type="checkbox"
-                  />
-                  <span aria-hidden="true" className="text-zinc-500">
-                    ⧉
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">Group</span>
+                  <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
+                    <input
+                      aria-label={`Select group of ${layer.childEntityIds.length} objects`}
+                      checked={selected}
+                      className="size-3.5 accent-sky-400"
+                      onChange={() => onToggleLayerGroup?.(layer.childEntityIds!, selected)}
+                      type="checkbox"
+                    />
+                    <span aria-hidden="true" className="text-zinc-500">
+                      ⧉
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">Group</span>
+                  </label>
+                  <button
+                    aria-label={`${layer.visible ? "Hide" : "Show"} group of ${layer.childEntityIds.length} objects`}
+                    aria-pressed={!layer.visible}
+                    className="size-6 shrink-0 border border-transparent text-[11px] text-zinc-500 hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:border-transparent disabled:hover:bg-transparent"
+                    disabled={visibilityUnavailableReason !== null}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onToggleLayerGroupVisibility?.(layer.groupId!, !layer.visible);
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    title={visibilityUnavailableReason ?? (layer.visible ? "Hide group" : "Show group")}
+                    type="button"
+                  >
+                    <span aria-hidden="true">{layer.visible ? "◉" : "○"}</span>
+                  </button>
                   <span className="tabular-nums text-[10px] text-zinc-600">{layer.childEntityIds.length}</span>
-                </label>
+                </div>
               </li>
             );
           }

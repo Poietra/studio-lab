@@ -151,6 +151,9 @@ export function projectStudioLayers(
     const groupId = entry.parentGroupId;
     if (groupId && !emittedGroups.has(groupId)) {
       const children = groupChildren.get(groupId) ?? [];
+      const visibilityReadOnlyReason = children.some(({ sourceAnchor }) => sourceAnchor === null)
+        ? PREVIEW_VISIBILITY_REASON
+        : null;
       emittedGroups.add(groupId);
       rows.push({
         ...orderingEntry,
@@ -162,7 +165,8 @@ export function projectStudioLayers(
         orderingReadOnlyReason: ACTIVE_GROUP_ORDERING_REASON,
         parentGroupId: null,
         readOnlyReason: "Group z-order is fixed for this vertical slice.",
-        visibilityReadOnlyReason: "Group visibility is not available in this vertical slice.",
+        visibilityReadOnlyReason,
+        visible: children.every(({ visible }) => visible),
       });
     }
     rows.push(orderingEntry);

@@ -980,6 +980,36 @@ export function createDirectManipulationVisibilityProgram(
     visible: boolean;
   }>,
 ): SceneEditValidationResult {
+  return createDirectManipulationVisibilityProgramForEntities(input, [input.entityId]);
+}
+
+/** Creates one atomic static-visibility Program for the canonical children of
+ * a Studio logical group. Group membership is projected from Scene IR by the
+ * caller; Rust still admits and applies the complete multi-entity Program. */
+export function createDirectManipulationGroupVisibilityProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityIds: readonly string[];
+    scene: RuntimeSceneState;
+    start: number;
+    transactionId: string;
+    visible: boolean;
+  }>,
+): SceneEditValidationResult {
+  if (input.entityIds.length < 2) throw new Error("Group visibility requires at least two objects.");
+  return createDirectManipulationVisibilityProgramForEntities(input, input.entityIds);
+}
+
+function createDirectManipulationVisibilityProgramForEntities(
+  input: Readonly<{
+    capturedPlayhead: number;
+    scene: RuntimeSceneState;
+    start: number;
+    transactionId: string;
+    visible: boolean;
+  }>,
+  entityIds: readonly string[],
+): SceneEditValidationResult {
   if (
     !Number.isFinite(input.start) ||
     !Number.isFinite(input.capturedPlayhead) ||
@@ -995,25 +1025,30 @@ export function createDirectManipulationVisibilityProgram(
     { capturedPlayhead: input.capturedPlayhead, sceneDuration: input.scene.duration },
   );
   if (resolution.kind === "invalid") throw new Error(resolution.message);
-  const operation: SceneEditOperation = {
-    dependsOn: [],
-    entityId: input.entityId,
-    id: operationId(input.transactionId, "set-visibility"),
-    interval: { end: input.start, start: input.start },
-    key: "visibility",
-    kind: "SetProperty",
-    provenance: provenance("direct-manipulation", ["Layers panel", "static canonical visibility"]),
-    value: input.visible,
-  };
+  if (new Set(entityIds).size !== entityIds.length) {
+    throw new Error("Group visibility requires unique objects.");
+  }
+  const operations = entityIds.map(
+    (entityId, index): SceneEditOperation => ({
+      dependsOn: [],
+      entityId,
+      id: operationId(input.transactionId, entityIds.length === 1 ? "set-visibility" : `set-visibility-${index}`),
+      interval: { end: input.start, start: input.start },
+      key: "visibility",
+      kind: "SetProperty",
+      provenance: provenance("direct-manipulation", ["Layers panel", "static canonical visibility"]),
+      value: input.visible,
+    }),
+  );
   return validateAndScheduleProgram(
     {
       anchor: resolution.anchor,
       intentCount: 1,
       loweringStatus: "unsupported",
-      operations: [operation],
+      operations,
       provenance: provenance("direct-manipulation", ["static document visibility"]),
       requestedExecution: "parallel",
-      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      schedule: { edges: [], mode: "parallel", order: operations.map(({ id }) => id) },
       transactionId: input.transactionId,
       version: EDIT_OPERATION_VERSION,
     },

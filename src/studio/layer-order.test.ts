@@ -225,6 +225,10 @@ describe("Studio Layers paint order", () => {
     ]);
     const selected = new Set(["studio:a", "studio:b"]);
     expect(selectedStudioLayerGroup(projected, selected)?.groupId).toBe("tx:group/entity:group");
+    expect(selectedStudioLayerGroup(projected, selected)).toMatchObject({
+      visibilityReadOnlyReason: null,
+      visible: true,
+    });
     expect(selectionContainsGroupedChild(projected, new Set(["studio:a"]))).toBe(true);
     expect(planStudioLayerGroup(projected, selected)).toMatchObject({
       kind: "unavailable",
@@ -240,6 +244,36 @@ describe("Studio Layers paint order", () => {
     expect(planStudioLayerReorder(projected, "studio:c", 0)).toMatchObject({
       kind: "unavailable",
       reason: expect.stringMatching(/atomic group reordering/i),
+    });
+  });
+
+  it("derives group visibility from every canonical child", () => {
+    const projected = projectStudioLayers({
+      canonicalEntities: [
+        { geometry: { kind: "group" }, id: "tx:group/entity:group", sceneOrder: 2, sourceZIndex: 1 },
+        { id: "studio:a", parentId: "tx:group/entity:group", sceneOrder: 0, sourceZIndex: 0 },
+        {
+          id: "studio:b",
+          parentId: "tx:group/entity:group",
+          sceneOrder: 1,
+          sourceZIndex: 1,
+          visible: false,
+        },
+      ],
+      creationSourceAnchors: new Map([
+        ["studio:a", 0],
+        ["studio:b", 0.5],
+      ]),
+      entities: [
+        entity("studio:a", { kind: "unknown", reason: "Studio-created" }),
+        entity("studio:b", { kind: "unknown", reason: "Studio-created" }),
+      ],
+      sourceRuntimeIdentity: null,
+    });
+
+    expect(projected.find(({ isGroup }) => isGroup)).toMatchObject({
+      visibilityReadOnlyReason: null,
+      visible: false,
     });
   });
 
