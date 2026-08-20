@@ -294,6 +294,8 @@ import {
   initializeEditorScene,
   installAuthoritativeEditorPrograms,
   installCloudEditorSessionSnapshotV1,
+  nextEditorRedoAction,
+  nextEditorUndoAction,
   redoEditorProgram as redoEditorProgramTransition,
   snapshotCloudEditorSessionV1,
   undoEditorProgram as undoEditorProgramTransition,
@@ -528,7 +530,6 @@ export function App({
     setInstruction,
     setInteractionMode,
     setIsPlaying,
-    setLockedEntityIds,
     setMotionDuration,
     setPendingClarification,
     setSelectedObjectIds,
@@ -539,6 +540,7 @@ export function App({
     state: editorState,
     setVerifiedSourceDurationBasis,
     suspend: suspendEditor,
+    toggleEntityLock: toggleEditorEntityLock,
     undoProgram,
   } = editorController;
   const {
@@ -554,6 +556,7 @@ export function App({
     instruction,
     interactionMode,
     isPlaying,
+    lockRedoEntries,
     lockedEntityIds,
     motionDuration,
     pendingClarification,
@@ -1923,8 +1926,10 @@ export function App({
   }
 
   function redoProgram() {
+    const action = nextEditorRedoAction(editorState);
+    if (action === "entity-lock") return redoEditorProgram();
     const entry = redoPrograms.at(-1);
-    if (draftEdit || !entry) return false;
+    if (draftEdit || action === null || !entry) return false;
     const lockedRedoPrograms =
       entry.kind === "draft"
         ? [entry.value.program]
@@ -1952,7 +1957,9 @@ export function App({
   }
 
   function undoProgramCommitFirst() {
-    if (draftEdit) return undoProgram();
+    const action = nextEditorUndoAction(editorState);
+    if (action === "draft" || action === "entity-lock") return undoProgram();
+    if (action !== "program") return false;
     const mutation = programUndoEntries.at(-1);
     if (!mutation) return false;
     const lockedUndoPrograms =
@@ -4205,17 +4212,15 @@ export function App({
   }
 
   function toggleLayerLock(entityId: string) {
-    const willLock = !lockedEntityIdsRef.current.has(entityId);
-    if (willLock && draftEdit && lockedEntityMutationTargets(draftEdit.program, new Set([entityId])).length > 0) {
-      discardDraft();
+    if (draftEdit) {
+      setDraftError("Apply or discard the current draft before changing layer locks.");
+      return false;
     }
-    setLockedEntityIds((current) => {
-      const next = toggleEntityLock(current, entityId);
-      lockedEntityIdsRef.current = new Set(next);
-      return next;
-    });
+    lockedEntityIdsRef.current = new Set(toggleEntityLock([...lockedEntityIdsRef.current], entityId));
+    toggleEditorEntityLock(entityId);
     if (inlineTextEditor?.entityId === entityId) setInlineTextEditor(null);
     setDraftError((current) => (current === LOCKED_ENTITY_MUTATION_MESSAGE ? null : current));
+    return true;
   }
 
   function manualAuthoringAnchor(
@@ -5770,9 +5775,7 @@ export function App({
       return false;
     }
     if (command === "undo") {
-      if (!draftEdit && appliedEdits.length === 0) return false;
-      undoProgramCommitFirst();
-      return true;
+      return undoProgramCommitFirst();
     }
     if (command === "escape") {
       if (inlineTextEditor) {
@@ -6702,7 +6705,7 @@ export function App({
               imageImportError={nativeSceneActive ? nativeProjectAssetError : null}
               imageImportPending={nativeSceneActive && nativeProjectAssetPending}
               layers={studioLayers}
-              lockToggleDisabled={draftApplyPending}
+              lockToggleDisabled={draftApplyPending || draftEdit !== null}
               lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
               onGroup={groupLayerSelection}
@@ -6730,10 +6733,11 @@ export function App({
                 )
               }
               onUndo={undoProgramCommitFirst}
-              redoCount={redoPrograms.length}
+              redoCount={redoPrograms.length + lockRedoEntries.length}
               selectedIds={selectedSet}
               selectedGroupId={selectedLayerGroup?.groupId ?? null}
               sourceImportOutcomes={activeEditorScene.importOutcomes}
+              undoAvailable={nextEditorUndoAction(editorState) !== null}
             />
 
             <StudioViewport

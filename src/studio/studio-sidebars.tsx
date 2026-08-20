@@ -208,6 +208,7 @@ export function WorkspaceSidebar({
   selectedIds,
   selectedGroupId = null,
   sourceImportOutcomes,
+  undoAvailable = appliedEdits.length > 0,
 }: Readonly<{
   activeScene: AuthorableWorkspaceScene;
   appliedProgramReadOnlyReasons: Readonly<Record<string, string | null>>;
@@ -247,6 +248,7 @@ export function WorkspaceSidebar({
   selectedIds: ReadonlySet<string>;
   selectedGroupId?: string | null;
   sourceImportOutcomes: readonly ManimSourceImportOutcome[];
+  undoAvailable?: boolean;
 }>) {
   const imageFileInput = useRef<HTMLInputElement | null>(null);
   const [layerDrag, setLayerDrag] = useState<Readonly<{ boundary: number; entityId: string }> | null>(null);
@@ -539,7 +541,7 @@ export function WorkspaceSidebar({
                     onPointerDown={(event) => event.stopPropagation()}
                     title={
                       lockToggleDisabled
-                        ? "Wait for the current Program apply to finish"
+                        ? "Apply or discard the current draft before changing layer locks"
                         : authoringLocked
                           ? "Unlock object editing"
                           : "Lock object editing"
@@ -680,8 +682,9 @@ export function WorkspaceSidebar({
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-balance text-xs font-medium text-zinc-300">Applied programs</h2>
           <div className="flex items-center gap-2">
-            {appliedEdits.length > 0 ? (
+            {undoAvailable ? (
               <button
+                aria-label="Undo latest editor action"
                 aria-keyshortcuts="Control+Z Meta+Z"
                 className="text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"
                 onClick={onUndo}
@@ -692,6 +695,7 @@ export function WorkspaceSidebar({
             ) : null}
             {redoCount > 0 ? (
               <button
+                aria-label="Redo latest editor action"
                 aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
                 className="text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"
                 disabled={!authoringAvailable}

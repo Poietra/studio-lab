@@ -19,6 +19,7 @@ import {
   editorSessionIdentityKey,
   type RedoProgramEntry,
 } from "./editor-session-store";
+import { toggleEntityLock } from "./entity-lock";
 import type { ProjectFragmentMaterialStateV1 } from "./fragment-material-authoring";
 import type { SuggestionStatus } from "./magic-edit-panel";
 import type { ProgramRecord } from "./model";
@@ -47,9 +48,17 @@ export type {
   RedoProgramEntry,
 } from "./editor-session-store";
 
+export type EntityLockHistoryEntry = Readonly<{
+  entityId: string;
+  locked: boolean;
+  programDepth: number;
+}>;
+
 export type EditorControllerState = EditorSessionSnapshot &
   Readonly<{
     isPlaying: boolean;
+    lockRedoEntries: readonly EntityLockHistoryEntry[];
+    lockUndoEntries: readonly EntityLockHistoryEntry[];
     pendingClarification: PendingClarification | null;
     suggestion: EditSuggestion | null;
     suggestionMessage: string | null;
@@ -120,6 +129,8 @@ export function createInitialEditorState(): EditorControllerState {
     instruction: "",
     interactionMode: "animate",
     isPlaying: false,
+    lockRedoEntries: [],
+    lockUndoEntries: [],
     lockedEntityIds: [],
     motionDuration: STUDIO_STYLE_PROFILE.durationSeconds.deliberate,
     pendingClarification: null,
@@ -135,6 +146,37 @@ export function createInitialEditorState(): EditorControllerState {
 
 export function editorControllerReducer(state: EditorControllerState, action: EditorControllerAction) {
   return action.type === "replace" ? action.state : action.update(state);
+}
+
+export type EditorHistoryAction = "draft" | "entity-lock" | "program" | null;
+
+export function nextEditorUndoAction(state: EditorControllerState): EditorHistoryAction {
+  if (state.draftProgram) return "draft";
+  const lock = state.lockUndoEntries.at(-1);
+  if (lock?.programDepth === state.programUndoEntries.length) return "entity-lock";
+  return state.programUndoEntries.length > 0 ? "program" : null;
+}
+
+export function nextEditorRedoAction(state: EditorControllerState): EditorHistoryAction {
+  if (state.draftProgram) return null;
+  const lock = state.lockRedoEntries.at(-1);
+  if (lock?.programDepth === state.programUndoEntries.length) return "entity-lock";
+  const program = state.redoPrograms.at(-1);
+  return program?.kind === "draft" ? "draft" : program ? "program" : null;
+}
+
+export function toggleEditorEntityLock(state: EditorControllerState, entityId: string): EditorControllerState {
+  if (state.draftProgram) {
+    return { ...state, draftError: "Apply or discard the current draft before changing layer locks." };
+  }
+  const locked = !state.lockedEntityIds.includes(entityId);
+  return {
+    ...state,
+    lockRedoEntries: [],
+    lockUndoEntries: [...state.lockUndoEntries, { entityId, locked, programDepth: state.programUndoEntries.length }],
+    lockedEntityIds: toggleEntityLock(state.lockedEntityIds, entityId),
+    redoPrograms: [],
+  };
 }
 
 function withoutSuggestion(state: EditorControllerState): EditorControllerState {
@@ -182,6 +224,8 @@ export function restoreEditorSession(
     ...state,
     ...snapshot,
     isPlaying: false,
+    lockRedoEntries: [],
+    lockUndoEntries: [],
   });
 }
 
@@ -240,6 +284,8 @@ export function initializeEditorScene(
     ...createInitialEditorState(),
     currentTime: input.currentTime,
     interactionMode: state.interactionMode,
+    lockRedoEntries: [],
+    lockUndoEntries: [],
     lockedEntityIds: [],
     motionDuration: state.motionDuration,
     selectedObjectIds: input.selectedObjectIds,
@@ -286,6 +332,7 @@ export function stageEditorDraft(state: EditorControllerState, input: StageDraft
     editingAppliedProgram:
       input.appliedEdit !== undefined ? input.appliedEdit : input.clearAppliedEdit ? null : state.editingAppliedProgram,
     isPlaying: input.stopPlayback ? false : state.isPlaying,
+    lockRedoEntries: [],
     programUndoEntries,
     redoPrograms: [],
     selectedObjectIds: input.selectedObjectIds ?? state.selectedObjectIds,
@@ -355,6 +402,8 @@ export function installAuthoritativeEditorPrograms(
     draftProgram: null,
     editingAppliedProgram: null,
     isPlaying: false,
+    lockRedoEntries: [],
+    lockUndoEntries: [],
     programUndoEntries: [],
     redoPrograms: [],
     selectedObjectIds: [],
@@ -409,6 +458,7 @@ export function applyEditorDraft(state: EditorControllerState): EditorController
     draftOperation: null,
     draftProgram: null,
     editingAppliedProgram: null,
+    lockRedoEntries: [],
     programUndoEntries: [...state.programUndoEntries, mutation],
     redoPrograms: [],
   });
@@ -519,6 +569,36 @@ export function redoEditorProgram(
   };
 }
 
+function setEntityLock(lockedEntityIds: readonly string[], entityId: string, locked: boolean) {
+  return lockedEntityIds.includes(entityId) === locked ? lockedEntityIds : toggleEntityLock(lockedEntityIds, entityId);
+}
+
+export function undoEditorAction(state: EditorControllerState): EditorControllerState {
+  if (nextEditorUndoAction(state) !== "entity-lock") return undoEditorProgram(state);
+  const entry = state.lockUndoEntries.at(-1)!;
+  return {
+    ...state,
+    lockRedoEntries: [...state.lockRedoEntries, entry],
+    lockUndoEntries: state.lockUndoEntries.slice(0, -1),
+    lockedEntityIds: setEntityLock(state.lockedEntityIds, entry.entityId, !entry.locked),
+  };
+}
+
+export function redoEditorAction(
+  state: EditorControllerState,
+  blockedReason: string | null = null,
+): EditorControllerState {
+  if (nextEditorRedoAction(state) !== "entity-lock") return redoEditorProgram(state, blockedReason);
+  if (blockedReason) return { ...state, draftError: blockedReason };
+  const entry = state.lockRedoEntries.at(-1)!;
+  return {
+    ...state,
+    lockRedoEntries: state.lockRedoEntries.slice(0, -1),
+    lockUndoEntries: [...state.lockUndoEntries, entry],
+    lockedEntityIds: setEntityLock(state.lockedEntityIds, entry.entityId, entry.locked),
+  };
+}
+
 export function editEditorAppliedProgram(
   state: EditorControllerState,
   record: ProgramRecord,
@@ -565,6 +645,7 @@ export function editEditorAppliedProgram(
     draftProgram: draftRecord,
     editingAppliedProgram: activeEdit ?? { index, original: editorRecord },
     isPlaying: false,
+    lockRedoEntries: [],
     redoPrograms: [],
     selectedObjectIds: metadata.selection,
   });
@@ -574,6 +655,8 @@ export function resetEditorPrograms(state: EditorControllerState): EditorControl
   return {
     ...discardEditorDraft(state),
     appliedPrograms: [],
+    lockRedoEntries: [],
+    lockUndoEntries: [],
     programUndoEntries: [],
     redoPrograms: [],
   };
@@ -766,19 +849,24 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
   }, [state.draftProgram, update]);
 
   const undoProgram = useCallback(() => {
-    if (!state.draftProgram && state.programUndoEntries.length === 0) return false;
+    if (nextEditorUndoAction(state) === null) return false;
     if (state.draftProgram) requestController.current.cancel();
-    update(undoEditorProgram);
+    update(undoEditorAction);
     return true;
-  }, [state.draftProgram, state.programUndoEntries.length, update]);
+  }, [state, update]);
 
   const redoProgram = useCallback(
     (blockedReason: string | null = null) => {
-      if (state.draftProgram || state.redoPrograms.length === 0) return false;
-      update((current) => redoEditorProgram(current, blockedReason));
+      if (nextEditorRedoAction(state) === null) return false;
+      update((current) => redoEditorAction(current, blockedReason));
       return blockedReason === null;
     },
-    [state.draftProgram, state.redoPrograms.length, update],
+    [state, update],
+  );
+
+  const toggleEntityLockWithHistory = useCallback(
+    (entityId: string) => update((current) => toggleEditorEntityLock(current, entityId)),
+    [update],
   );
 
   const editAppliedProgram = useCallback(
@@ -875,7 +963,6 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     setInstruction: (value: SetStateAction<string>) => setField("instruction", value),
     setInteractionMode: (value: SetStateAction<InteractionMode>) => setField("interactionMode", value),
     setIsPlaying: (value: SetStateAction<boolean>) => setField("isPlaying", value),
-    setLockedEntityIds: (value: SetStateAction<readonly string[]>) => setField("lockedEntityIds", value),
     setMotionDuration: (value: SetStateAction<number>) => setField("motionDuration", value),
     setPendingClarification: (value: SetStateAction<PendingClarification | null>) =>
       setField("pendingClarification", value),
@@ -888,6 +975,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     stageDraft,
     state,
     suspend,
+    toggleEntityLock: toggleEntityLockWithHistory,
     undoProgram,
   } as const;
 }
