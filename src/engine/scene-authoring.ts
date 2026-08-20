@@ -631,6 +631,16 @@ const studioCreationProjectionV1Schema = z
         z
           .object({
             entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("visibility"),
+            operationId: z.string().min(1),
+            transactionId: z.string().min(1),
+            visible: z.boolean(),
+          })
+          .strict(),
+        z
+          .object({
+            entityId: z.string().min(1),
             from: finiteNumberSchema,
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("rotation"),
@@ -842,6 +852,7 @@ type StudioCreationOperationV1 = Readonly<{
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
     | Readonly<{ alpha: number | null; entityId: string; kind: "opacity" }>
     | Readonly<{ entityId: string; kind: "source-z-index"; sourceZIndex: number | null }>
+    | Readonly<{ entityId: string; kind: "visibility"; visible: boolean | null }>
     | Readonly<{
         easing: "linear" | "smooth";
         entityId: string;

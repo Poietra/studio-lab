@@ -277,6 +277,7 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "SetProperty" && operation.key === "fillColor") return "fill-color";
   if (operation.kind === "SetProperty" && operation.key === "strokeColor") return "stroke-color";
   if (operation.kind === "SetProperty" && operation.key === "sourceZIndex") return "source-z-index";
+  if (operation.kind === "SetProperty" && operation.key === "visibility") return "visibility";
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") return "fade-in";
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") return "rotation";
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
@@ -800,6 +801,13 @@ function appendProjectedMutation(
       interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.start },
       kind: "exact",
       value: mutation.sourceZIndex,
+    });
+  } else if (mutation.kind === "visibility") {
+    appendProjectedSample(draft.propertyChannels, entityId, "visibility", {
+      ...metadata,
+      interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.start },
+      kind: "exact",
+      value: mutation.visible,
     });
   } else if (mutation.kind === "rotation") {
     appendProjectedSample(draft.propertyChannels, entityId, "rotation", {

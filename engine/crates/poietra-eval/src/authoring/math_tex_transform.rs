@@ -818,6 +818,7 @@ impl EngineSessionV1 {
                 scene_order: first_scene_order + u32::try_from(index).unwrap_or(u32::MAX),
                 source_z_index: template.source_z_index,
                 transform: template.transform.clone(),
+                visible: template.visible,
             });
         }
 

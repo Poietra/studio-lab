@@ -968,6 +968,59 @@ export function createDirectManipulationLayerOrderProgram(
   );
 }
 
+/** Creates one static Studio-owned visibility edit. Visibility is separate
+ * from opacity and lifetime and is evaluated by the canonical Rust Scene. */
+export function createDirectManipulationVisibilityProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityId: string;
+    scene: RuntimeSceneState;
+    start: number;
+    transactionId: string;
+    visible: boolean;
+  }>,
+): SceneEditValidationResult {
+  if (
+    !Number.isFinite(input.start) ||
+    !Number.isFinite(input.capturedPlayhead) ||
+    input.start < 0 ||
+    input.start > input.scene.duration
+  ) {
+    throw new Error("Layer visibility requires a valid source time inside the Scene.");
+  }
+  const resolution = resolveTimeAnchorOnce(
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead", referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute", seconds: input.start },
+    { capturedPlayhead: input.capturedPlayhead, sceneDuration: input.scene.duration },
+  );
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: SceneEditOperation = {
+    dependsOn: [],
+    entityId: input.entityId,
+    id: operationId(input.transactionId, "set-visibility"),
+    interval: { end: input.start, start: input.start },
+    key: "visibility",
+    kind: "SetProperty",
+    provenance: provenance("direct-manipulation", ["Layers panel", "static canonical visibility"]),
+    value: input.visible,
+  };
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "unsupported",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["static document visibility"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
+}
+
 export function createDirectManipulationColorProgram(
   input: Readonly<{
     capturedPlayhead: number;

@@ -724,6 +724,41 @@ fn representative_scene_semantics_are_fail_closed() {
 }
 
 #[test]
+fn missing_entity_visibility_defaults_to_visible() {
+    let entity = SceneEntityV1 {
+        appearance: SceneAppearanceV1::Vector {
+            fill: Some(FillStyleV1 {
+                color: black(),
+                fragment_material: None,
+                rule: FillRuleV1::NonZero,
+            }),
+            opacity: 1.0,
+            stroke: None,
+        },
+        geometry: SceneGeometryV1::Circle {
+            center: PointV1 { x: 0.0, y: 0.0 },
+            radius: 1.0,
+        },
+        id: "visible-by-default".to_owned(),
+        lifetimes: vec![IntervalV1 {
+            end: 2.0,
+            start: 0.0,
+        }],
+        parent_id: None,
+        provenance_id: "fixture:root".to_owned(),
+        scene_order: 0,
+        source_z_index: 0.0,
+        transform: AffineTransformV1::identity(),
+        visible: true,
+    };
+    let mut json = serde_json::to_value(entity).unwrap();
+    json.as_object_mut().unwrap().remove("visible");
+
+    let parsed: SceneEntityV1 = serde_json::from_value(json).unwrap();
+    assert!(parsed.visible);
+}
+
+#[test]
 fn world_space_rotation_channels_reject_parented_entities() {
     let mut scene = empty_scene();
     let parent = SceneEntityV1 {
@@ -750,12 +785,20 @@ fn world_space_rotation_channels_reject_parented_entities() {
         scene_order: 0,
         source_z_index: 0.0,
         transform: AffineTransformV1::identity(),
+        visible: true,
     };
     let mut child = parent.clone();
     child.id = "child".to_owned();
     child.parent_id = Some(parent.id.clone());
     child.scene_order = 1;
     scene.entities = vec![parent, child];
+    let mut hidden_non_leaf = scene.clone();
+    hidden_non_leaf.entities[0].visible = false;
+    assert!(
+        validate_scene_ir_v1(&hidden_non_leaf)
+            .unwrap_err()
+            .contains_message("root drawable leaf")
+    );
     scene.animation_channels.push(AnimationChannelV1::Rotation {
         entity_id: "child".to_owned(),
         id: "rotate-child".to_owned(),
@@ -868,6 +911,7 @@ fn singular_affine_empty_draw_requires_a_singular_transform_and_matching_channel
         scene_order: 0,
         source_z_index: 0.0,
         transform: AffineTransformV1::identity(),
+        visible: true,
     });
     scene.required_capabilities = vec![SceneCapabilityV1::ShapePrimitives];
 

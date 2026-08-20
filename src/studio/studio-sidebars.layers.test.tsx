@@ -48,6 +48,8 @@ describe("WorkspaceSidebar Layers", () => {
         sceneOrder: 1,
         sourceAnchor: 0,
         sourceZIndex: 2,
+        visibilityReadOnlyReason: null,
+        visible: true,
       },
       {
         canMove: { back: false, backward: false, forward: true, front: true },
@@ -56,6 +58,8 @@ describe("WorkspaceSidebar Layers", () => {
         sceneOrder: 0,
         sourceAnchor: 0,
         sourceZIndex: 1,
+        visibilityReadOnlyReason: "Imported Manim object: visibility round-trip is not supported yet.",
+        visible: true,
       },
     ];
 
@@ -79,6 +83,7 @@ describe("WorkspaceSidebar Layers", () => {
         onLayerReorder={vi.fn()}
         onRedo={vi.fn()}
         onToggleEntity={vi.fn()}
+        onToggleEntityVisibility={vi.fn()}
         onUndo={vi.fn()}
         redoCount={0}
         selectedIds={new Set(["front"])}
@@ -94,6 +99,7 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain('title="Imported Manim object: z-order round-trip is not supported yet."');
     expect(markup).toContain('aria-label="Backward front"');
     expect(markup).toMatch(/aria-label="Front front"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Hide back"[^>]*disabled=""/);
   });
 
   it("keeps a user-locked row selectable and disables its authoring controls", () => {
@@ -118,6 +124,8 @@ describe("WorkspaceSidebar Layers", () => {
             sceneOrder: 0,
             sourceAnchor: 0,
             sourceZIndex: 1,
+            visibilityReadOnlyReason: null,
+            visible: true,
           },
         ]}
         lockedEntityIds={new Set(["front"])}
@@ -129,6 +137,7 @@ describe("WorkspaceSidebar Layers", () => {
         onRedo={vi.fn()}
         onToggleEntity={vi.fn()}
         onToggleEntityLock={vi.fn()}
+        onToggleEntityVisibility={vi.fn()}
         onUndo={vi.fn()}
         redoCount={0}
         selectedIds={new Set(["front"])}
@@ -143,5 +152,49 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toMatch(/aria-label="Back front"[^>]*disabled=""/);
     expect(markup).toContain("Unlock this object before reordering it.");
     expect(markup).toContain("Locked");
+  });
+
+  it("keeps a hidden row selectable and exposes an accessible Show action", () => {
+    const hidden = entity("hidden");
+    const markup = renderToStaticMarkup(
+      <WorkspaceSidebar
+        activeScene={activeScene()}
+        appliedProgramReadOnlyReasons={{}}
+        appliedEdits={[]}
+        appliedTransactionIds={new Set()}
+        draftActive={false}
+        duration={1}
+        durationError={null}
+        durationMinimum={0.1}
+        editingAppliedTransactionId={null}
+        entities={[hidden]}
+        layers={[
+          {
+            canMove: { back: false, backward: false, forward: false, front: false },
+            entity: hidden,
+            readOnlyReason: null,
+            sceneOrder: 0,
+            sourceAnchor: 0,
+            sourceZIndex: 1,
+            visibilityReadOnlyReason: null,
+            visible: false,
+          },
+        ]}
+        nextScene={null}
+        onDurationChange={vi.fn()}
+        onEditAppliedProgram={vi.fn()}
+        onRedo={vi.fn()}
+        onToggleEntity={vi.fn()}
+        onToggleEntityVisibility={vi.fn()}
+        onUndo={vi.fn()}
+        redoCount={0}
+        selectedIds={new Set(["hidden"])}
+        sourceImportOutcomes={[]}
+      />,
+    );
+
+    expect(markup).toMatch(/aria-label="Select hidden"[^>]*checked=""/);
+    expect(markup).toMatch(/aria-label="Show hidden"[^>]*aria-pressed="true"/);
+    expect(markup).toContain("Hidden");
   });
 });

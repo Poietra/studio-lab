@@ -254,6 +254,14 @@ function normalizedStudioCreationOperation(
       sourceZIndex: typeof operation.value === "number" && Number.isFinite(operation.value) ? operation.value : null,
     };
   }
+  if (operation.kind === "SetProperty" && operation.key === "visibility") {
+    return {
+      ...common,
+      entityId: operation.entityId,
+      kind: "visibility",
+      visible: typeof operation.value === "boolean" ? operation.value : null,
+    };
+  }
   if (operation.kind === "AnimateProperty" && operation.key === "appearance") {
     if (operation.materialParameter) {
       return {

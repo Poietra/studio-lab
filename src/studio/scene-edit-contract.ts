@@ -70,6 +70,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
       "rotation",
       "scale",
       "strokeColor",
+      "visibility",
     ]),
     kind: z.literal("SetProperty"),
     value: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]),

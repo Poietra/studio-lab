@@ -3,6 +3,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 const JAVASCRIPT_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const JAVASCRIPT_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 
+const fn default_true() -> bool {
+    true
+}
+
 pub(crate) fn deserialize_js_safe_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
@@ -490,6 +494,9 @@ pub struct SceneEntityV1 {
     pub scene_order: u32,
     pub source_z_index: f64,
     pub transform: AffineTransformV1,
+    /// Static document visibility. Older Scene IR omits this field and remains visible.
+    #[serde(default = "default_true")]
+    pub visible: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

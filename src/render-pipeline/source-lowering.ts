@@ -992,6 +992,12 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
       "Layer order currently supports only Studio-created objects with a finite canonical z-index.",
     );
   }
+  if (operation.kind === "SetProperty" && operation.key === "visibility") {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Layer visibility is available in the canonical preview and MP4 export, but not Manim source export.",
+    );
+  }
   if (operation.kind === "AnimateProperty" && operation.key === "appearance") {
     throw new ProgramLoweringError(
       "operation-unsupported",

@@ -17,7 +17,8 @@ export type PropertyChannelKey =
   | "presence"
   | "rotation"
   | "scale"
-  | "strokeColor";
+  | "strokeColor"
+  | "visibility";
 
 export type ChannelAccess = Readonly<{
   channel: PropertyChannelKey;

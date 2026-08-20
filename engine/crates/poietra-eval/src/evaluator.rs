@@ -731,7 +731,8 @@ fn compile_render_packet_with_camera_fit_v1(
         .iter()
         .copied()
         .filter(|entity_index| {
-            entity_is_active(&options.scene.entities[*entity_index], state_sample_time)
+            let entity = &options.scene.entities[*entity_index];
+            entity.visible && entity_is_active(entity, state_sample_time)
         })
         .collect();
     let mut local = vec![None; options.scene.entities.len()];
@@ -1009,6 +1010,7 @@ mod tests {
                 scene_order: 0,
                 source_z_index: 0.0,
                 transform: AffineTransformV1::identity(),
+                visible: true,
             }],
             fidelity: FidelityV1::Exact {},
             provenance: vec![ProvenanceRecordV1 {
@@ -1326,6 +1328,7 @@ mod tests {
                 ty: 5.0,
                 ..AffineTransformV1::identity()
             },
+            visible: true,
         };
         scene.entities = vec![group, child];
         scene.required_capabilities = vec![

@@ -97,6 +97,7 @@ function setPropertyExecution(
     return SUPPORTED_EXECUTION;
   if (operation.key === "sourceZIndex" && typeof operation.value === "number" && Number.isFinite(operation.value))
     return SUPPORTED_EXECUTION;
+  if (operation.key === "visibility" && typeof operation.value === "boolean") return CLIENT_ONLY_EXECUTION;
   if (operation.key === "content") {
     if (canonicalEditableContent(operation.value, "Text") || canonicalEditableContent(operation.value, "MathTex"))
       return SUPPORTED_EXECUTION;
@@ -461,6 +462,26 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
         code: "lowering-unsupported" as const,
         field: "entityId",
         message: "Layer order edits currently support only Studio-created objects.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+  }
+  if (operation.key === "visibility") {
+    if (typeof operation.value !== "boolean") {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "value",
+        message: "Layer visibility requires a boolean value.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+    if (!scene.objectGraph.entities[operation.entityId]?.transactionId) {
+      issues.push({
+        code: "lowering-unsupported" as const,
+        field: "entityId",
+        message: "Layer visibility currently supports only Studio-created root objects.",
         operationId: operation.id,
         severity: "error" as const,
       });

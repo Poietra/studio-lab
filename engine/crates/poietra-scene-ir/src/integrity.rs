@@ -344,6 +344,13 @@ fn validate_render_packet_for_scene(
                 format!("draw entity {} is outside its lifetime", draw.entity_id()),
             );
         }
+        if !entity.visible {
+            issue(
+                &mut issues,
+                format!("{path}.entityId"),
+                format!("hidden entity {} produced a draw", draw.entity_id()),
+            );
+        }
         if draw.source_z_index() != entity.source_z_index {
             issue(
                 &mut issues,
@@ -476,7 +483,8 @@ fn validate_render_packet_for_scene(
     }
 
     for entity in &scene.entities {
-        if entity_is_active(entity, state_sample_time)
+        if entity.visible
+            && entity_is_active(entity, state_sample_time)
             && !matches!(entity.geometry, SceneGeometryV1::Group {})
             && !drawn_entities.contains(entity.id.as_str())
         {

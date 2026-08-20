@@ -1077,6 +1077,7 @@ mod tests {
                 scene_order: 0,
                 source_z_index: 0.0,
                 transform: AffineTransformV1::identity(),
+                visible: true,
             }],
             fidelity: FidelityV1::Exact {},
             provenance: vec![ProvenanceRecordV1 {

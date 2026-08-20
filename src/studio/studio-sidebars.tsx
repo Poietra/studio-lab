@@ -173,6 +173,7 @@ export function WorkspaceSidebar({
   onLayerOrder,
   onLayerReorder,
   onToggleEntityLock,
+  onToggleEntityVisibility,
   onRedo,
   onToggleEntity,
   onUndo,
@@ -201,6 +202,7 @@ export function WorkspaceSidebar({
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
   onToggleEntityLock?: (entityId: string) => void;
+  onToggleEntityVisibility?: (entityId: string, visible: boolean) => void;
   onRedo: () => void;
   onToggleEntity: (entityId: string, selected: boolean) => void;
   onUndo: () => void;
@@ -218,6 +220,8 @@ export function WorkspaceSidebar({
       sceneOrder: null,
       sourceAnchor: null,
       sourceZIndex: null,
+      visibilityReadOnlyReason: null,
+      visible: true,
     }));
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
@@ -235,6 +239,14 @@ export function WorkspaceSidebar({
           const provisionalLocked =
             entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId));
           const authoringLocked = lockedEntityIds.has(entity.id);
+          const visibilityUnavailableReason =
+            onToggleEntityVisibility === undefined
+              ? "Layer visibility is unavailable."
+              : provisionalLocked
+                ? "Apply this provisional object before changing its visibility."
+                : authoringLocked
+                  ? "Unlock this object before changing its visibility."
+                  : layer.visibilityReadOnlyReason;
           const dragUnavailableReason =
             onLayerReorder === undefined
               ? "Layer drag reordering is unavailable."
@@ -318,6 +330,28 @@ export function WorkspaceSidebar({
                   </span>
                   <span className="min-w-0 flex-1 truncate">{entityLabel(entity)}</span>
                 </label>
+                {onToggleEntityVisibility ? (
+                  <button
+                    aria-label={`${layer.visible ? "Hide" : "Show"} ${entityLabel(entity)}`}
+                    aria-pressed={!layer.visible}
+                    className="size-6 shrink-0 border border-transparent text-[11px] text-zinc-500 hover:border-zinc-700 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:border-transparent disabled:hover:bg-transparent"
+                    disabled={visibilityUnavailableReason !== null}
+                    draggable={false}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      onToggleEntityVisibility(entity.id, !layer.visible);
+                    }}
+                    onDragStart={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    title={visibilityUnavailableReason ?? (layer.visible ? "Hide object" : "Show object")}
+                    type="button"
+                  >
+                    <span aria-hidden="true">{layer.visible ? "◉" : "○"}</span>
+                  </button>
+                ) : null}
                 {onToggleEntityLock ? (
                   <button
                     aria-label={`${authoringLocked ? "Unlock" : "Lock"} ${entityLabel(entity)}`}
@@ -347,7 +381,13 @@ export function WorkspaceSidebar({
                   </button>
                 ) : null}
                 <span className="shrink-0 text-[10px] text-zinc-600" title={layer.readOnlyReason ?? undefined}>
-                  {authoringLocked ? "Locked" : layer.readOnlyReason ? "Read-only" : entity.type}
+                  {authoringLocked
+                    ? "Locked"
+                    : !layer.visible
+                      ? "Hidden"
+                      : layer.readOnlyReason
+                        ? "Read-only"
+                        : entity.type}
                 </span>
               </div>
               {selected && onLayerOrder ? (
