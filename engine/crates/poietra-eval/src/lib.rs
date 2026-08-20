@@ -41,11 +41,12 @@ pub use authoring::{
     StudioMotionProjectionBatch, StudioMotionProjectionEntityIdentity,
     StudioMotionProjectionInsertion, StudioMotionSourceBinding, StudioPersistentRemoveProjection,
     StudioPersistentRemoveProjectionEntry, StudioProjectedCreationEntity, StudioProjectedMotion,
-    StudioProjectionEasing, StudioTimelineEditInput, StudioTimelineEditProjection,
-    StudioTimelineEditTransform, StudioTimelineEventKind, StudioTimelineOperation,
-    StudioTimelineProjection, StudioTimelinePurpose, StudioTimelineWaitReduction,
-    project_studio_creation_edits, project_studio_math_tex_transform_edits,
-    project_studio_motion_edit, project_studio_timeline_edits,
+    StudioProjectionEasing, StudioPropertyEasing, StudioTimelineEditInput,
+    StudioTimelineEditProjection, StudioTimelineEditTransform, StudioTimelineEventKind,
+    StudioTimelineOperation, StudioTimelineProjection, StudioTimelinePurpose,
+    StudioTimelineWaitReduction, project_studio_creation_edits,
+    project_studio_math_tex_transform_edits, project_studio_motion_edit,
+    project_studio_timeline_edits,
 };
 // Compatibility names for downstream Rust callers. Internal code and adapters use the
 // Scene Edit vocabulary above; these aliases do not affect the serialized contracts.

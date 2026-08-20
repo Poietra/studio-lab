@@ -26,6 +26,7 @@ import {
   MAX_EDITOR_LIVE_SELECTED_ENTITY_IDS_V1,
 } from "./collaboration/editor-live-contract";
 import { compileFragmentMaterialGlsl } from "./engine/fragment-material-glsl";
+import type { StudioPropertyKeyframeEasing } from "./engine/scene-authoring";
 import { cn } from "./lib/cn";
 import { exportManimSource } from "./render-pipeline/client";
 import type { RenderSessionView } from "./render-pipeline/contracts";
@@ -2702,7 +2703,7 @@ export function App({
   }
 
   function duplicateStudioPropertyKeyframe<
-    TKeyframe extends Readonly<{ easing: "linear" | "smooth"; time: number; value: number }>,
+    TKeyframe extends Readonly<{ easing: StudioPropertyKeyframeEasing; time: number; value: number }>,
     TSourceTrack extends Readonly<{
       keyframes: readonly TKeyframe[];
       transactionId: string;

@@ -1,3 +1,4 @@
+import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import type { RuntimeSceneState } from "./model";
 import { operationId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
@@ -7,7 +8,7 @@ const OPACITY_KEYFRAME_EPSILON = 0.0005;
 const MAX_OPACITY_KEYFRAMES = 32;
 const POST_FADE_OPACITY = 1;
 
-export type OpacityKeyframeEasing = "linear" | "smooth";
+export type OpacityKeyframeEasing = StudioPropertyKeyframeEasing;
 
 export type OpacityKeyframe = Readonly<{
   easing: OpacityKeyframeEasing;

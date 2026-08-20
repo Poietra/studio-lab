@@ -1,5 +1,6 @@
 import { type KeyboardEvent, type PointerEvent, useRef, useState } from "react";
 
+import { STUDIO_PROPERTY_KEYFRAME_EASINGS, type StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import { cn } from "../lib/cn";
 import { LOCKED_ENTITY_MUTATION_MESSAGE } from "./entity-lock";
 import {
@@ -87,7 +88,7 @@ export type StudioTimelineProps = Readonly<{
 }>;
 
 export type StudioOpacityTimelineKeyframe = Readonly<{
-  easing: "linear" | "smooth";
+  easing: StudioPropertyKeyframeEasing;
   sourceTime: number;
   time: number;
   value: number;
@@ -105,6 +106,22 @@ export type StudioOpacityTimelineTrack = Readonly<{
 export type StudioMaterialParameterTimelineKeyframe = StudioOpacityTimelineKeyframe;
 export type StudioRotationTimelineKeyframe = StudioOpacityTimelineKeyframe;
 export type StudioScaleTimelineKeyframe = StudioOpacityTimelineKeyframe;
+
+const PROPERTY_KEYFRAME_EASING_LABELS: Record<StudioPropertyKeyframeEasing, string> = {
+  "ease-in": "Ease in",
+  "ease-in-out": "Ease in & out",
+  "ease-out": "Ease out",
+  linear: "Linear",
+  smooth: "Smooth",
+};
+
+function PropertyKeyframeEasingOptions() {
+  return STUDIO_PROPERTY_KEYFRAME_EASINGS.map((easing) => (
+    <option key={easing} value={easing}>
+      {PROPERTY_KEYFRAME_EASING_LABELS[easing]}
+    </option>
+  ));
+}
 
 export type StudioRotationTimelineTrack = Readonly<{
   entityId: string;
@@ -820,13 +837,12 @@ export function StudioTimeline({
               }
               onChange={(event) =>
                 onOpacityKeyframeChange(selectedOpacityTrack, selectedOpacityKeyframe!.index, {
-                  easing: event.currentTarget.value as "linear" | "smooth",
+                  easing: event.currentTarget.value as StudioPropertyKeyframeEasing,
                 })
               }
               value={selectedOpacityMarker.easing}
             >
-              <option value="linear">Linear</option>
-              <option value="smooth">Smooth</option>
+              <PropertyKeyframeEasingOptions />
             </select>
           </label>
           <DuplicateKeyframeButton
@@ -920,13 +936,12 @@ export function StudioTimeline({
               }
               onChange={(event) =>
                 onScaleKeyframeChange(selectedScaleTrack, selectedScaleKeyframe!.index, {
-                  easing: event.currentTarget.value as "linear" | "smooth",
+                  easing: event.currentTarget.value as StudioPropertyKeyframeEasing,
                 })
               }
               value={selectedScaleMarker.easing}
             >
-              <option value="linear">Linear</option>
-              <option value="smooth">Smooth</option>
+              <PropertyKeyframeEasingOptions />
             </select>
           </label>
           <DuplicateKeyframeButton
@@ -1020,13 +1035,12 @@ export function StudioTimeline({
               }
               onChange={(event) =>
                 onRotationKeyframeChange(selectedRotationTrack, selectedRotationKeyframe!.index, {
-                  easing: event.currentTarget.value as "linear" | "smooth",
+                  easing: event.currentTarget.value as StudioPropertyKeyframeEasing,
                 })
               }
               value={selectedRotationMarker.easing}
             >
-              <option value="linear">Linear</option>
-              <option value="smooth">Smooth</option>
+              <PropertyKeyframeEasingOptions />
             </select>
           </label>
           <DuplicateKeyframeButton
@@ -1122,13 +1136,12 @@ export function StudioTimeline({
               }
               onChange={(event) =>
                 onMaterialParameterKeyframeChange(selectedMaterialTrack, selectedMaterialKeyframe!.index, {
-                  easing: event.currentTarget.value as "linear" | "smooth",
+                  easing: event.currentTarget.value as StudioPropertyKeyframeEasing,
                 })
               }
               value={selectedMaterialMarker.easing}
             >
-              <option value="linear">Linear</option>
-              <option value="smooth">Smooth</option>
+              <PropertyKeyframeEasingOptions />
             </select>
           </label>
           <DuplicateKeyframeButton

@@ -1,3 +1,4 @@
+import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import type { RuntimeSceneState } from "./model";
 import { operationId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
@@ -9,7 +10,7 @@ export const MIN_TIMELINE_SCALE = 0.1;
 export const MAX_TIMELINE_SCALE = 8;
 
 export type ScaleKeyframe = Readonly<{
-  easing: "linear" | "smooth";
+  easing: StudioPropertyKeyframeEasing;
   time: number;
   value: number;
 }>;

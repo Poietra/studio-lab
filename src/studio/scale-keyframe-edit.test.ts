@@ -27,7 +27,7 @@ describe("uniform scale keyframe editing", () => {
       baseline: 1,
       entityId,
       keyframes: [
-        { easing: "linear", time: 2, value: 1 },
+        { easing: "ease-in-out", time: 2, value: 1 },
         { easing: "smooth", time: 4, value: 2 },
       ],
       scene: STUDIO_FIXTURE_SCENE,
@@ -37,7 +37,7 @@ describe("uniform scale keyframe editing", () => {
     expect(tracked.program.loweringStatus).toBe("unsupported");
     expect(insertedProgramDuration(tracked.program)).toBe(insertedProgramDuration(creation.validation.program));
     expect(scaleKeyframeTrackFromProgram(tracked.program, 0)?.keyframes).toEqual([
-      { easing: "linear", time: 2, value: 1 },
+      { easing: "ease-in-out", time: 2, value: 1 },
       { easing: "smooth", time: 4, value: 2 },
     ]);
     const sourceKeyframes = scaleKeyframeTrackFromProgram(tracked.program, 0)!.keyframes;
@@ -49,7 +49,7 @@ describe("uniform scale keyframe editing", () => {
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(scaleKeyframeTrackFromProgram(duplicated.program, 0)?.keyframes).toEqual([
-      { easing: "linear", time: 2, value: 1 },
+      { easing: "ease-in-out", time: 2, value: 1 },
       { easing: "smooth", time: 3, value: 2 },
       { easing: "smooth", time: 4, value: 2 },
     ]);

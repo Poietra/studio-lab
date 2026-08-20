@@ -1,8 +1,6 @@
-export type EngineEasingV1 =
-  | Readonly<{ kind: "linear" }>
-  | Readonly<{ kind: "smooth" }>
-  | Readonly<{ kind: "manim-smooth" }>
-  | Readonly<{ kind: "cubic-bezier"; x1: number; x2: number; y1: number; y2: number }>;
+import type { SceneEasingV1 } from "./scene-ir";
+
+export type EngineEasingV1 = SceneEasingV1;
 
 const NEWTON_ITERATIONS = 8;
 const BISECTION_ITERATIONS = 24;

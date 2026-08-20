@@ -32,7 +32,7 @@ describe("material parameter keyframe editing", () => {
       baseProgram: creation.validation.program,
       entityId,
       keyframes: [
-        { easing: "linear", time: 2, value: 0.35 },
+        { easing: "ease-out", time: 2, value: 0.35 },
         { easing: "smooth", time: 4, value: 0.8 },
       ],
       material,
@@ -47,7 +47,7 @@ describe("material parameter keyframe editing", () => {
     expect(materialParameterKeyframeTrackFromProgram(result.program, 0)).toMatchObject({
       entityId,
       keyframes: [
-        { easing: "linear", time: 2, value: 0.35 },
+        { easing: "ease-out", time: 2, value: 0.35 },
         { easing: "smooth", time: 4, value: 0.8 },
       ],
       material,
@@ -65,7 +65,7 @@ describe("material parameter keyframe editing", () => {
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(materialParameterKeyframeTrackFromProgram(duplicated.program, 0)?.keyframes).toEqual([
-      { easing: "linear", time: 2, value: 0.35 },
+      { easing: "ease-out", time: 2, value: 0.35 },
       { easing: "smooth", time: 3, value: 0.8 },
       { easing: "smooth", time: 4, value: 0.8 },
     ]);

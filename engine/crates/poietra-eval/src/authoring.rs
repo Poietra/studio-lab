@@ -30,7 +30,7 @@ pub use creation::{
     ProjectStudioCreationEditError, StudioCreationEditInput, StudioCreationEntitySpec,
     StudioCreationOperation, StudioCreationOperationKind, StudioCreationProjectedMutation,
     StudioCreationProjectedMutationKind, StudioCreationProjection, StudioProjectedCreationEntity,
-    project_studio_creation_edits,
+    StudioPropertyEasing, project_studio_creation_edits,
 };
 pub use fragment_material::{
     ApplyStudioFragmentMaterialsCommand, ApplyStudioFragmentMaterialsError,

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { easingV1Schema } from "../engine/scene-ir";
+
 const finiteNumber = z.number().finite();
 const pointSchema = z.object({ x: finiteNumber, y: finiteNumber }).strict();
 const dimensionsSchema = z
@@ -72,7 +74,7 @@ const propertyValueSchema = z.union([
 const propertyChannelSampleSchema = z
   .object({
     control: pointSchema.optional(),
-    easing: z.enum(["linear", "smooth", "manim-smooth"]).optional(),
+    easing: z.union([z.enum(["linear", "smooth", "manim-smooth"]), easingV1Schema]).optional(),
     from: propertyValueSchema.optional(),
     interval: intervalSchema,
     kind: z.enum(["animated", "exact"]),

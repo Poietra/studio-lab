@@ -1,9 +1,13 @@
 import { z } from "zod";
-import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
+import { easingV1Schema, type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
 import { loadPoietraWasmModule } from "./poietra-wasm-module";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
+
+export const STUDIO_PROPERTY_KEYFRAME_EASINGS = ["linear", "smooth", "ease-in", "ease-out", "ease-in-out"] as const;
+export type StudioPropertyKeyframeEasing = (typeof STUDIO_PROPERTY_KEYFRAME_EASINGS)[number];
+export const studioPropertyKeyframeEasingSchema = z.enum(STUDIO_PROPERTY_KEYFRAME_EASINGS);
 
 type StudioAuthoringOrigin = "direct-manipulation" | "fixture" | "remote-model" | "studio-default";
 type StudioAuthoringAnchorSourceV1 =
@@ -584,7 +588,7 @@ const studioCreationProjectionV1Schema = z
           .strict(),
         z
           .object({
-            easing: z.enum(["linear", "smooth"]),
+            easing: easingV1Schema,
             entityId: z.string().min(1),
             from: finiteNumberSchema,
             interval: studioTimelineProjectionIntervalV1Schema,
@@ -608,7 +612,7 @@ const studioCreationProjectionV1Schema = z
           .strict(),
         z
           .object({
-            easing: z.enum(["linear", "smooth"]),
+            easing: easingV1Schema,
             entityId: z.string().min(1),
             from: finiteNumberSchema.min(0).max(1),
             interval: studioTimelineProjectionIntervalV1Schema,
@@ -651,10 +655,34 @@ const studioCreationProjectionV1Schema = z
           .strict(),
         z
           .object({
+            easing: easingV1Schema,
+            entityId: z.string().min(1),
+            from: finiteNumberSchema,
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("rotation-keyframes"),
+            operationId: z.string().min(1),
+            to: finiteNumberSchema,
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
             entityId: z.string().min(1),
             from: finiteNumberSchema.positive(),
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("uniform-scale"),
+            operationId: z.string().min(1),
+            to: finiteNumberSchema.positive(),
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            easing: easingV1Schema,
+            entityId: z.string().min(1),
+            from: finiteNumberSchema.positive(),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("uniform-scale-keyframes"),
             operationId: z.string().min(1),
             to: finiteNumberSchema.positive(),
             transactionId: z.string().min(1),
@@ -854,14 +882,14 @@ type StudioCreationOperationV1 = Readonly<{
     | Readonly<{ entityId: string; kind: "source-z-index"; sourceZIndex: number | null }>
     | Readonly<{ entityId: string; kind: "visibility"; visible: boolean | null }>
     | Readonly<{
-        easing: "linear" | "smooth";
+        easing: StudioPropertyKeyframeEasing;
         entityId: string;
         from: number | null;
         kind: "opacity-keyframes";
         to: number | null;
       }>
     | Readonly<{
-        easing: "linear" | "smooth";
+        easing: StudioPropertyKeyframeEasing;
         entityId: string;
         from: number | null;
         kind: "material-parameter-keyframes";
@@ -880,7 +908,7 @@ type StudioCreationOperationV1 = Readonly<{
       }>
     | Readonly<{ entityId: string; kind: "persistent-remove"; persistent: boolean }>
     | Readonly<{
-        easing: "linear" | "smooth";
+        easing: StudioPropertyKeyframeEasing;
         entityId: string;
         from: number | null;
         kind: "uniform-scale-keyframes";
@@ -895,7 +923,7 @@ type StudioCreationOperationV1 = Readonly<{
         to: number | null;
       }>
     | Readonly<{
-        easing: "linear" | "smooth";
+        easing: StudioPropertyKeyframeEasing;
         entityId: string;
         from: number | null;
         kind: "rotation-keyframes";

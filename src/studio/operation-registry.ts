@@ -576,6 +576,20 @@ export const OPERATION_REGISTRY = {
     execution: animatePropertyExecution,
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
+      if (
+        operation.easing !== "linear" &&
+        operation.easing !== "smooth" &&
+        operation.key !== "appearance" &&
+        operation.timelineTrack !== true
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "easing",
+          message: "Ease presets are available only to Studio property Timeline tracks.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
       if (operation.timelineTrack === true) {
         const entity = scene.objectGraph.entities[operation.entityId];
         const valuesAreValid =

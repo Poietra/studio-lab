@@ -8,7 +8,7 @@ import {
   STUDIO_TEXT_DEFAULT_LAYOUT,
 } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
-import type { EntityContent, MotionEasing } from "../studio/model";
+import { type EntityContent, isMotionEasing, type MotionEasing } from "../studio/model";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
 import { type CreateEntityOperation, EDIT_OPERATION_VERSION } from "../studio/operations";
 import { insertedProgramDuration } from "../studio/program-composition";
@@ -884,7 +884,13 @@ function animationOperation(operation: SceneEditOperation): operation is Lowered
 }
 
 function animationEasing(operation: LoweredAnimationOperation): MotionEasing {
-  return operation.kind === "CreateMotion" || operation.kind === "AnimateProperty" ? operation.easing : "smooth";
+  if (operation.kind === "CreateMotion") return operation.easing;
+  if (operation.kind !== "AnimateProperty") return "smooth";
+  if (isMotionEasing(operation.easing)) return operation.easing;
+  throw new ProgramLoweringError(
+    "operation-unsupported",
+    "Timeline easing presets are rendered by the Studio core and cannot be lowered to Manim source.",
+  );
 }
 
 function scaleChange(operation: Extract<SceneEditOperation, { kind: "AnimateProperty" }>) {

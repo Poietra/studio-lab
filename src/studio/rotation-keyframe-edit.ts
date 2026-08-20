@@ -1,3 +1,4 @@
+import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import type { RuntimeSceneState } from "./model";
 import { operationId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
@@ -7,7 +8,7 @@ const KEYFRAME_EPSILON = 0.0005;
 const MAX_KEYFRAMES = 32;
 
 export type RotationKeyframe = Readonly<{
-  easing: "linear" | "smooth";
+  easing: StudioPropertyKeyframeEasing;
   time: number;
   value: number;
 }>;
