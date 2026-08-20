@@ -783,9 +783,13 @@ fn opacity_easing(easing: StudioMotionEasing) -> EasingV1 {
     }
 }
 
-fn closed_studio_opacity_track<'a>(
-    program: &'a StudioCreationEditInput,
-) -> Option<(&'a str, Vec<&'a StudioCreationOperation>)> {
+fn interval_is_exact_point(interval: &IntervalV1) -> bool {
+    interval.start.to_bits() == interval.end.to_bits()
+}
+
+fn closed_studio_opacity_track(
+    program: &StudioCreationEditInput,
+) -> Option<(&str, Vec<&StudioCreationOperation>)> {
     if program.origin != StudioAuthoringOrigin::DirectManipulation
         || program.requested_execution != SceneEditExecution::Sequence
         || program.schedule_mode != SceneEditScheduleMode::Sequence
@@ -832,7 +836,7 @@ fn closed_studio_opacity_track<'a>(
         {
             return None;
         }
-        if operations.len() == 1 && operation.interval.start == operation.interval.end {
+        if operations.len() == 1 && interval_is_exact_point(&operation.interval) {
             if !close_transform_baseline_value(*from, *to) {
                 return None;
             }
@@ -861,9 +865,9 @@ fn closed_studio_opacity_track<'a>(
     Some((entity_id, operations))
 }
 
-fn closed_studio_material_parameter_track<'a>(
-    program: &'a StudioCreationEditInput,
-) -> Option<(&'a str, Vec<&'a StudioCreationOperation>)> {
+fn closed_studio_material_parameter_track(
+    program: &StudioCreationEditInput,
+) -> Option<(&str, Vec<&StudioCreationOperation>)> {
     if program.origin != StudioAuthoringOrigin::DirectManipulation
         || program.requested_execution != SceneEditExecution::Sequence
         || program.schedule_mode != SceneEditScheduleMode::Sequence
@@ -926,7 +930,7 @@ fn closed_studio_material_parameter_track<'a>(
         {
             return None;
         }
-        if operations.len() == 1 && operation.interval.start == operation.interval.end {
+        if operations.len() == 1 && interval_is_exact_point(&operation.interval) {
             if !close_transform_baseline_value(*from, *to) {
                 return None;
             }
@@ -1633,7 +1637,6 @@ fn plan_studio_creation_edits(
             || (state.creation_program_rank == program_rank
                 && state.creation_transaction_id != program.transaction_id)
             || !state.material_parameter_keyframes.is_empty()
-            || state.appearance_at.is_some()
             || state.persistent_removal.is_some()
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
@@ -2495,6 +2498,49 @@ fn created_geometry_and_appearance(
     }
 }
 
+fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> bool {
+    let opacity_is_valid = entity.opacity_keyframes.iter().all(|keyframe| {
+        keyframe.at.is_finite()
+            && keyframe.at >= entity.lifetime.start
+            && keyframe.at <= entity.lifetime.end
+            && keyframe.value.is_finite()
+            && (0.0..=1.0).contains(&keyframe.value)
+    }) && entity
+        .opacity_keyframes
+        .windows(2)
+        .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON);
+    let base_has_fill = matches!(
+        created_geometry_and_appearance(entity.geometry.clone()).1,
+        SceneAppearanceV1::Vector { fill: Some(_), .. }
+    );
+    let material_is_valid = entity.material_parameter_keyframes.iter().all(|keyframe| {
+        keyframe.at.is_finite()
+            && keyframe.at >= entity.lifetime.start
+            && keyframe.at <= entity.lifetime.end
+            && !keyframe.value.parameters.is_empty()
+            && keyframe
+                .value
+                .parameters
+                .iter()
+                .all(|value| value.is_finite())
+    }) && entity
+        .material_parameter_keyframes
+        .windows(2)
+        .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
+        && (entity.material_parameter_keyframes.is_empty() || base_has_fill);
+    let starts_after_fade = entity.fade_in.as_ref().is_none_or(|fade| {
+        entity
+            .opacity_keyframes
+            .first()
+            .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
+            && entity
+                .material_parameter_keyframes
+                .first()
+                .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
+    });
+    opacity_is_valid && material_is_valid && starts_after_fade
+}
+
 fn validate_create_scene_entities_command(
     session: &EngineSessionV1,
     command: &CreateSceneEntitiesCommand,
@@ -2559,36 +2605,6 @@ fn validate_create_scene_entities_command(
         let appearance_changed = !close_transform_baseline_value(entity.paint_opacity, 1.0)
             || !rotation_is_noop(entity.rotation)
             || has_color_override;
-        let opacity_keyframes_are_valid = entity.opacity_keyframes.iter().all(|keyframe| {
-            keyframe.at.is_finite()
-                && keyframe.at >= entity.lifetime.start
-                && keyframe.at <= entity.lifetime.end
-                && keyframe.value.is_finite()
-                && (0.0..=1.0).contains(&keyframe.value)
-        }) && entity
-            .opacity_keyframes
-            .windows(2)
-            .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON);
-        let base_has_fill = matches!(
-            created_geometry_and_appearance(entity.geometry.clone()).1,
-            SceneAppearanceV1::Vector { fill: Some(_), .. }
-        );
-        let material_keyframes_are_valid =
-            entity.material_parameter_keyframes.iter().all(|keyframe| {
-                keyframe.at.is_finite()
-                    && keyframe.at >= entity.lifetime.start
-                    && keyframe.at <= entity.lifetime.end
-                    && !keyframe.value.parameters.is_empty()
-                    && keyframe
-                        .value
-                        .parameters
-                        .iter()
-                        .all(|value| value.is_finite())
-            }) && entity
-                .material_parameter_keyframes
-                .windows(2)
-                .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
-                && (entity.material_parameter_keyframes.is_empty() || base_has_fill);
         if !entity.paint_opacity.is_finite()
             || !(0.0..=1.0).contains(&entity.paint_opacity)
             || !entity.rotation.is_finite()
@@ -2600,21 +2616,8 @@ fn validate_create_scene_entities_command(
                         | CreateSceneEntityGeometry::Rectangle { .. }
                 ))
             || (!rotation_is_noop(entity.rotation) && entity.instant_transform.is_some())
-            || !opacity_keyframes_are_valid
-            || !material_keyframes_are_valid
-            || entity.fade_in.as_ref().is_some_and(|fade| {
-                entity
-                    .opacity_keyframes
-                    .first()
-                    .is_some_and(|keyframe| keyframe.at <= fade.end + TIMELINE_ANCHOR_EPSILON)
-            })
-            || entity.fade_in.as_ref().is_some_and(|fade| {
-                entity
-                    .material_parameter_keyframes
-                    .first()
-                    .is_some_and(|keyframe| keyframe.at <= fade.end + TIMELINE_ANCHOR_EPSILON)
-            })
-            || (!entity.material_parameter_keyframes.is_empty() && entity.appearance_at.is_some())
+            || !create_entity_property_keyframes_are_valid(entity)
+            || (!entity.material_parameter_keyframes.is_empty() && has_color_override)
             || (appearance_changed && entity.appearance_at.is_none())
             || entity.appearance_at.is_some_and(|at| {
                 !at.is_finite()
@@ -2642,6 +2645,7 @@ fn append_created_entity(
     capabilities: &mut BTreeSet<SceneCapabilityV1>,
 ) -> Result<(), CreateSceneEntitiesError> {
     let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
+    let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
     if let Some(color) = &entity.fill_color {
         let SceneAppearanceV1::Vector { fill, .. } = &mut appearance else {
             unreachable!("Studio shape color admission requires vector appearance");
@@ -2662,6 +2666,8 @@ fn append_created_entity(
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
         fill.fragment_material = Some(first.value.clone());
+        set_vector_paint_alpha(&mut appearance, entity.paint_opacity)
+            .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?;
     }
     capabilities.insert(capability);
     let created_id = entity.id;
@@ -2714,49 +2720,56 @@ fn append_created_entity(
             provenance_id: provenance_id.to_owned(),
         });
     }
-    if !entity.material_parameter_keyframes.is_empty() {
+    if has_material_parameter_keyframes {
         let SceneAppearanceV1::Vector { fill, stroke, .. } = appearance.clone() else {
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
         let Some(fill) = fill else {
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
-        let keyframes = entity
-            .material_parameter_keyframes
-            .into_iter()
-            .map(|keyframe| {
-                let mut fill = fill.clone();
-                if keyframe.value.texture.is_some() {
-                    capabilities.insert(SceneCapabilityV1::PngImage);
-                }
-                fill.fragment_material = Some(keyframe.value);
-                KeyframeV1 {
-                    at: keyframe.at,
-                    easing_to_next: keyframe.easing_to_next,
-                    value: VectorAppearanceValueV1 {
-                        fill: Some(fill),
-                        stroke: stroke.clone(),
-                    },
-                }
-            })
-            .collect();
         capabilities.insert(SceneCapabilityV1::FragmentMaterial);
-        capabilities.insert(SceneCapabilityV1::VectorAppearanceAnimation);
-        let channel_id =
-            unused_channel_id(scene, &format!("studio-material-parameter-{scene_order}"));
-        scene
-            .animation_channels
-            .push(AnimationChannelV1::VectorAppearance {
-                entity_id: created_id.clone(),
-                id: channel_id,
-                keyframes,
-                provenance_id: provenance_id.to_owned(),
-            });
+        if entity
+            .material_parameter_keyframes
+            .iter()
+            .any(|keyframe| keyframe.value.texture.is_some())
+        {
+            capabilities.insert(SceneCapabilityV1::PngImage);
+        }
+        if entity.material_parameter_keyframes.len() >= 2 {
+            let keyframes = entity
+                .material_parameter_keyframes
+                .into_iter()
+                .map(|keyframe| {
+                    let mut fill = fill.clone();
+                    fill.fragment_material = Some(keyframe.value);
+                    KeyframeV1 {
+                        at: keyframe.at,
+                        easing_to_next: keyframe.easing_to_next,
+                        value: VectorAppearanceValueV1 {
+                            fill: Some(fill),
+                            stroke: stroke.clone(),
+                        },
+                    }
+                })
+                .collect();
+            capabilities.insert(SceneCapabilityV1::VectorAppearanceAnimation);
+            let channel_id =
+                unused_channel_id(scene, &format!("studio-material-parameter-{scene_order}"));
+            scene
+                .animation_channels
+                .push(AnimationChannelV1::VectorAppearance {
+                    entity_id: created_id.clone(),
+                    id: channel_id,
+                    keyframes,
+                    provenance_id: provenance_id.to_owned(),
+                });
+        }
     }
     if let Some(at) = entity.appearance_at {
-        if !close_transform_baseline_value(entity.paint_opacity, 1.0)
-            || entity.fill_color.is_some()
-            || entity.stroke_color.is_some()
+        if !has_material_parameter_keyframes
+            && (!close_transform_baseline_value(entity.paint_opacity, 1.0)
+                || entity.fill_color.is_some()
+                || entity.stroke_color.is_some())
         {
             let mut changed_appearance = appearance.clone();
             let SceneAppearanceV1::Vector { fill, stroke, .. } = &mut changed_appearance else {
@@ -2775,9 +2788,8 @@ fn append_created_entity(
                     .expect("Studio shape color admission requires an existing stroke");
                 stroke.color = color.clone();
             }
-            debug_assert!(
-                set_vector_paint_alpha(&mut changed_appearance, entity.paint_opacity).is_some()
-            );
+            set_vector_paint_alpha(&mut changed_appearance, entity.paint_opacity)
+                .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?;
             let SceneAppearanceV1::Vector { fill, stroke, .. } = changed_appearance else {
                 unreachable!("supported Studio creation geometry always uses vector appearance");
             };
@@ -3253,7 +3265,7 @@ mod tests {
         }
     }
 
-    fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
+    fn mathtex_fixture_path() -> CubicPathV1 {
         let SceneGeometryV1::CubicPath { path } =
             fixture_bundle("mathtex-nested-radical-fraction.json")
                 .scene
@@ -3263,6 +3275,10 @@ mod tests {
         else {
             panic!("MathTex fixture must contain cubic-path geometry");
         };
+        path
+    }
+
+    fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
         CreateSceneEntitiesCommand {
             entities: vec![
                 CreateSceneEntity {
@@ -3318,7 +3334,9 @@ mod tests {
                     appearance_at: None,
                     fade_in: None,
                     fill_color: None,
-                    geometry: CreateSceneEntityGeometry::CubicOutline { path },
+                    geometry: CreateSceneEntityGeometry::CubicOutline {
+                        path: mathtex_fixture_path(),
+                    },
                     id: "tx:create/entity:mathtex".to_owned(),
                     lifetime: IntervalV1 {
                         end: 2.5,
@@ -3510,19 +3528,10 @@ mod tests {
             entity.tex_parts = None;
             entity.id.clone()
         };
-        let SceneGeometryV1::CubicPath { path } =
-            fixture_bundle("mathtex-nested-radical-fraction.json")
-                .scene
-                .entities
-                .remove(0)
-                .geometry
-        else {
-            panic!("Text outline fixture must contain cubic-path geometry");
-        };
         command.text_outlines = vec![StudioCreationTextOutline {
             entity_id,
             layout: StudioTextLayout::default(),
-            path,
+            path: mathtex_fixture_path(),
             text: text.to_owned(),
         }];
         command
@@ -3624,6 +3633,38 @@ mod tests {
         });
         program.schedule_order.push("material-segment".to_owned());
         program.schedule_edge_count = 2 * (program.operations.len() - 1);
+    }
+
+    fn sampled_material_parameter(
+        session: &EngineSessionV1,
+        entity_id: &str,
+        sample_time: f64,
+    ) -> f64 {
+        let packet_id = format!("material-parameter-{sample_time}");
+        let packet = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: &packet_id,
+                sample_time,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        packet
+            .draws
+            .iter()
+            .find_map(|draw| match draw {
+                poietra_scene_ir::RenderDrawV1::Path {
+                    entity_id: candidate,
+                    fill: Some(fill),
+                    ..
+                } if candidate == entity_id => fill.fragment_material.as_ref(),
+                _ => None,
+            })
+            .unwrap()
+            .parameters[0]
     }
 
     fn studio_created_appearance_edit_input(
@@ -4938,6 +4979,170 @@ mod tests {
                 ..
             }) if name == "amplitude"
         ));
+    }
+
+    #[test]
+    fn creation_material_parameter_track_composes_static_opacity_and_rotation() {
+        let mut bundle = static_imported_bundle();
+        bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.kind = StudioAuthoringEntityKind::Arrow;
+        entity.dimensions = StudioAuthoringDimensions::default();
+        add_creation_material_parameter_segment(&mut command.programs[0], entity_id, 1.0, 1.4);
+        command.programs.extend([
+            studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "opacity",
+                StudioCreationOperationKind::Opacity { alpha: Some(0.25) },
+            ),
+            studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "rotation",
+                StudioCreationOperationKind::Rotation {
+                    control_present: false,
+                    from: Some(0.0),
+                    relative_delta: Some(FRAC_PI_2),
+                    to: Some(FRAC_PI_2),
+                },
+            ),
+        ]);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+        assert!(matches!(
+            &created.appearance,
+            SceneAppearanceV1::Vector {
+                fill: Some(fill),
+                stroke: Some(stroke),
+                ..
+            } if (fill.color.alpha - 0.25).abs() < 1e-12
+                && (stroke.color.alpha - 0.25).abs() < 1e-12
+                && fill.fragment_material.is_some()
+        ));
+        let appearance_channels = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .filter_map(|channel| match channel {
+                AnimationChannelV1::VectorAppearance {
+                    entity_id: candidate,
+                    keyframes,
+                    ..
+                } if candidate == entity_id => Some(keyframes),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(appearance_channels.len(), 1);
+        assert!(appearance_channels[0].iter().all(|keyframe| matches!(
+            &keyframe.value,
+            VectorAppearanceValueV1 {
+                fill: Some(fill),
+                stroke: Some(stroke),
+            } if (fill.color.alpha - 0.25).abs() < 1e-12
+                && (stroke.color.alpha - 0.25).abs() < 1e-12
+        )));
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::AffineTransform { entity_id: candidate, .. }
+                            if candidate == entity_id
+                    )
+                })
+        );
+    }
+
+    #[test]
+    fn one_material_parameter_marker_sets_the_base_without_an_animation_channel() {
+        let mut bundle = static_imported_bundle();
+        bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.kind = StudioAuthoringEntityKind::Arrow;
+        entity.dimensions = StudioAuthoringDimensions::default();
+        add_creation_material_parameter_segment(&mut command.programs[0], entity_id, 1.0, 1.4);
+        let marker = command.programs[0].operations.last_mut().unwrap();
+        marker.interval.end = marker.interval.start;
+        let StudioCreationOperationKind::MaterialParameterKeyframes {
+            from: Some(from),
+            to,
+            ..
+        } = &mut marker.kind
+        else {
+            unreachable!();
+        };
+        *to = Some(*from);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+        let SceneAppearanceV1::Vector {
+            fill: Some(fill), ..
+        } = &created.appearance
+        else {
+            panic!("created arrow must have a fill");
+        };
+        assert_eq!(
+            fill.fragment_material.as_ref().unwrap().parameters,
+            vec![0.35, 8.0]
+        );
+        assert!(
+            !result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::VectorAppearance { entity_id: candidate, .. }
+                            if candidate == entity_id
+                    )
+                })
+        );
+        assert!(
+            result
+                .bundle
+                .scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::FragmentMaterial)
+        );
+        assert!((sampled_material_parameter(&session, entity_id, 0.95) - 0.35).abs() < 1e-12);
+        assert!((sampled_material_parameter(&session, entity_id, 1.5) - 0.35).abs() < 1e-12);
     }
 
     #[test]

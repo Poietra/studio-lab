@@ -342,7 +342,7 @@ fn interpolate_vector_appearance(
                     }
                     Some(material)
                 }
-                (None, Some(_)) | (Some(_), None) | (Some(_), Some(_)) => {
+                (None | Some(_), Some(_)) | (Some(_), None) => {
                     return Err(EvaluationError::MalformedScene(
                         "vector-appearance fragment material identity changed after validation",
                     ));
