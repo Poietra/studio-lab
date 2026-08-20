@@ -1,19 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
-  ManimApiRequestError,
   createManimProject,
   generateManimThumbnail,
   isNativeWorkspacePickerCancelled,
   loadManimProjects,
   loadManimThumbnailStatus,
   loadManimWorkspace,
+  ManimApiRequestError,
+  type ManimProjectCreationInput,
   renameManimProject,
   unregisterManimProject,
-  type ManimProjectCreationInput,
 } from "../render-pipeline/client";
 import type { ManimProjectSummary, ManimWorkspaceView } from "../render-pipeline/contracts";
 import { type ManimWorkspaceScene, workspaceScenes } from "./imported-workspace";
+import { projectStudioWorkspaceScenes, type StudioWorkspaceScene } from "./studio-native-workspace";
 
 type WorkspaceStatus = "error" | "loading" | "ready";
 export type WorkspaceMutation =
@@ -23,6 +24,10 @@ export type WorkspaceMutation =
   | null;
 
 function sceneAtId(scenes: readonly ManimWorkspaceScene[], id: string | null) {
+  return scenes.find((scene) => scene.sceneId === id) ?? null;
+}
+
+function editorSceneAtId(scenes: readonly StudioWorkspaceScene[], id: string | null) {
   return scenes.find((scene) => scene.sceneId === id) ?? null;
 }
 
@@ -104,7 +109,7 @@ export function useManimWorkspace() {
     try {
       const nextWorkspace = await loadManimWorkspace(projectId, controller.signal);
       if (request.current !== controller) return null;
-      const scenes = workspaceScenes(nextWorkspace);
+      const scenes = projectStudioWorkspaceScenes(nextWorkspace).scenes;
       activeProjectIdRef.current = projectId;
       setActiveProjectIdState(projectId);
       workspaceRef.current = nextWorkspace;
@@ -302,9 +307,13 @@ export function useManimWorkspace() {
   }, [loadProjectList]);
 
   const scenes = useMemo(() => (workspace ? workspaceScenes(workspace) : []), [workspace]);
+  const sceneProjection = useMemo(() => (workspace ? projectStudioWorkspaceScenes(workspace) : null), [workspace]);
+  const editorScenes = sceneProjection?.scenes ?? [];
   const activeScene = sceneAtId(scenes, activeSceneId);
+  const activeEditorScene = editorSceneAtId(editorScenes, activeSceneId);
   const nextScene = sceneAtId(scenes, activeScene?.nextSceneId ?? null);
   return {
+    activeEditorScene,
     activeScene,
     activeSceneId,
     activeProjectId,
@@ -312,6 +321,7 @@ export function useManimWorkspace() {
     clearMutationError,
     createWorkspace,
     error,
+    editorScenes,
     isRefreshing,
     leaveWorkspace,
     mutation,
@@ -321,6 +331,7 @@ export function useManimWorkspace() {
     refresh,
     renameWorkspace,
     scenes,
+    sceneProjection,
     setActiveProjectId,
     setActiveSceneId,
     status,

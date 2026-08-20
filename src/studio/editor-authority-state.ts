@@ -10,7 +10,6 @@ import {
   projectStudioMotion,
 } from "../engine/scene-authoring";
 import type { EditorProgramRecord } from "./editor-session-store";
-import type { ManimWorkspaceScene } from "./imported-workspace";
 import { programExecutionCapabilities } from "./operation-registry";
 import {
   isExactStaticRootProjectionProgramBatch,
@@ -27,6 +26,7 @@ import {
   studioMotionProjectionBatchKind,
 } from "./scene-authoring-wire";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import type { AuthorableWorkspaceScene } from "./studio-native-workspace";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "./timeline-projection";
 import {
   selectCreationProjection,
@@ -100,12 +100,12 @@ function isClosedValidationProgramBatch(programs: readonly SceneEdit[]) {
 }
 
 /**
- * Revalidates a wire projection against the selected imported Scene. The
+ * Revalidates a wire projection against the selected workspace Scene. The
  * durable authority owns canonical Programs, while validation and optional
  * authoring metadata remain browser concerns.
  */
 export async function materializeAuthoritativeEditorProgramsV1(
-  scene: ManimWorkspaceScene,
+  scene: AuthorableWorkspaceScene,
   current: readonly EditorProgramRecord[],
   programValues: unknown,
   timelineCompiler?: ProjectStudioTimelineCompiler,

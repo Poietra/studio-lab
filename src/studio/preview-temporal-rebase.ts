@@ -525,8 +525,8 @@ export async function compileStudioPreviewRuntimeTraceEdit(
     base.runtimeSceneState.sceneId !== correlation.studioSceneId ||
     base.runtimeSceneState.duration !== correlation.duration ||
     base.editorContext.activeSceneId !== correlation.studioSceneId ||
-    base.sourceSnapshot.sourceId !== context.sourcePath ||
-    base.sourceSnapshot.hash !== `sha256:${context.sourceHash}`
+    base.sourceSnapshot?.sourceId !== context.sourcePath ||
+    base.sourceSnapshot?.hash !== `sha256:${context.sourceHash}`
   ) {
     return unsupported(
       "source-correlation-invalid",

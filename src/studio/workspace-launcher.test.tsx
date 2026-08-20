@@ -27,6 +27,9 @@ describe("workspace launcher shell modes", () => {
 
     expect(markup).toContain("Import Python");
     expect(markup).toContain("Upload one .py file and an optional image.png.");
+    expect(markup).toContain("Blank Scene");
+    expect(markup).toContain("Start in Studio without creating a Python file.");
+    expect(markup).not.toContain("Begin with a minimal main.py.");
     expect(markup).not.toContain("Existing folder path");
     expect(markup).not.toContain("/path/to/manim-project");
   });

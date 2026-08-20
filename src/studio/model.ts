@@ -58,6 +58,17 @@ export type SourceSnapshot = Readonly<{
   version: typeof STUDIO_STATE_VERSION;
 }>;
 
+/**
+ * Source-free authority for a Studio-native document. `documentKey` is the
+ * opaque server-issued identity from the Work Catalog; it is deliberately not
+ * projected into a source path or digest.
+ */
+export type StudioNativeDocumentSnapshot = Readonly<{
+  documentKey: string;
+  origin: "studio-native";
+  version: typeof STUDIO_STATE_VERSION;
+}>;
+
 export type StaticSemanticEntity = Readonly<{
   sourceIdentity: string;
   runtimeIdentities: Knowledge<readonly string[]>;
@@ -223,15 +234,32 @@ export type ProgramRecord = Readonly<{
 
 export type StudioEditProjectionAuthority = "rust-authorized-batch" | "source-bound-endpoint" | "static-imported-root";
 
-export type WorkingState = Readonly<{
+type WorkingStateBase = Readonly<{
   appliedEdits: readonly ProgramRecord[];
   editorContext: EditorContext;
   runtimeSceneState: RuntimeSceneState;
-  sourceSnapshot: SourceSnapshot;
   stagedEdits: readonly ProgramRecord[];
   staticSemanticState: StaticSemanticState;
   version: typeof STUDIO_STATE_VERSION;
 }>;
+
+/**
+ * The authoring base has exactly one authority: imported source evidence or a
+ * Studio-native Editor Document. Keeping this a closed union prevents native
+ * projects from fabricating `.py` identity merely to satisfy legacy preview
+ * correlation code.
+ */
+export type WorkingState = WorkingStateBase &
+  (
+    | Readonly<{
+        documentSnapshot?: never;
+        sourceSnapshot: SourceSnapshot;
+      }>
+    | Readonly<{
+        documentSnapshot: StudioNativeDocumentSnapshot;
+        sourceSnapshot?: never;
+      }>
+  );
 
 export type ProposedState = Readonly<{
   base: WorkingState;

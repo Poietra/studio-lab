@@ -595,8 +595,8 @@ function importedWorkingSourceIsExact(
     importedSnapshotCorrelationIsExact(input.snapshot, true) &&
     base.runtimeSceneState.sceneId === base.editorContext.activeSceneId &&
     base.runtimeSceneState.sceneId === `${correlation.context.sourcePath}#${correlation.context.sceneName}` &&
-    base.sourceSnapshot.sourceId === correlation.context.sourcePath &&
-    base.sourceSnapshot.hash === `sha256:${correlation.context.sourceHash}`
+    base.sourceSnapshot?.sourceId === correlation.context.sourcePath &&
+    base.sourceSnapshot?.hash === `sha256:${correlation.context.sourceHash}`
   );
 }
 
@@ -1391,8 +1391,8 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
       !importedSnapshotCorrelationIsExact(input.snapshot, true) ||
       base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
       base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||
-      base.sourceSnapshot.sourceId !== correlation.context.sourcePath ||
-      base.sourceSnapshot.hash !== `sha256:${correlation.context.sourceHash}`
+      base.sourceSnapshot?.sourceId !== correlation.context.sourcePath ||
+      base.sourceSnapshot?.hash !== `sha256:${correlation.context.sourceHash}`
     ) {
       return {
         error: "Static imported Studio state is not correlated with one exact verified Scene.",

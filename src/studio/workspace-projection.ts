@@ -33,6 +33,7 @@ import {
 import { normalizeContentSamples } from "./property-sampling";
 import { isExactStudioMathTexTransformProgramBatch, studioMotionProjectionBatchKind } from "./scene-authoring-wire";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import { type AuthorableWorkspaceScene, studioWorkspaceWorkingState } from "./studio-native-workspace";
 import {
   correlateTimelineProgramBatch,
   isSceneDurationProgramBatch,
@@ -1356,7 +1357,7 @@ function projectBaseWorkingState(workingState: WorkingState): ProposedState {
 
 export function projectStudioWorkspace(
   input: Readonly<{
-    activeScene: ManimWorkspaceScene;
+    activeScene: AuthorableWorkspaceScene;
     appliedEdits: readonly ProgramRecord[];
     boundEntityProjection?: StudioBoundEntityProjectionV1 | null;
     creationProjection?: StudioCreationProjectionV1 | null;
@@ -1372,7 +1373,7 @@ export function projectStudioWorkspace(
     timelineProjection?: StudioTimelineProjectionV1 | null;
   }>,
 ) {
-  const workingState = importedWorkingState(input.activeScene, {
+  const workingState = studioWorkspaceWorkingState(input.activeScene, {
     appliedEdits: input.appliedEdits,
     playhead: input.currentTime,
     selection: input.selectedObjectIds,

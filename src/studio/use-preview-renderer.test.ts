@@ -670,13 +670,14 @@ class MathTexScene(Scene):
   const workingState: WorkingState = {
     ...base.proposedState.base,
     appliedEdits: [],
+    documentSnapshot: undefined,
     editorContext: {
       ...base.proposedState.base.editorContext,
       activeSceneId: runtimeSceneState.sceneId,
     },
     runtimeSceneState,
     sourceSnapshot: {
-      ...base.proposedState.base.sourceSnapshot,
+      ...base.proposedState.base.sourceSnapshot!,
       hash: `sha256:${imported.sourceHash}`,
       sourceId: "scene.py",
     },
@@ -1655,7 +1656,8 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: base.snapshot,
       workingState: {
         ...timelineWorkingState,
-        sourceSnapshot: { ...timelineWorkingState.sourceSnapshot, hash: `sha256:${HASH_B}` },
+        documentSnapshot: undefined,
+        sourceSnapshot: { ...timelineWorkingState.sourceSnapshot!, hash: `sha256:${HASH_B}` },
       },
       workingRevision: "studio-working-v1:inexact-imported-timeline-source",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
@@ -2365,7 +2367,8 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       workingState: {
         ...fixture.workingState,
-        sourceSnapshot: { ...fixture.workingState.sourceSnapshot, hash: `sha256:${HASH_B}` },
+        documentSnapshot: undefined,
+        sourceSnapshot: { ...fixture.workingState.sourceSnapshot!, hash: `sha256:${HASH_B}` },
       },
       workingRevision: fixture.workingRevision,
       workspaceKey: fixture.workspaceKey,

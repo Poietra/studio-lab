@@ -636,7 +636,16 @@ export const manimWorkspaceViewSchema: z.ZodType<ManimWorkspaceView> = z
     renderCapability: manimRenderCapabilitySchema,
     sources: z.array(manimWorkspaceSourceSchema),
   })
-  .strict();
+  .strict()
+  .superRefine((workspace, context) => {
+    if (workspace.nativeDocument && workspace.sources.length > 0) {
+      context.addIssue({
+        code: "custom",
+        message: "A Studio-native workspace cannot also expose imported Manim sources.",
+        path: ["sources"],
+      });
+    }
+  });
 
 export const manimProjectSummarySchema: z.ZodType<ManimProjectSummary> = z
   .object({
