@@ -105,6 +105,7 @@ import {
   validateInspectorEdits,
 } from "./studio/inspector-edit";
 import {
+  filterStudioCanvasEntitiesByVisibility,
   planStudioLayerOrder,
   planStudioLayerReorder,
   projectStudioLayers,
@@ -247,6 +248,7 @@ import {
   createDirectManipulationResizeProgram,
   createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
+  createDirectManipulationVisibilityProgram,
 } from "./studio/suggestion-program";
 import {
   isSceneDurationProgramBatch,
@@ -1901,13 +1903,16 @@ export function App({
   const runtimeTraceOpaqueSelectionEntities = (previewRenderer?.runtimeTraceOpaqueSelectionEntities ?? []).filter(
     ({ id }) => !sourceProjectedVisibleEntityIds.has(id),
   );
-  const visibleEntities = [
-    // Runtime-only groups such as NumberPlane can span the full frame. Keep
-    // their selection-only hit targets below source-backed edit targets so the
-    // editable grid_title remains directly draggable at the same timestamp.
-    ...runtimeTraceOpaqueSelectionEntities,
-    ...sourceProjectedVisibleEntities,
-  ];
+  const visibleEntities = filterStudioCanvasEntitiesByVisibility(
+    [
+      // Runtime-only groups such as NumberPlane can span the full frame. Keep
+      // their selection-only hit targets below source-backed edit targets so the
+      // editable grid_title remains directly draggable at the same timestamp.
+      ...runtimeTraceOpaqueSelectionEntities,
+      ...sourceProjectedVisibleEntities,
+    ],
+    previewRenderer?.canonicalScene?.bundle.scene.entities ?? null,
+  );
   const editableEntities = presentedRuntimeTraceAuthorities.reduce<readonly ProjectedEntity[]>(
     (entities, authority) =>
       projectStudioPreviewRuntimeTraceEntityPresence(
@@ -3717,6 +3722,34 @@ export function App({
 
   function reorderLayer(entityId: string, frontFirstIndex: number) {
     return stageLayerOrder(entityId, planStudioLayerReorder(studioLayers, entityId, frontFirstIndex));
+  }
+
+  function toggleLayerVisibility(entityId: string, visible: boolean) {
+    const layer = studioLayers.find(({ entity }) => entity.id === entityId);
+    if (!layer || layer.visibilityReadOnlyReason || layer.sourceAnchor === null) {
+      setDraftError(layer?.visibilityReadOnlyReason ?? "This layer visibility cannot be changed yet.");
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    try {
+      const validation = createDirectManipulationVisibilityProgram({
+        capturedPlayhead: layer.sourceAnchor,
+        entityId,
+        scene: sourceScene,
+        start: layer.sourceAnchor,
+        transactionId: `studio-visibility-${crypto.randomUUID()}`,
+        visible,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, layer.sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The layer visibility could not be changed.");
+      return false;
+    }
   }
 
   function toggleLayerLock(entityId: string) {
@@ -6155,6 +6188,7 @@ export function App({
               onLayerOrder={changeLayerOrder}
               onLayerReorder={reorderLayer}
               onToggleEntityLock={toggleLayerLock}
+              onToggleEntityVisibility={toggleLayerVisibility}
               onRedo={() => void redoProgram()}
               onToggleEntity={(entityId, selected) =>
                 setSelectedObjectIds((selection) =>

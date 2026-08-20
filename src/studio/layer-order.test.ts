@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { planStudioLayerOrder, planStudioLayerReorder, projectStudioLayers } from "./layer-order";
+import {
+  filterStudioCanvasEntitiesByVisibility,
+  planStudioLayerOrder,
+  planStudioLayerReorder,
+  projectStudioLayers,
+} from "./layer-order";
 import type { ProjectedEntity } from "./model";
 
 function entity(id: string, sourceIdentity: ProjectedEntity["sourceIdentity"]): ProjectedEntity {
@@ -105,6 +110,8 @@ describe("Studio Layers paint order", () => {
             sceneOrder: null,
             sourceAnchor: 0,
             sourceZIndex: null,
+            visibilityReadOnlyReason: "Wait for preview.",
+            visible: true,
           },
         ],
         "studio:a",
@@ -155,5 +162,34 @@ describe("Studio Layers paint order", () => {
 
     expect(pending[0].readOnlyReason).toMatch(/wait for the canonical preview/i);
     expect(pending[0].readOnlyReason).not.toMatch(/imported manim/i);
+  });
+
+  it("keeps hidden rows in Layers while removing only their Canvas overlay", () => {
+    const projected = projectStudioLayers({
+      canonicalEntities: [
+        { id: "studio:visible", sceneOrder: 0, sourceZIndex: 0 },
+        { id: "studio:hidden", sceneOrder: 1, sourceZIndex: 1, visible: false },
+      ],
+      creationSourceAnchors: new Map([
+        ["studio:visible", 0],
+        ["studio:hidden", 0],
+      ]),
+      entities: [
+        entity("studio:visible", { kind: "unknown", reason: "Studio-created" }),
+        {
+          ...entity("studio:hidden", { kind: "unknown", reason: "Studio-created" }),
+          transactionId: "tx:create-hidden",
+        },
+      ],
+      sourceRuntimeIdentity: null,
+    });
+
+    expect(projected.find(({ entity: item }) => item.id === "studio:hidden")?.visible).toBe(false);
+    expect(
+      filterStudioCanvasEntitiesByVisibility(
+        projected.map(({ entity: item }) => item),
+        [{ id: "studio:visible" }, { id: "studio:hidden", visible: false }],
+      ).map(({ id }) => id),
+    ).toEqual(["studio:visible"]);
   });
 });

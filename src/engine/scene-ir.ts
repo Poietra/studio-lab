@@ -151,6 +151,8 @@ export const sceneEntityV1Schema = z
       .max(MAX_ENTITIES - 1),
     sourceZIndex: finiteNumberV1Schema,
     transform: engineAffineTransformV1Schema,
+    /** Static document visibility. Missing means visible for older Scene IR. */
+    visible: z.boolean().optional(),
   })
   .strict();
 

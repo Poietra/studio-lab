@@ -9,18 +9,23 @@ export type StudioLayerEntry = Readonly<{
   sceneOrder: number | null;
   sourceAnchor: number | null;
   sourceZIndex: number | null;
+  visibilityReadOnlyReason: string | null;
+  visible: boolean;
 }>;
 
 type CanonicalLayerEntity = Readonly<{
   id: string;
   sceneOrder: number;
   sourceZIndex: number;
+  visible?: boolean;
 }>;
 
 type SourceRuntimeIdentity = ReadonlyMap<string, Readonly<{ entityId: string }>>;
 
 const IMPORTED_ORDERING_REASON = "Imported Manim object: z-order round-trip is not supported yet.";
 const PREVIEW_ORDERING_REASON = "Wait for the canonical preview before changing this layer order.";
+const IMPORTED_VISIBILITY_REASON = "Imported Manim object: visibility round-trip is not supported yet.";
+const PREVIEW_VISIBILITY_REASON = "Wait for the canonical preview before changing this layer visibility.";
 
 function comparePaintOrder(left: CanonicalLayerEntity, right: CanonicalLayerEntity) {
   return left.sourceZIndex - right.sourceZIndex || left.sceneOrder - right.sceneOrder;
@@ -68,6 +73,12 @@ export function projectStudioLayers(
       sceneOrder: canonical?.sceneOrder ?? null,
       sourceAnchor,
       sourceZIndex: canonical?.sourceZIndex ?? null,
+      visibilityReadOnlyReason: !studioCreated
+        ? IMPORTED_VISIBILITY_REASON
+        : sourceAnchor === null || canonical === null
+          ? PREVIEW_VISIBILITY_REASON
+          : null,
+      visible: canonical?.visible !== false,
     };
   });
   projected.sort((left, right) => {
@@ -93,6 +104,16 @@ export function projectStudioLayers(
         ? movementAvailability(entries.length - frontFirstIndex - 1, entries.length)
         : entry.canMove,
   }));
+}
+
+/** Keeps the Layers row while removing hidden canonical entities from Canvas
+ * interaction overlays. The WebGPU draw is removed independently in Rust. */
+export function filterStudioCanvasEntitiesByVisibility(
+  entities: readonly ProjectedEntity[],
+  canonicalEntities: readonly Readonly<{ id: string; visible?: boolean }>[] | null,
+) {
+  const hidden = new Set(canonicalEntities?.filter(({ visible }) => visible === false).map(({ id }) => id) ?? []);
+  return entities.filter(({ id }) => !hidden.has(id));
 }
 
 export type StudioLayerOrderPlan =

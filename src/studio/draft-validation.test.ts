@@ -15,6 +15,7 @@ import {
   createDirectManipulationResizeProgram,
   createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
+  createDirectManipulationVisibilityProgram,
 } from "./suggestion-program";
 
 const transition: EditSuggestionOperation = {
@@ -538,7 +539,58 @@ describe("Studio draft validation boundary", () => {
         transactionId: "imported-layer-order",
       }),
     ).toMatchObject({
-      issues: [expect.objectContaining({ code: "lowering-unsupported", field: "entityId" })],
+      issues: expect.arrayContaining([expect.objectContaining({ code: "lowering-unsupported", field: "entityId" })]),
+      kind: "invalid",
+    });
+  });
+
+  it("creates static visibility only for a Studio-created object", () => {
+    const entityId = "tx:visibility/entity:circle";
+    const scene = {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          [entityId]: {
+            id: entityId,
+            lifetime: [{ end: STUDIO_FIXTURE_SCENE.duration, start: 0 }],
+            provisional: false,
+            sourceIdentity: { kind: "unknown" as const, reason: "Studio-created entity." },
+            transactionId: "visibility",
+            type: "Circle",
+          },
+        },
+      },
+    };
+
+    expect(
+      createDirectManipulationVisibilityProgram({
+        capturedPlayhead: 0,
+        entityId,
+        scene,
+        start: 0,
+        transactionId: "hide-layer",
+        visible: false,
+      }),
+    ).toMatchObject({
+      kind: "valid",
+      program: {
+        loweringStatus: "unsupported",
+        operations: [{ entityId, key: "visibility", value: false }],
+      },
+    });
+    expect(
+      createDirectManipulationVisibilityProgram({
+        capturedPlayhead: 0,
+        entityId: "equation_1",
+        scene: STUDIO_FIXTURE_SCENE,
+        start: 0,
+        transactionId: "hide-imported-layer",
+        visible: false,
+      }),
+    ).toMatchObject({
+      issues: expect.arrayContaining([expect.objectContaining({ code: "lowering-unsupported", field: "entityId" })]),
       kind: "invalid",
     });
   });

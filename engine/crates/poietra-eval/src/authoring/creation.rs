@@ -76,6 +76,7 @@ struct CreateSceneEntity {
     source_z_index: Option<f64>,
     stroke_color: Option<RgbaColorV1>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
+    visible: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -137,6 +138,9 @@ pub enum StudioCreationProjectedMutationKind {
     },
     SourceZIndex {
         source_z_index: f64,
+    },
+    Visibility {
+        visible: bool,
     },
     OpacityKeyframes {
         easing: StudioMotionEasing,
@@ -244,6 +248,9 @@ pub enum StudioCreationOperationKind {
     },
     SourceZIndex {
         source_z_index: Option<f64>,
+    },
+    Visibility {
+        visible: Option<bool>,
     },
     OpacityKeyframes {
         easing: StudioMotionEasing,
@@ -389,6 +396,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::Rotation { .. }
             | StudioCreationOperationKind::Opacity { .. }
             | StudioCreationOperationKind::SourceZIndex { .. }
+            | StudioCreationOperationKind::Visibility { .. }
             | StudioCreationOperationKind::OpacityKeyframes { .. }
             | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
             | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -542,6 +550,7 @@ struct PlannedStudioCreationEntity {
     uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
     spec: StudioCreationEntitySpec,
+    visible: bool,
 }
 
 struct StudioCreationTimelinePlan {
@@ -1516,6 +1525,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
                 | StudioCreationOperationKind::SourceZIndex { .. }
+                | StudioCreationOperationKind::Visibility { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
@@ -1557,6 +1567,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
                 | StudioCreationOperationKind::SourceZIndex { .. }
+                | StudioCreationOperationKind::Visibility { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::Resize { .. }
@@ -1786,6 +1797,7 @@ fn plan_studio_creation_edits(
             uniform_scale_keyframes: Vec::new(),
             source_z_index: None,
             spec: spec.clone(),
+            visible: true,
         });
     }
 
@@ -2549,6 +2561,35 @@ fn plan_studio_creation_edits(
                         },
                     ));
                 }
+                StudioCreationOperationKind::Visibility {
+                    visible: Some(visible),
+                } if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                    && *visible != state.visible
+                    && studio_timeline_semantic_values_match(
+                        operation.interval.end,
+                        program.anchor_resolved_seconds,
+                    )
+                    && studio_timeline_semantic_values_match(
+                        program.anchor_resolved_seconds,
+                        state.spec.lifetime_start,
+                    )
+                    && state.persistent_removal.is_none() =>
+                {
+                    state.visible = *visible;
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: instant_interval,
+                            kind: StudioCreationProjectedMutationKind::Visibility {
+                                visible: *visible,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
                 StudioCreationOperationKind::FillColor { color: Some(color) }
                     if operation.origin == StudioAuthoringOrigin::DirectManipulation
                         && matches!(
@@ -2702,6 +2743,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
                 | StudioCreationOperationKind::SourceZIndex { .. }
+                | StudioCreationOperationKind::Visibility { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -3222,6 +3264,7 @@ fn append_created_entity(
         scene_order,
         source_z_index,
         transform: base_transform.clone(),
+        visible: entity.visible,
     });
     let mut opacity_keyframes = Vec::new();
     if let Some(fade) = entity.fade_in {
@@ -3754,6 +3797,7 @@ impl EngineSessionV1 {
                 uniform_scale_keyframes: state.uniform_scale_keyframes.clone(),
                 source_z_index: state.source_z_index,
                 stroke_color,
+                visible: state.visible,
             });
         }
         let motions = plan
@@ -3851,6 +3895,10 @@ mod tests {
         path
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keeps the complete creation fixture explicit"
+    )]
     fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
         CreateSceneEntitiesCommand {
             entities: vec![
@@ -3875,6 +3923,7 @@ mod tests {
                     source_z_index: None,
                     stroke_color: None,
                     instant_transform: None,
+                    visible: true,
                 },
                 CreateSceneEntity {
                     appearance_at: None,
@@ -3906,6 +3955,7 @@ mod tests {
                         scale_x: 0.75,
                         scale_y: 1.0,
                     }),
+                    visible: true,
                 },
                 CreateSceneEntity {
                     appearance_at: None,
@@ -3930,6 +3980,7 @@ mod tests {
                     source_z_index: None,
                     stroke_color: None,
                     instant_transform: None,
+                    visible: true,
                 },
             ],
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
@@ -4890,6 +4941,51 @@ mod tests {
                 .map(poietra_scene_ir::RenderDrawV1::entity_id),
             Some(entity_id)
         );
+    }
+
+    #[test]
+    fn normalized_creation_applies_static_visibility_without_changing_lifetime_or_opacity() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        command.programs.push(studio_created_appearance_edit_input(
+            0.5,
+            entity_id,
+            "hide-layer",
+            StudioCreationOperationKind::Visibility {
+                visible: Some(false),
+            },
+        ));
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert!(matches!(
+            &projection.mutations[2].kind,
+            StudioCreationProjectedMutationKind::Visibility { visible: false }
+        ));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+        assert!(!created.visible);
+        assert_eq!(
+            created.lifetimes,
+            vec![IntervalV1 {
+                end: result.bundle.scene.duration,
+                start: 0.5
+            }]
+        );
+        assert!(matches!(
+            created.appearance,
+            SceneAppearanceV1::Vector { opacity, .. } if (opacity - 1.0).abs() < f64::EPSILON
+        ));
     }
 
     #[test]

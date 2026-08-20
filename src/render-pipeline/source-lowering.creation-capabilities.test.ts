@@ -180,6 +180,22 @@ describe("Canonical EditProgram source lowering", () => {
     ).toThrow(/only Studio-created objects/i);
   });
 
+  it("rejects canonical layer visibility instead of lowering it as opacity or removal", () => {
+    const visibility = canonicalProgram([
+      {
+        ...operationBase("hide-created-layer", 7),
+        entityId: "tx:hidden/entity:circle",
+        key: "visibility",
+        kind: "SetProperty",
+        value: false,
+      },
+    ]);
+
+    expect(() => lowerCanonicalProgramSource(source, request(visibility), { height: 8, width: 14.222 }, null)).toThrow(
+      /canonical preview and MP4 export, but not Manim source export/i,
+    );
+  });
+
   it("keeps client opacity keyframes out of Manim source export", () => {
     const entityId = "tx:client-opacity/entity:circle";
     const program = canonicalProgram(

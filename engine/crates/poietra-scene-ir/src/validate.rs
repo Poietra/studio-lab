@@ -994,6 +994,11 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
             );
         }
     }
+    let parent_ids = scene
+        .entities
+        .iter()
+        .filter_map(|entity| entity.parent_id.as_deref())
+        .collect::<HashSet<_>>();
     let mut scene_orders = HashSet::new();
     let mut total_segments = 0usize;
     for (index, entity) in scene.entities.iter().enumerate() {
@@ -1102,6 +1107,16 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                     format!("unknown parent entity {parent_id}"),
                 );
             }
+        }
+        if !entity.visible
+            && (entity.parent_id.is_some()
+                || matches!(entity.geometry, SceneGeometryV1::Group {})
+                || parent_ids.contains(entity.id.as_str()))
+        {
+            validator.issue(
+                format!("{path}.visible"),
+                "static hidden visibility currently requires a root drawable leaf entity",
+            );
         }
         if entity.lifetimes.is_empty() || entity.lifetimes.len() > 64 {
             validator.issue(
