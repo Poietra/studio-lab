@@ -36,7 +36,18 @@ describe("project-local fragment material authoring", () => {
   it("assigns one declared screen texture per object and preserves the slot while duplicating", () => {
     const preset = createStudioTextureFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
     expect(listStudioFragmentMaterialsV1(preset.state)).toMatchObject([
-      { name: "Screen texture", source: STUDIO_TEXTURE_FRAGMENT_SOURCE_V1, textureSlot: "texture2d" },
+      {
+        name: "Screen texture",
+        parameterSchema: [
+          { default: 1, name: "Tiles X", range: { max: 8, min: 0.25, step: 0.25 }, type: "f32" },
+          { default: 1, name: "Tiles Y", range: { max: 8, min: 0.25, step: 0.25 }, type: "f32" },
+          { default: 0, name: "Offset X", range: { max: 2, min: -2, step: 0.05 }, type: "f32" },
+          { default: 0, name: "Offset Y", range: { max: 2, min: -2, step: 0.05 }, type: "f32" },
+          { default: 1, name: "Mix", range: { max: 1, min: 0, step: 0.05 }, type: "f32" },
+        ],
+        source: STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
+        textureSlot: "texture2d",
+      },
     ]);
     const firstTexture = {
       asset: { assetId: "asset:first", sha256: "1".repeat(64) },
@@ -48,7 +59,21 @@ describe("project-local fragment material authoring", () => {
       shaderId: preset.shaderId,
       texture: firstTexture,
     });
-    const changed = updateStudioFragmentMaterialTextureV1(assigned, {
+    expect(assigned.assignmentsByScene["scene-a"]?.circle?.parameters).toEqual([1, 1, 0, 0, 1]);
+    const tiled = updateStudioFragmentMaterialParameterV1(assigned, {
+      entityId: "circle",
+      name: "Tiles X",
+      sceneId: "scene-a",
+      value: 3,
+    });
+    const mixed = updateStudioFragmentMaterialParameterV1(tiled, {
+      entityId: "circle",
+      name: "Mix",
+      sceneId: "scene-a",
+      value: 0.6,
+    });
+    expect(mixed.assignmentsByScene["scene-a"]?.circle?.parameters).toEqual([3, 1, 0, 0, 0.6]);
+    const changed = updateStudioFragmentMaterialTextureV1(mixed, {
       entityId: "circle",
       sceneId: "scene-a",
       texture: {
@@ -69,6 +94,9 @@ describe("project-local fragment material authoring", () => {
     ).toThrow("Select a project PNG");
     const duplicated = duplicateStudioFragmentMaterialV1(changed, preset.shaderId);
     expect(duplicated.state.registry.materials[1]).toMatchObject({ textureSlot: "texture2d" });
+    expect(duplicated.state.parameterSchemasByShaderId[duplicated.shaderId]).toEqual(
+      changed.parameterSchemasByShaderId[preset.shaderId],
+    );
   });
 
   it("creates the Wave preset and updates one object's bounded parameters without changing another object", () => {

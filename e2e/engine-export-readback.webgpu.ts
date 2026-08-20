@@ -140,7 +140,7 @@ function screenTextureExportFixture(fixture: SceneIrBundleV1, assets: SceneIrBun
         ...base.appearance.fill,
         color: { alpha: 1, blue: 1, green: 1, red: 1 },
         fragmentMaterial: {
-          parameters: [],
+          parameters: [1, 1, 0, 0, 1],
           revision: 1,
           shaderId: SCREEN_TEXTURE_SHADER_ID,
           texture: {

@@ -3,8 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
+  STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "../engine/fragment-material-registry";
+import { STUDIO_TEXTURE_FRAGMENT_PARAMETER_SCHEMA_V1 } from "./fragment-material-authoring";
 import {
   FragmentMaterialEditor,
   type FragmentMaterialEditorItem,
@@ -216,7 +218,7 @@ describe("FragmentMaterialEditor", () => {
     const markup = renderToStaticMarkup(
       <FragmentMaterialEditor
         active
-        assignedParameters={[]}
+        assignedParameters={[2, 1.5, 0.25, -0.1, 0.7]}
         assignedShaderId="screen-texture"
         assignedTexture={{
           asset: { assetId: "asset:diagram", sha256: "a".repeat(64) },
@@ -229,10 +231,10 @@ describe("FragmentMaterialEditor", () => {
             assignmentCount: 1,
             glslSource: null,
             name: "Screen texture",
-            parameterSchema: [],
+            parameterSchema: STUDIO_TEXTURE_FRAGMENT_PARAMETER_SCHEMA_V1,
             revision: 1,
             shaderId: "screen-texture",
-            source: STUDIO_WAVE_FRAGMENT_SOURCE_V1,
+            source: STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
             textureSlot: "texture2d",
           },
         ]}
@@ -252,6 +254,12 @@ describe("FragmentMaterialEditor", () => {
     );
 
     expect(markup).toContain('aria-label="Material texture"');
+    expect(markup).toContain('aria-label="Tiles X material parameter"');
+    expect(markup).toContain('aria-label="Tiles Y material parameter"');
+    expect(markup).toContain('aria-label="Offset X material parameter"');
+    expect(markup).toContain('aria-label="Offset Y material parameter"');
+    expect(markup).toContain('aria-label="Mix material parameter"');
+    expect(markup).toContain("0.7");
     expect(markup).toContain("Diagram (640×360)");
     expect(markup).toContain('<option value="nearest" selected="">Nearest</option>');
     expect(markup).toContain("Texture materials use canonical WGSL");
