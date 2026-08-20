@@ -319,11 +319,7 @@ function EntityResizeHandles({
   shape: "circle" | "rectangle" | null;
 }>) {
   const handles =
-    shape === "rectangle"
-      ? RESIZE_HANDLES
-      : shape === "circle"
-        ? RESIZE_HANDLES.filter((handle) => handle.direction.length === 2)
-        : RESIZE_HANDLES.filter((handle) => handle.direction === "se");
+    shape === "rectangle" ? RESIZE_HANDLES : RESIZE_HANDLES.filter((handle) => handle.direction.length === 2);
   return handles.map((handle) => {
     const arrowKeys =
       handle.direction.length === 2

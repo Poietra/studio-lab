@@ -206,7 +206,7 @@ test("renders a real ImageMobject through verified PNG delivery and WebGPU readb
   const resizeHandle = page.getByRole("button", { name: "Resize image from bottom-right corner" });
   await expect(resizeHandle).toBeVisible();
   await expect(resizeHandle).toHaveAttribute("data-studio-resize-handle", studioEntityId);
-  await expect(page.locator(`[data-studio-resize-handle="${studioEntityId}"]`)).toHaveCount(1);
+  await expect(page.locator(`[data-studio-resize-handle="${studioEntityId}"]`)).toHaveCount(4);
 
   const proof = await page.evaluate(
     async ({ asset, projectId, revision, scene, targetViewport }) => {

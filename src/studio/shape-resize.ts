@@ -27,6 +27,15 @@ export function resizeHandleUsesDelta(direction: ResizeHandleDirection, delta: P
   );
 }
 
+export function resizeHandleDeltaIsOutward(direction: ResizeHandleDirection, delta: Point) {
+  return (
+    (delta.x < 0 && direction.includes("w")) ||
+    (delta.x > 0 && direction.includes("e")) ||
+    (delta.y < 0 && direction.includes("n")) ||
+    (delta.y > 0 && direction.includes("s"))
+  );
+}
+
 export function oppositeResizeCorner(
   direction: ResizeHandleDirection,
   bounds: Readonly<{ bottom: number; left: number; right: number; top: number }>,
