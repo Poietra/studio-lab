@@ -107,6 +107,7 @@ export function StudioViewport({
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
   onCanvasPlace,
+  onCreateStarterComposition,
   onEntityKeyDown,
   onEntityPointerCancel,
   onEntityPointerDown,
@@ -205,6 +206,7 @@ export function StudioViewport({
         lockedEntityIds={lockedEntityIds}
         motionPaths={motionPaths}
         onCanvasPlace={onCanvasPlace}
+        onCreateStarterComposition={onCreateStarterComposition}
         onEntityKeyDown={onEntityKeyDown}
         onEntityPointerCancel={onEntityPointerCancel}
         onEntityPointerDown={onEntityPointerDown}
