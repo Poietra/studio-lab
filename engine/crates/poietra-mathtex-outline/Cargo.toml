@@ -17,6 +17,7 @@ ratex-types.workspace = true
 serde.workspace = true
 sha2.workspace = true
 ttf-parser.workspace = true
+unicode-normalization.workspace = true
 
 [build-dependencies]
 ratex-katex-fonts.workspace = true

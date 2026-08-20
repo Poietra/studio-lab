@@ -70,7 +70,7 @@ describe("Inspector field validation", () => {
     });
   });
 
-  it("normalizes Japanese multiline Text to LF for edits and re-editing", () => {
+  it("normalizes Japanese multiline and canonically equivalent IME Text for edits and re-editing", () => {
     const entity = fixtureEntity("label_1");
     expect(validateInspectorEdits(entity, values(entity, { content: "日本語で動画を作る\r\nこんにちは" }))).toEqual({
       edits: {
@@ -95,6 +95,12 @@ describe("Inspector field validation", () => {
       content: { displayLines: ["日本語で動画を作る", "こんにちは"], text: "日本語で動画を作る\r\nこんにちは" },
     } satisfies ProjectedEntity;
     expect(initialInspectorEditValues(restored).content).toBe("日本語で動画を作る\nこんにちは");
+
+    const decomposed = validateInspectorEdits(entity, values(entity, { content: "Cafe\u0301" }));
+    expect(decomposed).toMatchObject({
+      edits: { content: { displayLines: ["Caf\u00e9"], text: "Caf\u00e9" } },
+      kind: "valid",
+    });
   });
 
   it("validates Text size, alignment, real weight, and line height as one content edit", () => {
