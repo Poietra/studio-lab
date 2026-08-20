@@ -364,7 +364,7 @@ describe("durable editor session storage", () => {
     expect(store.restore(identity())).toEqual({ kind: "restored", snapshot: snapshot() });
   });
 
-  it("restores Studio-native sessions within one tab without persisting them", () => {
+  it("restores Studio-native Programs after a browser reload by project and document", () => {
     const adapter = new MemoryAdapter();
     const store = new EditorSessionStore(adapter);
     const nativeSnapshot = snapshot();
@@ -372,8 +372,16 @@ describe("durable editor session storage", () => {
     expect(store.save(nativeIdentity(), nativeSnapshot)).toBe(true);
     expect(store.restore(nativeIdentity())).toEqual({ kind: "restored", snapshot: nativeSnapshot });
     expect(store.restore(nativeIdentity("e".repeat(64)))).toEqual({ kind: "empty" });
-    expect(adapter.value).toBeNull();
-    expect(new EditorSessionStore(adapter).restore(nativeIdentity())).toEqual({ kind: "empty" });
+    expect(adapter.value).not.toContain("native:");
+    expect(new EditorSessionStore(adapter).restore(nativeIdentity())).toMatchObject({
+      kind: "restored",
+      snapshot: {
+        appliedPrograms: nativeSnapshot.appliedPrograms,
+        draftError: null,
+        insertValue: "",
+        instruction: "",
+      },
+    });
   });
 
   it("restores preset parameters and Scene-isolated assignments through the existing storage authority", () => {

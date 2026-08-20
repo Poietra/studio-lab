@@ -151,6 +151,19 @@ const storedEntrySchema = z
     snapshot: editorSessionSnapshotSchemaV1,
   })
   .strict();
+const storedNativeIdentitySchema = z
+  .object({
+    documentKey: z.string().regex(/^[0-9a-f]{64}$/),
+    projectId: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),
+  })
+  .strict();
+const storedNativeEntrySchema = z
+  .object({
+    identity: storedNativeIdentitySchema,
+    savedAt: z.number().int().nonnegative(),
+    snapshot: editorSessionSnapshotSchemaV1,
+  })
+  .strict();
 const storedProjectFragmentMaterialSchema = z
   .object({
     sourceLanguage: z.literal("wgsl"),
@@ -161,13 +174,20 @@ const storedEnvelopeSchema = z
   .object({
     entries: z.array(storedEntrySchema).max(100),
     fragmentMaterials: z.record(projectIdSchema, storedProjectFragmentMaterialSchema).optional(),
+    nativeEntries: z.array(storedNativeEntrySchema).max(100).optional(),
     version: z.literal(EDITOR_SESSION_STORAGE_VERSION),
   })
   .strict();
 
 type StoredIdentity = z.infer<typeof storedIdentitySchema>;
+type StoredNativeIdentity = z.infer<typeof storedNativeIdentitySchema>;
 type StoredEntry = Readonly<{
   identity: StoredIdentity;
+  savedAt: number;
+  snapshot: EditorSessionSnapshotV1;
+}>;
+type StoredNativeEntry = Readonly<{
+  identity: StoredNativeIdentity;
   savedAt: number;
   snapshot: EditorSessionSnapshotV1;
 }>;
@@ -193,8 +213,12 @@ function sessionKey(identity: StoredIdentity) {
   return JSON.stringify([identity.projectId, identity.sceneKey, identity.sourceHash]);
 }
 
-function nativeSessionKey(identity: NativeEditorSessionIdentity) {
-  return JSON.stringify([identity.projectId, opaqueSceneKey(identity.sceneId), "studio-native", identity.documentKey]);
+function storedNativeIdentity(identity: NativeEditorSessionIdentity): StoredNativeIdentity {
+  return { documentKey: identity.documentKey, projectId: identity.projectId };
+}
+
+function nativeSessionKey(identity: StoredNativeIdentity) {
+  return JSON.stringify([identity.projectId, "studio-native", identity.documentKey]);
 }
 
 function parsedNativeIdentity(identity: EditorSessionIdentity) {
@@ -209,7 +233,7 @@ function parsedNativeIdentity(identity: EditorSessionIdentity) {
  */
 export function editorSessionIdentityKey(identity: EditorSessionIdentity) {
   const native = parsedNativeIdentity(identity);
-  if (native) return nativeSessionKey(native);
+  if (native) return nativeSessionKey(storedNativeIdentity(native));
   const parsed = identitySchema.safeParse(identity);
   return parsed.success ? sessionKey(storedIdentity(parsed.data)) : null;
 }
@@ -291,6 +315,10 @@ function migrateStoredEnvelope(value: unknown) {
         snapshot: parseEditorSessionSnapshotV1(entry.snapshot),
       })),
       fragmentMaterials: parsed.data.fragmentMaterials ?? {},
+      nativeEntries: (parsed.data.nativeEntries ?? []).map((entry) => ({
+        ...entry,
+        snapshot: parseEditorSessionSnapshotV1(entry.snapshot),
+      })),
     };
   } catch {
     return null;
@@ -300,6 +328,7 @@ function migrateStoredEnvelope(value: unknown) {
 export class EditorSessionStore {
   private readonly cloudManagedSessions = new Set<string>();
   private readonly memorySessions = new Map<string, EditorSessionSnapshot>();
+  private readonly persistedNativeSessions = new Map<string, StoredNativeEntry>();
   private readonly persistedSessions = new Map<string, StoredEntry>();
   private readonly projectFragmentMaterials = new Map<string, ProjectFragmentMaterialStateV1>();
 
@@ -313,7 +342,9 @@ export class EditorSessionStore {
   clear(identity: EditorSessionIdentity) {
     const native = parsedNativeIdentity(identity);
     if (native) {
-      this.memorySessions.delete(nativeSessionKey(native));
+      const key = nativeSessionKey(storedNativeIdentity(native));
+      this.memorySessions.delete(key);
+      if (this.persistedNativeSessions.delete(key)) this.flush();
       return;
     }
     const parsedIdentity = identitySchema.safeParse(identity);
@@ -325,6 +356,12 @@ export class EditorSessionStore {
 
   clearProject(projectId: string) {
     let changed = this.projectFragmentMaterials.delete(projectId);
+    for (const [key, entry] of this.persistedNativeSessions) {
+      if (entry.identity.projectId === projectId) {
+        this.persistedNativeSessions.delete(key);
+        changed = true;
+      }
+    }
     for (const [key, entry] of this.persistedSessions) {
       if (entry.identity.projectId === projectId) {
         this.persistedSessions.delete(key);
@@ -374,6 +411,12 @@ export class EditorSessionStore {
         changed = true;
       }
     }
+    for (const [key, entry] of this.persistedNativeSessions) {
+      if (!projectIds.has(entry.identity.projectId)) {
+        this.persistedNativeSessions.delete(key);
+        changed = true;
+      }
+    }
     for (const [key] of this.memorySessions) {
       const parsedKey = JSON.parse(key) as readonly string[];
       const projectId = parsedKey[0];
@@ -389,8 +432,14 @@ export class EditorSessionStore {
   restore(identity: EditorSessionIdentity): EditorSessionRestoreResult {
     const native = parsedNativeIdentity(identity);
     if (native) {
-      const snapshot = this.memorySessions.get(nativeSessionKey(native));
-      return snapshot ? { kind: "restored", snapshot } : { kind: "empty" };
+      const key = nativeSessionKey(storedNativeIdentity(native));
+      const snapshot = this.memorySessions.get(key);
+      if (snapshot) return { kind: "restored", snapshot };
+      const persisted = this.persistedNativeSessions.get(key);
+      if (!persisted) return { kind: "empty" };
+      const restored = restoredDurableSnapshot(persisted.snapshot);
+      this.memorySessions.set(key, restored);
+      return { kind: "restored", snapshot: restored };
     }
     const parsedIdentity = identitySchema.safeParse(identity);
     if (!parsedIdentity.success) return { kind: "empty" };
@@ -461,7 +510,21 @@ export class EditorSessionStore {
     if (!parsedSnapshot) return false;
     const native = parsedNativeIdentity(identity);
     if (native) {
-      this.memorySessions.set(nativeSessionKey(native), parsedSnapshot);
+      const persistedIdentity = storedNativeIdentity(native);
+      const key = nativeSessionKey(persistedIdentity);
+      this.memorySessions.set(key, parsedSnapshot);
+      const entry: StoredNativeEntry = {
+        identity: persistedIdentity,
+        savedAt: Math.max(0, Math.floor(this.now())),
+        snapshot: durableEditorSessionSnapshotV1(parsedSnapshot),
+      };
+      if (serializedBytes(JSON.stringify(entry)) > MAX_STORED_EDITOR_SESSION_BYTES) {
+        this.persistedNativeSessions.delete(key);
+        this.flush();
+        return false;
+      }
+      this.persistedNativeSessions.set(key, entry);
+      this.flush();
       return true;
     }
     const parsedIdentity = identitySchema.safeParse(identity);
@@ -487,25 +550,47 @@ export class EditorSessionStore {
   }
 
   private flush() {
-    const retained = [...this.persistedSessions.values()]
-      .sort((left, right) => right.savedAt - left.savedAt)
-      .filter((entry) => serializedBytes(JSON.stringify(entry)) <= MAX_STORED_EDITOR_SESSION_BYTES)
+    const retained = [
+      ...[...this.persistedSessions.values()].map((entry) => ({ entry, kind: "imported" as const })),
+      ...[...this.persistedNativeSessions.values()].map((entry) => ({ entry, kind: "native" as const })),
+    ]
+      .sort((left, right) => right.entry.savedAt - left.entry.savedAt)
+      .filter(({ entry }) => serializedBytes(JSON.stringify(entry)) <= MAX_STORED_EDITOR_SESSION_BYTES)
       .slice(0, MAX_STORED_EDITOR_SESSIONS);
     const fragmentMaterials = this.serializedProjectFragmentMaterials();
-    let envelope = { entries: retained, fragmentMaterials, version: EDITOR_SESSION_STORAGE_VERSION } as const;
+    let envelope = {
+      entries: retained.flatMap(({ entry, kind }) => (kind === "imported" ? [entry] : [])),
+      fragmentMaterials,
+      nativeEntries: retained.flatMap(({ entry, kind }) => (kind === "native" ? [entry] : [])),
+      version: EDITOR_SESSION_STORAGE_VERSION,
+    };
     while (
-      envelope.entries.length > 0 &&
+      envelope.entries.length + envelope.nativeEntries.length > 0 &&
       serializedBytes(JSON.stringify(envelope)) > MAX_EDITOR_SESSION_STORAGE_BYTES
     ) {
-      envelope = { ...envelope, entries: envelope.entries.slice(0, -1) };
+      const oldestImported = envelope.entries.at(-1)?.savedAt ?? Number.POSITIVE_INFINITY;
+      const oldestNative = envelope.nativeEntries.at(-1)?.savedAt ?? Number.POSITIVE_INFINITY;
+      envelope =
+        oldestImported <= oldestNative
+          ? { ...envelope, entries: envelope.entries.slice(0, -1) }
+          : { ...envelope, nativeEntries: envelope.nativeEntries.slice(0, -1) };
     }
     this.persistedSessions.clear();
     for (const entry of envelope.entries) {
       this.persistedSessions.set(sessionKey(entry.identity), entry);
     }
+    this.persistedNativeSessions.clear();
+    for (const entry of envelope.nativeEntries) {
+      this.persistedNativeSessions.set(nativeSessionKey(entry.identity), entry);
+    }
     if (!this.adapter) return;
     try {
-      if (envelope.entries.length === 0 && Object.keys(envelope.fragmentMaterials).length === 0) this.adapter.clear();
+      if (
+        envelope.entries.length === 0 &&
+        envelope.nativeEntries.length === 0 &&
+        Object.keys(envelope.fragmentMaterials).length === 0
+      )
+        this.adapter.clear();
       else this.adapter.write(JSON.stringify(envelope));
     } catch {
       // Storage can be unavailable or over quota. The in-memory session remains usable.
@@ -541,6 +626,11 @@ export class EditorSessionStore {
       const key = sessionKey(entry.identity);
       const previous = this.persistedSessions.get(key);
       if (!previous || previous.savedAt <= entry.savedAt) this.persistedSessions.set(key, entry);
+    }
+    for (const entry of envelope.nativeEntries) {
+      const key = nativeSessionKey(entry.identity);
+      const previous = this.persistedNativeSessions.get(key);
+      if (!previous || previous.savedAt <= entry.savedAt) this.persistedNativeSessions.set(key, entry);
     }
     for (const [projectId, material] of Object.entries(envelope.fragmentMaterials)) {
       this.projectFragmentMaterials.set(projectId, material.state);
