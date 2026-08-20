@@ -975,7 +975,19 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain("sample</textarea>");
     expect(markup).toContain("Enter for new line");
     expect(markup).toContain("Ctrl/⌘+Enter to commit");
+    expect(markup).toContain('aria-label="Create text"');
+    expect(markup).toContain(">Create</button>");
     expect(markup).not.toContain("data-studio-semantic-paint");
+
+    const editMarkup = renderToStaticMarkup(
+      <StudioInlineTextEditor
+        onCancel={vi.fn()}
+        onCommit={vi.fn(() => true)}
+        session={{ entityId: "entity:text", initialValue: "sample", kind: "edit", point: { x: 320, y: 180 } }}
+      />,
+    );
+    expect(editMarkup).toContain('aria-label="Save text"');
+    expect(editMarkup).toContain(">Save</button>");
   });
 
   it("lets the active inline editor blur before another canvas placement", () => {
