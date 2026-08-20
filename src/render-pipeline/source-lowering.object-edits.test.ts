@@ -640,7 +640,7 @@ class GroupedEquation(Scene):
     });
   });
 
-  it("round-trips one imported multi-root position Program without splitting its transaction", () => {
+  it("round-trips repeated imported multi-root position Programs without splitting their transactions", () => {
     const groupSource = `from manim import *
 
 class GroupedEquation(Scene):
@@ -674,28 +674,53 @@ class GroupedEquation(Scene):
       transactionId: "move-imported-selection",
     });
     if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+    const secondValidation = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: -10, y: 30 },
+      positions: {
+        [leftId]: {
+          x: left.geometry.position.value.x + delta.x,
+          y: left.geometry.position.value.y + delta.y,
+        },
+        [rightId]: {
+          x: right.geometry.position.value.x + delta.x,
+          y: right.geometry.position.value.y + delta.y,
+        },
+      },
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targetEntityIds: [leftId, rightId],
+      transactionId: "move-imported-selection-again",
+    });
+    if (secondValidation.kind !== "valid") throw new Error(JSON.stringify(secondValidation.issues));
 
-    const lowered = lowerCanonicalProgramSource(
+    const lowered = lowerCanonicalProgramBatchSource(
       groupSource,
       request(validation.program, [
         { entityId: leftId, sourceVariable: "left" },
         { entityId: rightId, sourceVariable: "right" },
       ]),
+      [
+        { program: validation.program, sourceAnchor: 0 },
+        { program: secondValidation.program, sourceAnchor: 0 },
+      ],
       frame,
       null,
     );
     const reimported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation", frame);
 
-    expect(lowered.insertedCode.match(/# poietra:position/g)).toHaveLength(2);
-    expect(lowered.insertedCode).toContain("left.move_to(");
-    expect(lowered.insertedCode).toContain("right.move_to(");
+    expect(lowered.insertedCode.match(/# poietra:position/g)).toHaveLength(4);
+    expect(lowered.insertedCode.match(/left\.move_to\(/g)).toHaveLength(2);
+    expect(lowered.insertedCode.match(/right\.move_to\(/g)).toHaveLength(2);
+    expect(lowered.insertedCode).toContain('# poietra:transaction "move-imported-selection"');
+    expect(lowered.insertedCode).toContain('# poietra:transaction "move-imported-selection-again"');
     expect(reimported?.runtimeSceneState.objectGraph.entities[leftId]?.geometry?.position).toEqual({
       kind: "known",
-      value: { x: left.geometry.position.value.x + delta.x, y: left.geometry.position.value.y + delta.y },
+      value: { x: left.geometry.position.value.x + 30, y: left.geometry.position.value.y + 10 },
     });
     expect(reimported?.runtimeSceneState.objectGraph.entities[rightId]?.geometry?.position).toEqual({
       kind: "known",
-      value: { x: right.geometry.position.value.x + delta.x, y: right.geometry.position.value.y + delta.y },
+      value: { x: right.geometry.position.value.x + 30, y: right.geometry.position.value.y + 10 },
     });
   });
 

@@ -1968,7 +1968,7 @@ describe("compileStudioPreviewSceneV1", () => {
     },
   );
 
-  it("passes one imported multi-root move as an atomic static-root Program", async () => {
+  it("replays repeated imported multi-root moves for preview, undo, and redo", async () => {
     const fixture = await editedStaticRootPreviewInput();
     const firstRuntime = fixture.snapshot.snapshot.scene.entities[0];
     const firstStudio = fixture.workingState.runtimeSceneState.objectGraph.entities["source:circle"];
@@ -2038,6 +2038,32 @@ describe("compileStudioPreviewSceneV1", () => {
       ...programRecord(validation.program, validation),
       validation: { issues: validation.issues, status: "valid" as const },
     };
+    const secondValidation = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 30, y: 20 },
+      positions: {
+        "source:circle": { x: 340, y: 170 },
+        "source:second": { x: 420, y: 170 },
+      },
+      scene: workingBase.runtimeSceneState,
+      start: 0,
+      targetEntityIds: ["source:circle", "source:second"],
+      transactionId: "move-imported-selection-again",
+    });
+    if (secondValidation.kind !== "valid") throw new Error(JSON.stringify(secondValidation.issues));
+    const secondRecord = {
+      ...programRecord(secondValidation.program, secondValidation),
+      validation: { issues: secondValidation.issues, status: "valid" as const },
+    };
+    const appliedEdits = [record, secondRecord];
+    const correlatedSnapshot = {
+      ...fixture.snapshot,
+      snapshot: snapshotBundle,
+      sourceRuntimeIdentity: new Map([
+        ["circle", { bindingId: "binding:circle", entityId: "earlier", sourceName: "circle" }],
+        ["second", { bindingId: "binding:second", entityId: "second-root", sourceName: "second" }],
+      ]),
+    } satisfies StudioVerifiedPreviewSnapshotV1;
     const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
     const result = await compileStudioPreviewSceneV1({
       applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(
@@ -2045,17 +2071,10 @@ describe("compileStudioPreviewSceneV1", () => {
         compileApplyStaticRootTransformEdit,
       ),
       frame: { height: 9, width: 16 },
-      snapshot: {
-        ...fixture.snapshot,
-        snapshot: snapshotBundle,
-        sourceRuntimeIdentity: new Map([
-          ["circle", { bindingId: "binding:circle", entityId: "earlier", sourceName: "circle" }],
-          ["second", { bindingId: "binding:second", entityId: "second-root", sourceName: "second" }],
-        ]),
-      },
-      workingState: { ...workingBase, appliedEdits: [record] },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits },
       workingRevision: canonicalEditorWorkingRevision({
-        appliedEdits: [record],
+        appliedEdits,
         draftEdit: null,
         editingAppliedProgram: null,
         redoPrograms: [],
@@ -2068,14 +2087,61 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.staticRootProjection?.mutations).toEqual([
       expect.objectContaining({ entityId: "source:circle", kind: "position" }),
       expect.objectContaining({ entityId: "source:second", kind: "position" }),
+      expect.objectContaining({ entityId: "source:circle", kind: "position", value: { x: 370, y: 190 } }),
+      expect.objectContaining({ entityId: "source:second", kind: "position", value: { x: 450, y: 190 } }),
     ]);
     expect(commands).toHaveLength(1);
-    expect(commands[0]?.programs).toHaveLength(1);
+    expect(commands[0]?.programs).toHaveLength(2);
     expect(commands[0]?.programs[0]?.operations).toMatchObject([
       { entityId: "source:circle", kind: "position", position: { x: 340, y: 170 } },
       { entityId: "source:second", kind: "position", position: { x: 420, y: 170 } },
     ]);
+    expect(commands[0]?.programs[1]?.operations).toMatchObject([
+      { entityId: "source:circle", kind: "position", position: { x: 370, y: 190 } },
+      { entityId: "source:second", kind: "position", position: { x: 450, y: 190 } },
+    ]);
+    for (const entityId of ["earlier", "second-root"]) {
+      const entity = result.scene.bundle.scene.entities.find(({ id }) => id === entityId);
+      expect(entity?.transform.tx).toBeCloseTo(1.25);
+      expect(entity?.transform.ty).toBeCloseTo(-0.25);
+    }
     expect(result.scene.interactionEntityIds).toEqual(["earlier", "second-root"]);
+
+    const undo = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: compileApplyStaticRootTransformEdit,
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits: [record] },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits: [record],
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [{ kind: "mutation", mutation: { index: 1, kind: "append", value: secondRecord } }],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (undo.kind !== "compiled") throw new Error(undo.error);
+    for (const entityId of ["earlier", "second-root"]) {
+      const entity = undo.scene.bundle.scene.entities.find(({ id }) => id === entityId);
+      expect(entity?.transform.tx).toBeCloseTo(0.5);
+      expect(entity?.transform.ty).toBeCloseTo(0.25);
+    }
+
+    const redo = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: compileApplyStaticRootTransformEdit,
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits,
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (redo.kind !== "compiled") throw new Error(redo.error);
+    expect(redo.scene.bundle).toEqual(result.scene.bundle);
   });
 
   it("routes an imported static move followed by motion through one static-root Rust command", async () => {
