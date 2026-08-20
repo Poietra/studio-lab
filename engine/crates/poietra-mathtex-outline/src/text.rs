@@ -21,8 +21,10 @@ pub const MAX_TEXT_LINE_CHARACTERS_V1: usize = 128;
 pub const MAX_TEXT_CUBIC_SEGMENTS_V1: usize = 2_048;
 
 const DEJAVU_SANS_REGULAR: &[u8] = include_bytes!("../assets/DejaVuSans.ttf");
+const DEJAVU_SANS_BOLD: &[u8] = include_bytes!("../assets/DejaVuSans-Bold.ttf");
 const NOTO_SANS_CJK_JP_REGULAR_JOYO: &[u8] =
     include_bytes!("../assets/NotoSansCJKjp-Regular-Joyo.otf");
+const NOTO_SANS_CJK_JP_BOLD_JOYO: &[u8] = include_bytes!("../assets/NotoSansCJKjp-Bold-Joyo.otf");
 pub const DEFAULT_TEXT_LINE_HEIGHT_EM: f64 = 1.2;
 
 /// Horizontal alignment applied to each line inside the widest line box.
@@ -35,11 +37,22 @@ pub enum TextAlignmentV1 {
     Right,
 }
 
+/// Real embedded font face selected for plain Text outlines.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TextFontWeightV1 {
+    Bold,
+    #[default]
+    Regular,
+}
+
 /// Bounded plain-text layout owned by the Rust outline compiler.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextOutlineLayoutV1 {
     pub alignment: TextAlignmentV1,
+    #[serde(default)]
+    pub font_weight: TextFontWeightV1,
     pub line_height: f64,
 }
 
@@ -47,6 +60,7 @@ impl Default for TextOutlineLayoutV1 {
     fn default() -> Self {
         Self {
             alignment: TextAlignmentV1::Left,
+            font_weight: TextFontWeightV1::Regular,
             line_height: DEFAULT_TEXT_LINE_HEIGHT_EM,
         }
     }
@@ -163,13 +177,17 @@ pub fn compile_text_outline_v1(request: &TextOutlineRequestV1) -> TextOutlineRes
 
 fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1, CompileFailure> {
     let text = validate_request(request)?;
-    let dejavu = Face::parse(DEJAVU_SANS_REGULAR, 0).map_err(|_| {
+    let (dejavu_bytes, japanese_bytes) = match request.layout.font_weight {
+        TextFontWeightV1::Bold => (DEJAVU_SANS_BOLD, NOTO_SANS_CJK_JP_BOLD_JOYO),
+        TextFontWeightV1::Regular => (DEJAVU_SANS_REGULAR, NOTO_SANS_CJK_JP_REGULAR_JOYO),
+    };
+    let dejavu = Face::parse(dejavu_bytes, 0).map_err(|_| {
         CompileFailure::new(
             TextOutlineUnsupportedCodeV1::InternalFailure,
             "The embedded DejaVu Sans font could not be parsed",
         )
     })?;
-    let japanese = Face::parse(NOTO_SANS_CJK_JP_REGULAR_JOYO, 0).map_err(|_| {
+    let japanese = Face::parse(japanese_bytes, 0).map_err(|_| {
         CompileFailure::new(
             TextOutlineUnsupportedCodeV1::InternalFailure,
             "The embedded Japanese text font could not be parsed",
@@ -481,6 +499,7 @@ mod tests {
             "Wide\ni",
             TextOutlineLayoutV1 {
                 alignment: TextAlignmentV1::Center,
+                font_weight: TextFontWeightV1::Regular,
                 line_height: DEFAULT_TEXT_LINE_HEIGHT_EM,
             },
         );
@@ -488,6 +507,7 @@ mod tests {
             "Wide\ni",
             TextOutlineLayoutV1 {
                 alignment: TextAlignmentV1::Right,
+                font_weight: TextFontWeightV1::Regular,
                 line_height: 2.0,
             },
         );
@@ -499,6 +519,7 @@ mod tests {
                 "Wide\ni",
                 TextOutlineLayoutV1 {
                     alignment: TextAlignmentV1::Right,
+                    font_weight: TextFontWeightV1::Regular,
                     line_height: 2.0,
                 },
             )
@@ -510,6 +531,34 @@ mod tests {
             compile_text_outline_v1(&overflowing),
             TextOutlineResultV1::Unsupported(TextOutlineUnsupportedV1 {
                 code: TextOutlineUnsupportedCodeV1::OutlineInvalid,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn regular_and_bold_use_distinct_real_faces_for_latin_and_japanese() {
+        let regular = TextOutlineLayoutV1::default();
+        let bold = TextOutlineLayoutV1 {
+            font_weight: TextFontWeightV1::Bold,
+            ..regular
+        };
+        for text in ["Bold text", "太字の日本語"] {
+            let regular_artifact = compiled_with_layout(text, regular);
+            let bold_artifact = compiled_with_layout(text, bold);
+            assert_ne!(bold_artifact.path, regular_artifact.path);
+            assert!(
+                (bold_artifact.bounds.top - bold_artifact.bounds.bottom - 1.0).abs() <= 0.000_002
+            );
+            validate_cubic_path_v1(&bold_artifact.path).expect("bold Text path must be valid");
+        }
+
+        let mut missing = TextOutlineRequestV1::new("𠮷");
+        missing.layout = bold;
+        assert!(matches!(
+            compile_text_outline_v1(&missing),
+            TextOutlineResultV1::Unsupported(TextOutlineUnsupportedV1 {
+                code: TextOutlineUnsupportedCodeV1::GlyphMissing,
                 ..
             })
         ));

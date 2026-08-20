@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { canonicalTextOutlineInputV1, initializePoietraMathTexOutlineBindingsV1 } from "./mathtex-outline";
+import {
+  canonicalTextOutlineInputV1,
+  initializePoietraMathTexOutlineBindingsV1,
+  POIETRA_TEXT_OUTLINE_ABI_VERSION,
+} from "./mathtex-outline";
 
 function candidate(initialize: (input?: unknown) => Promise<unknown>) {
   return {
@@ -31,6 +35,10 @@ describe("MathTex outline WASM initialization", () => {
 });
 
 describe("plain Text outline input", () => {
+  it("pins the font-weight request ABI", () => {
+    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(3);
+  });
+
   it("accepts bounded Japanese multiline text and canonicalizes CRLF", () => {
     expect(canonicalTextOutlineInputV1("日本語で動画を作る\r\nこんにちは")).toBe("日本語で動画を作る\nこんにちは");
     expect(canonicalTextOutlineInputV1("supplementary: 🚀")).toBe("supplementary: 🚀");

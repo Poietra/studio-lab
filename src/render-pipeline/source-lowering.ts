@@ -750,8 +750,9 @@ function manimTextConstructor(
       "Manim .py export does not yet preserve Studio Text alignment or line height faithfully. Preview and MP4 export support this layout, but Python export would not preserve it faithfully.",
     );
   }
-  if (!options.unitHeight) return `Text(${JSON.stringify(text)})`;
-  return `Text(${JSON.stringify(text)}, font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(${formatAmount(layout.fontSize)})`;
+  const weightArgument = layout.fontWeight === "bold" ? ", weight=BOLD" : "";
+  if (!options.unitHeight) return `Text(${JSON.stringify(text)}${weightArgument})`;
+  return `Text(${JSON.stringify(text)}, font="DejaVu Sans"${weightArgument}, disable_ligatures=True).scale_to_fit_height(${formatAmount(layout.fontSize)})`;
 }
 
 function entityConstructor(operation: CreateEntityOperation) {

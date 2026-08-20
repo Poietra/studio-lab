@@ -2539,7 +2539,10 @@ describe("compileStudioPreviewSceneV1", () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const sourceText = "日本語で動画を作る\r\nこんにちは";
     const text = "日本語で動画を作る\nこんにちは";
-    const textContent = { layout: { alignment: "right" as const, fontSize: 1.5, lineHeight: 1.8 }, text };
+    const textContent = {
+      layout: { alignment: "right" as const, fontSize: 1.5, fontWeight: "bold" as const, lineHeight: 1.8 },
+      text,
+    };
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 0.5,
       entities: [
@@ -2547,7 +2550,7 @@ describe("compileStudioPreviewSceneV1", () => {
           content: {
             displayLines: [sourceText],
             text: sourceText,
-            textLayout: { alignment: "right", fontSize: 1.5, lineHeight: 1.8 },
+            textLayout: { alignment: "right", fontSize: 1.5, fontWeight: "bold", lineHeight: 1.8 },
           },
           position: { x: 320, y: 180 },
           type: "Text",
@@ -2667,7 +2670,9 @@ describe("compileStudioPreviewSceneV1", () => {
     });
 
     expect(result.kind).toBe("compiled");
-    expect(compilerInputs).toEqual([{ layout: { alignment: "right", lineHeight: 1.8 }, text: textContent.text }]);
+    expect(compilerInputs).toEqual([
+      { layout: { alignment: "right", fontWeight: "bold", lineHeight: 1.8 }, text: textContent.text },
+    ]);
     expect(commands).toHaveLength(1);
     const compiled = outline.result;
     if (compiled.kind !== "compiled") throw new Error("Text test outline must compile.");

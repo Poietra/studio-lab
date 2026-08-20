@@ -248,6 +248,7 @@ const contentMarkerSchema = z.discriminatedUnion("type", [
             .object({
               alignment: z.enum(["center", "left", "right"]),
               fontSize: z.number().finite().positive().default(1),
+              fontWeight: z.enum(["bold", "regular"]).default("regular"),
               lineHeight: z.number().finite().positive(),
             })
             .strict()
@@ -1439,7 +1440,7 @@ function markerBefore(statements: readonly SourceStatement[], statementIndex: nu
 function verifiedContentReplacement(statement: string, marker: z.infer<typeof contentMarkerSchema>) {
   const constructor =
     marker.type === "Text"
-      ? `Text(${JSON.stringify(marker.content.text)})`
+      ? `Text(${JSON.stringify(marker.content.text)}${marker.content.textLayout?.fontWeight === "bold" ? ", weight=BOLD" : ""})`
       : `MathTex(${marker.content.texParts.map((part) => JSON.stringify(part)).join(", ")})`;
   const variable = marker.variable;
   return (

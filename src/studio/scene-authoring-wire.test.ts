@@ -84,7 +84,7 @@ describe("Studio creation wire", () => {
     expect(command.programs[0]?.operations[0]).toMatchObject({
       entity: {
         kind: "text",
-        layout: { alignment: "left", fontSize: 1, lineHeight: 1.2 },
+        layout: { alignment: "left", fontSize: 1, fontWeight: "regular", lineHeight: 1.2 },
         text: "日本語で動画を作る\nこんにちは",
         texParts: null,
       },
@@ -104,7 +104,7 @@ describe("Studio creation wire", () => {
       value: {
         displayLines: ["After"],
         text: "After",
-        textLayout: { alignment: "right" as const, fontSize: 1.5, lineHeight: 1.8 },
+        textLayout: { alignment: "right" as const, fontSize: 1.5, fontWeight: "bold" as const, lineHeight: 1.8 },
       },
     };
     const followup = {

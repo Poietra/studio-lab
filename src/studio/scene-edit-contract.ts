@@ -38,6 +38,7 @@ const contentSchema = z.object({
     .object({
       alignment: z.enum(["center", "left", "right"]),
       fontSize: z.number().finite().positive().default(1),
+      fontWeight: z.enum(["bold", "regular"]).default("regular"),
       lineHeight: z.number().finite().positive(),
     })
     .strict()

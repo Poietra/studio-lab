@@ -117,7 +117,7 @@ export async function authorizeSnapshotProgramWithSnapshot(
             throw new HttpError("Studio-created Text requires bounded canonical Unicode content and layout.", 400);
           }
           textInputs.set(
-            `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontSize}\u0000${content.layout.lineHeight}`,
+            `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}`,
             { content, entityId: operation.entity.id },
           );
         }
@@ -127,7 +127,11 @@ export async function authorizeSnapshotProgramWithSnapshot(
       let response;
       try {
         response = await compileTextOutlineV1({
-          layout: { alignment: content.layout.alignment, lineHeight: content.layout.lineHeight },
+          layout: {
+            alignment: content.layout.alignment,
+            fontWeight: content.layout.fontWeight,
+            lineHeight: content.layout.lineHeight,
+          },
           text: content.text,
         });
       } catch {

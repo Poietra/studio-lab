@@ -14,6 +14,7 @@ export type InspectorEditField =
   | "radius"
   | "textAlignment"
   | "textFontSize"
+  | "textFontWeight"
   | "textLineHeight"
   | "width"
   | "x"
@@ -25,6 +26,7 @@ export type InspectorEditValues = Readonly<{
   radius: string | null;
   textAlignment: "center" | "left" | "right" | null;
   textFontSize: string | null;
+  textFontWeight: "bold" | "regular" | null;
   textLineHeight: string | null;
   width: string | null;
   x: string | null;
@@ -110,6 +112,7 @@ function validateContent(
   textLayout: Readonly<{
     alignment: "center" | "left" | "right";
     fontSize: number;
+    fontWeight: "bold" | "regular";
     lineHeight: number;
   }> | null,
   errors: Partial<Record<InspectorEditField, string>>,
@@ -175,6 +178,8 @@ export function initialInspectorEditValues(entity: ProjectedEntity): InspectorEd
       entity.type === "Text"
         ? formattedNumber(textContent?.layout.fontSize ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontSize, 2)
         : null,
+    textFontWeight:
+      textContent?.layout.fontWeight ?? (entity.type === "Text" ? STUDIO_TEXT_DEFAULT_LAYOUT.fontWeight : null),
     textLineHeight:
       entity.type === "Text"
         ? formattedNumber(textContent?.layout.lineHeight ?? STUDIO_TEXT_DEFAULT_LAYOUT.lineHeight, 2)
@@ -209,10 +214,12 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
     let textLayout: Readonly<{
       alignment: "center" | "left" | "right";
       fontSize: number;
+      fontWeight: "bold" | "regular";
       lineHeight: number;
     }> | null = null;
     if (entity.type === "Text") {
       if (!values.textAlignment) errors.textAlignment = "Choose a Text alignment.";
+      if (!values.textFontWeight) errors.textFontWeight = "Choose a Text font weight.";
       const fontSize =
         values.textFontSize === null ? null : parseFiniteNumber(values.textFontSize, "textFontSize", errors);
       const lineHeight =
@@ -224,11 +231,12 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
         errors.textLineHeight = "Line height must be greater than zero.";
       } else if (
         values.textAlignment &&
+        values.textFontWeight &&
         fontSize !== null &&
         errors.textFontSize === undefined &&
         lineHeight !== null
       ) {
-        textLayout = { alignment: values.textAlignment, fontSize, lineHeight };
+        textLayout = { alignment: values.textAlignment, fontSize, fontWeight: values.textFontWeight, lineHeight };
       }
     }
     const currentText = studioCreationTextContent(entity.content);
@@ -237,11 +245,16 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
       textLayout !== null &&
       (currentText?.layout.alignment !== textLayout.alignment ||
         currentText?.layout.fontSize !== textLayout.fontSize ||
+        currentText?.layout.fontWeight !== textLayout.fontWeight ||
         currentText?.layout.lineHeight !== textLayout.lineHeight);
     const contentChanged = values.content !== currentContentValue(entity) || layoutChanged;
     const studioCreated = entity.sourceIdentity.kind === "unknown" && Boolean(entity.transactionId);
     if (layoutChanged && !studioCreated) {
-      errors.textAlignment = "Typography editing is available only for Studio-created Text.";
+      const message = "Typography editing is available only for Studio-created Text.";
+      if (currentText?.layout.alignment !== textLayout?.alignment) errors.textAlignment = message;
+      else if (currentText?.layout.fontSize !== textLayout?.fontSize) errors.textFontSize = message;
+      else if (currentText?.layout.fontWeight !== textLayout?.fontWeight) errors.textFontWeight = message;
+      else errors.textLineHeight = message;
     } else if (contentChanged) {
       const content = validateContent(entity, values.content, textLayout, errors);
       if (content) edits.content = content;

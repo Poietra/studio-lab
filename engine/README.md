@@ -45,7 +45,8 @@ node scripts/regenerate-mathtex-manim-parity.mjs
 The sibling plain-Text ABI lays out at most 256 Unicode scalars across eight
 lines with left, center, or right alignment and a positive finite line height
 (1.2 em by default), then normalizes the complete block's ink to centered unit
-height. It embeds printable ASCII plus a Noto Sans
+height. Regular and bold select distinct embedded font faces; synthetic bold is
+not used. It embeds printable ASCII plus a Noto Sans
 CJK JP subset containing kana, Japanese punctuation, full-width forms, and the
 2,136 Joyo kanji. It does not provide font-family selection, shaping, arbitrary
 CJK, or emoji; missing glyphs fail explicitly.

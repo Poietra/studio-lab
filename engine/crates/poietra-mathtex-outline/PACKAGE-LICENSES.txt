@@ -179,17 +179,22 @@ IN THE FONT SOFTWARE.
 Noto Sans CJK JP provenance and subset scope
 ---------------------------------------------
 
-Name: Noto Sans CJK JP Regular
+Names: Noto Sans CJK JP Regular and Bold
 Version: 2.004
 Official distribution: https://github.com/notofonts/noto-cjk
 Copyright: Copyright 2014-2021 Adobe (http://www.adobe.com/).
 License: SIL Open Font License, Version 1.1 (reproduced above)
 
-The embedded `NotoSansCJKjp-Regular-Joyo.otf` is a mechanically reduced copy
-of face zero in `NotoSansCJK-Regular.ttc`. Its source SHA-256 is
-`b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a`; the
+The embedded `NotoSansCJKjp-Regular-Joyo.otf` and
+`NotoSansCJKjp-Bold-Joyo.otf` are mechanically reduced copies of face zero in
+the corresponding official CJK TTC files. The Regular source SHA-256 is
+`b76b0433203017ca80401b2ee0dd69350349871c4b19d504c34dbdd80541690a` and its
 embedded subset SHA-256 is
 `3b20029c2d55abc5fbaf99a66de9701ed22acd4ab73c85f99d75509e18a08f5c`.
+The Bold source SHA-256 is
+`faa5f3656a78b2e2d450d27fe8382c778bc2b6bb5ea29c986664a6a435056ceb` and its
+embedded subset SHA-256 is
+`a8698cb395390eda245e0095537e5459598c16ff236f4d37330b9ef2b66cd4c4`.
 FontTools 4.61.1 selected the 2,136 Joyo kanji listed by the Agency for
 Cultural Affairs, plus ASCII, Latin-1, Japanese punctuation, hiragana,
 katakana, and full-width forms. It removed the GSUB, GPOS, and GDEF tables,
@@ -199,7 +204,8 @@ were not edited.
 Official Joyo index:
 https://www.bunka.go.jp/seisaku/kokugo_nihongo/kokugo_shisaku/joyokanjihyo_sakuin/index.html
 
-The selected face is 609,668 bytes (535,787 bytes with gzip level 6). For
+The Regular selected face is 609,668 bytes (535,787 bytes with gzip level 6),
+and the Bold selected face is 622,984 bytes (546,535 bytes with gzip level 6). For
 comparison on the same host, an IPA Gothic subset across broad Japanese CJK
 ranges was 5,545,516 bytes (3,890,692 gzip), while the corresponding Noto CJK
 subset was 13,458,308 bytes (11,354,699 gzip). This smaller face deliberately
@@ -209,13 +215,17 @@ produce the public `glyph-missing` result.
 DejaVu Sans provenance and license
 ----------------------------------
 
-Name: DejaVu Sans Regular
+Names: DejaVu Sans Regular and Bold
 Official distribution: https://dejavu-fonts.github.io/
 Copyright: Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved.
 License: Bitstream Vera
 
-The embedded face is mechanically subset to printable ASCII (U+0020–U+007E)
-without changing glyph designs or the DejaVu Sans family and Book style names.
+The embedded faces are mechanically subset to printable ASCII (U+0020–U+007E)
+without changing glyph designs or the DejaVu Sans family and Book/Bold style
+names. The Bold source SHA-256 is
+`5c1247acef7f2b8522a31742c76d6adcb5569bacc0be7ceaa4dc39dd252ce895` and the
+embedded Bold subset SHA-256 is
+`faf60d17a78efc57cfbe99be7a707a0f057e06778682dc0c3518be8b3624f4f8`.
 
 DejaVu changes are in public domain. Bitstream Vera is a trademark of
 Bitstream, Inc.

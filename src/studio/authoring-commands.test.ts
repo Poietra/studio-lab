@@ -132,7 +132,7 @@ describe("manual Studio authoring commands", () => {
       displayLines: ["日本語で動画を作る", "こんにちは"],
       label: canonical,
       text: canonical,
-      textLayout: { alignment: "left", fontSize: 1, lineHeight: 1.2 },
+      textLayout: { alignment: "left", fontSize: 1, fontWeight: "regular", lineHeight: 1.2 },
     });
     const lfCreation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
@@ -155,7 +155,7 @@ describe("manual Studio authoring commands", () => {
     const content = {
       displayLines: ["Wide", "i"],
       text: "Wide\ni",
-      textLayout: { alignment: "right" as const, fontSize: 1.5, lineHeight: 1.8 },
+      textLayout: { alignment: "right" as const, fontSize: 1.5, fontWeight: "bold" as const, lineHeight: 1.8 },
     };
     expect(() =>
       createInspectorEntityEditProgram({
@@ -225,16 +225,27 @@ describe("manual Studio authoring commands", () => {
       ),
     ).toBe(false);
 
+    const original = editorProgramRecord(owner, null, [creation.entityIds[0]!]);
     const applied = editorProgramRecord(programRecord(validation.program, validation), null, [creation.entityIds[0]!]);
     const state = {
       ...createInitialEditorState(),
       appliedPrograms: [applied],
-      programUndoEntries: [{ index: 0, kind: "append" as const, value: applied }],
+      programUndoEntries: [
+        { index: 0, kind: "append" as const, value: original },
+        { index: 0, kind: "replace" as const, previous: original, value: applied },
+      ],
       selectedObjectIds: ["label_1"],
     };
     const undone = undoEditorProgram(state);
-    expect(undone.appliedPrograms).toEqual([]);
-    expect(redoEditorProgram(undone).appliedPrograms).toEqual([applied]);
+    expect(undone.appliedPrograms).toEqual([original]);
+    expect(
+      undone.appliedPrograms[0]?.program.operations.find((operation) => operation.kind === "CreateEntity"),
+    ).toMatchObject({ entity: { content: { text: "Before", textLayout: { fontWeight: "regular" } } } });
+    const redone = redoEditorProgram(undone);
+    expect(redone.appliedPrograms).toEqual([applied]);
+    expect(
+      redone.appliedPrograms[0]?.program.operations.find((operation) => operation.kind === "CreateEntity"),
+    ).toMatchObject({ entity: { content: { text: "Wide\ni", textLayout: { fontWeight: "bold" } } } });
   });
 
   it.each(["tab\tbreak", ["a", "b", "c", "d", "e", "f", "g", "h", "i"].join("\n"), "x".repeat(129)])(
