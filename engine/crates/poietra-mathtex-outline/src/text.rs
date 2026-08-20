@@ -176,10 +176,10 @@ impl CompileFailure {
 
 /// Compiles bounded Unicode text with embedded, deterministic font faces.
 ///
-/// Sans text uses `DejaVu Sans` for printable ASCII and a `Noto Sans CJK JP` subset
-/// for Japanese. Mono text uses `DejaVu Sans Mono` for printable ASCII and fails
-/// with `glyph-missing` for unsupported scalars instead of silently changing
-/// families or loading a browser or system font.
+/// Printable ASCII uses the requested `DejaVu Sans` or `DejaVu Sans Mono`
+/// face. Scalars missing from that face use the embedded `Noto Sans CJK JP`
+/// subset. Layout remains left-to-right, applies kerning only inside one font
+/// run, and never consults browser or system fonts.
 #[must_use]
 pub fn compile_text_outline_v1(request: &TextOutlineRequestV1) -> TextOutlineResultV1 {
     match compile_inner(request) {
@@ -190,91 +190,40 @@ pub fn compile_text_outline_v1(request: &TextOutlineRequestV1) -> TextOutlineRes
 
 fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1, CompileFailure> {
     let text = validate_request(request)?;
-    let (primary_bytes, japanese_bytes) =
-        match (request.layout.font_family, request.layout.font_weight) {
-            (TextFontFamilyV1::Sans, TextFontWeightV1::Bold) => {
-                (DEJAVU_SANS_BOLD, Some(NOTO_SANS_CJK_JP_BOLD_JOYO))
-            }
-            (TextFontFamilyV1::Sans, TextFontWeightV1::Regular) => {
-                (DEJAVU_SANS_REGULAR, Some(NOTO_SANS_CJK_JP_REGULAR_JOYO))
-            }
-            (TextFontFamilyV1::Mono, TextFontWeightV1::Bold) => (DEJAVU_SANS_MONO_BOLD, None),
-            (TextFontFamilyV1::Mono, TextFontWeightV1::Regular) => (DEJAVU_SANS_MONO_REGULAR, None),
-        };
-    let primary = Face::parse(primary_bytes, 0).map_err(|_| {
-        CompileFailure::new(
-            TextOutlineUnsupportedCodeV1::InternalFailure,
-            "The selected embedded text font could not be parsed",
-        )
-    })?;
-    let japanese = japanese_bytes
-        .map(|bytes| {
-            Face::parse(bytes, 0).map_err(|_| {
-                CompileFailure::new(
-                    TextOutlineUnsupportedCodeV1::InternalFailure,
-                    "The embedded Japanese text font could not be parsed",
-                )
-            })
-        })
-        .transpose()?;
-    let face = if text
-        .chars()
-        .filter(|character| *character != '\n')
-        .all(|character| primary.glyph_index(character).is_some())
-    {
-        &primary
-    } else {
-        japanese.as_ref().unwrap_or(&primary)
-    };
-    let line_widths = text
+    let faces = TextFaces::new(request.layout.font_family, request.layout.font_weight)?;
+    let shaped_lines = text
         .split('\n')
-        .map(|line| line_advance(face, line))
+        .map(|line| shape_ltr_line(&faces, line))
         .collect::<Result<Vec<_>, _>>()?;
-    let maximum_line_width = line_widths.iter().copied().fold(0.0_f64, f64::max);
+    let maximum_line_width = shaped_lines
+        .iter()
+        .map(|line| line.advance)
+        .fold(0.0_f64, f64::max);
     let mut subpaths = Vec::new();
     let mut segment_count = 0usize;
 
-    for (line_index, (line, line_width)) in text.split('\n').zip(line_widths).enumerate() {
-        let mut cursor_x = match request.layout.alignment {
+    for (line_index, line) in shaped_lines.into_iter().enumerate() {
+        let line_offset_x = match request.layout.alignment {
             TextAlignmentV1::Left => 0.0,
-            TextAlignmentV1::Center => (maximum_line_width - line_width) / 2.0,
-            TextAlignmentV1::Right => maximum_line_width - line_width,
+            TextAlignmentV1::Center => (maximum_line_width - line.advance) / 2.0,
+            TextAlignmentV1::Right => maximum_line_width - line.advance,
         };
-        let mut previous = None;
         let line_index = u32::try_from(line_index).map_err(|_| {
             CompileFailure::new(
                 TextOutlineUnsupportedCodeV1::InternalFailure,
                 "The bounded Text line index could not be represented",
             )
         })?;
-        let baseline_y =
-            -f64::from(line_index) * f64::from(face.units_per_em()) * request.layout.line_height;
-        for character in line.chars() {
-            let glyph = face.glyph_index(character).ok_or_else(|| {
-                CompileFailure::new(
-                    TextOutlineUnsupportedCodeV1::GlyphMissing,
-                    "The embedded text fonts have no glyph for this Unicode scalar",
-                )
-            })?;
-            if let Some(left) = previous {
-                cursor_x += f64::from(horizontal_kerning(face, left, glyph));
-            }
+        let baseline_y = -f64::from(line_index) * faces.em_units * request.layout.line_height;
+        for glyph in line.glyphs {
             append_glyph(
-                face,
+                &faces,
                 glyph,
-                character,
-                cursor_x,
+                line_offset_x,
                 baseline_y,
                 &mut subpaths,
                 &mut segment_count,
             )?;
-            cursor_x += f64::from(face.glyph_hor_advance(glyph).ok_or_else(|| {
-                CompileFailure::new(
-                    TextOutlineUnsupportedCodeV1::OutlineInvalid,
-                    "An embedded text glyph has no horizontal advance",
-                )
-            })?);
-            previous = Some(glyph);
         }
     }
 
@@ -286,43 +235,145 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
     })
 }
 
-fn line_advance(face: &Face<'_>, line: &str) -> Result<f64, CompileFailure> {
-    let mut width = 0.0;
-    let mut previous = None;
-    for character in line.chars() {
-        let glyph = face.glyph_index(character).ok_or_else(|| {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TextFaceSlot {
+    JapaneseFallback,
+    Primary,
+}
+
+#[derive(Debug)]
+struct TextFaces {
+    em_units: f64,
+    japanese_fallback: Face<'static>,
+    primary: Face<'static>,
+}
+
+impl TextFaces {
+    fn new(family: TextFontFamilyV1, weight: TextFontWeightV1) -> Result<Self, CompileFailure> {
+        let primary_bytes = match (family, weight) {
+            (TextFontFamilyV1::Sans, TextFontWeightV1::Bold) => DEJAVU_SANS_BOLD,
+            (TextFontFamilyV1::Sans, TextFontWeightV1::Regular) => DEJAVU_SANS_REGULAR,
+            (TextFontFamilyV1::Mono, TextFontWeightV1::Bold) => DEJAVU_SANS_MONO_BOLD,
+            (TextFontFamilyV1::Mono, TextFontWeightV1::Regular) => DEJAVU_SANS_MONO_REGULAR,
+        };
+        let japanese_bytes = match weight {
+            TextFontWeightV1::Bold => NOTO_SANS_CJK_JP_BOLD_JOYO,
+            TextFontWeightV1::Regular => NOTO_SANS_CJK_JP_REGULAR_JOYO,
+        };
+        let primary = Face::parse(primary_bytes, 0).map_err(|_| {
             CompileFailure::new(
-                TextOutlineUnsupportedCodeV1::GlyphMissing,
-                "The embedded text fonts have no glyph for this Unicode scalar",
+                TextOutlineUnsupportedCodeV1::InternalFailure,
+                "The selected embedded text font could not be parsed",
             )
         })?;
-        if let Some(left) = previous {
-            width += f64::from(horizontal_kerning(face, left, glyph));
+        let japanese_fallback = Face::parse(japanese_bytes, 0).map_err(|_| {
+            CompileFailure::new(
+                TextOutlineUnsupportedCodeV1::InternalFailure,
+                "The embedded Japanese text font could not be parsed",
+            )
+        })?;
+        Ok(Self {
+            em_units: f64::from(primary.units_per_em()),
+            japanese_fallback,
+            primary,
+        })
+    }
+
+    const fn face(&self, slot: TextFaceSlot) -> &Face<'static> {
+        match slot {
+            TextFaceSlot::JapaneseFallback => &self.japanese_fallback,
+            TextFaceSlot::Primary => &self.primary,
         }
-        width += f64::from(face.glyph_hor_advance(glyph).ok_or_else(|| {
+    }
+
+    fn scale(&self, slot: TextFaceSlot) -> f64 {
+        self.em_units / f64::from(self.face(slot).units_per_em())
+    }
+
+    fn glyph(&self, character: char) -> Result<(TextFaceSlot, GlyphId), CompileFailure> {
+        if let Some(glyph) = self.primary.glyph_index(character) {
+            return Ok((TextFaceSlot::Primary, glyph));
+        }
+        self.japanese_fallback
+            .glyph_index(character)
+            .map(|glyph| (TextFaceSlot::JapaneseFallback, glyph))
+            .ok_or_else(|| {
+                CompileFailure::new(
+                    TextOutlineUnsupportedCodeV1::GlyphMissing,
+                    "The embedded text fonts have no glyph for this Unicode scalar",
+                )
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PositionedGlyph {
+    character: char,
+    face: TextFaceSlot,
+    id: GlyphId,
+    origin_x: f64,
+}
+
+#[derive(Debug)]
+struct ShapedLine {
+    advance: f64,
+    glyphs: Vec<PositionedGlyph>,
+}
+
+fn shape_ltr_line(faces: &TextFaces, line: &str) -> Result<ShapedLine, CompileFailure> {
+    let mut cursor_x = 0.0;
+    let mut glyphs = Vec::with_capacity(line.chars().count());
+    let mut previous = None;
+    for character in line.chars() {
+        let (slot, glyph) = faces.glyph(character)?;
+        let face = faces.face(slot);
+        let scale = faces.scale(slot);
+        if let Some((previous_slot, left)) = previous
+            && previous_slot == slot
+        {
+            cursor_x += f64::from(horizontal_kerning(face, left, glyph)) * scale;
+        }
+        glyphs.push(PositionedGlyph {
+            character,
+            face: slot,
+            id: glyph,
+            origin_x: cursor_x,
+        });
+        cursor_x += f64::from(face.glyph_hor_advance(glyph).ok_or_else(|| {
             CompileFailure::new(
                 TextOutlineUnsupportedCodeV1::OutlineInvalid,
                 "An embedded text glyph has no horizontal advance",
             )
-        })?);
-        previous = Some(glyph);
+        })?) * scale;
+        previous = Some((slot, glyph));
     }
-    Ok(width)
+    Ok(ShapedLine {
+        advance: cursor_x,
+        glyphs,
+    })
 }
 
 fn append_glyph(
-    face: &Face<'_>,
-    glyph: GlyphId,
-    character: char,
-    cursor_x: f64,
+    faces: &TextFaces,
+    glyph: PositionedGlyph,
+    line_offset_x: f64,
     baseline_y: f64,
     target: &mut Vec<CubicSubpathV1>,
     segment_count: &mut usize,
 ) -> Result<(), CompileFailure> {
-    let Some(glyph_subpaths) = glyph_outline_subpaths(face, glyph, 1.0, 1.0, cursor_x, baseline_y)
-        .map_err(map_outline_failure)?
+    let face = faces.face(glyph.face);
+    let scale = faces.scale(glyph.face);
+    let Some(glyph_subpaths) = glyph_outline_subpaths(
+        face,
+        glyph.id,
+        scale,
+        scale,
+        line_offset_x + glyph.origin_x,
+        baseline_y,
+    )
+    .map_err(map_outline_failure)?
     else {
-        return if character.is_whitespace() {
+        return if glyph.character.is_whitespace() {
             Ok(())
         } else {
             Err(CompileFailure::new(
@@ -614,15 +665,58 @@ mod tests {
             validate_cubic_path_v1(&mono.path).expect("mono Text path must be valid");
         }
 
-        let mut unsupported = TextOutlineRequestV1::new("日本語");
-        unsupported.layout.font_family = TextFontFamilyV1::Mono;
-        assert!(matches!(
-            compile_text_outline_v1(&unsupported),
-            TextOutlineResultV1::Unsupported(TextOutlineUnsupportedV1 {
-                code: TextOutlineUnsupportedCodeV1::GlyphMissing,
-                ..
-            })
-        ));
+        let mono_mixed = compiled_with_layout(
+            "Mono日本語",
+            TextOutlineLayoutV1 {
+                font_family: TextFontFamilyV1::Mono,
+                ..TextOutlineLayoutV1::default()
+            },
+        );
+        validate_cubic_path_v1(&mono_mixed.path).expect("Mono fallback path must be valid");
+    }
+
+    #[test]
+    fn mixed_ltr_text_keeps_the_requested_latin_face_and_uses_japanese_fallback() {
+        for family in [TextFontFamilyV1::Sans, TextFontFamilyV1::Mono] {
+            let faces = TextFaces::new(family, TextFontWeightV1::Regular).unwrap();
+            let shaped = shape_ltr_line(&faces, "AV日本語").unwrap();
+            assert_eq!(
+                shaped
+                    .glyphs
+                    .iter()
+                    .map(|glyph| glyph.face)
+                    .collect::<Vec<_>>(),
+                [
+                    TextFaceSlot::Primary,
+                    TextFaceSlot::Primary,
+                    TextFaceSlot::JapaneseFallback,
+                    TextFaceSlot::JapaneseFallback,
+                    TextFaceSlot::JapaneseFallback,
+                ]
+            );
+            assert!(shaped.glyphs[0].origin_x.abs() <= f64::EPSILON);
+            assert!(shaped.glyphs[1].origin_x > 0.0);
+            assert!(faces.scale(TextFaceSlot::JapaneseFallback) > 1.0);
+
+            let artifact = compiled_with_layout(
+                "AV日本語",
+                TextOutlineLayoutV1 {
+                    font_family: family,
+                    ..TextOutlineLayoutV1::default()
+                },
+            );
+            assert_eq!(
+                artifact,
+                compiled_with_layout(
+                    "AV日本語",
+                    TextOutlineLayoutV1 {
+                        font_family: family,
+                        ..TextOutlineLayoutV1::default()
+                    },
+                )
+            );
+            validate_cubic_path_v1(&artifact.path).expect("mixed fallback path must be valid");
+        }
     }
 
     #[test]

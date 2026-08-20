@@ -45,11 +45,13 @@ node scripts/regenerate-mathtex-manim-parity.mjs
 The sibling plain-Text ABI lays out at most 256 Unicode scalars across eight
 lines with left, center, or right alignment and a positive finite line height
 (1.2 em by default), then normalizes the complete block's ink to centered unit
-height. Regular and bold select distinct embedded font faces; synthetic bold is
-not used. It embeds printable ASCII plus a Noto Sans
-CJK JP subset containing kana, Japanese punctuation, full-width forms, and the
-2,136 Joyo kanji. It does not provide font-family selection, shaping, arbitrary
-CJK, or emoji; missing glyphs fail explicitly.
+height. Sans/Mono and Regular/Bold select distinct embedded DejaVu faces;
+synthetic bold is not used. Missing scalars fall back per left-to-right font run
+to the matching-weight Noto Sans CJK JP subset, whose font units are normalized
+to the selected DejaVu em. The subset contains kana, Japanese punctuation,
+full-width forms, and the 2,136 Joyo kanji. Kerning is applied only inside one
+face run. It does not provide bidirectional or complex-script shaping,
+arbitrary CJK, or emoji; missing glyphs fail explicitly.
 
 The sibling `poietra.segmented-tex-outline` V1 ABI preserves the aggregate
 MathTex V1 wire contract while exposing deterministic display-item fragments
