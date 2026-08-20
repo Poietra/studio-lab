@@ -96,6 +96,12 @@ function projectTimelineObjectTracks(scene: RuntimeSceneState): readonly Timelin
         },
         key: channel.key,
         operationId: sample.operationId,
+        ...(sample.operationId
+          ? {}
+          : {
+              readOnlyReason:
+                "This animation is owned by the imported Manim source. Edit the Python source to change it.",
+            }),
       }))
       .filter((sample) => sample.interval.end > sample.interval.start);
     if (animated.length > 0) {

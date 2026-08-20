@@ -1408,11 +1408,19 @@ export function StudioTimeline({
                   {track.animatedChannels.map((channel, index) =>
                     channel.operationId && trackMotionOperationIds.has(channel.operationId) ? null : (
                       <div
-                        className="absolute bottom-1 z-10 h-1.5 min-w-px bg-sky-400"
+                        aria-label={
+                          channel.readOnlyReason ? `${channel.key} animation · ${channel.readOnlyReason}` : undefined
+                        }
+                        className={cn(
+                          "absolute bottom-1 z-10 h-1.5 min-w-px bg-sky-400",
+                          channel.readOnlyReason && "cursor-help focus-visible:h-2",
+                        )}
                         data-timeline-animation
+                        data-timeline-read-only-animation={channel.readOnlyReason ? "" : undefined}
                         key={`${track.entityId}/${channel.key}/${index}`}
                         style={timelineIntervalStyle(channel.interval, duration)}
-                        title={`${channel.key} animation ${channel.interval.start.toFixed(2)}–${channel.interval.end.toFixed(2)}s`}
+                        tabIndex={channel.readOnlyReason ? 0 : undefined}
+                        title={`${channel.key} animation ${channel.interval.start.toFixed(2)}–${channel.interval.end.toFixed(2)}s${channel.readOnlyReason ? ` · ${channel.readOnlyReason}` : ""}`}
                       />
                     ),
                   )}
