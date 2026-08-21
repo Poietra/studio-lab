@@ -34,6 +34,7 @@ import {
 import {
   projectStudioWorkspace,
   selectCreationProjection,
+  selectCreationProjectionProgramPrefix,
   selectMathTexTransformProjection,
   selectMotionProjection,
   selectStaticRootProjection,
@@ -856,6 +857,74 @@ describe("Studio workspace projection", () => {
         programs: [creationProgram, staticPositionProgram, motionProgram, removeProgram],
       }).programs[0]?.operations[0],
     ).toMatchObject({ entity: { dimensions: {}, kind: "arrow" }, kind: "create" });
+    const prefixProjection = selectCreationProjectionProgramPrefix(
+      imported.runtimeSceneState.duration,
+      [creationProgram, staticPositionProgram],
+      [creationProgram, staticPositionProgram, motionProgram, removeProgram],
+      projection,
+    );
+    expect(prefixProjection).toMatchObject({
+      entities: [{ createdLifetime: { end: imported.runtimeSceneState.duration + 0.4, start: 0 } }],
+      insertions: [{ duration: 0.4, transactionId: creationProgram.transactionId }],
+      motions: [],
+      mutations: [
+        { operationId: "create/position" },
+        { operationId: "create/fade" },
+        { interval: { end: 0.9, start: 0.9 }, operationId: "create/static-position" },
+      ],
+      projectedDuration: imported.runtimeSceneState.duration + 0.4,
+      removals: [],
+    });
+    expect(() =>
+      selectCreationProjectionProgramPrefix(
+        imported.runtimeSceneState.duration,
+        [creationProgram, staticPositionProgram],
+        [
+          creationProgram,
+          staticPositionProgram,
+          {
+            ...motionProgram,
+            anchor: {
+              ...motionProgram.anchor,
+              capturedPlayhead: 0.25,
+              resolvedSeconds: 0.25,
+              source: { kind: "absolute", seconds: 0.25 },
+            },
+          },
+        ],
+        projection,
+      ),
+    ).toThrow(/execution prefix/u);
+    expect(() =>
+      selectCreationProjectionProgramPrefix(
+        imported.runtimeSceneState.duration,
+        [creationProgram, staticPositionProgram],
+        [
+          creationProgram,
+          staticPositionProgram,
+          { ...motionProgram, anchor: { ...motionProgram.anchor, resolvedSeconds: 0.5 } },
+        ],
+        null,
+      ),
+    ).toThrow(/Rust creation projection is required/u);
+    expect(
+      projectStudioWorkspace({
+        activeScene: imported,
+        appliedEdits: [
+          programRecord(creationProgram, { issues: [], kind: "valid" }),
+          programRecord(staticPositionProgram, { issues: [], kind: "valid" }),
+        ],
+        creationProjection: prefixProjection,
+        currentTime: 1,
+        draftEdit: null,
+        editAuthority: "rust-authorized-batch",
+        nextScene: null,
+        selectedObjectIds: [entityId],
+      }).proposedState.evaluatedScene,
+    ).toMatchObject({
+      duration: imported.runtimeSceneState.duration + 0.4,
+      objectGraph: { entities: { [entityId]: { lifetime: [{ end: imported.runtimeSceneState.duration + 0.4 }] } } },
+    });
     const projected = projectStudioWorkspace({
       activeScene: imported,
       appliedEdits: [
@@ -1212,6 +1281,20 @@ describe("Studio workspace projection", () => {
     expect(selectStudioWorkspaceEditAuthority([record], [], "rust-authorized-batch")).toBeUndefined();
     expect(selectStudioWorkspaceEditAuthority([{ ...record }], [record], "rust-authorized-batch")).toBeUndefined();
     expect(selectStudioWorkspaceEditAuthority([], [record], "rust-authorized-batch")).toBeNull();
+
+    const suffixRecord = programRecord(
+      { ...validation.program, transactionId: "authority-suffix" },
+      { issues: [], kind: "valid" },
+    );
+    expect(selectStudioWorkspaceEditAuthority([record], [record, suffixRecord], "rust-authorized-batch")).toBe(
+      "rust-authorized-batch",
+    );
+    expect(
+      selectStudioWorkspaceEditAuthority([record, suffixRecord], [suffixRecord, record], "rust-authorized-batch"),
+    ).toBeUndefined();
+    expect(
+      selectStudioWorkspaceEditAuthority([record], [{ ...record }, suffixRecord], "rust-authorized-batch"),
+    ).toBeUndefined();
 
     const wait = createSceneDurationProgram({
       capturedPlayhead: imported.runtimeSceneState.duration,

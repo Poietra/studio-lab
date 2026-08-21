@@ -332,7 +332,7 @@ import {
   isTransitionOverlay,
   projectStudioWorkspace,
   selectBoundEntityProjection,
-  selectCreationProjection,
+  selectCreationProjectionProgramPrefix,
   selectMathTexTransformProjection,
   selectMotionProjection,
   selectPersistentRemoveProjection,
@@ -1302,9 +1302,10 @@ export function App({
     if (authority !== "rust-authorized-batch") return null;
     if (!projectedEditorScene || !previewRenderer?.creationProjection) return undefined;
     try {
-      return selectCreationProjection(
+      return selectCreationProjectionProgramPrefix(
         projectedEditorScene.runtimeSceneState.duration,
         programs,
+        previewEditRecords.map((record) => record.program),
         previewRenderer.creationProjection,
       );
     } catch {

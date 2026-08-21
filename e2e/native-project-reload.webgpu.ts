@@ -79,6 +79,7 @@ test("authors Text, shape, motion, and Images in a blank workspace and restores 
     await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
     await dragBy(page, rectangle, { x: 90, y: -35 }, true);
     await expect(page.locator("[data-motion-path]")).toHaveCount(1);
+    await page.getByLabel("Curve X").fill("20");
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(canvas).toHaveAttribute("data-preview-revision", /^[0-9a-f]{64}$/u);
 

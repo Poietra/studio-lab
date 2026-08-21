@@ -83,7 +83,7 @@ export function selectStudioWorkspaceEditAuthority(
 ) {
   if (records.length === 0) return null;
   if (isSceneDurationProgramBatch(records.map(({ program }) => program))) return null;
-  if (!authority || records.length !== previewRecords.length) return undefined;
+  if (!authority || records.length > previewRecords.length) return undefined;
   return records.every((record, index) => record === previewRecords[index]) ? authority : undefined;
 }
 
@@ -478,6 +478,79 @@ export function selectCreationProjection(
   projection: StudioCreationProjectionV1 | null,
 ): StudioCreationProjectionV1 | null {
   return correlateCreationProjection(baseDuration, programs, projection) ? projection : null;
+}
+
+function timeBeforeInsertion(time: number, insertion: StudioCreationProjectionV1["insertions"][number]) {
+  const insertionEnd = insertion.at + insertion.duration;
+  if (time <= insertion.at) return time;
+  if (time >= insertionEnd) return time - insertion.duration;
+  throw new TypeError("A retained creation projection timestamp falls inside a draft-only insertion.");
+}
+
+function intervalBeforeInsertions(
+  interval: Readonly<{ end: number; start: number }>,
+  insertions: readonly StudioCreationProjectionV1["insertions"][number][],
+) {
+  return insertions.reduceRight(
+    (current, insertion) => ({
+      end: timeBeforeInsertion(current.end, insertion),
+      start: timeBeforeInsertion(current.start, insertion),
+    }),
+    interval,
+  );
+}
+
+/** Selects an exact Program prefix from one already correlated Rust creation projection. */
+export function selectCreationProjectionProgramPrefix(
+  baseDuration: number,
+  programs: readonly SceneEdit[],
+  fullPrograms: readonly SceneEdit[],
+  projection: StudioCreationProjectionV1 | null,
+): StudioCreationProjectionV1 | null {
+  if (programs.length > fullPrograms.length || programs.some((program, index) => program !== fullPrograms[index])) {
+    throw new TypeError("A creation projection can only select an exact Program prefix.");
+  }
+  const lastPrefixAnchor = Math.max(...programs.map(({ anchor }) => anchor.resolvedSeconds));
+  if (fullPrograms.slice(programs.length).some(({ anchor }) => anchor.resolvedSeconds < lastPrefixAnchor)) {
+    throw new TypeError("A creation projection can only select a Rust execution prefix.");
+  }
+  const fullProjection = selectCreationProjection(baseDuration, fullPrograms, projection);
+  if (!fullProjection || programs.length === fullPrograms.length) return fullProjection;
+
+  const transactionIds = new Set(programs.map(({ transactionId }) => transactionId));
+  const operationIds = new Set(programs.flatMap(({ operations }) => operations.map(({ id }) => id)));
+  const suffixInsertions = fullProjection.insertions.filter(({ transactionId }) => !transactionIds.has(transactionId));
+  const rewindTime = (time: number) =>
+    suffixInsertions.reduceRight((current, insertion) => timeBeforeInsertion(current, insertion), time);
+  const selectedInsertions = fullProjection.insertions
+    .filter(({ transactionId }) => transactionIds.has(transactionId))
+    .map((insertion) => ({ ...insertion, at: rewindTime(insertion.at) }));
+  const selectedProjection: StudioCreationProjectionV1 = {
+    entities: fullProjection.entities
+      .filter(({ operationId }) => operationIds.has(operationId))
+      .map((entity) => ({
+        ...entity,
+        createdLifetime: intervalBeforeInsertions(entity.createdLifetime, suffixInsertions),
+      })),
+    insertions: selectedInsertions,
+    motions: fullProjection.motions
+      .filter(({ operationId }) => operationIds.has(operationId))
+      .map((motion) => ({ ...motion, interval: intervalBeforeInsertions(motion.interval, suffixInsertions) })),
+    mutations: fullProjection.mutations
+      .filter(({ operationId }) => operationIds.has(operationId))
+      .map((mutation) => ({ ...mutation, interval: intervalBeforeInsertions(mutation.interval, suffixInsertions) })),
+    projectedDuration:
+      baseDuration + selectedInsertions.reduce((duration, insertion) => duration + insertion.duration, 0),
+    removals: fullProjection.removals
+      .filter(({ operationId }) => operationIds.has(operationId))
+      .map((removal) => ({
+        ...removal,
+        fadeInterval: removal.fadeInterval ? intervalBeforeInsertions(removal.fadeInterval, suffixInsertions) : null,
+        removedAt: rewindTime(removal.removedAt),
+        resultingLifetimeEnd: rewindTime(removal.resultingLifetimeEnd),
+      })),
+  };
+  return selectCreationProjection(baseDuration, programs, selectedProjection);
 }
 
 function mathTexContentMatches(
