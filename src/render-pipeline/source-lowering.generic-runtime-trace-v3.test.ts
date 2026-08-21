@@ -39,6 +39,31 @@ class StaticNumberPlane(Scene):
         self.add(grid)
         self.wait(2)
 `;
+const staticAxisCases = [
+  { sceneName: "StaticAxes", sourcePath: "static_axes.py", type: "Axes", variable: "axes" },
+  {
+    sceneName: "StaticNumberLine",
+    sourcePath: "static_number_line.py",
+    type: "NumberLine",
+    variable: "numberLine",
+  },
+] as const;
+type StaticAxisCase = (typeof staticAxisCases)[number];
+
+function staticAxisSource(testCase: StaticAxisCase) {
+  return `from manim import *
+
+class ${testCase.sceneName}(Scene):
+    def construct(self):
+        ${testCase.variable} = ${testCase.type}()
+        self.add(${testCase.variable})
+        self.wait(2)
+`;
+}
+
+function staticAxisEntityId(testCase: StaticAxisCase) {
+  return `source:${testCase.sourcePath}#${testCase.sceneName}:${testCase.variable}`;
+}
 
 function moveEditProgram(
   value = { x: 410, y: 135 },
@@ -220,6 +245,27 @@ function numberPlaneRequest(sourceText: string, program: CanonicalEditProgram): 
 
 function lowerNumberPlane(sourceText: string, program: CanonicalEditProgram) {
   const renderRequest = numberPlaneRequest(sourceText, program);
+  return lowerRuntimeTraceEditSource(
+    sourceText,
+    renderRequest,
+    [{ program, sourceAnchor: program.anchor.resolvedSeconds }],
+    frame,
+    null,
+  );
+}
+
+function lowerStaticAxis(testCase: StaticAxisCase, sourceText: string, program: CanonicalEditProgram) {
+  const renderRequest: ProgramRenderRequest = {
+    cameraCenter: { x: 0, y: 0 },
+    destination: null,
+    program,
+    projectId: "static-axis-preview",
+    sceneName: testCase.sceneName,
+    sourceBindings: [{ entityId: staticAxisEntityId(testCase), sourceVariable: testCase.variable }],
+    sourceHash: createHash("sha256").update(sourceText, "utf8").digest("hex"),
+    sourcePath: testCase.sourcePath,
+    viewport: { height: 360, width: 640 },
+  };
   return lowerRuntimeTraceEditSource(
     sourceText,
     renderRequest,
@@ -822,6 +868,82 @@ describe("Runtime Trace edit source lowering", () => {
     );
     expect(
       deriveRuntimeTraceResizeSourceEditPlan(lowered!.source, numberPlaneSceneName, numberPlaneSourcePath, "grid"),
+    ).toMatchObject({
+      baseSource: moved,
+      expectedScaleFactor: 1.5,
+      sourceAnchor: 0,
+    });
+  });
+
+  it.each(staticAxisCases)("round-trips a default static $type move as the same source-bound root", (testCase) => {
+    const sourceText = staticAxisSource(testCase);
+    const targetEntityId = staticAxisEntityId(testCase);
+    const program = moveEditProgram({ x: 410, y: 135 }, 0, targetEntityId);
+    const lowered = lowerStaticAxis(testCase, sourceText, program);
+
+    expect(lowered?.insertedCode).toBe(`        ${testCase.variable}.move_to((2, 1, 0))`);
+    expect(lowered?.source).toContain(
+      `        ${testCase.variable} = ${testCase.type}()\n` +
+        `        ${testCase.variable}.move_to((2, 1, 0))\n` +
+        `        self.add(${testCase.variable})`,
+    );
+    expect(lowered?.preflight).toMatchObject({
+      baseBinding: { name: testCase.variable, ordinal: 1 },
+      entityId: targetEntityId,
+      expectedWorldCenter: { x: 2, y: 1 },
+      kind: "runtime-trace-move-edit",
+      sourceAnchor: 0,
+    });
+
+    const imported = importManimScene(lowered!.source, testCase.sourcePath, testCase.sceneName, frame);
+    expect(imported?.sourceVariables).toEqual({ [targetEntityId]: testCase.variable });
+    expect(imported?.runtimeSceneState.objectGraph.entities[targetEntityId]).toMatchObject({
+      sourceIdentity: { kind: "known", value: testCase.variable },
+      type: testCase.type,
+    });
+    expect(
+      deriveRuntimeTraceMoveSourceEditPlan(lowered!.source, testCase.sceneName, testCase.sourcePath, testCase.variable),
+    ).toMatchObject({
+      baseSource: sourceText,
+      expectedWorldCenter: { x: 2, y: 1 },
+      sourceAnchor: 0,
+    });
+  });
+
+  it.each(staticAxisCases)("round-trips a positive uniform $type scale after a prior move", (testCase) => {
+    const sourceText = staticAxisSource(testCase);
+    const targetEntityId = staticAxisEntityId(testCase);
+    const moved = lowerStaticAxis(testCase, sourceText, moveEditProgram({ x: 410, y: 135 }, 0, targetEntityId))!.source;
+    const lowered = lowerStaticAxis(testCase, moved, resizeEditProgram(1.5, 1, 0, targetEntityId));
+
+    expect(lowered?.insertedCode).toBe(`        ${testCase.variable}.scale(1.5)`);
+    expect(lowered?.source).toContain(
+      `        ${testCase.variable} = ${testCase.type}()\n` +
+        `        ${testCase.variable}.scale(1.5)\n` +
+        `        ${testCase.variable}.move_to((2, 1, 0))\n` +
+        `        self.add(${testCase.variable})`,
+    );
+    expect(lowered?.preflight).toMatchObject({
+      baseBinding: { name: testCase.variable, ordinal: 1 },
+      entityId: targetEntityId,
+      expectedScaleFactor: 1.5,
+      kind: "runtime-trace-resize-edit",
+      sourceAnchor: 0,
+    });
+
+    const imported = importManimScene(lowered!.source, testCase.sourcePath, testCase.sceneName, frame);
+    expect(imported?.sourceVariables).toEqual({ [targetEntityId]: testCase.variable });
+    expect(imported?.runtimeSceneState.objectGraph.entities[targetEntityId]).toMatchObject({
+      sourceIdentity: { kind: "known", value: testCase.variable },
+      type: testCase.type,
+    });
+    expect(
+      deriveRuntimeTraceResizeSourceEditPlan(
+        lowered!.source,
+        testCase.sceneName,
+        testCase.sourcePath,
+        testCase.variable,
+      ),
     ).toMatchObject({
       baseSource: moved,
       expectedScaleFactor: 1.5,

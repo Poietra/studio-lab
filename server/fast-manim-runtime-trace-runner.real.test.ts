@@ -29,6 +29,10 @@ const GENERIC_STATIC_NUMBER_PLANE_SOURCE = readFileSync(
   new URL("../fixtures/real-preview-harness/scene_number_plane.py", import.meta.url),
   "utf8",
 );
+const GENERIC_STATIC_AXES_AND_NUMBER_LINE_SOURCE = readFileSync(
+  new URL("../fixtures/real-preview-harness/scene_axes_number_line.py", import.meta.url),
+  "utf8",
+);
 const UPDATERS_SOURCE_HASH = createHash("sha256").update(RUNTIME_TRACE_SOURCE_TEXT, "utf8").digest("hex");
 
 describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
@@ -192,18 +196,13 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       }
     });
 
-    it("verifies real static NumberPlane move and resize edits as fresh V3 candidate pairs", {
+    it("verifies real static composite move and resize edits as fresh V3 candidate pairs", {
       timeout: 120_000,
     }, async () => {
-      const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-number-plane-move-real-"));
+      const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-static-axes-real-"));
       await mkdir(join(root, "scenes"));
-      const sourcePath = "scenes/static_number_plane.py";
-      await writeFile(join(root, sourcePath), GENERIC_STATIC_NUMBER_PLANE_SOURCE, "utf8");
-      const candidateSource = GENERIC_STATIC_NUMBER_PLANE_SOURCE.replace(
-        "        grid = NumberPlane()\n",
-        "        grid = NumberPlane()\n        grid.move_to((1.25, -0.5, 0))\n",
-      );
-      const plan = deriveRuntimeTraceMoveSourceEditPlan(candidateSource, "StaticNumberPlane", sourcePath, "grid");
+      await writeFile(join(root, "scenes/static_number_plane.py"), GENERIC_STATIC_NUMBER_PLANE_SOURCE, "utf8");
+      await writeFile(join(root, "scenes/static_axes.py"), GENERIC_STATIC_AXES_AND_NUMBER_LINE_SOURCE, "utf8");
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({
           command: producerCommand,
@@ -220,55 +219,93 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         timeoutMs: 120_000,
       });
       try {
-        const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
-          moveEdit: {
-            baseBinding: plan.baseBinding,
-            baseSourceHash: plan.baseSourceHash,
-            entityId: `source:${sourcePath}#StaticNumberPlane:grid`,
-            expectedWorldCenter: plan.expectedWorldCenter,
-            kind: "runtime-trace-move-edit",
-            sourceAnchor: plan.sourceAnchor,
+        for (const target of [
+          {
+            bindingName: "grid",
+            constructor: "NumberPlane()",
+            requestSlug: "number-plane",
+            sceneName: "StaticNumberPlane",
+            source: GENERIC_STATIC_NUMBER_PLANE_SOURCE,
+            sourcePath: "scenes/static_number_plane.py",
           },
-          projectId: "demo",
-          requestId: "runtime-trace-v3-number-plane-move-real-1",
-          sceneName: "StaticNumberPlane",
-          sourcePath,
-        });
-        expect(preflight).toMatchObject({
-          sourceHash: createHash("sha256").update(candidateSource).digest("hex"),
-          status: "verified",
-          traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
-        });
+          {
+            bindingName: "axes",
+            constructor: "Axes()",
+            requestSlug: "axes",
+            sceneName: "StaticAxes",
+            source: GENERIC_STATIC_AXES_AND_NUMBER_LINE_SOURCE,
+            sourcePath: "scenes/static_axes.py",
+          },
+          {
+            bindingName: "number_line",
+            constructor: "NumberLine()",
+            requestSlug: "number-line",
+            sceneName: "StaticNumberLine",
+            source: GENERIC_STATIC_AXES_AND_NUMBER_LINE_SOURCE,
+            sourcePath: "scenes/static_axes.py",
+          },
+        ] as const) {
+          const assignment = `        ${target.bindingName} = ${target.constructor}\n`;
+          const moveCandidateSource = target.source.replace(
+            assignment,
+            `${assignment}        ${target.bindingName}.move_to((1.25, -0.5, 0))\n`,
+          );
+          const movePlan = deriveRuntimeTraceMoveSourceEditPlan(
+            moveCandidateSource,
+            target.sceneName,
+            target.sourcePath,
+            target.bindingName,
+          );
+          const movePreflight = await runner.runRuntimeTraceCandidateUnpublished(moveCandidateSource, {
+            moveEdit: {
+              baseBinding: movePlan.baseBinding,
+              baseSourceHash: movePlan.baseSourceHash,
+              entityId: `source:${target.sourcePath}#${target.sceneName}:${target.bindingName}`,
+              expectedWorldCenter: movePlan.expectedWorldCenter,
+              kind: "runtime-trace-move-edit",
+              sourceAnchor: movePlan.sourceAnchor,
+            },
+            projectId: "demo",
+            requestId: `runtime-trace-v3-${target.requestSlug}-move-real-1`,
+            sceneName: target.sceneName,
+            sourcePath: target.sourcePath,
+          });
+          expect(movePreflight).toMatchObject({
+            sourceHash: createHash("sha256").update(moveCandidateSource).digest("hex"),
+            status: "verified",
+            traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+          });
 
-        const resizeCandidateSource = GENERIC_STATIC_NUMBER_PLANE_SOURCE.replace(
-          "        grid = NumberPlane()\n",
-          "        grid = NumberPlane()\n        grid.scale(0.8)\n",
-        );
-        const resizePlan = deriveRuntimeTraceResizeSourceEditPlan(
-          resizeCandidateSource,
-          "StaticNumberPlane",
-          sourcePath,
-          "grid",
-        );
-        const resizePreflight = await runner.runRuntimeTraceCandidateUnpublished(resizeCandidateSource, {
-          resizeEdit: {
-            baseBinding: resizePlan.baseBinding,
-            baseSourceHash: resizePlan.baseSourceHash,
-            entityId: `source:${sourcePath}#StaticNumberPlane:grid`,
-            expectedScaleFactor: resizePlan.expectedScaleFactor,
-            kind: "runtime-trace-resize-edit",
-            sourceAnchor: resizePlan.sourceAnchor,
-          },
-          projectId: "demo",
-          requestId: "runtime-trace-v3-number-plane-resize-real-1",
-          sceneName: "StaticNumberPlane",
-          sourcePath,
-        });
-        expect(resizePreflight).toMatchObject({
-          sourceHash: createHash("sha256").update(resizeCandidateSource).digest("hex"),
-          status: "verified",
-          traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
-        });
+          const resizeCandidateSource = target.source.replace(
+            assignment,
+            `${assignment}        ${target.bindingName}.scale(0.8)\n`,
+          );
+          const resizePlan = deriveRuntimeTraceResizeSourceEditPlan(
+            resizeCandidateSource,
+            target.sceneName,
+            target.sourcePath,
+            target.bindingName,
+          );
+          const resizePreflight = await runner.runRuntimeTraceCandidateUnpublished(resizeCandidateSource, {
+            resizeEdit: {
+              baseBinding: resizePlan.baseBinding,
+              baseSourceHash: resizePlan.baseSourceHash,
+              entityId: `source:${target.sourcePath}#${target.sceneName}:${target.bindingName}`,
+              expectedScaleFactor: resizePlan.expectedScaleFactor,
+              kind: "runtime-trace-resize-edit",
+              sourceAnchor: resizePlan.sourceAnchor,
+            },
+            projectId: "demo",
+            requestId: `runtime-trace-v3-${target.requestSlug}-resize-real-1`,
+            sceneName: target.sceneName,
+            sourcePath: target.sourcePath,
+          });
+          expect(resizePreflight).toMatchObject({
+            sourceHash: createHash("sha256").update(resizeCandidateSource).digest("hex"),
+            status: "verified",
+            traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+          });
+        }
       } finally {
         await runner.close();
         await rm(root, { force: true, recursive: true });
