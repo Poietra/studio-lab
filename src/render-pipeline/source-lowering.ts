@@ -780,7 +780,9 @@ function entityConstructor(operation: CreateEntityOperation) {
     Circle: `Circle(radius=${formatAmount(dimensions?.radius ?? 1)})`,
     Line: "Line(LEFT, RIGHT)",
     Rectangle: `Rectangle(width=${formatAmount(dimensions?.width ?? 4)}, height=${formatAmount(dimensions?.height ?? 2)})`,
+    RegularPolygon: `RegularPolygon(${formatAmount(dimensions?.sides ?? 6)}, radius=${formatAmount(dimensions?.radius ?? 1)})`,
     Square: "Square(side_length=2)",
+    Triangle: `Triangle(radius=${formatAmount(dimensions?.radius ?? 1)})`,
   }[type];
   if (shapeConstructor) return shapeConstructor;
   if (type.startsWith("TransitionOverlay:")) {

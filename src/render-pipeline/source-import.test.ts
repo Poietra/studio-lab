@@ -1047,6 +1047,72 @@ class Geometry(Scene):
     );
   });
 
+  it("recovers only bounded literal Triangle and RegularPolygon parameters", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class StaticPolygons(Scene):
+    def construct(self):
+        triangle = Triangle(radius=1.25)
+        default_polygon = RegularPolygon()
+        positional_polygon = RegularPolygon(7, radius=1.5)
+        named_polygon = RegularPolygon(n=8, radius=2)
+        dynamic_sides = RegularPolygon(n=side_count, radius=1)
+        fractional_sides = RegularPolygon(3.0, radius=1)
+        too_few_sides = RegularPolygon(2, radius=1)
+        too_many_sides = RegularPolygon(33, radius=1)
+        invalid_sides_keyword = RegularPolygon(sides=6, radius=1)
+        dynamic_radius = Triangle(radius=get_radius())
+        self.add(
+            triangle,
+            default_polygon,
+            positional_polygon,
+            named_polygon,
+            dynamic_sides,
+            fractional_sides,
+            too_few_sides,
+            too_many_sides,
+            invalid_sides_keyword,
+            dynamic_radius,
+        )
+`,
+      "scene.py",
+      "StaticPolygons",
+    );
+    const entity = (variable: string) =>
+      imported?.runtimeSceneState.objectGraph.entities[`source:scene.py#StaticPolygons:${variable}`];
+
+    expect(entity("triangle")).toMatchObject({
+      geometry: { dimensions: { kind: "known", value: { radius: 1.25, sides: 3 } } },
+      sourceIdentity: { kind: "known", value: "triangle" },
+      type: "Triangle",
+    });
+    expect(entity("default_polygon")?.geometry?.dimensions).toEqual({
+      kind: "known",
+      value: { radius: 1, sides: 6 },
+    });
+    expect(entity("positional_polygon")?.geometry?.dimensions).toEqual({
+      kind: "known",
+      value: { radius: 1.5, sides: 7 },
+    });
+    expect(entity("named_polygon")).toMatchObject({
+      geometry: { dimensions: { kind: "known", value: { radius: 2, sides: 8 } } },
+      sourceIdentity: { kind: "known", value: "named_polygon" },
+      type: "RegularPolygon",
+    });
+    for (const variable of [
+      "dynamic_sides",
+      "fractional_sides",
+      "too_few_sides",
+      "too_many_sides",
+      "invalid_sides_keyword",
+      "dynamic_radius",
+    ]) {
+      expect(entity(variable)?.geometry?.dimensions).toMatchObject({ kind: "unknown" });
+    }
+    expect(runtimeSceneStateSchema.parse(imported?.runtimeSceneState)).toEqual(imported?.runtimeSceneState);
+  });
+
   it("recovers direct and simple chained literal paint mutations", () => {
     const imported = importManimScene(
       `from manim import *

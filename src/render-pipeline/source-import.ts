@@ -856,6 +856,13 @@ function positiveNumberLiteral(source: string) {
   return value !== null && value > 0 ? value : null;
 }
 
+function boundedRegularPolygonSidesLiteral(source: string) {
+  const literal = source.trim();
+  if (!/^[+]?\d(?:_?\d)*$/u.test(literal)) return null;
+  const value = Number(literal.replaceAll("_", ""));
+  return Number.isSafeInteger(value) && value >= 3 && value <= 32 ? value : null;
+}
+
 const BOUNDED_STATIC_NUMBER_LITERAL =
   "-?(?:(?:\\d(?:_?\\d)*)\\.(?:\\d(?:_?\\d)*)?|\\.(?:\\d(?:_?\\d)*)|(?:\\d(?:_?\\d)*))(?:[eE][+-]?\\d(?:_?\\d)*)?";
 const BOUNDED_STATIC_NUMBER_LITERAL_PATTERN = new RegExp(`^${BOUNDED_STATIC_NUMBER_LITERAL}$`);
@@ -935,9 +942,19 @@ function dimensionsFrom(type: string, argumentsSource: string): Knowledge<Entity
   } else if (type === "Square") {
     const side = read("side_length", 0, 2);
     if (side !== null) dimensions = { height: side, width: side };
+  } else if (type === "Triangle") {
+    const radius = read("radius", Number.MAX_SAFE_INTEGER, 1);
+    if (radius !== null && positional.length === 0 && !keywords.has("n") && !keywords.has("sides")) {
+      dimensions = { radius, sides: 3 };
+    }
   } else if (type === "RegularPolygon") {
     const radius = read("radius", Number.MAX_SAFE_INTEGER, 1);
-    if (radius !== null) dimensions = { radius };
+    const sidesExpression = keywords.get("n") ?? positional[0];
+    const sides = sidesExpression === undefined ? 6 : boundedRegularPolygonSidesLiteral(sidesExpression);
+    const hasUnambiguousSides = positional.length <= 1 && !(keywords.has("n") && positional.length > 0);
+    if (radius !== null && sides !== null && hasUnambiguousSides && !keywords.has("sides")) {
+      dimensions = { radius, sides };
+    }
   }
   if (dimensions) return { kind: "known", value: dimensions };
   return unknown(`${type} dimensions depend on a dynamic constructor expression or Manim runtime layout.`, [
