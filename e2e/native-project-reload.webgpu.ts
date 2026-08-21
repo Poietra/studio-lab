@@ -849,3 +849,68 @@ test("authors Triangle and Regular Polygon through motion, Draw, reload, and MP4
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
 });
+
+test("authors Ellipse, Arc, and Sector through Draw, reload, and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Curve primitive fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert ellipse/ }).click();
+    await page.getByRole("slider", { name: "Ellipse width" }).fill("4");
+    await page.getByRole("slider", { name: "Ellipse height" }).fill("1.5");
+    await canvas.click({ position: { x: 260, y: 210 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const ellipse = page.getByRole("button", { name: "Move Ellipse", exact: true });
+    await expect(ellipse).toBeVisible();
+    await expect(page.getByText("w 4 · h 1.5", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: /Insert arc/ }).click();
+    await page.getByRole("slider", { name: "Arc radius" }).fill("1.5");
+    await page.getByRole("slider", { name: "Arc start angle" }).fill("45");
+    await page.getByRole("slider", { name: "Arc sweep angle" }).fill("180");
+    await canvas.click({ position: { x: 470, y: 190 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const arc = page.getByRole("button", { name: "Move Arc", exact: true });
+    await expect(arc).toBeVisible();
+    await expect(page.getByText("r 1.5 · start 45° · sweep 180°", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Add Draw entrance for Arc" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    let drawClip = page.getByRole("button", { name: "Edit Arc Draw entrance" });
+    await expect(drawClip).toBeVisible();
+    const arcId = await arc.getAttribute("data-studio-entity");
+    if (!arcId) throw new Error("The Arc did not expose its Studio entity id.");
+    const arcWrapper = page.locator(`[data-studio-entity-wrapper="${arcId}"]`);
+    await scrubEntranceClip(page, drawClip, 0);
+    await expect(arcWrapper).toHaveCount(0);
+    await scrubEntranceClip(page, drawClip, 0.5);
+    await expect(arcWrapper).toHaveCount(1);
+
+    await page.getByRole("button", { name: /Insert sector/ }).click();
+    await page.getByRole("slider", { name: "Sector radius" }).fill("1.25");
+    await page.getByRole("slider", { name: "Sector start angle" }).fill("-45");
+    await page.getByRole("slider", { name: "Sector sweep angle" }).fill("270");
+    await canvas.click({ position: { x: 390, y: 310 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("button", { name: "Move Sector", exact: true })).toBeVisible();
+    await expect(page.getByText("r 1.25 · start -45° · sweep 270°", { exact: true })).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Curve primitive fixture workspace" }).click();
+    await expect(page.getByRole("button", { name: "Move Ellipse", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move Arc", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move Sector", exact: true })).toBeVisible();
+    drawClip = page.getByRole("button", { name: "Edit Arc Draw entrance" });
+    await expect(drawClip).toBeVisible();
+
+    const mp4 = await exportLocalMp4(page);
+    const [brightPixels = 0] = await decodedBrightPixelCounts(page, mp4, [1]);
+    expect(brightPixels).toBeGreaterThan(100);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
