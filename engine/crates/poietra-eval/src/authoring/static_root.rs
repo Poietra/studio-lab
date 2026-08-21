@@ -254,6 +254,10 @@ fn static_transform_geometry_matches(
             matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
                 && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
         }
+        StaticRootTransformEntityKind::RegularPolygon => {
+            matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
+                && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
+        }
         StaticRootTransformEntityKind::Other => true,
     }
 }
@@ -586,6 +590,7 @@ impl EngineSessionV1 {
             StaticRootTransformEntityKind::Circle
                 | StaticRootTransformEntityKind::Image
                 | StaticRootTransformEntityKind::MathTex
+                | StaticRootTransformEntityKind::RegularPolygon
                 | StaticRootTransformEntityKind::Rectangle
         ) || studio_entity
             .scale
@@ -1130,6 +1135,7 @@ impl EngineSessionV1 {
                             StaticRootTransformEntityKind::Circle
                                 | StaticRootTransformEntityKind::Image
                                 | StaticRootTransformEntityKind::MathTex
+                                | StaticRootTransformEntityKind::RegularPolygon
                                 | StaticRootTransformEntityKind::Rectangle
                         )
                         && program_position_studio_entity_ids.contains(studio_entity_id)
@@ -1712,6 +1718,7 @@ impl EngineSessionV1 {
                         StaticRootTransformEntityKind::Circle
                             | StaticRootTransformEntityKind::Image
                             | StaticRootTransformEntityKind::MathTex
+                            | StaticRootTransformEntityKind::RegularPolygon
                             | StaticRootTransformEntityKind::Rectangle
                     )
                 || uniform_scale_from.is_some_and(|from| {
@@ -1782,7 +1789,9 @@ impl EngineSessionV1 {
             } else if !primitive_transform
                 && !matches!(
                     studio_entity.kind,
-                    StaticRootTransformEntityKind::Image | StaticRootTransformEntityKind::MathTex
+                    StaticRootTransformEntityKind::Image
+                        | StaticRootTransformEntityKind::MathTex
+                        | StaticRootTransformEntityKind::RegularPolygon
                 )
             {
                 let target = position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
@@ -2083,6 +2092,7 @@ mod tests {
                 dimensions: StaticRootTransformDimensions {
                     height: None,
                     radius: Some(1.0),
+                    sides: None,
                     width: None,
                 },
                 id: "source:earlier".to_owned(),
@@ -2570,6 +2580,77 @@ mod tests {
     }
 
     #[test]
+    fn uniformly_scales_one_imported_regular_polygon() {
+        let mut bundle = static_imported_bundle();
+        let polygon = bundle
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        polygon.geometry = SceneGeometryV1::CubicPath {
+            path: math_tex_fixture_path("real-mathtex-morph-v5.json"),
+        };
+        bundle.scene.required_capabilities = vec![
+            SceneCapabilityV1::CubicPathGeometry,
+            SceneCapabilityV1::ShapePrimitives,
+        ];
+
+        let mut command = static_root_position_command();
+        command.studio_entities[0].kind = StaticRootTransformEntityKind::RegularPolygon;
+        command.studio_entities[0].dimensions = StaticRootTransformDimensions {
+            height: None,
+            radius: Some(0.5),
+            sides: Some(5),
+            width: None,
+        };
+        let program = &mut command.programs[0];
+        let mut scale = program.operations[0].clone();
+        scale.id = "scale-regular-polygon".to_owned();
+        scale.kind = StaticRootTransformOperationKind::UniformScale {
+            control_present: false,
+            from: Some(1.0),
+            relative_factor: Some(1.5),
+            to: Some(1.5),
+        };
+        program.operations.push(scale);
+        program
+            .schedule_order
+            .push("scale-regular-polygon".to_owned());
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_static_root_transform_edit(command).unwrap();
+
+        assert!(matches!(
+            result
+                .static_root_projection
+                .as_ref()
+                .unwrap()
+                .mutations
+                .as_slice(),
+            [
+                StudioStaticRootProjectedMutation {
+                    mutation: StudioStaticRootMutation::Position { .. },
+                    ..
+                },
+                StudioStaticRootProjectedMutation {
+                    mutation: StudioStaticRootMutation::UniformScale { .. },
+                    ..
+                }
+            ]
+        ));
+        let polygon = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        assert_eq!(polygon.transform.m11, 1.5);
+        assert_eq!(polygon.transform.m22, 1.5);
+    }
+
+    #[test]
     fn replays_repeated_imported_group_resize_history() {
         let mut command = static_root_group_resize_command();
         append_group_resize_program(&mut command);
@@ -2887,6 +2968,7 @@ mod tests {
             from_dimensions: StaticRootTransformDimensions {
                 height: None,
                 radius: Some(0.5),
+                sides: None,
                 width: None,
             },
             from_position: PointV1 { x: 360.0, y: 180.0 },
@@ -2895,6 +2977,7 @@ mod tests {
             to_dimensions: StaticRootTransformDimensions {
                 height: None,
                 radius: Some(1.0),
+                sides: None,
                 width: None,
             },
             to_position: PointV1 { x: 400.0, y: 180.0 },
@@ -2912,6 +2995,7 @@ mod tests {
                         from_dimensions: StaticRootTransformDimensions {
                             height: None,
                             radius: Some(0.5),
+                            sides: None,
                             width: None,
                         },
                         from_position: PointV1 { x: 360.0, y: 180.0 },
@@ -2922,6 +3006,7 @@ mod tests {
                         to_dimensions: StaticRootTransformDimensions {
                             height: None,
                             radius: Some(1.0),
+                            sides: None,
                             width: None,
                         },
                         to_position: PointV1 { x: 400.0, y: 180.0 },
@@ -2994,6 +3079,7 @@ mod tests {
             dimensions: StaticRootTransformDimensions {
                 height: None,
                 radius: None,
+                sides: None,
                 width: None,
             },
             object_graph_key: "source:formula".to_owned(),
