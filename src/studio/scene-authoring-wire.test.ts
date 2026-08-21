@@ -599,4 +599,33 @@ describe("Studio creation wire", () => {
     });
     expect(command.programs[2]?.operations[0]).toMatchObject({ color: null, entityId, kind: "stroke-color" });
   });
+
+  it("normalizes one complete Camera view transition without a synthetic entity", () => {
+    const program = followupProgram("camera:focus", {
+      dependsOn: [],
+      easing: "smooth",
+      from: { center: { x: 0, y: 0 }, frameHeight: 9, frameWidth: 16 },
+      id: "camera:focus/animate",
+      interval: { end: 2, start: 1 },
+      kind: "AnimateCamera",
+      provenance: { evidence: ["exact prepared bounds"], origin: "direct-manipulation" },
+      to: { center: { x: 3, y: 1 }, frameHeight: 4.5, frameWidth: 8 },
+    });
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 4,
+      programs: [creationProgram("Circle"), program],
+    });
+
+    expect(command.programs[1]?.operations[0]).toEqual({
+      dependsOn: [],
+      easing: "smooth",
+      fromView: { center: { x: 0, y: 0 }, frameHeight: 9, frameWidth: 16 },
+      id: "camera:focus/animate",
+      interval: { end: 2, start: 1 },
+      kind: "animate-camera",
+      origin: "direct-manipulation",
+      toView: { center: { x: 3, y: 1 }, frameHeight: 4.5, frameWidth: 8 },
+    });
+    expect(command.programs[1]?.operations[0]).not.toHaveProperty("entityId");
+  });
 });

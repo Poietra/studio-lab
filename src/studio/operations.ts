@@ -53,7 +53,7 @@ export type SceneDurationWaitOperation = InsertTimelineEventOperation &
 export type SceneDurationOperation = SceneDurationWaitOperation | TrimSceneDurationOperation;
 
 export type InsertSceneBoundaryOperation = Extract<SceneEditOperation, { kind: "InsertSceneBoundary" }>;
-export type ChangeCameraOperation = Extract<SceneEditOperation, { kind: "ChangeCamera" }>;
+export type AnimateCameraOperation = Extract<SceneEditOperation, { kind: "AnimateCamera" }>;
 export type CanonicalEditOperation = SceneEditOperation;
 
 export function isSceneDurationOperation(operation: SceneEditOperation): operation is SceneDurationOperation {

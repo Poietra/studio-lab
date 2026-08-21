@@ -395,6 +395,15 @@ function normalizedStudioCreationOperation(
       toShape: operation.to.shape,
     };
   }
+  if (operation.kind === "AnimateCamera") {
+    return {
+      ...common,
+      easing: operation.easing,
+      fromView: operation.from,
+      kind: "animate-camera",
+      toView: operation.to,
+    };
+  }
   if (operation.kind === "TransformContent") {
     const replacement = canonicalEditableContent(operation.replacement, "MathTex");
     return {

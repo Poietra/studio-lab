@@ -46,6 +46,14 @@ import {
   replaceStudioEntityLifetimeProgram,
   type StudioEntityInput,
 } from "./studio/authoring-commands";
+import {
+  type CameraClipEasing,
+  type CameraView,
+  cameraClipFromProgram,
+  cameraFocusViewFromPreparedBounds,
+  createCameraProgram,
+  replaceCameraProgram,
+} from "./studio/camera-clip-edit";
 import { canvasDragTargetEntityIds, toggleCanvasEntitySelection } from "./studio/canvas-selection";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import { runDraftSourcePreflight } from "./studio/draft-apply-preflight";
@@ -295,6 +303,8 @@ import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
 import type {
+  StudioCameraClipChange,
+  StudioCameraTimelineClip,
   StudioDrawInClipChange,
   StudioDrawInTimelineClip,
   StudioMaterialParameterTimelineOption,
@@ -1434,6 +1444,17 @@ export function App({
   const workspaceTimelineProjection = timelineProjectionForRecords(previewEditRecords);
   const workspaceBoundEntityProjection = boundEntityProjectionForRecords(previewEditRecords);
   const workspaceCreationProjection = creationProjectionForRecords(previewEditRecords);
+  const workspaceEntityCreationProjection = workspaceCreationProjection
+    ? {
+        ...workspaceCreationProjection,
+        mutations: workspaceCreationProjection.mutations.filter(
+          (
+            mutation,
+          ): mutation is Extract<(typeof workspaceCreationProjection.mutations)[number], { entityId: string }> =>
+            "entityId" in mutation,
+        ),
+      }
+    : workspaceCreationProjection;
   const workspaceMathTexTransformProjection = mathTexTransformProjectionForRecords(previewEditRecords);
   const workspaceMotionProjection = motionProjectionForRecords(previewEditRecords);
   const workspacePersistentRemoveProjection = persistentRemoveProjectionForRecords(previewEditRecords);
@@ -1564,6 +1585,7 @@ export function App({
         : projectedEditorScene?.runtimeSceneState.duration;
     const maximumEnds = [
       ...workspaceCreationProjection.mutations.flatMap((candidate) =>
+        "entityId" in candidate &&
         candidate.entityId === sourceClip.entityId &&
         candidate.operationId !== sourceClip.operationId &&
         candidate.interval.start > mutation.interval.start + 0.0005
@@ -1729,6 +1751,45 @@ export function App({
                 ? LOCKED_ENTITY_MUTATION_MESSAGE
                 : null,
         targetShape: sourceClip.to.shape,
+        transactionId: sourceClip.transactionId,
+      },
+    ];
+  });
+  const cameraClips: readonly StudioCameraTimelineClip[] = previewAppliedEdits.flatMap((record) => {
+    if (!workspaceCreationProjection) return [];
+    const sourceClip = cameraClipFromProgram(record.program);
+    if (!sourceClip) return [];
+    const mutation = workspaceCreationProjection.mutations.find(
+      (candidate) => candidate.kind === "animate-camera" && candidate.operationId === sourceClip.operationId,
+    );
+    if (!mutation || mutation.kind !== "animate-camera") return [];
+    const nextSourceStart = previewAppliedEdits
+      .flatMap(({ program }) => {
+        const candidate = cameraClipFromProgram(program);
+        return candidate && candidate.interval.start > sourceClip.interval.start + 0.0005
+          ? [candidate.interval.start]
+          : [];
+      })
+      .reduce((earliest, start) => Math.min(earliest, start), Number.POSITIVE_INFINITY);
+    const maximumEnd = Math.min(
+      projectedEditorScene?.runtimeSceneState.duration ?? sourceClip.interval.end,
+      nextSourceStart,
+    );
+    const activeDraftIsThisClip = editingAppliedProgram?.original.program.transactionId === sourceClip.transactionId;
+    return [
+      {
+        easing: sourceClip.easing,
+        from: sourceClip.from,
+        interval: mutation.interval,
+        maximumDuration: Math.max(0.1, maximumEnd - sourceClip.interval.start),
+        operationId: sourceClip.operationId,
+        readOnlyReason:
+          previewRenderer?.state.phase !== "presented"
+            ? "Wait for the canonical WebGPU preview before editing Camera."
+            : draftEdit && !activeDraftIsThisClip
+              ? "Apply or discard the current draft before editing Camera."
+              : null,
+        to: sourceClip.to,
         transactionId: sourceClip.transactionId,
       },
     ];
@@ -2093,7 +2154,7 @@ export function App({
     if (!entityId) return null;
     const entity = studioCreationProjectionEntityFor(entityId);
     const sourceAnchor = studioCreationStaticTransformAnchorForEntity(
-      workspaceCreationProjection,
+      workspaceEntityCreationProjection,
       previewEditRecords.map(({ program }) => program),
       entityId,
     );
@@ -3637,6 +3698,223 @@ export function App({
     if (draftEdit) {
       if (editingAppliedProgram?.original.program.transactionId !== clip.transactionId) {
         setDraftError("Apply or discard the current draft before deleting Transform.");
+        return false;
+      }
+      const planned = undoEditorProgramTransition(discardEditorDraftTransition(editorState));
+      if (!editorDocumentAuthority.enabled) {
+        installAcceptedState(planned);
+        return true;
+      }
+      const lifecycleBlocker = readDurationBlocker();
+      if (lifecycleBlocker || !editorDocumentAuthority.canAuthor()) {
+        setDraftError(lifecycleBlocker ?? editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
+        return false;
+      }
+      void commitEditorProgramMutation(collaborationMutationForUndoV1(mutation), planned);
+      return true;
+    }
+    return undoProgramCommitFirst();
+  }
+
+  function baseCameraView(): CameraView | null {
+    const view = previewRenderer?.canonicalScene?.bundle.scene.camera.view;
+    return view
+      ? {
+          center: { ...view.center },
+          frameHeight: view.frameHeight,
+          frameWidth: view.frameWidth,
+        }
+      : null;
+  }
+
+  function sameCameraView(left: CameraView, right: CameraView) {
+    return (
+      Math.abs(left.center.x - right.center.x) < 0.0005 &&
+      Math.abs(left.center.y - right.center.y) < 0.0005 &&
+      Math.abs(left.frameHeight - right.frameHeight) < 0.0005 &&
+      Math.abs(left.frameWidth - right.frameWidth) < 0.0005
+    );
+  }
+
+  function currentExactCameraView(): CameraView | null {
+    return cameraClips.at(-1)?.to ?? baseCameraView();
+  }
+
+  function selectedPreparedCameraBounds() {
+    if (!previewRenderer || !workspace) return null;
+    const sourceNames = new Map<string, string | null>();
+    const bounds = selectedObjectIds.flatMap((entityId) => {
+      const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+      const verified = entity ? verifiedPreviewGeometryForStudioEntity(previewRenderer, sourceNames, entity) : null;
+      const prepared = verified ? preparedGeometryBounds(verified.geometry, workspace.frame) : null;
+      return prepared ? [prepared] : [];
+    });
+    if (bounds.length !== selectedObjectIds.length || bounds.length === 0) return null;
+    return {
+      bottom: Math.max(...bounds.map((bound) => bound.bottom)),
+      left: Math.min(...bounds.map((bound) => bound.left)),
+      right: Math.max(...bounds.map((bound) => bound.right)),
+      top: Math.min(...bounds.map((bound) => bound.top)),
+    };
+  }
+
+  function cameraCommonUnavailableReason() {
+    if (!nativeSceneActive) return "Camera clips currently support only Studio-native Scenes.";
+    if (studioAuthoringLocked) return readDurationBlocker() ?? EDITOR_SESSION_LOADING_BLOCKER;
+    if (boundary !== null) return "Finish the Scene transition before authoring Camera clips.";
+    if (
+      previewRenderer?.state.phase !== "presented" ||
+      !previewPaintAvailable ||
+      !workspaceCreationProjection ||
+      !workspaceProjection
+    ) {
+      return "Wait for the canonical WebGPU preview before authoring Camera clips.";
+    }
+    if (previewSelectionOnly) return "Camera clips require a complete canonical Scene preview.";
+    if (draftEdit) return "Apply or discard the current draft before authoring Camera clips.";
+    const latest = cameraClips.at(-1);
+    if (latest && currentTime < latest.interval.end - 0.0005) {
+      return "Move the playhead to the end of the latest Camera clip before appending another one.";
+    }
+    if (!baseCameraView() || !currentExactCameraView()) return "The exact Scene Camera view is unavailable.";
+    return null;
+  }
+
+  function cameraFocusUnavailableReason() {
+    const common = cameraCommonUnavailableReason();
+    if (common) return common;
+    if (selectedObjectIds.length === 0) return "Select at least one Studio object to focus the Camera.";
+    if (selectedObjectIds.some((entityId) => !studioCreationProjectionEntityFor(entityId))) {
+      return "Camera Focus supports only applied Studio-created objects.";
+    }
+    const bounds = selectedPreparedCameraBounds();
+    const base = baseCameraView();
+    const current = currentExactCameraView();
+    if (!bounds || !base || !current) return "Exact prepared bounds are unavailable for the complete selection.";
+    try {
+      cameraFocusViewFromPreparedBounds({ bounds, baseView: base, currentView: current, viewport: STUDIO_VIEWPORT });
+      return null;
+    } catch (error) {
+      return error instanceof Error ? error.message : "The selection cannot produce a bounded Camera view.";
+    }
+  }
+
+  function cameraResetUnavailableReason() {
+    const common = cameraCommonUnavailableReason();
+    if (common) return common;
+    const base = baseCameraView();
+    const current = currentExactCameraView();
+    if (!base || !current) return "The exact Scene Camera view is unavailable.";
+    return sameCameraView(base, current) ? "The Camera is already at the base Scene view." : null;
+  }
+
+  function addCameraClip(kind: "focus" | "reset", input: Readonly<{ duration: number; easing: CameraClipEasing }>) {
+    const unavailable = kind === "focus" ? cameraFocusUnavailableReason() : cameraResetUnavailableReason();
+    if (unavailable) {
+      setDraftError(unavailable);
+      return false;
+    }
+    const base = baseCameraView();
+    const from = currentExactCameraView();
+    if (!base || !from) return false;
+    const bounds = kind === "focus" ? selectedPreparedCameraBounds() : null;
+    let to: CameraView;
+    try {
+      to =
+        kind === "focus" && bounds
+          ? cameraFocusViewFromPreparedBounds({ bounds, baseView: base, currentView: from, viewport: STUDIO_VIEWPORT })
+          : base;
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Camera target view is invalid.");
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: `creating a Camera ${kind === "focus" ? "Focus" : "Reset"}`,
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: kind === "focus" ? selectedObjectIds : [],
+    });
+    if (!anchor) return false;
+    try {
+      const validation = createCameraProgram({
+        baseView: base,
+        capturedPlayhead: anchor.sourceTime,
+        easing: input.easing,
+        end: anchor.sourceTime + input.duration,
+        from,
+        scene: sourceScene,
+        start: anchor.sourceTime,
+        to,
+        transactionId: `studio-camera-${kind}-${crypto.randomUUID()}`,
+        workspaceOrigin: "studio-native",
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record, selectedObjectIds, gestureContext.sourcePrograms);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Camera clip could not be created.");
+      return false;
+    }
+  }
+
+  function stageCameraClip(clip: StudioCameraTimelineClip, change: StudioCameraClipChange = {}) {
+    if (clip.readOnlyReason) {
+      setDraftError(clip.readOnlyReason);
+      return false;
+    }
+    const programIndex = appliedEdits.findIndex(({ program }) => program.transactionId === clip.transactionId);
+    const original = appliedEdits[programIndex];
+    const base = previewAppliedEdits[programIndex];
+    const cameraBase = baseCameraView();
+    if (!original || !base || !cameraBase || base.program.transactionId !== clip.transactionId) {
+      setDraftError("The Camera clip no longer matches the applied Program history.");
+      return false;
+    }
+    try {
+      const preceding = sourceSceneBeforeAppliedProgram(programIndex);
+      const validation = replaceCameraProgram({
+        baseProgram: base.program,
+        baseView: cameraBase,
+        duration: change.duration,
+        easing: change.easing,
+        scene: preceding.scene,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record, selectedObjectIds, preceding.canonical, null, {
+        index: programIndex,
+        original,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Camera clip could not be edited.");
+      return false;
+    }
+  }
+
+  function deleteCameraClip(clip: StudioCameraTimelineClip) {
+    const latest = appliedEdits.at(-1);
+    const mutation = programUndoEntries.at(-1);
+    if (
+      !latest ||
+      latest.program.transactionId !== clip.transactionId ||
+      !mutation ||
+      mutation.kind !== "append" ||
+      mutation.value.program.transactionId !== clip.transactionId
+    ) {
+      setDraftError("Undo later edits and Camera changes before deleting this clip.");
+      return false;
+    }
+    if (draftEdit) {
+      if (editingAppliedProgram?.original.program.transactionId !== clip.transactionId) {
+        setDraftError("Apply or discard the current draft before deleting Camera.");
         return false;
       }
       const planned = undoEditorProgramTransition(discardEditorDraftTransition(editorState));
@@ -5839,7 +6117,7 @@ export function App({
         fromPosition: Point;
         fromScale: number;
       }>[] => {
-        const transform = currentCreationTransformForEntity(workspaceCreationProjection, entity.id);
+        const transform = currentCreationTransformForEntity(workspaceEntityCreationProjection, entity.id);
         if (transform) {
           return [
             {
@@ -6054,7 +6332,7 @@ export function App({
         entityId: string;
         fromPosition: Point;
       }>[] => {
-        const createdPosition = latestCreationPositionForEntity(workspaceCreationProjection, entity.id);
+        const createdPosition = latestCreationPositionForEntity(workspaceEntityCreationProjection, entity.id);
         if (createdPosition)
           return [{ authority: "studio-created" as const, entityId: entity.id, fromPosition: createdPosition }];
         if (
@@ -7515,8 +7793,8 @@ export function App({
   const selectedRuntimeTraceEditCapabilities = selectedRuntimeTraceEditAuthority?.capabilities ?? null;
   const selectedStudioCreationAppearanceAuthority = studioCreationAppearanceAuthorityFor(selectedEntity?.id);
   const selectedStudioCreationStaticTransformAuthority = studioCreationStaticTransformAuthorityFor(selectedEntity?.id);
-  const studioUniformScaleResizeOnlyIds = uniformScaleResizeOnlyCreationEntityIds(workspaceCreationProjection);
-  const studioResizeUnavailableIds = resizeUnavailableCreationEntityIds(workspaceCreationProjection);
+  const studioUniformScaleResizeOnlyIds = uniformScaleResizeOnlyCreationEntityIds(workspaceEntityCreationProjection);
+  const studioResizeUnavailableIds = resizeUnavailableCreationEntityIds(workspaceEntityCreationProjection);
   const selectedStudioCreationAppearanceAtAnchor =
     selectedStudioCreationAppearanceAuthority !== null &&
     Math.abs(sourceCurrentTime - selectedStudioCreationAppearanceAuthority.sourceAnchor) < 0.0005;
@@ -7532,7 +7810,7 @@ export function App({
       ? selectedEntity.id
       : null;
   const studioGroupResizeEligibleIds = new Set(
-    [...groupResizeEligibleCreationEntityIds(workspaceCreationProjection)].filter(
+    [...groupResizeEligibleCreationEntityIds(workspaceEntityCreationProjection)].filter(
       (entityId) =>
         scaleKeyframeTransformConflictEntity(transformTrackPrograms, [entityId]) === null &&
         rotationKeyframeTransformConflictEntity(transformTrackPrograms, [entityId]) === null,
@@ -7540,7 +7818,7 @@ export function App({
   );
   const groupTransformOrigins = new Map([
     ...[...studioGroupResizeEligibleIds].flatMap((entityId) => {
-      const transform = currentCreationTransformForEntity(workspaceCreationProjection, entityId);
+      const transform = currentCreationTransformForEntity(workspaceEntityCreationProjection, entityId);
       return transform ? [[entityId, transform.transformOrigin] as const] : [];
     }),
     ...editableEntities.flatMap((entity) =>
@@ -8095,6 +8373,7 @@ export function App({
               anchors={timelineAnchors}
               appliedMotionClips={appliedMotionClips}
               appliedTransactionIds={appliedTransactionIds}
+              cameraClips={cameraClips}
               boundaryActive={boundary !== null}
               className="order-1 min-h-[30rem] md:order-2 md:col-start-2 md:row-start-1 md:min-h-[32rem] xl:min-h-0"
               currentTime={currentTime}
@@ -8137,6 +8416,9 @@ export function App({
               uniformScaleResizeOnlyIds={studioUniformScaleResizeOnlyIds}
               onAppliedMotionClipChange={changeAppliedMotionClip}
               onAppliedMotionClipSelect={editAppliedMotionClip}
+              onCameraClipChange={stageCameraClip}
+              onCameraClipDelete={deleteCameraClip}
+              onCameraClipSelect={(clip) => void stageCameraClip(clip)}
               onDrawInAdd={addDrawIn}
               onDrawInChange={changeDrawIn}
               onDrawInDelete={deleteDrawIn}
@@ -8266,6 +8548,13 @@ export function App({
             <StudioInspector
               appliedProgramCount={appliedEdits.length}
               authoringAvailable={previewMutationAvailable}
+              cameraAuthoring={{
+                defaultDuration: motionDuration,
+                focusUnavailableReason: cameraFocusUnavailableReason(),
+                onFocus: (input) => addCameraClip("focus", input),
+                onReset: (input) => addCameraClip("reset", input),
+                resetUnavailableReason: cameraResetUnavailableReason(),
+              }}
               className="order-3 min-h-96 md:col-span-2 md:col-start-1 md:row-start-2 xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:min-h-0"
               draftError={draftError}
               draftApplyPending={draftApplyPending}

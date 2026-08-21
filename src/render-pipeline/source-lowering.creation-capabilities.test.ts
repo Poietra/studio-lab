@@ -681,9 +681,10 @@ describe("Canonical EditProgram source lowering", () => {
   it("rejects CameraFocus camera changes through the shared capability contract", () => {
     const cameraFocus: CanonicalEditOperation = {
       ...operationBase("camera-focus", 7, 8),
-      kind: "ChangeCamera",
-      property: "scale",
-      value: 1.35,
+      easing: "smooth",
+      from: { center: { x: 0, y: 0 }, frameHeight: 8, frameWidth: 14.222 },
+      kind: "AnimateCamera",
+      to: { center: { x: 2, y: 0 }, frameHeight: 4, frameWidth: 7.111 },
     };
     expect(() =>
       lowerCanonicalProgramSource(
@@ -692,7 +693,7 @@ describe("Canonical EditProgram source lowering", () => {
         { height: 8, width: 14.222 },
         null,
       ),
-    ).toThrow(/CameraFocus can be previewed.*ChangeCamera cannot yet be lowered/);
+    ).toThrow(/AnimateCamera has no truthful source lowering/);
   });
 
   it("rejects live relations because a one-shot move cannot preserve that constraint", () => {

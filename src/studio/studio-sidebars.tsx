@@ -12,6 +12,8 @@ import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../rende
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { DraftInspector } from "./draft-inspector";
 import {
+  type CameraInspectorAuthoring,
+  CameraInspectorEditor,
   EntityInspectorEditor,
   entityInspectorKey,
   type MathTexTransformInspectorAuthoring,
@@ -1014,6 +1016,7 @@ export function StudioInspector({
   authoringAvailable = true,
   className,
   colorAvailable,
+  cameraAuthoring,
   draftApplyPending,
   draftError,
   draftOperation,
@@ -1077,6 +1080,7 @@ export function StudioInspector({
   authoringAvailable?: boolean;
   className?: string;
   colorAvailable: boolean;
+  cameraAuthoring?: CameraInspectorAuthoring;
   draftApplyPending: boolean;
   draftError: string | null;
   draftOperation: EditSuggestionOperation | null;
@@ -1370,6 +1374,7 @@ export function StudioInspector({
               </p>
             </div>
           )}
+          {cameraAuthoring ? <CameraInspectorEditor authoring={cameraAuthoring} /> : null}
           {selectedEntityLocked ? (
             <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-500" role="status">
               Unlock this object in Layers before editing it.

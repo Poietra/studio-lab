@@ -169,7 +169,7 @@ describe("EditProgram execution capabilities", () => {
     }
   });
 
-  it("keeps CameraFocus previewable but blocks Apply before source lowering", () => {
+  it("rejects approximate CameraFocus suggestions in favor of exact Studio controls", () => {
     const validation = canonicalizeSuggestionProgram(cameraFocusSuggestion(), {
       capturedPlayhead: 4.42,
       origin: "remote-model",
@@ -177,17 +177,12 @@ describe("EditProgram execution capabilities", () => {
       transactionId: "camera-focus-contract",
     });
 
-    expect(validation.kind).toBe("valid");
-    expect(programExecutionCapabilities(validation.program)).toEqual({
-      apply: "blocked",
-      applyBlocker: "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
-      lowering: "illustrative",
-    });
+    expect(validation.kind).toBe("invalid");
     expect(validation.issues).toContainEqual(
       expect.objectContaining({
-        code: "lowering-unsupported",
-        operationId: expect.stringContaining("camera-zoom"),
-        severity: "warning",
+        code: "schema-invalid",
+        message: expect.stringMatching(/exact prepared WebGPU bounds.*Studio Inspector Camera controls/),
+        severity: "error",
       }),
     );
   });

@@ -1197,17 +1197,39 @@ export const OPERATION_REGISTRY = {
     execution: () => SUPPORTED_EXECUTION,
     validate: (operation, scene) => baseIssues(operation, scene),
   } satisfies Capability<"InsertSceneBoundary">,
-  ChangeCamera: {
+  AnimateCamera: {
     access: () => ({
       reads: [{ channel: "camera", entityId: "camera" }],
       writes: [{ channel: "camera", entityId: "camera" }],
     }),
-    execution: () =>
-      previewOnlyExecution(
-        "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
-      ),
-    validate: (operation, scene) => baseIssues(operation, scene),
-  } satisfies Capability<"ChangeCamera">,
+    execution: () => CLIENT_ONLY_EXECUTION,
+    validate: (operation, scene) => {
+      const issues = [...baseIssues(operation, scene)];
+      const aspect = (view: typeof operation.from) => view.frameWidth / view.frameHeight;
+      const viewIsBounded = (view: typeof operation.from) =>
+        Math.abs(view.center.x) <= 1_000_000_000 &&
+        Math.abs(view.center.y) <= 1_000_000_000 &&
+        view.frameHeight <= 1_000_000_000 &&
+        view.frameWidth <= 1_000_000_000;
+      const aspectDelta = Math.abs(aspect(operation.from) - aspect(operation.to));
+      const aspectScale = Math.max(1, Math.abs(aspect(operation.from)), Math.abs(aspect(operation.to)));
+      if (
+        operation.interval.end <= operation.interval.start ||
+        !viewIsBounded(operation.from) ||
+        !viewIsBounded(operation.to) ||
+        aspectDelta > 1e-9 * aspectScale
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "camera",
+          message: "Camera animation requires one bounded, positive-duration, aspect-preserving view change.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"AnimateCamera">,
 } as const;
 
 export function operationCapability(operation: SceneEditOperation) {
