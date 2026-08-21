@@ -1340,13 +1340,17 @@ fn closed_studio_group_rotation(
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one closed planner owns logical-group history and paint-order admission"
+)]
 fn closed_studio_group_layer_order(
     program_index: usize,
     programs: &[StudioCreationEditInput],
     timeline: &StudioCreationTimelinePlan,
     entities: &[PlannedStudioCreationEntity],
     base_source_z_index_start: Option<f64>,
-    base_scene_source_z_indexes: Option<&[f64]>,
+    base_scene_paint_order: Option<&[(f64, u32)]>,
 ) -> Option<PlannedStudioGroupLayerOrder> {
     let program = programs.get(program_index)?;
     if program.origin != StudioAuthoringOrigin::DirectManipulation
@@ -1468,14 +1472,20 @@ fn closed_studio_group_layer_order(
     // Projection does not know the imported Scene's z-index baseline. Apply does,
     // so enforce the paint-block invariant there without duplicating the UI's
     // adjacent-block planner in the domain core.
-    if let Some(base_scene_source_z_indexes) = base_scene_source_z_indexes {
+    if let Some(base_scene_paint_order) = base_scene_paint_order {
         let group_is_one_paint_block = |projected: bool| {
-            let mut paint_order = base_scene_source_z_indexes
+            let first_created_scene_order = base_scene_paint_order
                 .iter()
-                .enumerate()
-                .map(|(index, source_z_index)| Some((index, *source_z_index, false)))
+                .map(|(_, scene_order)| *scene_order)
+                .max()
+                .map_or(Some(0), |scene_order| scene_order.checked_add(1))?;
+            let mut paint_order = base_scene_paint_order
+                .iter()
+                .map(|(source_z_index, scene_order)| Some((*scene_order, *source_z_index, false)))
                 .chain(entities.iter().enumerate().map(|(index, state)| {
                     let fallback_index = u32::try_from(index).ok().map(f64::from)?;
+                    let scene_order =
+                        first_created_scene_order.checked_add(u32::try_from(index).ok()?)?;
                     let current = state.source_z_index.or_else(|| {
                         base_source_z_index_start.map(|start| start + fallback_index)
                     })?;
@@ -1487,7 +1497,7 @@ fn closed_studio_group_layer_order(
                         current
                     };
                     Some((
-                        base_scene_source_z_indexes.len() + index,
+                        scene_order,
                         source_z_index,
                         target_ids.contains(&state.spec.id),
                     ))
@@ -1542,9 +1552,10 @@ fn closed_studio_group_layer_order(
             .iter()
             .enumerate()
             .find(|(_, state)| state.spec.id == *entity_id)?;
-        let current = state
-            .source_z_index
-            .or_else(|| base_source_z_index_start.map(|start| start + index as f64));
+        let current = state.source_z_index.or_else(|| {
+            let fallback_index = u32::try_from(index).ok().map(f64::from)?;
+            base_source_z_index_start.map(|start| start + fallback_index)
+        });
         if current.is_some_and(|current| !close_transform_baseline_value(*from, current)) {
             return None;
         }
@@ -1563,7 +1574,7 @@ fn plan_studio_creation_edits(
     base_duration: f64,
     programs: &[StudioCreationEditInput],
     base_source_z_index_start: Option<f64>,
-    base_scene_source_z_indexes: Option<&[f64]>,
+    base_scene_paint_order: Option<&[(f64, u32)]>,
 ) -> Result<StudioCreationPlan, ProjectStudioCreationEditError> {
     let timeline = plan_studio_creation_timeline(base_duration, programs)?;
     let create_programs = timeline
@@ -2680,7 +2691,7 @@ fn plan_studio_creation_edits(
             &timeline,
             &entities,
             base_source_z_index_start,
-            base_scene_source_z_indexes,
+            base_scene_paint_order,
         );
         let contains_position = program.operations.iter().any(|operation| {
             matches!(operation.kind, StudioCreationOperationKind::Position { .. })
@@ -3263,7 +3274,7 @@ fn plan_studio_creation_edits(
                             Some((*rank, *schedule_index, visible))
                         })
                         .max_by_key(|(rank, schedule_index, _)| (*rank, *schedule_index))
-                        .map_or(true, |(_, _, visible)| visible);
+                        .is_none_or(|(_, _, visible)| visible);
                     if !visible_at_group
                         || !child.rotation_keyframes.is_empty()
                         || parent_by_child.contains_key(child_id)
@@ -4336,6 +4347,13 @@ impl EngineSessionV1 {
             .iter()
             .map(|entity| entity.source_z_index)
             .collect::<Vec<_>>();
+        let base_scene_paint_order = self
+            .scene()
+            .entities
+            .iter()
+            .filter(|entity| !matches!(entity.geometry, SceneGeometryV1::Group {}))
+            .map(|entity| (entity.source_z_index, entity.scene_order))
+            .collect::<Vec<_>>();
         let base_source_z_index_start = base_scene_source_z_indexes
             .iter()
             .copied()
@@ -4345,7 +4363,7 @@ impl EngineSessionV1 {
             self.scene().duration,
             &programs,
             Some(base_source_z_index_start),
-            Some(&base_scene_source_z_indexes),
+            Some(&base_scene_paint_order),
         )
         .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
         for state in &plan.entities {
@@ -5799,6 +5817,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::float_cmp,
+        clippy::too_many_lines,
+        reason = "one end-to-end logical-group paint-order regression scenario"
+    )]
     fn normalized_creation_applies_late_group_paint_order_atomically() {
         let bundle = static_imported_bundle();
         let mut command = studio_creation_command(&bundle);
