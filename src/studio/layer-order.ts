@@ -392,6 +392,62 @@ export function planStudioLayerGroupOrder(
   };
 }
 
+/** Resolves an arbitrary front-first drop into the same adjacent group moves
+ * used by the buttons, then emits one atomic canonical Program target set. */
+export function planStudioLayerGroupReorder(
+  entries: readonly StudioLayerEntry[],
+  groupId: string,
+  frontFirstIndex: number,
+): StudioLayerGroupOrderPlan {
+  const rootRows = entries.filter(({ isGroup, parentGroupId }) => isGroup || !parentGroupId);
+  if (!Number.isInteger(frontFirstIndex) || frontFirstIndex < 0 || frontFirstIndex >= rootRows.length) {
+    return { kind: "unavailable", reason: "The requested group position is outside the current paint order." };
+  }
+  const currentIndex = rootRows.findIndex(({ groupId: candidate, isGroup }) => isGroup && candidate === groupId);
+  if (currentIndex < 0) {
+    return { kind: "unavailable", reason: "The selected logical group is not available in the canonical preview." };
+  }
+  if (currentIndex === frontFirstIndex) {
+    return { kind: "unavailable", reason: "This group is already at the requested paint position." };
+  }
+
+  const group = rootRows[currentIndex]!;
+  const childIds = new Set(group.childEntityIds ?? []);
+  const originalZIndices = new Map(
+    entries.flatMap(({ entity, isGroup, sourceZIndex }) =>
+      !isGroup && childIds.has(entity.id) && sourceZIndex !== null ? [[entity.id, sourceZIndex] as const] : [],
+    ),
+  );
+  if (originalZIndices.size !== childIds.size) {
+    return { kind: "unavailable", reason: "Wait for every grouped object to appear in the canonical preview." };
+  }
+
+  let projected = entries;
+  const direction = frontFirstIndex < currentIndex ? "forward" : "backward";
+  for (let step = 0; step < Math.abs(frontFirstIndex - currentIndex); step += 1) {
+    const adjacent = planStudioLayerGroupOrder(projected, groupId, direction);
+    if (adjacent.kind === "unavailable") return adjacent;
+    const targets = new Map(adjacent.targets.map((target) => [target.entityId, target.sourceZIndex] as const));
+    projected = projected.map((entry) => {
+      const sourceZIndex = targets.get(entry.entity.id);
+      return sourceZIndex === undefined || entry.isGroup ? entry : { ...entry, sourceZIndex };
+    });
+  }
+
+  const children = canonicalPaintOrder(projected).filter(({ entity }) => childIds.has(entity.id));
+  if (children.length !== childIds.size) {
+    return { kind: "unavailable", reason: "Wait for every grouped object to appear in the canonical preview." };
+  }
+  return {
+    kind: "planned",
+    targets: children.map(({ entity, sourceZIndex }) => ({
+      entityId: entity.id,
+      fromSourceZIndex: originalZIndices.get(entity.id)!,
+      sourceZIndex,
+    })),
+  };
+}
+
 export function selectionContainsGroupedChild(
   entries: readonly StudioLayerEntry[],
   selectedEntityIds: ReadonlySet<string>,

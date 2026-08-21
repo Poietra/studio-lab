@@ -115,6 +115,7 @@ import {
   filterStudioCanvasEntitiesByVisibility,
   planStudioLayerGroup,
   planStudioLayerGroupOrder,
+  planStudioLayerGroupReorder,
   planStudioLayerOrder,
   planStudioLayerReorder,
   projectStudioLayers,
@@ -4219,6 +4220,10 @@ export function App({
     return stageLayerGroupOrder(groupId, planStudioLayerGroupOrder(studioLayers, groupId, direction));
   }
 
+  function reorderLayerGroup(groupId: string, frontFirstIndex: number) {
+    return stageLayerGroupOrder(groupId, planStudioLayerGroupReorder(studioLayers, groupId, frontFirstIndex));
+  }
+
   function groupLayerSelection() {
     if (layerGroupUnavailableReason || layerGroupPlan.kind !== "planned" || !draftSourceScene) {
       if (layerGroupUnavailableReason) setDraftError(layerGroupUnavailableReason);
@@ -7074,6 +7079,7 @@ export function App({
               onEditAppliedProgram={editAppliedProgram}
               onLayerOrder={changeLayerOrder}
               onLayerGroupOrder={changeLayerGroupOrder}
+              onLayerGroupReorder={reorderLayerGroup}
               onLayerReorder={reorderLayer}
               onToggleLayerGroup={(childEntityIds, selected) =>
                 setSelectedObjectIds(selected ? [] : [...childEntityIds])

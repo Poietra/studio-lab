@@ -197,6 +197,7 @@ export function WorkspaceSidebar({
   onAddImageAsset,
   onEditAppliedProgram,
   onLayerGroupOrder,
+  onLayerGroupReorder,
   onLayerOrder,
   onLayerReorder,
   onToggleLayerGroup,
@@ -240,6 +241,7 @@ export function WorkspaceSidebar({
   onAddImageAsset?: (asset: StudioNativeImageAssetV1) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
   onLayerGroupOrder?: (groupId: string, direction: StudioLayerOrderDirection) => void;
+  onLayerGroupReorder?: (groupId: string, frontFirstIndex: number) => void;
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
   onToggleLayerGroup?: (childEntityIds: readonly string[], selected: boolean) => void;
@@ -258,7 +260,11 @@ export function WorkspaceSidebar({
   undoAvailable?: boolean;
 }>) {
   const imageFileInput = useRef<HTMLInputElement | null>(null);
-  const [layerDrag, setLayerDrag] = useState<Readonly<{ boundary: number; entityId: string }> | null>(null);
+  const [layerDrag, setLayerDrag] = useState<Readonly<{
+    boundary: number;
+    id: string;
+    kind: "entity" | "group";
+  }> | null>(null);
   const layerEntries: readonly StudioLayerEntry[] =
     layers ??
     entities.map((entity) => ({
@@ -271,6 +277,7 @@ export function WorkspaceSidebar({
       visibilityReadOnlyReason: null,
       visible: true,
     }));
+  const rootLayerEntries = layerEntries.filter(({ isGroup, parentGroupId }) => isGroup || !parentGroupId);
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       <section className="mb-4 border-b border-zinc-800 pb-4" aria-labelledby="studio-assets-heading">
@@ -381,7 +388,32 @@ export function WorkspaceSidebar({
         {activeScene.name}
       </p>
       <ul className="mt-3 space-y-1">
-        {layerEntries.map((layer, layerIndex) => {
+        {layerEntries.map((layer) => {
+          const rootLayerIndex = rootLayerEntries.indexOf(layer);
+          const updateDropBoundary = (event: DragEvent<HTMLLIElement>) => {
+            if (!layerDrag || rootLayerIndex < 0) return null;
+            const bounds = event.currentTarget.getBoundingClientRect();
+            const boundary = rootLayerIndex + (event.clientY >= bounds.top + bounds.height / 2 ? 1 : 0);
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setLayerDrag((current) => (current && current.boundary !== boundary ? { ...current, boundary } : current));
+            return boundary;
+          };
+          const completeDrop = (event: DragEvent<HTMLLIElement>) => {
+            const boundary = updateDropBoundary(event) ?? layerDrag?.boundary;
+            if (!layerDrag || boundary === undefined) return;
+            const sourceIndex = rootLayerEntries.findIndex((entry) =>
+              layerDrag.kind === "group"
+                ? entry.isGroup && entry.groupId === layerDrag.id
+                : !entry.isGroup && entry.entity.id === layerDrag.id,
+            );
+            const frontFirstIndex = boundary > sourceIndex ? boundary - 1 : boundary;
+            if (sourceIndex >= 0 && frontFirstIndex !== sourceIndex) {
+              if (layerDrag.kind === "group") onLayerGroupReorder?.(layerDrag.id, frontFirstIndex);
+              else onLayerReorder?.(layerDrag.id, frontFirstIndex);
+            }
+            setLayerDrag(null);
+          };
           if (layer.isGroup && layer.groupId && layer.childEntityIds) {
             const selected =
               layer.childEntityIds.length > 0 &&
@@ -399,6 +431,15 @@ export function WorkspaceSidebar({
                   : groupHasLockedChild
                     ? "Unlock every grouped object before changing group order."
                     : layer.orderingReadOnlyReason;
+            const groupDragUnavailableReason =
+              onLayerGroupReorder === undefined
+                ? "Group drag reordering is unavailable."
+                : !authoringAvailable
+                  ? "Wait for the canonical preview before reordering this group."
+                  : groupHasLockedChild
+                    ? "Unlock every grouped object before reordering this group."
+                    : layer.orderingReadOnlyReason;
+            const groupDraggable = groupDragUnavailableReason === null;
             const visibilityUnavailableReason =
               onToggleLayerGroupVisibility === undefined
                 ? "Group visibility is unavailable."
@@ -406,13 +447,42 @@ export function WorkspaceSidebar({
                   ? "Unlock every grouped object before changing group visibility."
                   : layer.visibilityReadOnlyReason;
             return (
-              <li className="border border-zinc-800 bg-zinc-900/50" key={layer.groupId}>
+              <li
+                className={cn(
+                  "border border-zinc-800 bg-zinc-900/50",
+                  layerDrag?.boundary === rootLayerIndex && "border-t-sky-400",
+                  layerDrag?.boundary === rootLayerEntries.length && rootLayerIndex === rootLayerEntries.length - 1
+                    ? "border-b-sky-400"
+                    : null,
+                )}
+                key={layer.groupId}
+                onDragOver={updateDropBoundary}
+                onDrop={completeDrop}
+              >
                 <div
                   className={cn(
                     "flex cursor-pointer items-center gap-2 px-2 py-1.5 text-xs",
                     selected ? "bg-sky-950 text-sky-200" : "text-zinc-300 hover:bg-zinc-900",
                   )}
                 >
+                  <span
+                    aria-hidden="true"
+                    className={cn("text-zinc-500", groupDraggable ? "cursor-grab" : "opacity-40")}
+                    draggable={groupDraggable}
+                    onDragEnd={() => setLayerDrag(null)}
+                    onDragStart={(event) => {
+                      if (!groupDraggable) {
+                        event.preventDefault();
+                        return;
+                      }
+                      event.dataTransfer.effectAllowed = "move";
+                      event.dataTransfer.setData("text/plain", layer.groupId!);
+                      setLayerDrag({ boundary: rootLayerIndex, id: layer.groupId!, kind: "group" });
+                    }}
+                    title={groupDragUnavailableReason ?? "Drag to reorder this group"}
+                  >
+                    ⧉
+                  </span>
                   <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2">
                     <input
                       aria-label={`Select group of ${layer.childEntityIds.length} objects`}
@@ -421,9 +491,6 @@ export function WorkspaceSidebar({
                       onChange={() => onToggleLayerGroup?.(layer.childEntityIds!, selected)}
                       type="checkbox"
                     />
-                    <span aria-hidden="true" className="text-zinc-500">
-                      ⧉
-                    </span>
                     <span className="min-w-0 flex-1 truncate">Group</span>
                   </label>
                   <button
@@ -520,47 +587,17 @@ export function WorkspaceSidebar({
                       ? "This object is not present at the current time."
                       : orderingReadOnlyReason;
           const draggable = onLayerReorder !== undefined && dragUnavailableReason === null;
-          const updateDropBoundary = (event: DragEvent<HTMLLIElement>) => {
-            if (!layerDrag) return null;
-            const bounds = event.currentTarget.getBoundingClientRect();
-            const boundary = layerIndex + (event.clientY >= bounds.top + bounds.height / 2 ? 1 : 0);
-            event.preventDefault();
-            event.dataTransfer.dropEffect = "move";
-            setLayerDrag((current) => (current && current.boundary !== boundary ? { ...current, boundary } : current));
-            return boundary;
-          };
           return (
             <li
               className={cn(
-                layerDrag?.boundary === layerIndex && "border-t border-sky-400",
-                layerDrag?.boundary === layerEntries.length && layerIndex === layerEntries.length - 1
+                layerDrag?.boundary === rootLayerIndex && "border-t border-sky-400",
+                layerDrag?.boundary === rootLayerEntries.length && rootLayerIndex === rootLayerEntries.length - 1
                   ? "border-b border-sky-400"
                   : null,
               )}
-              draggable={draggable}
               key={entity.id}
-              onDragEnd={() => setLayerDrag(null)}
               onDragOver={updateDropBoundary}
-              onDragStart={(event) => {
-                if (!draggable) {
-                  event.preventDefault();
-                  return;
-                }
-                event.dataTransfer.effectAllowed = "move";
-                event.dataTransfer.setData("text/plain", entity.id);
-                setLayerDrag({ boundary: layerIndex, entityId: entity.id });
-              }}
-              onDrop={(event) => {
-                const boundary = updateDropBoundary(event) ?? layerDrag?.boundary;
-                if (!layerDrag || boundary === undefined) return;
-                const sourceIndex = layerEntries.findIndex(({ entity: item }) => item.id === layerDrag.entityId);
-                const frontFirstIndex = boundary > sourceIndex ? boundary - 1 : boundary;
-                if (sourceIndex >= 0 && frontFirstIndex !== sourceIndex) {
-                  onLayerReorder?.(layerDrag.entityId, frontFirstIndex);
-                }
-                setLayerDrag(null);
-              }}
-              title={dragUnavailableReason ?? "Drag to reorder this layer"}
+              onDrop={completeDrop}
             >
               <div
                 className={cn(
@@ -569,6 +606,24 @@ export function WorkspaceSidebar({
                   selected ? "bg-sky-950 text-sky-200" : "text-zinc-400 hover:bg-zinc-900",
                 )}
               >
+                <span
+                  aria-hidden="true"
+                  className={cn("shrink-0 text-zinc-600", draggable ? "cursor-grab" : "opacity-40")}
+                  draggable={draggable}
+                  onDragEnd={() => setLayerDrag(null)}
+                  onDragStart={(event) => {
+                    if (!draggable) {
+                      event.preventDefault();
+                      return;
+                    }
+                    event.dataTransfer.effectAllowed = "move";
+                    event.dataTransfer.setData("text/plain", entity.id);
+                    setLayerDrag({ boundary: rootLayerIndex, id: entity.id, kind: "entity" });
+                  }}
+                  title={dragUnavailableReason ?? "Drag to reorder this layer"}
+                >
+                  ⠿
+                </span>
                 <label
                   className={cn(
                     "flex min-w-0 flex-1 items-center gap-2",
@@ -583,12 +638,6 @@ export function WorkspaceSidebar({
                     onChange={() => onToggleEntity(entity.id, selected)}
                     type="checkbox"
                   />
-                  <span
-                    aria-hidden="true"
-                    className={cn("shrink-0 text-zinc-600", draggable ? "cursor-grab" : "opacity-40")}
-                  >
-                    ⠿
-                  </span>
                   <span className="min-w-0 flex-1 truncate">{entityLabel(entity)}</span>
                 </label>
                 {onToggleEntityVisibility ? (
