@@ -257,6 +257,107 @@ describe("Studio Layers paint order", () => {
       kind: "unavailable",
       reason: expect.stringMatching(/already at the back edge/i),
     });
+    expect(planStudioLayerGroupOrder(projected, "tx:group/entity:group", "forward")).toEqual({
+      kind: "planned",
+      targets: [
+        { entityId: "studio:a", fromSourceZIndex: 0, sourceZIndex: 3 },
+        { entityId: "studio:b", fromSourceZIndex: 1, sourceZIndex: 4 },
+      ],
+    });
+    expect(planStudioLayerGroupOrder(projected, "tx:group/entity:group", "backward")).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/already at the backward edge/i),
+    });
+  });
+
+  it("moves a logical group across exactly one adjacent paint block", () => {
+    const targetGroupId = "tx:target/entity:group";
+    const projected = projectStudioLayers({
+      canonicalEntities: [
+        { id: "back:outer", sceneOrder: 0, sourceZIndex: 0 },
+        { id: "back:adjacent", sceneOrder: 1, sourceZIndex: 1 },
+        { geometry: { kind: "group" }, id: targetGroupId, sceneOrder: 6, sourceZIndex: 2 },
+        { id: "studio:a", parentId: targetGroupId, sceneOrder: 2, sourceZIndex: 2 },
+        { id: "studio:b", parentId: targetGroupId, sceneOrder: 3, sourceZIndex: 3 },
+        { id: "front:adjacent", sceneOrder: 4, sourceZIndex: 4 },
+        { id: "front:outer", sceneOrder: 5, sourceZIndex: 5 },
+      ],
+      creationSourceAnchors: new Map([
+        ["back:outer", 0],
+        ["back:adjacent", 0],
+        ["studio:a", 0],
+        ["studio:b", 0],
+        ["front:adjacent", 0],
+        ["front:outer", 0],
+      ]),
+      entities: ["back:outer", "back:adjacent", "studio:a", "studio:b", "front:adjacent", "front:outer"].map((id) =>
+        entity(id, { kind: "unknown", reason: "Studio-created" }),
+      ),
+      sourceRuntimeIdentity: null,
+    });
+
+    expect(planStudioLayerGroupOrder(projected, targetGroupId, "backward")).toEqual({
+      kind: "planned",
+      targets: [
+        { entityId: "studio:a", fromSourceZIndex: 2, sourceZIndex: 1 / 3 },
+        { entityId: "studio:b", fromSourceZIndex: 3, sourceZIndex: 2 / 3 },
+      ],
+    });
+    expect(planStudioLayerGroupOrder(projected, targetGroupId, "forward")).toEqual({
+      kind: "planned",
+      targets: [
+        { entityId: "studio:a", fromSourceZIndex: 2, sourceZIndex: 13 / 3 },
+        { entityId: "studio:b", fromSourceZIndex: 3, sourceZIndex: 14 / 3 },
+      ],
+    });
+    expect(
+      planStudioLayerGroupOrder(
+        projected.map((entry) => (entry.entity.id === "front:outer" ? { ...entry, sourceZIndex: null } : entry)),
+        targetGroupId,
+        "forward",
+      ),
+    ).toMatchObject({ kind: "unavailable", reason: expect.stringMatching(/every layer/i) });
+    expect(
+      planStudioLayerGroupOrder(
+        projected.map((entry) => ({
+          ...entry,
+          sourceZIndex: entry.sourceZIndex === null ? null : entry.sourceZIndex + 1_000_000_000,
+        })),
+        targetGroupId,
+        "forward",
+      ),
+    ).toMatchObject({ kind: "unavailable", reason: expect.stringMatching(/share one canonical z-index/i) });
+  });
+
+  it("crosses an adjacent logical group as one block", () => {
+    const targetGroupId = "tx:target/entity:group";
+    const adjacentGroupId = "tx:adjacent/entity:group";
+    const projected = projectStudioLayers({
+      canonicalEntities: [
+        { geometry: { kind: "group" }, id: targetGroupId, sceneOrder: 5, sourceZIndex: 0 },
+        { id: "target:a", parentId: targetGroupId, sceneOrder: 0, sourceZIndex: 0 },
+        { id: "target:b", parentId: targetGroupId, sceneOrder: 1, sourceZIndex: 1 },
+        { geometry: { kind: "group" }, id: adjacentGroupId, sceneOrder: 6, sourceZIndex: 2 },
+        { id: "adjacent:a", parentId: adjacentGroupId, sceneOrder: 2, sourceZIndex: 2 },
+        { id: "adjacent:b", parentId: adjacentGroupId, sceneOrder: 3, sourceZIndex: 3 },
+        { id: "outside", sceneOrder: 4, sourceZIndex: 4 },
+      ],
+      creationSourceAnchors: new Map(
+        ["target:a", "target:b", "adjacent:a", "adjacent:b", "outside"].map((id) => [id, 0]),
+      ),
+      entities: ["target:a", "target:b", "adjacent:a", "adjacent:b", "outside"].map((id) =>
+        entity(id, { kind: "unknown", reason: "Studio-created" }),
+      ),
+      sourceRuntimeIdentity: null,
+    });
+
+    expect(planStudioLayerGroupOrder(projected, targetGroupId, "forward")).toEqual({
+      kind: "planned",
+      targets: [
+        { entityId: "target:a", fromSourceZIndex: 0, sourceZIndex: 10 / 3 },
+        { entityId: "target:b", fromSourceZIndex: 1, sourceZIndex: 11 / 3 },
+      ],
+    });
   });
 
   it("derives group visibility from every canonical child", () => {

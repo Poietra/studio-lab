@@ -1340,12 +1340,17 @@ fn closed_studio_group_rotation(
     })
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one closed planner owns logical-group history and paint-order admission"
+)]
 fn closed_studio_group_layer_order(
     program_index: usize,
     programs: &[StudioCreationEditInput],
     timeline: &StudioCreationTimelinePlan,
     entities: &[PlannedStudioCreationEntity],
     base_source_z_index_start: Option<f64>,
+    base_scene_paint_order: Option<&[(f64, u32)]>,
 ) -> Option<PlannedStudioGroupLayerOrder> {
     let program = programs.get(program_index)?;
     if program.origin != StudioAuthoringOrigin::DirectManipulation
@@ -1464,22 +1469,93 @@ fn closed_studio_group_layer_order(
     {
         return None;
     }
+    // Projection does not know the imported Scene's z-index baseline. Apply does,
+    // so enforce the paint-block invariant there without duplicating the UI's
+    // adjacent-block planner in the domain core.
+    if let Some(base_scene_paint_order) = base_scene_paint_order {
+        let group_is_one_paint_block = |projected: bool| {
+            let first_created_scene_order = base_scene_paint_order
+                .iter()
+                .map(|(_, scene_order)| *scene_order)
+                .max()
+                .map_or(Some(0), |scene_order| scene_order.checked_add(1))?;
+            let mut paint_order = base_scene_paint_order
+                .iter()
+                .map(|(source_z_index, scene_order)| Some((*scene_order, *source_z_index, false)))
+                .chain(entities.iter().enumerate().map(|(index, state)| {
+                    let fallback_index = u32::try_from(index).ok().map(f64::from)?;
+                    let scene_order =
+                        first_created_scene_order.checked_add(u32::try_from(index).ok()?)?;
+                    let current = state.source_z_index.or_else(|| {
+                        base_source_z_index_start.map(|start| start + fallback_index)
+                    })?;
+                    let source_z_index = if projected {
+                        targets
+                            .get(&state.spec.id)
+                            .map_or(current, |(_, target)| *target)
+                    } else {
+                        current
+                    };
+                    Some((
+                        scene_order,
+                        source_z_index,
+                        target_ids.contains(&state.spec.id),
+                    ))
+                }))
+                .collect::<Option<Vec<_>>>()?;
+            paint_order
+                .sort_by(|left, right| left.1.total_cmp(&right.1).then(left.0.cmp(&right.0)));
+            let indexes = paint_order
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (_, _, target))| target.then_some(index))
+                .collect::<Vec<_>>();
+            (indexes.len() == target_ids.len()
+                && indexes.windows(2).all(|pair| pair[1] == pair[0] + 1))
+            .then_some(())
+        };
+        group_is_one_paint_block(false)?;
+        group_is_one_paint_block(true)?;
+    }
     let (_, (first_from, first_to)) = targets.first_key_value()?;
     let delta = first_to - first_from;
     if targets
         .values()
         .any(|(from, to)| !close_transform_baseline_value(to - from, delta))
     {
-        return None;
+        let mut from_order = targets
+            .iter()
+            .map(|(entity_id, (from, _))| (entity_id, *from))
+            .collect::<Vec<_>>();
+        from_order.sort_by(|left, right| left.1.total_cmp(&right.1));
+        let mut to_order = targets
+            .iter()
+            .map(|(entity_id, (_, to))| (entity_id, *to))
+            .collect::<Vec<_>>();
+        to_order.sort_by(|left, right| left.1.total_cmp(&right.1));
+        if from_order
+            .windows(2)
+            .any(|pair| close_transform_baseline_value(pair[0].1, pair[1].1))
+            || to_order
+                .windows(2)
+                .any(|pair| close_transform_baseline_value(pair[0].1, pair[1].1))
+            || from_order
+                .iter()
+                .map(|(entity_id, _)| *entity_id)
+                .ne(to_order.iter().map(|(entity_id, _)| *entity_id))
+        {
+            return None;
+        }
     }
     for (entity_id, (from, _)) in &targets {
         let (index, state) = entities
             .iter()
             .enumerate()
             .find(|(_, state)| state.spec.id == *entity_id)?;
-        let current = state
-            .source_z_index
-            .or_else(|| base_source_z_index_start.map(|start| start + index as f64));
+        let current = state.source_z_index.or_else(|| {
+            let fallback_index = u32::try_from(index).ok().map(f64::from)?;
+            base_source_z_index_start.map(|start| start + fallback_index)
+        });
         if current.is_some_and(|current| !close_transform_baseline_value(*from, current)) {
             return None;
         }
@@ -1498,6 +1574,7 @@ fn plan_studio_creation_edits(
     base_duration: f64,
     programs: &[StudioCreationEditInput],
     base_source_z_index_start: Option<f64>,
+    base_scene_paint_order: Option<&[(f64, u32)]>,
 ) -> Result<StudioCreationPlan, ProjectStudioCreationEditError> {
     let timeline = plan_studio_creation_timeline(base_duration, programs)?;
     let create_programs = timeline
@@ -2614,6 +2691,7 @@ fn plan_studio_creation_edits(
             &timeline,
             &entities,
             base_source_z_index_start,
+            base_scene_paint_order,
         );
         let contains_position = program.operations.iter().any(|operation| {
             matches!(operation.kind, StudioCreationOperationKind::Position { .. })
@@ -3196,7 +3274,7 @@ fn plan_studio_creation_edits(
                             Some((*rank, *schedule_index, visible))
                         })
                         .max_by_key(|(rank, schedule_index, _)| (*rank, *schedule_index))
-                        .map_or(true, |(_, _, visible)| visible);
+                        .is_none_or(|(_, _, visible)| visible);
                     if !visible_at_group
                         || !child.rotation_keyframes.is_empty()
                         || parent_by_child.contains_key(child_id)
@@ -3385,7 +3463,7 @@ pub fn project_studio_creation_edits(
     base_duration: f64,
     programs: &[StudioCreationEditInput],
 ) -> Result<StudioCreationProjection, ProjectStudioCreationEditError> {
-    Ok(plan_studio_creation_edits(base_duration, programs, None)?.projection())
+    Ok(plan_studio_creation_edits(base_duration, programs, None, None)?.projection())
 }
 
 fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
@@ -4263,17 +4341,29 @@ impl EngineSessionV1 {
         {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
-        let base_source_z_index_start = self
+        let base_scene_source_z_indexes = self
             .scene()
             .entities
             .iter()
             .map(|entity| entity.source_z_index)
+            .collect::<Vec<_>>();
+        let base_scene_paint_order = self
+            .scene()
+            .entities
+            .iter()
+            .filter(|entity| !matches!(entity.geometry, SceneGeometryV1::Group {}))
+            .map(|entity| (entity.source_z_index, entity.scene_order))
+            .collect::<Vec<_>>();
+        let base_source_z_index_start = base_scene_source_z_indexes
+            .iter()
+            .copied()
             .fold(-1.0_f64, f64::max)
             + 1.0;
         let plan = plan_studio_creation_edits(
             self.scene().duration,
             &programs,
             Some(base_source_z_index_start),
+            Some(&base_scene_paint_order),
         )
         .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
         for state in &plan.entities {
@@ -5727,6 +5817,12 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::float_cmp,
+        clippy::too_many_lines,
+        reason = "one end-to-end logical-group paint-order regression scenario"
+    )]
     fn normalized_creation_applies_late_group_paint_order_atomically() {
         let bundle = static_imported_bundle();
         let mut command = studio_creation_command(&bundle);
@@ -5959,9 +6055,50 @@ mod tests {
             unreachable!();
         };
         *source_z_index = source_z_index.map(|value| value + 0.25);
+        assert!(
+            project_studio_creation_edits(bundle.scene.duration, &non_uniform.programs).is_ok()
+        );
+        assert!(
+            EngineSessionV1::new(bundle.clone())
+                .unwrap()
+                .apply_studio_creation_edit(non_uniform)
+                .is_ok()
+        );
+
+        let mut reversed = command.clone();
+        let StudioCreationOperationKind::SourceZIndex { source_z_index, .. } =
+            &mut reversed.programs.last_mut().unwrap().operations[0].kind
+        else {
+            unreachable!();
+        };
+        *source_z_index = source_z_index.map(|value| value + 2.0);
         assert!(matches!(
-            project_studio_creation_edits(bundle.scene.duration, &non_uniform.programs),
+            project_studio_creation_edits(bundle.scene.duration, &reversed.programs),
             Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        let mut split = command.clone();
+        for (index, operation) in split
+            .programs
+            .last_mut()
+            .unwrap()
+            .operations
+            .iter_mut()
+            .enumerate()
+        {
+            let StudioCreationOperationKind::SourceZIndex { source_z_index, .. } =
+                &mut operation.kind
+            else {
+                unreachable!();
+            };
+            *source_z_index = Some(if index == 0 { -100.0 } else { 100.0 });
+        }
+        assert!(project_studio_creation_edits(bundle.scene.duration, &split.programs).is_ok());
+        assert!(matches!(
+            EngineSessionV1::new(bundle.clone())
+                .unwrap()
+                .apply_studio_creation_edit(split),
+            Err(ApplyStudioCreationEditError::Unsupported)
         ));
 
         command.programs.last_mut().unwrap().operations.pop();
