@@ -215,9 +215,11 @@ import {
   importedGroupResizeHistoryIsSupported,
   type PreparedSelectionResizeBasis,
   resizeSelectionAtPoint,
+  resizeUnavailableCreationEntityIds,
   type SelectionResizeGesture,
   selectionResizeCommandTargets,
   selectionResizePreviewAtFactor,
+  uniformScaleResizeOnlyCreationEntityIds,
 } from "./studio/selection-resize-gesture";
 import {
   createSelectionRotationGesture,
@@ -4756,8 +4758,16 @@ export function App({
       entity.present &&
       (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
-    const runtimeUniformResizeOnly = runtimeTraceEditCandidateFor(entity.id) !== null;
-    const shape = runtimeUniformResizeOnly ? null : resizeKindForType(entity.type);
+    if (studioResizeUnavailableIds.has(entity.id)) {
+      setSelectedObjectIds([entity.id]);
+      setDraftError(
+        "Resize is unavailable for this object's base rotation until local transform composition is supported.",
+      );
+      return;
+    }
+    const uniformScaleResizeOnly =
+      runtimeTraceEditCandidateFor(entity.id) !== null || studioUniformScaleResizeOnlyIds.has(entity.id);
+    const shape = uniformScaleResizeOnly ? null : resizeKindForType(entity.type);
     const unknownGeometry = entity.geometry.scale.kind === "unknown" ? entity.geometry.scale : null;
     if (unknownGeometry) {
       setDraftError(`Studio cannot resize ${entityLabel(entity)} safely: ${unknownGeometry.reason}`);
@@ -5432,8 +5442,16 @@ export function App({
     if (!resizeHandleUsesDelta(handle, delta)) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return;
-    const runtimeUniformResizeOnly = runtimeTraceEditCandidateFor(entity.id) !== null;
-    const shape = runtimeUniformResizeOnly ? null : resizeKindForType(entity.type);
+    if (studioResizeUnavailableIds.has(entity.id)) {
+      setSelectedObjectIds([entity.id]);
+      setDraftError(
+        "Resize is unavailable for this object's base rotation until local transform composition is supported.",
+      );
+      return;
+    }
+    const uniformScaleResizeOnly =
+      runtimeTraceEditCandidateFor(entity.id) !== null || studioUniformScaleResizeOnlyIds.has(entity.id);
+    const shape = uniformScaleResizeOnly ? null : resizeKindForType(entity.type);
     if (
       shape &&
       entity.geometry.dimensions.kind === "known" &&
@@ -5631,6 +5649,12 @@ export function App({
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity || Math.abs(entity.scale - targetScale) < 0.001) return false;
+    if (studioResizeUnavailableIds.has(entity.id)) {
+      setDraftError(
+        "Resize is unavailable for this object's base rotation until local transform composition is supported.",
+      );
+      return false;
+    }
     const runtimeTraceEditCandidate = runtimeTraceEditCandidateFor(entityId);
     if (runtimeTraceEditCandidate && !runtimeTraceEditCandidate.capabilities.uniformScale) {
       setDraftError(runtimeTraceEditCandidate.restrictionMessage);
@@ -6591,6 +6615,8 @@ export function App({
   const selectedRuntimeTraceEditCapabilities = selectedRuntimeTraceEditAuthority?.capabilities ?? null;
   const selectedStudioCreationAppearanceAuthority = studioCreationAppearanceAuthorityFor(selectedEntity?.id);
   const selectedStudioCreationStaticTransformAuthority = studioCreationStaticTransformAuthorityFor(selectedEntity?.id);
+  const studioUniformScaleResizeOnlyIds = uniformScaleResizeOnlyCreationEntityIds(workspaceCreationProjection);
+  const studioResizeUnavailableIds = resizeUnavailableCreationEntityIds(workspaceCreationProjection);
   const selectedStudioCreationAppearanceAtAnchor =
     selectedStudioCreationAppearanceAuthority !== null &&
     Math.abs(sourceCurrentTime - selectedStudioCreationAppearanceAuthority.sourceAnchor) < 0.0005;
@@ -7199,8 +7225,10 @@ export function App({
               opacityTracks={opacityTracks}
               rotationTrackEligibleIds={rotationTrackEligibleIds}
               rotationTracks={rotationTracks}
+              resizeUnavailableIds={studioResizeUnavailableIds}
               scaleTrackEligibleIds={scaleTrackEligibleIds}
               scaleTracks={scaleTracks}
+              uniformScaleResizeOnlyIds={studioUniformScaleResizeOnlyIds}
               onAppliedMotionClipChange={changeAppliedMotionClip}
               onAppliedMotionClipSelect={editAppliedMotionClip}
               onCanvasPlace={(point) => {

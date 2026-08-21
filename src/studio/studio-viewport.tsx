@@ -104,6 +104,7 @@ export function StudioViewport({
   rotationTracks,
   scaleTrackEligibleIds,
   scaleTracks,
+  uniformScaleResizeOnlyIds,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
   onCanvasPlace,
@@ -172,6 +173,7 @@ export function StudioViewport({
   projection,
   readOnly = false,
   rotationHandleEntityId,
+  resizeUnavailableIds,
   selectedIds,
   selectionLayoutUnavailableReason,
 }: StudioViewportProps) {
@@ -245,9 +247,11 @@ export function StudioViewport({
         preview={preview}
         presenceParticipants={presenceParticipants}
         readOnly={readOnly}
+        resizeUnavailableIds={resizeUnavailableIds}
         rotationHandleEntityId={rotationHandleEntityId}
         sampleId={projection.canvas.sampleId}
         selectedIds={selectedIds}
+        uniformScaleResizeOnlyIds={uniformScaleResizeOnlyIds}
       />
       <Profiler id="timeline" onRender={recordStudioCommitProfile}>
         <StudioTimeline

@@ -130,9 +130,11 @@ export type StudioCanvasProps = Readonly<{
   readOnly: boolean;
   rotationHandleEntityId: string | null;
   rotationPreview: EntityRotationPreview | null;
+  resizeUnavailableIds: ReadonlySet<string>;
   sampleId: string;
   scalePreview: EntityScalePreview | null;
   selectedIds: ReadonlySet<string>;
+  uniformScaleResizeOnlyIds: ReadonlySet<string>;
 }>;
 
 export function entityLabel(entity: ProjectedEntity) {
@@ -613,9 +615,11 @@ export function StudioCanvas({
   readOnly,
   rotationHandleEntityId,
   rotationPreview,
+  resizeUnavailableIds,
   sampleId,
   scalePreview,
   selectedIds,
+  uniformScaleResizeOnlyIds,
 }: StudioCanvasProps) {
   markStudioRenderBoundary("canvas");
   // Scene pixels have one authority: an exactly correlated WebGPU frame.
@@ -1031,6 +1035,7 @@ export function StudioCanvas({
             // Shape resizing remains gated by the source projection.
             const shapeResizeAvailable =
               !runtimeUniformScaleOnly &&
+              !uniformScaleResizeOnlyIds.has(entity.id) &&
               shape !== null &&
               entity.geometry.dimensions.kind === "known" &&
               hasShapeDimensions(shape, entity.geometry.dimensions.value) &&
@@ -1038,7 +1043,10 @@ export function StudioCanvas({
               !positionUnknown &&
               !scaleUnknown;
             const resizeAvailable =
-              !scaleUnknown && !runtimePositionOnly && (shapeResizeAvailable || singleResizeBasis !== null);
+              !resizeUnavailableIds.has(entity.id) &&
+              !scaleUnknown &&
+              !runtimePositionOnly &&
+              (shapeResizeAvailable || singleResizeBasis !== null);
             const remoteSelectorOrdinals = remoteSelectorOrdinalsByEntityId.get(entity.id) ?? [];
             return (
               <div

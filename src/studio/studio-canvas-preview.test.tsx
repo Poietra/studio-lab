@@ -147,11 +147,13 @@ function baseProps(): StudioCanvasProps {
     onSelectionRotationPointerUp: vi.fn(),
     onSelectEntity: vi.fn(),
     readOnly: false,
+    resizeUnavailableIds: new Set<string>(),
     rotationHandleEntityId: null,
     rotationPreview: null,
     sampleId: "sample-1",
     scalePreview: null,
     selectedIds: new Set<string>(),
+    uniformScaleResizeOnlyIds: new Set<string>(),
   };
 }
 
@@ -479,7 +481,56 @@ describe("StudioCanvas retained preview layer", () => {
     expect(snapBasis?.objects[0]?.bounds.right).toBeCloseTo(622.5, 1);
   });
 
-  it("keeps group handles after a prior admitted rigid rotation but rejects standalone rotation", () => {
+  it("offers only uniform corner resize for a rotated Studio-created rectangle", () => {
+    const rectangle: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      geometry: {
+        ...CIRCLE_ENTITY.geometry,
+        dimensions: { kind: "known", value: { height: 2, width: 4 } },
+      },
+      id: "tx:create-rectangle/entity:rectangle",
+      sourceIdentity: { kind: "unknown", reason: "Studio-created entity." },
+      transactionId: "create-rectangle",
+      type: "Rectangle",
+    };
+    const renderResizePolicy = (baseRotationBlocked: boolean) =>
+      renderToStaticMarkup(
+        <StudioCanvas
+          {...baseProps()}
+          appliedTransactionIds={new Set(["create-rectangle"])}
+          entities={[rectangle]}
+          preview={previewView(
+            {
+              frame: {
+                packetId: "canvas:rotated-native-rectangle",
+                revision: "a".repeat(64),
+                sampleTime: 0,
+                viewport: { heightPx: 360, widthPx: 640 },
+              },
+              phase: "presented",
+            },
+            new Map([[rectangle.id, { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 180 } }]]),
+          )}
+          resizeUnavailableIds={baseRotationBlocked ? new Set([rectangle.id]) : new Set()}
+          selectedIds={new Set([rectangle.id])}
+          uniformScaleResizeOnlyIds={baseRotationBlocked ? new Set() : new Set([rectangle.id])}
+        />,
+      );
+    const markup = renderResizePolicy(false);
+
+    expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(4);
+    for (const direction of ["nw", "ne", "sw", "se"]) {
+      expect(markup).toContain(`data-resize-direction="${direction}"`);
+    }
+    for (const direction of ["n", "e", "s", "w"]) {
+      expect(markup).not.toContain(`data-resize-direction="${direction}"`);
+    }
+    expect(markup).toContain("Hold Alt/Option to bypass snapping");
+    expect(markup).not.toContain("Hold Shift to preserve aspect ratio");
+    expect(renderResizePolicy(true)).not.toContain("data-studio-resize-handle");
+  });
+
+  it("keeps group handles after prior group or individual Rust-projected rotation", () => {
     const circle: ProjectedEntity = {
       ...CIRCLE_ENTITY,
       id: "tx:create-circle/entity:circle",
@@ -534,7 +585,10 @@ describe("StudioCanvas retained preview layer", () => {
           selectedIds={new Set([circle.id, rectangle.id])}
         />,
       );
-    const entities = [{ entityId: circle.id }, { entityId: rectangle.id }];
+    const entities = [
+      { createdLifetime: { start: 0 }, entityId: circle.id, initialRotation: 0 },
+      { createdLifetime: { start: 0 }, entityId: rectangle.id, initialRotation: 0 },
+    ];
     const eligible = groupResizeEligibleCreationEntityIds({ entities, mutations: [] });
     const markup = renderSelection(eligible, eligible);
 
@@ -548,19 +602,31 @@ describe("StudioCanvas retained preview layer", () => {
 
     const rotatedEligible = groupResizeEligibleCreationEntityIds({
       entities,
-      mutations: [{ entityId: rectangle.id, kind: "rotation", to: Math.PI / 4 }],
+      mutations: [{ entityId: rectangle.id, interval: { start: 0.4 }, kind: "rotation", to: Math.PI / 4 }],
     });
     const rotatedMarkup = renderSelection(rotatedEligible, rotatedEligible);
-    expect(rotatedMarkup).not.toContain("data-studio-selection-resize-handle");
-    expect(rotatedMarkup).not.toContain("data-studio-selection-rotation-handle");
+    expect(rotatedMarkup.match(/data-studio-selection-resize-handle=/g)).toHaveLength(4);
+    expect(rotatedMarkup.match(/data-studio-selection-rotation-handle=/g)).toHaveLength(1);
 
     const groupRotatedEligible = groupResizeEligibleCreationEntityIds({
       entities,
       mutations: [
         { entityId: circle.id, kind: "position", transactionId: "group-rotation" },
         { entityId: rectangle.id, kind: "position", transactionId: "group-rotation" },
-        { entityId: circle.id, kind: "rotation", to: Math.PI / 2, transactionId: "group-rotation" },
-        { entityId: rectangle.id, kind: "rotation", to: Math.PI / 2, transactionId: "group-rotation" },
+        {
+          entityId: circle.id,
+          interval: { start: 0.4 },
+          kind: "rotation",
+          to: Math.PI / 2,
+          transactionId: "group-rotation",
+        },
+        {
+          entityId: rectangle.id,
+          interval: { start: 0.4 },
+          kind: "rotation",
+          to: Math.PI / 2,
+          transactionId: "group-rotation",
+        },
       ],
     });
     const groupRotatedMarkup = renderSelection(groupRotatedEligible, groupRotatedEligible);
