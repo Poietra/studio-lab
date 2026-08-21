@@ -238,7 +238,7 @@ export function WorkspaceSidebar({
   onDurationChange: (duration: number) => void;
   onAddImageAsset?: (asset: StudioNativeImageAssetV1) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
-  onLayerGroupOrder?: (groupId: string, direction: "back" | "front") => void;
+  onLayerGroupOrder?: (groupId: string, direction: StudioLayerOrderDirection) => void;
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
   onToggleLayerGroup?: (childEntityIds: readonly string[], selected: boolean) => void;
@@ -466,10 +466,12 @@ export function WorkspaceSidebar({
                   <span className="tabular-nums text-[10px] text-zinc-600">{layer.childEntityIds.length}</span>
                 </div>
                 {selected && onLayerGroupOrder ? (
-                  <div className="grid grid-cols-2 border-t border-zinc-800" role="group" aria-label="Order group">
+                  <div className="grid grid-cols-4 border-t border-zinc-800" role="group" aria-label="Order group">
                     {(
                       [
                         ["back", "Back", "⇤"],
+                        ["backward", "Backward", "←"],
+                        ["forward", "Forward", "→"],
                         ["front", "Front", "⇥"],
                       ] as const
                     ).map(([direction, label, glyph]) => (

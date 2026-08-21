@@ -163,8 +163,8 @@ export function projectStudioLayers(
         ...orderingEntry,
         canMove: {
           back: lastChildIndex < entityEntries.length - 1,
-          backward: false,
-          forward: false,
+          backward: lastChildIndex < entityEntries.length - 1,
+          forward: firstChildIndex > 0,
           front: firstChildIndex > 0,
         },
         childEntityIds: children.map(({ entity }) => entity.id),
@@ -252,13 +252,13 @@ export type StudioLayerGroupOrderPlan =
     }>
   | Readonly<{ kind: "unavailable"; reason: string }>;
 
-/** Moves one contiguous logical group to the outer paint edge while retaining
- * every child's canonical relative z-index. Adjacent group movement remains a
- * separate gesture because it needs a block-level drop target. */
+/** Moves one contiguous logical group as one canonical paint block. Adjacent
+ * movement crosses exactly one root block; another logical group therefore
+ * remains contiguous as well. */
 export function planStudioLayerGroupOrder(
   entries: readonly StudioLayerEntry[],
   groupId: string,
-  direction: "back" | "front",
+  direction: StudioLayerOrderDirection,
 ): StudioLayerGroupOrderPlan {
   const group = entries.find((entry) => entry.isGroup && entry.groupId === groupId);
   if (!group?.childEntityIds?.length) {
@@ -279,24 +279,97 @@ export function planStudioLayerGroupOrder(
   if (indexes.some((index, offset) => offset > 0 && index !== indexes[offset - 1]! + 1)) {
     return { kind: "unavailable", reason: "The logical group is no longer contiguous in canonical paint order." };
   }
-  const atEdge = direction === "front" ? indexes.at(-1) === canonical.length - 1 : indexes[0] === 0;
+
+  const blocks: (typeof canonical)[] = [];
+  const emittedBlockKeys = new Set<string>();
+  for (const entry of canonical) {
+    const blockKey = entry.parentGroupId ?? `entity:${entry.entity.id}`;
+    const currentBlock = blocks.at(-1);
+    const currentKey =
+      currentBlock?.[0]?.parentGroupId ?? (currentBlock?.[0] ? `entity:${currentBlock[0].entity.id}` : null);
+    if (currentKey === blockKey) currentBlock!.push(entry);
+    else {
+      if (emittedBlockKeys.has(blockKey)) {
+        return { kind: "unavailable", reason: "A logical group is no longer contiguous in canonical paint order." };
+      }
+      emittedBlockKeys.add(blockKey);
+      blocks.push([entry]);
+    }
+  }
+  const blockIndex = blocks.findIndex(
+    (block) =>
+      block.length === children.length &&
+      block.every(({ entity }) => childIds.has(entity.id)) &&
+      block.every(({ parentGroupId }) => parentGroupId === groupId),
+  );
+  if (blockIndex < 0) {
+    return { kind: "unavailable", reason: "The logical group is no longer one canonical paint block." };
+  }
+  const towardFront = direction === "front" || direction === "forward";
+  const atEdge = towardFront ? blockIndex === blocks.length - 1 : blockIndex === 0;
   if (atEdge) return { kind: "unavailable", reason: `This group is already at the ${direction} edge.` };
 
-  const outside = canonical.filter(({ entity }) => !childIds.has(entity.id));
   const childMinimum = Math.min(...children.map(({ sourceZIndex }) => sourceZIndex));
   const childMaximum = Math.max(...children.map(({ sourceZIndex }) => sourceZIndex));
-  const outsideMinimum = Math.min(...outside.map(({ sourceZIndex }) => sourceZIndex));
-  const outsideMaximum = Math.max(...outside.map(({ sourceZIndex }) => sourceZIndex));
-  const delta = direction === "front" ? outsideMaximum + 1 - childMinimum : outsideMinimum - 1 - childMaximum;
-  if (!Number.isFinite(delta)) {
-    return { kind: "unavailable", reason: "The canonical z-index range cannot be extended safely." };
+  if (direction === "back" || direction === "front") {
+    const outside = canonical.filter(({ entity }) => !childIds.has(entity.id));
+    const outsideMinimum = Math.min(...outside.map(({ sourceZIndex }) => sourceZIndex));
+    const outsideMaximum = Math.max(...outside.map(({ sourceZIndex }) => sourceZIndex));
+    const delta = direction === "front" ? outsideMaximum + 1 - childMinimum : outsideMinimum - 1 - childMaximum;
+    if (!Number.isFinite(delta)) {
+      return { kind: "unavailable", reason: "The canonical z-index range cannot be extended safely." };
+    }
+    return {
+      kind: "planned",
+      targets: children.map(({ entity, sourceZIndex }) => ({
+        entityId: entity.id,
+        fromSourceZIndex: sourceZIndex,
+        sourceZIndex: sourceZIndex + delta,
+      })),
+    };
+  }
+
+  if (children.some((child, index) => index > 0 && child.sourceZIndex <= children[index - 1]!.sourceZIndex)) {
+    return {
+      kind: "unavailable",
+      reason: "Grouped objects that share one canonical z-index cannot move by one layer safely.",
+    };
+  }
+  const adjacentIndex = blockIndex + (towardFront ? 1 : -1);
+  const outerIndex = blockIndex + (towardFront ? 2 : -2);
+  const adjacent = blocks[adjacentIndex]!;
+  const outer = blocks[outerIndex];
+  const adjacentMinimum = Math.min(...adjacent.map(({ sourceZIndex }) => sourceZIndex));
+  const adjacentMaximum = Math.max(...adjacent.map(({ sourceZIndex }) => sourceZIndex));
+  const lower = towardFront
+    ? adjacentMaximum
+    : outer
+      ? Math.max(...outer.map(({ sourceZIndex }) => sourceZIndex))
+      : null;
+  const upper = towardFront
+    ? outer
+      ? Math.min(...outer.map(({ sourceZIndex }) => sourceZIndex))
+      : null
+    : adjacentMinimum;
+  const targetZIndices = children.map((_, index) => {
+    if (lower === null) return upper! - children.length + index;
+    if (upper === null) return lower + index + 1;
+    return lower + ((upper - lower) * (index + 1)) / (children.length + 1);
+  });
+  if (
+    targetZIndices.some((value) => !Number.isFinite(value)) ||
+    targetZIndices.some((value, index) => index > 0 && value <= targetZIndices[index - 1]!) ||
+    (lower !== null && targetZIndices[0]! <= lower) ||
+    (upper !== null && targetZIndices.at(-1)! >= upper)
+  ) {
+    return { kind: "unavailable", reason: "The adjacent canonical z-index range cannot fit this group safely." };
   }
   return {
     kind: "planned",
-    targets: children.map(({ entity, sourceZIndex }) => ({
+    targets: children.map(({ entity, sourceZIndex }, index) => ({
       entityId: entity.id,
       fromSourceZIndex: sourceZIndex,
-      sourceZIndex: sourceZIndex + delta,
+      sourceZIndex: targetZIndices[index]!,
     })),
   };
 }

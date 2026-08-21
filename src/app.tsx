@@ -4198,7 +4198,7 @@ export function App({
     }
   }
 
-  function changeLayerGroupOrder(groupId: string, direction: "back" | "front") {
+  function changeLayerGroupOrder(groupId: string, direction: StudioLayerOrderDirection) {
     return stageLayerGroupOrder(groupId, planStudioLayerGroupOrder(studioLayers, groupId, direction));
   }
 

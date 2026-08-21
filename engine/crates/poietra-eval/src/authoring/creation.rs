@@ -1470,7 +1470,29 @@ fn closed_studio_group_layer_order(
         .values()
         .any(|(from, to)| !close_transform_baseline_value(to - from, delta))
     {
-        return None;
+        let mut from_order = targets
+            .iter()
+            .map(|(entity_id, (from, _))| (entity_id, *from))
+            .collect::<Vec<_>>();
+        from_order.sort_by(|left, right| left.1.total_cmp(&right.1));
+        let mut to_order = targets
+            .iter()
+            .map(|(entity_id, (_, to))| (entity_id, *to))
+            .collect::<Vec<_>>();
+        to_order.sort_by(|left, right| left.1.total_cmp(&right.1));
+        if from_order
+            .windows(2)
+            .any(|pair| close_transform_baseline_value(pair[0].1, pair[1].1))
+            || to_order
+                .windows(2)
+                .any(|pair| close_transform_baseline_value(pair[0].1, pair[1].1))
+            || from_order
+                .iter()
+                .map(|(entity_id, _)| *entity_id)
+                .ne(to_order.iter().map(|(entity_id, _)| *entity_id))
+        {
+            return None;
+        }
     }
     for (entity_id, (from, _)) in &targets {
         let (index, state) = entities
@@ -5959,8 +5981,25 @@ mod tests {
             unreachable!();
         };
         *source_z_index = source_z_index.map(|value| value + 0.25);
+        assert!(
+            project_studio_creation_edits(bundle.scene.duration, &non_uniform.programs).is_ok()
+        );
+        assert!(
+            EngineSessionV1::new(bundle.clone())
+                .unwrap()
+                .apply_studio_creation_edit(non_uniform)
+                .is_ok()
+        );
+
+        let mut reversed = command.clone();
+        let StudioCreationOperationKind::SourceZIndex { source_z_index, .. } =
+            &mut reversed.programs.last_mut().unwrap().operations[0].kind
+        else {
+            unreachable!();
+        };
+        *source_z_index = source_z_index.map(|value| value + 2.0);
         assert!(matches!(
-            project_studio_creation_edits(bundle.scene.duration, &non_uniform.programs),
+            project_studio_creation_edits(bundle.scene.duration, &reversed.programs),
             Err(ProjectStudioCreationEditError::Unsupported)
         ));
 

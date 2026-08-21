@@ -341,7 +341,7 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("Hidden");
   });
 
-  it("offers atomic edge order controls for a selected Studio logical group", () => {
+  it("offers atomic edge and adjacent order controls for a selected Studio logical group", () => {
     const first = entity("first");
     const second = entity("second");
     const outside = entity("outside");
@@ -395,6 +395,8 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toMatch(/aria-label="Lock group of 2 objects"[^>]*aria-pressed="false"/);
     expect(markup).toContain('title="Hide group"');
     expect(markup).toMatch(/aria-label="Back group of 2 objects"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Backward group of 2 objects"[^>]*disabled=""/);
+    expect(markup).toMatch(/aria-label="Forward group of 2 objects"(?![^>]* disabled="")/);
     expect(markup).toMatch(/aria-label="Front group of 2 objects"(?![^>]* disabled="")/);
   });
 });
