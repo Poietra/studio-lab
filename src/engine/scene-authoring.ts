@@ -114,17 +114,22 @@ export type ApplyStudioFragmentMaterialsCompiler = (
 ) => Promise<SceneIrBundleV1>;
 type StaticRootTransformEntityKind =
   | "arc"
+  | "axes"
   | "circle"
   | "ellipse"
   | "image"
   | "math-tex"
+  | "number-line"
+  | "number-plane"
   | "other"
   | "rectangle"
   | "regular-polygon"
   | "sector";
 type StudioAnglePairV1 = Readonly<{ start: number; sweep: number }>;
+type StudioCoordinateAxisV1 = Readonly<{ maximum: number; minimum: number; step: number }>;
 type StaticRootTransformDimensions = Readonly<{
   angles?: StudioAnglePairV1;
+  coordinateSystem?: Readonly<{ x: StudioCoordinateAxisV1; y?: StudioCoordinateAxisV1 }>;
   height?: number;
   radius?: number;
   sides?: number;
@@ -514,6 +519,18 @@ const studioBoundEntityEditResultV1Schema = z
 const studioStaticRootDimensionsV1Schema = z
   .object({
     angles: z.object({ start: finiteNumberSchema, sweep: finiteNumberSchema }).strict().optional(),
+    coordinateSystem: z
+      .object({
+        x: z
+          .object({ maximum: finiteNumberSchema, minimum: finiteNumberSchema, step: finiteNumberSchema.positive() })
+          .strict(),
+        y: z
+          .object({ maximum: finiteNumberSchema, minimum: finiteNumberSchema, step: finiteNumberSchema.positive() })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
     height: finiteNumberSchema.optional(),
     radius: finiteNumberSchema.optional(),
     sides: z.number().int().min(3).max(32).optional(),
@@ -601,11 +618,14 @@ const studioCreationProjectionV1Schema = z
           kind: z.enum([
             "arc",
             "arrow",
+            "axes",
             "circle",
             "ellipse",
             "image",
             "line",
             "math-tex",
+            "number-line",
+            "number-plane",
             "rectangle",
             "regular-polygon",
             "sector",
@@ -998,11 +1018,14 @@ type StudioCreationDimensionsV1 = StaticRootTransformDimensions;
 type StudioCreationEntityKindV1 =
   | "arc"
   | "arrow"
+  | "axes"
   | "circle"
   | "ellipse"
   | "image"
   | "line"
   | "math-tex"
+  | "number-line"
+  | "number-plane"
   | "other"
   | "rectangle"
   | "regular-polygon"

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
+import { INSERT_ENTITY_TYPES } from "../studio/authoring-commands";
 import type { ProgramRecord } from "../studio/model";
 import { STUDIO_STYLE_PROFILE, styleProfileRef } from "../studio/style-profile";
 import {
@@ -127,6 +128,12 @@ function snapshot() {
 }
 
 describe("editor session snapshot V1 contract", () => {
+  it("round-trips every Studio tool", () => {
+    for (const insertTool of ["select", ...INSERT_ENTITY_TYPES] as const) {
+      expect(parseEditorSessionSnapshotV1({ ...snapshot(), insertTool }).insertTool).toBe(insertTool);
+    }
+  });
+
   it("strictly preserves the complete durable resume state and editor metadata", () => {
     const value = snapshot();
 

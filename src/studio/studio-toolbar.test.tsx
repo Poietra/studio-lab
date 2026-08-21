@@ -6,6 +6,16 @@ import { StudioToolbar, type StudioToolbarProps } from "./studio-toolbar";
 function props(overrides: Partial<StudioToolbarProps> = {}): StudioToolbarProps {
   return {
     authoringAvailable: true,
+    coordinateInsertSettings: {
+      height: 4,
+      width: 6,
+      xMaximum: 5,
+      xMinimum: -5,
+      xStep: 1,
+      yMaximum: 3,
+      yMinimum: -3,
+      yStep: 1,
+    },
     curveInsertSettings: {
       ellipseHeight: 2,
       ellipseWidth: 3,
@@ -14,6 +24,7 @@ function props(overrides: Partial<StudioToolbarProps> = {}): StudioToolbarProps 
       sweepDegrees: 90,
     },
     insertValue: "",
+    onCoordinateInsertSettingsChange: vi.fn(),
     onCurveInsertSettingsChange: vi.fn(),
     onInsertAtCenter: vi.fn(),
     onInsertValueChange: vi.fn(),
@@ -55,6 +66,20 @@ describe("StudioToolbar selection layout", () => {
     expect(arc).toContain('aria-label="Arc radius"');
     expect(arc).toContain('aria-label="Arc start angle"');
     expect(arc).toContain('aria-label="Arc sweep angle"');
+  });
+
+  it("exposes coordinate object tools and bounded range controls", () => {
+    const tools = renderToStaticMarkup(<StudioToolbar {...props()} />);
+    const line = renderToStaticMarkup(<StudioToolbar {...props({ tool: "NumberLine" })} />);
+    const plane = renderToStaticMarkup(<StudioToolbar {...props({ tool: "NumberPlane" })} />);
+
+    expect(tools).toContain("Insert number line (N)");
+    expect(tools).toContain("Insert axes (X)");
+    expect(tools).toContain("Insert number plane (B)");
+    expect(line).toContain('aria-label="X minimum"');
+    expect(line).not.toContain('aria-label="Y minimum"');
+    expect(plane).toContain('aria-label="Y minimum"');
+    expect(plane).toContain('aria-label="Display height"');
   });
 
   it("offers alignment for two selected objects and requires three for distribution", () => {

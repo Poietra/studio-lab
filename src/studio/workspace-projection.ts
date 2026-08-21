@@ -15,6 +15,7 @@ import { insertSceneTime, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import {
   type EntityContent,
+  type EntityDimensions,
   type ProgramRecord,
   type ProjectedEntity,
   type PropertyChannel,
@@ -139,22 +140,18 @@ function sameProjectionNumber(left: number, right: number) {
   );
 }
 
-function sameProjectionDimensions(
-  left: Readonly<{
-    angles?: Readonly<{ start: number; sweep: number }>;
-    height?: number;
-    radius?: number;
-    sides?: number;
-    width?: number;
-  }>,
-  right: Readonly<{
-    angles?: Readonly<{ start: number; sweep: number }>;
-    height?: number;
-    radius?: number;
-    sides?: number;
-    width?: number;
-  }>,
+function sameProjectionCoordinateAxis(
+  left: Readonly<{ maximum: number; minimum: number; step: number }>,
+  right: Readonly<{ maximum: number; minimum: number; step: number }>,
 ) {
+  return (
+    sameProjectionNumber(left.minimum, right.minimum) &&
+    sameProjectionNumber(left.maximum, right.maximum) &&
+    sameProjectionNumber(left.step, right.step)
+  );
+}
+
+function sameProjectionDimensions(left: EntityDimensions, right: EntityDimensions) {
   const scalarDimensionsMatch = (["height", "radius", "sides", "width"] as const).every((key) => {
     const leftValue = left[key];
     const rightValue = right[key];
@@ -167,7 +164,13 @@ function sameProjectionDimensions(
     (left.angles === undefined || right.angles === undefined
       ? left.angles === right.angles
       : sameProjectionNumber(left.angles.start, right.angles.start) &&
-        sameProjectionNumber(left.angles.sweep, right.angles.sweep))
+        sameProjectionNumber(left.angles.sweep, right.angles.sweep)) &&
+    (left.coordinateSystem === undefined || right.coordinateSystem === undefined
+      ? left.coordinateSystem === right.coordinateSystem
+      : sameProjectionCoordinateAxis(left.coordinateSystem.x, right.coordinateSystem.x) &&
+        (left.coordinateSystem.y === undefined || right.coordinateSystem.y === undefined
+          ? left.coordinateSystem.y === right.coordinateSystem.y
+          : sameProjectionCoordinateAxis(left.coordinateSystem.y, right.coordinateSystem.y)))
   );
 }
 
@@ -311,12 +314,15 @@ export function selectMotionProjection(
 function creationEntityKind(type: string): StudioCreationProjectionV1["entities"][number]["kind"] | null {
   if (type === "Arc") return "arc";
   if (type === "Arrow") return "arrow";
+  if (type === "Axes") return "axes";
   if (type === "Circle") return "circle";
   if (type === "Ellipse") return "ellipse";
   if (type === "Triangle" || type === "RegularPolygon") return "regular-polygon";
   if (type === "ImageMobject") return "image";
   if (type === "Line") return "line";
   if (type === "MathTex") return "math-tex";
+  if (type === "NumberLine") return "number-line";
+  if (type === "NumberPlane") return "number-plane";
   if (type === "Rectangle") return "rectangle";
   if (type === "Sector") return "sector";
   if (type === "Text") return "text";
@@ -1399,8 +1405,11 @@ function projectCreationWorkingState(
     }
     const hasShapeGeometry =
       entity.kind === "arc" ||
+      entity.kind === "axes" ||
       entity.kind === "circle" ||
       entity.kind === "ellipse" ||
+      entity.kind === "number-line" ||
+      entity.kind === "number-plane" ||
       entity.kind === "rectangle" ||
       entity.kind === "regular-polygon" ||
       entity.kind === "sector";

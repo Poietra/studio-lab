@@ -36,6 +36,9 @@ export const INSERT_ENTITY_TYPES = [
   "Sector",
   "Triangle",
   "RegularPolygon",
+  "NumberLine",
+  "Axes",
+  "NumberPlane",
   "Line",
   "Arrow",
 ] as const;
@@ -63,6 +66,19 @@ export function defaultEntityDimensions(type: InsertEntityType | "ImageMobject")
   }
   if (type === "Triangle") return { radius: 1, sides: 3 };
   if (type === "RegularPolygon") return { radius: 1, sides: 6 };
+  if (type === "NumberLine") {
+    return { coordinateSystem: { x: { maximum: 5, minimum: -5, step: 1 } }, width: 6 };
+  }
+  if (type === "Axes" || type === "NumberPlane") {
+    return {
+      coordinateSystem: {
+        x: { maximum: 5, minimum: -5, step: 1 },
+        y: { maximum: 3, minimum: -3, step: 1 },
+      },
+      height: 4,
+      width: 6,
+    };
+  }
   return undefined;
 }
 
@@ -827,46 +843,89 @@ export function createSceneDurationProgram(
   return validateAndScheduleProgram(program, input.scene);
 }
 
+function duplicatedEntityDimensions(type: string, dimensions: EntityDimensions | null) {
+  if (dimensions === null) return undefined;
+  const { angles, coordinateSystem, height, radius, sides, width } = dimensions;
+  if (type === "Circle" && radius !== undefined && !angles && !coordinateSystem && !height && !sides && !width) {
+    return { radius };
+  }
+  if (
+    type === "Rectangle" &&
+    height !== undefined &&
+    width !== undefined &&
+    !angles &&
+    !coordinateSystem &&
+    !radius &&
+    !sides
+  ) {
+    return { height, width };
+  }
+  if (
+    (type === "Triangle" || type === "RegularPolygon") &&
+    radius !== undefined &&
+    sides !== undefined &&
+    !angles &&
+    !coordinateSystem &&
+    !height &&
+    !width
+  ) {
+    return { radius, sides };
+  }
+  if (
+    type === "Ellipse" &&
+    height !== undefined &&
+    width !== undefined &&
+    !angles &&
+    !coordinateSystem &&
+    !radius &&
+    !sides
+  ) {
+    return { height, width };
+  }
+  if (
+    (type === "Arc" || type === "Sector") &&
+    angles &&
+    radius !== undefined &&
+    !coordinateSystem &&
+    !height &&
+    !sides &&
+    !width
+  ) {
+    return { angles, radius };
+  }
+  if (
+    type === "NumberLine" &&
+    coordinateSystem &&
+    !coordinateSystem.y &&
+    width !== undefined &&
+    !angles &&
+    !height &&
+    !radius &&
+    !sides
+  ) {
+    return { coordinateSystem, width };
+  }
+  if (
+    (type === "Axes" || type === "NumberPlane") &&
+    coordinateSystem?.y &&
+    height !== undefined &&
+    width !== undefined &&
+    !angles &&
+    !radius &&
+    !sides
+  ) {
+    return { coordinateSystem, height, width };
+  }
+  return undefined;
+}
+
 export function duplicateEntityInput(
   entity: ProjectedEntity,
   offset: number = STUDIO_STYLE_PROFILE.spacingUnitPx,
 ): StudioEntityInput | null {
   if (!INSERT_ENTITY_TYPES.some((type) => type === entity.type)) return null;
   const knownDimensions = entity.geometry.dimensions.kind === "known" ? entity.geometry.dimensions.value : null;
-  const dimensions =
-    entity.type === "Circle" &&
-    knownDimensions?.radius !== undefined &&
-    knownDimensions.sides === undefined &&
-    knownDimensions.height === undefined &&
-    knownDimensions.width === undefined
-      ? { radius: knownDimensions.radius }
-      : entity.type === "Rectangle" &&
-          knownDimensions?.height !== undefined &&
-          knownDimensions.width !== undefined &&
-          knownDimensions.radius === undefined &&
-          knownDimensions.sides === undefined
-        ? { height: knownDimensions.height, width: knownDimensions.width }
-        : (entity.type === "Triangle" || entity.type === "RegularPolygon") &&
-            knownDimensions?.radius !== undefined &&
-            knownDimensions.height === undefined &&
-            knownDimensions.width === undefined &&
-            knownDimensions.sides !== undefined
-          ? { radius: knownDimensions.radius, sides: knownDimensions.sides }
-          : entity.type === "Ellipse" &&
-              knownDimensions?.height !== undefined &&
-              knownDimensions.width !== undefined &&
-              knownDimensions.angles === undefined &&
-              knownDimensions.radius === undefined &&
-              knownDimensions.sides === undefined
-            ? { height: knownDimensions.height, width: knownDimensions.width }
-            : (entity.type === "Arc" || entity.type === "Sector") &&
-                knownDimensions?.angles !== undefined &&
-                knownDimensions.radius !== undefined &&
-                knownDimensions.height === undefined &&
-                knownDimensions.sides === undefined &&
-                knownDimensions.width === undefined
-              ? { angles: knownDimensions.angles, radius: knownDimensions.radius }
-              : undefined;
+  const dimensions = duplicatedEntityDimensions(entity.type, knownDimensions);
   return {
     content: entity.content,
     ...(dimensions ? { dimensions } : {}),

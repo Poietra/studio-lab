@@ -29,7 +29,25 @@ function creationProgram(type: string): SceneEdit {
                 ? { dimensions: { height: 2, width: 3 } }
                 : type === "Arc" || type === "Sector"
                   ? { dimensions: { angles: { start: 0, sweep: Math.PI / 2 }, radius: 1 } }
-                  : {}),
+                  : type === "NumberLine"
+                    ? {
+                        dimensions: {
+                          coordinateSystem: { x: { maximum: 5, minimum: -5, step: 1 } },
+                          width: 6,
+                        },
+                      }
+                    : type === "Axes" || type === "NumberPlane"
+                      ? {
+                          dimensions: {
+                            coordinateSystem: {
+                              x: { maximum: 5, minimum: -5, step: 1 },
+                              y: { maximum: 3, minimum: -3, step: 1 },
+                            },
+                            height: 4,
+                            width: 6,
+                          },
+                        }
+                      : {}),
           ...(type === "Text"
             ? {
                 content: {
@@ -116,6 +134,21 @@ describe("Studio creation wire", () => {
         return operation.entity.kind;
       }),
     ).toEqual(["ellipse", "arc", "sector"]);
+  });
+
+  it("maps coordinate objects to their Rust creation kinds", () => {
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 2,
+      programs: [creationProgram("NumberLine"), creationProgram("Axes"), creationProgram("NumberPlane")],
+    });
+
+    expect(
+      command.programs.map((program) => {
+        const operation = program.operations[0];
+        if (operation?.kind !== "create") throw new Error("Coordinate wire fixture is incomplete.");
+        return operation.entity.kind;
+      }),
+    ).toEqual(["number-line", "axes", "number-plane"]);
   });
 
   it("normalizes DrawIn as the fixed zero-to-one path-trim operation", () => {

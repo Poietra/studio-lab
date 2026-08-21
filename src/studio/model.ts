@@ -26,6 +26,10 @@ export type Knowledge<T> = Known<T> | Unknown;
 
 export type EntityDimensions = Readonly<{
   angles?: Readonly<{ start: number; sweep: number }>;
+  coordinateSystem?: Readonly<{
+    x: Readonly<{ maximum: number; minimum: number; step: number }>;
+    y?: Readonly<{ maximum: number; minimum: number; step: number }>;
+  }>;
   height?: number;
   radius?: number;
   sides?: number;

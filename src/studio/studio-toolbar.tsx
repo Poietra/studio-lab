@@ -25,6 +25,9 @@ const TOOL_COMMANDS: readonly Readonly<{
   { commandId: "insert-ellipse", label: "Ellipse", tool: "Ellipse" },
   { commandId: "insert-arc", label: "Arc", tool: "Arc" },
   { commandId: "insert-sector", label: "Sector", tool: "Sector" },
+  { commandId: "insert-number-line", label: "Number line", tool: "NumberLine" },
+  { commandId: "insert-axes", label: "Axes", tool: "Axes" },
+  { commandId: "insert-number-plane", label: "Number plane", tool: "NumberPlane" },
   { commandId: "insert-triangle", label: "Triangle", tool: "Triangle" },
   { commandId: "insert-regular-polygon", label: "Polygon", tool: "RegularPolygon" },
   { commandId: "insert-line", label: "Line", tool: "Line" },
@@ -44,8 +47,10 @@ const LAYOUT_BUTTON_LABELS: Readonly<Record<SelectionLayoutCommand, string>> = {
 
 export type StudioToolbarProps = Readonly<{
   authoringAvailable: boolean;
+  coordinateInsertSettings: CoordinateInsertSettings;
   curveInsertSettings: CurveInsertSettings;
   insertValue: string;
+  onCoordinateInsertSettingsChange: (settings: CoordinateInsertSettings) => void;
   onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
   onInsertAtCenter: () => void;
   onInsertValueChange: (value: string) => void;
@@ -66,10 +71,23 @@ export type CurveInsertSettings = Readonly<{
   sweepDegrees: number;
 }>;
 
+export type CoordinateInsertSettings = Readonly<{
+  height: number;
+  width: number;
+  xMaximum: number;
+  xMinimum: number;
+  xStep: number;
+  yMaximum: number;
+  yMinimum: number;
+  yStep: number;
+}>;
+
 export function StudioToolbar({
   authoringAvailable,
+  coordinateInsertSettings,
   curveInsertSettings,
   insertValue,
+  onCoordinateInsertSettingsChange,
   onCurveInsertSettingsChange,
   onInsertAtCenter,
   onInsertValueChange,
@@ -85,11 +103,28 @@ export function StudioToolbar({
   const requiresContent = tool === "Text" || tool === "MathTex";
   const requiresPolygonSides = tool === "RegularPolygon";
   const requiresCurveParameters = tool === "Arc" || tool === "Ellipse" || tool === "Sector";
+  const requiresCoordinateParameters = tool === "Axes" || tool === "NumberLine" || tool === "NumberPlane";
   const [polygonSidesDraft, setPolygonSidesDraft] = useState(String(polygonSides));
   useEffect(() => setPolygonSidesDraft(String(polygonSides)), [polygonSides]);
   const parsedPolygonSides = Number(polygonSidesDraft);
   const polygonSidesDraftIsValid =
     Number.isInteger(parsedPolygonSides) && parsedPolygonSides >= 3 && parsedPolygonSides <= 32;
+  const coordinateParameterFields: readonly Readonly<
+    [label: string, key: keyof CoordinateInsertSettings, minimum: number, maximum: number, step: number]
+  >[] = [
+    ["X minimum", "xMinimum", -100, 100, 0.5],
+    ["X maximum", "xMaximum", -100, 100, 0.5],
+    ["X step", "xStep", 0.25, 20, 0.25],
+    ...(tool === "NumberLine"
+      ? []
+      : ([
+          ["Y minimum", "yMinimum", -100, 100, 0.5],
+          ["Y maximum", "yMaximum", -100, 100, 0.5],
+          ["Y step", "yStep", 0.25, 20, 0.25],
+        ] as const)),
+    ["Display width", "width", 0.5, 12, 0.5],
+    ...(tool === "NumberLine" ? [] : ([["Display height", "height", 0.5, 8, 0.5]] as const)),
+  ];
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   return (
     <section aria-label="Studio tools" className="shrink-0 border-b border-zinc-800 bg-zinc-950 px-3 py-2">
@@ -150,9 +185,9 @@ export function StudioToolbar({
           </div>
         ) : null}
       </div>
-      {requiresContent || requiresPolygonSides || requiresCurveParameters ? (
+      {requiresContent || requiresPolygonSides || requiresCurveParameters || requiresCoordinateParameters ? (
         <form
-          className="mt-2 flex max-w-xl items-end gap-2"
+          className="mt-2 flex max-w-4xl flex-wrap items-end gap-2"
           onSubmit={(event) => {
             event.preventDefault();
             if (requiresPolygonSides && !polygonSidesDraftIsValid) return;
@@ -225,7 +260,7 @@ export function StudioToolbar({
                 </label>
               ))}
             </div>
-          ) : (
+          ) : requiresCurveParameters ? (
             <div className="flex min-w-0 flex-1 gap-3" role="group" aria-label={`${tool} parameters`}>
               {(
                 [
@@ -256,7 +291,31 @@ export function StudioToolbar({
                 </label>
               ))}
             </div>
-          )}
+          ) : requiresCoordinateParameters ? (
+            <div className="flex min-w-0 flex-1 flex-wrap gap-2" role="group" aria-label={`${tool} parameters`}>
+              {coordinateParameterFields.map(([label, key, min, max, step]) => (
+                <label className="w-24 text-[10px] text-zinc-500" key={key}>
+                  {label}
+                  <input
+                    aria-label={label}
+                    className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs tabular-nums text-zinc-100 outline-none focus:border-sky-500"
+                    disabled={!authoringAvailable}
+                    max={max}
+                    min={min}
+                    onChange={(event) => {
+                      const value = event.currentTarget.valueAsNumber;
+                      if (Number.isFinite(value)) {
+                        onCoordinateInsertSettingsChange({ ...coordinateInsertSettings, [key]: value });
+                      }
+                    }}
+                    step={step}
+                    type="number"
+                    value={coordinateInsertSettings[key]}
+                  />
+                </label>
+              ))}
+            </div>
+          ) : null}
           <button
             className="h-8 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
             disabled={!authoringAvailable || (requiresPolygonSides && !polygonSidesDraftIsValid)}

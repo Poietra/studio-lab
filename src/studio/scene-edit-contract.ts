@@ -18,9 +18,23 @@ const anglePairSchema = z
     sweep: z.number().finite(),
   })
   .strict();
+const coordinateAxisSchema = z
+  .object({
+    maximum: z.number().finite(),
+    minimum: z.number().finite(),
+    step: z.number().finite().positive(),
+  })
+  .strict();
+const coordinateSystemSchema = z
+  .object({
+    x: coordinateAxisSchema,
+    y: coordinateAxisSchema.optional(),
+  })
+  .strict();
 const dimensionsSchema = z
   .object({
     angles: anglePairSchema.optional(),
+    coordinateSystem: coordinateSystemSchema.optional(),
     height: z.number().positive().optional(),
     radius: z.number().positive().optional(),
     sides: z.number().int().min(3).max(32).optional(),

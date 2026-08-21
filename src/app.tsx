@@ -319,7 +319,7 @@ import type {
   StudioWriteInClipChange,
   StudioWriteInTimelineClip,
 } from "./studio/studio-timeline";
-import type { CurveInsertSettings, StudioTool } from "./studio/studio-toolbar";
+import type { CoordinateInsertSettings, CurveInsertSettings, StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
 import { clientPointToViewport, rotationDeltaFromClientPoints } from "./studio/studio-viewport-geometry";
 import { STUDIO_STYLE_PROFILE } from "./studio/style-profile";
@@ -680,6 +680,16 @@ export function App({
   const [nativeProjectAssetPending, setNativeProjectAssetPending] = useState(false);
   const [nativeProjectAssetError, setNativeProjectAssetError] = useState<string | null>(null);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
+  const [coordinateInsertSettings, setCoordinateInsertSettings] = useState<CoordinateInsertSettings>({
+    height: 4,
+    width: 6,
+    xMaximum: 5,
+    xMinimum: -5,
+    xStep: 1,
+    yMaximum: 3,
+    yMinimum: -3,
+    yStep: 1,
+  });
   const [curveInsertSettings, setCurveInsertSettings] = useState<CurveInsertSettings>({
     ellipseHeight: 2,
     ellipseWidth: 3,
@@ -4890,7 +4900,28 @@ export function App({
                   },
                   radius: curveInsertSettings.radius,
                 }
-              : undefined;
+              : insertTool === "NumberLine" || insertTool === "Axes" || insertTool === "NumberPlane"
+                ? {
+                    coordinateSystem: {
+                      x: {
+                        maximum: coordinateInsertSettings.xMaximum,
+                        minimum: coordinateInsertSettings.xMinimum,
+                        step: coordinateInsertSettings.xStep,
+                      },
+                      ...(insertTool === "NumberLine"
+                        ? {}
+                        : {
+                            y: {
+                              maximum: coordinateInsertSettings.yMaximum,
+                              minimum: coordinateInsertSettings.yMinimum,
+                              step: coordinateInsertSettings.yStep,
+                            },
+                          }),
+                    },
+                    ...(insertTool === "NumberLine" ? {} : { height: coordinateInsertSettings.height }),
+                    width: coordinateInsertSettings.width,
+                  }
+                : undefined;
       const inputs =
         entities ??
         (insertTool === "select"
@@ -6971,7 +7002,18 @@ export function App({
     const colorableTypes =
       property === "fillColor"
         ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"]
-        : ["Arc", "Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"];
+        : [
+            "Arc",
+            "Axes",
+            "Circle",
+            "Ellipse",
+            "NumberLine",
+            "NumberPlane",
+            "Rectangle",
+            "RegularPolygon",
+            "Sector",
+            "Triangle",
+          ];
     if (!createdAuthority || !entity || !colorableTypes.includes(entity.type)) {
       setDraftError(`This object does not support a ${property === "fillColor" ? "fill" : "stroke"} color.`);
       return false;
@@ -7331,10 +7373,13 @@ export function App({
     const toolByCommand: Partial<Record<StudioCommandId, StudioTool>> = {
       "insert-arc": "Arc",
       "insert-arrow": "Arrow",
+      "insert-axes": "Axes",
       "insert-circle": "Circle",
       "insert-ellipse": "Ellipse",
       "insert-line": "Line",
       "insert-mathtex": "MathTex",
+      "insert-number-line": "NumberLine",
+      "insert-number-plane": "NumberPlane",
       "insert-regular-polygon": "RegularPolygon",
       "insert-rectangle": "Rectangle",
       "insert-sector": "Sector",
@@ -8408,6 +8453,7 @@ export function App({
               cameraClips={cameraClips}
               boundaryActive={boundary !== null}
               className="order-1 min-h-[30rem] md:order-2 md:col-start-2 md:row-start-1 md:min-h-[32rem] xl:min-h-0"
+              coordinateInsertSettings={coordinateInsertSettings}
               currentTime={currentTime}
               curveInsertSettings={curveInsertSettings}
               duration={activeDuration}
@@ -8492,6 +8538,7 @@ export function App({
               onInlineTextCancel={cancelInlineTextEdit}
               onInlineTextCommit={commitInlineTextEdit}
               onInteractionModeChange={setInteractionMode}
+              onCoordinateInsertSettingsChange={setCoordinateInsertSettings}
               onCurveInsertSettingsChange={setCurveInsertSettings}
               onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
               onImageAssetDrop={
@@ -8638,9 +8685,18 @@ export function App({
               colorAvailable={
                 selectedStudioCreationAppearanceAtAnchor &&
                 selectedEntity !== null &&
-                ["Arc", "Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"].includes(
-                  selectedEntity.type,
-                )
+                [
+                  "Arc",
+                  "Axes",
+                  "Circle",
+                  "Ellipse",
+                  "NumberLine",
+                  "NumberPlane",
+                  "Rectangle",
+                  "RegularPolygon",
+                  "Sector",
+                  "Triangle",
+                ].includes(selectedEntity.type)
               }
               fillColorValue={
                 selectedEntity?.geometry.style.kind === "known"
