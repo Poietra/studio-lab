@@ -2332,6 +2332,10 @@ export function App({
             (candidate) => candidate.kind === "CreateMotion" && candidate.id === operation.id,
           );
           if (sourceOperation?.kind !== "CreateMotion") return [];
+          const workingInterval = workspaceProjection?.proposedState.evaluatedScene.eventTrack.events.find(
+            (event) => event.transactionId === record.program.transactionId && event.operationId === operation.id,
+          )?.interval;
+          if (!workingInterval) return [];
           const metadataReason = appliedMotionClipReadOnlyReason(
             record.program,
             metadata?.operation,
@@ -2354,7 +2358,7 @@ export function App({
               anchors,
               easing: sourceOperation.easing,
               entityId,
-              interval: operation.interval,
+              interval: workingInterval,
               label: entity?.content?.label ?? entity?.content?.text ?? entityId.split(":").at(-1) ?? entityId,
               maximumDuration: Math.max(
                 0.1,
