@@ -7,7 +7,7 @@ import {
   timelineInsertionOffset,
   workingTimeToSourceTime,
 } from "./program-composition";
-import type { SceneEditOperation } from "./scene-edit-contract";
+import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 
 const LIFETIME_EDIT_EVIDENCE_PREFIX = "studio-lifetime-edit:";
 
@@ -40,6 +40,77 @@ export type LifetimeEditControls = Readonly<{
   reason: string | null;
   startTargets: readonly LifetimeEditTarget[];
 }>;
+
+type StudioGroupLifetimeTrimTarget = Readonly<{
+  capturedPlayhead: number;
+  childEntityIds: readonly string[];
+  scene: RuntimeSceneState;
+}>;
+
+export function studioGroupLifetimeTrimTargetUnavailableReason(input: StudioGroupLifetimeTrimTarget) {
+  const childEntityIds = new Set(input.childEntityIds);
+  if (childEntityIds.size < 2 || childEntityIds.size !== input.childEntityIds.length) {
+    return "Group lifetime requires at least two unique objects.";
+  }
+  if (
+    !Number.isFinite(input.capturedPlayhead) ||
+    input.capturedPlayhead < 0 ||
+    input.capturedPlayhead > input.scene.duration
+  ) {
+    return "Group lifetime requires a valid source time inside the Scene.";
+  }
+  if (input.capturedPlayhead >= input.scene.duration) {
+    return "Move the playhead before the Scene end to trim this group lifetime.";
+  }
+  for (const entityId of childEntityIds) {
+    const entity = input.scene.objectGraph.entities[entityId];
+    if (!entity?.transactionId) {
+      return "Group lifetime is available only for Studio-created objects.";
+    }
+    const activeLifetime = entity.lifetime.find(
+      ({ end, start }) => input.capturedPlayhead >= start && input.capturedPlayhead < end,
+    );
+    if (!activeLifetime) {
+      return "Every grouped object must be present at the lifetime end.";
+    }
+    if (input.capturedPlayhead - activeLifetime.start < MIN_OBJECT_LIFETIME_SECONDS - 0.001) {
+      return `Keep at least ${MIN_OBJECT_LIFETIME_SECONDS.toFixed(1)} seconds of every grouped object lifetime.`;
+    }
+  }
+  return null;
+}
+
+export function studioLogicalGroupLifetimeTrimUnavailableReason(
+  input: StudioGroupLifetimeTrimTarget &
+    Readonly<{
+      groupId: string;
+      programs: readonly SceneEdit[];
+    }>,
+) {
+  const groupOwner = input.programs.find(({ operations }) =>
+    operations.some((operation) => operation.kind === "GroupEntities" && operation.groupId === input.groupId),
+  );
+  if (!groupOwner) {
+    return "The canonical Group Program is unavailable; ungroup and group these objects again.";
+  }
+  if (
+    input.programs.some(({ operations }) =>
+      operations.some(
+        (operation) =>
+          operation.kind === "ChangePresence" &&
+          operation.effect === "remove" &&
+          operation.persistent &&
+          input.childEntityIds.includes(operation.entityId),
+      ),
+    )
+  ) {
+    return "Undo the existing child or group lifetime trim before choosing another group end.";
+  }
+  if (input.capturedPlayhead - groupOwner.anchor.resolvedSeconds < 0.001) {
+    return "Move the playhead after the point where this logical group was created.";
+  }
+  return studioGroupLifetimeTrimTargetUnavailableReason(input);
+}
 
 export function lifetimeControlKey(entityId: string, index: number) {
   return `${entityId}/lifetime/${index}`;

@@ -188,6 +188,7 @@ export function WorkspaceSidebar({
   durationError,
   durationMinimum,
   entities,
+  groupLifetimeTrimUnavailableReason = null,
   groupUnavailableReason = "Select at least two contiguous Studio-created objects.",
   imageAssets = [],
   imageAssetDragAvailable = false,
@@ -206,6 +207,7 @@ export function WorkspaceSidebar({
   onLayerGroupReorder,
   onLayerOrder,
   onLayerReorder,
+  onTrimLayerGroupLifetime,
   onToggleLayerGroup,
   onToggleLayerGroupLock,
   onToggleLayerGroupVisibility,
@@ -233,6 +235,7 @@ export function WorkspaceSidebar({
   durationError: string | null;
   durationMinimum: number;
   entities: readonly ProjectedEntity[];
+  groupLifetimeTrimUnavailableReason?: string | null;
   groupUnavailableReason?: string | null;
   imageAssets?: readonly StudioNativeImageAssetV1[];
   imageAssetDragAvailable?: boolean;
@@ -251,6 +254,7 @@ export function WorkspaceSidebar({
   onLayerGroupReorder?: (groupId: string, frontFirstIndex: number) => void;
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
+  onTrimLayerGroupLifetime?: (groupId: string) => void;
   onToggleLayerGroup?: (childEntityIds: readonly string[], selected: boolean) => void;
   onToggleLayerGroupLock?: (childEntityIds: readonly string[]) => void;
   onToggleLayerGroupVisibility?: (groupId: string, visible: boolean) => void;
@@ -494,6 +498,16 @@ export function WorkspaceSidebar({
                   : groupHasLockedChild
                     ? "Unlock every grouped object before reordering this group."
                     : layer.orderingReadOnlyReason;
+            const groupLifetimeUnavailableReason =
+              onTrimLayerGroupLifetime === undefined
+                ? "Group lifetime editing is unavailable."
+                : !authoringAvailable
+                  ? "Wait for the canonical preview before trimming this group lifetime."
+                  : draftActive
+                    ? "Apply or discard the current draft before trimming this group lifetime."
+                    : groupHasLockedChild
+                      ? "Unlock every grouped object before trimming this group lifetime."
+                      : groupLifetimeTrimUnavailableReason;
             const groupDraggable = groupDragUnavailableReason === null;
             const visibilityUnavailableReason =
               onToggleLayerGroupVisibility === undefined
@@ -611,6 +625,18 @@ export function WorkspaceSidebar({
                       </button>
                     ))}
                   </div>
+                ) : null}
+                {selected && onTrimLayerGroupLifetime ? (
+                  <button
+                    aria-label={`End lifetime for group of ${layer.childEntityIds.length} objects at playhead`}
+                    className="h-7 w-full border-t border-zinc-800 px-2 text-left text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                    disabled={groupLifetimeUnavailableReason !== null}
+                    onClick={() => onTrimLayerGroupLifetime(layer.groupId!)}
+                    title={groupLifetimeUnavailableReason ?? "Trim every grouped object lifetime at the playhead"}
+                    type="button"
+                  >
+                    End group at playhead
+                  </button>
                 ) : null}
               </li>
             );

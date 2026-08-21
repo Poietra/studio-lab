@@ -5,6 +5,8 @@ import {
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
+  createStudioGroupLifetimeTrimProgram,
+  createStudioGroupProgram,
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
@@ -13,6 +15,7 @@ import {
 import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import { programRecord, projectProposedState } from "./evaluator";
 import { createFixtureProposedState, projectPersistentRemoveFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { studioLogicalGroupLifetimeTrimUnavailableReason } from "./lifetime-editing";
 import { programExecutionCapabilities } from "./operation-registry";
 import type { CanonicalEditOperation } from "./operations";
 import { rebaseProgramTime } from "./program-composition";
@@ -615,6 +618,107 @@ describe("manual Studio authoring commands", () => {
     expect(
       projectProposedState(proposed, 5.5).canvas.entities.find((entity) => entity.id === "equation_1")?.present,
     ).toBe(false);
+  });
+
+  it("trims every Studio logical-group child through one parallel lifetime Program", () => {
+    const firstId = "tx:first/entity:circle";
+    const secondId = "tx:second/entity:circle";
+    const firstScene = studioOwnedCircleScene(firstId, "first");
+    const secondScene = studioOwnedCircleScene(secondId, "second");
+    const scene = {
+      ...firstScene,
+      objectGraph: {
+        ...firstScene.objectGraph,
+        entities: {
+          ...firstScene.objectGraph.entities,
+          [secondId]: secondScene.objectGraph.entities[secondId]!,
+        },
+      },
+    };
+    const result = createStudioGroupLifetimeTrimProgram({
+      capturedPlayhead: 7,
+      childEntityIds: [firstId, secondId],
+      scene,
+      transactionId: "trim-logical-group",
+    });
+
+    expect(result.kind).toBe("valid");
+    expect(result.program.intentCount).toBe(1);
+    expect(result.program.requestedExecution).toBe("parallel");
+    expect(result.program.operations).toEqual([
+      expect.objectContaining({
+        effect: "remove",
+        entityId: firstId,
+        interval: { end: 7, start: 7 },
+        persistent: true,
+      }),
+      expect.objectContaining({
+        effect: "remove",
+        entityId: secondId,
+        interval: { end: 7, start: 7 },
+        persistent: true,
+      }),
+    ]);
+    const group = createStudioGroupProgram({
+      capturedPlayhead: 1,
+      childEntityIds: [firstId, secondId],
+      scene,
+      transactionId: "logical-group",
+    });
+    expect(group.validation.kind).toBe("valid");
+    const unavailableReason = (capturedPlayhead: number, programs = [group.validation.program], targetScene = scene) =>
+      studioLogicalGroupLifetimeTrimUnavailableReason({
+        capturedPlayhead,
+        childEntityIds: [firstId, secondId],
+        groupId: group.groupId,
+        programs,
+        scene: targetScene,
+      });
+    expect(unavailableReason(7)).toBeNull();
+    expect(unavailableReason(7, [])).toMatch(/canonical Group Program is unavailable/i);
+    expect(unavailableReason(1)).toMatch(/after the point where this logical group was created/i);
+    expect(unavailableReason(1.05)).toMatch(/at least 0.1 seconds/i);
+    expect(unavailableReason(scene.duration)).toMatch(/before the Scene end/i);
+    expect(unavailableReason(7, [group.validation.program, result.program])).toMatch(/existing.*lifetime trim/i);
+    expect(
+      unavailableReason(7, [group.validation.program], {
+        ...scene,
+        objectGraph: {
+          ...scene.objectGraph,
+          entities: {
+            ...scene.objectGraph.entities,
+            [secondId]: {
+              ...scene.objectGraph.entities[secondId]!,
+              lifetime: [{ end: 6, start: 1 }],
+            },
+          },
+        },
+      }),
+    ).toMatch(/every grouped object must be present/i);
+    expect(() =>
+      createStudioGroupLifetimeTrimProgram({
+        capturedPlayhead: 1.05,
+        childEntityIds: [firstId, secondId],
+        scene,
+        transactionId: "too-short-logical-group",
+      }),
+    ).toThrow(/at least 0.1 seconds/i);
+    expect(() =>
+      createStudioGroupLifetimeTrimProgram({
+        capturedPlayhead: 7,
+        childEntityIds: [firstId, "equation_1"],
+        scene,
+        transactionId: "imported-logical-group",
+      }),
+    ).toThrow(/only for Studio-created objects/i);
+    expect(() =>
+      createStudioGroupLifetimeTrimProgram({
+        capturedPlayhead: scene.duration,
+        childEntityIds: [firstId, secondId],
+        scene,
+        transactionId: "scene-end-logical-group",
+      }),
+    ).toThrow(/before the Scene end/i);
   });
 
   it("trims a lifetime through a persistent removal from a safe source anchor", () => {
