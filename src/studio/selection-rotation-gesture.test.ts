@@ -7,6 +7,7 @@ import {
   latestCreationPositionForEntity,
   selectionRotationCommandTargets,
   selectionRotationPreviewAtAngle,
+  studioCreationStaticTransformAnchorForEntity,
 } from "./selection-rotation-gesture";
 
 const positionMutation = (transactionId: string, entityId: string) => ({
@@ -192,6 +193,75 @@ describe("selection rotation gesture", () => {
       transformOrigin: { x: 120, y: 220 },
     });
     expect(currentCreationTransformForEntity(projection, "missing")).toBeNull();
+  });
+
+  it("keeps one Studio-created static transform lane at the Rust-admitted anchor", () => {
+    const programs = [
+      { anchor: { resolvedSeconds: 0.5 }, transactionId: "create" },
+      { anchor: { resolvedSeconds: 0.85 }, transactionId: "resize" },
+      { anchor: { resolvedSeconds: 0.85 }, transactionId: "rotate" },
+      { anchor: { resolvedSeconds: 0.85 }, transactionId: "scale" },
+    ];
+    const projection = {
+      entities: [{ entityId: "circle", transactionId: "create" }],
+      motions: [],
+      mutations: [
+        { entityId: "circle", kind: "position", transactionId: "create" },
+        { entityId: "circle", kind: "resize", transactionId: "resize" },
+        { entityId: "circle", kind: "rotation", transactionId: "rotate" },
+        { entityId: "circle", kind: "uniform-scale", transactionId: "scale" },
+      ],
+      removals: [],
+    };
+
+    expect(studioCreationStaticTransformAnchorForEntity(projection, programs, "circle")).toBe(0.85);
+  });
+
+  it("keeps motion, transform tracks, removals, and split static anchors outside the lane", () => {
+    const programs = [
+      { anchor: { resolvedSeconds: 0.5 }, transactionId: "create" },
+      { anchor: { resolvedSeconds: 0.85 }, transactionId: "resize" },
+      { anchor: { resolvedSeconds: 1.2 }, transactionId: "rotate" },
+    ];
+    const base = {
+      entities: [{ entityId: "circle", transactionId: "create" }],
+      mutations: [{ entityId: "circle", kind: "resize", transactionId: "resize" }],
+    };
+
+    expect(
+      studioCreationStaticTransformAnchorForEntity(
+        { ...base, motions: [{ targetEntityId: "circle" }] },
+        programs,
+        "circle",
+      ),
+    ).toBeNull();
+    expect(
+      studioCreationStaticTransformAnchorForEntity(
+        {
+          ...base,
+          mutations: [...base.mutations, { entityId: "circle", kind: "rotation-keyframes", transactionId: "create" }],
+        },
+        programs,
+        "circle",
+      ),
+    ).toBeNull();
+    expect(
+      studioCreationStaticTransformAnchorForEntity(
+        { ...base, removals: [{ studioEntityId: "circle" }] },
+        programs,
+        "circle",
+      ),
+    ).toBeNull();
+    expect(
+      studioCreationStaticTransformAnchorForEntity(
+        {
+          ...base,
+          mutations: [...base.mutations, { entityId: "circle", kind: "rotation", transactionId: "rotate" }],
+        },
+        programs,
+        "circle",
+      ),
+    ).toBeNull();
   });
 
   it("rotates prepared centers from the Rust-projected origin after an asymmetric shape resize", () => {
