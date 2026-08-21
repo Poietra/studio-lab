@@ -80,6 +80,7 @@ pub(super) struct PlannedSceneMotion {
     pub(super) control_offset: PointV1,
     pub(super) delta: PointV1,
     pub(super) easing: StudioMotionEasing,
+    pub(super) initial_position: Option<PointV1>,
     pub(super) interval: IntervalV1,
     pub(super) target_entity_ids: Vec<String>,
 }
@@ -708,10 +709,10 @@ pub(super) fn append_planned_scene_motions(
                     .iter()
                     .find(|entity| entity.id == *entity_id)
                     .ok_or_else(|| ApplyStudioMotionEditError::TargetMissing(entity_id.clone()))?;
-                let start = PointV1 {
+                let start = motion.initial_position.clone().unwrap_or(PointV1 {
                     x: entity.transform.tx,
                     y: entity.transform.ty,
-                };
+                });
                 entity_order.push(entity_id.clone());
                 entity_paths.insert(
                     entity_id.clone(),
@@ -960,6 +961,7 @@ impl EngineSessionV1 {
                 control_offset,
                 delta,
                 easing: motion.easing,
+                initial_position: None,
                 interval: motion.interval.clone(),
                 target_entity_ids: runtime_entity_ids,
             });
@@ -995,6 +997,7 @@ impl EngineSessionV1 {
                 control_offset: command.control_offset,
                 delta: command.delta,
                 easing: command.easing,
+                initial_position: None,
                 interval: command.interval.clone(),
                 target_entity_ids: command.target_entity_ids,
             }],

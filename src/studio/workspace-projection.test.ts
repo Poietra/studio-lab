@@ -695,7 +695,7 @@ describe("Studio workspace projection", () => {
       version: 1,
     };
     const motionProgram: CanonicalEditProgram = {
-      anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
+      anchor: { capturedPlayhead: 1, evidence: [], resolvedSeconds: 1, source: { kind: "absolute", seconds: 1 } },
       intentCount: 1,
       loweringStatus: "supported",
       operations: [
@@ -705,7 +705,7 @@ describe("Studio workspace projection", () => {
           dependsOn: [],
           easing: "smooth",
           id: "create/motion",
-          interval: { end: 1, start: 0 },
+          interval: { end: 2, start: 1 },
           kind: "CreateMotion",
           provenance: { evidence: [], origin: "direct-manipulation" },
           targetEntityIds: [entityId],
@@ -715,6 +715,33 @@ describe("Studio workspace projection", () => {
       requestedExecution: "sequence",
       schedule: { edges: [], mode: "sequence", order: ["create/motion"] },
       transactionId: "motion-created",
+      version: 1,
+    };
+    const staticPositionProgram: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0.5,
+        evidence: [],
+        resolvedSeconds: 0.5,
+        source: { kind: "absolute", seconds: 0.5 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          entityId,
+          id: "create/static-position",
+          interval: { end: 0.5, start: 0.5 },
+          key: "position",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          value: { x: 120, y: 120 },
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: ["create/static-position"] },
+      transactionId: "static-position-created",
       version: 1,
     };
     const projection: StudioCreationProjectionV1 = {
@@ -732,20 +759,20 @@ describe("Studio workspace projection", () => {
       ],
       insertions: [
         { at: 0, duration: 0.4, transactionId: creationProgram.transactionId },
-        { at: 0.4, duration: 1, transactionId: motionProgram.transactionId },
+        { at: 1.4, duration: 1, transactionId: motionProgram.transactionId },
       ],
       motions: [
         {
-          control: { x: 125, y: 140 },
+          control: { x: 145, y: 140 },
           controlOffset: { x: 0, y: 10 },
           delta: { x: 50, y: 20 },
           easing: "manim-smooth",
-          from: { x: 100, y: 120 },
-          interval: { end: 1.4, start: 0.4 },
+          from: { x: 120, y: 120 },
+          interval: { end: 2.4, start: 1.4 },
           operationId: "create/motion",
-          sourceInterval: { end: 1, start: 0 },
+          sourceInterval: { end: 2, start: 1 },
           targetEntityId: entityId,
-          to: { x: 150, y: 140 },
+          to: { x: 170, y: 140 },
           transactionId: motionProgram.transactionId,
         },
       ],
@@ -767,15 +794,23 @@ describe("Studio workspace projection", () => {
           to: 1,
           transactionId: creationProgram.transactionId,
         },
+        {
+          entityId,
+          interval: { end: 0.9, start: 0.9 },
+          kind: "position",
+          operationId: "create/static-position",
+          transactionId: staticPositionProgram.transactionId,
+          value: { x: 120, y: 120 },
+        },
       ],
       projectedDuration: imported.runtimeSceneState.duration + 1.4,
       removals: [
         {
           affectedSceneEntityIds: [entityId],
-          fadeInterval: { end: 2.7, start: 2.5 },
+          fadeInterval: { end: 3.8, start: 3.6 },
           operationId: "create/remove",
-          removedAt: 2.7,
-          resultingLifetimeEnd: 2.7,
+          removedAt: 3.8,
+          resultingLifetimeEnd: 3.8,
           sceneEntityId: entityId,
           studioEntityId: entityId,
           transactionId: "remove-created",
@@ -784,10 +819,10 @@ describe("Studio workspace projection", () => {
     };
     const removeProgram: CanonicalEditProgram = {
       anchor: {
-        capturedPlayhead: 1.1,
+        capturedPlayhead: 2.2,
         evidence: [],
-        resolvedSeconds: 1.1,
-        source: { kind: "absolute", seconds: 1.1 },
+        resolvedSeconds: 2.2,
+        source: { kind: "absolute", seconds: 2.2 },
       },
       intentCount: 1,
       loweringStatus: "supported",
@@ -797,7 +832,7 @@ describe("Studio workspace projection", () => {
           effect: "remove",
           entityId,
           id: "create/remove",
-          interval: { end: 1.3, start: 1.1 },
+          interval: { end: 2.4, start: 2.2 },
           kind: "ChangePresence",
           persistent: true,
           provenance: { evidence: [], origin: "direct-manipulation" },
@@ -812,13 +847,14 @@ describe("Studio workspace projection", () => {
     expect(
       buildStudioCreationProjectionCommand({
         baseDuration: imported.runtimeSceneState.duration,
-        programs: [creationProgram, motionProgram, removeProgram],
+        programs: [creationProgram, staticPositionProgram, motionProgram, removeProgram],
       }).programs[0]?.operations[0],
     ).toMatchObject({ entity: { dimensions: {}, kind: "arrow" }, kind: "create" });
     const projected = projectStudioWorkspace({
       activeScene: imported,
       appliedEdits: [
         programRecord(creationProgram, { issues: [], kind: "valid" }),
+        programRecord(staticPositionProgram, { issues: [], kind: "valid" }),
         programRecord(motionProgram, { issues: [], kind: "valid" }),
         programRecord(removeProgram, { issues: [], kind: "valid" }),
       ],
@@ -840,7 +876,7 @@ describe("Studio workspace projection", () => {
       value: projection.motions[0]?.to,
     });
     expect(projected.proposedState.evaluatedScene.objectGraph.entities[entityId]?.lifetime).toEqual([
-      { end: 2.7, start: 0 },
+      { end: 3.8, start: 0 },
     ]);
   });
 
