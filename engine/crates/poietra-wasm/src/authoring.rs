@@ -10,7 +10,8 @@ use poietra_eval::{
     StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
     StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
     StudioBoundEntityEditInput, StudioCreationEditInput, StudioCreationMathTexOutline,
-    StudioCreationTextOutline, StudioFragmentMaterialAssignment, StudioMathTexTransformEditInput,
+    StudioCreationSegmentedMathTexOutline, StudioCreationTextOutline,
+    StudioFragmentMaterialAssignment, StudioMathTexTransformEditInput,
     StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
     StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
     StudioMotionEditInput, StudioMotionEntityIdentity, StudioMotionProjectionBatch,
@@ -130,6 +131,8 @@ struct ApplyStudioCreationEditCommandJsonV1 {
     frame: StudioAuthoringSize,
     math_tex_outlines: Vec<StudioCreationMathTexOutline>,
     #[serde(default)]
+    segmented_math_tex_outlines: Vec<StudioCreationSegmentedMathTexOutline>,
+    #[serde(default)]
     text_outlines: Vec<StudioCreationTextOutline>,
     next_revision: String,
     programs: Vec<StudioCreationEditInput>,
@@ -157,6 +160,7 @@ impl From<ApplyStudioCreationEditCommandJsonV1> for ApplyStudioCreationEditComma
             expected_base_revision: value.expected_base_revision,
             frame: value.frame,
             math_tex_outlines: value.math_tex_outlines,
+            segmented_math_tex_outlines: value.segmented_math_tex_outlines,
             text_outlines: value.text_outlines,
             next_revision: value.next_revision,
             programs: value.programs,
@@ -1787,12 +1791,13 @@ mod tests {
     }
 
     #[test]
-    fn studio_creation_adapter_defaults_text_outlines_for_legacy_commands() {
+    fn studio_creation_adapter_defaults_optional_outlines_for_legacy_commands() {
         let command: ApplyStudioCreationEditCommandJsonV1 =
             serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
         let command: ApplyStudioCreationEditCommand = command.into();
 
         assert!(command.text_outlines.is_empty());
+        assert!(command.segmented_math_tex_outlines.is_empty());
     }
 
     #[test]

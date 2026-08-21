@@ -5,7 +5,7 @@ import {
   STUDIO_GRADIENT_FRAGMENT_SOURCE_V1,
   STUDIO_WAVE_FRAGMENT_SOURCE_V1,
 } from "../engine/fragment-material-registry";
-import { createStudioEntitiesProgram, replaceStudioTextContentProgram } from "./authoring-commands";
+import { createStudioEntitiesProgram, replaceStudioCreatedContentProgram } from "./authoring-commands";
 import { resolveVerifiedSourceDurationBasis } from "./editor-revision-policy";
 import {
   EDITOR_SESSION_STALE_SOURCE_MESSAGE,
@@ -440,7 +440,7 @@ describe("durable editor session storage", () => {
       transactionId: "sized-text",
     });
     const owner = programRecord(creation.validation.program, creation.validation);
-    const replacement = replaceStudioTextContentProgram({
+    const replacement = replaceStudioCreatedContentProgram({
       content: {
         displayLines: ["Sized Text"],
         label: "Sized Text",

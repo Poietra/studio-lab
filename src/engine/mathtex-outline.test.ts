@@ -2,8 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   canonicalTextOutlineInputV1,
+  createSegmentedTexOutlineCompilerV1,
   initializePoietraMathTexOutlineBindingsV1,
+  POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION,
   POIETRA_TEXT_OUTLINE_ABI_VERSION,
+  segmentedTexOutlineRequestV1Schema,
 } from "./mathtex-outline";
 
 function candidate(initialize: (input?: unknown) => Promise<unknown>) {
@@ -12,6 +15,60 @@ function candidate(initialize: (input?: unknown) => Promise<unknown>) {
     default: initialize,
     poietraMathTexOutlineAbiVersion: () => 1,
   };
+}
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+function compiledSegmentedResponse() {
+  return {
+    result: {
+      bounds: { bottom: -0.5, left: -0.5, right: 0.5, top: 0.5 },
+      contentDigest: "a".repeat(64),
+      fontDigest: "b".repeat(64),
+      fragments: [
+        {
+          bounds: { bottom: -0.5, left: -0.5, right: 0.5, top: 0.5 },
+          fillEntityId: "fragment-0000:fill",
+          fillRule: "nonzero",
+          id: "fragment-0000",
+          kind: "glyph",
+          order: 0,
+          outlineEntityId: "fragment-0000:outline",
+          paint: { alpha: 1, blue: 1, green: 1, red: 1 },
+          path: {
+            subpaths: [
+              {
+                closed: true,
+                segments: [
+                  {
+                    control1: { x: -0.5, y: 0.5 },
+                    control2: { x: 0.5, y: 0.5 },
+                    end: { x: -0.5, y: -0.5 },
+                  },
+                ],
+                start: { x: -0.5, y: -0.5 },
+              },
+            ],
+          },
+          sourceCorrelation: { kind: "expression-byte-range", sourceEndByte: 1, sourceStartByte: 0 },
+        },
+      ],
+      kind: "compiled",
+      mode: "mathtex-math",
+      paintSpans: [],
+      source: "x",
+      toolchainDigest: "c".repeat(64),
+      writePlan: {
+        fragmentLagRatio: 0.2,
+        outlineStrokeWidth: 2,
+        phaseBoundary: 0.5,
+        representation: "separate-outline-and-fill-entities",
+      },
+    },
+    schema: "poietra.segmented-tex-outline-response",
+    version: 1,
+  } as const;
 }
 
 describe("MathTex outline WASM initialization", () => {
@@ -31,6 +88,99 @@ describe("MathTex outline WASM initialization", () => {
     await initializePoietraMathTexOutlineBindingsV1(candidate(initialize), input);
 
     expect(initialize).toHaveBeenCalledWith(input);
+  });
+});
+
+describe("segmented Tex outline browser adapter", () => {
+  it("pins and sends the existing segmented V1 request to the generated binding", async () => {
+    const requests: unknown[] = [];
+    const compile = createSegmentedTexOutlineCompilerV1(async () => ({
+      compileSegmentedTexOutlineV1: (requestJson) => {
+        requests.push(JSON.parse(decoder.decode(requestJson)));
+        return encoder.encode(JSON.stringify(compiledSegmentedResponse()));
+      },
+      poietraSegmentedTexOutlineAbiVersion: () => POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION,
+    }));
+
+    await expect(
+      compile({ mode: "mathtex-math", paintMatches: [], source: "x", sourceKind: "literal" }),
+    ).resolves.toEqual(compiledSegmentedResponse());
+    expect(requests).toEqual([
+      {
+        mode: "mathtex-math",
+        paintMatches: [],
+        schema: "poietra.segmented-tex-outline-request",
+        source: "x",
+        sourceKind: "literal",
+        version: 1,
+      },
+    ]);
+  });
+
+  it("preserves structured unsupported results from the segmented compiler", async () => {
+    const response = {
+      result: {
+        code: "dynamic-source-unsupported",
+        kind: "unsupported",
+        message: "Dynamic Tex source cannot be correlated to deterministic fragments",
+      },
+      schema: "poietra.segmented-tex-outline-response",
+      version: 1,
+    } as const;
+    const compile = createSegmentedTexOutlineCompilerV1(async () => ({
+      compileSegmentedTexOutlineV1: () => encoder.encode(JSON.stringify(response)),
+      poietraSegmentedTexOutlineAbiVersion: () => 1,
+    }));
+
+    await expect(
+      compile({ mode: "tex-text", paintMatches: [], source: "dynamic()", sourceKind: "dynamic" }),
+    ).resolves.toEqual(response);
+  });
+
+  it("rejects a missing sibling ABI and malformed compiled artifacts", async () => {
+    const wrongAbi = createSegmentedTexOutlineCompilerV1(async () => ({
+      compileSegmentedTexOutlineV1: () => encoder.encode(JSON.stringify(compiledSegmentedResponse())),
+      poietraSegmentedTexOutlineAbiVersion: () => 2,
+    }));
+    await expect(
+      wrongAbi({ mode: "mathtex-math", paintMatches: [], source: "x", sourceKind: "literal" }),
+    ).rejects.toThrow("does not implement ABI version 1");
+
+    const validResponse = compiledSegmentedResponse();
+    const malformed = {
+      ...validResponse,
+      result: {
+        ...validResponse.result,
+        fragments: [{ ...validResponse.result.fragments[0], fillEntityId: "wrong:fill" }],
+      },
+    };
+    const malformedCompiler = createSegmentedTexOutlineCompilerV1(async () => ({
+      compileSegmentedTexOutlineV1: () => encoder.encode(JSON.stringify(malformed)),
+      poietraSegmentedTexOutlineAbiVersion: () => 1,
+    }));
+    await expect(
+      malformedCompiler({ mode: "mathtex-math", paintMatches: [], source: "x", sourceKind: "literal" }),
+    ).rejects.toThrow("violated the v1 response contract");
+  });
+
+  it("uses UTF-8 byte bounds and rejects unknown request fields", () => {
+    const baseRequest = {
+      mode: "tex-text",
+      paintMatches: [],
+      schema: "poietra.segmented-tex-outline-request",
+      sourceKind: "literal",
+      version: 1,
+    } as const;
+
+    expect(segmentedTexOutlineRequestV1Schema.safeParse({ ...baseRequest, source: "é".repeat(128) }).success).toBe(
+      true,
+    );
+    expect(segmentedTexOutlineRequestV1Schema.safeParse({ ...baseRequest, source: "é".repeat(129) }).success).toBe(
+      false,
+    );
+    expect(
+      segmentedTexOutlineRequestV1Schema.safeParse({ ...baseRequest, source: "x", unsupportedOption: true }).success,
+    ).toBe(false);
   });
 });
 

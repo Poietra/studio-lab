@@ -163,7 +163,8 @@ function validateContent(
   }
   return {
     displayLines: [texParts.join(" ")],
-    label: entity.content?.label,
+    label:
+      entity.sourceIdentity.kind === "unknown" && entity.transactionId ? texParts.join(" ") : entity.content?.label,
     texParts,
   } satisfies EntityContent;
 }

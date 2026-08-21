@@ -71,7 +71,7 @@ describe("EditProgram execution capabilities", () => {
   it("keeps DrawIn on the client-side path-trim authority", () => {
     const operation: CanonicalEditOperation = {
       dependsOn: ["tx:draw/operation:create"],
-      easing: "smooth",
+      easing: "linear",
       entityId: "tx:draw/entity:line",
       id: "tx:draw/operation:draw-in",
       interval: { end: 1, start: 0 },
@@ -82,6 +82,34 @@ describe("EditProgram execution capabilities", () => {
     expect(operationAccess(operation)).toEqual({
       reads: [{ channel: "pathTrim", entityId: operation.entityId }],
       writes: [{ channel: "pathTrim", entityId: operation.entityId }],
+    });
+    expect(operationExecutionCapabilities(operation)).toEqual({
+      apply: "supported",
+      applyBlocker: null,
+      lowering: "unsupported",
+    });
+  });
+
+  it("keeps WriteIn on the client-side Rust authoring authority", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: ["tx:write/operation:create"],
+      easing: "linear",
+      entityId: "tx:write/entity:math",
+      id: "tx:write/operation:write-in",
+      interval: { end: 1, start: 0 },
+      kind: "WriteIn",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+    };
+
+    expect(operationAccess(operation)).toEqual({
+      reads: [
+        { channel: "pathTrim", entityId: operation.entityId },
+        { channel: "appearance", entityId: operation.entityId },
+      ],
+      writes: [
+        { channel: "pathTrim", entityId: operation.entityId },
+        { channel: "appearance", entityId: operation.entityId },
+      ],
     });
     expect(operationExecutionCapabilities(operation)).toEqual({
       apply: "supported",

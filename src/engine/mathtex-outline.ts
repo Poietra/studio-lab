@@ -1,7 +1,15 @@
 import { z } from "zod";
-import { coordinateV1Schema, countCubicPathSegments, cubicPathV1Schema, sha256V1Schema } from "./primitives";
+import {
+  coordinateV1Schema,
+  countCubicPathSegments,
+  cubicPathV1Schema,
+  finiteNumberV1Schema,
+  rgbaColorV1Schema,
+  sha256V1Schema,
+} from "./primitives";
 
 export const POIETRA_MATHTEX_OUTLINE_ABI_VERSION = 1 as const;
+export const POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION = 1 as const;
 export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 6 as const;
 const MAX_MATHTEX_PARTS = 16;
 const MAX_MATHTEX_CONTENT_LENGTH = 2_000;
@@ -9,6 +17,13 @@ const MAX_MATHTEX_REQUEST_JSON_BYTES = 16 * 1024;
 const MAX_MATHTEX_RESPONSE_JSON_BYTES = 1024 * 1024;
 const MAX_MATHTEX_OUTLINE_SEGMENTS = 2_048;
 const MATHTEX_NORMALIZATION_TOLERANCE = 0.000_002;
+const MAX_SEGMENTED_TEX_SOURCE_BYTES = 256;
+const MAX_SEGMENTED_TEX_PAINT_MATCHES = 4;
+const MAX_SEGMENTED_TEX_PAINT_LITERAL_BYTES = 64;
+const MAX_SEGMENTED_TEX_FRAGMENTS = 128;
+const MAX_SEGMENTED_TEX_CUBIC_SEGMENTS = 2_048;
+const MAX_SEGMENTED_TEX_UNSUPPORTED_MESSAGE_BYTES = 512;
+const MAX_U32 = 0xffff_ffff;
 export const MAX_TEXT_OUTLINE_SCALARS = 256;
 export const MAX_TEXT_OUTLINE_LINES = 8;
 export const MAX_TEXT_OUTLINE_LINE_SCALARS = 128;
@@ -100,6 +115,252 @@ export const mathTexOutlineResponseV1Schema = z
 export type MathTexOutlineArtifactV1 = z.infer<typeof mathTexOutlineArtifactV1Schema>;
 export type MathTexOutlineResponseV1 = z.infer<typeof mathTexOutlineResponseV1Schema>;
 export type MathTexOutlineCompilerV1 = (texParts: readonly string[]) => Promise<MathTexOutlineResponseV1>;
+
+function hasBoundedUtf8Length(value: string, maximum: number) {
+  return new TextEncoder().encode(value).byteLength <= maximum;
+}
+
+const segmentedTexSourceV1Schema = z
+  .string()
+  .min(1)
+  .refine(
+    (source) => hasBoundedUtf8Length(source, MAX_SEGMENTED_TEX_SOURCE_BYTES),
+    `Segmented Tex source accepts at most ${MAX_SEGMENTED_TEX_SOURCE_BYTES} UTF-8 bytes.`,
+  );
+
+const opaqueRgbaColorV1Schema = rgbaColorV1Schema.extend({ alpha: z.literal(1) });
+
+const segmentedTexPaintMatchV1Schema = z
+  .object({
+    literal: z
+      .string()
+      .min(1)
+      .refine(
+        (literal) => hasBoundedUtf8Length(literal, MAX_SEGMENTED_TEX_PAINT_LITERAL_BYTES),
+        `Segmented Tex paint literals accept at most ${MAX_SEGMENTED_TEX_PAINT_LITERAL_BYTES} UTF-8 bytes.`,
+      ),
+    paint: opaqueRgbaColorV1Schema,
+  })
+  .strict();
+
+const segmentedTexOutlineRequestBodyV1Schema = z
+  .object({
+    mode: z.enum(["tex-text", "mathtex-math"]),
+    paintMatches: z.array(segmentedTexPaintMatchV1Schema).max(MAX_SEGMENTED_TEX_PAINT_MATCHES),
+    source: segmentedTexSourceV1Schema,
+    sourceKind: z.enum(["literal", "dynamic"]),
+  })
+  .strict();
+
+/** Input body accepted by the browser wrapper; the fixed schema and version are added at the WASM boundary. */
+export const segmentedTexOutlineInputV1Schema = segmentedTexOutlineRequestBodyV1Schema;
+
+export const segmentedTexOutlineRequestV1Schema = z
+  .object({
+    mode: z.enum(["tex-text", "mathtex-math"]),
+    paintMatches: z.array(segmentedTexPaintMatchV1Schema).max(MAX_SEGMENTED_TEX_PAINT_MATCHES),
+    schema: z.literal("poietra.segmented-tex-outline-request"),
+    source: segmentedTexSourceV1Schema,
+    sourceKind: z.enum(["literal", "dynamic"]),
+    version: z.literal(1),
+  })
+  .strict();
+
+const segmentedTexByteRangeV1Schema = z
+  .object({
+    sourceEndByte: z.number().int().positive().max(MAX_U32),
+    sourceStartByte: z.number().int().nonnegative().max(MAX_U32),
+  })
+  .strict()
+  .refine(
+    ({ sourceEndByte, sourceStartByte }) => sourceStartByte < sourceEndByte,
+    "Segmented Tex source byte ranges must be non-empty.",
+  );
+
+const segmentedTexSourceCorrelationV1Schema = z.discriminatedUnion("kind", [
+  segmentedTexByteRangeV1Schema.safeExtend({ kind: z.literal("exact-byte-range") }),
+  segmentedTexByteRangeV1Schema.safeExtend({ kind: z.literal("expression-byte-range") }),
+]);
+
+const segmentedTexPaintSpanV1Schema = segmentedTexByteRangeV1Schema.safeExtend({
+  paint: opaqueRgbaColorV1Schema,
+});
+
+const segmentedTexOutlineBoundsV1Schema = z
+  .object({
+    bottom: coordinateV1Schema,
+    left: coordinateV1Schema,
+    right: coordinateV1Schema,
+    top: coordinateV1Schema,
+  })
+  .strict()
+  .refine(({ bottom, left, right, top }) => right > left && top > bottom, "Segmented Tex ink bounds must be positive.");
+
+const segmentedTexOutlineFragmentV1Schema = z
+  .object({
+    bounds: segmentedTexOutlineBoundsV1Schema,
+    fillEntityId: z.string(),
+    fillRule: z.literal("nonzero"),
+    id: z.string(),
+    kind: z.enum(["glyph", "rule", "shape", "path"]),
+    order: z.number().int().nonnegative().max(MAX_U32),
+    outlineEntityId: z.string(),
+    paint: opaqueRgbaColorV1Schema,
+    path: cubicPathV1Schema,
+    sourceCorrelation: segmentedTexSourceCorrelationV1Schema,
+  })
+  .strict()
+  .superRefine(({ path }, context) => {
+    if (path.subpaths.some(({ closed }) => !closed)) {
+      context.addIssue({ code: "custom", message: "Segmented Tex outline contours must be closed." });
+    }
+  });
+
+const segmentedTexWritePlanV1Schema = z
+  .object({
+    fragmentLagRatio: finiteNumberV1Schema.positive().max(0.2),
+    outlineStrokeWidth: z.literal(2),
+    phaseBoundary: z.literal(0.5),
+    representation: z.literal("separate-outline-and-fill-entities"),
+  })
+  .strict();
+
+function isUtf8Boundary(source: string, byteOffset: number) {
+  const bytes = new TextEncoder().encode(source);
+  if (byteOffset === 0 || byteOffset === bytes.byteLength) return true;
+  return byteOffset > 0 && byteOffset < bytes.byteLength && (bytes[byteOffset] & 0xc0) !== 0x80;
+}
+
+export const segmentedTexOutlineArtifactV1Schema = z
+  .object({
+    bounds: segmentedTexOutlineBoundsV1Schema,
+    contentDigest: sha256V1Schema,
+    fontDigest: sha256V1Schema,
+    fragments: z.array(segmentedTexOutlineFragmentV1Schema).min(1).max(MAX_SEGMENTED_TEX_FRAGMENTS),
+    mode: z.enum(["tex-text", "mathtex-math"]),
+    paintSpans: z.array(segmentedTexPaintSpanV1Schema).max(MAX_SEGMENTED_TEX_PAINT_MATCHES),
+    source: segmentedTexSourceV1Schema,
+    toolchainDigest: sha256V1Schema,
+    writePlan: segmentedTexWritePlanV1Schema,
+  })
+  .strict()
+  .superRefine(({ bounds, fragments, mode, paintSpans, source }, context) => {
+    if (
+      Math.abs(bounds.top - bounds.bottom - 1) > MATHTEX_NORMALIZATION_TOLERANCE ||
+      Math.abs(bounds.left + bounds.right) > MATHTEX_NORMALIZATION_TOLERANCE ||
+      Math.abs(bounds.bottom + bounds.top) > MATHTEX_NORMALIZATION_TOLERANCE
+    ) {
+      context.addIssue({ code: "custom", message: "Segmented Tex bounds must use canonical centered unit height." });
+    }
+
+    const sourceByteLength = new TextEncoder().encode(source).byteLength;
+    let segmentCount = 0;
+    fragments.forEach((fragment, index) => {
+      segmentCount += countCubicPathSegments(fragment.path);
+      const expectedId = `fragment-${index.toString().padStart(4, "0")}`;
+      if (
+        fragment.order !== index ||
+        fragment.id !== expectedId ||
+        fragment.outlineEntityId !== `${expectedId}:outline` ||
+        fragment.fillEntityId !== `${expectedId}:fill`
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Segmented Tex fragments must preserve canonical order and entity IDs.",
+          path: ["fragments", index],
+        });
+      }
+      const { kind, sourceEndByte, sourceStartByte } = fragment.sourceCorrelation;
+      if (
+        sourceEndByte > sourceByteLength ||
+        !isUtf8Boundary(source, sourceStartByte) ||
+        !isUtf8Boundary(source, sourceEndByte)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Segmented Tex fragment correlation must reference source UTF-8 boundaries.",
+          path: ["fragments", index, "sourceCorrelation"],
+        });
+      }
+      if (
+        (mode === "tex-text" && kind !== "exact-byte-range") ||
+        (mode === "mathtex-math" &&
+          (kind !== "expression-byte-range" || sourceStartByte !== 0 || sourceEndByte !== sourceByteLength))
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Segmented Tex fragment correlation must match the compilation mode.",
+          path: ["fragments", index, "sourceCorrelation"],
+        });
+      }
+    });
+    if (segmentCount > MAX_SEGMENTED_TEX_CUBIC_SEGMENTS) {
+      context.addIssue({ code: "custom", message: "Segmented Tex outlines accept at most 2,048 cubic segments." });
+    }
+
+    paintSpans.forEach(({ sourceEndByte, sourceStartByte }, index) => {
+      const previous = paintSpans[index - 1];
+      if (
+        sourceEndByte > sourceByteLength ||
+        !isUtf8Boundary(source, sourceStartByte) ||
+        !isUtf8Boundary(source, sourceEndByte) ||
+        (previous !== undefined && previous.sourceEndByte > sourceStartByte)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Segmented Tex paint spans must be ordered, disjoint source UTF-8 ranges.",
+          path: ["paintSpans", index],
+        });
+      }
+    });
+  });
+
+const segmentedTexOutlineUnsupportedV1Schema = z
+  .object({
+    code: z.enum([
+      "invalid-request",
+      "request-too-large",
+      "dynamic-source-unsupported",
+      "syntax-unsupported",
+      "option-unsupported",
+      "paint-partition-ambiguous",
+      "source-correlation-unsupported",
+      "frame-item-unsupported",
+      "outline-invalid",
+      "outline-limit-exceeded",
+      "response-too-large",
+      "internal-failure",
+    ]),
+    kind: z.literal("unsupported"),
+    message: z
+      .string()
+      .min(1)
+      .refine(
+        (message) => hasBoundedUtf8Length(message, MAX_SEGMENTED_TEX_UNSUPPORTED_MESSAGE_BYTES),
+        `Segmented Tex unsupported messages accept at most ${MAX_SEGMENTED_TEX_UNSUPPORTED_MESSAGE_BYTES} UTF-8 bytes.`,
+      ),
+  })
+  .strict();
+
+const segmentedTexOutlineCompiledV1Schema = segmentedTexOutlineArtifactV1Schema.safeExtend({
+  kind: z.literal("compiled"),
+});
+
+export const segmentedTexOutlineResponseV1Schema = z
+  .object({
+    result: z.discriminatedUnion("kind", [segmentedTexOutlineCompiledV1Schema, segmentedTexOutlineUnsupportedV1Schema]),
+    schema: z.literal("poietra.segmented-tex-outline-response"),
+    version: z.literal(1),
+  })
+  .strict();
+
+export type SegmentedTexOutlineInputV1 = z.infer<typeof segmentedTexOutlineInputV1Schema>;
+export type SegmentedTexOutlineRequestV1 = z.infer<typeof segmentedTexOutlineRequestV1Schema>;
+export type SegmentedTexOutlineArtifactV1 = z.infer<typeof segmentedTexOutlineArtifactV1Schema>;
+export type SegmentedTexOutlineResponseV1 = z.infer<typeof segmentedTexOutlineResponseV1Schema>;
+export type SegmentedTexOutlineCompilerV1 = (
+  input: SegmentedTexOutlineInputV1,
+) => Promise<SegmentedTexOutlineResponseV1>;
 
 function hasUnpairedUtf16Surrogate(text: string) {
   for (let index = 0; index < text.length; index += 1) {
@@ -237,10 +498,17 @@ export type TextOutlineCompilerV1 = (input: TextOutlineInputV1) => Promise<TextO
 
 type PoietraMathTexOutlineWasmModuleV1 = Readonly<{
   compileMathTexOutlineV1: (requestJson: Uint8Array) => Uint8Array;
+  compileSegmentedTexOutlineV1?: (requestJson: Uint8Array) => Uint8Array;
   compileTextOutlineV1?: (requestJson: Uint8Array) => Uint8Array;
   default: (input?: unknown) => Promise<unknown>;
   poietraMathTexOutlineAbiVersion: () => number;
+  poietraSegmentedTexOutlineAbiVersion?: () => number;
   poietraTextOutlineAbiVersion?: () => number;
+}>;
+
+export type SegmentedTexOutlineWasmBindingsV1 = Readonly<{
+  compileSegmentedTexOutlineV1?: (requestJson: Uint8Array) => Uint8Array;
+  poietraSegmentedTexOutlineAbiVersion?: () => number;
 }>;
 
 function browserModuleUrl() {
@@ -353,6 +621,36 @@ function parseBoundedTextResponse(responseJson: Uint8Array): TextOutlineResponse
   return parsed.data;
 }
 
+function parseBoundedSegmentedResponse(
+  responseJson: Uint8Array,
+  request: SegmentedTexOutlineRequestV1,
+): SegmentedTexOutlineResponseV1 {
+  if (
+    !(responseJson instanceof Uint8Array) ||
+    responseJson.byteLength === 0 ||
+    responseJson.byteLength > MAX_MATHTEX_RESPONSE_JSON_BYTES
+  ) {
+    throw new Error("The segmented Tex outline module returned an invalid or oversized response.");
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(responseJson));
+  } catch (cause) {
+    throw new Error("The segmented Tex outline module returned malformed UTF-8 JSON.", { cause });
+  }
+  const parsed = segmentedTexOutlineResponseV1Schema.safeParse(decoded);
+  if (!parsed.success) {
+    throw new Error("The segmented Tex outline module violated the v1 response contract.", { cause: parsed.error });
+  }
+  if (
+    parsed.data.result.kind === "compiled" &&
+    (parsed.data.result.mode !== request.mode || parsed.data.result.source !== request.source)
+  ) {
+    throw new Error("The segmented Tex outline module returned an artifact for a different request.");
+  }
+  return parsed.data;
+}
+
 export const compileMathTexOutlineV1: MathTexOutlineCompilerV1 = async (texParts) => {
   const request = mathTexOutlineRequestV1Schema.parse({
     schema: "poietra.mathtex-outline-request",
@@ -366,6 +664,36 @@ export const compileMathTexOutlineV1: MathTexOutlineCompilerV1 = async (texParts
   const bindings = await loadPoietraMathTexOutlineBindingsV1();
   return parseBoundedResponse(bindings.compileMathTexOutlineV1(requestJson));
 };
+
+/** Creates a bounded browser adapter for the generated segmented Tex/MathTex WASM binding. */
+export function createSegmentedTexOutlineCompilerV1(
+  getBindings: () => Promise<SegmentedTexOutlineWasmBindingsV1>,
+): SegmentedTexOutlineCompilerV1 {
+  return async (input) => {
+    const request = segmentedTexOutlineRequestV1Schema.parse({
+      ...input,
+      schema: "poietra.segmented-tex-outline-request",
+      version: 1,
+    });
+    const requestJson = new TextEncoder().encode(JSON.stringify(request));
+    if (requestJson.byteLength > MAX_MATHTEX_REQUEST_JSON_BYTES) {
+      throw new Error("The segmented Tex outline request is oversized.");
+    }
+    const bindings = await getBindings();
+    if (
+      typeof bindings.poietraSegmentedTexOutlineAbiVersion !== "function" ||
+      bindings.poietraSegmentedTexOutlineAbiVersion() !== POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION ||
+      typeof bindings.compileSegmentedTexOutlineV1 !== "function"
+    ) {
+      throw new Error(
+        `The segmented Tex outline module does not implement ABI version ${POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION}.`,
+      );
+    }
+    return parseBoundedSegmentedResponse(bindings.compileSegmentedTexOutlineV1(requestJson), request);
+  };
+}
+
+export const compileSegmentedTexOutlineV1 = createSegmentedTexOutlineCompilerV1(loadPoietraMathTexOutlineBindingsV1);
 
 export const compileTextOutlineV1: TextOutlineCompilerV1 = async ({ layout, text }) => {
   const request = textOutlineRequestV1Schema.parse({

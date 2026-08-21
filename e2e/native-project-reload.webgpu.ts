@@ -32,6 +32,22 @@ async function dragBy(
   await page.mouse.up();
 }
 
+async function placeOnCanvas(page: Page, fractionX: number, fractionY: number) {
+  const canvas = page.locator("[data-studio-canvas]");
+  const bounds = await canvas.boundingBox();
+  if (!bounds) throw new Error("The Studio canvas is not visible.");
+  await canvas.dispatchEvent("pointerdown", {
+    bubbles: true,
+    button: 0,
+    buttons: 1,
+    clientX: bounds.x + bounds.width * fractionX,
+    clientY: bounds.y + bounds.height * fractionY,
+    isPrimary: true,
+    pointerId: 1,
+    pointerType: "mouse",
+  });
+}
+
 async function scrubMotionClip(page: Page, clip: Locator, progress: number) {
   const slider = page.getByRole("slider", { name: "Scene playhead" });
   const duration = Number(await slider.getAttribute("max"));
@@ -48,7 +64,7 @@ async function scrubMotionClip(page: Page, clip: Locator, progress: number) {
     .toBeCloseTo(time, 1);
 }
 
-async function scrubDrawInClip(page: Page, clip: Locator, progress: number) {
+async function scrubEntranceClip(page: Page, clip: Locator, progress: number) {
   const slider = page.getByRole("slider", { name: "Scene playhead" });
   const sceneDuration = Number(await slider.getAttribute("max"));
   const placement = await clip.evaluate((element) => ({
@@ -361,13 +377,13 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
 
     let drawClip = page.getByRole("button", { name: "Edit Line Draw entrance" });
     await expect(drawClip).toBeVisible();
-    await scrubDrawInClip(page, drawClip, 0);
+    await scrubEntranceClip(page, drawClip, 0);
     await expect(lineWrapper).toHaveCount(0);
-    await scrubDrawInClip(page, drawClip, 0.5);
+    await scrubEntranceClip(page, drawClip, 0.5);
     await expect(lineWrapper).toHaveCount(1);
     const middleWidth = (await preparedDimensions(lineWrapper)).width;
     expect(middleWidth).toBeGreaterThan(0);
-    await scrubDrawInClip(page, drawClip, 1);
+    await scrubEntranceClip(page, drawClip, 1);
     const endWidth = (await preparedDimensions(lineWrapper)).width;
     expect(endWidth).toBeGreaterThan(middleWidth * 1.5);
 
@@ -436,6 +452,128 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     const exportedStrokePixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6]);
     expect(exportedStrokePixels[1] ?? 0).toBeGreaterThan((exportedStrokePixels[0] ?? 0) + 20);
     expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan((exportedStrokePixels[1] ?? 0) * 1.25);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
+test("writes a Studio MathTex through scrub, history, reload, and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "MathTex Write fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert equation/ }).click();
+    await page.getByRole("textbox", { name: "MathTex" }).fill("E = mc^2");
+    await canvas.click({ position: { x: 400, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const equation = page.getByRole("button", { name: "Move E = mc^2", exact: true });
+    await expect(equation).toBeVisible();
+    const equationId = await equation.getAttribute("data-studio-entity");
+    if (!equationId) throw new Error("The Studio MathTex did not expose its entity id.");
+    const equationWrapper = page.locator(`[data-studio-entity-wrapper="${equationId}"]`);
+    await expect(page.getByRole("checkbox", { name: "Select E = mc^2" })).toHaveCount(1);
+
+    await page.getByRole("button", { name: "Add Write entrance for E = mc^2" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    let writeClip = page.getByRole("button", { name: "Edit E = mc^2 Write entrance" });
+    await scrubEntranceClip(page, writeClip, 0);
+    await expect(equationWrapper).toHaveCount(0);
+    await scrubEntranceClip(page, writeClip, 0.5);
+    await expect(equationWrapper).toHaveCount(1);
+    const middleWidth = (await preparedDimensions(equationWrapper)).width;
+    expect(middleWidth).toBeGreaterThan(0);
+    await scrubEntranceClip(page, writeClip, 1);
+    const endWidth = (await preparedDimensions(equationWrapper)).width;
+    expect(endWidth).toBeGreaterThan(0);
+    await expect(page.getByRole("checkbox", { name: "Select E = mc^2" })).toHaveCount(1);
+
+    const initialWriteTitle = await writeClip.getAttribute("title");
+    if (!initialWriteTitle) throw new Error("The Write clip did not expose its interval and easing.");
+    await writeClip.click();
+    const writeDuration = page.getByRole("spinbutton", { name: "Write duration for E = mc^2" });
+    await expect(writeDuration).toBeEnabled();
+    await expect(page.locator('[data-write-in-easing="linear"]')).toContainText("Easing · Linear");
+    const writeRevision = await canvas.getAttribute("data-preview-revision");
+    await writeDuration.press("Control+A");
+    await writeDuration.pressSequentially("1.5");
+    await writeDuration.press("Enter");
+    await expect.poll(() => canvas.getAttribute("data-preview-revision")).not.toBe(writeRevision);
+    await expect(writeDuration).toHaveValue("1.5");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.50s · linear");
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(writeClip).toHaveAttribute("title", initialWriteTitle);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.50s · linear");
+
+    await writeClip.click();
+    await page.getByRole("button", { name: "Remove Write" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(writeClip).toHaveCount(0);
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.50s · linear");
+
+    const mp4 = await exportLocalMp4(page);
+    const exportedInkPixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6]);
+    expect(exportedInkPixels[1] ?? 0).toBeGreaterThan((exportedInkPixels[0] ?? 0) + 20);
+    expect(exportedInkPixels[2] ?? 0).toBeGreaterThan(exportedInkPixels[1] ?? 0);
+
+    await scrubEntranceClip(page, writeClip, 1);
+    const xPosition = page.getByRole("spinbutton", { name: "X position of E = mc^2" });
+    await xPosition.fill("430");
+    await page.getByRole("button", { name: "Create draft" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(xPosition).toHaveValue("430.0");
+
+    await page.getByRole("button", { name: "Set position" }).click();
+    const beforeResizeScale = Number(await equationWrapper.getAttribute("data-studio-entity-scale"));
+    const resizeHandle = page.getByRole("button", { name: "Resize E = mc^2 from bottom-right corner" });
+    await dragBy(page, resizeHandle, { x: 28, y: 20 });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect
+      .poll(async () => Number(await equationWrapper.getAttribute("data-studio-entity-scale")))
+      .toBeGreaterThan(beforeResizeScale);
+
+    await page.getByRole("button", { name: "Rotate E = mc^2 counterclockwise by 15 degrees" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const content = page.getByRole("textbox", { name: "MathTex content of E = mc^2" });
+    await content.fill("F = ma");
+    await content.press("Control+Enter");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("poietra.studio.editor-sessions")?.includes("F = ma")))
+      .toBe(true);
+    await expect(page.getByRole("checkbox", { name: "Select F = ma" })).toHaveCount(1);
+    writeClip = page.getByRole("button", { name: "Edit F = ma Write entrance" });
+    await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.50s · linear");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open MathTex Write fixture workspace" }).click();
+    writeClip = page.getByRole("button", { name: "Edit F = ma Write entrance" });
+    await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.50s · linear");
+    await expect(page.getByRole("checkbox", { name: "Select F = ma" })).toHaveCount(1);
+    await expect(page.locator('[aria-label*="fragment-"]')).toHaveCount(0);
+
+    await page.getByRole("button", { name: /Insert circle/ }).click();
+    await placeOnCanvas(page, 0.85, 0.8);
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const mathSelection = page.getByRole("checkbox", { name: "Select F = ma" });
+    const circleSelection = page.getByRole("checkbox", { name: "Select Circle" });
+    if (!(await mathSelection.isChecked())) await mathSelection.check();
+    if (!(await circleSelection.isChecked())) await circleSelection.check();
+    await page.getByRole("button", { name: "Group", exact: true }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("button", { name: "Hide group of 2 objects" })).toBeEnabled();
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

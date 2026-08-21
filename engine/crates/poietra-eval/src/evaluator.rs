@@ -276,7 +276,14 @@ where
         .ok_or(EvaluationError::MalformedScene(
             "non-final keyframe is missing easingToNext",
         ))?;
-    let progress = (time - left.at) / (right.at - left.at);
+    let raw_progress = (time - left.at) / (right.at - left.at);
+    let matches_right_boundary = time > left.at
+        && (1.0 - raw_progress).abs() <= 4.0 * f64::EPSILON * raw_progress.abs().max(1.0);
+    let progress = if matches_right_boundary {
+        1.0
+    } else {
+        raw_progress
+    };
     let eased = apply_easing_v1(easing, progress);
     Ok((
         interpolate(&left.value, &right.value, eased).map_err(EvaluationError::from)?,
@@ -1265,6 +1272,50 @@ mod tests {
         .unwrap();
 
         assert!((frame.packet.draws[0].opacity() - 0.070_103_716_545_108_15).abs() <= 1.0e-15);
+    }
+
+    #[test]
+    fn keyframe_endpoint_tolerance_preserves_a_short_segment() {
+        let keyframes = [
+            KeyframeV1 {
+                at: 0.0,
+                easing_to_next: Some(poietra_scene_ir::EasingV1::Linear {}),
+                value: 0.0,
+            },
+            KeyframeV1 {
+                at: f64::EPSILON,
+                easing_to_next: None,
+                value: 1.0,
+            },
+        ];
+
+        assert_eq!(
+            sample_keyframes(&0.0, &keyframes, 0.0, interpolate_number)
+                .unwrap()
+                .0,
+            0.0
+        );
+        assert_eq!(
+            sample_keyframes(&0.0, &keyframes, f64::EPSILON / 2.0, interpolate_number)
+                .unwrap()
+                .0,
+            0.5
+        );
+
+        let wider_keyframes = [
+            keyframes[0].clone(),
+            KeyframeV1 {
+                at: 5.0 * f64::EPSILON,
+                easing_to_next: None,
+                value: 1.0,
+            },
+        ];
+        assert_eq!(
+            sample_keyframes(&0.0, &wider_keyframes, f64::EPSILON, interpolate_number)
+                .unwrap()
+                .0,
+            0.2
+        );
     }
 
     #[test]

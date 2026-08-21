@@ -10,11 +10,15 @@ import {
 } from "../engine/fragment-material-registry";
 import {
   compileMathTexOutlineV1,
+  compileSegmentedTexOutlineV1,
   compileTextOutlineV1,
   type MathTexOutlineArtifactV1,
   type MathTexOutlineCompilerV1,
   type MathTexOutlineResponseV1,
   mathTexOutlineResponseV1Schema,
+  type SegmentedTexOutlineArtifactV1,
+  type SegmentedTexOutlineCompilerV1,
+  segmentedTexOutlineResponseV1Schema,
   type TextOutlineArtifactV1,
   type TextOutlineCompilerV1,
   textOutlineResponseV1Schema,
@@ -543,6 +547,7 @@ export async function digestStudioPreviewSceneRevisionV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlines?: Readonly<Record<string, MathTexOutlineArtifactV1>>;
+    segmentedMathTexOutlines?: Readonly<Record<string, SegmentedTexOutlineArtifactV1>>;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     textOutlines?: Readonly<Record<string, TextOutlineArtifactV1>>;
     workingRevision: string;
@@ -580,6 +585,17 @@ export async function digestStudioPreviewSceneRevisionV1(
         outline.fontDigest,
         outline.bounds,
         outline.path,
+      ]),
+    Object.entries(input.segmentedMathTexOutlines ?? {})
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([entityId, outline]) => [
+        entityId,
+        outline.contentDigest,
+        outline.toolchainDigest,
+        outline.fontDigest,
+        outline.source,
+        outline.fragments,
+        outline.writePlan,
       ]),
     Object.entries(input.textOutlines ?? {})
       .sort(([left], [right]) => left.localeCompare(right))
@@ -716,6 +732,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
     applyStudioTimelineEditCompiler?: ApplyStudioTimelineEditCompiler;
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
+    segmentedMathTexOutlineCompiler?: SegmentedTexOutlineCompilerV1;
     projectStudioMotionCompiler?: ProjectStudioMotionCompiler;
     projectStudioTimelineCompiler?: ProjectStudioTimelineCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
@@ -781,6 +798,11 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
       return { error: "Studio creation requires one exactly correlated base Scene.", kind: "unsupported" };
     }
     const mathTexOutlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
+    const writeInEntityIds = new Set(
+      sourceEdits.flatMap(({ program }) =>
+        program.operations.flatMap((operation) => (operation.kind === "WriteIn" ? [operation.entityId] : [])),
+      ),
+    );
     const textOutlineInputByKey = new Map<
       string,
       Readonly<{
@@ -837,6 +859,78 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
         kind: "unsupported",
       };
     }
+    const segmentedMathTexOutlines: ApplyStudioCreationEditWireCommandV1["segmentedMathTexOutlines"][number][] = [];
+    const segmentedMathTexOutlineDigestMap: Record<string, SegmentedTexOutlineArtifactV1> = {};
+    try {
+      const compiler = input.segmentedMathTexOutlineCompiler ?? compileSegmentedTexOutlineV1;
+      const responses = await Promise.all(
+        mathTexOutlineInputs
+          .filter(({ entityId }) => writeInEntityIds.has(entityId))
+          .map(async ({ entityId, texParts }) => ({
+            entityId,
+            response: segmentedTexOutlineResponseV1Schema.parse(
+              await compiler({
+                mode: "mathtex-math",
+                paintMatches: [],
+                source: texParts.join(" "),
+                sourceKind: "literal",
+              }),
+            ),
+            source: texParts.join(" "),
+          })),
+      );
+      for (const { entityId, response, source } of responses) {
+        if (response.result.kind === "unsupported") {
+          return {
+            error: `MathTex Write entity ${entityId} is unsupported (${response.result.code}): ${response.result.message}`,
+            kind: "unsupported",
+          };
+        }
+        if (
+          response.result.mode !== "mathtex-math" ||
+          response.result.source !== source ||
+          response.result.paintSpans.length !== 0
+        ) {
+          return {
+            error: `MathTex Write entity ${entityId} returned an artifact for a different compilation request.`,
+            kind: "unsupported",
+          };
+        }
+        segmentedMathTexOutlines.push({
+          entityId,
+          fragments: response.result.fragments.map(
+            ({ fillEntityId, fillRule, id, order, outlineEntityId, paint, path, sourceCorrelation }) => {
+              if (sourceCorrelation.kind !== "expression-byte-range") {
+                throw new Error("MathTex Write requires expression-wide source correlation.");
+              }
+              return {
+                fillEntityId,
+                fillRule,
+                id,
+                order,
+                outlineEntityId,
+                paint,
+                path,
+                sourceCorrelation,
+              };
+            },
+          ),
+          source: response.result.source,
+          writePlan: {
+            fragmentLagRatio: response.result.writePlan.fragmentLagRatio,
+            outlineStrokeWidth: response.result.writePlan.outlineStrokeWidth,
+            phaseBoundary: response.result.writePlan.phaseBoundary,
+            representation: response.result.writePlan.representation,
+          },
+        });
+        segmentedMathTexOutlineDigestMap[entityId] = response.result;
+      }
+    } catch (error) {
+      return {
+        error: `MathTex Write outline compilation failed: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
     const textOutlines: ApplyStudioCreationEditWireCommandV1["textOutlines"][number][] = [];
     const textOutlineDigestMap: Record<string, TextOutlineArtifactV1> = {};
     try {
@@ -877,6 +971,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       mathTexOutlines: mathTexOutlineDigestMap,
+      segmentedMathTexOutlines: segmentedMathTexOutlineDigestMap,
       snapshot: input.snapshot,
       textOutlines: textOutlineDigestMap,
       workingRevision: input.workingRevision,
@@ -888,6 +983,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
       mathTexOutlines,
       nextRevision: engineRevisionHash,
       programs: sourceEdits.map(({ program }) => program),
+      segmentedMathTexOutlines,
       textOutlines,
       viewport: STUDIO_VIEWPORT,
     });
@@ -910,8 +1006,9 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
         return { error: "Rust core did not return the Studio creation projection.", kind: "unsupported" };
       }
       const bundle = result.bundle;
-      const baseEntityIds = new Set(input.snapshot.snapshot.scene.entities.map(({ id }) => id));
-      const createdEntityIds = bundle.scene.entities.flatMap(({ id }) => (baseEntityIds.has(id) ? [] : [id]));
+      // Only Studio-authored roots are interaction targets. Rust may lower one root
+      // into renderer-owned fragment children (for example segmented MathTex Write).
+      const createdEntityIds = creationProjection.entities.map(({ entityId }) => entityId);
       const interactionEntityIds = studioPreviewInteractionEntityIdsV1(
         input.snapshot.sourceRuntimeIdentity,
         studioPreviewInteractionAuthority(input.snapshot, 0, input.workingState.runtimeSceneState.eventTrack.events),

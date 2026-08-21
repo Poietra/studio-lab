@@ -9,8 +9,8 @@ import {
   createStudioGroupProgram,
   defaultEntityContent,
   duplicateEntityInput,
+  replaceStudioCreatedContentProgram,
   replaceStudioEntityLifetimeProgram,
-  replaceStudioTextContentProgram,
 } from "./authoring-commands";
 import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import { programRecord, projectProposedState } from "./evaluator";
@@ -29,6 +29,7 @@ import {
   redoEditorProgram,
   undoEditorProgram,
 } from "./use-editor-controller";
+import { replaceWriteInProgram } from "./write-in-edit";
 
 describe("manual Studio authoring commands", () => {
   function studioOwnedCircleScene(
@@ -215,7 +216,7 @@ describe("manual Studio authoring commands", () => {
       transactionId: "create-text",
     });
     const owner = programRecord(creation.validation.program, creation.validation);
-    const validation = replaceStudioTextContentProgram({
+    const validation = replaceStudioCreatedContentProgram({
       content,
       entityId: creation.entityIds[0]!,
       owner,
@@ -282,6 +283,50 @@ describe("manual Studio authoring commands", () => {
       ).toThrow("visible Unicode text of at most 256 scalars, 8 lines, and 128 scalars per line");
     },
   );
+
+  it("replaces Studio MathTex creation content without removing its Write entrance", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        {
+          content: { displayLines: ["E = mc^2"], label: "E = mc^2", texParts: ["E = mc^2"] },
+          position: { x: 384, y: 224 },
+          type: "MathTex",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "create-mathtex",
+    });
+    const entityId = creation.entityIds[0]!;
+    const withWrite = replaceWriteInProgram({
+      baseProgram: creation.validation.program,
+      entityId,
+      scene: STUDIO_FIXTURE_SCENE,
+      write: { easing: "linear", end: 2.5 },
+    });
+    expect(withWrite.kind, JSON.stringify(withWrite.issues)).toBe("valid");
+    const content = { displayLines: ["F = ma"], label: "F = ma", texParts: ["F = ma"] };
+    const replacement = replaceStudioCreatedContentProgram({
+      content,
+      entityId,
+      owner: programRecord(withWrite.program, withWrite),
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(replacement.kind, JSON.stringify(replacement.issues)).toBe("valid");
+    expect(replacement.program.operations).toContainEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({ content, id: entityId, type: "MathTex" }),
+        kind: "CreateEntity",
+      }),
+    );
+    expect(replacement.program.operations).toContainEqual(expect.objectContaining({ entityId, kind: "WriteIn" }));
+    expect(
+      replacement.program.operations.some(
+        (operation) => operation.kind === "SetProperty" && operation.key === "content",
+      ),
+    ).toBe(false);
+  });
 
   it("combines Inspector position and shape dimensions into the existing ResizeEntity operation", () => {
     const creation = createStudioEntitiesProgram({

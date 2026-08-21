@@ -287,11 +287,11 @@ export function createInspectorEntityEditProgram(
   }
   if (
     input.edits.content &&
-    entity.type === "Text" &&
+    (entity.type === "Text" || entity.type === "MathTex") &&
     entity.sourceIdentity.kind === "unknown" &&
     entity.transactionId
   ) {
-    throw new Error("Studio-created Text content must replace its creation Program.");
+    throw new Error("Studio-created content must replace its creation Program.");
   }
   if (
     input.edits.content &&
@@ -369,7 +369,7 @@ export function createInspectorEntityEditProgram(
   });
 }
 
-export function replaceStudioTextContentProgram(
+export function replaceStudioCreatedContentProgram(
   input: Readonly<{
     content: EntityContent;
     entityId: string;
@@ -377,13 +377,19 @@ export function replaceStudioTextContentProgram(
     scene: RuntimeSceneState;
   }>,
 ): SceneEditValidationResult {
-  const content = canonicalEditableContent(input.content, "Text");
-  if (!content) throw new Error(STUDIO_CREATION_TEXT_CONTRACT);
   let replacementCount = 0;
   const operations = input.owner.program.operations.map((operation) => {
     if (operation.kind !== "CreateEntity" || operation.entity.id !== input.entityId) return operation;
-    if (operation.entity.type !== "Text") {
-      throw new Error("Only a Studio-created Text entity can replace its creation content.");
+    if (operation.entity.type !== "Text" && operation.entity.type !== "MathTex") {
+      throw new Error("Only a Studio-created Text or MathTex entity can replace its creation content.");
+    }
+    const content = canonicalEditableContent(input.content, operation.entity.type);
+    if (!content) {
+      throw new Error(
+        operation.entity.type === "Text"
+          ? STUDIO_CREATION_TEXT_CONTRACT
+          : "MathTex content must contain one to 16 non-blank TeX parts.",
+      );
     }
     replacementCount += 1;
     return {
@@ -392,7 +398,7 @@ export function replaceStudioTextContentProgram(
     } satisfies SceneEditOperation;
   });
   if (replacementCount !== 1) {
-    throw new Error("The Studio-created Text has no unique creation owner.");
+    throw new Error("The Studio-created content has no unique creation owner.");
   }
   return validateAndScheduleProgram({ ...input.owner.program, operations }, input.scene);
 }
@@ -583,7 +589,9 @@ function shiftStudioCreationOperation(
     };
   }
   if (
-    ((operation.kind === "ChangePresence" && operation.effect === "fade-in") || operation.kind === "DrawIn") &&
+    ((operation.kind === "ChangePresence" && operation.effect === "fade-in") ||
+      operation.kind === "DrawIn" ||
+      operation.kind === "WriteIn") &&
     operation.entityId === entityId &&
     interval.end > target.end
   ) {
@@ -601,7 +609,8 @@ function operationTargetsEntity(operation: SceneEditOperation, entityId: string)
     operation.kind === "SetProperty" ||
     operation.kind === "AnimateProperty" ||
     operation.kind === "ChangePresence" ||
-    operation.kind === "DrawIn"
+    operation.kind === "DrawIn" ||
+    operation.kind === "WriteIn"
   )
     return operation.entityId === entityId;
   if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entityId);

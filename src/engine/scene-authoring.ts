@@ -641,6 +641,18 @@ const studioCreationProjectionV1Schema = z
           .strict(),
         z
           .object({
+            easing: z.object({ kind: z.literal("linear") }).strict(),
+            entityId: z.string().min(1),
+            from: z.literal(0),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("write-in"),
+            operationId: z.string().min(1),
+            to: z.literal(1),
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
             easing: easingV1Schema,
             entityId: z.string().min(1),
             from: finiteNumberSchema,
@@ -950,6 +962,7 @@ type StudioCreationOperationV1 = Readonly<{
     | Readonly<{ color: string | null; entityId: string; kind: "fill-color" | "stroke-color" }>
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
     | Readonly<{ easing: "linear" | "smooth"; entityId: string; from: 0; kind: "draw-in"; to: 1 }>
+    | Readonly<{ easing: "linear"; entityId: string; kind: "write-in" }>
     | Readonly<{ alpha: number | null; entityId: string; kind: "opacity" }>
     | Readonly<{
         documentStatic: boolean;
@@ -1046,6 +1059,30 @@ export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
     entityId: string;
     path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
     texParts: readonly string[];
+  }>[];
+  segmentedMathTexOutlines: readonly Readonly<{
+    entityId: string;
+    fragments: readonly Readonly<{
+      fillEntityId: string;
+      fillRule: "evenodd" | "nonzero";
+      id: string;
+      order: number;
+      outlineEntityId: string;
+      paint: Readonly<{ alpha: number; blue: number; green: number; red: number }>;
+      path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
+      sourceCorrelation: Readonly<{
+        kind: "expression-byte-range";
+        sourceEndByte: number;
+        sourceStartByte: number;
+      }>;
+    }>[];
+    source: string;
+    writePlan: Readonly<{
+      fragmentLagRatio: number;
+      outlineStrokeWidth: number;
+      phaseBoundary: number;
+      representation: "separate-outline-and-fill-entities";
+    }>;
   }>[];
   textOutlines: readonly Readonly<{
     entityId: string;

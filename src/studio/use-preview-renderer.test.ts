@@ -3107,13 +3107,25 @@ describe("compileStudioPreviewSceneV1", () => {
           lifetimes: [creationProjection.entities[0]!.createdLifetime],
           sceneOrder: bundle.scene.entities.length,
         };
+        const outlineEntity = {
+          ...textEntity,
+          id: `${textEntity.id}/write/fragment-0000/outline`,
+          parentId: textEntity.id,
+          sceneOrder: textEntity.sceneOrder + 1,
+        };
+        const fillEntity = {
+          ...textEntity,
+          id: `${textEntity.id}/write/fragment-0000/fill`,
+          parentId: textEntity.id,
+          sceneOrder: textEntity.sceneOrder + 2,
+        };
         return {
           ...unchangedAuthoringResult({
             ...bundle,
             scene: {
               ...bundle.scene,
               duration: creationProjection.projectedDuration,
-              entities: [...bundle.scene.entities, textEntity],
+              entities: [...bundle.scene.entities, textEntity, outlineEntity, fillEntity],
               requiredCapabilities: [
                 ...new Set([...bundle.scene.requiredCapabilities, "cubic-path-geometry" as const]),
               ],
@@ -3151,6 +3163,11 @@ describe("compileStudioPreviewSceneV1", () => {
       kind: "cubic-path",
       path: compiled.path,
     });
+    expect(
+      result.scene.interactionEntityIds.filter(
+        (entityId) => entityId === creation.entityIds[0] || entityId.startsWith(`${creation.entityIds[0]}/write/`),
+      ),
+    ).toEqual([creation.entityIds[0]]);
   });
 
   it("attaches a compiled Text outline to the normalized Rust command", async () => {
