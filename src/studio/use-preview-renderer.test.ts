@@ -70,6 +70,7 @@ import {
 } from "./studio-native-workspace";
 import {
   canonicalizeSuggestionProgram,
+  createDirectManipulationGroupRotationProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
   createDirectManipulationScaleProgram,
@@ -2142,6 +2143,80 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     if (redo.kind !== "compiled") throw new Error(redo.error);
     expect(redo.scene.bundle).toEqual(result.scene.bundle);
+
+    const rotationValidation = createDirectManipulationGroupRotationProgram({
+      angleRadians: Math.PI / 2,
+      capturedPlayhead: 0,
+      scene: workingBase.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: "source:circle", toPosition: { x: 410, y: 230 } },
+        { entityId: "source:second", toPosition: { x: 410, y: 150 } },
+      ],
+      transactionId: "rotate-imported-selection",
+    });
+    if (rotationValidation.kind !== "valid") throw new Error(JSON.stringify(rotationValidation.issues));
+    const rotationRecord = {
+      ...programRecord(rotationValidation.program, rotationValidation),
+      validation: { issues: rotationValidation.issues, status: "valid" as const },
+    };
+    const rotatedAppliedEdits = [...appliedEdits, rotationRecord];
+    const rotatedCommands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+    const rotated = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(
+        rotatedCommands,
+        compileApplyStaticRootTransformEdit,
+      ),
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits: rotatedAppliedEdits },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits: rotatedAppliedEdits,
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (rotated.kind !== "compiled") throw new Error(rotated.error);
+    expect(rotatedCommands[0]?.programs.at(-1)?.operations).toMatchObject([
+      { entityId: "source:circle", kind: "position", position: { x: 410, y: 230 } },
+      { entityId: "source:second", kind: "position", position: { x: 410, y: 150 } },
+      { entityId: "source:circle", kind: "rotation", relativeDelta: Math.PI / 2 },
+      { entityId: "source:second", kind: "rotation", relativeDelta: Math.PI / 2 },
+    ]);
+    expect(rotated.scene.staticRootProjection?.mutations.slice(-4)).toEqual([
+      expect.objectContaining({ entityId: "source:circle", kind: "position", value: { x: 410, y: 230 } }),
+      expect.objectContaining({ entityId: "source:second", kind: "position", value: { x: 410, y: 150 } }),
+      expect.objectContaining({ entityId: "source:circle", kind: "rotation", to: Math.PI / 2 }),
+      expect.objectContaining({ entityId: "source:second", kind: "rotation", to: Math.PI / 2 }),
+    ]);
+    for (const entityId of ["earlier", "second-root"]) {
+      const entity = rotated.scene.bundle.scene.entities.find(({ id }) => id === entityId);
+      expect(entity?.transform.m11).toBeCloseTo(0);
+      expect(Math.abs(entity?.transform.m12 ?? 0)).toBeCloseTo(1);
+    }
+
+    const rotationUndo = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: compileApplyStaticRootTransformEdit,
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits,
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [{ kind: "mutation", mutation: { index: 2, kind: "append", value: rotationRecord } }],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (rotationUndo.kind !== "compiled") throw new Error(rotationUndo.error);
+    expect(rotationUndo.scene.staticRootProjection?.mutations).toHaveLength(4);
+    for (const entityId of ["earlier", "second-root"]) {
+      expect(rotationUndo.scene.bundle.scene.entities.find(({ id }) => id === entityId)?.transform).toEqual(
+        result.scene.bundle.scene.entities.find(({ id }) => id === entityId)?.transform,
+      );
+    }
   });
 
   it("routes an imported static move followed by motion through one static-root Rust command", async () => {

@@ -130,6 +130,14 @@ type StaticRootTransformOperation = Readonly<{
         controlPresent: boolean;
         entityId: string;
         from: number | null;
+        kind: "rotation";
+        relativeDelta: number | null;
+        to: number | null;
+      }>
+    | Readonly<{
+        controlPresent: boolean;
+        entityId: string;
+        from: number | null;
         kind: "uniform-scale";
         relativeFactor: number | null;
         to: number | null;
@@ -204,6 +212,15 @@ export type StudioStaticRootMutationV1 =
       from: number;
       interval: Readonly<{ end: number; start: number }>;
       kind: "uniform-scale";
+      operationId: string;
+      to: number;
+      transactionId: string;
+    }>
+  | Readonly<{
+      entityId: string;
+      from: number;
+      interval: Readonly<{ end: number; start: number }>;
+      kind: "rotation";
       operationId: string;
       to: number;
       transactionId: string;
@@ -761,6 +778,17 @@ const studioStaticRootProjectionV1Schema = z
             from: finiteNumberSchema,
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("uniform-scale"),
+            operationId: z.string().min(1),
+            to: finiteNumberSchema,
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            entityId: z.string().min(1),
+            from: finiteNumberSchema,
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("rotation"),
             operationId: z.string().min(1),
             to: finiteNumberSchema,
             transactionId: z.string().min(1),

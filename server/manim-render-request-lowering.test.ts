@@ -907,7 +907,7 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source).toContain("equation.move_to((0, 0, 0))");
   });
 
-  it("authorizes and lowers repeated imported selection moves as one ordered final-render history", async () => {
+  it("authorizes and lowers imported selection move and rotation as one ordered final-render history", async () => {
     const groupSource = `from manim import *
 
 class GroupedEquation(Scene):
@@ -966,7 +966,29 @@ class GroupedEquation(Scene):
     };
     const first = groupProgram("move-selection", { x: 340, y: 170 }, { x: 420, y: 170 });
     const second = groupProgram("move-selection-again", { x: 370, y: 190 }, { x: 450, y: 190 });
-    const programs = [first, second];
+    const rotationPositions = groupProgram("rotate-selection", { x: 410, y: 230 }, { x: 410, y: 150 });
+    const rotations: CanonicalEditOperation[] = [leftId, rightId].map((targetEntityId, index) => ({
+      dependsOn: [],
+      easing: "smooth",
+      entityId: targetEntityId,
+      from: 0,
+      id: `tx:rotate-selection/operation:rotation-${index}`,
+      interval: { end: 0, start: 0 },
+      key: "rotation",
+      kind: "AnimateProperty",
+      provenance: { evidence: ["selection rotation"], origin: "direct-manipulation" },
+      relativeDelta: Math.PI / 2,
+      to: Math.PI / 2,
+    }));
+    const rotation = {
+      ...rotationPositions,
+      operations: [...rotationPositions.operations, ...rotations],
+      schedule: {
+        ...rotationPositions.schedule,
+        order: [...rotationPositions.schedule.order, ...rotations.map(({ id }) => id)],
+      },
+    } satisfies CanonicalEditProgram;
+    const programs = [first, second, rotation];
     const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
 
     const result = await lower(
@@ -987,8 +1009,9 @@ class GroupedEquation(Scene):
 
     expect(authorizations).toHaveLength(1);
     expect(authorizations[0]?.programs).toEqual(programs);
-    expect(result.lowered.insertedCode.match(/left\.move_to\(/g)).toHaveLength(2);
-    expect(result.lowered.insertedCode.match(/right\.move_to\(/g)).toHaveLength(2);
+    expect(result.lowered.insertedCode.match(/left\.move_to\(/g)).toHaveLength(3);
+    expect(result.lowered.insertedCode.match(/right\.move_to\(/g)).toHaveLength(3);
+    expect(result.lowered.insertedCode.match(/\.rotate\(/g)).toHaveLength(2);
     expect(result.lowered.insertedCode.indexOf('poietra:transaction "move-selection"')).toBeLessThan(
       result.lowered.insertedCode.indexOf('poietra:transaction "move-selection-again"'),
     );

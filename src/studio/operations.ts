@@ -65,7 +65,7 @@ export function isStaticRootTransformOperation(operation: SceneEditOperation) {
   return (
     operation.kind === "ResizeEntity" ||
     (operation.kind === "SetProperty" && operation.key === "position") ||
-    (operation.kind === "AnimateProperty" && operation.key === "scale")
+    (operation.kind === "AnimateProperty" && (operation.key === "rotation" || operation.key === "scale"))
   );
 }
 

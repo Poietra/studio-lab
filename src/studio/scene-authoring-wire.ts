@@ -123,6 +123,17 @@ function normalizedStaticRootOperation(
       to: typeof operation.to === "number" ? operation.to : null,
     };
   }
+  if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
+    return {
+      ...common,
+      controlPresent: operation.control !== undefined,
+      entityId: operation.entityId,
+      from: typeof operation.from === "number" ? operation.from : null,
+      kind: "rotation",
+      relativeDelta: operation.relativeDelta ?? null,
+      to: typeof operation.to === "number" ? operation.to : null,
+    };
+  }
   if (operation.kind === "ResizeEntity") {
     return {
       ...common,

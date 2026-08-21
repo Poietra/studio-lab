@@ -138,6 +138,7 @@ type ProgramSourceLoweringOptions = Readonly<{
   generatedEntityIds?: ReadonlySet<string>;
   reservedSourceVariables?: ReadonlySet<string>;
   sourceAnchor?: number;
+  snapshotAuthorizedSourceBoundRotation?: boolean;
 }>;
 
 type SourceScaleState =
@@ -1045,7 +1046,7 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
     );
   }
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
-    if (options.generatedEntityIds?.has(operation.entityId)) return;
+    if (options.generatedEntityIds?.has(operation.entityId) || options.snapshotAuthorizedSourceBoundRotation) return;
     throw new ProgramLoweringError(
       "operation-unsupported",
       "Relative rotation requires the Runtime Trace source lowerer.",
@@ -3106,6 +3107,7 @@ export function lowerCanonicalProgramBatchSource(
   frame: Readonly<{ height: number; width: number }>,
   incoming: IncomingSceneSetup | null,
   timelineTransforms: readonly StudioTimelineEditTransformV1[] | null = null,
+  authorization: Readonly<{ snapshotAuthorizedSourceBoundRotation?: boolean }> = {},
 ): LoweredProgramBatchSource {
   if (entries.length === 0) {
     throw new ProgramLoweringError("operation-unsupported", "A source export batch must contain at least one Program.");
@@ -3162,6 +3164,7 @@ export function lowerCanonicalProgramBatchSource(
         generatedEntityIds,
         reservedSourceVariables: generatedSourceVariables,
         sourceAnchor: entry.sourceAnchor,
+        snapshotAuthorizedSourceBoundRotation: authorization.snapshotAuthorizedSourceBoundRotation,
       },
     );
     for (const aliases of lowered.entityAliases) {
