@@ -1346,6 +1346,7 @@ fn closed_studio_group_layer_order(
     timeline: &StudioCreationTimelinePlan,
     entities: &[PlannedStudioCreationEntity],
     base_source_z_index_start: Option<f64>,
+    base_scene_source_z_indexes: Option<&[f64]>,
 ) -> Option<PlannedStudioGroupLayerOrder> {
     let program = programs.get(program_index)?;
     if program.origin != StudioAuthoringOrigin::DirectManipulation
@@ -1464,6 +1465,48 @@ fn closed_studio_group_layer_order(
     {
         return None;
     }
+    // Projection does not know the imported Scene's z-index baseline. Apply does,
+    // so enforce the paint-block invariant there without duplicating the UI's
+    // adjacent-block planner in the domain core.
+    if let Some(base_scene_source_z_indexes) = base_scene_source_z_indexes {
+        let group_is_one_paint_block = |projected: bool| {
+            let mut paint_order = base_scene_source_z_indexes
+                .iter()
+                .enumerate()
+                .map(|(index, source_z_index)| Some((index, *source_z_index, false)))
+                .chain(entities.iter().enumerate().map(|(index, state)| {
+                    let fallback_index = u32::try_from(index).ok().map(f64::from)?;
+                    let current = state.source_z_index.or_else(|| {
+                        base_source_z_index_start.map(|start| start + fallback_index)
+                    })?;
+                    let source_z_index = if projected {
+                        targets
+                            .get(&state.spec.id)
+                            .map_or(current, |(_, target)| *target)
+                    } else {
+                        current
+                    };
+                    Some((
+                        base_scene_source_z_indexes.len() + index,
+                        source_z_index,
+                        target_ids.contains(&state.spec.id),
+                    ))
+                }))
+                .collect::<Option<Vec<_>>>()?;
+            paint_order
+                .sort_by(|left, right| left.1.total_cmp(&right.1).then(left.0.cmp(&right.0)));
+            let indexes = paint_order
+                .iter()
+                .enumerate()
+                .filter_map(|(index, (_, _, target))| target.then_some(index))
+                .collect::<Vec<_>>();
+            (indexes.len() == target_ids.len()
+                && indexes.windows(2).all(|pair| pair[1] == pair[0] + 1))
+            .then_some(())
+        };
+        group_is_one_paint_block(false)?;
+        group_is_one_paint_block(true)?;
+    }
     let (_, (first_from, first_to)) = targets.first_key_value()?;
     let delta = first_to - first_from;
     if targets
@@ -1520,6 +1563,7 @@ fn plan_studio_creation_edits(
     base_duration: f64,
     programs: &[StudioCreationEditInput],
     base_source_z_index_start: Option<f64>,
+    base_scene_source_z_indexes: Option<&[f64]>,
 ) -> Result<StudioCreationPlan, ProjectStudioCreationEditError> {
     let timeline = plan_studio_creation_timeline(base_duration, programs)?;
     let create_programs = timeline
@@ -2636,6 +2680,7 @@ fn plan_studio_creation_edits(
             &timeline,
             &entities,
             base_source_z_index_start,
+            base_scene_source_z_indexes,
         );
         let contains_position = program.operations.iter().any(|operation| {
             matches!(operation.kind, StudioCreationOperationKind::Position { .. })
@@ -3407,7 +3452,7 @@ pub fn project_studio_creation_edits(
     base_duration: f64,
     programs: &[StudioCreationEditInput],
 ) -> Result<StudioCreationProjection, ProjectStudioCreationEditError> {
-    Ok(plan_studio_creation_edits(base_duration, programs, None)?.projection())
+    Ok(plan_studio_creation_edits(base_duration, programs, None, None)?.projection())
 }
 
 fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
@@ -4285,17 +4330,22 @@ impl EngineSessionV1 {
         {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
-        let base_source_z_index_start = self
+        let base_scene_source_z_indexes = self
             .scene()
             .entities
             .iter()
             .map(|entity| entity.source_z_index)
+            .collect::<Vec<_>>();
+        let base_source_z_index_start = base_scene_source_z_indexes
+            .iter()
+            .copied()
             .fold(-1.0_f64, f64::max)
             + 1.0;
         let plan = plan_studio_creation_edits(
             self.scene().duration,
             &programs,
             Some(base_source_z_index_start),
+            Some(&base_scene_source_z_indexes),
         )
         .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
         for state in &plan.entities {
@@ -6001,6 +6051,30 @@ mod tests {
         assert!(matches!(
             project_studio_creation_edits(bundle.scene.duration, &reversed.programs),
             Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        let mut split = command.clone();
+        for (index, operation) in split
+            .programs
+            .last_mut()
+            .unwrap()
+            .operations
+            .iter_mut()
+            .enumerate()
+        {
+            let StudioCreationOperationKind::SourceZIndex { source_z_index, .. } =
+                &mut operation.kind
+            else {
+                unreachable!();
+            };
+            *source_z_index = Some(if index == 0 { -100.0 } else { 100.0 });
+        }
+        assert!(project_studio_creation_edits(bundle.scene.duration, &split.programs).is_ok());
+        assert!(matches!(
+            EngineSessionV1::new(bundle.clone())
+                .unwrap()
+                .apply_studio_creation_edit(split),
+            Err(ApplyStudioCreationEditError::Unsupported)
         ));
 
         command.programs.last_mut().unwrap().operations.pop();

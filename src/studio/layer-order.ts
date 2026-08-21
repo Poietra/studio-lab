@@ -37,6 +37,14 @@ const IMPORTED_VISIBILITY_REASON = "Imported Manim object: visibility round-trip
 const PREVIEW_VISIBILITY_REASON = "Wait for the canonical preview before changing this layer visibility.";
 const ACTIVE_GROUP_ORDERING_REASON = "Move the logical group as one layer before changing an individual child order.";
 
+function layerOrderValuesClose(left: number, right: number) {
+  return (
+    Number.isFinite(left) &&
+    Number.isFinite(right) &&
+    Math.abs(left - right) <= 1e-9 * Math.max(1, Math.abs(left), Math.abs(right))
+  );
+}
+
 function comparePaintOrder(left: CanonicalLayerEntity, right: CanonicalLayerEntity) {
   return left.sourceZIndex - right.sourceZIndex || left.sceneOrder - right.sceneOrder;
 }
@@ -329,7 +337,14 @@ export function planStudioLayerGroupOrder(
     };
   }
 
-  if (children.some((child, index) => index > 0 && child.sourceZIndex <= children[index - 1]!.sourceZIndex)) {
+  if (
+    children.some(
+      (child, index) =>
+        index > 0 &&
+        (child.sourceZIndex < children[index - 1]!.sourceZIndex ||
+          layerOrderValuesClose(child.sourceZIndex, children[index - 1]!.sourceZIndex)),
+    )
+  ) {
     return {
       kind: "unavailable",
       reason: "Grouped objects that share one canonical z-index cannot move by one layer safely.",
@@ -358,9 +373,12 @@ export function planStudioLayerGroupOrder(
   });
   if (
     targetZIndices.some((value) => !Number.isFinite(value)) ||
-    targetZIndices.some((value, index) => index > 0 && value <= targetZIndices[index - 1]!) ||
-    (lower !== null && targetZIndices[0]! <= lower) ||
-    (upper !== null && targetZIndices.at(-1)! >= upper)
+    targetZIndices.some(
+      (value, index) =>
+        index > 0 && (value < targetZIndices[index - 1]! || layerOrderValuesClose(value, targetZIndices[index - 1]!)),
+    ) ||
+    (lower !== null && (targetZIndices[0]! < lower || layerOrderValuesClose(targetZIndices[0]!, lower))) ||
+    (upper !== null && (targetZIndices.at(-1)! > upper || layerOrderValuesClose(targetZIndices.at(-1)!, upper)))
   ) {
     return { kind: "unavailable", reason: "The adjacent canonical z-index range cannot fit this group safely." };
   }

@@ -317,6 +317,16 @@ describe("Studio Layers paint order", () => {
         "forward",
       ),
     ).toMatchObject({ kind: "unavailable", reason: expect.stringMatching(/every layer/i) });
+    expect(
+      planStudioLayerGroupOrder(
+        projected.map((entry) => ({
+          ...entry,
+          sourceZIndex: entry.sourceZIndex === null ? null : entry.sourceZIndex + 1_000_000_000,
+        })),
+        targetGroupId,
+        "forward",
+      ),
+    ).toMatchObject({ kind: "unavailable", reason: expect.stringMatching(/share one canonical z-index/i) });
   });
 
   it("crosses an adjacent logical group as one block", () => {
