@@ -325,6 +325,7 @@ function creationEntityKind(type: string): StudioCreationProjectionV1["entities"
   if (type === "NumberPlane") return "number-plane";
   if (type === "Rectangle") return "rectangle";
   if (type === "Sector") return "sector";
+  if (type === "SvgPath") return "svg-path";
   if (type === "Text") return "text";
   return null;
 }
@@ -1412,7 +1413,8 @@ function projectCreationWorkingState(
       entity.kind === "number-plane" ||
       entity.kind === "rectangle" ||
       entity.kind === "regular-polygon" ||
-      entity.kind === "sector";
+      entity.kind === "sector" ||
+      entity.kind === "svg-path";
     draft.entities[entity.entityId] = {
       ...(operation.entity.content ? { content: operation.entity.content } : {}),
       ...(hasShapeGeometry

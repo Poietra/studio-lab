@@ -37,9 +37,11 @@ ratex-layout = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727
 ratex-lexer = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
 ratex-parser = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
 ratex-types = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
+roxmltree = "=0.21.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["float_roundtrip", "raw_value"] }
 sha2 = "0.10"
+svgtypes = "=0.16.1"
 thiserror = "2.0"
 ttf-parser = "=0.25.1"
 unicode-normalization = "=0.1.25"

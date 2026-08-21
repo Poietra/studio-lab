@@ -58,6 +58,14 @@ const studioImagePlacementSchema = z
     sampler: z.enum(["linear", "nearest"]),
   })
   .strict();
+const studioSvgPathPlacementSchema = z
+  .object({
+    source: z
+      .string()
+      .min(1)
+      .max(256 * 1024),
+  })
+  .strict();
 const intervalSchema = z.object({ end: z.number(), start: z.number() });
 const provenanceSchema = z.object({
   evidence: z.array(z.string()),
@@ -94,6 +102,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
       dimensions: dimensionsSchema.optional(),
       id: z.string(),
       image: studioImagePlacementSchema.optional(),
+      svg: studioSvgPathPlacementSchema.optional(),
       lifetime: z.object({ end: z.number().nullable(), start: z.number() }),
       type: z.string(),
     }),

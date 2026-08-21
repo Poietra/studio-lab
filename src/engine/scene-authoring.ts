@@ -124,7 +124,8 @@ type StaticRootTransformEntityKind =
   | "other"
   | "rectangle"
   | "regular-polygon"
-  | "sector";
+  | "sector"
+  | "svg-path";
 type StudioAnglePairV1 = Readonly<{ start: number; sweep: number }>;
 type StudioCoordinateAxisV1 = Readonly<{ maximum: number; minimum: number; step: number }>;
 type StaticRootTransformDimensions = Readonly<{
@@ -629,6 +630,7 @@ const studioCreationProjectionV1Schema = z
             "rectangle",
             "regular-polygon",
             "sector",
+            "svg-path",
             "text",
           ]),
           layout: studioTextLayoutV1Schema.optional(),
@@ -1030,6 +1032,7 @@ type StudioCreationEntityKindV1 =
   | "rectangle"
   | "regular-polygon"
   | "sector"
+  | "svg-path"
   | "text";
 type StudioCreationImageV1 = Readonly<{
   asset: Readonly<{ assetId: string; sha256: string }>;
@@ -1065,6 +1068,7 @@ type StudioCreationOperationV1 = Readonly<{
           lifetimeStart: number;
           text: string | null;
           texParts: readonly string[] | null;
+          svg?: Readonly<{ source: string }> | null;
         }>;
         kind: "create";
       }>

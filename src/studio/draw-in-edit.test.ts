@@ -90,6 +90,42 @@ describe("Draw entrance editing", () => {
     },
   );
 
+  it("supports Draw on a Rust-validated stroke-only SVG path and rejects filled SVG paths", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        {
+          dimensions: { height: 2, width: 3 },
+          position: { x: 320, y: 180 },
+          svg: { source: '<svg viewBox="0 0 3 2"><path d="M0 0 L3 2" fill="none" stroke="white"/></svg>' },
+          type: "SvgPath",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "draw-svg",
+    });
+    const entityId = creation.entityIds[0]!;
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "linear", end: 2 },
+      entityId,
+      scene: STUDIO_FIXTURE_SCENE,
+      svgHasFill: false,
+    });
+
+    expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
+    expect(drawInClipFromProgram(drawn.program)?.entityId).toBe(entityId);
+    expect(() =>
+      replaceDrawInProgram({
+        baseProgram: creation.validation.program,
+        draw: { easing: "linear", end: 2 },
+        entityId,
+        scene: STUDIO_FIXTURE_SCENE,
+        svgHasFill: true,
+      }),
+    ).toThrow(/stroke-only SVG paths/);
+  });
+
   it("rejects non-stroke Studio objects", () => {
     const arrow = createStudioEntitiesProgram({
       capturedPlayhead: 1,

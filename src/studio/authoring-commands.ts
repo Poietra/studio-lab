@@ -54,10 +54,13 @@ export type StudioEntityInput = Readonly<{
     sampler: "linear" | "nearest";
   }>;
   position: Point;
-  type: InsertEntityType | "ImageMobject";
+  svg?: Readonly<{ source: string }>;
+  type: InsertEntityType | "ImageMobject" | "SvgPath";
 }>;
 
-export function defaultEntityDimensions(type: InsertEntityType | "ImageMobject"): EntityDimensions | undefined {
+export function defaultEntityDimensions(
+  type: InsertEntityType | "ImageMobject" | "SvgPath",
+): EntityDimensions | undefined {
   if (type === "Circle") return { radius: 1 };
   if (type === "Rectangle") return { height: 2, width: 4 };
   if (type === "Ellipse") return { height: 2, width: 3 };
@@ -241,6 +244,7 @@ export function createStudioEntitiesProgram(
           ...(dimensions ? { dimensions } : {}),
           id: entityId,
           ...(entity.image ? { image: entity.image } : {}),
+          ...(entity.svg ? { svg: entity.svg } : {}),
           lifetime: { end: null, start: input.capturedPlayhead },
           type: entity.type,
         },

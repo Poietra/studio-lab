@@ -339,6 +339,64 @@ describe("Studio workspace projection", () => {
     );
   });
 
+  it("keeps Rust-projected SVG dimensions available to selection transforms", () => {
+    const imported = workspaceScene("First", null);
+    const authored = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [
+        {
+          dimensions: { height: 2, width: 3 },
+          position: { x: 320, y: 180 },
+          svg: { source: '<svg viewBox="0 0 3 2"><path d="M0 0 L3 0 L3 2 Z"/></svg>' },
+          type: "SvgPath",
+        },
+      ],
+      scene: imported.runtimeSceneState,
+      transactionId: "svg-correlation",
+    });
+    const create = authored.validation.program.operations.find((operation) => operation.kind === "CreateEntity");
+    if (create?.kind !== "CreateEntity") throw new Error("SVG creation fixture is incomplete.");
+    const program: CanonicalEditProgram = {
+      ...authored.validation.program,
+      intentCount: 1,
+      operations: [create],
+      schedule: { edges: [], mode: "parallel", order: [create.id] },
+    };
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
+          entityId: create.entity.id,
+          initialDimensions: { height: 2, width: 3 },
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "svg-path",
+          operationId: create.id,
+          transactionId: program.transactionId,
+        },
+      ],
+      insertions: [],
+      motions: [],
+      mutations: [],
+      projectedDuration: imported.runtimeSceneState.duration,
+      removals: [],
+    };
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedEdits: [programRecord(program, authored.validation)],
+      creationProjection: projection,
+      currentTime: 0,
+      draftEdit: null,
+      editAuthority: "rust-authorized-batch",
+      nextScene: null,
+      selectedObjectIds: [create.entity.id],
+    });
+
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[create.entity.id]?.geometry?.dimensions).toEqual(
+      { kind: "known", value: { height: 2, width: 3 } },
+    );
+  });
+
   it("correlates Draw from its exact Rust interval and easing", () => {
     const imported = workspaceScene("First", null);
     const creation = createStudioEntitiesProgram({

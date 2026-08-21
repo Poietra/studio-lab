@@ -11,6 +11,7 @@ import {
   NativeProjectLocalStore,
 } from "./native-project-local-store";
 import { createStudioNativeBlankScene, createStudioNativeBlankSceneIrBundle } from "./studio-native-workspace";
+import { importStudioSvgPathAsset } from "./studio-svg-assets";
 
 const DOCUMENT_KEY = "d".repeat(64);
 const IDENTITY = { documentKey: DOCUMENT_KEY, projectId: "project-a" } as const;
@@ -58,7 +59,7 @@ class DelayedFirstWriteAdapter extends MemoryAdapter {
   }
 }
 
-async function authoredState() {
+async function authoredState(includeSvg = false) {
   const bundle = await createStudioNativeBlankSceneIrBundle(createStudioNativeBlankScene(DOCUMENT_KEY), {
     height: 8,
     width: 14.222,
@@ -77,6 +78,15 @@ async function authoredState() {
     assetPayloads: ingested.assetPayloads,
     bundle: ingested.bundle,
     fragmentMaterials: createStudioWaveFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1).state,
+    svgAssets: includeSvg
+      ? [
+          await importStudioSvgPathAsset(
+            new File(['<svg viewBox="0 0 3 2"><path d="M0 0 L3 0 L3 2 Z" fill="#38bdf8"/></svg>'], "diagram.svg", {
+              type: "image/svg+xml",
+            }),
+          ),
+        ]
+      : [],
   };
 }
 
@@ -84,7 +94,7 @@ describe("Studio-native local project persistence", () => {
   it("restores the verified PNG manifest, all owned bytes, and material state", async () => {
     const adapter = new MemoryAdapter();
     const store = new NativeProjectLocalStore(adapter, async () => ({ pixelHeight: 1, pixelWidth: 2 }));
-    const state = await authoredState();
+    const state = await authoredState(true);
     const expectedBytes = new Map(
       state.assetPayloads.map((payload) => [payload.sha256, new Uint8Array(payload.bytes).slice()]),
     );
@@ -99,6 +109,7 @@ describe("Studio-native local project persistence", () => {
       expect(new Uint8Array(payload.bytes)).toEqual(expectedBytes.get(payload.sha256));
     }
     expect(restored?.fragmentMaterials).toEqual(state.fragmentMaterials);
+    expect(restored?.svgAssets).toEqual(state.svgAssets);
   });
 
   it("isolates document keys and removes every local document for a deleted project", async () => {
@@ -127,6 +138,7 @@ describe("Studio-native local project persistence", () => {
     await Promise.all([firstSave, secondSave]);
     await expect(store.restore(IDENTITY)).resolves.toMatchObject({
       fragmentMaterials: EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
+      svgAssets: [],
     });
   });
 });

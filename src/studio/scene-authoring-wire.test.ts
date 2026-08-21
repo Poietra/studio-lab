@@ -65,6 +65,14 @@ function creationProgram(type: string): SceneEdit {
                 },
               }
             : {}),
+          ...(type === "SvgPath"
+            ? {
+                dimensions: { height: 2, width: 3 },
+                svg: {
+                  source: '<svg viewBox="0 0 3 2"><path d="M0 0 L3 0 L3 2 Z" fill="#38bdf8"/></svg>',
+                },
+              }
+            : {}),
           id: `entity:${type}`,
           lifetime: { end: null, start: 0 },
           type,
@@ -149,6 +157,21 @@ describe("Studio creation wire", () => {
         return operation.entity.kind;
       }),
     ).toEqual(["number-line", "axes", "number-plane"]);
+  });
+
+  it("passes bounded SVG source to the Rust svg-path creation kind without parsing geometry", () => {
+    const command = buildStudioCreationProjectionCommand({ baseDuration: 2, programs: [creationProgram("SvgPath")] });
+
+    expect(command.programs[0]?.operations[0]).toEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({
+          dimensions: { height: 2, width: 3 },
+          kind: "svg-path",
+          svg: expect.objectContaining({ source: expect.stringContaining("<path") }),
+        }),
+        kind: "create",
+      }),
+    );
   });
 
   it("normalizes DrawIn as the fixed zero-to-one path-trim operation", () => {

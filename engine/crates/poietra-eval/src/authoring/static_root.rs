@@ -272,6 +272,10 @@ fn static_transform_geometry_matches(
             matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
                 && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
         }
+        StaticRootTransformEntityKind::SvgPath => {
+            matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
+                && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
+        }
         StaticRootTransformEntityKind::Other => true,
     }
 }

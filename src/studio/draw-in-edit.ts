@@ -28,6 +28,7 @@ const DRAWABLE_STUDIO_TYPES = new Set([
   "Rectangle",
   "RegularPolygon",
   "Sector",
+  "SvgPath",
   "Triangle",
 ]);
 
@@ -64,11 +65,20 @@ export function drawInClipFromProgram(program: SceneEdit): DrawInClip | null {
   };
 }
 
-export function drawInUnavailableReason(program: SceneEdit, entityId: string): string | null {
+export function drawInUnavailableReason(
+  program: SceneEdit,
+  entityId: string,
+  options: Readonly<{ svgHasFill?: boolean | null }> = {},
+): string | null {
   const create = createdEntity(program, entityId);
   if (!create || create.kind !== "CreateEntity") return "Draw supports only Studio-created objects.";
   if (!DRAWABLE_STUDIO_TYPES.has(create.entity.type)) {
     return "Draw supports Studio-created path objects.";
+  }
+  if (create.entity.type === "SvgPath" && options.svgHasFill !== false) {
+    return options.svgHasFill
+      ? 'Draw supports stroke-only SVG paths. Import a path with fill="none" to animate its stroke.'
+      : "Wait for the Rust-validated SVG paint metadata before adding Draw.";
   }
   const otherDraw = program.operations.find(
     (operation) => operation.kind === "DrawIn" && operation.entityId !== entityId,
@@ -101,9 +111,12 @@ export function replaceDrawInProgram(
     draw: Readonly<{ easing: DrawInEasing; end: number }> | null;
     entityId: string;
     scene: RuntimeSceneState;
+    svgHasFill?: boolean | null;
   }>,
 ): SceneEditValidationResult {
-  const unavailable = drawInUnavailableReason(input.baseProgram, input.entityId);
+  const unavailable = drawInUnavailableReason(input.baseProgram, input.entityId, {
+    svgHasFill: input.svgHasFill,
+  });
   if (unavailable) throw new TypeError(unavailable);
   const create = createdEntity(input.baseProgram, input.entityId);
   if (!create || create.kind !== "CreateEntity") throw new TypeError("The Studio creation operation is unavailable.");

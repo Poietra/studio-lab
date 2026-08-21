@@ -76,10 +76,11 @@ function createEntityExecution(
     type === "MathTex" && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
   const hasTextContent = type === "Text" && studioCreationText(content) !== null;
   const hasNativeImage = type === "ImageMobject" && operation.entity.image !== undefined;
+  const hasNativeSvgPath = type === "SvgPath" && operation.entity.svg !== undefined;
   const isNativePath = ["Arc", "Axes", "Ellipse", "NumberLine", "NumberPlane", "Sector"].includes(type);
   const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "RegularPolygon", "Square", "Triangle"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
-  if (hasNativeImage || isNativePath) return CLIENT_ONLY_EXECUTION;
+  if (hasNativeImage || hasNativeSvgPath || isNativePath) return CLIENT_ONLY_EXECUTION;
   if (hasMathTexContent || hasTextContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
   return previewOnlyExecution(`CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`);
 }
@@ -436,6 +437,20 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       dimensions.sides === undefined
     );
   }
+  if (type === "SvgPath") {
+    return (
+      dimensions.height !== undefined &&
+      Number.isFinite(dimensions.height) &&
+      dimensions.height > 0 &&
+      dimensions.width !== undefined &&
+      Number.isFinite(dimensions.width) &&
+      dimensions.width > 0 &&
+      dimensions.angles === undefined &&
+      dimensions.coordinateSystem === undefined &&
+      dimensions.radius === undefined &&
+      dimensions.sides === undefined
+    );
+  }
   return false;
 }
 
@@ -693,6 +708,15 @@ export const OPERATION_REGISTRY = {
           severity: "error",
         });
       }
+      if ((operation.entity.type === "SvgPath") !== (operation.entity.svg !== undefined)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "entity.svg",
+          message: "A Studio-native SvgPath requires one Rust-validated SVG source.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
       return issues;
     },
   } satisfies Capability<"CreateEntity">,
@@ -728,6 +752,7 @@ export const OPERATION_REGISTRY = {
             "Rectangle",
             "RegularPolygon",
             "Sector",
+            "SvgPath",
             "Triangle",
           ].includes(entity.type))
       ) {
