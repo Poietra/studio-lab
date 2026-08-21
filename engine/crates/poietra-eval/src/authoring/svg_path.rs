@@ -40,6 +40,8 @@ pub enum StudioSvgPathError {
     SourceTooLarge,
     #[error("SVG XML is malformed: {0}")]
     MalformedXml(String),
+    #[error("SVG processing instruction `{0}` is unsupported")]
+    UnsupportedProcessingInstruction(String),
     #[error("the SVG root must be an <svg> element in the SVG namespace")]
     InvalidRoot,
     #[error("SVG root attribute `{0}` is unsupported by the path asset profile")]
@@ -387,6 +389,11 @@ pub(crate) fn normalize_studio_svg_path_asset(
     }
     let document = roxmltree::Document::parse(source)
         .map_err(|error| StudioSvgPathError::MalformedXml(error.to_string()))?;
+    if let Some(instruction) = document.descendants().find_map(|node| node.pi()) {
+        return Err(StudioSvgPathError::UnsupportedProcessingInstruction(
+            instruction.target.to_owned(),
+        ));
+    }
     let root = document.root_element();
     if root.tag_name().name() != "svg"
         || root
@@ -638,6 +645,10 @@ mod tests {
             (
                 r#"<svg viewBox="0 0 10 10"><path d="M0 0 L10 0 Z" fill="url(#paint)"/></svg>"#,
                 "paint must be `none` or one solid CSS color",
+            ),
+            (
+                r#"<?xml-stylesheet href="https://example.invalid/theme.css"?><svg viewBox="0 0 10 10"><path d="M0 0 L10 0 Z"/></svg>"#,
+                "processing instruction `xml-stylesheet` is unsupported",
             ),
         ];
         for (source, expected) in cases {
