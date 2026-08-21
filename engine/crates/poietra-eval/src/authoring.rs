@@ -192,14 +192,17 @@ pub type StaticRootTransformOrigin = StudioAuthoringOrigin;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StudioAuthoringEntityKind {
+    Arc,
     Arrow,
     Circle,
+    Ellipse,
     Image,
     Line,
     MathTex,
     Other,
     Rectangle,
     RegularPolygon,
+    Sector,
     Text,
 }
 
@@ -214,9 +217,18 @@ pub struct StudioAuthoringSize {
 
 pub type StaticRootTransformSize = StudioAuthoringSize;
 
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioAuthoringAngles {
+    pub start: f64,
+    pub sweep: f64,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioAuthoringDimensions {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub angles: Option<StudioAuthoringAngles>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -385,12 +397,13 @@ fn studio_authoring_shape_size(
 ) -> Option<StudioAuthoringSize> {
     match (
         kind,
+        dimensions.angles,
         dimensions.radius,
         dimensions.sides,
         dimensions.width,
         dimensions.height,
     ) {
-        (StaticRootTransformEntityKind::Circle, Some(radius), None, None, None)
+        (StaticRootTransformEntityKind::Circle, None, Some(radius), None, None, None)
             if radius.is_finite() && radius > 0.0 =>
         {
             Some(StudioAuthoringSize {
@@ -398,7 +411,7 @@ fn studio_authoring_shape_size(
                 width: radius * 2.0,
             })
         }
-        (StaticRootTransformEntityKind::Rectangle, None, None, Some(width), Some(height))
+        (StaticRootTransformEntityKind::Rectangle, None, None, None, Some(width), Some(height))
             if width.is_finite() && width > 0.0 && height.is_finite() && height > 0.0 =>
         {
             Some(StudioAuthoringSize { height, width })
@@ -1099,6 +1112,7 @@ mod tests {
             }],
             studio_entities: vec![StaticRootTransformStudioEntity {
                 dimensions: StaticRootTransformDimensions {
+                    angles: None,
                     height: None,
                     radius: Some(0.5),
                     sides: None,
@@ -1250,6 +1264,7 @@ mod tests {
         let mut resized = static_root_position_command();
         resized.programs[0].operations[0].kind = StaticRootTransformOperationKind::Resize {
             from_dimensions: StaticRootTransformDimensions {
+                angles: None,
                 height: None,
                 radius: Some(0.5),
                 sides: None,
@@ -1259,6 +1274,7 @@ mod tests {
             from_scale: 1.0,
             shape: StaticRootTransformEntityKind::Circle,
             to_dimensions: StaticRootTransformDimensions {
+                angles: None,
                 height: None,
                 radius: Some(1.0),
                 sides: None,

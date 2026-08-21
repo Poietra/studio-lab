@@ -112,8 +112,24 @@ export type ApplyStudioFragmentMaterialsCompiler = (
   snapshot: SceneIrBundleV1,
   command: ApplyStudioFragmentMaterialsWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
-type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" | "rectangle" | "regular-polygon";
-type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; sides?: number; width?: number }>;
+type StaticRootTransformEntityKind =
+  | "arc"
+  | "circle"
+  | "ellipse"
+  | "image"
+  | "math-tex"
+  | "other"
+  | "rectangle"
+  | "regular-polygon"
+  | "sector";
+type StudioAnglePairV1 = Readonly<{ start: number; sweep: number }>;
+type StaticRootTransformDimensions = Readonly<{
+  angles?: StudioAnglePairV1;
+  height?: number;
+  radius?: number;
+  sides?: number;
+  width?: number;
+}>;
 type StaticRootTransformOperation = Readonly<{
   dependsOn: readonly string[];
   id: string;
@@ -497,6 +513,7 @@ const studioBoundEntityEditResultV1Schema = z
   .strict();
 const studioStaticRootDimensionsV1Schema = z
   .object({
+    angles: z.object({ start: finiteNumberSchema, sweep: finiteNumberSchema }).strict().optional(),
     height: finiteNumberSchema.optional(),
     radius: finiteNumberSchema.optional(),
     sides: z.number().int().min(3).max(32).optional(),
@@ -581,7 +598,19 @@ const studioCreationProjectionV1Schema = z
           initialRotation: finiteNumberSchema,
           initialScale: finiteNumberSchema.positive(),
           image: studioCreationImageV1Schema.optional(),
-          kind: z.enum(["arrow", "circle", "image", "line", "math-tex", "rectangle", "regular-polygon", "text"]),
+          kind: z.enum([
+            "arc",
+            "arrow",
+            "circle",
+            "ellipse",
+            "image",
+            "line",
+            "math-tex",
+            "rectangle",
+            "regular-polygon",
+            "sector",
+            "text",
+          ]),
           layout: studioTextLayoutV1Schema.optional(),
           operationId: z.string().min(1),
           text: z.string().min(1).max(256).optional(),
@@ -965,16 +994,19 @@ const studioTimelineProjectionV1Schema = z
   })
   .strict();
 
-type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; sides?: number; width?: number }>;
+type StudioCreationDimensionsV1 = StaticRootTransformDimensions;
 type StudioCreationEntityKindV1 =
+  | "arc"
   | "arrow"
   | "circle"
+  | "ellipse"
   | "image"
   | "line"
   | "math-tex"
   | "other"
   | "rectangle"
   | "regular-polygon"
+  | "sector"
   | "text";
 type StudioCreationImageV1 = Readonly<{
   asset: Readonly<{ assetId: string; sha256: string }>;

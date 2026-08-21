@@ -76,9 +76,10 @@ function createEntityExecution(
     type === "MathTex" && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
   const hasTextContent = type === "Text" && studioCreationText(content) !== null;
   const hasNativeImage = type === "ImageMobject" && operation.entity.image !== undefined;
+  const isNativeCurve = type === "Arc" || type === "Ellipse" || type === "Sector";
   const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "RegularPolygon", "Square", "Triangle"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
-  if (hasNativeImage) return CLIENT_ONLY_EXECUTION;
+  if (hasNativeImage || isNativeCurve) return CLIENT_ONLY_EXECUTION;
   if (hasMathTexContent || hasTextContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
   return previewOnlyExecution(`CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`);
 }
@@ -333,16 +334,46 @@ function entityIssues(entityIds: readonly string[], operation: SceneEditOperatio
 }
 
 const TIME_EPSILON = 0.0005;
+const MIN_CURVE_SWEEP_RADIANS = 1e-6;
 
 function validCreateDimensions(type: string, dimensions: EntityDimensions | undefined) {
-  if (dimensions === undefined) return type !== "Triangle" && type !== "RegularPolygon";
+  if (dimensions === undefined) {
+    return (
+      type !== "Arc" && type !== "Ellipse" && type !== "Sector" && type !== "Triangle" && type !== "RegularPolygon"
+    );
+  }
   if (type === "Circle") return exactShapeDimensions("circle", dimensions);
   if (type === "Rectangle") return exactShapeDimensions("rectangle", dimensions);
+  if (type === "Ellipse") {
+    return (
+      dimensions.height !== undefined &&
+      dimensions.width !== undefined &&
+      dimensions.angles === undefined &&
+      dimensions.radius === undefined &&
+      dimensions.sides === undefined
+    );
+  }
+  if (type === "Arc" || type === "Sector") {
+    return (
+      dimensions.angles !== undefined &&
+      Number.isFinite(dimensions.angles.start) &&
+      Number.isFinite(dimensions.angles.sweep) &&
+      Math.abs(dimensions.angles.sweep) >= MIN_CURVE_SWEEP_RADIANS &&
+      Math.abs(dimensions.angles.sweep) <= Math.PI * 2 &&
+      dimensions.radius !== undefined &&
+      Number.isFinite(dimensions.radius) &&
+      dimensions.radius > 0 &&
+      dimensions.height === undefined &&
+      dimensions.sides === undefined &&
+      dimensions.width === undefined
+    );
+  }
   if (type === "Triangle" || type === "RegularPolygon") {
     return (
       dimensions.radius !== undefined &&
       Number.isFinite(dimensions.radius) &&
       dimensions.radius > 0 &&
+      dimensions.angles === undefined &&
       dimensions.height === undefined &&
       dimensions.width === undefined &&
       dimensions.sides !== undefined &&
@@ -358,11 +389,13 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
 function exactShapeDimensions(shape: "circle" | "rectangle", dimensions: EntityDimensions) {
   return shape === "circle"
     ? dimensions.radius !== undefined &&
+        dimensions.angles === undefined &&
         dimensions.height === undefined &&
         dimensions.sides === undefined &&
         dimensions.width === undefined
     : dimensions.height !== undefined &&
         dimensions.width !== undefined &&
+        dimensions.angles === undefined &&
         dimensions.radius === undefined &&
         dimensions.sides === undefined;
 }
@@ -538,11 +571,15 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
         severity: "error" as const,
       });
     }
-    if (!entity?.transactionId || !["Circle", "Rectangle", "RegularPolygon", "Triangle"].includes(entity.type)) {
+    const colorableTypes =
+      operation.key === "fillColor"
+        ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"]
+        : ["Arc", "Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"];
+    if (!entity?.transactionId || !colorableTypes.includes(entity.type)) {
       issues.push({
         code: "schema-invalid" as const,
         field: "entityId",
-        message: "Shape colors currently support only Studio-created Circle, Rectangle, and regular polygon entities.",
+        message: `Shape ${operation.key === "fillColor" ? "fill" : "stroke"} is unavailable for this entity.`,
         operationId: operation.id,
         severity: "error" as const,
       });
@@ -611,11 +648,17 @@ export const OPERATION_REGISTRY = {
           severity: "error",
         });
       }
-      if (entity && (!entity.transactionId || !["Circle", "Line", "Rectangle"].includes(entity.type))) {
+      if (
+        entity &&
+        (!entity.transactionId ||
+          !["Arc", "Circle", "Ellipse", "Line", "Rectangle", "RegularPolygon", "Sector", "Triangle"].includes(
+            entity.type,
+          ))
+      ) {
         issues.push({
           code: "lowering-unsupported",
           field: "entityId",
-          message: "DrawIn supports only Studio-created Line, Circle, and Rectangle entities.",
+          message: "DrawIn supports only Studio-created path entities.",
           operationId: operation.id,
           severity: "error",
         });

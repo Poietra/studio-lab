@@ -319,7 +319,7 @@ import type {
   StudioWriteInClipChange,
   StudioWriteInTimelineClip,
 } from "./studio/studio-timeline";
-import type { StudioTool } from "./studio/studio-toolbar";
+import type { CurveInsertSettings, StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
 import { clientPointToViewport, rotationDeltaFromClientPoints } from "./studio/studio-viewport-geometry";
 import { STUDIO_STYLE_PROFILE } from "./studio/style-profile";
@@ -680,6 +680,13 @@ export function App({
   const [nativeProjectAssetPending, setNativeProjectAssetPending] = useState(false);
   const [nativeProjectAssetError, setNativeProjectAssetError] = useState<string | null>(null);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
+  const [curveInsertSettings, setCurveInsertSettings] = useState<CurveInsertSettings>({
+    ellipseHeight: 2,
+    ellipseWidth: 3,
+    radius: 1,
+    startDegrees: 0,
+    sweepDegrees: 90,
+  });
   const [regularPolygonSides, setRegularPolygonSides] = useState(6);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const nativeProjectLocalStore = useMemo(browserNativeProjectLocalStore, []);
@@ -3396,9 +3403,7 @@ export function App({
     if (rejectLockedEntityMutation(entityId)) return;
     const owner = studioCreationProgramOwner(entityId);
     if (!owner || !projectedEditorScene) {
-      setDraftError(
-        "Draw supports only eligible Studio-created Line, Circle, Rectangle, Triangle, and Regular Polygon objects.",
-      );
+      setDraftError("Draw supports only eligible Studio-created path objects.");
       return;
     }
     const unavailable = drawInUnavailableReason(owner.record.program, entityId);
@@ -4872,6 +4877,20 @@ export function App({
       ? projectRuntimeSceneToSourceTimeline(proposedState.evaluatedScene, precedingPrograms)
       : draftSourceScene;
     try {
+      const insertDimensions =
+        insertTool === "RegularPolygon"
+          ? { radius: 1, sides: regularPolygonSides }
+          : insertTool === "Ellipse"
+            ? { height: curveInsertSettings.ellipseHeight, width: curveInsertSettings.ellipseWidth }
+            : insertTool === "Arc" || insertTool === "Sector"
+              ? {
+                  angles: {
+                    start: (curveInsertSettings.startDegrees * Math.PI) / 180,
+                    sweep: (curveInsertSettings.sweepDegrees * Math.PI) / 180,
+                  },
+                  radius: curveInsertSettings.radius,
+                }
+              : undefined;
       const inputs =
         entities ??
         (insertTool === "select"
@@ -4879,7 +4898,7 @@ export function App({
           : [
               {
                 content: defaultEntityContent(insertTool, insertValue),
-                ...(insertTool === "RegularPolygon" ? { dimensions: { radius: 1, sides: regularPolygonSides } } : {}),
+                ...(insertDimensions ? { dimensions: insertDimensions } : {}),
                 position: point,
                 type: insertTool,
               },
@@ -6947,16 +6966,18 @@ export function App({
 
   function setEntityColorFromInspector(entityId: string, property: "fillColor" | "strokeColor", color: string) {
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
-    if (property === "fillColor" && sceneProgramsHaveDrawIn(previewAppliedSceneEdits, entityId)) {
-      setDraftError("Remove Draw before adding a fill to this object.");
-      return false;
-    }
     const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
-    if (!createdAuthority || !entity || !["Circle", "Rectangle", "RegularPolygon", "Triangle"].includes(entity.type)) {
-      setDraftError(
-        "Fill and stroke colors can currently be changed on Studio-created circles, rectangles, and regular polygons.",
-      );
+    const colorableTypes =
+      property === "fillColor"
+        ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"]
+        : ["Arc", "Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"];
+    if (!createdAuthority || !entity || !colorableTypes.includes(entity.type)) {
+      setDraftError(`This object does not support a ${property === "fillColor" ? "fill" : "stroke"} color.`);
+      return false;
+    }
+    if (property === "fillColor" && sceneProgramsHaveDrawIn(previewAppliedSceneEdits, entityId)) {
+      setDraftError("Remove Draw before adding a fill to this object.");
       return false;
     }
     const normalizedColor = color.toLowerCase();
@@ -7308,12 +7329,15 @@ export function App({
       return false;
     }
     const toolByCommand: Partial<Record<StudioCommandId, StudioTool>> = {
+      "insert-arc": "Arc",
       "insert-arrow": "Arrow",
       "insert-circle": "Circle",
+      "insert-ellipse": "Ellipse",
       "insert-line": "Line",
       "insert-mathtex": "MathTex",
       "insert-regular-polygon": "RegularPolygon",
       "insert-rectangle": "Rectangle",
+      "insert-sector": "Sector",
       "insert-text": "Text",
       "insert-triangle": "Triangle",
       "select-tool": "select",
@@ -8385,6 +8409,7 @@ export function App({
               boundaryActive={boundary !== null}
               className="order-1 min-h-[30rem] md:order-2 md:col-start-2 md:row-start-1 md:min-h-[32rem] xl:min-h-0"
               currentTime={currentTime}
+              curveInsertSettings={curveInsertSettings}
               duration={activeDuration}
               drawInClips={drawInClips}
               drawInAvailability={drawInAvailability}
@@ -8467,6 +8492,7 @@ export function App({
               onInlineTextCancel={cancelInlineTextEdit}
               onInlineTextCommit={commitInlineTextEdit}
               onInteractionModeChange={setInteractionMode}
+              onCurveInsertSettingsChange={setCurveInsertSettings}
               onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
               onImageAssetDrop={
                 nativeSceneActive
@@ -8612,7 +8638,9 @@ export function App({
               colorAvailable={
                 selectedStudioCreationAppearanceAtAnchor &&
                 selectedEntity !== null &&
-                ["Circle", "Rectangle", "RegularPolygon", "Triangle"].includes(selectedEntity.type)
+                ["Arc", "Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"].includes(
+                  selectedEntity.type,
+                )
               }
               fillColorValue={
                 selectedEntity?.geometry.style.kind === "known"

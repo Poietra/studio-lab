@@ -22,6 +22,9 @@ const TOOL_COMMANDS: readonly Readonly<{
   { commandId: "insert-mathtex", label: "Math", tool: "MathTex" },
   { commandId: "insert-rectangle", label: "Rectangle", tool: "Rectangle" },
   { commandId: "insert-circle", label: "Circle", tool: "Circle" },
+  { commandId: "insert-ellipse", label: "Ellipse", tool: "Ellipse" },
+  { commandId: "insert-arc", label: "Arc", tool: "Arc" },
+  { commandId: "insert-sector", label: "Sector", tool: "Sector" },
   { commandId: "insert-triangle", label: "Triangle", tool: "Triangle" },
   { commandId: "insert-regular-polygon", label: "Polygon", tool: "RegularPolygon" },
   { commandId: "insert-line", label: "Line", tool: "Line" },
@@ -41,7 +44,9 @@ const LAYOUT_BUTTON_LABELS: Readonly<Record<SelectionLayoutCommand, string>> = {
 
 export type StudioToolbarProps = Readonly<{
   authoringAvailable: boolean;
+  curveInsertSettings: CurveInsertSettings;
   insertValue: string;
+  onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
   onInsertAtCenter: () => void;
   onInsertValueChange: (value: string) => void;
   onPolygonSidesChange: (sides: number) => void;
@@ -53,9 +58,19 @@ export type StudioToolbarProps = Readonly<{
   tool: StudioTool;
 }>;
 
+export type CurveInsertSettings = Readonly<{
+  ellipseHeight: number;
+  ellipseWidth: number;
+  radius: number;
+  startDegrees: number;
+  sweepDegrees: number;
+}>;
+
 export function StudioToolbar({
   authoringAvailable,
+  curveInsertSettings,
   insertValue,
+  onCurveInsertSettingsChange,
   onInsertAtCenter,
   onInsertValueChange,
   onPolygonSidesChange,
@@ -69,6 +84,7 @@ export function StudioToolbar({
   markStudioRenderBoundary("toolbar");
   const requiresContent = tool === "Text" || tool === "MathTex";
   const requiresPolygonSides = tool === "RegularPolygon";
+  const requiresCurveParameters = tool === "Arc" || tool === "Ellipse" || tool === "Sector";
   const [polygonSidesDraft, setPolygonSidesDraft] = useState(String(polygonSides));
   useEffect(() => setPolygonSidesDraft(String(polygonSides)), [polygonSides]);
   const parsedPolygonSides = Number(polygonSidesDraft);
@@ -134,7 +150,7 @@ export function StudioToolbar({
           </div>
         ) : null}
       </div>
-      {requiresContent || requiresPolygonSides ? (
+      {requiresContent || requiresPolygonSides || requiresCurveParameters ? (
         <form
           className="mt-2 flex max-w-xl items-end gap-2"
           onSubmit={(event) => {
@@ -157,7 +173,7 @@ export function StudioToolbar({
                 disabled={!authoringAvailable}
               />
             </label>
-          ) : (
+          ) : requiresPolygonSides ? (
             <label className="w-28 text-[10px] text-zinc-500">
               Polygon sides
               <input
@@ -180,6 +196,66 @@ export function StudioToolbar({
                 value={polygonSidesDraft}
               />
             </label>
+          ) : tool === "Ellipse" ? (
+            <div className="flex min-w-0 flex-1 gap-3" role="group" aria-label="Ellipse dimensions">
+              {(
+                [
+                  ["Ellipse width", "ellipseWidth", curveInsertSettings.ellipseWidth],
+                  ["Ellipse height", "ellipseHeight", curveInsertSettings.ellipseHeight],
+                ] as const
+              ).map(([label, key, value]) => (
+                <label className="min-w-28 flex-1 text-[10px] text-zinc-500" key={key}>
+                  {label} · {value.toFixed(2)}
+                  <input
+                    aria-label={label}
+                    className="mt-1 block h-8 w-full accent-sky-500"
+                    disabled={!authoringAvailable}
+                    max={6}
+                    min={0.25}
+                    onChange={(event) =>
+                      onCurveInsertSettingsChange({
+                        ...curveInsertSettings,
+                        [key]: event.currentTarget.valueAsNumber,
+                      })
+                    }
+                    step={0.25}
+                    type="range"
+                    value={value}
+                  />
+                </label>
+              ))}
+            </div>
+          ) : (
+            <div className="flex min-w-0 flex-1 gap-3" role="group" aria-label={`${tool} parameters`}>
+              {(
+                [
+                  [`${tool} radius`, "radius", curveInsertSettings.radius, 0.25, 4, 0.25],
+                  [`${tool} start angle`, "startDegrees", curveInsertSettings.startDegrees, -180, 180, 15],
+                  [`${tool} sweep angle`, "sweepDegrees", curveInsertSettings.sweepDegrees, 15, 360, 15],
+                ] as const
+              ).map(([label, key, value, min, max, step]) => (
+                <label className="min-w-28 flex-1 text-[10px] text-zinc-500" key={key}>
+                  {label} · {value}
+                  {key === "radius" ? "" : "°"}
+                  <input
+                    aria-label={label}
+                    className="mt-1 block h-8 w-full accent-sky-500"
+                    disabled={!authoringAvailable}
+                    max={max}
+                    min={min}
+                    onChange={(event) =>
+                      onCurveInsertSettingsChange({
+                        ...curveInsertSettings,
+                        [key]: event.currentTarget.valueAsNumber,
+                      })
+                    }
+                    step={step}
+                    type="range"
+                    value={value}
+                  />
+                </label>
+              ))}
+            </div>
           )}
           <button
             className="h-8 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"

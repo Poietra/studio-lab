@@ -25,7 +25,11 @@ function creationProgram(type: string): SceneEdit {
             ? { dimensions: { radius: 1, sides: 3 } }
             : type === "RegularPolygon"
               ? { dimensions: { radius: 1, sides: 6 } }
-              : {}),
+              : type === "Ellipse"
+                ? { dimensions: { height: 2, width: 3 } }
+                : type === "Arc" || type === "Sector"
+                  ? { dimensions: { angles: { start: 0, sweep: Math.PI / 2 }, radius: 1 } }
+                  : {}),
           ...(type === "Text"
             ? {
                 content: {
@@ -97,6 +101,21 @@ describe("Studio creation wire", () => {
         kind: "create",
       }),
     ]);
+  });
+
+  it("maps native curve primitives to their Rust creation kinds", () => {
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 2,
+      programs: [creationProgram("Ellipse"), creationProgram("Arc"), creationProgram("Sector")],
+    });
+
+    expect(
+      command.programs.map((program) => {
+        const operation = program.operations[0];
+        if (operation?.kind !== "create") throw new Error("Curve wire fixture is incomplete.");
+        return operation.entity.kind;
+      }),
+    ).toEqual(["ellipse", "arc", "sector"]);
   });
 
   it("normalizes DrawIn as the fixed zero-to-one path-trim operation", () => {

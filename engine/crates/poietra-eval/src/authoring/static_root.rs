@@ -254,7 +254,10 @@ fn static_transform_geometry_matches(
             matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
                 && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
         }
-        StaticRootTransformEntityKind::RegularPolygon => {
+        StaticRootTransformEntityKind::Arc
+        | StaticRootTransformEntityKind::Ellipse
+        | StaticRootTransformEntityKind::RegularPolygon
+        | StaticRootTransformEntityKind::Sector => {
             matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
                 && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
         }
@@ -2090,6 +2093,7 @@ mod tests {
             .studio_entities
             .push(StaticRootTransformStudioEntity {
                 dimensions: StaticRootTransformDimensions {
+                    angles: None,
                     height: None,
                     radius: Some(1.0),
                     sides: None,
@@ -2599,6 +2603,7 @@ mod tests {
         let mut command = static_root_position_command();
         command.studio_entities[0].kind = StaticRootTransformEntityKind::RegularPolygon;
         command.studio_entities[0].dimensions = StaticRootTransformDimensions {
+            angles: None,
             height: None,
             radius: Some(0.5),
             sides: Some(5),
@@ -2966,6 +2971,7 @@ mod tests {
         let mut command = static_root_position_command();
         command.programs[0].operations[0].kind = StaticRootTransformOperationKind::Resize {
             from_dimensions: StaticRootTransformDimensions {
+                angles: None,
                 height: None,
                 radius: Some(0.5),
                 sides: None,
@@ -2975,6 +2981,7 @@ mod tests {
             from_scale: 1.0,
             shape: StaticRootTransformEntityKind::Circle,
             to_dimensions: StaticRootTransformDimensions {
+                angles: None,
                 height: None,
                 radius: Some(1.0),
                 sides: None,
@@ -2993,6 +3000,7 @@ mod tests {
                     mutation: StudioStaticRootMutation::Resize {
                         entity_id: "source:circle".to_owned(),
                         from_dimensions: StaticRootTransformDimensions {
+                            angles: None,
                             height: None,
                             radius: Some(0.5),
                             sides: None,
@@ -3004,6 +3012,7 @@ mod tests {
                             start: 0.0,
                         },
                         to_dimensions: StaticRootTransformDimensions {
+                            angles: None,
                             height: None,
                             radius: Some(1.0),
                             sides: None,
@@ -3077,6 +3086,7 @@ mod tests {
         }];
         command.studio_entities = vec![StaticRootTransformStudioEntity {
             dimensions: StaticRootTransformDimensions {
+                angles: None,
                 height: None,
                 radius: None,
                 sides: None,

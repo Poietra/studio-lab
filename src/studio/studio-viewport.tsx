@@ -7,7 +7,7 @@ import { StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import type { StudioGesturePreviewStore } from "./studio-gesture-preview-store";
 import { recordStudioCommitProfile } from "./studio-render-profiler";
 import { StudioTimeline, type StudioTimelineProps } from "./studio-timeline";
-import { type StudioTool, StudioToolbar } from "./studio-toolbar";
+import { type CurveInsertSettings, type StudioTool, StudioToolbar } from "./studio-toolbar";
 
 type StudioGestureCanvasBaseProps = Omit<
   StudioCanvasProps,
@@ -55,9 +55,11 @@ export type StudioViewportProps = Readonly<
   > &
     Omit<StudioTimelineProps, "events" | "objectTracks" | "readOnly"> & {
       className?: string;
+      curveInsertSettings: CurveInsertSettings;
       previewPaintAvailable: boolean;
       gesturePreviewStore: StudioGesturePreviewStore;
       insertValue: string;
+      onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
       onInsertAtCenter: () => void;
       onInsertToolChange: (tool: StudioTool) => void;
       onInsertValueChange: (value: string) => void;
@@ -78,6 +80,7 @@ export function StudioViewport({
   boundaryActive,
   className,
   currentTime,
+  curveInsertSettings,
   duration,
   drawInClips,
   drawInAvailability,
@@ -145,6 +148,7 @@ export function StudioViewport({
   onInlineTextCancel,
   onInlineTextCommit,
   onInteractionModeChange,
+  onCurveInsertSettingsChange,
   onInsertAtCenter,
   onImageAssetDrop,
   onInsertToolChange,
@@ -210,7 +214,9 @@ export function StudioViewport({
       <Profiler id="toolbar" onRender={recordStudioCommitProfile}>
         <StudioToolbar
           authoringAvailable={previewPaintAvailable}
+          curveInsertSettings={curveInsertSettings}
           insertValue={insertValue}
+          onCurveInsertSettingsChange={onCurveInsertSettingsChange}
           onInsertAtCenter={onInsertAtCenter}
           onInsertValueChange={onInsertValueChange}
           onPolygonSidesChange={onPolygonSidesChange}

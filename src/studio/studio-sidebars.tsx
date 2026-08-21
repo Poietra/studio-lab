@@ -44,6 +44,9 @@ const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
   "insert-mathtex",
   "insert-rectangle",
   "insert-circle",
+  "insert-ellipse",
+  "insert-arc",
+  "insert-sector",
   "insert-triangle",
   "insert-regular-polygon",
   "insert-line",
@@ -84,9 +87,11 @@ function NativeImageThumbnail({ asset }: Readonly<{ asset: StudioNativeImageAsse
 
 function dimensionSummary(entity: ProjectedEntity) {
   if (entity.geometry.dimensions.kind === "unknown") return "Runtime-dependent";
-  const { height, radius, sides, width } = entity.geometry.dimensions.value;
+  const { angles, height, radius, sides, width } = entity.geometry.dimensions.value;
   const values = [
     radius === undefined ? null : `r ${radius}`,
+    angles === undefined ? null : `start ${Math.round((angles.start * 180) / Math.PI)}°`,
+    angles === undefined ? null : `sweep ${Math.round((angles.sweep * 180) / Math.PI)}°`,
     sides === undefined ? null : `${sides} sides`,
     width === undefined ? null : `w ${width}`,
     height === undefined ? null : `h ${height}`,
@@ -1161,6 +1166,18 @@ export function StudioInspector({
       ).flatMap(([label, knowledge]) => (knowledge.kind === "unknown" ? [{ label, reason: knowledge.reason }] : []))
     : [];
   const scaleUnknown = selectedEntity?.geometry.scale.kind === "unknown";
+  const shapeColorProperties: readonly Readonly<
+    [label: string, property: "fillColor" | "strokeColor", value: string | null]
+  >[] =
+    selectedEntity &&
+    ["Arc", "Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"].includes(selectedEntity.type)
+      ? selectedEntity.type === "Arc"
+        ? [["Stroke", "strokeColor", strokeColorValue]]
+        : [
+            ["Fill", "fillColor", fillColorValue],
+            ["Stroke", "strokeColor", strokeColorValue],
+          ]
+      : [];
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       {draftEdit ? (
@@ -1222,52 +1239,45 @@ export function StudioInspector({
                 <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>
                   {styleSummary(selectedEntity)}
                 </dd>
-                {["Circle", "Rectangle", "RegularPolygon", "Triangle"].includes(selectedEntity.type)
-                  ? (
-                      [
-                        ["Fill", "fillColor", fillColorValue],
-                        ["Stroke", "strokeColor", strokeColorValue],
-                      ] as const
-                    ).map(([label, property, value]) => (
-                      <div className="contents" key={property}>
-                        <dt className="self-center text-zinc-600">{label}</dt>
-                        <dd>
-                          <form
-                            className="flex items-center gap-1"
-                            onSubmit={(event) => {
-                              event.preventDefault();
-                              const data = new FormData(event.currentTarget);
-                              onEntityColorChange(selectedEntity.id, property, String(data.get("color")));
-                            }}
-                          >
-                            <input
-                              aria-label={`${label} color ${entityLabel(selectedEntity)}`}
-                              className="h-7 w-10 cursor-pointer border border-zinc-700 bg-zinc-950 p-0.5 disabled:cursor-not-allowed"
-                              defaultValue={colorInputValue(value)}
-                              disabled={!colorAvailable}
-                              key={`${selectedEntity.id}/${property}/${value ?? "unset"}`}
-                              name="color"
-                              title={
-                                colorAvailable
-                                  ? property === "fillColor"
-                                    ? "Set a solid fill color and enable the shape fill"
-                                    : "Set the shape stroke color"
-                                  : "Color editing currently requires a Studio-created circle, rectangle, or regular polygon at its creation time"
-                              }
-                              type="color"
-                            />
-                            <button
-                              className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
-                              disabled={!colorAvailable}
-                              type="submit"
-                            >
-                              Set
-                            </button>
-                          </form>
-                        </dd>
-                      </div>
-                    ))
-                  : null}
+                {shapeColorProperties.map(([label, property, value]) => (
+                  <div className="contents" key={property}>
+                    <dt className="self-center text-zinc-600">{label}</dt>
+                    <dd>
+                      <form
+                        className="flex items-center gap-1"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const data = new FormData(event.currentTarget);
+                          onEntityColorChange(selectedEntity.id, property, String(data.get("color")));
+                        }}
+                      >
+                        <input
+                          aria-label={`${label} color ${entityLabel(selectedEntity)}`}
+                          className="h-7 w-10 cursor-pointer border border-zinc-700 bg-zinc-950 p-0.5 disabled:cursor-not-allowed"
+                          defaultValue={colorInputValue(value)}
+                          disabled={!colorAvailable}
+                          key={`${selectedEntity.id}/${property}/${value ?? "unset"}`}
+                          name="color"
+                          title={
+                            colorAvailable
+                              ? property === "fillColor"
+                                ? "Set a solid fill color and enable the shape fill"
+                                : "Set the shape stroke color"
+                              : "Color editing currently requires a supported Studio-created shape at its creation time"
+                          }
+                          type="color"
+                        />
+                        <button
+                          className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                          disabled={!colorAvailable}
+                          type="submit"
+                        >
+                          Set
+                        </button>
+                      </form>
+                    </dd>
+                  </div>
+                ))}
                 <dt className="self-center text-zinc-600">Opacity</dt>
                 <dd>
                   <form

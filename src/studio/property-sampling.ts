@@ -20,10 +20,28 @@ export function isEntityDimensionsValue(value: unknown): value is EntityDimensio
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Readonly<Record<string, unknown>>;
   const keys = Object.keys(record);
+  const angles = record.angles;
+  const anglesAreValid =
+    angles === undefined ||
+    (typeof angles === "object" &&
+      angles !== null &&
+      !Array.isArray(angles) &&
+      Object.keys(angles).length === 2 &&
+      "start" in angles &&
+      "sweep" in angles &&
+      typeof angles.start === "number" &&
+      Number.isFinite(angles.start) &&
+      typeof angles.sweep === "number" &&
+      Number.isFinite(angles.sweep));
   return (
     keys.length > 0 &&
-    keys.every((key) => key === "height" || key === "radius" || key === "sides" || key === "width") &&
-    keys.every((key) => typeof record[key] === "number" && Number.isFinite(record[key])) &&
+    keys.every(
+      (key) => key === "angles" || key === "height" || key === "radius" || key === "sides" || key === "width",
+    ) &&
+    keys
+      .filter((key) => key !== "angles")
+      .every((key) => typeof record[key] === "number" && Number.isFinite(record[key])) &&
+    anglesAreValid &&
     (record.sides === undefined ||
       (typeof record.sides === "number" && Number.isInteger(record.sides) && record.sides >= 3 && record.sides <= 32))
   );
@@ -39,7 +57,14 @@ function interpolateDimensions(from: EntityDimensions, to: EntityDimensions, pro
         : [];
     }),
   ) as EntityDimensions;
-  return from.sides !== undefined && from.sides === to.sides ? { ...interpolated, sides: from.sides } : interpolated;
+  const withSides =
+    from.sides !== undefined && from.sides === to.sides ? { ...interpolated, sides: from.sides } : interpolated;
+  return from.angles !== undefined &&
+    to.angles !== undefined &&
+    from.angles.start === to.angles.start &&
+    from.angles.sweep === to.angles.sweep
+    ? { ...withSides, angles: from.angles }
+    : withSides;
 }
 
 function sameStartPriority(sample: PropertyChannelSample, index: number, baseIndex: number) {

@@ -4,8 +4,10 @@ import { easingV1Schema } from "../engine/scene-ir";
 
 const finiteNumber = z.number().finite();
 const pointSchema = z.object({ x: finiteNumber, y: finiteNumber }).strict();
+const anglePairSchema = z.object({ start: finiteNumber, sweep: finiteNumber }).strict();
 const dimensionsSchema = z
   .object({
+    angles: anglePairSchema.optional(),
     height: finiteNumber.positive().optional(),
     radius: finiteNumber.positive().optional(),
     sides: finiteNumber.int().min(3).max(32).optional(),
