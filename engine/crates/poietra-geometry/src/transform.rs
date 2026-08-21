@@ -1,8 +1,37 @@
 use poietra_scene_ir::{AffineTransformV1, CubicPathV1, PointV1};
 
 use crate::{
-    GeometryError, sample_cubic_path_manim_point_from_proportion_v1, sample_cubic_path_v1,
+    GeometryError, PathSampleV1, sample_cubic_path_manim_point_from_proportion_v1,
+    sample_cubic_path_v1,
 };
+
+fn apply_motion_sample(
+    transform: &AffineTransformV1,
+    sample: PathSampleV1,
+    orient_to_path: bool,
+) -> Result<AffineTransformV1, GeometryError> {
+    if !orient_to_path {
+        return Ok(AffineTransformV1 {
+            tx: sample.point.x,
+            ty: sample.point.y,
+            ..transform.clone()
+        });
+    }
+    let tangent = sample
+        .tangent
+        .ok_or(GeometryError::UndefinedMotionTangent)?;
+    let angle = tangent.y.atan2(tangent.x);
+    let cosine = angle.cos();
+    let sine = angle.sin();
+    Ok(AffineTransformV1 {
+        m11: cosine * transform.m11 - sine * transform.m21,
+        m12: cosine * transform.m12 - sine * transform.m22,
+        m21: sine * transform.m11 + cosine * transform.m21,
+        m22: sine * transform.m12 + cosine * transform.m22,
+        tx: sample.point.x,
+        ty: sample.point.y,
+    })
+}
 
 /// Interpolates all six affine components independently.
 pub fn interpolate_affine_transform_v1(
@@ -68,45 +97,24 @@ pub fn apply_motion_path_v1(
     orient_to_path: bool,
 ) -> Result<AffineTransformV1, GeometryError> {
     let sample = sample_cubic_path_v1(path, progress)?;
-    if !orient_to_path {
-        return Ok(AffineTransformV1 {
-            tx: sample.point.x,
-            ty: sample.point.y,
-            ..transform.clone()
-        });
-    }
-    let tangent = sample
-        .tangent
-        .ok_or(GeometryError::UndefinedMotionTangent)?;
-    let angle = tangent.y.atan2(tangent.x);
-    let cosine = angle.cos();
-    let sine = angle.sin();
-    Ok(AffineTransformV1 {
-        m11: cosine * transform.m11 - sine * transform.m21,
-        m12: cosine * transform.m12 - sine * transform.m22,
-        m21: sine * transform.m11 + cosine * transform.m21,
-        m22: sine * transform.m12 + cosine * transform.m22,
-        tx: sample.point.x,
-        ty: sample.point.y,
-    })
+    apply_motion_sample(transform, sample, orient_to_path)
 }
 
-/// Applies the non-orienting pose used by Manim's `MoveAlongPath`.
+/// Applies the position sampling used by Manim's `MoveAlongPath`, optionally
+/// pre-rotating the sampled linear part to the selected cubic tangent.
 ///
 /// # Errors
 ///
-/// Returns a geometry error for invalid path data.
+/// Returns a geometry error for invalid path data or when orientation is
+/// requested but the entire path has no non-zero tangent.
 pub fn apply_manim_motion_path_v1(
     transform: &AffineTransformV1,
     path: &CubicPathV1,
     progress: f64,
+    orient_to_path: bool,
 ) -> Result<AffineTransformV1, GeometryError> {
-    let point = sample_cubic_path_manim_point_from_proportion_v1(path, progress)?;
-    Ok(AffineTransformV1 {
-        tx: point.x,
-        ty: point.y,
-        ..transform.clone()
-    })
+    let sample = sample_cubic_path_manim_point_from_proportion_v1(path, progress)?;
+    apply_motion_sample(transform, sample, orient_to_path)
 }
 
 #[cfg(test)]

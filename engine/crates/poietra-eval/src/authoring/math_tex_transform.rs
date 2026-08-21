@@ -535,6 +535,7 @@ fn studio_math_tex_transform_projection_from_plan(
                 from: from.clone(),
                 interval: motion.interval.clone(),
                 operation_id: motion.operation_id.clone(),
+                orient_to_path: false,
                 source_interval: motion.source_interval.clone(),
                 target_entity_id: motion.target_entity_id.clone(),
                 to,
@@ -861,6 +862,7 @@ impl EngineSessionV1 {
                     easing: motion.easing,
                     initial_position: None,
                     interval: motion.interval.clone(),
+                    orient_to_path: false,
                     target_entity_ids: vec![motion.target_entity_id.clone()],
                 }],
                 &provenance_id,
@@ -1185,6 +1187,7 @@ pub(super) mod tests {
                     start: 1.5,
                 },
                 operation_id: "move-restored".to_owned(),
+                orient_to_path: false,
                 source_interval: IntervalV1 {
                     end: 1.75,
                     start: 1.5,

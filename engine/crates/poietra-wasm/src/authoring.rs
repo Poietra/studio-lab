@@ -1713,6 +1713,80 @@ mod tests {
     }
 
     #[test]
+    fn studio_creation_adapter_forwards_optional_path_orientation() {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
+        command["programs"].as_array_mut().unwrap().truncate(1);
+        command["programs"].as_array_mut().unwrap().push(json!({
+            "anchorCapturedPlayhead": 1.0,
+            "anchorResolvedSeconds": 1.0,
+            "anchorSource": { "kind": "playhead", "referenceSeconds": 1.0 },
+            "intentCount": 1,
+            "loweringSupported": false,
+            "operations": [{
+                "controlOffset": { "x": 0.0, "y": -160.0 },
+                "delta": { "x": 240.0, "y": -80.0 },
+                "dependsOn": [],
+                "easing": "smooth",
+                "id": "move-and-orient-rectangle",
+                "interval": { "end": 2.0, "start": 1.0 },
+                "kind": "create-motion",
+                "orientToPath": true,
+                "origin": "direct-manipulation",
+                "targetEntityIds": ["tx:create/entity:rectangle"]
+            }],
+            "origin": "direct-manipulation",
+            "requestedExecution": "sequence",
+            "scheduleEdgeCount": 0,
+            "scheduleMode": "sequence",
+            "scheduleOrder": ["move-and-orient-rectangle"],
+            "transactionId": "move-and-orient-rectangle"
+        }));
+
+        let response = apply_studio_creation_edit_json(
+            &fixture_json(),
+            &serde_json::to_vec(&command).unwrap(),
+        )
+        .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(
+            response["creationProjection"]["motions"][0]["orientToPath"],
+            json!(true)
+        );
+        let bundle =
+            parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                .unwrap();
+        assert!(bundle.scene.animation_channels.iter().any(|channel| {
+            matches!(
+                channel,
+                AnimationChannelV1::MotionPath {
+                    entity_id,
+                    orient_to_path: true,
+                    parameterization: Some(
+                        poietra_scene_ir::MotionPathParameterizationV1::ManimPointFromProportionV1
+                    ),
+                    ..
+                } if entity_id == "tx:create/entity:rectangle"
+            )
+        }));
+
+        command["programs"][1]["operations"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("orientToPath");
+        let legacy = apply_studio_creation_edit_json(
+            &fixture_json(),
+            &serde_json::to_vec(&command).unwrap(),
+        )
+        .unwrap();
+        let legacy: serde_json::Value = serde_json::from_slice(&legacy).unwrap();
+        assert_eq!(
+            legacy["creationProjection"]["motions"][0]["orientToPath"],
+            json!(false)
+        );
+    }
+
+    #[test]
     fn studio_creation_adapter_defaults_text_outlines_for_legacy_commands() {
         let command: ApplyStudioCreationEditCommandJsonV1 =
             serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
@@ -2176,6 +2250,7 @@ mod tests {
                 "from": { "x": 800.0, "y": 450.0 },
                 "interval": { "end": 1.75, "start": 1.5 },
                 "operationId": "move-restored",
+                "orientToPath": false,
                 "sourceInterval": { "end": 1.75, "start": 1.5 },
                 "targetEntityId": "tx:math-tex-transform/entity:a-prime",
                 "to": { "x": 960.0, "y": 450.0 },

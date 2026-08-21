@@ -55,20 +55,18 @@ fn retained_evaluator_matches_manim_curved_interior_samples_across_unordered_see
         "scene": fixture.scene,
     }))
     .unwrap();
-    let mut invalid = bundle.scene.clone();
+    let mut oriented_bundle = bundle.clone();
     let Some(AnimationChannelV1::MotionPath { orient_to_path, .. }) =
-        invalid.animation_channels.first_mut()
+        oriented_bundle.scene.animation_channels.first_mut()
     else {
         panic!("fixture must contain its motion-path channel");
     };
     *orient_to_path = true;
-    assert!(
-        validate_scene_ir_v1(&invalid)
-            .unwrap_err()
-            .contains_message("does not orient")
-    );
+    validate_scene_ir_v1(&oriented_bundle.scene).unwrap();
     let session = EngineSessionV1::new(bundle).unwrap();
+    let oriented_session = EngineSessionV1::new(oriented_bundle).unwrap();
     let mut observed = Vec::new();
+    let mut observed_orientation = false;
     for (index, sample) in fixture.samples.iter().enumerate() {
         let packet_id = format!("manim-motion:{index}");
         let packet = session
@@ -87,7 +85,30 @@ fn retained_evaluator_matches_manim_curved_interior_samples_across_unordered_see
         };
         assert!((transform.tx - sample.translation[0]).abs() <= 1.0e-12);
         assert!((transform.ty - sample.translation[1]).abs() <= 1.0e-12);
+        let oriented_packet_id = format!("manim-motion-oriented:{index}");
+        let oriented_packet = oriented_session
+            .sample_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: std::slice::from_ref(&fixture.reference.commit),
+                packet_id: &oriented_packet_id,
+                sample_time: sample.sample_time,
+                viewport: ViewportV1 {
+                    height_px: 90,
+                    width_px: 160,
+                },
+            })
+            .unwrap();
+        let Some(RenderDrawV1::Path {
+            transform: oriented_transform,
+            ..
+        }) = oriented_packet.draws.first()
+        else {
+            panic!("expected the oriented motion-path draw");
+        };
+        assert_eq!(oriented_transform.tx.to_bits(), transform.tx.to_bits());
+        assert_eq!(oriented_transform.ty.to_bits(), transform.ty.to_bits());
+        observed_orientation |= oriented_transform.m12 != 0.0 || oriented_transform.m21 != 0.0;
         observed.push([transform.tx, transform.ty]);
     }
     assert_eq!(observed[0].map(f64::to_bits), observed[4].map(f64::to_bits));
+    assert!(observed_orientation);
 }
