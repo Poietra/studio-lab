@@ -1,4 +1,4 @@
-import type { KeyboardEvent, PointerEvent } from "react";
+import type { DragEvent, KeyboardEvent, PointerEvent } from "react";
 
 import { cn } from "../lib/cn";
 import type { CanvasSelectionMode } from "./canvas-selection";
@@ -19,6 +19,7 @@ import {
   resizeKindForType,
 } from "./shape-resize";
 import { StudioEmptyWorkspace, type StudioEmptyWorkspaceEntityType } from "./studio-empty-workspace";
+import { STUDIO_IMAGE_ASSET_DRAG_TYPE } from "./studio-image-assets";
 import { StudioInlineTextEditor, type StudioInlineTextEditorSession } from "./studio-inline-text-editor";
 import { StudioMotionOverlay } from "./studio-motion-overlay";
 import {
@@ -71,6 +72,7 @@ export type StudioCanvasProps = Readonly<{
   onCanvasPlace: (point: Point) => void;
   onCreateEmptyWorkspaceEntity?: (type: StudioEmptyWorkspaceEntityType) => void;
   onCreateStarterComposition?: () => void;
+  onImageAssetDrop?: (payload: string, point: Point) => void;
   onEntityKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityPointerCancel: (event: PointerEvent<HTMLButtonElement>) => void;
   onEntityPointerDown: (
@@ -574,6 +576,7 @@ export function StudioCanvas({
   onCanvasPlace,
   onCreateEmptyWorkspaceEntity,
   onCreateStarterComposition,
+  onImageAssetDrop,
   onEntityKeyDown,
   onEntityPointerCancel,
   onEntityPointerDown,
@@ -626,6 +629,13 @@ export function StudioCanvas({
   const emptyInteractiveCanvas =
     entities.length === 0 &&
     insertTool === "select" &&
+    showingCanvasPixels &&
+    preview?.interactionAuthority.kind === "interactive" &&
+    !readOnly &&
+    !boundaryActive &&
+    inlineTextEditor === null;
+  const imageAssetDropAvailable =
+    onImageAssetDrop !== undefined &&
     showingCanvasPixels &&
     preview?.interactionAuthority.kind === "interactive" &&
     !readOnly &&
@@ -813,6 +823,30 @@ export function StudioCanvas({
         }
         data-proposed-state-sample={sampleId}
         data-scene-phase={boundaryActive ? "incoming" : "outgoing"}
+        aria-label="Animation canvas"
+        onDragOver={(event: DragEvent<HTMLDivElement>) => {
+          if (
+            !imageAssetDropAvailable ||
+            !Array.from(event.dataTransfer.types).includes(STUDIO_IMAGE_ASSET_DRAG_TYPE)
+          ) {
+            return;
+          }
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDrop={(event: DragEvent<HTMLDivElement>) => {
+          if (!imageAssetDropAvailable || !onImageAssetDrop) return;
+          const payload = event.dataTransfer.getData(STUDIO_IMAGE_ASSET_DRAG_TYPE);
+          if (!payload) return;
+          event.preventDefault();
+          onImageAssetDrop(
+            payload,
+            clientPointToViewport(event.currentTarget.getBoundingClientRect(), {
+              x: event.clientX,
+              y: event.clientY,
+            }),
+          );
+        }}
         onPointerLeave={() => onPresenceCursorChange(null)}
         onPointerMove={(event) => {
           const point = clientPointToViewport(event.currentTarget.getBoundingClientRect(), {
@@ -839,6 +873,7 @@ export function StudioCanvas({
             clientPointToViewport(event.currentTarget.getBoundingClientRect(), { x: event.clientX, y: event.clientY }),
           );
         }}
+        role="group"
       >
         {preview ? (
           <canvas

@@ -22,7 +22,11 @@ import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragm
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity } from "./model";
-import type { StudioNativeImageAssetV1 } from "./studio-image-assets";
+import {
+  STUDIO_IMAGE_ASSET_DRAG_TYPE,
+  type StudioNativeImageAssetV1,
+  studioImageAssetDragPayload,
+} from "./studio-image-assets";
 import type { AuthorableWorkspaceScene } from "./studio-native-workspace";
 import { entityLabel } from "./studio-viewport";
 
@@ -63,7 +67,7 @@ function NativeImageThumbnail({ asset }: Readonly<{ asset: StudioNativeImageAsse
   }, [asset.bytes]);
   return (
     <div className="flex size-11 shrink-0 items-center justify-center overflow-hidden border border-zinc-800 bg-zinc-900">
-      <img alt={asset.label} className="size-full object-contain" src={source ?? undefined} />
+      <img alt={asset.label} className="size-full object-contain" draggable={false} src={source ?? undefined} />
     </div>
   );
 }
@@ -185,6 +189,7 @@ export function WorkspaceSidebar({
   entities,
   groupUnavailableReason = "Select at least two contiguous Studio-created objects.",
   imageAssets = [],
+  imageAssetDragAvailable = false,
   imageImportError = null,
   imageImportPending = false,
   layers,
@@ -229,6 +234,7 @@ export function WorkspaceSidebar({
   entities: readonly ProjectedEntity[];
   groupUnavailableReason?: string | null;
   imageAssets?: readonly StudioNativeImageAssetV1[];
+  imageAssetDragAvailable?: boolean;
   imageImportError?: string | null;
   imageImportPending?: boolean;
   layers?: readonly StudioLayerEntry[];
@@ -321,32 +327,55 @@ export function WorkspaceSidebar({
           </p>
         ) : (
           <ul className="mt-2 space-y-1" aria-label="Project images">
-            {imageAssets.map((asset) => (
-              <li
-                className="border border-zinc-800 p-2"
-                key={`${asset.image.asset.assetId}:${asset.image.asset.sha256}`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex min-w-0 items-center gap-2">
-                    <NativeImageThumbnail asset={asset} />
-                    <div className="min-w-0">
-                      <p className="truncate text-xs text-zinc-300">{asset.label}</p>
-                      <p className="mt-0.5 tabular-nums text-[10px] text-zinc-600">
-                        {asset.pixelWidth} × {asset.pixelHeight}
-                      </p>
-                    </div>
+            {imageAssets.map((asset) => {
+              const imageAssetDraggable =
+                imageAssetDragAvailable && authoringAvailable && !draftActive && onAddImageAsset !== undefined;
+              return (
+                <li
+                  className="border border-zinc-800 p-2"
+                  key={`${asset.image.asset.assetId}:${asset.image.asset.sha256}`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <button
+                      aria-label={`Add ${asset.label} at canvas center`}
+                      className={cn(
+                        "flex min-w-0 items-center gap-2 text-left disabled:cursor-not-allowed",
+                        imageAssetDraggable ? "cursor-grab active:cursor-grabbing" : null,
+                      )}
+                      disabled={!authoringAvailable || draftActive || onAddImageAsset === undefined}
+                      draggable={imageAssetDraggable}
+                      onClick={() => onAddImageAsset?.(asset)}
+                      onDragStart={(event) => {
+                        if (!imageAssetDraggable) {
+                          event.preventDefault();
+                          return;
+                        }
+                        event.dataTransfer.effectAllowed = "copy";
+                        event.dataTransfer.setData(STUDIO_IMAGE_ASSET_DRAG_TYPE, studioImageAssetDragPayload(asset));
+                      }}
+                      title={imageAssetDraggable ? "Drag to place on the canvas, or use Add." : undefined}
+                      type="button"
+                    >
+                      <NativeImageThumbnail asset={asset} />
+                      <span className="min-w-0">
+                        <span className="block truncate text-xs text-zinc-300">{asset.label}</span>
+                        <span className="mt-0.5 block tabular-nums text-[10px] text-zinc-600">
+                          {asset.pixelWidth} × {asset.pixelHeight}
+                        </span>
+                      </span>
+                    </button>
+                    <button
+                      className="h-7 shrink-0 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                      disabled={!authoringAvailable || draftActive || onAddImageAsset === undefined}
+                      onClick={() => onAddImageAsset?.(asset)}
+                      type="button"
+                    >
+                      + Add
+                    </button>
                   </div>
-                  <button
-                    className="h-7 shrink-0 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
-                    disabled={!authoringAvailable || draftActive || onAddImageAsset === undefined}
-                    onClick={() => onAddImageAsset?.(asset)}
-                    type="button"
-                  >
-                    + Add
-                  </button>
-                </div>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
         )}
         <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">

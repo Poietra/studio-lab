@@ -14,6 +14,8 @@ export type StudioNativeImageAssetV1 = Readonly<{
   pixelWidth: number;
 }>;
 
+export const STUDIO_IMAGE_ASSET_DRAG_TYPE = "application/x-poietra-image-asset";
+
 type CanonicalImageSourceV1 = Readonly<{
   assetPayloads: readonly CanvasPngAssetTransferV1[];
   bundle: SceneIrBundleV1;
@@ -65,4 +67,35 @@ export function studioNativeImageAssetsV1(source: CanonicalImageSourceV1 | null)
       },
     ];
   });
+}
+
+export function studioImageAssetDragPayload(asset: StudioNativeImageAssetV1): string {
+  return JSON.stringify(asset.image.asset);
+}
+
+export function resolveStudioImageAssetDrag(
+  assets: readonly StudioNativeImageAssetV1[],
+  payload: string,
+): StudioNativeImageAssetV1 | null {
+  if (payload.length === 0 || payload.length > 4096) return null;
+  try {
+    const reference: unknown = JSON.parse(payload);
+    if (
+      typeof reference !== "object" ||
+      reference === null ||
+      !("assetId" in reference) ||
+      !("sha256" in reference) ||
+      typeof reference.assetId !== "string" ||
+      typeof reference.sha256 !== "string"
+    ) {
+      return null;
+    }
+    return (
+      assets.find(
+        ({ image }) => image.asset.assetId === reference.assetId && image.asset.sha256 === reference.sha256,
+      ) ?? null
+    );
+  } catch {
+    return null;
+  }
 }
