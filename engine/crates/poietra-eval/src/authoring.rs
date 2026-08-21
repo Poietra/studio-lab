@@ -202,6 +202,7 @@ pub enum StudioAuthoringEntityKind {
     Arrow,
     Axes,
     Circle,
+    DataPlot,
     Ellipse,
     Image,
     Line,

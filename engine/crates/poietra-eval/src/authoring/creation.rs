@@ -169,6 +169,8 @@ struct CreateSceneEntitiesCommand {
 #[serde(rename_all = "camelCase")]
 pub struct StudioProjectedCreationEntity {
     pub created_lifetime: IntervalV1,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_series: Option<StudioDataSeries>,
     pub entity_id: String,
     pub initial_dimensions: StudioAuthoringDimensions,
     pub initial_rotation: f64,
@@ -200,6 +202,20 @@ pub struct StudioCreationImageSpec {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCreationSvgPathSpec {
     pub source: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioDataPlotInterpolation {
+    Linear,
+    Smooth,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioDataSeries {
+    pub interpolation: StudioDataPlotInterpolation,
+    pub points: Vec<PointV1>,
 }
 
 /// One exact property mutation resolved by the shared creation planner.
@@ -325,6 +341,8 @@ pub struct StudioCreationProjection {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCreationEntitySpec {
+    #[serde(default)]
+    pub data_series: Option<StudioDataSeries>,
     pub dimensions: StudioAuthoringDimensions,
     pub id: String,
     #[serde(default)]
@@ -987,6 +1005,7 @@ impl StudioCreationPlan {
                 let initial_text = studio_creation_spec_text_content(&state.spec);
                 StudioProjectedCreationEntity {
                     created_lifetime: state.lifetime.clone(),
+                    data_series: state.spec.data_series.clone(),
                     entity_id: state.spec.id.clone(),
                     initial_dimensions: state.initial_dimensions,
                     initial_rotation: 0.0,
@@ -2318,6 +2337,7 @@ fn plan_studio_creation_edits(
                         | StudioAuthoringEntityKind::Arrow
                         | StudioAuthoringEntityKind::Axes
                         | StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::DataPlot
                         | StudioAuthoringEntityKind::Ellipse
                         | StudioAuthoringEntityKind::Image
                         | StudioAuthoringEntityKind::Line
@@ -2483,8 +2503,10 @@ fn plan_studio_creation_edits(
         } else {
             None
         };
-        let creation_payload_is_valid =
-            match spec.kind {
+        let data_series_presence_is_valid =
+            (spec.kind == StudioAuthoringEntityKind::DataPlot) == spec.data_series.is_some();
+        let creation_payload_is_valid = data_series_presence_is_valid
+            && match spec.kind {
                 StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
                     spec.image.is_none()
                         && spec.svg.is_none()
@@ -2523,6 +2545,16 @@ fn plan_studio_creation_edits(
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
                         && studio_coordinate_system_parameters(spec.kind, spec.dimensions).is_some()
+                }
+                StudioAuthoringEntityKind::DataPlot => {
+                    spec.image.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && studio_coordinate_system_parameters(spec.kind, spec.dimensions).is_some()
+                        && spec.data_series.as_ref().is_some_and(|series| {
+                            studio_data_series_is_valid(series, spec.dimensions)
+                        })
                 }
                 StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
                     spec.image.is_none()
@@ -2711,6 +2743,7 @@ fn plan_studio_creation_edits(
                 StudioAuthoringEntityKind::Arc
                     | StudioAuthoringEntityKind::Axes
                     | StudioAuthoringEntityKind::Circle
+                    | StudioAuthoringEntityKind::DataPlot
                     | StudioAuthoringEntityKind::Ellipse
                     | StudioAuthoringEntityKind::Line
                     | StudioAuthoringEntityKind::NumberLine
@@ -3948,6 +3981,7 @@ fn plan_studio_creation_edits(
                             StudioAuthoringEntityKind::Arc
                                 | StudioAuthoringEntityKind::Axes
                                 | StudioAuthoringEntityKind::Circle
+                                | StudioAuthoringEntityKind::DataPlot
                                 | StudioAuthoringEntityKind::Ellipse
                                 | StudioAuthoringEntityKind::NumberLine
                                 | StudioAuthoringEntityKind::NumberPlane
@@ -4531,6 +4565,7 @@ const STUDIO_REGULAR_POLYGON_MAX_SIDES: u32 = 32;
 const STUDIO_CURVE_MIN_SWEEP_RADIANS: f64 = 1.0e-6;
 const STUDIO_COORDINATE_SYSTEM_MAX_MARKS: u32 = 128;
 const STUDIO_COORDINATE_TICK_HALF_LENGTH_RATIO: f64 = 0.025;
+const STUDIO_DATA_PLOT_MAX_POINTS: usize = 256;
 
 fn studio_regular_polygon_parameters(dimensions: StudioAuthoringDimensions) -> Option<(u32, f64)> {
     match (
@@ -4642,7 +4677,9 @@ fn studio_coordinate_system_parameters(
             Some(width),
         ) if width.is_finite() && width > 0.0 => (width, None, coordinates),
         (
-            StudioAuthoringEntityKind::Axes | StudioAuthoringEntityKind::NumberPlane,
+            StudioAuthoringEntityKind::Axes
+            | StudioAuthoringEntityKind::DataPlot
+            | StudioAuthoringEntityKind::NumberPlane,
             None,
             Some(coordinates @ StudioAuthoringCoordinateSystem { y: Some(_), .. }),
             Some(height),
@@ -4760,6 +4797,122 @@ fn studio_coordinate_system_path(
         }
     }
     Some(CubicPathV1 { subpaths })
+}
+
+fn studio_data_series_is_valid(
+    series: &StudioDataSeries,
+    dimensions: StudioAuthoringDimensions,
+) -> bool {
+    let Some((_, Some(_), coordinates)) =
+        studio_coordinate_system_parameters(StudioAuthoringEntityKind::DataPlot, dimensions)
+    else {
+        return false;
+    };
+    let Some(y_range) = coordinates.y else {
+        return false;
+    };
+    (2..=STUDIO_DATA_PLOT_MAX_POINTS).contains(&series.points.len())
+        && series.points.iter().all(|point| {
+            point.x.is_finite()
+                && point.y.is_finite()
+                && (coordinates.x.minimum..=coordinates.x.maximum).contains(&point.x)
+                && (y_range.minimum..=y_range.maximum).contains(&point.y)
+        })
+        && series.points.windows(2).all(|pair| pair[0].x < pair[1].x)
+}
+
+fn studio_monotone_tangent(left_slope: f64, right_slope: f64) -> f64 {
+    if !left_slope.is_finite()
+        || !right_slope.is_finite()
+        || left_slope == 0.0
+        || right_slope == 0.0
+        || left_slope.is_sign_positive() != right_slope.is_sign_positive()
+    {
+        return 0.0;
+    }
+    let smaller = left_slope.abs().min(right_slope.abs());
+    let larger = left_slope.abs().max(right_slope.abs());
+    left_slope.signum() * smaller * (2.0 / (1.0 + smaller / larger))
+}
+
+fn studio_data_plot_path(
+    dimensions: StudioAuthoringDimensions,
+    series: &StudioDataSeries,
+) -> Option<CubicPathV1> {
+    if !studio_data_series_is_valid(series, dimensions) {
+        return None;
+    }
+    let (width, Some(height), coordinates) =
+        studio_coordinate_system_parameters(StudioAuthoringEntityKind::DataPlot, dimensions)?
+    else {
+        return None;
+    };
+    let y_range = coordinates.y?;
+    let map_point = |point: &PointV1| PointV1 {
+        x: studio_coordinate_to_local(point.x, coordinates.x, width),
+        y: studio_coordinate_to_local(point.y, y_range, height),
+    };
+    let slopes = series
+        .points
+        .windows(2)
+        .map(|pair| (pair[1].y - pair[0].y) / (pair[1].x - pair[0].x))
+        .collect::<Vec<_>>();
+    let mut tangents = vec![0.0; series.points.len()];
+    if series.interpolation == StudioDataPlotInterpolation::Smooth {
+        tangents[0] = if slopes[0].is_finite() {
+            slopes[0]
+        } else {
+            0.0
+        };
+        for index in 1..series.points.len() - 1 {
+            tangents[index] = studio_monotone_tangent(slopes[index - 1], slopes[index]);
+        }
+        let last = slopes[slopes.len() - 1];
+        tangents[series.points.len() - 1] = if last.is_finite() { last } else { 0.0 };
+    }
+    let start = map_point(&series.points[0]);
+    let segments = series
+        .points
+        .windows(2)
+        .enumerate()
+        .map(|(index, pair)| {
+            let from = &pair[0];
+            let to = &pair[1];
+            if series.interpolation == StudioDataPlotInterpolation::Linear {
+                return straight_cubic_segment(&map_point(from), map_point(to));
+            }
+            let delta_x = to.x - from.x;
+            let minimum_y = from.y.min(to.y);
+            let maximum_y = from.y.max(to.y);
+            let first_y = (from.y + tangents[index] * delta_x / 3.0).clamp(minimum_y, maximum_y);
+            let second_y = (to.y - tangents[index + 1] * delta_x / 3.0).clamp(minimum_y, maximum_y);
+            CubicSegmentV1 {
+                control1: map_point(&PointV1 {
+                    x: from.x + delta_x / 3.0,
+                    y: if first_y.is_finite() { first_y } else { from.y },
+                }),
+                control2: map_point(&PointV1 {
+                    x: from.x + delta_x * 2.0 / 3.0,
+                    y: if second_y.is_finite() { second_y } else { to.y },
+                }),
+                end: map_point(to),
+            }
+        })
+        .collect::<Vec<_>>();
+    let path = CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: false,
+            segments,
+            start,
+        }],
+    };
+    let path_is_finite = path.subpaths[0]
+        .segments
+        .iter()
+        .flat_map(|segment| [&segment.control1, &segment.control2, &segment.end])
+        .chain(std::iter::once(&path.subpaths[0].start))
+        .all(|point| point.x.is_finite() && point.y.is_finite());
+    path_is_finite.then_some(path)
 }
 
 fn studio_elliptic_arc(
@@ -5647,6 +5800,7 @@ fn studio_creation_shape_path(
         StudioAuthoringEntityKind::Arc
         | StudioAuthoringEntityKind::Arrow
         | StudioAuthoringEntityKind::Axes
+        | StudioAuthoringEntityKind::DataPlot
         | StudioAuthoringEntityKind::Ellipse
         | StudioAuthoringEntityKind::Image
         | StudioAuthoringEntityKind::Line
@@ -6553,6 +6707,7 @@ impl EngineSessionV1 {
                 | StudioAuthoringEntityKind::Arrow
                 | StudioAuthoringEntityKind::Axes
                 | StudioAuthoringEntityKind::Circle
+                | StudioAuthoringEntityKind::DataPlot
                 | StudioAuthoringEntityKind::Ellipse
                 | StudioAuthoringEntityKind::Image
                 | StudioAuthoringEntityKind::Line
@@ -6589,6 +6744,16 @@ impl EngineSessionV1 {
                     let path =
                         studio_coordinate_system_path(state.kind, width, height, coordinates)
                             .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    CreateSceneEntityGeometry::ShapeOutline { path }
+                }
+                StudioAuthoringEntityKind::DataPlot => {
+                    let series = state
+                        .spec
+                        .data_series
+                        .as_ref()
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    let path = studio_data_plot_path(state.initial_dimensions, series)
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                     CreateSceneEntityGeometry::ShapeOutline { path }
                 }
                 StudioAuthoringEntityKind::Circle => {
@@ -6740,6 +6905,7 @@ impl EngineSessionV1 {
                     StudioAuthoringEntityKind::Arc
                     | StudioAuthoringEntityKind::Arrow
                     | StudioAuthoringEntityKind::Axes
+                    | StudioAuthoringEntityKind::DataPlot
                     | StudioAuthoringEntityKind::Ellipse
                     | StudioAuthoringEntityKind::Image
                     | StudioAuthoringEntityKind::Line
@@ -7303,6 +7469,7 @@ mod tests {
                             interval: create_interval.clone(),
                             kind: StudioCreationOperationKind::Create {
                                 entity: StudioCreationEntitySpec {
+                                    data_series: None,
                                     dimensions: StudioAuthoringDimensions {
                                         angles: None,
                                         coordinate_system: None,
@@ -7787,6 +7954,46 @@ mod tests {
         entity.kind = kind;
         entity.dimensions = dimensions;
         command
+    }
+
+    fn studio_data_plot_creation_command(
+        bundle: &SceneIrBundleV1,
+        dimensions: StudioAuthoringDimensions,
+        series: StudioDataSeries,
+    ) -> ApplyStudioCreationEditCommand {
+        let mut command = studio_path_creation_command(
+            bundle,
+            "data-plot",
+            StudioAuthoringEntityKind::DataPlot,
+            dimensions,
+        );
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.data_series = Some(series);
+        command
+    }
+
+    fn studio_data_plot_dimensions(x_maximum: f64, x_step: f64) -> StudioAuthoringDimensions {
+        StudioAuthoringDimensions {
+            coordinate_system: Some(StudioAuthoringCoordinateSystem {
+                x: StudioAuthoringCoordinateRange {
+                    maximum: x_maximum,
+                    minimum: 0.0,
+                    step: x_step,
+                },
+                y: Some(StudioAuthoringCoordinateRange {
+                    maximum: 2.0,
+                    minimum: -1.0,
+                    step: 1.0,
+                }),
+            }),
+            height: Some(3.0),
+            width: Some(6.0),
+            ..StudioAuthoringDimensions::default()
+        }
     }
 
     fn studio_math_tex_write_creation_command(
@@ -10590,6 +10797,167 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table pins both admitted interpolation modes through projection and retained Scene IR"
+    )]
+    fn normalized_creation_projects_and_applies_static_data_plots() {
+        let bundle = static_imported_bundle();
+        let dimensions = studio_data_plot_dimensions(3.0, 1.0);
+        let points = vec![
+            PointV1 { x: 0.0, y: 0.0 },
+            PointV1 { x: 1.0, y: 1.0 },
+            PointV1 { x: 2.0, y: 0.0 },
+            PointV1 { x: 3.0, y: 1.0 },
+        ];
+        let point_is_near = |actual: &PointV1, expected: &PointV1| {
+            (actual.x - expected.x).abs() < 1.0e-12 && (actual.y - expected.y).abs() < 1.0e-12
+        };
+
+        for interpolation in [
+            StudioDataPlotInterpolation::Linear,
+            StudioDataPlotInterpolation::Smooth,
+        ] {
+            let series = StudioDataSeries {
+                interpolation,
+                points: points.clone(),
+            };
+            let mut command =
+                studio_data_plot_creation_command(&bundle, dimensions, series.clone());
+            if interpolation == StudioDataPlotInterpolation::Linear {
+                let program = &mut command.programs[0];
+                let draw = program
+                    .operations
+                    .iter_mut()
+                    .find(|operation| {
+                        matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+                    })
+                    .unwrap();
+                draw.id = "draw".to_owned();
+                draw.interval.end = 1.25;
+                draw.kind = StudioCreationOperationKind::DrawIn {
+                    easing: StudioPropertyEasing::Smooth,
+                    from: Some(0.0),
+                    to: Some(1.0),
+                };
+                program.schedule_order[2] = "draw".to_owned();
+            }
+
+            let projection =
+                project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+            assert_eq!(
+                projection.entities[0].kind,
+                StudioAuthoringEntityKind::DataPlot
+            );
+            assert_eq!(projection.entities[0].data_series.as_ref(), Some(&series));
+            let projection_wire = serde_json::to_value(&projection).unwrap();
+            assert_eq!(projection_wire["entities"][0]["kind"], "data-plot");
+            assert_eq!(
+                projection_wire["entities"][0]["dataSeries"],
+                serde_json::to_value(&series).unwrap()
+            );
+
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+            let result = session.apply_studio_creation_edit(command).unwrap();
+            let created = result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == "tx:create/entity:data-plot")
+                .unwrap();
+            let SceneGeometryV1::CubicPath { path } = &created.geometry else {
+                panic!("data plot must reuse cubic-path geometry");
+            };
+            let subpath = &path.subpaths[0];
+            assert_eq!(path.subpaths.len(), 1);
+            assert!(!subpath.closed);
+            assert_eq!(subpath.segments.len(), 3);
+            assert!(point_is_near(&subpath.start, &PointV1 { x: -3.0, y: -0.5 }));
+            assert!(matches!(
+                &created.appearance,
+                SceneAppearanceV1::Vector {
+                    fill: None,
+                    stroke: Some(_),
+                    ..
+                }
+            ));
+
+            if interpolation == StudioDataPlotInterpolation::Linear {
+                assert!(point_is_near(
+                    &subpath.segments[0].control1,
+                    &PointV1 {
+                        x: -7.0 / 3.0,
+                        y: -1.0 / 6.0,
+                    }
+                ));
+                assert!(
+                    result
+                        .bundle
+                        .scene
+                        .animation_channels
+                        .iter()
+                        .any(|channel| {
+                            matches!(
+                                channel,
+                                AnimationChannelV1::PathTrim { entity_id, .. }
+                                    if entity_id == "tx:create/entity:data-plot"
+                            )
+                        })
+                );
+            } else {
+                assert!(
+                    (subpath.segments[0].control2.y - subpath.segments[0].end.y).abs() < 1.0e-12
+                );
+                assert!(
+                    (subpath.segments[1].control1.y - subpath.segments[0].end.y).abs() < 1.0e-12
+                );
+                assert!(
+                    (subpath.segments[1].control2.y - subpath.segments[1].end.y).abs() < 1.0e-12
+                );
+                assert!(
+                    (subpath.segments[2].control1.y - subpath.segments[1].end.y).abs() < 1.0e-12
+                );
+                for (index, segment) in subpath.segments.iter().enumerate() {
+                    let start_y = if index == 0 {
+                        subpath.start.y
+                    } else {
+                        subpath.segments[index - 1].end.y
+                    };
+                    let lower = start_y.min(segment.end.y);
+                    let upper = start_y.max(segment.end.y);
+                    assert!((lower..=upper).contains(&segment.control1.y));
+                    assert!((lower..=upper).contains(&segment.control2.y));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn normalized_creation_rejects_invalid_static_data_plots_atomically() {
+        let bundle = static_imported_bundle();
+        let command = studio_data_plot_creation_command(
+            &bundle,
+            studio_data_plot_dimensions(3.0, 1.0),
+            StudioDataSeries {
+                interpolation: StudioDataPlotInterpolation::Smooth,
+                points: vec![PointV1 { x: 1.0, y: 0.0 }, PointV1 { x: 1.0, y: 1.0 }],
+            },
+        );
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &command.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &bundle.scene);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+    }
+
+    #[test]
     fn normalized_creation_rejects_invalid_curve_dimensions_atomically() {
         let bundle = static_imported_bundle();
         let ellipse = |width, height| StudioAuthoringDimensions {
@@ -12886,6 +13254,7 @@ mod tests {
                     },
                     kind: StudioCreationOperationKind::Create {
                         entity: StudioCreationEntitySpec {
+                            data_series: None,
                             dimensions: StudioAuthoringDimensions {
                                 angles: None,
                                 coordinate_system: None,
