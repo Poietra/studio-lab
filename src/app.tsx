@@ -301,6 +301,7 @@ import {
 } from "./studio/studio-native-workspace";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
+import { importStudioSvgPathAsset, type StudioSvgPathAsset } from "./studio/studio-svg-assets";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
 import type {
   StudioCameraClipChange,
@@ -447,6 +448,7 @@ type TabLocalNativeProjectState = NativeProjectAssetStateV1 &
     documentKey: string;
     fragmentMaterials: ProjectFragmentMaterialStateV1;
     projectId: string;
+    svgAssets: readonly StudioSvgPathAsset[];
   }>;
 
 function tabLocalNativeProjectKey(projectId: string, documentKey: string) {
@@ -679,6 +681,7 @@ export function App({
   const [nativeProjectState, setNativeProjectState] = useState<TabLocalNativeProjectState | null>(null);
   const [nativeProjectAssetPending, setNativeProjectAssetPending] = useState(false);
   const [nativeProjectAssetError, setNativeProjectAssetError] = useState<string | null>(null);
+  const [nativeProjectAssetErrorKind, setNativeProjectAssetErrorKind] = useState<"image" | "svg" | null>(null);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [coordinateInsertSettings, setCoordinateInsertSettings] = useState<CoordinateInsertSettings>({
     height: 4,
@@ -741,6 +744,7 @@ export function App({
     nativeProjectAssetGeneration.current = generation;
     setNativeProjectState(null);
     setNativeProjectAssetError(null);
+    setNativeProjectAssetErrorKind(null);
     setNativeProjectAssetPending(false);
     if (
       !activeProjectId ||
@@ -769,6 +773,7 @@ export function App({
             documentKey,
             fragmentMaterials: EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
             projectId,
+            svgAssets: [],
           };
       if (nativeProjectAssetGeneration.current !== generation) return;
       nativeProjectStates.current.set(stateKey, initialized);
@@ -1257,6 +1262,15 @@ export function App({
   });
   const studioExportSource = previewRenderer?.canonicalScene ?? null;
   const studioImageAssets = studioNativeImageAssetsV1(studioExportSource);
+  const studioSvgAssets = nativeProjectState?.svgAssets ?? [];
+  const studioSvgPathFillState = (program: SceneEdit, entityId: string): boolean | null => {
+    const create = program.operations.find(
+      (operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId,
+    );
+    if (!create || create.kind !== "CreateEntity" || create.entity.type !== "SvgPath" || !create.entity.svg)
+      return null;
+    return studioSvgAssets.find((asset) => asset.source === create.entity.svg?.source)?.hasFill ?? null;
+  };
   const activeFragmentMaterialTextureAssets = studioExportSource?.bundle.assets.assets ?? [];
   const studioExportPublication = resolveStudioExportPublicationAvailabilityV1({
     exportSource: studioExportSource,
@@ -1281,6 +1295,7 @@ export function App({
     const documentKey = activeEditorScene.identity.documentKey;
     setNativeProjectAssetPending(true);
     setNativeProjectAssetError(null);
+    setNativeProjectAssetErrorKind(null);
     try {
       let result: NativeProjectAssetStateV1 = nativeProjectState;
       for (const file of files) {
@@ -1298,6 +1313,7 @@ export function App({
         documentKey,
         fragmentMaterials: retained?.fragmentMaterials ?? nativeProjectState.fragmentMaterials,
         projectId,
+        svgAssets: retained?.svgAssets ?? nativeProjectState.svgAssets,
       };
       await nativeProjectLocalStore?.save({ documentKey, projectId }, updated);
       if (nativeProjectAssetGeneration.current !== generation) return;
@@ -1305,7 +1321,46 @@ export function App({
       setNativeProjectState(updated);
     } catch (cause) {
       if (nativeProjectAssetGeneration.current !== generation) return;
+      setNativeProjectAssetErrorKind("image");
       setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not import the selected PNGs.");
+    } finally {
+      if (nativeProjectAssetGeneration.current === generation) setNativeProjectAssetPending(false);
+    }
+  }
+
+  async function importNativeProjectSvgFiles(files: readonly File[]) {
+    if (
+      !activeProjectId ||
+      !activeEditorScene ||
+      !isStudioNativeWorkspaceScene(activeEditorScene) ||
+      !nativeProjectState ||
+      nativeProjectState.projectId !== activeProjectId ||
+      nativeProjectState.documentKey !== activeEditorScene.identity.documentKey ||
+      nativeProjectAssetPending ||
+      files.length === 0
+    )
+      return;
+    const generation = nativeProjectAssetGeneration.current;
+    const projectId = activeProjectId;
+    const documentKey = activeEditorScene.identity.documentKey;
+    setNativeProjectAssetPending(true);
+    setNativeProjectAssetError(null);
+    setNativeProjectAssetErrorKind(null);
+    try {
+      const imported: StudioSvgPathAsset[] = [];
+      for (const file of files) imported.push(await importStudioSvgPathAsset(file));
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      const stateKey = tabLocalNativeProjectKey(projectId, documentKey);
+      const retained = nativeProjectStates.current.get(stateKey) ?? nativeProjectState;
+      const updated = { ...retained, svgAssets: [...retained.svgAssets, ...imported] };
+      await nativeProjectLocalStore?.save({ documentKey, projectId }, updated);
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      nativeProjectStates.current.set(stateKey, updated);
+      setNativeProjectState(updated);
+    } catch (cause) {
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      setNativeProjectAssetErrorKind("svg");
+      setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not import the selected SVGs.");
     } finally {
       if (nativeProjectAssetGeneration.current === generation) setNativeProjectAssetPending(false);
     }
@@ -1551,7 +1606,9 @@ export function App({
               ? "Remove the object's fragment material before adding Draw."
               : hasExternalFillOrMaterial
                 ? "Remove the object's fill or material animation before adding Draw."
-                : drawInUnavailableReason(owner.program, entityId);
+                : drawInUnavailableReason(owner.program, entityId, {
+                    svgHasFill: studioSvgPathFillState(owner.program, entityId),
+                  });
       return [entityId, reason] as const;
     }),
   );
@@ -3390,6 +3447,7 @@ export function App({
         draw,
         entityId,
         scene: projectedEditorScene.runtimeSceneState,
+        svgHasFill: studioSvgPathFillState(baseProgram, entityId),
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
@@ -3416,7 +3474,9 @@ export function App({
       setDraftError("Draw supports only eligible Studio-created path objects.");
       return;
     }
-    const unavailable = drawInUnavailableReason(owner.record.program, entityId);
+    const unavailable = drawInUnavailableReason(owner.record.program, entityId, {
+      svgHasFill: studioSvgPathFillState(owner.record.program, entityId),
+    });
     if (unavailable) {
       setDraftError(unavailable);
       return;
@@ -7484,6 +7544,11 @@ export function App({
     ? (activeSceneFragmentMaterials.assignments[selectedFragmentMaterialEntity.id] ?? null)
     : null;
   const selectedFragmentMaterialAssigned = selectedFragmentMaterialAssignment !== null;
+  const selectedSvgPathHasFill = selectedFragmentMaterialEntity
+    ? (previewAppliedEdits
+        .map(({ program }) => studioSvgPathFillState(program, selectedFragmentMaterialEntity.id))
+        .find((hasFill) => hasFill !== null) ?? null)
+    : null;
   const selectedEntranceMaterialBlocker = selectedFragmentMaterialEntity
     ? sceneProgramsHaveDrawIn(previewAppliedSceneEdits, selectedFragmentMaterialEntity.id)
       ? "Remove Draw before assigning a fragment material to this object."
@@ -7496,8 +7561,9 @@ export function App({
     !selectedEntityLocked &&
     selectedFragmentMaterialEntity !== null &&
     selectedFragmentMaterialEntity.geometry.style.kind === "known" &&
-    selectedFragmentMaterialEntity.geometry.style.value.fillColor !== undefined &&
-    selectedFragmentMaterialEntity.geometry.style.value.fillColor !== null;
+    ((selectedFragmentMaterialEntity.geometry.style.value.fillColor !== undefined &&
+      selectedFragmentMaterialEntity.geometry.style.value.fillColor !== null) ||
+      selectedSvgPathHasFill === true);
   const activeSceneHasFragmentMaterialAssignments = sceneHasFragmentMaterialAssignmentsV1(activeSceneFragmentMaterials);
   const activeSceneFragmentMaterialCompileError = studioFragmentMaterialCompileErrorV1(
     activeSceneFragmentMaterials,
@@ -8402,8 +8468,15 @@ export function App({
               groupUnavailableReason={layerGroupUnavailableReason}
               imageAssets={studioImageAssets}
               imageAssetDragAvailable={nativeSceneActive}
-              imageImportError={nativeSceneActive ? nativeProjectAssetError : null}
+              imageImportError={
+                nativeSceneActive && nativeProjectAssetErrorKind === "image" ? nativeProjectAssetError : null
+              }
               imageImportPending={nativeSceneActive && nativeProjectAssetPending}
+              svgAssets={nativeSceneActive ? studioSvgAssets : []}
+              svgImportError={
+                nativeSceneActive && nativeProjectAssetErrorKind === "svg" ? nativeProjectAssetError : null
+              }
+              svgImportPending={nativeSceneActive && nativeProjectAssetPending}
               layers={studioLayers}
               groupLifetimeTrimUnavailableReason={selectedLayerGroupLifetimeUnavailableReason}
               lockToggleDisabled={draftApplyPending || draftEdit !== null}
@@ -8411,11 +8484,23 @@ export function App({
               nextScene={nextScene}
               onGroup={groupLayerSelection}
               onImportImageFiles={nativeSceneActive ? (files) => void importNativeProjectImageFiles(files) : undefined}
+              onImportSvgFiles={nativeSceneActive ? (files) => void importNativeProjectSvgFiles(files) : undefined}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onAddImageAsset={(asset) => {
                 setIsPlaying(false);
                 void insertEntitiesAt({ x: 320, y: 180 }, [
                   { image: asset.image, position: { x: 320, y: 180 }, type: "ImageMobject" },
+                ]);
+              }}
+              onAddSvgAsset={(asset) => {
+                setIsPlaying(false);
+                void insertEntitiesAt({ x: 320, y: 180 }, [
+                  {
+                    dimensions: asset.dimensions,
+                    position: { x: 320, y: 180 },
+                    svg: { source: asset.source },
+                    type: "SvgPath",
+                  },
                 ]);
               }}
               onEditAppliedProgram={editAppliedProgram}

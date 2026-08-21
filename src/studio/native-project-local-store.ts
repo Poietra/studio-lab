@@ -11,6 +11,7 @@ import {
   type ProjectFragmentMaterialStateV1,
   projectFragmentMaterialStateV1Schema,
 } from "./fragment-material-authoring";
+import { parseStudioSvgPathAssets, restoreStudioSvgPathAssets, type StudioSvgPathAsset } from "./studio-svg-assets";
 
 const DATABASE_NAME = "poietra-studio-native-projects";
 const DATABASE_VERSION = 1;
@@ -26,6 +27,7 @@ export type NativeProjectLocalState = Readonly<{
   assetPayloads: readonly CanvasPngAssetTransferV1[];
   bundle: SceneIrBundleV1;
   fragmentMaterials: ProjectFragmentMaterialStateV1;
+  svgAssets: readonly StudioSvgPathAsset[];
 }>;
 
 type NativeProjectLocalRecord = NativeProjectLocalIdentity &
@@ -93,6 +95,7 @@ export class NativeProjectLocalStore {
       assetPayloads: prepared.transfers,
       bundle,
       fragmentMaterials: projectFragmentMaterialStateV1Schema.parse(record.fragmentMaterials),
+      svgAssets: await restoreStudioSvgPathAssets(record.svgAssets),
     };
   }
 
@@ -109,6 +112,7 @@ export class NativeProjectLocalStore {
       assetPayloads: copyAssetPayloads(state.assetPayloads),
       bundle: state.bundle,
       fragmentMaterials: projectFragmentMaterialStateV1Schema.parse(state.fragmentMaterials),
+      svgAssets: parseStudioSvgPathAssets(state.svgAssets),
       version: 1 as const,
     };
     await this.enqueueMutation(() => this.adapter.write(record));

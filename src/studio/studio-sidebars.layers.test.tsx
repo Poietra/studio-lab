@@ -162,6 +162,53 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("The PNG could not be decoded.");
   });
 
+  it("lists Rust-validated SVG paths with import and placement actions", () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceSidebar
+        activeScene={activeScene()}
+        appliedProgramReadOnlyReasons={{}}
+        appliedEdits={[]}
+        appliedTransactionIds={new Set()}
+        draftActive={false}
+        duration={1}
+        durationError={null}
+        durationMinimum={0.1}
+        editingAppliedTransactionId={null}
+        entities={[]}
+        nextScene={null}
+        onAddSvgAsset={vi.fn()}
+        onDurationChange={vi.fn()}
+        onEditAppliedProgram={vi.fn()}
+        onImportSvgFiles={vi.fn()}
+        onRedo={vi.fn()}
+        onToggleEntity={vi.fn()}
+        onUndo={vi.fn()}
+        redoCount={0}
+        selectedIds={new Set()}
+        sourceImportOutcomes={[]}
+        svgAssets={[
+          {
+            dimensions: { height: 2, width: 3 },
+            hasFill: true,
+            hasStroke: true,
+            id: "svg-path:one",
+            label: "diagram.svg",
+            segmentCount: 4,
+            source: '<svg viewBox="0 0 3 2"><path d="M0 0 L3 0 L3 2 Z"/></svg>',
+            subpathCount: 1,
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("+ Import SVG");
+    expect(markup).toContain('accept="image/svg+xml,.svg"');
+    expect(markup).toContain("Vector paths");
+    expect(markup).toContain("diagram.svg");
+    expect(markup).toContain("1 subpath · 4 segments");
+    expect(markup).toContain("CSS, masks, filters, and unsupported elements are rejected");
+  });
+
   it("uses canonical front-first rows and reflects the shared Canvas selection", () => {
     const front = entity("front");
     const back = entity("back");

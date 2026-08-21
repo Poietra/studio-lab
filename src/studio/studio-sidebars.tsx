@@ -36,6 +36,7 @@ import {
   studioImageAssetsMatchingQuery,
 } from "./studio-image-assets";
 import type { AuthorableWorkspaceScene } from "./studio-native-workspace";
+import { type StudioSvgPathAsset, studioSvgPathAssetsMatchingQuery } from "./studio-svg-assets";
 import { entityLabel } from "./studio-viewport";
 
 const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
@@ -218,14 +219,19 @@ export function WorkspaceSidebar({
   imageAssetDragAvailable = false,
   imageImportError = null,
   imageImportPending = false,
+  svgAssets = [],
+  svgImportError = null,
+  svgImportPending = false,
   layers,
   lockToggleDisabled = false,
   lockedEntityIds = new Set(),
   nextScene,
   onGroup,
   onImportImageFiles,
+  onImportSvgFiles,
   onDurationChange,
   onAddImageAsset,
+  onAddSvgAsset,
   onEditAppliedProgram,
   onLayerGroupOrder,
   onLayerGroupReorder,
@@ -265,14 +271,19 @@ export function WorkspaceSidebar({
   imageAssetDragAvailable?: boolean;
   imageImportError?: string | null;
   imageImportPending?: boolean;
+  svgAssets?: readonly StudioSvgPathAsset[];
+  svgImportError?: string | null;
+  svgImportPending?: boolean;
   layers?: readonly StudioLayerEntry[];
   lockToggleDisabled?: boolean;
   lockedEntityIds?: ReadonlySet<string>;
   nextScene: AuthorableWorkspaceScene | null;
   onGroup?: () => void;
   onImportImageFiles?: (files: readonly File[]) => void;
+  onImportSvgFiles?: (files: readonly File[]) => void;
   onDurationChange: (duration: number) => void;
   onAddImageAsset?: (asset: StudioNativeImageAssetV1) => void;
+  onAddSvgAsset?: (asset: StudioSvgPathAsset) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
   onLayerGroupOrder?: (groupId: string, direction: StudioLayerOrderDirection) => void;
   onLayerGroupReorder?: (groupId: string, frontFirstIndex: number) => void;
@@ -295,7 +306,9 @@ export function WorkspaceSidebar({
   undoAvailable?: boolean;
 }>) {
   const imageFileInput = useRef<HTMLInputElement | null>(null);
+  const svgFileInput = useRef<HTMLInputElement | null>(null);
   const [imageAssetSearchQuery, setImageAssetSearchQuery] = useState("");
+  const [svgAssetSearchQuery, setSvgAssetSearchQuery] = useState("");
   const [layerDrag, setLayerDrag] = useState<Readonly<{
     boundary: number;
     id: string;
@@ -315,6 +328,7 @@ export function WorkspaceSidebar({
     }));
   const rootLayerEntries = layerEntries.filter(({ isGroup, parentGroupId }) => isGroup || !parentGroupId);
   const matchingImageAssets = studioImageAssetsMatchingQuery(imageAssets, imageAssetSearchQuery);
+  const matchingSvgAssets = studioSvgPathAssetsMatchingQuery(svgAssets, svgAssetSearchQuery);
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       <section className="mb-4 border-b border-zinc-800 pb-4" aria-labelledby="studio-assets-heading">
@@ -323,7 +337,7 @@ export function WorkspaceSidebar({
             Assets
           </h2>
           <div className="flex items-center gap-2">
-            <span className="tabular-nums text-[10px] text-zinc-600">{imageAssets.length}</span>
+            <span className="tabular-nums text-[10px] text-zinc-600">{imageAssets.length + svgAssets.length}</span>
             {onImportImageFiles ? (
               <>
                 <input
@@ -346,6 +360,31 @@ export function WorkspaceSidebar({
                   type="button"
                 >
                   {imageImportPending ? "Importing…" : "+ Import PNG"}
+                </button>
+              </>
+            ) : null}
+            {onImportSvgFiles ? (
+              <>
+                <input
+                  accept="image/svg+xml,.svg"
+                  className="sr-only"
+                  disabled={!authoringAvailable || draftActive || svgImportPending}
+                  onChange={(event) => {
+                    const files = Array.from(event.currentTarget.files ?? []);
+                    event.currentTarget.value = "";
+                    if (files.length > 0) onImportSvgFiles(files);
+                  }}
+                  multiple
+                  ref={svgFileInput}
+                  type="file"
+                />
+                <button
+                  className="h-7 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                  disabled={!authoringAvailable || draftActive || svgImportPending}
+                  onClick={() => svgFileInput.current?.click()}
+                  type="button"
+                >
+                  {svgImportPending ? "Importing…" : "+ Import SVG"}
                 </button>
               </>
             ) : null}
@@ -438,6 +477,63 @@ export function WorkspaceSidebar({
         {imageImportError ? (
           <p className="mt-2 text-pretty text-[10px] leading-4 text-red-300" role="alert">
             {imageImportError}
+          </p>
+        ) : null}
+        <h3 className="mt-4 text-[10px] font-medium text-zinc-500">Vector paths</h3>
+        {svgAssets.length === 0 ? (
+          <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+            Import a finite-viewBox SVG containing one supported path.
+          </p>
+        ) : (
+          <>
+            <label className="mt-2 block text-[10px] font-medium text-zinc-500" htmlFor="studio-svg-asset-search">
+              Project vectors
+            </label>
+            <input
+              aria-controls="studio-project-vectors"
+              aria-label="Search project vectors"
+              className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
+              id="studio-svg-asset-search"
+              onChange={(event) => setSvgAssetSearchQuery(event.currentTarget.value)}
+              placeholder="Search by name"
+              type="search"
+              value={svgAssetSearchQuery}
+            />
+            <ul className="mt-2 space-y-1" aria-label="Project vectors" id="studio-project-vectors">
+              {matchingSvgAssets.map((asset) => (
+                <li className="flex items-center justify-between gap-2 border border-zinc-800 p-2" key={asset.id}>
+                  <div className="flex min-w-0 items-center gap-2">
+                    <div className="flex size-11 shrink-0 items-center justify-center border border-zinc-800 bg-zinc-900 text-[10px] font-semibold text-sky-300">
+                      SVG
+                    </div>
+                    <span className="min-w-0">
+                      <span className="block truncate text-xs text-zinc-300">{asset.label}</span>
+                      <span className="mt-0.5 block tabular-nums text-[10px] text-zinc-600">
+                        {asset.subpathCount} subpath{asset.subpathCount === 1 ? "" : "s"} · {asset.segmentCount}{" "}
+                        segments
+                      </span>
+                    </span>
+                  </div>
+                  <button
+                    className="h-7 shrink-0 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                    disabled={!authoringAvailable || draftActive || onAddSvgAsset === undefined}
+                    onClick={() => onAddSvgAsset?.(asset)}
+                    type="button"
+                  >
+                    + Add
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+          SVG paths stay vector-native in Preview and local MP4 export. CSS, masks, filters, and unsupported elements
+          are rejected.
+        </p>
+        {svgImportError ? (
+          <p className="mt-2 text-pretty text-[10px] leading-4 text-red-300" role="alert">
+            {svgImportError}
           </p>
         ) : null}
       </section>
