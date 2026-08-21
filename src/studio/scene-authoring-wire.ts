@@ -148,6 +148,7 @@ function normalizedStaticRootOperation(
     };
   }
   if (operation.kind === "CreateMotion") {
+    if (operation.rotationDeltaRadians !== undefined) return { ...common, kind: "unsupported" };
     return {
       ...common,
       controlOffset: operation.controlOffset,
@@ -367,6 +368,7 @@ function normalizedStudioCreationOperation(
       delta: operation.delta,
       easing: operation.easing,
       kind: "create-motion",
+      ...(operation.rotationDeltaRadians === undefined ? {} : { rotationDeltaRadians: operation.rotationDeltaRadians }),
       targetEntityIds: operation.targetEntityIds,
     };
   }
@@ -426,7 +428,11 @@ export function isExactStudioMathTexTransformProgramBatch(programs: readonly Sce
     transformCount <= 2 &&
     motionCount <= 1 &&
     programs.every((program) => program.operations.length > 0) &&
-    operations.every(({ kind }) => kind === "TransformContent" || kind === "CreateMotion")
+    operations.every(
+      (operation) =>
+        operation.kind === "TransformContent" ||
+        (operation.kind === "CreateMotion" && operation.rotationDeltaRadians === undefined),
+    )
   );
 }
 
@@ -456,6 +462,7 @@ function normalizedStudioMathTexTransformPrograms(
           origin: operation.provenance.origin,
         };
         if (operation.kind === "CreateMotion") {
+          if (operation.rotationDeltaRadians !== undefined) return { ...common, kind: "unsupported" };
           return {
             ...common,
             controlOffset: operation.controlOffset,
@@ -536,6 +543,7 @@ function normalizedStudioMotionOperation(
     origin: operation.provenance.origin,
   };
   if (operation.kind === "CreateMotion") {
+    if (operation.rotationDeltaRadians !== undefined) return { ...common, kind: "unsupported" };
     return {
       ...common,
       controlOffset: operation.controlOffset,
@@ -553,7 +561,11 @@ export function isExactStudioMotionProgramBatch(programs: readonly SceneEdit[]):
   return (
     programs.length > 0 &&
     programs.every(
-      (program) => program.operations.length > 0 && program.operations.every(({ kind }) => kind === "CreateMotion"),
+      (program) =>
+        program.operations.length > 0 &&
+        program.operations.every(
+          (operation) => operation.kind === "CreateMotion" && operation.rotationDeltaRadians === undefined,
+        ),
     )
   );
 }
@@ -580,6 +592,8 @@ export function studioMotionProjectionBatchKind(
   if (programs.length === 0 || programs.some((program) => program.operations.length === 0)) return null;
   const operations = programs.flatMap(({ operations }) => operations);
   if (!operations.some(({ kind }) => kind === "CreateMotion")) return null;
+  if (operations.some((operation) => operation.kind === "CreateMotion" && operation.rotationDeltaRadians !== undefined))
+    return null;
   if (operations.some(({ kind }) => kind === "TransformContent")) return null;
   if (operations.some(({ kind }) => kind === "CreateEntity")) return null;
   if (operations.every(({ kind }) => kind === "CreateMotion")) return "standalone";

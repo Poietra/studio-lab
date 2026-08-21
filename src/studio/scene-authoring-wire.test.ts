@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildStudioCreationEditCommand, buildStudioCreationProjectionCommand } from "./scene-authoring-wire";
+import {
+  buildStudioCreationEditCommand,
+  buildStudioCreationProjectionCommand,
+  isExactStudioMotionProgramBatch,
+  studioMotionProjectionBatchKind,
+} from "./scene-authoring-wire";
 import type { SceneEdit } from "./scene-edit-contract";
 
 function creationProgram(type: string): SceneEdit {
@@ -71,6 +76,34 @@ function followupProgram(transactionId: string, operation: SceneEdit["operations
 }
 
 describe("Studio creation wire", () => {
+  it("forwards motion spin only through the Studio creation authority", () => {
+    const entityId = "entity:Rectangle";
+    const motion = followupProgram("spin:Rectangle", {
+      controlOffset: { x: 20, y: -10 },
+      delta: { x: 80, y: 40 },
+      dependsOn: [],
+      easing: "smooth",
+      id: "spin:Rectangle",
+      interval: { end: 2, start: 0 },
+      kind: "CreateMotion",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      rotationDeltaRadians: 2 * Math.PI,
+      targetEntityIds: [entityId],
+    });
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 4,
+      programs: [creationProgram("Rectangle"), motion],
+    });
+    expect(command.programs[1]?.operations[0]).toMatchObject({
+      kind: "create-motion",
+      rotationDeltaRadians: 2 * Math.PI,
+      targetEntityIds: [entityId],
+    });
+    expect(isExactStudioMotionProgramBatch([motion])).toBe(false);
+    expect(studioMotionProjectionBatchKind([motion])).toBeNull();
+  });
+
   it("normalizes Arrow as a first-class creation kind in apply and projection commands", () => {
     const programs = [creationProgram("Arrow")];
     const apply = buildStudioCreationEditCommand({

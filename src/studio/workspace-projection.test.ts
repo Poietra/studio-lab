@@ -14,6 +14,7 @@ import {
   createInspectorEntityEditProgram,
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
+  createStudioEntitiesProgram,
 } from "./authoring-commands";
 import {
   canResolveSourceDurationMismatch,
@@ -878,6 +879,175 @@ describe("Studio workspace projection", () => {
     expect(projected.proposedState.evaluatedScene.objectGraph.entities[entityId]?.lifetime).toEqual([
       { end: 3.8, start: 0 },
     ]);
+  });
+
+  it("correlates a Studio-created motion spin as one atomic operation record", () => {
+    const imported = workspaceScene("First", null);
+    const initialPosition = { x: 100, y: 120 };
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [{ content: undefined, position: initialPosition, type: "Circle" }],
+      scene: imported.runtimeSceneState,
+      transactionId: "spin-create",
+    });
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const creationProgram = creation.validation.program;
+    const entityId = creation.entityIds[0];
+    const createOperation = creationProgram.operations.find((operation) => operation.kind === "CreateEntity");
+    const positionOperation = creationProgram.operations.find(
+      (operation) => operation.kind === "SetProperty" && operation.key === "position",
+    );
+    const fadeOperation = creationProgram.operations.find(
+      (operation) => operation.kind === "ChangePresence" && operation.effect === "fade-in",
+    );
+    if (
+      !entityId ||
+      createOperation?.kind !== "CreateEntity" ||
+      positionOperation?.kind !== "SetProperty" ||
+      positionOperation.key !== "position" ||
+      fadeOperation?.kind !== "ChangePresence" ||
+      fadeOperation.effect !== "fade-in"
+    ) {
+      throw new Error("Studio creation fixture is incomplete.");
+    }
+    const creationDuration = fadeOperation.interval.end - fadeOperation.interval.start;
+    const motionOperation = {
+      controlOffset: { x: 0, y: 10 },
+      delta: { x: 50, y: 20 },
+      dependsOn: [],
+      easing: "smooth" as const,
+      id: "spin-motion/create-motion",
+      interval: { end: 2, start: 1 },
+      kind: "CreateMotion" as const,
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+      rotationDeltaRadians: Math.PI * 2,
+      targetEntityIds: [entityId],
+    };
+    const motionProgram: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 1, evidence: [], resolvedSeconds: 1, source: { kind: "absolute", seconds: 1 } },
+      intentCount: 1,
+      loweringStatus: "unsupported",
+      operations: [motionOperation],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [motionOperation.id] },
+      transactionId: "spin-motion",
+      version: 1,
+    };
+    const projectedMotionInterval = {
+      end: motionOperation.interval.end + creationDuration,
+      start: motionOperation.interval.start + creationDuration,
+    };
+    const projectedDuration = imported.runtimeSceneState.duration + creationDuration + 1;
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: projectedDuration, start: 0 },
+          entityId,
+          initialDimensions: { radius: 1 },
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "circle",
+          operationId: createOperation.id,
+          transactionId: creationProgram.transactionId,
+        },
+      ],
+      insertions: [
+        { at: 0, duration: creationDuration, transactionId: creationProgram.transactionId },
+        {
+          at: motionOperation.interval.start + creationDuration,
+          duration: 1,
+          transactionId: motionProgram.transactionId,
+        },
+      ],
+      motions: [
+        {
+          control: { x: 125, y: 140 },
+          controlOffset: motionOperation.controlOffset,
+          delta: motionOperation.delta,
+          easing: "manim-smooth",
+          from: initialPosition,
+          interval: projectedMotionInterval,
+          operationId: motionOperation.id,
+          sourceInterval: motionOperation.interval,
+          targetEntityId: entityId,
+          to: { x: 150, y: 140 },
+          transactionId: motionProgram.transactionId,
+        },
+      ],
+      mutations: [
+        {
+          entityId,
+          interval: positionOperation.interval,
+          kind: "position",
+          operationId: positionOperation.id,
+          transactionId: creationProgram.transactionId,
+          value: initialPosition,
+        },
+        {
+          entityId,
+          from: 0,
+          interval: fadeOperation.interval,
+          kind: "fade-in",
+          operationId: fadeOperation.id,
+          to: 1,
+          transactionId: creationProgram.transactionId,
+        },
+        {
+          easing: { kind: "manim-smooth" },
+          entityId,
+          from: 0,
+          interval: projectedMotionInterval,
+          kind: "rotation-keyframes",
+          operationId: motionOperation.id,
+          to: motionOperation.rotationDeltaRadians,
+          transactionId: motionProgram.transactionId,
+        },
+      ],
+      projectedDuration,
+      removals: [],
+    };
+
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedEdits: [
+        programRecord(creationProgram, { issues: [], kind: "valid" }),
+        programRecord(motionProgram, { issues: [], kind: "valid" }),
+      ],
+      creationProjection: projection,
+      currentTime: projectedMotionInterval.start,
+      draftEdit: null,
+      editAuthority: "rust-authorized-batch",
+      nextScene: null,
+      selectedObjectIds: [entityId],
+    });
+
+    expect(
+      projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/position`]?.samples.at(-1),
+    ).toMatchObject({
+      control: projection.motions[0]?.control,
+      operationId: motionOperation.id,
+      value: projection.motions[0]?.to,
+    });
+    expect(
+      projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/rotation`]?.samples.at(-1),
+    ).toMatchObject({
+      easing: { kind: "manim-smooth" },
+      from: 0,
+      interval: projectedMotionInterval,
+      operationId: motionOperation.id,
+      value: Math.PI * 2,
+    });
+    expect(
+      projected.proposedState.evaluatedScene.eventTrack.events.filter(
+        ({ operationId }) => operationId === motionOperation.id,
+      ),
+    ).toHaveLength(1);
+    expect(
+      projected.proposedState.evaluatedScene.provenanceGraph.records.filter(
+        ({ operationId }) => operationId === motionOperation.id,
+      ),
+    ).toHaveLength(1);
   });
 
   it("installs Studio-created shape color and ordering channels from the Rust projection", () => {

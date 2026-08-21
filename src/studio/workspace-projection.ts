@@ -319,7 +319,11 @@ function correlateCreationProjection(
   if (operationById.size !== operations.length || transactionIds.size !== programs.length) {
     throw new TypeError("A Studio creation batch must contain unique operation and transaction IDs.");
   }
-  const expectedMutationOperations = operations.filter(({ operation }) => creationMutationKind(operation) !== null);
+  const expectedMutationOperations = operations.filter(
+    ({ operation }) =>
+      creationMutationKind(operation) !== null ||
+      (operation.kind === "CreateMotion" && operation.rotationDeltaRadians !== undefined),
+  );
   const expectedMotionCount = operations.reduce(
     (count, { operation }) => count + (operation.kind === "CreateMotion" ? operation.targetEntityIds.length : 0),
     0,
@@ -413,21 +417,6 @@ function correlateCreationProjection(
     return { entity, operation, program: expected.program };
   });
 
-  const seenMutationIds = new Set<string>();
-  const mutations = projection.mutations.map((mutation) => {
-    const expected = operationById.get(mutation.operationId);
-    if (
-      !expected ||
-      seenMutationIds.has(mutation.operationId) ||
-      mutation.transactionId !== expected.program.transactionId ||
-      creationMutationKind(expected.operation) !== mutation.kind ||
-      mutation.entityId !== ("entityId" in expected.operation ? expected.operation.entityId : undefined)
-    ) {
-      throw new TypeError(`Creation mutation ${mutation.operationId} is not correlated with the Rust projection.`);
-    }
-    seenMutationIds.add(mutation.operationId);
-    return { mutation, ...expected };
-  });
   const motionProjection: StudioMotionProjectionV1 = {
     insertions: projection.insertions,
     motions: projection.motions,
@@ -437,6 +426,44 @@ function correlateCreationProjection(
   if (expectedMotionCount > 0 && !motions) {
     throw new TypeError("The Rust creation projection contains no correlated motion.");
   }
+  const seenMutationIds = new Set<string>();
+  const mutations = projection.mutations.map((mutation) => {
+    const expected = operationById.get(mutation.operationId);
+    const operation = expected?.operation;
+    const expectedMutationKind = operation ? creationMutationKind(operation) : null;
+    const motion =
+      operation?.kind === "CreateMotion" && operation.rotationDeltaRadians !== undefined
+        ? motions?.find(
+            ({ motion: candidate }) =>
+              candidate.operationId === operation.id && candidate.targetEntityId === operation.targetEntityIds[0],
+          )?.motion
+        : undefined;
+    const isCorrelatedSpin =
+      operation?.kind === "CreateMotion" &&
+      operation.targetEntityIds.length === 1 &&
+      motion !== undefined &&
+      mutation.kind === "rotation-keyframes" &&
+      mutation.entityId === operation.targetEntityIds[0] &&
+      mutation.easing.kind === (operation.easing === "smooth" ? "manim-smooth" : "linear") &&
+      sameProjectionNumber(mutation.from, 0) &&
+      sameProjectionNumber(mutation.to, operation.rotationDeltaRadians ?? Number.NaN) &&
+      sameProjectionNumber(mutation.interval.start, motion.interval.start) &&
+      sameProjectionNumber(mutation.interval.end, motion.interval.end);
+    const isCorrelatedMutation =
+      expectedMutationKind !== null &&
+      expectedMutationKind === mutation.kind &&
+      mutation.entityId === (operation && "entityId" in operation ? operation.entityId : undefined);
+    if (
+      !expected ||
+      seenMutationIds.has(mutation.operationId) ||
+      mutation.transactionId !== expected.program.transactionId ||
+      (!isCorrelatedMutation && !isCorrelatedSpin)
+    ) {
+      throw new TypeError(`Creation mutation ${mutation.operationId} is not correlated with the Rust projection.`);
+    }
+    seenMutationIds.add(mutation.operationId);
+    return { mutation, ...expected };
+  });
   const removals = selectPersistentRemoveProjection(programs, { removals: projection.removals });
   if (expectedRemovalCount > 0 && !removals) {
     throw new TypeError("The Rust creation projection contains no correlated persistent remove.");
@@ -999,8 +1026,11 @@ function projectBoundEntityWorkingState(
   return projectedWorkingState(workingState, records, draft);
 }
 
-function appendCorrelatedMotions(draft: MotionProjectionDraft, correlated: readonly CorrelatedProjectedMotion[]) {
-  const recordedOperationIds = new Set<string>();
+function appendCorrelatedMotions(
+  draft: MotionProjectionDraft,
+  correlated: readonly CorrelatedProjectedMotion[],
+  recordedOperationIds = new Set<string>(),
+) {
   for (const { motion, operation, program } of correlated) {
     const target = draft.entities[motion.targetEntityId];
     if (
@@ -1150,14 +1180,16 @@ function projectCreationWorkingState(
     });
   }
 
+  const recordedMotionOperationIds = new Set<string>();
   for (const { mutation, operation, program } of correlated.mutations) {
     if (!draft.entities[mutation.entityId]) {
       throw new TypeError(`Creation mutation ${mutation.operationId} targets a missing projected entity.`);
     }
     appendProjectedOperationRecord(draft, operation, program, mutation.interval);
+    recordedMotionOperationIds.add(operation.id);
     appendProjectedMutation(draft, mutation, projection.projectedDuration);
   }
-  appendCorrelatedMotions(draft, correlated.motions);
+  appendCorrelatedMotions(draft, correlated.motions, recordedMotionOperationIds);
   appendPersistentRemovals(draft, programs, correlated.removals);
 
   return projectedWorkingState(workingState, records, draft);

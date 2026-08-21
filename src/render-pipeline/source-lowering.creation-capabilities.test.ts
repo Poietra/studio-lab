@@ -294,6 +294,14 @@ describe("Canonical EditProgram source lowering", () => {
     );
   });
 
+  it("does not silently lower a motion spin as translation only", () => {
+    const program = canonicalProgram([motionOperation({ rotationDeltaRadians: 2 * Math.PI })], "client-motion-spin");
+
+    expect(() => lowerCanonicalProgramSource(source, request(program), { height: 8, width: 14.222 }, null)).toThrow(
+      /motion with spin is available in the canonical client preview and video export, but not Manim source export/i,
+    );
+  });
+
   it("lowers Studio-created Text with the preview font and canonical size", () => {
     const entityId = "tx:created-text/entity:label";
     const create = canonicalProgram(
