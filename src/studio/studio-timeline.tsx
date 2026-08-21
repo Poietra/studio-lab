@@ -19,6 +19,7 @@ import {
   timelinePositionPercent,
 } from "./studio-timeline-geometry";
 import type { InteractionMode } from "./studio-viewport-geometry";
+import type { WriteInEasing } from "./write-in-edit";
 
 export type StudioTimelineProps = Readonly<{
   anchors: readonly StudioTimelineAnchor[];
@@ -46,6 +47,8 @@ export type StudioTimelineProps = Readonly<{
   rotationTracks: readonly StudioRotationTimelineTrack[];
   scaleTrackEligibleIds: ReadonlySet<string>;
   scaleTracks: readonly StudioScaleTimelineTrack[];
+  writeInClips: readonly StudioWriteInTimelineClip[];
+  writeInAvailability: ReadonlyMap<string, string | null>;
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
   onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
   onDrawInAdd: (entityId: string) => void;
@@ -90,6 +93,10 @@ export type StudioTimelineProps = Readonly<{
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
+  onWriteInAdd: (entityId: string) => void;
+  onWriteInChange: (clip: StudioWriteInTimelineClip, change: StudioWriteInClipChange) => void;
+  onWriteInDelete: (clip: StudioWriteInTimelineClip) => void;
+  onWriteInSelect: (clip: StudioWriteInTimelineClip) => void;
   readOnly: boolean;
   selectedIds: ReadonlySet<string>;
 }>;
@@ -110,10 +117,31 @@ export type StudioDrawInClipChange = Readonly<{
   easing?: DrawInEasing;
 }>;
 
-function DrawInDurationInput({
+export type StudioWriteInTimelineClip = Readonly<{
+  easing: WriteInEasing;
+  entityId: string;
+  interval: Interval;
+  label: string;
+  maximumDuration: number;
+  operationId: string;
+  readOnlyReason: string | null;
+  transactionId: string;
+}>;
+
+export type StudioWriteInClipChange = Readonly<{
+  duration?: number;
+  easing?: WriteInEasing;
+}>;
+
+function EntranceDurationInput({
   clip,
+  kind,
   onCommit,
-}: Readonly<{ clip: StudioDrawInTimelineClip; onCommit: (duration: number) => void }>) {
+}: Readonly<{
+  clip: StudioDrawInTimelineClip | StudioWriteInTimelineClip;
+  kind: "Draw" | "Write";
+  onCommit: (duration: number) => void;
+}>) {
   const duration = Math.max(0.1, clip.interval.end - clip.interval.start);
   const [draft, setDraft] = useState(String(duration));
 
@@ -128,7 +156,7 @@ function DrawInDurationInput({
 
   return (
     <input
-      aria-label={`Draw duration for ${clip.label}`}
+      aria-label={`${kind} duration for ${clip.label}`}
       className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-violet-500"
       disabled={clip.readOnlyReason !== null}
       max={clip.maximumDuration}
@@ -654,6 +682,8 @@ export function StudioTimeline({
   rotationTracks,
   scaleTrackEligibleIds,
   scaleTracks,
+  writeInClips,
+  writeInAvailability,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
   onDrawInAdd,
@@ -682,6 +712,10 @@ export function StudioTimeline({
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
+  onWriteInAdd,
+  onWriteInChange,
+  onWriteInDelete,
+  onWriteInSelect,
   readOnly,
   selectedIds,
 }: StudioTimelineProps) {
@@ -719,6 +753,19 @@ export function StudioTimeline({
           : lockedEntityIds.has(selectedDrawInClip.entityId)
             ? LOCKED_ENTITY_MUTATION_MESSAGE
             : selectedDrawInClip.readOnlyReason,
+      }
+    : null;
+  const selectedWriteInClip = editingAppliedTransactionId
+    ? (writeInClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
+    : null;
+  const editingWriteInClip = selectedWriteInClip
+    ? {
+        ...selectedWriteInClip,
+        readOnlyReason: readOnly
+          ? "The timeline is read-only."
+          : lockedEntityIds.has(selectedWriteInClip.entityId)
+            ? LOCKED_ENTITY_MUTATION_MESSAGE
+            : selectedWriteInClip.readOnlyReason,
       }
     : null;
   const displayedTimelineAnchors = editingMotionClip?.anchors ?? anchors;
@@ -817,8 +864,9 @@ export function StudioTimeline({
           </span>
           <div className="flex items-center gap-1 text-zinc-500">
             Duration
-            <DrawInDurationInput
+            <EntranceDurationInput
               clip={editingDrawInClip}
+              kind="Draw"
               key={`${editingDrawInClip.transactionId}/${editingDrawInClip.interval.start}/${editingDrawInClip.interval.end}/${editingDrawInClip.maximumDuration}`}
               onCommit={(duration) => onDrawInChange(editingDrawInClip, { duration })}
             />
@@ -849,6 +897,39 @@ export function StudioTimeline({
           </button>
           {editingDrawInClip.readOnlyReason ? (
             <span className="text-amber-500">{editingDrawInClip.readOnlyReason}</span>
+          ) : (
+            <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
+          )}
+        </div>
+      ) : null}
+      {editingWriteInClip ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="max-w-48 truncate text-fuchsia-300" title={editingWriteInClip.label}>
+            Write · {editingWriteInClip.label}
+          </span>
+          <div className="flex items-center gap-1 text-zinc-500">
+            Duration
+            <EntranceDurationInput
+              clip={editingWriteInClip}
+              key={`${editingWriteInClip.transactionId}/${editingWriteInClip.interval.start}/${editingWriteInClip.interval.end}/${editingWriteInClip.maximumDuration}`}
+              kind="Write"
+              onCommit={(duration) => onWriteInChange(editingWriteInClip, { duration })}
+            />
+            s
+          </div>
+          <span className="text-zinc-500" data-write-in-easing={editingWriteInClip.easing}>
+            Easing · Linear
+          </span>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={editingWriteInClip.readOnlyReason !== null}
+            onClick={() => onWriteInDelete(editingWriteInClip)}
+            type="button"
+          >
+            Remove Write
+          </button>
+          {editingWriteInClip.readOnlyReason ? (
+            <span className="text-amber-500">{editingWriteInClip.readOnlyReason}</span>
           ) : (
             <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
           )}
@@ -1395,12 +1476,17 @@ export function StudioTimeline({
             const scaleTrack = scaleTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackDrawInClips = drawInClips.filter((clip) => clip.entityId === track.entityId);
+            const trackWriteInClips = writeInClips.filter((clip) => clip.entityId === track.entityId);
             const drawInUnavailableReason = drawInAvailability.has(track.entityId)
               ? (drawInAvailability.get(track.entityId) ?? null)
               : "Draw supports only Studio-created objects.";
+            const writeInUnavailableReason = writeInAvailability.has(track.entityId)
+              ? (writeInAvailability.get(track.entityId) ?? null)
+              : "Write supports only Studio-created objects.";
             const authoredClipOperationIds = new Set([
               ...trackMotionClips.map((clip) => clip.operationId),
               ...trackDrawInClips.map((clip) => clip.operationId),
+              ...trackWriteInClips.map((clip) => clip.operationId),
             ]);
             const selectionLocked =
               readOnly ||
@@ -1413,6 +1499,12 @@ export function StudioTimeline({
                 ? LOCKED_ENTITY_MUTATION_MESSAGE
                 : drawInUnavailableReason;
             const drawInBlockerId = `draw-in-blocker-${trackIndex}`;
+            const writeInAddBlocker = selectionLocked
+              ? "The timeline is read-only."
+              : authoringLocked
+                ? LOCKED_ENTITY_MUTATION_MESSAGE
+                : writeInUnavailableReason;
+            const writeInBlockerId = `write-in-blocker-${trackIndex}`;
             return (
               <div
                 className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 last:border-b-0 sm:grid-cols-[8rem_minmax(0,1fr)]"
@@ -1452,6 +1544,28 @@ export function StudioTimeline({
                       {drawInAddBlocker ? (
                         <span className="sr-only" id={drawInBlockerId}>
                           {drawInAddBlocker}
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null}
+                  {selected && trackWriteInClips.length === 0 ? (
+                    <>
+                      <button
+                        aria-describedby={writeInAddBlocker ? writeInBlockerId : undefined}
+                        aria-disabled={mutationLocked || writeInUnavailableReason !== null}
+                        aria-label={`Add Write entrance for ${track.label}`}
+                        className="mr-1 h-5 shrink-0 px-1 text-[9px] leading-none text-fuchsia-300 hover:bg-fuchsia-950 aria-disabled:cursor-not-allowed aria-disabled:text-zinc-600"
+                        onClick={() => {
+                          if (!writeInAddBlocker) onWriteInAdd(track.entityId);
+                        }}
+                        title={writeInAddBlocker ?? "Replace the initial fade with a segmented MathTex Write entrance"}
+                        type="button"
+                      >
+                        W+
+                      </button>
+                      {writeInAddBlocker ? (
+                        <span className="sr-only" id={writeInBlockerId}>
+                          {writeInAddBlocker}
                         </span>
                       ) : null}
                     </>
@@ -1713,6 +1827,35 @@ export function StudioTimeline({
                         type="button"
                       >
                         <span className="block truncate">Draw</span>
+                      </button>
+                    );
+                  })}
+                  {trackWriteInClips.map((clip) => {
+                    const readOnlyReason = selectionLocked
+                      ? "The timeline is read-only."
+                      : authoringLocked
+                        ? LOCKED_ENTITY_MUTATION_MESSAGE
+                        : clip.readOnlyReason;
+                    const displayedClip = { ...clip, readOnlyReason };
+                    return (
+                      <button
+                        aria-label={`Edit ${clip.label} Write entrance`}
+                        className={cn(
+                          "absolute top-1 z-10 h-5 min-w-2 border border-fuchsia-500 bg-fuchsia-950/90 px-1 text-left text-[9px] leading-4 text-fuchsia-200 hover:bg-fuchsia-900",
+                          readOnlyReason && "cursor-not-allowed border-zinc-700 bg-zinc-900 text-zinc-600",
+                        )}
+                        disabled={readOnlyReason !== null}
+                        data-write-in-clip={clip.operationId}
+                        key={clip.operationId}
+                        onClick={() => onWriteInSelect(displayedClip)}
+                        style={timelineIntervalStyle(clip.interval, duration)}
+                        title={
+                          readOnlyReason ??
+                          `Write ${clip.interval.start.toFixed(2)}–${clip.interval.end.toFixed(2)}s · ${clip.easing}`
+                        }
+                        type="button"
+                      >
+                        <span className="block truncate">Write</span>
                       </button>
                     );
                   })}

@@ -12,6 +12,8 @@ function props(): StudioTimelineProps {
     duration: 5,
     drawInClips: [],
     drawInAvailability: new Map(),
+    writeInClips: [],
+    writeInAvailability: new Map(),
     editingAppliedTransactionId: null,
     events: [],
     interactionMode: "position",
@@ -39,6 +41,10 @@ function props(): StudioTimelineProps {
     onDrawInChange: vi.fn(),
     onDrawInDelete: vi.fn(),
     onDrawInSelect: vi.fn(),
+    onWriteInAdd: vi.fn(),
+    onWriteInChange: vi.fn(),
+    onWriteInDelete: vi.fn(),
+    onWriteInSelect: vi.fn(),
     onInteractionModeChange: vi.fn(),
     onLifetimeChange: vi.fn(),
     onMaterialParameterKeyframeAdd: vi.fn(),
@@ -110,7 +116,7 @@ describe("StudioTimeline opacity keyframes", () => {
         {...base}
         drawInClips={[
           {
-            easing: "smooth",
+            easing: "linear",
             entityId: "circle",
             interval: { end: 2, start: 1 },
             label: "Circle",
@@ -128,6 +134,55 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain('aria-label="Draw duration for Circle"');
     expect(markup).toContain('aria-label="Draw easing for Circle"');
     expect(markup).toContain("Remove Draw");
+  });
+
+  it("keeps the Write control visible with a reason for a non-MathTex target", () => {
+    const reason = "Write supports only Studio-created MathTex objects.";
+    const markup = renderToStaticMarkup(
+      <StudioTimeline {...props()} writeInAvailability={new Map([["circle", reason]])} />,
+    );
+
+    expect(markup).toContain('aria-label="Add Write entrance for Circle"');
+    expect(markup).toContain(`title="${reason}"`);
+    expect(markup).toMatch(/aria-disabled="true"[^>]*aria-label="Add Write entrance for Circle"/u);
+    expect(markup).toContain(`>${reason}</span>`);
+  });
+
+  it("renders a Studio MathTex Write clip and its duration controls", () => {
+    const base = props();
+    const mathTexTrack = {
+      ...base.objectTracks[0]!,
+      entityId: "equation",
+      label: "E = mc^2",
+      type: "MathTex",
+    };
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...base}
+        editingAppliedTransactionId="create-equation"
+        objectTracks={[mathTexTrack]}
+        selectedIds={new Set(["equation"])}
+        writeInAvailability={new Map([["equation", null]])}
+        writeInClips={[
+          {
+            easing: "linear",
+            entityId: "equation",
+            interval: { end: 2, start: 1 },
+            label: "E = mc^2",
+            maximumDuration: 4,
+            operationId: "write-equation",
+            readOnlyReason: null,
+            transactionId: "create-equation",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Edit E = mc^2 Write entrance"');
+    expect(markup).toContain('aria-label="Write duration for E = mc^2"');
+    expect(markup).toContain('data-write-in-easing="linear"');
+    expect(markup).toContain("Remove Write");
+    expect(markup).toContain('data-write-in-clip="write-equation"');
   });
 
   it("renders the marker above lifetime and non-interactive playhead layers", () => {

@@ -603,6 +603,42 @@ export const OPERATION_REGISTRY = {
       return issues;
     },
   } satisfies Capability<"DrawIn">,
+  WriteIn: {
+    access: (operation) => ({
+      reads: [
+        { channel: "pathTrim", entityId: operation.entityId },
+        { channel: "appearance", entityId: operation.entityId },
+      ],
+      writes: [
+        { channel: "pathTrim", entityId: operation.entityId },
+        { channel: "appearance", entityId: operation.entityId },
+      ],
+    }),
+    execution: () => CLIENT_ONLY_EXECUTION,
+    validate: (operation, scene) => {
+      const issues = entityIssues([operation.entityId], operation, scene);
+      const entity = scene.objectGraph.entities[operation.entityId];
+      if (operation.interval.end - operation.interval.start <= SOURCE_LOWERING_EPSILON) {
+        issues.push({
+          code: "interval-invalid",
+          field: "interval",
+          message: "WriteIn requires a positive duration.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (entity && (!entity.transactionId || entity.type !== "MathTex")) {
+        issues.push({
+          code: "lowering-unsupported",
+          field: "entityId",
+          message: "WriteIn supports only Studio-created MathTex entities.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"WriteIn">,
   SetProperty: {
     access: (operation) => ({ reads: [], writes: [{ channel: operation.key, entityId: operation.entityId }] }),
     execution: setPropertyExecution,

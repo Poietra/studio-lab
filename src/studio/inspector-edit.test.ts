@@ -28,6 +28,20 @@ function studioTextEntity() {
   } satisfies ProjectedEntity;
 }
 
+function studioMathTexEntity() {
+  return {
+    ...fixtureEntity("equation_1"),
+    content: {
+      displayLines: ["E = mc^2"],
+      label: "E = mc^2",
+      texParts: ["E = mc^2"],
+    },
+    id: "tx:studio-mathtex/entity:equation",
+    sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
+    transactionId: "studio-mathtex",
+  } satisfies ProjectedEntity;
+}
+
 describe("Inspector field validation", () => {
   it("offers only bundled Sans/Mono families and real Regular/Bold weights for Studio-created Text", () => {
     const markup = renderToStaticMarkup(
@@ -65,6 +79,20 @@ describe("Inspector field validation", () => {
           texParts: ["F", "=", "m", "a"],
         },
         position: { x: 410, y: 170 },
+      },
+      kind: "valid",
+    });
+  });
+
+  it("updates the display label when Studio-created MathTex content changes", () => {
+    const entity = studioMathTexEntity();
+    expect(validateInspectorEdits(entity, values(entity, { content: "F\n=\nma" }))).toEqual({
+      edits: {
+        content: {
+          displayLines: ["F = ma"],
+          label: "F = ma",
+          texParts: ["F", "=", "ma"],
+        },
       },
       kind: "valid",
     });

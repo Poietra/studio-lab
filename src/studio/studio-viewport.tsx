@@ -106,6 +106,8 @@ export function StudioViewport({
   rotationTracks,
   scaleTrackEligibleIds,
   scaleTracks,
+  writeInClips,
+  writeInAvailability,
   uniformScaleResizeOnlyIds,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
@@ -173,6 +175,10 @@ export function StudioViewport({
   onSelectionLayout,
   onTimeChange,
   onTogglePlayback,
+  onWriteInAdd,
+  onWriteInChange,
+  onWriteInDelete,
+  onWriteInSelect,
   preview = null,
   presenceParticipants,
   previewPaintAvailable,
@@ -286,6 +292,8 @@ export function StudioViewport({
           rotationTracks={rotationTracks}
           scaleTrackEligibleIds={scaleTrackEligibleIds}
           scaleTracks={scaleTracks}
+          writeInClips={writeInClips}
+          writeInAvailability={writeInAvailability}
           onAppliedMotionClipChange={onAppliedMotionClipChange}
           onAppliedMotionClipSelect={onAppliedMotionClipSelect}
           onDrawInAdd={onDrawInAdd}
@@ -314,6 +322,10 @@ export function StudioViewport({
           onSelectEntity={onSelectEntity}
           onTimeChange={onTimeChange}
           onTogglePlayback={onTogglePlayback}
+          onWriteInAdd={onWriteInAdd}
+          onWriteInChange={onWriteInChange}
+          onWriteInDelete={onWriteInDelete}
+          onWriteInSelect={onWriteInSelect}
           readOnly={readOnly}
           selectedIds={selectedIds}
         />
