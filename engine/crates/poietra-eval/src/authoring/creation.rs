@@ -3116,6 +3116,7 @@ fn plan_studio_creation_edits(
                         shape,
                         StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
                     )
+                    && rotation_is_noop(state.instant_rotation)
                     && *from_dimensions == state.current_dimensions
                     && studio_authoring_shape_size(*shape, *from_dimensions).is_some()
                     && studio_authoring_point_is_finite(from_position)
@@ -6379,6 +6380,81 @@ mod tests {
         assert!((transform.m22 + 3.0).abs() < 1e-12);
         assert_eq!(result.creation_projection.as_ref(), Some(&projection));
         assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn normalized_creation_rejects_shape_resize_after_static_rotation_atomically() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:second/entity:rectangle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        command
+            .programs
+            .push(second_group_resize_creation(&command.programs[0]));
+        command.programs.push(studio_created_appearance_edit_input(
+            0.95,
+            entity_id,
+            "resize-before-rotation",
+            StudioCreationOperationKind::Resize {
+                from_dimensions: StudioAuthoringDimensions {
+                    height: Some(1.0),
+                    radius: None,
+                    width: Some(2.0),
+                },
+                from_position: PointV1 { x: 480.0, y: 180.0 },
+                from_scale: 1.0,
+                shape: StudioAuthoringEntityKind::Rectangle,
+                to_dimensions: StudioAuthoringDimensions {
+                    height: Some(1.5),
+                    radius: None,
+                    width: Some(3.0),
+                },
+                to_position: PointV1 { x: 460.0, y: 180.0 },
+            },
+        ));
+        command.programs.push(studio_created_appearance_edit_input(
+            0.95,
+            entity_id,
+            "rotate-rectangle",
+            StudioCreationOperationKind::Rotation {
+                control_present: false,
+                from: Some(0.0),
+                relative_delta: Some(std::f64::consts::FRAC_PI_2),
+                to: Some(std::f64::consts::FRAC_PI_2),
+            },
+        ));
+        command.programs.push(studio_created_appearance_edit_input(
+            0.95,
+            entity_id,
+            "resize-after-rotation",
+            StudioCreationOperationKind::Resize {
+                from_dimensions: StudioAuthoringDimensions {
+                    height: Some(1.5),
+                    radius: None,
+                    width: Some(3.0),
+                },
+                from_position: PointV1 { x: 460.0, y: 180.0 },
+                from_scale: 1.0,
+                shape: StudioAuthoringEntityKind::Rectangle,
+                to_dimensions: StudioAuthoringDimensions {
+                    height: Some(1.0),
+                    radius: None,
+                    width: Some(4.0),
+                },
+                to_position: PointV1 { x: 440.0, y: 180.0 },
+            },
+        ));
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
     }
 
     #[test]
