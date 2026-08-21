@@ -859,6 +859,7 @@ impl EngineSessionV1 {
                     ),
                     delta: studio_vector_to_scene_vector(&motion.delta, frame, viewport),
                     easing: motion.easing,
+                    initial_position: None,
                     interval: motion.interval.clone(),
                     target_entity_ids: vec![motion.target_entity_id.clone()],
                 }],

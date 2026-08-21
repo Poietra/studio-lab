@@ -752,7 +752,10 @@ fn shift_studio_creation_time(
     ranked_insertions: &[(usize, SceneTimelineInsertion)],
 ) -> f64 {
     for (rank, insertion) in ranked_insertions {
-        if *rank > program_rank && at >= insertion.at - TIMELINE_ANCHOR_EPSILON {
+        // A point Program ordered before an insertion at the same source
+        // anchor executes immediately before that insertion. Only a point
+        // strictly after the insertion moves past its inserted duration.
+        if *rank > program_rank && at > insertion.at + TIMELINE_ANCHOR_EPSILON {
             at += insertion.duration;
         }
     }
@@ -831,13 +834,16 @@ fn studio_creation_motion_is_compatible(
     motion_interval: &IntervalV1,
 ) -> bool {
     let fade_end = state.fade_interval.as_ref().map(|interval| interval.end);
-    !state.has_position_or_resize_instant
-        && motion_interval.start >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+    let instant_is_compatible = state.instant_at.is_none_or(|at| {
+        at <= motion_interval.start + TIMELINE_ANCHOR_EPSILON
+            || (!state.has_position_or_resize_instant
+                && rotation_is_noop(state.instant_rotation)
+                && at >= motion_interval.end - TIMELINE_ANCHOR_EPSILON)
+    });
+    motion_interval.start >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
         && motion_interval.end <= state.lifetime.end + TIMELINE_ANCHOR_EPSILON
         && fade_end.is_none_or(|end| motion_interval.start >= end - TIMELINE_ANCHOR_EPSILON)
-        && state
-            .instant_at
-            .is_none_or(|at| at >= motion_interval.end - TIMELINE_ANCHOR_EPSILON)
+        && instant_is_compatible
         && state.persistent_removal.as_ref().is_none_or(|removal| {
             removal.interval.start >= motion_interval.end - TIMELINE_ANCHOR_EPSILON
                 && state
@@ -3394,9 +3400,7 @@ fn plan_studio_creation_edits(
                 .iter()
                 .find(|state| state.spec.id == *entity_id)
                 .ok_or(ProjectStudioCreationEditError::Unsupported)?;
-            if !rotation_is_noop(state.current_rotation)
-                || !rotation_is_noop(state.instant_rotation)
-                || !state.rotation_keyframes.is_empty()
+            if !state.rotation_keyframes.is_empty()
                 || !state.uniform_scale_keyframes.is_empty()
                 || !studio_creation_motion_is_compatible(state, &motion.interval)
             {
@@ -3411,7 +3415,7 @@ fn plan_studio_creation_edits(
                 state.spec.id.clone(),
                 StudioMotionProjectionTarget {
                     lifetime: state.lifetime.clone(),
-                    position: state.initial_position.clone(),
+                    position: state.position.clone(),
                 },
             )
         })
@@ -4612,6 +4616,12 @@ impl EngineSessionV1 {
                 ),
                 delta: studio_vector_to_scene_vector(&motion.delta, frame, viewport),
                 easing: authored_motion_easing(motion.easing),
+                initial_position: Some(studio_point_to_scene_point(
+                    &motion.from,
+                    frame,
+                    viewport,
+                    &self.scene().camera.view.center,
+                )),
                 interval: motion.interval.clone(),
                 target_entity_ids: vec![motion.target_entity_id.clone()],
             })
@@ -6455,6 +6465,182 @@ mod tests {
         assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.assets(), &expected_assets);
         assert_eq!(session.retained_index_stats().build_count, 1);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        clippy::too_many_lines,
+        reason = "one end-to-end test pins the complete static-transform-to-motion handoff"
+    )]
+    fn normalized_creation_moves_after_one_static_transform_anchor() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.insert(
+            1,
+            studio_created_appearance_edit_input(
+                1.0,
+                entity_id,
+                "position-before-motion",
+                StudioCreationOperationKind::Position {
+                    position: Some(PointV1 { x: 340.0, y: 180.0 }),
+                },
+            ),
+        );
+        let StudioCreationOperationKind::Resize { from_position, .. } =
+            &mut command.programs[2].operations[0].kind
+        else {
+            panic!("the creation fixture must retain its shape resize");
+        };
+        *from_position = PointV1 { x: 340.0, y: 180.0 };
+        command.programs[2].anchor_captured_playhead = 1.0;
+        command.programs[2].anchor_resolved_seconds = 1.0;
+        command.programs[2].anchor_source = SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(1.0),
+        };
+        command.programs[2].operations[0].interval = IntervalV1 {
+            end: 1.0,
+            start: 1.0,
+        };
+        command.programs.push(studio_created_appearance_edit_input(
+            1.0,
+            entity_id,
+            "rotation-before-motion",
+            StudioCreationOperationKind::Rotation {
+                control_present: false,
+                from: Some(0.0),
+                relative_delta: Some(std::f64::consts::FRAC_PI_2),
+                to: Some(std::f64::consts::FRAC_PI_2),
+            },
+        ));
+        command.programs.push(studio_created_appearance_edit_input(
+            1.0,
+            entity_id,
+            "scale-before-motion",
+            StudioCreationOperationKind::UniformScale {
+                control_present: false,
+                from: Some(1.0),
+                relative_factor: Some(1.5),
+                to: Some(1.5),
+            },
+        ));
+        command
+            .programs
+            .push(studio_created_motion_edit_input(vec![entity_id.to_owned()]));
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(projection.motions.len(), 1);
+        assert_eq!(projection.motions[0].from, PointV1 { x: 360.0, y: 180.0 });
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let motion_path = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id: target,
+                    path,
+                    ..
+                } if target == entity_id => Some(path),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(motion_path.subpaths[0].start, PointV1 { x: 1.0, y: 0.0 });
+        assert_eq!(
+            motion_path.subpaths[0].segments[0].end,
+            PointV1 { x: 7.0, y: 2.0 }
+        );
+
+        let motion_interval = &projection.motions[0].interval;
+        for (time, expected_position) in [
+            (motion_interval.start, PointV1 { x: 1.0, y: 0.0 }),
+            (
+                f64::midpoint(motion_interval.start, motion_interval.end),
+                PointV1 { x: 4.0, y: 3.0 },
+            ),
+            (motion_interval.end, PointV1 { x: 7.0, y: 2.0 }),
+        ] {
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "static-transform-motion-sample",
+                    sample_time: time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            let poietra_scene_ir::RenderDrawV1::Path { transform, .. } = packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == entity_id)
+                .unwrap()
+            else {
+                panic!("created motion target must remain a path draw");
+            };
+            assert!(transform.m11.abs() < 1e-12, "time={time}");
+            assert!((transform.m12 + 3.0).abs() < 1e-12, "time={time}");
+            assert!((transform.m21 - 3.0).abs() < 1e-12, "time={time}");
+            assert!(transform.m22.abs() < 1e-12, "time={time}");
+            assert!(
+                (transform.tx - expected_position.x).abs() < 1e-12,
+                "time={time}"
+            );
+            assert!(
+                (transform.ty - expected_position.y).abs() < 1e-12,
+                "time={time}"
+            );
+        }
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn normalized_creation_rejects_position_or_resize_after_motion_atomically() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let position = studio_created_appearance_edit_input(
+            2.2,
+            entity_id,
+            "position-after-motion",
+            StudioCreationOperationKind::Position {
+                position: Some(PointV1 { x: 400.0, y: 180.0 }),
+            },
+        );
+        let mut resize = studio_creation_command(&bundle).programs.remove(1);
+        resize.anchor_captured_playhead = 2.2;
+        resize.anchor_resolved_seconds = 2.2;
+        resize.anchor_source = SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(2.2),
+        };
+        resize.operations[0].interval = IntervalV1 {
+            end: 2.2,
+            start: 2.2,
+        };
+
+        for post_motion_transform in [position, resize] {
+            let mut command = studio_creation_command(&bundle);
+            command.programs.truncate(1);
+            command
+                .programs
+                .push(studio_created_motion_edit_input(vec![entity_id.to_owned()]));
+            command.programs.push(post_motion_transform);
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+
+            assert!(matches!(
+                session.apply_studio_creation_edit(command),
+                Err(ApplyStudioCreationEditError::Unsupported)
+            ));
+            assert_eq!(session.scene(), &bundle.scene);
+            assert_eq!(session.assets(), &bundle.assets);
+            assert_eq!(session.retained_index_stats().build_count, 1);
+        }
     }
 
     #[test]

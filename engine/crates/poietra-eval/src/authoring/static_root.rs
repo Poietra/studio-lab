@@ -1957,6 +1957,7 @@ impl EngineSessionV1 {
                     control_offset,
                     delta,
                     easing: motion.easing,
+                    initial_position: None,
                     interval: motion.interval.clone(),
                     target_entity_ids: runtime_entity_ids,
                 });
