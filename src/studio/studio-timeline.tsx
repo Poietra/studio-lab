@@ -2,6 +2,7 @@ import { type KeyboardEvent, type PointerEvent, useRef, useState } from "react";
 
 import { STUDIO_PROPERTY_KEYFRAME_EASINGS, type StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import { cn } from "../lib/cn";
+import type { DrawInEasing } from "./draw-in-edit";
 import { LOCKED_ENTITY_MUTATION_MESSAGE } from "./entity-lock";
 import {
   lifetimeControlKey,
@@ -25,6 +26,8 @@ export type StudioTimelineProps = Readonly<{
   appliedTransactionIds: ReadonlySet<string>;
   currentTime: number;
   duration: number;
+  drawInClips: readonly StudioDrawInTimelineClip[];
+  drawInAvailability: ReadonlyMap<string, string | null>;
   editingAppliedTransactionId: string | null;
   events: readonly TimelineEvent[];
   interactionMode: InteractionMode;
@@ -45,6 +48,10 @@ export type StudioTimelineProps = Readonly<{
   scaleTracks: readonly StudioScaleTimelineTrack[];
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
   onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
+  onDrawInAdd: (entityId: string) => void;
+  onDrawInChange: (clip: StudioDrawInTimelineClip, change: StudioDrawInClipChange) => void;
+  onDrawInDelete: (clip: StudioDrawInTimelineClip) => void;
+  onDrawInSelect: (clip: StudioDrawInTimelineClip) => void;
   onInteractionModeChange: (mode: InteractionMode) => void;
   onLifetimeChange: (entityId: string, lifetimeStart: number, target: Interval) => void;
   onMotionDurationChange: (duration: number) => void;
@@ -86,6 +93,57 @@ export type StudioTimelineProps = Readonly<{
   readOnly: boolean;
   selectedIds: ReadonlySet<string>;
 }>;
+
+export type StudioDrawInTimelineClip = Readonly<{
+  easing: DrawInEasing;
+  entityId: string;
+  interval: Interval;
+  label: string;
+  maximumDuration: number;
+  operationId: string;
+  readOnlyReason: string | null;
+  transactionId: string;
+}>;
+
+export type StudioDrawInClipChange = Readonly<{
+  duration?: number;
+  easing?: DrawInEasing;
+}>;
+
+function DrawInDurationInput({
+  clip,
+  onCommit,
+}: Readonly<{ clip: StudioDrawInTimelineClip; onCommit: (duration: number) => void }>) {
+  const duration = Math.max(0.1, clip.interval.end - clip.interval.start);
+  const [draft, setDraft] = useState(String(duration));
+
+  function commit() {
+    const next = Number(draft);
+    if (!Number.isFinite(next) || next < 0.1 || next > clip.maximumDuration) {
+      setDraft(String(duration));
+      return;
+    }
+    if (Math.abs(next - duration) > 0.0005) onCommit(next);
+  }
+
+  return (
+    <input
+      aria-label={`Draw duration for ${clip.label}`}
+      className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-violet-500"
+      disabled={clip.readOnlyReason !== null}
+      max={clip.maximumDuration}
+      min="0.1"
+      onBlur={commit}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+      step="0.1"
+      type="number"
+      value={draft}
+    />
+  );
+}
 
 export type StudioOpacityTimelineKeyframe = Readonly<{
   easing: StudioPropertyKeyframeEasing;
@@ -576,6 +634,8 @@ export function StudioTimeline({
   appliedTransactionIds,
   currentTime,
   duration,
+  drawInClips,
+  drawInAvailability,
   editingAppliedTransactionId,
   events,
   interactionMode,
@@ -596,6 +656,10 @@ export function StudioTimeline({
   scaleTracks,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
+  onDrawInAdd,
+  onDrawInChange,
+  onDrawInDelete,
+  onDrawInSelect,
   onInteractionModeChange,
   onLifetimeChange,
   onMaterialParameterKeyframeAdd,
@@ -643,6 +707,19 @@ export function StudioTimeline({
     : EMPTY_LIFETIME_CONTROLS;
   const editingMotionClip = editingAppliedTransactionId
     ? (appliedMotionClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
+    : null;
+  const selectedDrawInClip = editingAppliedTransactionId
+    ? (drawInClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
+    : null;
+  const editingDrawInClip = selectedDrawInClip
+    ? {
+        ...selectedDrawInClip,
+        readOnlyReason: readOnly
+          ? "The timeline is read-only."
+          : lockedEntityIds.has(selectedDrawInClip.entityId)
+            ? LOCKED_ENTITY_MUTATION_MESSAGE
+            : selectedDrawInClip.readOnlyReason,
+      }
     : null;
   const displayedTimelineAnchors = editingMotionClip?.anchors ?? anchors;
   const motionClipBlockers = [
@@ -733,6 +810,50 @@ export function StudioTimeline({
           </label>
         ) : null}
       </div>
+      {editingDrawInClip ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="max-w-48 truncate text-violet-300" title={editingDrawInClip.label}>
+            Draw · {editingDrawInClip.label}
+          </span>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Duration
+            <DrawInDurationInput
+              clip={editingDrawInClip}
+              key={`${editingDrawInClip.transactionId}/${editingDrawInClip.interval.start}/${editingDrawInClip.interval.end}/${editingDrawInClip.maximumDuration}`}
+              onCommit={(duration) => onDrawInChange(editingDrawInClip, { duration })}
+            />
+            s
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label={`Draw easing for ${editingDrawInClip.label}`}
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-violet-500"
+              disabled={editingDrawInClip.readOnlyReason !== null}
+              onChange={(event) =>
+                onDrawInChange(editingDrawInClip, { easing: event.currentTarget.value as DrawInEasing })
+              }
+              value={editingDrawInClip.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={editingDrawInClip.readOnlyReason !== null}
+            onClick={() => onDrawInDelete(editingDrawInClip)}
+            type="button"
+          >
+            Remove Draw
+          </button>
+          {editingDrawInClip.readOnlyReason ? (
+            <span className="text-amber-500">{editingDrawInClip.readOnlyReason}</span>
+          ) : (
+            <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
+          )}
+        </div>
+      ) : null}
       {selectedLifetimeTrack && selectedLifetimeInterval ? (
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
           <span className="max-w-40 truncate text-zinc-400" title={selectedLifetimeTrack.label}>
@@ -1257,7 +1378,7 @@ export function StudioTimeline({
               <TimelinePlayhead currentTime={currentTime} duration={duration} />
             </div>
           </div>
-          {objectTracks.map((track) => {
+          {objectTracks.map((track, trackIndex) => {
             const selected = selectedIds.has(track.entityId);
             const materialTracks = materialParameterTracks.filter((candidate) => candidate.entityId === track.entityId);
             const staleMaterialTrack = materialTracks.find(({ assignmentChanged }) => assignmentChanged) ?? null;
@@ -1273,12 +1394,25 @@ export function StudioTimeline({
             const rotationTrack = rotationTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const scaleTrack = scaleTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
-            const trackMotionOperationIds = new Set(trackMotionClips.map((clip) => clip.operationId));
+            const trackDrawInClips = drawInClips.filter((clip) => clip.entityId === track.entityId);
+            const drawInUnavailableReason = drawInAvailability.has(track.entityId)
+              ? (drawInAvailability.get(track.entityId) ?? null)
+              : "Draw supports only Studio-created objects.";
+            const authoredClipOperationIds = new Set([
+              ...trackMotionClips.map((clip) => clip.operationId),
+              ...trackDrawInClips.map((clip) => clip.operationId),
+            ]);
             const selectionLocked =
               readOnly ||
               (track.provisional && !(track.transactionId && appliedTransactionIds.has(track.transactionId)));
             const authoringLocked = lockedEntityIds.has(track.entityId);
             const mutationLocked = selectionLocked || authoringLocked;
+            const drawInAddBlocker = selectionLocked
+              ? "The timeline is read-only."
+              : authoringLocked
+                ? LOCKED_ENTITY_MUTATION_MESSAGE
+                : drawInUnavailableReason;
+            const drawInBlockerId = `draw-in-blocker-${trackIndex}`;
             return (
               <div
                 className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 last:border-b-0 sm:grid-cols-[8rem_minmax(0,1fr)]"
@@ -1300,6 +1434,28 @@ export function StudioTimeline({
                   >
                     {track.label}
                   </button>
+                  {selected && trackDrawInClips.length === 0 ? (
+                    <>
+                      <button
+                        aria-describedby={drawInAddBlocker ? drawInBlockerId : undefined}
+                        aria-disabled={mutationLocked || drawInUnavailableReason !== null}
+                        aria-label={`Add Draw entrance for ${track.label}`}
+                        className="mr-1 h-5 shrink-0 px-1 text-[9px] leading-none text-violet-300 hover:bg-violet-950 aria-disabled:cursor-not-allowed aria-disabled:text-zinc-600"
+                        onClick={() => {
+                          if (!drawInAddBlocker) onDrawInAdd(track.entityId);
+                        }}
+                        title={drawInAddBlocker ?? "Replace the initial fade with a stroke Draw entrance"}
+                        type="button"
+                      >
+                        D+
+                      </button>
+                      {drawInAddBlocker ? (
+                        <span className="sr-only" id={drawInBlockerId}>
+                          {drawInAddBlocker}
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null}
                   {selected && opacityTrackEligibleIds.has(track.entityId) ? (
                     <button
                       aria-label={`Add opacity keyframe for ${track.label}`}
@@ -1406,7 +1562,7 @@ export function StudioTimeline({
                     );
                   })}
                   {track.animatedChannels.map((channel, index) =>
-                    channel.operationId && trackMotionOperationIds.has(channel.operationId) ? null : (
+                    channel.operationId && authoredClipOperationIds.has(channel.operationId) ? null : (
                       <div
                         aria-label={
                           channel.readOnlyReason ? `${channel.key} animation · ${channel.readOnlyReason}` : undefined
@@ -1531,6 +1687,35 @@ export function StudioTimeline({
                       onSelect={() => onAppliedMotionClipSelect(clip)}
                     />
                   ))}
+                  {trackDrawInClips.map((clip) => {
+                    const readOnlyReason = selectionLocked
+                      ? "The timeline is read-only."
+                      : authoringLocked
+                        ? LOCKED_ENTITY_MUTATION_MESSAGE
+                        : clip.readOnlyReason;
+                    const displayedClip = { ...clip, readOnlyReason };
+                    return (
+                      <button
+                        aria-label={`Edit ${clip.label} Draw entrance`}
+                        className={cn(
+                          "absolute top-1 z-10 h-5 min-w-2 border border-violet-500 bg-violet-950/90 px-1 text-left text-[9px] leading-4 text-violet-200 hover:bg-violet-900",
+                          readOnlyReason && "cursor-not-allowed border-zinc-700 bg-zinc-900 text-zinc-600",
+                        )}
+                        disabled={readOnlyReason !== null}
+                        data-draw-in-clip={clip.operationId}
+                        key={clip.operationId}
+                        onClick={() => onDrawInSelect(displayedClip)}
+                        style={timelineIntervalStyle(clip.interval, duration)}
+                        title={
+                          readOnlyReason ??
+                          `Draw ${clip.interval.start.toFixed(2)}–${clip.interval.end.toFixed(2)}s · ${clip.easing}`
+                        }
+                        type="button"
+                      >
+                        <span className="block truncate">Draw</span>
+                      </button>
+                    );
+                  })}
                   {track.lifetimes.length === 0 ? (
                     <span className="absolute inset-0 flex items-center px-2 text-[9px] text-zinc-700">
                       Not present
