@@ -752,7 +752,10 @@ fn shift_studio_creation_time(
     ranked_insertions: &[(usize, SceneTimelineInsertion)],
 ) -> f64 {
     for (rank, insertion) in ranked_insertions {
-        if *rank > program_rank && at >= insertion.at - TIMELINE_ANCHOR_EPSILON {
+        // A point Program ordered before an insertion at the same source
+        // anchor executes immediately before that insertion. Only a point
+        // strictly after the insertion moves past its inserted duration.
+        if *rank > program_rank && at > insertion.at + TIMELINE_ANCHOR_EPSILON {
             at += insertion.duration;
         }
     }
@@ -6477,7 +6480,7 @@ mod tests {
         command.programs.insert(
             1,
             studio_created_appearance_edit_input(
-                0.85,
+                1.0,
                 entity_id,
                 "position-before-motion",
                 StudioCreationOperationKind::Position {
@@ -6491,8 +6494,17 @@ mod tests {
             panic!("the creation fixture must retain its shape resize");
         };
         *from_position = PointV1 { x: 340.0, y: 180.0 };
+        command.programs[2].anchor_captured_playhead = 1.0;
+        command.programs[2].anchor_resolved_seconds = 1.0;
+        command.programs[2].anchor_source = SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(1.0),
+        };
+        command.programs[2].operations[0].interval = IntervalV1 {
+            end: 1.0,
+            start: 1.0,
+        };
         command.programs.push(studio_created_appearance_edit_input(
-            0.85,
+            1.0,
             entity_id,
             "rotation-before-motion",
             StudioCreationOperationKind::Rotation {
@@ -6503,7 +6515,7 @@ mod tests {
             },
         ));
         command.programs.push(studio_created_appearance_edit_input(
-            0.85,
+            1.0,
             entity_id,
             "scale-before-motion",
             StudioCreationOperationKind::UniformScale {
