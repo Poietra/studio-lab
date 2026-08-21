@@ -2,7 +2,11 @@ import { readFile } from "node:fs/promises";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DEFAULT_BROWSER_MP4_EXPORT_PROFILE, runBrowserMp4ExportV1 } from "./browser-mp4-export";
+import {
+  browserMp4ExportProfileV1,
+  DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+  runBrowserMp4ExportV1,
+} from "./browser-mp4-export";
 import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
 import {
   type ExportProgressV1,
@@ -64,6 +68,29 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("runBrowserMp4ExportV1", () => {
+  it("forwards a selected non-default resolution and frame rate to the worker", async () => {
+    const bundle = await fixtureBundle();
+    const worker = new FakeWorker();
+    const profile = browserMp4ExportProfileV1({ frameRate: 60, resolution: "1280x720" });
+    const outcomePromise = runBrowserMp4ExportV1({
+      profile,
+      snapshot: bundle,
+      workerFactory: () => worker as unknown as Worker,
+    });
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
+    const request = exportWorkerRequestV1Schema.parse(worker.posted[0]);
+    if (request.kind !== "export-mp4") throw new Error("missing export request");
+    expect(JSON.parse(new TextDecoder().decode(request.profileJson))).toEqual(profile);
+    worker.emitMessage({
+      bytes: new Uint8Array([0, 0, 0, 8]).buffer,
+      kind: "export-finished",
+      requestId: request.requestId,
+      schema: "poietra.export-worker-response",
+      version: 1,
+    } satisfies ExportWorkerResponseV1);
+    await expect(outcomePromise).resolves.toMatchObject({ kind: "exported" });
+  });
+
   it("forwards a canonical Studio-created Image and its verified PNG payload to the WebCodecs worker", async () => {
     const base = await fixtureBundle("png-alpha-edge-camera.json");
     const image = base.scene.entities.find((entity) => entity.geometry.kind === "image");

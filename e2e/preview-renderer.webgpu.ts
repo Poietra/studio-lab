@@ -717,7 +717,28 @@ test("presents exactly correlated WebGPU frames with a paint-free interaction ov
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
 });
 
-test("downloads a playable 30 fps MP4 from the exact presented Rust Scene", { tag: "@ci-smoke" }, async ({ page }) => {
+test("offers only the closed export settings and keeps a non-default selection", { tag: "@ci-smoke" }, async ({
+  page,
+}) => {
+  await page.goto(`/${EXPORT_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+
+  const resolution = page.getByRole("combobox", { name: "Video resolution" });
+  const frameRate = page.getByRole("combobox", { name: "Video frame rate" });
+  await expect(resolution.locator("option")).toHaveText(["480p", "720p", "1080p"]);
+  await expect(frameRate.locator("option")).toHaveText(["30 fps", "60 fps"]);
+  await resolution.selectOption("1280x720");
+  await frameRate.selectOption("60");
+  await expect(page.locator("[data-studio-export-profile]")).toHaveAttribute(
+    "data-studio-export-profile",
+    "1280x720@60",
+  );
+});
+
+test("downloads a playable 30 fps MP4 from the exact presented Rust Scene", {
+  tag: "@ci-smoke",
+}, async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/${EXPORT_FIXTURE_QUERY}`);
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();

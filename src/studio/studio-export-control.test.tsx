@@ -1,7 +1,11 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { browserMp4ExportFileNameV1 } from "../engine/browser-mp4-export";
+import {
+  browserMp4ExportFileNameV1,
+  browserMp4ExportProfileV1,
+  DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+} from "../engine/browser-mp4-export";
 import type { SceneIrBundleV1 } from "../engine/contracts";
 import { EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1 } from "../engine/fragment-material-registry";
 import {
@@ -76,6 +80,7 @@ describe("completeBrowserMp4ExportV1", () => {
       capturedAvailability: unavailablePublication,
       capturedPublication,
       deliverLocal: () => calls.push("download"),
+      profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
       publicationCaptureFailure: null,
       preparePublication: async () => {
         calls.push("digest");
@@ -99,12 +104,32 @@ describe("completeBrowserMp4ExportV1", () => {
       deliverLocal: () => {
         delivered = true;
       },
+      profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
       publicationCaptureFailure: "UUID unavailable",
       video: new Uint8Array([1, 2, 3]),
     });
 
     expect(delivered).toBe(true);
     expect(completion.state).toEqual({ kind: "failed", message: "UUID unavailable" });
+  });
+
+  it("keeps a selected non-default profile in publication metadata", async () => {
+    const profile = browserMp4ExportProfileV1({ frameRate: 60, resolution: "1280x720" });
+    const completion = await completeBrowserMp4ExportV1({
+      capturedAvailability: unavailablePublication,
+      capturedPublication,
+      deliverLocal: () => undefined,
+      profile,
+      publicationCaptureFailure: null,
+      video: new Uint8Array([1, 2, 3]),
+    });
+
+    expect(completion.artifact?.metadata.exportProfile).toEqual(profile);
+    expect(completion.artifact?.metadata.encoderEvidence).toMatchObject({
+      frameRate: 60,
+      resolution: "1280x720",
+    });
+    expect(completion.state).toEqual({ kind: "ready" });
   });
 });
 
@@ -131,6 +156,14 @@ describe("StudioExportControl", () => {
     expect(markup).toContain(">Publish</button>");
     expect(markup).toContain(">+ WAV</button>");
     expect(markup).toContain('accept=".wav,audio/wav,audio/x-wav"');
+    expect(markup).toContain('aria-label="Video resolution"');
+    expect(markup).toContain('<option value="854x480" selected="">480p</option>');
+    expect(markup).toContain('<option value="1280x720">720p</option>');
+    expect(markup).toContain('<option value="1920x1080">1080p</option>');
+    expect(markup).toContain('aria-label="Video frame rate"');
+    expect(markup).toContain('<option value="30" selected="">30 fps</option>');
+    expect(markup).toContain('<option value="60">60 fps</option>');
+    expect(markup).toContain('data-studio-export-profile="854x480@30"');
   });
 
   it("stays disabled while the surrounding session transition locks the header", () => {

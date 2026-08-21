@@ -6,10 +6,12 @@ import {
 } from "../collaboration/client-export-client";
 import {
   browserMp4ExportFileNameV1,
+  browserMp4ExportProfileV1,
   DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
   downloadMp4Blob,
   runBrowserMp4ExportV1,
 } from "../engine/browser-mp4-export";
+import { type ExportProfileV1, exportFrameRateV1Schema, exportResolutionV1Schema } from "../engine/export-profile";
 import {
   type ExportProgressV1,
   type ExportRefusalReasonV1,
@@ -72,6 +74,14 @@ type BrowserExportPublicationCompletionV1 = Readonly<{
 
 const defaultPublicationClient = new FetchClientExportPublicationClientV1();
 
+const EXPORT_RESOLUTION_OPTIONS = [
+  { label: "480p", value: "854x480" },
+  { label: "720p", value: "1280x720" },
+  { label: "1080p", value: "1920x1080" },
+] as const satisfies ReadonlyArray<Readonly<{ label: string; value: ExportProfileV1["resolution"] }>>;
+
+const EXPORT_FRAME_RATE_OPTIONS = [30, 60] as const satisfies readonly ExportProfileV1["frameRate"][];
+
 export type StudioExportControlStateKindV1 = ExportRunStateV1["kind"] | "unavailable";
 
 /** Bounded whole percentage of encoded frames, honest about the empty grid. */
@@ -89,6 +99,7 @@ export async function completeBrowserMp4ExportV1(
     capturedAvailability: StudioExportPublicationAvailabilityV1;
     capturedPublication: ReturnType<typeof captureStudioExportPublicationV1>;
     deliverLocal: () => void;
+    profile: ExportProfileV1;
     publicationCaptureFailure: string | null;
     video: Uint8Array<ArrayBuffer>;
     preparePublication?: typeof prepareStudioExportPublicationV1;
@@ -116,7 +127,7 @@ export async function completeBrowserMp4ExportV1(
   try {
     const artifact = await (input.preparePublication ?? prepareStudioExportPublicationV1)(
       input.capturedPublication,
-      DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+      input.profile,
       input.video,
     );
     return { artifact, state: { kind: "ready" } };
@@ -141,9 +152,19 @@ export function StudioExportControl({
   const [publicationRun, setPublicationRun] = useState<PublicationRunStateV1>({ kind: "idle" });
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [exportFrameRate, setExportFrameRate] = useState<ExportProfileV1["frameRate"]>(
+    DEFAULT_BROWSER_MP4_EXPORT_PROFILE.frameRate,
+  );
+  const [exportResolution, setExportResolution] = useState<ExportProfileV1["resolution"]>(
+    DEFAULT_BROWSER_MP4_EXPORT_PROFILE.resolution,
+  );
   const activeExport = useRef<AbortController | null>(null);
   const audioInput = useRef<HTMLInputElement | null>(null);
   const pendingPublication = useRef<PreparedStudioExportPublicationV1 | null>(null);
+  const selectedProfile = browserMp4ExportProfileV1({
+    frameRate: exportFrameRate,
+    resolution: exportResolution,
+  });
 
   const stateKind: StudioExportControlStateKindV1 =
     run.kind === "running" ? "running" : exportSource === null ? "unavailable" : run.kind;
@@ -174,6 +195,7 @@ export function StudioExportControl({
     const capturedSource = exportSource;
     const capturedAudioFile = audioFile;
     const capturedAvailability = publication;
+    const capturedProfile = selectedProfile;
     let capturedPublication: ReturnType<typeof captureStudioExportPublicationV1> = null;
     let publicationCaptureFailure: string | null = null;
     if (!capturedAudioFile) {
@@ -197,7 +219,7 @@ export function StudioExportControl({
         onProgress: (progress) => {
           if (activeExport.current === controller) setRun({ kind: "running", progress });
         },
-        profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+        profile: capturedProfile,
         signal: controller.signal,
         snapshot: capturedSource.bundle,
       });
@@ -228,6 +250,7 @@ export function StudioExportControl({
             downloadMp4Blob(fileName, outcome.mp4);
             setRun({ fileName, kind: "done" });
           },
+          profile: capturedProfile,
           publicationCaptureFailure,
           video,
         });
@@ -266,6 +289,11 @@ export function StudioExportControl({
     if (audioInput.current) audioInput.current.value = "";
   }
 
+  function discardPendingPublicationForProfileChange() {
+    pendingPublication.current = null;
+    setPublicationRun({ kind: "idle" });
+  }
+
   async function publishExport() {
     const artifact = pendingPublication.current;
     if (disabled || audioFile || publicationRun.kind === "publishing" || !artifact) return;
@@ -290,9 +318,48 @@ export function StudioExportControl({
       className="flex items-center gap-1"
       data-studio-export-mp4-reason={run.kind === "refused" ? run.reason : undefined}
       data-studio-export-mp4-state={stateKind}
+      data-studio-export-profile={`${exportResolution}@${exportFrameRate}`}
       data-studio-export-publication-state={publicationRun.kind}
       role="status"
     >
+      <select
+        aria-label="Video resolution"
+        className="h-7 border border-zinc-700 bg-zinc-950 px-1 tabular-nums text-zinc-300 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
+        disabled={disabled || running || saving || publishing}
+        onChange={(event) => {
+          const resolution = exportResolutionV1Schema.safeParse(event.currentTarget.value);
+          if (resolution.success && resolution.data !== exportResolution) {
+            discardPendingPublicationForProfileChange();
+            setExportResolution(resolution.data);
+          }
+        }}
+        value={exportResolution}
+      >
+        {EXPORT_RESOLUTION_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <select
+        aria-label="Video frame rate"
+        className="h-7 border border-zinc-700 bg-zinc-950 px-1 tabular-nums text-zinc-300 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
+        disabled={disabled || running || saving || publishing}
+        onChange={(event) => {
+          const frameRate = exportFrameRateV1Schema.safeParse(Number(event.currentTarget.value));
+          if (frameRate.success && frameRate.data !== exportFrameRate) {
+            discardPendingPublicationForProfileChange();
+            setExportFrameRate(frameRate.data);
+          }
+        }}
+        value={exportFrameRate}
+      >
+        {EXPORT_FRAME_RATE_OPTIONS.map((frameRate) => (
+          <option key={frameRate} value={frameRate}>
+            {frameRate} fps
+          </option>
+        ))}
+      </select>
       <button
         className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-wait disabled:text-zinc-600"
         disabled={startBlocked}
