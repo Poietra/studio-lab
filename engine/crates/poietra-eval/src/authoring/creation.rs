@@ -2302,6 +2302,7 @@ fn plan_studio_creation_edits(
                         | StudioAuthoringEntityKind::Line
                         | StudioAuthoringEntityKind::MathTex
                         | StudioAuthoringEntityKind::Rectangle
+                        | StudioAuthoringEntityKind::RegularPolygon
                         | StudioAuthoringEntityKind::Text
                 )
             {
@@ -2457,6 +2458,13 @@ fn plan_studio_creation_edits(
                         && spec.tex_parts.is_none()
                         && studio_authoring_shape_size(spec.kind, spec.dimensions).is_some()
                 }
+                StudioAuthoringEntityKind::RegularPolygon => {
+                    spec.image.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && studio_regular_polygon_parameters(spec.dimensions).is_some()
+                }
                 StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
                     spec.image.is_none()
                         && spec.text.is_none()
@@ -2468,6 +2476,7 @@ fn plan_studio_creation_edits(
                     spec.image.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
+                        && spec.dimensions.sides.is_none()
                         && spec.tex_parts.as_ref().is_some_and(|parts| {
                             !parts.is_empty() && parts.iter().all(|part| !part.trim().is_empty())
                         })
@@ -2628,6 +2637,7 @@ fn plan_studio_creation_edits(
                 StudioAuthoringEntityKind::Circle
                     | StudioAuthoringEntityKind::Line
                     | StudioAuthoringEntityKind::Rectangle
+                    | StudioAuthoringEntityKind::RegularPolygon
             ) || !studio_timeline_semantic_values_match(draw.start, lifetime.start)
                 || draw.end > lifetime.end
         }) {
@@ -3806,6 +3816,7 @@ fn plan_studio_creation_edits(
                             state.kind,
                             StudioAuthoringEntityKind::Circle
                                 | StudioAuthoringEntityKind::Rectangle
+                                | StudioAuthoringEntityKind::RegularPolygon
                         )
                         && canonical_studio_hex_color(color).is_some()
                         && state.fill_color_override.as_deref() != Some(color.as_str())
@@ -3841,6 +3852,7 @@ fn plan_studio_creation_edits(
                             state.kind,
                             StudioAuthoringEntityKind::Circle
                                 | StudioAuthoringEntityKind::Rectangle
+                                | StudioAuthoringEntityKind::RegularPolygon
                         )
                         && canonical_studio_hex_color(color).is_some()
                         && state.stroke_color_override.as_deref().unwrap_or("#ffffff") != color
@@ -4410,6 +4422,81 @@ fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
             y: start.y + (end.y - start.y) * 2.0 / 3.0,
         },
         end,
+    }
+}
+
+const STUDIO_REGULAR_POLYGON_MIN_SIDES: u32 = 3;
+const STUDIO_REGULAR_POLYGON_MAX_SIDES: u32 = 32;
+
+fn studio_regular_polygon_parameters(dimensions: StudioAuthoringDimensions) -> Option<(u32, f64)> {
+    match (
+        dimensions.height,
+        dimensions.radius,
+        dimensions.sides,
+        dimensions.width,
+    ) {
+        (None, Some(radius), Some(sides), None)
+            if radius.is_finite()
+                && radius > 0.0
+                && (STUDIO_REGULAR_POLYGON_MIN_SIDES..=STUDIO_REGULAR_POLYGON_MAX_SIDES)
+                    .contains(&sides) =>
+        {
+            Some((sides, radius))
+        }
+        _ => None,
+    }
+}
+
+fn studio_regular_polygon_path(sides: u32, radius: f64) -> CubicPathV1 {
+    let start_angle = if sides & 1 == 0 {
+        0.0
+    } else {
+        std::f64::consts::FRAC_PI_2
+    };
+    let mut points = (0..sides)
+        .map(|index| {
+            let angle = start_angle + std::f64::consts::TAU * f64::from(index) / f64::from(sides);
+            PointV1 {
+                x: radius * angle.cos(),
+                y: radius * angle.sin(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let (min_x, max_x, min_y, max_y) = points.iter().fold(
+        (
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ),
+        |(min_x, max_x, min_y, max_y), point| {
+            (
+                min_x.min(point.x),
+                max_x.max(point.x),
+                min_y.min(point.y),
+                max_y.max(point.y),
+            )
+        },
+    );
+    let center_x = (min_x + max_x) / 2.0;
+    let center_y = (min_y + max_y) / 2.0;
+    for point in &mut points {
+        point.x -= center_x;
+        point.y -= center_y;
+    }
+    let segments = points
+        .iter()
+        .enumerate()
+        .map(|(index, start)| {
+            straight_cubic_segment(start, points[(index + 1) % points.len()].clone())
+        })
+        .collect();
+    CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: true,
+            segments,
+            start: points[0].clone(),
+        }],
     }
 }
 
@@ -5143,6 +5230,7 @@ fn studio_creation_shape_path(
         | StudioAuthoringEntityKind::Line
         | StudioAuthoringEntityKind::MathTex
         | StudioAuthoringEntityKind::Other
+        | StudioAuthoringEntityKind::RegularPolygon
         | StudioAuthoringEntityKind::Text => {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
@@ -6040,7 +6128,8 @@ impl EngineSessionV1 {
                 | StudioAuthoringEntityKind::Image
                 | StudioAuthoringEntityKind::Line
                 | StudioAuthoringEntityKind::Other
-                | StudioAuthoringEntityKind::Rectangle => {}
+                | StudioAuthoringEntityKind::Rectangle
+                | StudioAuthoringEntityKind::RegularPolygon => {}
             }
         }
 
@@ -6097,6 +6186,14 @@ impl EngineSessionV1 {
                             height: size.height,
                             width: size.width,
                         }
+                    }
+                }
+                StudioAuthoringEntityKind::RegularPolygon => {
+                    let (sides, radius) =
+                        studio_regular_polygon_parameters(state.initial_dimensions)
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    CreateSceneEntityGeometry::ShapeOutline {
+                        path: studio_regular_polygon_path(sides, radius),
                     }
                 }
                 StudioAuthoringEntityKind::MathTex if state.write_interval.is_some() => {
@@ -6169,6 +6266,7 @@ impl EngineSessionV1 {
                     | StudioAuthoringEntityKind::Image
                     | StudioAuthoringEntityKind::Line
                     | StudioAuthoringEntityKind::MathTex
+                    | StudioAuthoringEntityKind::RegularPolygon
                     | StudioAuthoringEntityKind::Text => (1.0, 1.0),
                     StudioAuthoringEntityKind::Other => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
@@ -6405,12 +6503,14 @@ mod tests {
             from_dimensions: StudioAuthoringDimensions {
                 height: Some(2.0),
                 radius: None,
+                sides: None,
                 width: Some(4.0),
             },
             from_shape: StudioAuthoringEntityKind::Rectangle,
             to_dimensions: StudioAuthoringDimensions {
                 height: None,
                 radius: Some(1.0),
+                sides: None,
                 width: None,
             },
             to_shape: StudioAuthoringEntityKind::Circle,
@@ -6720,6 +6820,7 @@ mod tests {
                                     dimensions: StudioAuthoringDimensions {
                                         height: None,
                                         radius: Some(1.0),
+                                        sides: None,
                                         width: None,
                                     },
                                     id: entity_id.to_owned(),
@@ -6784,6 +6885,7 @@ mod tests {
                             from_dimensions: StudioAuthoringDimensions {
                                 height: None,
                                 radius: Some(1.0),
+                                sides: None,
                                 width: None,
                             },
                             from_position: PointV1 { x: 320.0, y: 180.0 },
@@ -6792,6 +6894,7 @@ mod tests {
                             to_dimensions: StudioAuthoringDimensions {
                                 height: None,
                                 radius: Some(2.0),
+                                sides: None,
                                 width: None,
                             },
                             to_position: PointV1 { x: 360.0, y: 180.0 },
@@ -7104,6 +7207,33 @@ mod tests {
         command
     }
 
+    fn studio_regular_polygon_creation_command(
+        bundle: &SceneIrBundleV1,
+        sides: u32,
+        radius: f64,
+    ) -> ApplyStudioCreationEditCommand {
+        let mut command = studio_creation_command(bundle);
+        command.programs.truncate(1);
+        let program = &mut command.programs[0];
+        for operation in &mut program.operations {
+            if operation.entity_id.as_deref() == Some("tx:create/entity:circle") {
+                operation.entity_id = Some("tx:create/entity:regular-polygon".to_owned());
+            }
+        }
+        let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
+            unreachable!();
+        };
+        entity.id = "tx:create/entity:regular-polygon".to_owned();
+        entity.kind = StudioAuthoringEntityKind::RegularPolygon;
+        entity.dimensions = StudioAuthoringDimensions {
+            height: None,
+            radius: Some(radius),
+            sides: Some(sides),
+            width: None,
+        };
+        command
+    }
+
     fn studio_math_tex_write_creation_command(
         bundle: &SceneIrBundleV1,
     ) -> ApplyStudioCreationEditCommand {
@@ -7390,6 +7520,7 @@ mod tests {
                 entity.dimensions = StudioAuthoringDimensions {
                     height: Some(2.0),
                     radius: None,
+                    sides: None,
                     width: Some(4.0),
                 };
             }
@@ -7397,11 +7528,13 @@ mod tests {
         let rectangle = StudioAuthoringDimensions {
             height: Some(2.0),
             radius: None,
+            sides: None,
             width: Some(4.0),
         };
         let circle = StudioAuthoringDimensions {
             height: None,
             radius: Some(1.0),
+            sides: None,
             width: None,
         };
         command.programs.push(studio_shape_transform_program(
@@ -7728,6 +7861,7 @@ mod tests {
                     entity.dimensions = StudioAuthoringDimensions {
                         height: Some(1.0),
                         radius: None,
+                        sides: None,
                         width: Some(2.0),
                     };
                 }
@@ -8803,6 +8937,7 @@ mod tests {
                 from_dimensions: StudioAuthoringDimensions {
                     height: Some(1.0),
                     radius: None,
+                    sides: None,
                     width: Some(2.0),
                 },
                 from_position: PointV1 { x: 480.0, y: 180.0 },
@@ -8811,6 +8946,7 @@ mod tests {
                 to_dimensions: StudioAuthoringDimensions {
                     height: Some(1.5),
                     radius: None,
+                    sides: None,
                     width: Some(3.0),
                 },
                 to_position: PointV1 { x: 460.0, y: 180.0 },
@@ -8835,6 +8971,7 @@ mod tests {
                 from_dimensions: StudioAuthoringDimensions {
                     height: Some(1.5),
                     radius: None,
+                    sides: None,
                     width: Some(3.0),
                 },
                 from_position: PointV1 { x: 460.0, y: 180.0 },
@@ -8843,6 +8980,7 @@ mod tests {
                 to_dimensions: StudioAuthoringDimensions {
                     height: Some(1.0),
                     radius: None,
+                    sides: None,
                     width: Some(4.0),
                 },
                 to_position: PointV1 { x: 440.0, y: 180.0 },
@@ -9272,6 +9410,205 @@ mod tests {
             rotation_at_a_different_static_anchor,
             rotation_with_motion,
         ] {
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+            assert!(matches!(
+                session.apply_studio_creation_edit(command),
+                Err(ApplyStudioCreationEditError::Unsupported)
+            ));
+            assert_eq!(session.scene(), &bundle.scene);
+            assert_eq!(session.retained_index_stats().build_count, 1);
+        }
+    }
+
+    #[test]
+    fn normalized_creation_projects_and_applies_a_regular_polygon_as_one_closed_cubic_path() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_regular_polygon_creation_command(&bundle, 5, 2.0);
+        let program = &mut command.programs[0];
+        let draw = program
+            .operations
+            .iter_mut()
+            .find(|operation| matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. }))
+            .unwrap();
+        draw.id = "draw".to_owned();
+        draw.interval.end = 1.25;
+        draw.kind = StudioCreationOperationKind::DrawIn {
+            easing: StudioPropertyEasing::Smooth,
+            from: Some(0.0),
+            to: Some(1.0),
+        };
+        program.schedule_order[2] = "draw".to_owned();
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(projection.entities.len(), 1);
+        assert_eq!(
+            projection.entities[0].kind,
+            StudioAuthoringEntityKind::RegularPolygon
+        );
+        assert_eq!(
+            projection.entities[0].initial_dimensions,
+            StudioAuthoringDimensions {
+                height: None,
+                radius: Some(2.0),
+                sides: Some(5),
+                width: None,
+            }
+        );
+        let projection_wire = serde_json::to_value(&projection).unwrap();
+        assert_eq!(
+            projection_wire["entities"][0]["kind"],
+            serde_json::json!("regular-polygon")
+        );
+        assert_eq!(
+            projection_wire["entities"][0]["initialDimensions"],
+            serde_json::json!({ "radius": 2.0, "sides": 5 })
+        );
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "tx:create/entity:regular-polygon")
+            .unwrap();
+        let SceneGeometryV1::CubicPath { path } = &created.geometry else {
+            panic!("regular polygon must reuse cubic-path geometry");
+        };
+        assert_eq!(path.subpaths.len(), 1);
+        let subpath = &path.subpaths[0];
+        assert!(subpath.closed);
+        assert_eq!(subpath.segments.len(), 5);
+        assert!(subpath.start.x.abs() < 1.0e-12);
+        let min_y = subpath
+            .segments
+            .iter()
+            .map(|segment| segment.end.y)
+            .fold(subpath.start.y, f64::min);
+        assert!((min_y + subpath.start.y).abs() < 1.0e-12);
+        let final_endpoint = &subpath.segments.last().unwrap().end;
+        assert!((final_endpoint.x - subpath.start.x).abs() < 1.0e-12);
+        assert!((final_endpoint.y - subpath.start.y).abs() < 1.0e-12);
+        assert!(
+            result
+                .bundle
+                .scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::CubicPathGeometry)
+        );
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::PathTrim { entity_id, .. }
+                            if entity_id == "tx:create/entity:regular-polygon"
+                    )
+                })
+        );
+        assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn regular_polygon_path_matches_manim_even_and_odd_start_orientation() {
+        let triangle = studio_regular_polygon_path(3, 1.5);
+        let triangle_subpath = &triangle.subpaths[0];
+        let triangle_points = std::iter::once(&triangle_subpath.start)
+            .chain(triangle_subpath.segments.iter().map(|segment| &segment.end))
+            .collect::<Vec<_>>();
+        let triangle_min_y = triangle_points
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::INFINITY, f64::min);
+        let triangle_max_y = triangle_points
+            .iter()
+            .map(|point| point.y)
+            .fold(f64::NEG_INFINITY, f64::max);
+        assert!(triangle_subpath.start.x.abs() < 1.0e-12);
+        assert!((triangle_subpath.start.y - triangle_max_y).abs() < 1.0e-12);
+        assert!((triangle_min_y + triangle_max_y).abs() < 1.0e-12);
+
+        let hexagon = studio_regular_polygon_path(6, 1.5);
+        assert!((hexagon.subpaths[0].start.x - 1.5).abs() < 1.0e-12);
+        assert!(hexagon.subpaths[0].start.y.abs() < 1.0e-12);
+        assert_eq!(hexagon.subpaths[0].segments.len(), 6);
+    }
+
+    #[test]
+    fn normalized_creation_rejects_invalid_regular_polygon_payloads_atomically() {
+        let bundle = static_imported_bundle();
+        let valid = studio_regular_polygon_creation_command(&bundle, 6, 1.0);
+        let mut invalid_dimensions = vec![
+            StudioAuthoringDimensions {
+                height: None,
+                radius: Some(1.0),
+                sides: None,
+                width: None,
+            },
+            StudioAuthoringDimensions {
+                height: None,
+                radius: Some(1.0),
+                sides: Some(2),
+                width: None,
+            },
+            StudioAuthoringDimensions {
+                height: None,
+                radius: Some(1.0),
+                sides: Some(33),
+                width: None,
+            },
+            StudioAuthoringDimensions {
+                height: None,
+                radius: None,
+                sides: Some(6),
+                width: None,
+            },
+            StudioAuthoringDimensions {
+                height: None,
+                radius: Some(0.0),
+                sides: Some(6),
+                width: None,
+            },
+            StudioAuthoringDimensions {
+                height: None,
+                radius: Some(f64::INFINITY),
+                sides: Some(6),
+                width: None,
+            },
+            StudioAuthoringDimensions {
+                height: None,
+                radius: Some(1.0),
+                sides: Some(6),
+                width: Some(1.0),
+            },
+        ];
+        invalid_dimensions.push(StudioAuthoringDimensions {
+            height: None,
+            radius: Some(f64::NAN),
+            sides: Some(6),
+            width: None,
+        });
+
+        for dimensions in invalid_dimensions {
+            let mut command = valid.clone();
+            let StudioCreationOperationKind::Create { entity } =
+                &mut command.programs[0].operations[0].kind
+            else {
+                unreachable!();
+            };
+            entity.dimensions = dimensions;
+            assert!(matches!(
+                project_studio_creation_edits(bundle.scene.duration, &command.programs),
+                Err(ProjectStudioCreationEditError::Unsupported)
+            ));
+
             let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
             assert!(matches!(
                 session.apply_studio_creation_edit(command),
@@ -9906,6 +10243,7 @@ mod tests {
         *from_dimensions = StudioAuthoringDimensions {
             height: None,
             radius: Some(2.0),
+            sides: None,
             width: None,
         };
         assert!(matches!(
@@ -9951,6 +10289,7 @@ mod tests {
                     from_dimensions: StudioAuthoringDimensions {
                         height: Some(2.0),
                         radius: None,
+                        sides: None,
                         width: Some(4.0),
                     },
                     from_position: PointV1 { x: 320.0, y: 180.0 },
@@ -9959,6 +10298,7 @@ mod tests {
                     to_dimensions: StudioAuthoringDimensions {
                         height: Some(3.0),
                         radius: None,
+                        sides: None,
                         width: Some(6.0),
                     },
                     to_position: PointV1 { x: 360.0, y: 180.0 },
@@ -11395,6 +11735,7 @@ mod tests {
                             dimensions: StudioAuthoringDimensions {
                                 height: Some(1.0),
                                 radius: None,
+                                sides: None,
                                 width: Some(2.0),
                             },
                             id: second_id.to_owned(),

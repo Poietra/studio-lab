@@ -22,8 +22,24 @@ import {
 
 describe("Canonical EditProgram source lowering", () => {
   it("lowers and reimports manually inserted geometry with safe default constructors", () => {
-    const types = ["Circle", "Rectangle", "Square", "Line", "Arrow"] as const;
-    const operations = types.flatMap((type, index): CanonicalEditOperation[] => {
+    const shapes: readonly Readonly<{
+      constructor: string;
+      dimensions?: Readonly<{ radius: number; sides: number }>;
+      type: string;
+    }>[] = [
+      { constructor: "Circle(radius=1)", type: "Circle" },
+      { constructor: "Rectangle(width=4, height=2)", type: "Rectangle" },
+      { constructor: "Square(side_length=2)", type: "Square" },
+      { constructor: "Line(LEFT, RIGHT)", type: "Line" },
+      { constructor: "Arrow(LEFT, RIGHT, buff=0)", type: "Arrow" },
+      { constructor: "Triangle(radius=1.25)", dimensions: { radius: 1.25, sides: 3 }, type: "Triangle" },
+      {
+        constructor: "RegularPolygon(7, radius=1.5)",
+        dimensions: { radius: 1.5, sides: 7 },
+        type: "RegularPolygon",
+      },
+    ];
+    const operations = shapes.flatMap((shape, index): CanonicalEditOperation[] => {
       const entityId = `tx:manual-shapes/entity:shape-${index}`;
       const createId = `tx:manual-shapes/operation:create-${index}`;
       const positionId = `tx:manual-shapes/operation:position-${index}`;
@@ -31,10 +47,11 @@ describe("Canonical EditProgram source lowering", () => {
         {
           ...operationBase(createId, 7),
           entity: {
-            content: { displayLines: [type], label: type },
+            content: { displayLines: [shape.type], label: shape.type },
+            ...(shape.dimensions ? { dimensions: shape.dimensions } : {}),
             id: entityId,
             lifetime: { end: null, start: 7 },
-            type,
+            type: shape.type,
           },
           kind: "CreateEntity",
         },
@@ -59,14 +76,19 @@ describe("Canonical EditProgram source lowering", () => {
     const program = canonicalProgram(operations, "manual-shapes");
     const lowered = lowerCanonicalProgramSource(source, request(program, []), { height: 8, width: 14.222 }, null);
 
-    expect(lowered.insertedCode).toContain("Circle(radius=1)");
-    expect(lowered.insertedCode).toContain("Rectangle(width=4, height=2)");
-    expect(lowered.insertedCode).toContain("Square(side_length=2)");
-    expect(lowered.insertedCode).toContain("Line(LEFT, RIGHT)");
-    expect(lowered.insertedCode).toContain("Arrow(LEFT, RIGHT, buff=0)");
-    expect(lowered.insertedCode.match(/FadeIn\(/g)).toHaveLength(types.length);
+    for (const shape of shapes) expect(lowered.insertedCode).toContain(shape.constructor);
+    expect(lowered.insertedCode.match(/FadeIn\(/g)).toHaveLength(shapes.length);
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
-    expect(imported?.runtimeSceneState.objectGraph.entities["tx:manual-shapes/entity:shape-3"]?.type).toBe("Line");
+    for (const [index, shape] of shapes.entries()) {
+      const entityId = `tx:manual-shapes/entity:shape-${index}`;
+      const sourceVariable = imported?.sourceVariables[entityId];
+      expect(sourceVariable).toMatch(/^poietra_manual_shapes_/u);
+      expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
+        sourceIdentity: { kind: "known", value: sourceVariable },
+        type: shape.type,
+        ...(shape.dimensions ? { geometry: { dimensions: { kind: "known", value: shape.dimensions } } } : {}),
+      });
+    }
   });
 
   it("lowers static opacity and rotation follow-ups onto one Studio-created variable", () => {

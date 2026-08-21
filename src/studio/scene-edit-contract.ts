@@ -16,6 +16,7 @@ const dimensionsSchema = z
   .object({
     height: z.number().positive().optional(),
     radius: z.number().positive().optional(),
+    sides: z.number().int().min(3).max(32).optional(),
     width: z.number().positive().optional(),
   })
   .strict();

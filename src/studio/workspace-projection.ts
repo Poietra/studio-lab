@@ -140,10 +140,10 @@ function sameProjectionNumber(left: number, right: number) {
 }
 
 function sameProjectionDimensions(
-  left: Readonly<{ height?: number; radius?: number; width?: number }>,
-  right: Readonly<{ height?: number; radius?: number; width?: number }>,
+  left: Readonly<{ height?: number; radius?: number; sides?: number; width?: number }>,
+  right: Readonly<{ height?: number; radius?: number; sides?: number; width?: number }>,
 ) {
-  return (["height", "radius", "width"] as const).every((key) => {
+  return (["height", "radius", "sides", "width"] as const).every((key) => {
     const leftValue = left[key];
     const rightValue = right[key];
     return leftValue === undefined || rightValue === undefined
@@ -292,6 +292,7 @@ export function selectMotionProjection(
 function creationEntityKind(type: string): StudioCreationProjectionV1["entities"][number]["kind"] | null {
   if (type === "Arrow") return "arrow";
   if (type === "Circle") return "circle";
+  if (type === "Triangle" || type === "RegularPolygon") return "regular-polygon";
   if (type === "ImageMobject") return "image";
   if (type === "Line") return "line";
   if (type === "MathTex") return "math-tex";
@@ -438,6 +439,7 @@ function correlateCreationProjection(
       entity.transactionId !== expected.program.transactionId ||
       entity.entityId !== operation.entity.id ||
       entity.kind !== expectedKind ||
+      !sameProjectionDimensions(entity.initialDimensions, operation.entity.dimensions ?? {}) ||
       !sameCreationImage(entity.image, expectedImage) ||
       seenEntityIds.has(entity.entityId) ||
       seenEntityOperationIds.has(entity.operationId) ||
@@ -1373,7 +1375,8 @@ function projectCreationWorkingState(
     if (draft.entities[entity.entityId]) {
       throw new TypeError(`Created entity ${entity.entityId} already exists in the Studio workspace.`);
     }
-    const hasShapeGeometry = entity.kind === "circle" || entity.kind === "rectangle";
+    const hasShapeGeometry =
+      entity.kind === "circle" || entity.kind === "rectangle" || entity.kind === "regular-polygon";
     draft.entities[entity.entityId] = {
       ...(operation.entity.content ? { content: operation.entity.content } : {}),
       ...(hasShapeGeometry

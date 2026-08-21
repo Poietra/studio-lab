@@ -199,6 +199,7 @@ pub enum StudioAuthoringEntityKind {
     MathTex,
     Other,
     Rectangle,
+    RegularPolygon,
     Text,
 }
 
@@ -220,6 +221,8 @@ pub struct StudioAuthoringDimensions {
     pub height: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sides: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<f64>,
 }
@@ -380,8 +383,14 @@ fn studio_authoring_shape_size(
     kind: StudioAuthoringEntityKind,
     dimensions: StudioAuthoringDimensions,
 ) -> Option<StudioAuthoringSize> {
-    match (kind, dimensions.radius, dimensions.width, dimensions.height) {
-        (StaticRootTransformEntityKind::Circle, Some(radius), None, None)
+    match (
+        kind,
+        dimensions.radius,
+        dimensions.sides,
+        dimensions.width,
+        dimensions.height,
+    ) {
+        (StaticRootTransformEntityKind::Circle, Some(radius), None, None, None)
             if radius.is_finite() && radius > 0.0 =>
         {
             Some(StudioAuthoringSize {
@@ -389,7 +398,7 @@ fn studio_authoring_shape_size(
                 width: radius * 2.0,
             })
         }
-        (StaticRootTransformEntityKind::Rectangle, None, Some(width), Some(height))
+        (StaticRootTransformEntityKind::Rectangle, None, None, Some(width), Some(height))
             if width.is_finite() && width > 0.0 && height.is_finite() && height > 0.0 =>
         {
             Some(StudioAuthoringSize { height, width })
@@ -1092,6 +1101,7 @@ mod tests {
                 dimensions: StaticRootTransformDimensions {
                     height: None,
                     radius: Some(0.5),
+                    sides: None,
                     width: None,
                 },
                 object_graph_key: "source:circle".to_owned(),
@@ -1242,6 +1252,7 @@ mod tests {
             from_dimensions: StaticRootTransformDimensions {
                 height: None,
                 radius: Some(0.5),
+                sides: None,
                 width: None,
             },
             from_position: PointV1 { x: 360.0, y: 180.0 },
@@ -1250,6 +1261,7 @@ mod tests {
             to_dimensions: StaticRootTransformDimensions {
                 height: None,
                 radius: Some(1.0),
+                sides: None,
                 width: None,
             },
             to_position: PointV1 { x: 400.0, y: 180.0 },

@@ -76,7 +76,7 @@ function createEntityExecution(
     type === "MathTex" && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
   const hasTextContent = type === "Text" && studioCreationText(content) !== null;
   const hasNativeImage = type === "ImageMobject" && operation.entity.image !== undefined;
-  const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "Square"].includes(type);
+  const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "RegularPolygon", "Square", "Triangle"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
   if (hasNativeImage) return CLIENT_ONLY_EXECUTION;
   if (hasMathTexContent || hasTextContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
@@ -335,16 +335,36 @@ function entityIssues(entityIds: readonly string[], operation: SceneEditOperatio
 const TIME_EPSILON = 0.0005;
 
 function validCreateDimensions(type: string, dimensions: EntityDimensions | undefined) {
-  if (dimensions === undefined) return true;
+  if (dimensions === undefined) return type !== "Triangle" && type !== "RegularPolygon";
   if (type === "Circle") return exactShapeDimensions("circle", dimensions);
   if (type === "Rectangle") return exactShapeDimensions("rectangle", dimensions);
+  if (type === "Triangle" || type === "RegularPolygon") {
+    return (
+      dimensions.radius !== undefined &&
+      Number.isFinite(dimensions.radius) &&
+      dimensions.radius > 0 &&
+      dimensions.height === undefined &&
+      dimensions.width === undefined &&
+      dimensions.sides !== undefined &&
+      Number.isInteger(dimensions.sides) &&
+      dimensions.sides >= 3 &&
+      dimensions.sides <= 32 &&
+      (type !== "Triangle" || dimensions.sides === 3)
+    );
+  }
   return false;
 }
 
 function exactShapeDimensions(shape: "circle" | "rectangle", dimensions: EntityDimensions) {
   return shape === "circle"
-    ? dimensions.radius !== undefined && dimensions.height === undefined && dimensions.width === undefined
-    : dimensions.height !== undefined && dimensions.width !== undefined && dimensions.radius === undefined;
+    ? dimensions.radius !== undefined &&
+        dimensions.height === undefined &&
+        dimensions.sides === undefined &&
+        dimensions.width === undefined
+    : dimensions.height !== undefined &&
+        dimensions.width !== undefined &&
+        dimensions.radius === undefined &&
+        dimensions.sides === undefined;
 }
 
 function closeEnough(left: number, right: number) {
@@ -518,11 +538,11 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
         severity: "error" as const,
       });
     }
-    if (!entity?.transactionId || (entity.type !== "Circle" && entity.type !== "Rectangle")) {
+    if (!entity?.transactionId || !["Circle", "Rectangle", "RegularPolygon", "Triangle"].includes(entity.type)) {
       issues.push({
         code: "schema-invalid" as const,
         field: "entityId",
-        message: "Shape colors currently support only Studio-created Circle and Rectangle entities.",
+        message: "Shape colors currently support only Studio-created Circle, Rectangle, and regular polygon entities.",
         operationId: operation.id,
         severity: "error" as const,
       });
@@ -993,10 +1013,12 @@ export const OPERATION_REGISTRY = {
         endpoint.shape === "circle"
           ? endpoint.dimensions.radius !== undefined &&
             endpoint.dimensions.height === undefined &&
+            endpoint.dimensions.sides === undefined &&
             endpoint.dimensions.width === undefined
           : endpoint.dimensions.height !== undefined &&
             endpoint.dimensions.width !== undefined &&
-            endpoint.dimensions.radius === undefined;
+            endpoint.dimensions.radius === undefined &&
+            endpoint.dimensions.sides === undefined;
       if (
         operation.from.shape === operation.to.shape ||
         !dimensionsAreValid(operation.from) ||

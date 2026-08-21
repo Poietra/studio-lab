@@ -68,6 +68,25 @@ describe("Draw entrance editing", () => {
     expect(drawInClipFromProgram(shortened.program)?.interval).toEqual({ end: 2, start: 1 });
   });
 
+  it.each(["Triangle", "RegularPolygon"] as const)("supports Draw on a Studio-created %s", (type) => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ position: { x: 320, y: 180 }, type }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: `draw-${type}`,
+    });
+    const entityId = creation.entityIds[0]!;
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "linear", end: 2 },
+      entityId,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
+    expect(drawInClipFromProgram(drawn.program)?.entityId).toBe(entityId);
+  });
+
   it("rejects non-stroke Studio objects", () => {
     const arrow = createStudioEntitiesProgram({
       capturedPlayhead: 1,
@@ -82,6 +101,6 @@ describe("Draw entrance editing", () => {
         entityId: arrow.entityIds[0]!,
         scene: STUDIO_FIXTURE_SCENE,
       }),
-    ).toThrow(/Line, Circle, and Rectangle/);
+    ).toThrow(/Line, Circle, Rectangle, Triangle, and Regular Polygon/);
   });
 });

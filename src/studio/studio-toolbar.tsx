@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { cn } from "../lib/cn";
 import type { InsertEntityType } from "./authoring-commands";
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
@@ -21,6 +22,8 @@ const TOOL_COMMANDS: readonly Readonly<{
   { commandId: "insert-mathtex", label: "Math", tool: "MathTex" },
   { commandId: "insert-rectangle", label: "Rectangle", tool: "Rectangle" },
   { commandId: "insert-circle", label: "Circle", tool: "Circle" },
+  { commandId: "insert-triangle", label: "Triangle", tool: "Triangle" },
+  { commandId: "insert-regular-polygon", label: "Polygon", tool: "RegularPolygon" },
   { commandId: "insert-line", label: "Line", tool: "Line" },
   { commandId: "insert-arrow", label: "Arrow", tool: "Arrow" },
 ] as const;
@@ -41,8 +44,10 @@ export type StudioToolbarProps = Readonly<{
   insertValue: string;
   onInsertAtCenter: () => void;
   onInsertValueChange: (value: string) => void;
+  onPolygonSidesChange: (sides: number) => void;
   onSelectionLayout: (command: SelectionLayoutCommand) => void;
   onToolChange: (tool: StudioTool) => void;
+  polygonSides: number;
   selectionCount: number;
   selectionLayoutUnavailableReason: string | null;
   tool: StudioTool;
@@ -53,14 +58,22 @@ export function StudioToolbar({
   insertValue,
   onInsertAtCenter,
   onInsertValueChange,
+  onPolygonSidesChange,
   onSelectionLayout,
   onToolChange,
+  polygonSides,
   selectionCount,
   selectionLayoutUnavailableReason,
   tool,
 }: StudioToolbarProps) {
   markStudioRenderBoundary("toolbar");
   const requiresContent = tool === "Text" || tool === "MathTex";
+  const requiresPolygonSides = tool === "RegularPolygon";
+  const [polygonSidesDraft, setPolygonSidesDraft] = useState(String(polygonSides));
+  useEffect(() => setPolygonSidesDraft(String(polygonSides)), [polygonSides]);
+  const parsedPolygonSides = Number(polygonSidesDraft);
+  const polygonSidesDraftIsValid =
+    Number.isInteger(parsedPolygonSides) && parsedPolygonSides >= 3 && parsedPolygonSides <= 32;
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   return (
     <section aria-label="Studio tools" className="shrink-0 border-b border-zinc-800 bg-zinc-950 px-3 py-2">
@@ -121,30 +134,56 @@ export function StudioToolbar({
           </div>
         ) : null}
       </div>
-      {requiresContent ? (
+      {requiresContent || requiresPolygonSides ? (
         <form
           className="mt-2 flex max-w-xl items-end gap-2"
           onSubmit={(event) => {
             event.preventDefault();
+            if (requiresPolygonSides && !polygonSidesDraftIsValid) return;
             onInsertAtCenter();
           }}
         >
-          <label className="min-w-0 flex-1 text-[10px] text-zinc-500">
-            {tool === "Text" ? "Text content" : "MathTex"}
-            <input
-              autoComplete="off"
-              className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-sky-500"
-              maxLength={tool === "Text" ? STUDIO_CREATION_TEXT_MAX_LENGTH : undefined}
-              onChange={(event) => onInsertValueChange(event.currentTarget.value)}
-              placeholder={tool === "Text" ? "Type text" : String.raw`e.g. E = mc^2`}
-              title={tool === "Text" ? STUDIO_CREATION_TEXT_CONTRACT : undefined}
-              value={insertValue}
-              disabled={!authoringAvailable}
-            />
-          </label>
+          {requiresContent ? (
+            <label className="min-w-0 flex-1 text-[10px] text-zinc-500">
+              {tool === "Text" ? "Text content" : "MathTex"}
+              <input
+                autoComplete="off"
+                className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-sky-500"
+                maxLength={tool === "Text" ? STUDIO_CREATION_TEXT_MAX_LENGTH : undefined}
+                onChange={(event) => onInsertValueChange(event.currentTarget.value)}
+                placeholder={tool === "Text" ? "Type text" : String.raw`e.g. E = mc^2`}
+                title={tool === "Text" ? STUDIO_CREATION_TEXT_CONTRACT : undefined}
+                value={insertValue}
+                disabled={!authoringAvailable}
+              />
+            </label>
+          ) : (
+            <label className="w-28 text-[10px] text-zinc-500">
+              Polygon sides
+              <input
+                aria-label="Polygon sides"
+                className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs tabular-nums text-zinc-100 outline-none focus:border-sky-500"
+                disabled={!authoringAvailable}
+                max={32}
+                min={3}
+                onChange={(event) => {
+                  const draft = event.currentTarget.value;
+                  const sides = Number(draft);
+                  setPolygonSidesDraft(draft);
+                  if (Number.isInteger(sides) && sides >= 3 && sides <= 32) onPolygonSidesChange(sides);
+                }}
+                onBlur={() => {
+                  if (!polygonSidesDraftIsValid) setPolygonSidesDraft(String(polygonSides));
+                }}
+                step={1}
+                type="number"
+                value={polygonSidesDraft}
+              />
+            </label>
+          )}
           <button
             className="h-8 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
-            disabled={!authoringAvailable}
+            disabled={!authoringAvailable || (requiresPolygonSides && !polygonSidesDraftIsValid)}
             type="submit"
           >
             Insert at center

@@ -769,3 +769,83 @@ test("orients an Arrow along a curved motion path through reload and MP4 export"
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
 });
+
+test("authors Triangle and Regular Polygon through motion, Draw, reload, and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Polygon authoring fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert triangle/ }).click();
+    await canvas.click({ position: { x: 260, y: 240 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const triangle = page.getByRole("button", { name: "Move Triangle", exact: true });
+    await expect(triangle).toBeVisible();
+    const triangleId = await triangle.getAttribute("data-studio-entity");
+    if (!triangleId) throw new Error("The Triangle did not expose its Studio entity id.");
+    const triangleWrapper = page.locator(`[data-studio-entity-wrapper="${triangleId}"]`);
+    await expect(page.getByText("r 1 · 3 sides", { exact: true })).toBeVisible();
+    const triangleDimensions = await preparedDimensions(triangleWrapper);
+    expect(triangleDimensions.width).toBeGreaterThan(1.6);
+    expect(triangleDimensions.height).toBeGreaterThan(1.4);
+
+    const triangleFill = page.getByLabel("Fill color Triangle");
+    await triangleFill.fill("#3b82f6");
+    await triangleFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(triangleFill).toHaveValue("#3b82f6");
+
+    await page.getByRole("button", { name: "Create animation" }).click();
+    await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
+    await dragBy(page, triangle, { x: 80, y: -30 }, true);
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("button", { name: "Edit Triangle motion clip" })).toBeVisible();
+
+    await page.getByRole("button", { name: /Insert regular polygon/ }).click();
+    const polygonSides = page.getByRole("spinbutton", { name: "Polygon sides" });
+    await polygonSides.press("ControlOrMeta+A");
+    await polygonSides.pressSequentially("12");
+    await canvas.click({ position: { x: 520, y: 260 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const polygon = page.getByRole("button", { name: "Move RegularPolygon", exact: true });
+    await expect(polygon).toBeVisible();
+    const polygonId = await polygon.getAttribute("data-studio-entity");
+    if (!polygonId) throw new Error("The Regular Polygon did not expose its Studio entity id.");
+    const polygonWrapper = page.locator(`[data-studio-entity-wrapper="${polygonId}"]`);
+    await expect(page.getByText("r 1 · 12 sides", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Add Draw entrance for RegularPolygon" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    let drawClip = page.getByRole("button", { name: "Edit RegularPolygon Draw entrance" });
+    await expect(drawClip).toBeVisible();
+    await scrubEntranceClip(page, drawClip, 0);
+    await expect(polygonWrapper).toHaveCount(0);
+    await scrubEntranceClip(page, drawClip, 0.5);
+    await expect(polygonWrapper).toHaveCount(1);
+    await scrubEntranceClip(page, drawClip, 1);
+    const completePolygonDimensions = await preparedDimensions(polygonWrapper);
+    expect(completePolygonDimensions.width).toBeGreaterThan(1.9);
+    expect(completePolygonDimensions.height).toBeGreaterThan(1.9);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Polygon authoring fixture workspace" }).click();
+    await expect(page.getByRole("button", { name: "Move Triangle", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move RegularPolygon", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Edit Triangle motion clip" })).toBeVisible();
+    drawClip = page.getByRole("button", { name: "Edit RegularPolygon Draw entrance" });
+    await expect(drawClip).toBeVisible();
+    await drawClip.click();
+    await expect(page.getByRole("spinbutton", { name: "Draw duration for RegularPolygon" })).toBeEnabled();
+    await page.getByRole("button", { name: "Discard" }).click();
+
+    const mp4 = await exportLocalMp4(page);
+    const exportedPixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6]);
+    expect(exportedPixels[1] ?? 0).toBeGreaterThan((exportedPixels[0] ?? 0) + 20);
+    expect(exportedPixels[2] ?? 0).toBeGreaterThan(exportedPixels[1] ?? 0);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});

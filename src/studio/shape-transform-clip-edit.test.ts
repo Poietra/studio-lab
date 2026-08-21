@@ -126,4 +126,28 @@ describe("Studio Shape Transform clip editing", () => {
       }),
     ).toThrow(/lifetime/);
   });
+
+  it("rejects polygon metadata on Rectangle and Circle endpoints", () => {
+    const result = createShapeTransformProgram({
+      capturedPlayhead: 2,
+      easing: "smooth",
+      end: 3,
+      entityId: ROOT_ID,
+      from: { dimensions: { height: 2, sides: 6, width: 4 }, shape: "rectangle" },
+      scene: studioScene(),
+      start: 2,
+      to: { dimensions: { radius: 1 }, shape: "circle" },
+      transactionId: "polygon-metadata",
+    });
+
+    expect(result.kind).toBe("invalid");
+    expect(result.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "schema-invalid",
+          message: expect.stringContaining("exact dimensions"),
+        }),
+      ]),
+    );
+  });
 });

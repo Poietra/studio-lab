@@ -61,7 +61,9 @@ export type StudioViewportProps = Readonly<
       onInsertAtCenter: () => void;
       onInsertToolChange: (tool: StudioTool) => void;
       onInsertValueChange: (value: string) => void;
+      onPolygonSidesChange: (sides: number) => void;
       onSelectionLayout: (command: SelectionLayoutCommand) => void;
+      polygonSides: number;
       projection: ProposedStateProjection;
       readOnly?: boolean;
       selectionLayoutUnavailableReason: string | null;
@@ -147,6 +149,7 @@ export function StudioViewport({
   onImageAssetDrop,
   onInsertToolChange,
   onInsertValueChange,
+  onPolygonSidesChange,
   onLifetimeChange,
   onMaterialParameterKeyframeAdd,
   onMaterialParameterKeyframeChange,
@@ -194,6 +197,7 @@ export function StudioViewport({
   preview = null,
   presenceParticipants,
   previewPaintAvailable,
+  polygonSides,
   projection,
   readOnly = false,
   rotationHandleEntityId,
@@ -209,8 +213,10 @@ export function StudioViewport({
           insertValue={insertValue}
           onInsertAtCenter={onInsertAtCenter}
           onInsertValueChange={onInsertValueChange}
+          onPolygonSidesChange={onPolygonSidesChange}
           onSelectionLayout={onSelectionLayout}
           onToolChange={onInsertToolChange}
+          polygonSides={polygonSides}
           selectionCount={selectedIds.size}
           selectionLayoutUnavailableReason={selectionLayoutUnavailableReason}
           tool={insertTool}

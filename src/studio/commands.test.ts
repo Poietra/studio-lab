@@ -18,6 +18,8 @@ describe("Studio command shortcuts", () => {
     expect(key("v")).toBe("select-tool");
     expect(key("t")).toBe("insert-text");
     expect(key("r")).toBe("insert-rectangle");
+    expect(key("g")).toBe("insert-triangle");
+    expect(key("p")).toBe("insert-regular-polygon");
     expect(key("Delete")).toBe("delete");
     expect(key(" ")).toBe("play-pause");
   });

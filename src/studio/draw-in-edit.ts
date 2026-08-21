@@ -17,7 +17,7 @@ export type DrawInClip = Readonly<{
   transactionId: string;
 }>;
 
-const DRAWABLE_STUDIO_TYPES = new Set(["Circle", "Line", "Rectangle"]);
+const DRAWABLE_STUDIO_TYPES = new Set(["Circle", "Line", "Rectangle", "RegularPolygon", "Triangle"]);
 
 export function sceneProgramsHaveDrawIn(programs: readonly SceneEdit[], entityId: string) {
   return programs.some((program) =>
@@ -56,7 +56,7 @@ export function drawInUnavailableReason(program: SceneEdit, entityId: string): s
   const create = createdEntity(program, entityId);
   if (!create || create.kind !== "CreateEntity") return "Draw supports only Studio-created objects.";
   if (!DRAWABLE_STUDIO_TYPES.has(create.entity.type)) {
-    return "Draw supports Studio-created Line, Circle, and Rectangle objects.";
+    return "Draw supports Studio-created Line, Circle, Rectangle, Triangle, and Regular Polygon objects.";
   }
   const otherDraw = program.operations.find(
     (operation) => operation.kind === "DrawIn" && operation.entityId !== entityId,

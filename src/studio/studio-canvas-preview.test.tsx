@@ -41,6 +41,18 @@ const CIRCLE_ENTITY: ProjectedEntity = {
   type: "Circle",
 };
 
+const REGULAR_POLYGON_ENTITY: ProjectedEntity = {
+  ...CIRCLE_ENTITY,
+  geometry: {
+    ...CIRCLE_ENTITY.geometry,
+    dimensions: { kind: "known", value: { radius: 1, sides: 6 } },
+  },
+  id: "entity:regular-polygon",
+  sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
+  transactionId: "create-regular-polygon",
+  type: "RegularPolygon",
+};
+
 function lineJointsTriangle(sourceName: "t1" | "t2" | "t3", x: number): ProjectedEntity {
   const runtimeOwned = (field: string) => ({ kind: "unknown" as const, reason: `VGroup owns runtime ${field}.` });
   return {
@@ -1846,8 +1858,20 @@ describe("StudioCanvas retained preview layer", () => {
   it("enables solid fill and stroke colors only for an authorized Studio-created shape", () => {
     const disabled = renderSelectedInspector(CIRCLE_ENTITY, null);
     const enabled = renderSelectedInspector(CIRCLE_ENTITY, null, null, false, false, null, true, "#123456", "#abcdef");
+    const polygon = renderSelectedInspector(
+      REGULAR_POLYGON_ENTITY,
+      null,
+      null,
+      false,
+      false,
+      null,
+      true,
+      "#123456",
+      "#abcdef",
+    );
     const fill = /<input aria-label="Fill color circle_1"[^>]*>/u;
     const stroke = /<input aria-label="Stroke color circle_1"[^>]*>/u;
+    const polygonFill = /<input aria-label="Fill color regular-polygon"[^>]*>/u;
 
     expect(disabled.match(fill)?.[0]).toContain('disabled=""');
     expect(disabled.match(stroke)?.[0]).toContain('disabled=""');
@@ -1855,6 +1879,8 @@ describe("StudioCanvas retained preview layer", () => {
     expect(enabled.match(fill)?.[0]).toContain('value="#123456"');
     expect(enabled.match(stroke)?.[0]).not.toContain('disabled=""');
     expect(enabled.match(stroke)?.[0]).toContain('value="#abcdef"');
+    expect(polygon.match(polygonFill)?.[0]).not.toContain('disabled=""');
+    expect(polygon).toContain("6 sides");
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

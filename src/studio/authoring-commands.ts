@@ -26,7 +26,16 @@ import { STUDIO_STYLE_PROFILE, type StyleProfileRef, styleProfileRef } from "./s
 import { resolveTimeAnchorOnce } from "./time";
 import type { SceneDurationTrimAvailability } from "./timeline-projection";
 
-export const INSERT_ENTITY_TYPES = ["Text", "MathTex", "Rectangle", "Circle", "Line", "Arrow"] as const;
+export const INSERT_ENTITY_TYPES = [
+  "Text",
+  "MathTex",
+  "Rectangle",
+  "Circle",
+  "Triangle",
+  "RegularPolygon",
+  "Line",
+  "Arrow",
+] as const;
 
 export type InsertEntityType = (typeof INSERT_ENTITY_TYPES)[number];
 
@@ -45,6 +54,8 @@ export type StudioEntityInput = Readonly<{
 export function defaultEntityDimensions(type: InsertEntityType | "ImageMobject"): EntityDimensions | undefined {
   if (type === "Circle") return { radius: 1 };
   if (type === "Rectangle") return { height: 2, width: 4 };
+  if (type === "Triangle") return { radius: 1, sides: 3 };
+  if (type === "RegularPolygon") return { radius: 1, sides: 6 };
   return undefined;
 }
 
@@ -818,15 +829,23 @@ export function duplicateEntityInput(
   const dimensions =
     entity.type === "Circle" &&
     knownDimensions?.radius !== undefined &&
+    knownDimensions.sides === undefined &&
     knownDimensions.height === undefined &&
     knownDimensions.width === undefined
       ? { radius: knownDimensions.radius }
       : entity.type === "Rectangle" &&
           knownDimensions?.height !== undefined &&
           knownDimensions.width !== undefined &&
-          knownDimensions.radius === undefined
+          knownDimensions.radius === undefined &&
+          knownDimensions.sides === undefined
         ? { height: knownDimensions.height, width: knownDimensions.width }
-        : undefined;
+        : (entity.type === "Triangle" || entity.type === "RegularPolygon") &&
+            knownDimensions?.radius !== undefined &&
+            knownDimensions.height === undefined &&
+            knownDimensions.width === undefined &&
+            knownDimensions.sides !== undefined
+          ? { radius: knownDimensions.radius, sides: knownDimensions.sides }
+          : undefined;
   return {
     content: entity.content,
     ...(dimensions ? { dimensions } : {}),

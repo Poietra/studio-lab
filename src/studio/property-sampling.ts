@@ -22,13 +22,15 @@ export function isEntityDimensionsValue(value: unknown): value is EntityDimensio
   const keys = Object.keys(record);
   return (
     keys.length > 0 &&
-    keys.every((key) => key === "height" || key === "radius" || key === "width") &&
-    keys.every((key) => typeof record[key] === "number" && Number.isFinite(record[key]))
+    keys.every((key) => key === "height" || key === "radius" || key === "sides" || key === "width") &&
+    keys.every((key) => typeof record[key] === "number" && Number.isFinite(record[key])) &&
+    (record.sides === undefined ||
+      (typeof record.sides === "number" && Number.isInteger(record.sides) && record.sides >= 3 && record.sides <= 32))
   );
 }
 
 function interpolateDimensions(from: EntityDimensions, to: EntityDimensions, progress: number) {
-  return Object.fromEntries(
+  const interpolated = Object.fromEntries(
     (["height", "radius", "width"] as const).flatMap((key) => {
       const start = from[key];
       const end = to[key];
@@ -37,6 +39,7 @@ function interpolateDimensions(from: EntityDimensions, to: EntityDimensions, pro
         : [];
     }),
   ) as EntityDimensions;
+  return from.sides !== undefined && from.sides === to.sides ? { ...interpolated, sides: from.sides } : interpolated;
 }
 
 function sameStartPriority(sample: PropertyChannelSample, index: number, baseIndex: number) {
