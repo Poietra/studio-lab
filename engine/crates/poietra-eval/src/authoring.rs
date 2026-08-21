@@ -234,6 +234,63 @@ pub struct StudioCreationMathTexOutline {
     pub tex_parts: Vec<String>,
 }
 
+/// One ordered path fragment produced by the browser's segmented `MathTex` compiler.
+///
+/// The compiler-owned fragment id is correlation metadata only. The canonical
+/// Scene entity ids are derived from the Studio root id inside the authoring core.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioCreationSegmentedMathTexFragment {
+    pub fill_entity_id: String,
+    pub fill_rule: FillRuleV1,
+    pub id: String,
+    pub order: u32,
+    pub outline_entity_id: String,
+    pub paint: RgbaColorV1,
+    pub path: CubicPathV1,
+    pub source_correlation: StudioCreationSegmentedMathTexSourceCorrelation,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioCreationSegmentedMathTexSourceCorrelationKind {
+    ExpressionByteRange,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioCreationSegmentedMathTexSourceCorrelation {
+    pub kind: StudioCreationSegmentedMathTexSourceCorrelationKind,
+    pub source_end_byte: u32,
+    pub source_start_byte: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioCreationSegmentedMathTexRepresentation {
+    SeparateOutlineAndFillEntities,
+}
+
+/// Timing and stroke parameters for a two-phase Studio `MathTex` Write.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioCreationSegmentedMathTexWritePlan {
+    pub fragment_lag_ratio: f64,
+    pub outline_stroke_width: f64,
+    pub phase_boundary: f64,
+    pub representation: StudioCreationSegmentedMathTexRepresentation,
+}
+
+/// Segmented `MathTex` boundary artifact admitted by the canonical creation core.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioCreationSegmentedMathTexOutline {
+    pub entity_id: String,
+    pub fragments: Vec<StudioCreationSegmentedMathTexFragment>,
+    pub source: String,
+    pub write_plan: StudioCreationSegmentedMathTexWritePlan,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StudioTextAlignment {

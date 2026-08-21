@@ -80,7 +80,7 @@ describe("Studio creation wire", () => {
     const create = creationProgram("Line");
     const drawIn = {
       dependsOn: ["create:Line"],
-      easing: "smooth" as const,
+      easing: "linear" as const,
       entityId: "entity:Line",
       id: "draw-in:Line",
       interval: { end: 1, start: 0 },
@@ -104,7 +104,7 @@ describe("Studio creation wire", () => {
 
     expect(command.programs[0]?.operations[1]).toEqual({
       dependsOn: ["create:Line"],
-      easing: "smooth",
+      easing: "linear",
       entityId: "entity:Line",
       from: 0,
       id: "draw-in:Line",
@@ -112,6 +112,43 @@ describe("Studio creation wire", () => {
       kind: "draw-in",
       origin: "direct-manipulation",
       to: 1,
+    });
+  });
+
+  it("normalizes WriteIn as one fixed Write progress operation", () => {
+    const create = creationProgram("MathTex");
+    const writeIn = {
+      dependsOn: ["create:MathTex"],
+      easing: "linear" as const,
+      entityId: "entity:MathTex",
+      id: "write-in:MathTex",
+      interval: { end: 1, start: 0 },
+      kind: "WriteIn" as const,
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+    };
+    const program: SceneEdit = {
+      ...create,
+      intentCount: 2,
+      loweringStatus: "unsupported",
+      operations: [...create.operations, writeIn],
+      requestedExecution: "sequence",
+      schedule: {
+        edges: [{ from: "create:MathTex", reason: "identity", to: "write-in:MathTex" }],
+        mode: "sequence",
+        order: ["create:MathTex", "write-in:MathTex"],
+      },
+    };
+
+    const command = buildStudioCreationProjectionCommand({ baseDuration: 2, programs: [program] });
+
+    expect(command.programs[0]?.operations[1]).toEqual({
+      dependsOn: ["create:MathTex"],
+      easing: "linear",
+      entityId: "entity:MathTex",
+      id: "write-in:MathTex",
+      interval: { end: 1, start: 0 },
+      kind: "write-in",
+      origin: "direct-manipulation",
     });
   });
 

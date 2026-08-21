@@ -26,14 +26,17 @@ use super::{
     ApplyStudioPersistentRemoveError, SceneEditAnchorSource, SceneEditExecution,
     SceneEditOperationFacts, SceneEditScheduleMode, StudioAuthoringDimensions,
     StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioAuthoringOrigin,
-    StudioAuthoringSize, StudioCreationMathTexOutline, StudioCreationTextOutline,
-    StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry, StudioTextContent,
-    StudioTextLayout, TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value,
-    scene_edit_anchor_is_closed, scene_edit_structure_is_closed, studio_arrow_appearance,
-    studio_authoring_point_is_finite, studio_authoring_shape_size,
-    studio_authoring_size_is_positive, studio_math_tex_appearance, studio_point_to_scene_point,
-    studio_shape_appearance, studio_timeline_semantic_values_match, studio_vector_to_scene_vector,
-    unused_channel_id,
+    StudioAuthoringSize, StudioCreationMathTexOutline, StudioCreationSegmentedMathTexFragment,
+    StudioCreationSegmentedMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
+    StudioCreationSegmentedMathTexSourceCorrelation,
+    StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationSegmentedMathTexWritePlan,
+    StudioCreationTextOutline, StudioPersistentRemoveProjection,
+    StudioPersistentRemoveProjectionEntry, StudioTextContent, StudioTextLayout,
+    TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value, scene_edit_anchor_is_closed,
+    scene_edit_structure_is_closed, studio_arrow_appearance, studio_authoring_point_is_finite,
+    studio_authoring_shape_size, studio_authoring_size_is_positive, studio_math_tex_appearance,
+    studio_point_to_scene_point, studio_shape_appearance, studio_timeline_semantic_values_match,
+    studio_vector_to_scene_vector, unused_channel_id,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -55,6 +58,7 @@ enum CreateSceneEntityGeometry {
     CubicOutline {
         path: CubicPathV1,
     },
+    LogicalGroup,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,6 +70,26 @@ struct CreateSceneEntityFadeIn {
 struct CreateSceneEntityDrawIn {
     easing: EasingV1,
     end: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CreateSceneEntityWriteIn {
+    easing: EasingV1,
+    interval: IntervalV1,
+    fragments: Vec<StudioCreationSegmentedMathTexFragment>,
+    plan: StudioCreationSegmentedMathTexWritePlan,
+    source: String,
+}
+
+const SEGMENTED_MATH_TEX_MAX_FRAGMENTS: usize = 128;
+const SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS: usize = 2_048;
+const SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES: usize = 256;
+const SEGMENTED_MATH_TEX_PHASE_BOUNDARY: f64 = 0.5;
+const SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH: f64 = 2.0;
+const MANIM_STROKE_WIDTH_TO_SCENE_WORLD: f64 = 0.01;
+
+fn manim_stroke_width_to_scene_world(width: f64) -> f64 {
+    width * MANIM_STROKE_WIDTH_TO_SCENE_WORLD
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -98,6 +122,7 @@ struct CreateSceneEntity {
     stroke_color: Option<RgbaColorV1>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
     visible: bool,
+    write_in: Option<CreateSceneEntityWriteIn>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -159,6 +184,11 @@ pub enum StudioCreationProjectedMutationKind {
         to: f64,
     },
     DrawIn {
+        easing: EasingV1,
+        from: f64,
+        to: f64,
+    },
+    WriteIn {
         easing: EasingV1,
         from: f64,
         to: f64,
@@ -290,6 +320,9 @@ pub enum StudioCreationOperationKind {
         from: Option<f64>,
         to: Option<f64>,
     },
+    WriteIn {
+        easing: StudioPropertyEasing,
+    },
     UniformScale {
         control_present: bool,
         from: Option<f64>,
@@ -414,6 +447,8 @@ pub struct ApplyStudioCreationEditCommand {
     pub next_revision: String,
     pub programs: Vec<StudioCreationEditInput>,
     #[serde(default)]
+    pub segmented_math_tex_outlines: Vec<StudioCreationSegmentedMathTexOutline>,
+    #[serde(default)]
     pub text_outlines: Vec<StudioCreationTextOutline>,
     pub viewport: StudioAuthoringSize,
 }
@@ -481,6 +516,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             StudioCreationOperationKind::Position { .. }
             | StudioCreationOperationKind::FadeIn { .. }
             | StudioCreationOperationKind::DrawIn { .. }
+            | StudioCreationOperationKind::WriteIn { .. }
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Rotation { .. }
             | StudioCreationOperationKind::Opacity { .. }
@@ -644,6 +680,8 @@ struct PlannedStudioCreationEntity {
     source_z_index: Option<f64>,
     spec: StudioCreationEntitySpec,
     visible: bool,
+    write_easing: Option<EasingV1>,
+    write_interval: Option<IntervalV1>,
 }
 
 struct StudioCreationTimelinePlan {
@@ -669,6 +707,7 @@ fn studio_creation_insertion_duration(program: &StudioCreationEditInput) -> f64 
                     operation.kind,
                     StudioCreationOperationKind::FadeIn { .. }
                         | StudioCreationOperationKind::DrawIn { .. }
+                        | StudioCreationOperationKind::WriteIn { .. }
                 )
             } else {
                 matches!(
@@ -863,6 +902,7 @@ fn studio_creation_initial_appearance_end(state: &PlannedStudioCreationEntity) -
         .fade_interval
         .as_ref()
         .or(state.draw_interval.as_ref())
+        .or(state.write_interval.as_ref())
         .map(|interval| interval.end)
 }
 
@@ -1665,6 +1705,7 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::Position { .. }
                         | StudioCreationOperationKind::FadeIn { .. }
                         | StudioCreationOperationKind::DrawIn { .. }
+                        | StudioCreationOperationKind::WriteIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1725,6 +1766,7 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::Position { .. }
                         | StudioCreationOperationKind::FadeIn { .. }
                         | StudioCreationOperationKind::DrawIn { .. }
+                        | StudioCreationOperationKind::WriteIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1767,6 +1809,7 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::Position { .. }
                         | StudioCreationOperationKind::FadeIn { .. }
                         | StudioCreationOperationKind::DrawIn { .. }
+                        | StudioCreationOperationKind::WriteIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1809,6 +1852,7 @@ fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::Position { .. }
                         | StudioCreationOperationKind::FadeIn { .. }
                         | StudioCreationOperationKind::DrawIn { .. }
+                        | StudioCreationOperationKind::WriteIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1928,6 +1972,19 @@ fn plan_studio_creation_edits(
                         || !operation.interval.end.is_finite()
                         || operation.interval.end <= operation.interval.start
                 }
+                StudioCreationOperationKind::WriteIn { easing } => {
+                    operation
+                        .entity_id
+                        .as_deref()
+                        .is_none_or(|entity_id| !program_created_ids.contains(entity_id))
+                        || !matches!(easing, StudioPropertyEasing::Linear)
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        || !operation.interval.end.is_finite()
+                        || operation.interval.end <= operation.interval.start
+                }
                 StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1967,6 +2024,7 @@ fn plan_studio_creation_edits(
                 StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::DrawIn { .. }
+                | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1978,6 +2036,7 @@ fn plan_studio_creation_edits(
                 StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::DrawIn { .. }
+                | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -2163,10 +2222,20 @@ fn plan_studio_creation_edits(
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let writes = program
+            .operations
+            .iter()
+            .filter(|operation| operation.entity_id.as_deref() == Some(spec.id.as_str()))
+            .filter_map(|operation| match &operation.kind {
+                StudioCreationOperationKind::WriteIn { easing } => Some((operation, *easing)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
         if positions.len() != 1
             || fades.len() > 1
             || draws.len() > 1
-            || (!fades.is_empty() && !draws.is_empty())
+            || writes.len() > 1
+            || fades.len() + draws.len() + writes.len() > 1
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
@@ -2275,6 +2344,51 @@ fn plan_studio_creation_edits(
                 },
             ));
         }
+        let mut write_interval = writes.first().map(|(write, _)| IntervalV1 {
+            end: write.interval.end + program_offset,
+            start: write.interval.start + program_offset,
+        });
+        if let Some(write) = &mut write_interval {
+            for (rank, insertion) in &timeline.ranked_insertions {
+                if *rank > program_rank {
+                    shift_interval_for_insertion(write, insertion);
+                }
+            }
+        }
+        if write_interval.as_ref().is_some_and(|write| {
+            spec.kind != StudioAuthoringEntityKind::MathTex
+                || !studio_timeline_semantic_values_match(write.start, lifetime.start)
+                || write.end > lifetime.end
+        }) {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let write_easing = writes.first().map(|(_, easing)| property_easing(*easing));
+        if let (Some((write, _)), Some(interval), Some(easing)) = (
+            writes.first(),
+            write_interval.as_ref(),
+            write_easing.as_ref(),
+        ) {
+            let write_order = program
+                .schedule_order
+                .iter()
+                .position(|operation_id| operation_id == &write.id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            ranked_mutations.push((
+                program_rank,
+                write_order,
+                StudioCreationProjectedMutation {
+                    entity_id: spec.id.clone(),
+                    interval: interval.clone(),
+                    kind: StudioCreationProjectedMutationKind::WriteIn {
+                        easing: easing.clone(),
+                        from: 0.0,
+                        to: 1.0,
+                    },
+                    operation_id: write.id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                },
+            ));
+        }
         entities.push(PlannedStudioCreationEntity {
             appearance_at: None,
             create_operation_id: create_operation.id.clone(),
@@ -2306,6 +2420,8 @@ fn plan_studio_creation_edits(
             source_z_index: None,
             spec: spec.clone(),
             visible: true,
+            write_easing,
+            write_interval,
         });
     }
 
@@ -3379,6 +3495,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::DrawIn { .. }
+                | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -3833,6 +3950,11 @@ fn created_geometry_and_appearance(
             studio_math_tex_appearance(),
             SceneCapabilityV1::CubicPathGeometry,
         ),
+        CreateSceneEntityGeometry::LogicalGroup => (
+            SceneGeometryV1::Group {},
+            SceneAppearanceV1::Group { opacity: 1.0 },
+            SceneCapabilityV1::LogicalGroup,
+        ),
     }
 }
 
@@ -3842,6 +3964,7 @@ fn create_entity_initial_appearance_end(entity: &CreateSceneEntity) -> Option<f6
         .as_ref()
         .map(|fade| fade.end)
         .or_else(|| entity.draw_in.as_ref().map(|draw| draw.end))
+        .or_else(|| entity.write_in.as_ref().map(|write| write.interval.end))
 }
 
 fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
@@ -3859,6 +3982,108 @@ fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
                     | CreateSceneEntityGeometry::Line
                     | CreateSceneEntityGeometry::Rectangle { .. }
             )
+    })
+}
+
+fn studio_write_fragment_id_is_portable(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphanumeric())
+        && value.len() <= 64
+        && bytes.all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'/' | b'-')
+        })
+}
+
+fn studio_write_path_has_closed_renderable_contours(path: &CubicPathV1) -> bool {
+    !path.subpaths.is_empty()
+        && path.subpaths.iter().all(|subpath| {
+            if !subpath.closed || subpath.segments.is_empty() {
+                return false;
+            }
+            let mut start = &subpath.start;
+            for segment in &subpath.segments {
+                if *start == segment.control1 && *start == segment.control2 && *start == segment.end
+                {
+                    return false;
+                }
+                start = &segment.end;
+            }
+            true
+        })
+}
+
+fn create_entity_write_is_valid(entity: &CreateSceneEntity) -> bool {
+    let Some(write) = &entity.write_in else {
+        return !matches!(entity.geometry, CreateSceneEntityGeometry::LogicalGroup);
+    };
+    let plan = write.plan;
+    let Ok(fragment_count) = u32::try_from(write.fragments.len()) else {
+        return false;
+    };
+    if fragment_count == 0 {
+        return false;
+    }
+    let expected_lag_ratio = (4.0 / f64::from(fragment_count)).min(0.2);
+    let source_byte_length = write.source.len();
+    let Ok(source_end_byte) = u32::try_from(source_byte_length) else {
+        return false;
+    };
+    let mut fragment_ids = BTreeSet::new();
+    let total_segments = write.fragments.iter().try_fold(0_usize, |total, fragment| {
+        fragment
+            .path
+            .subpaths
+            .iter()
+            .try_fold(total, |subtotal, subpath| {
+                subtotal.checked_add(subpath.segments.len())
+            })
+    });
+    matches!(entity.geometry, CreateSceneEntityGeometry::LogicalGroup)
+        && entity.draw_in.is_none()
+        && entity.fade_in.is_none()
+        && studio_timeline_semantic_values_match(write.interval.start, entity.lifetime.start)
+        && write.interval.end.is_finite()
+        && write.interval.end > write.interval.start
+        && write.interval.end <= entity.lifetime.end
+        && matches!(write.easing, EasingV1::Linear {})
+        && close_transform_baseline_value(plan.fragment_lag_ratio, expected_lag_ratio)
+        && close_transform_baseline_value(plan.phase_boundary, SEGMENTED_MATH_TEX_PHASE_BOUNDARY)
+        && plan.representation
+            == StudioCreationSegmentedMathTexRepresentation::SeparateOutlineAndFillEntities
+        && close_transform_baseline_value(
+            plan.outline_stroke_width,
+            SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH,
+        )
+        && !write.fragments.is_empty()
+        && write.fragments.len() <= SEGMENTED_MATH_TEX_MAX_FRAGMENTS
+        && source_byte_length <= SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES
+        && matches!(
+            total_segments,
+            Some(1..=SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS)
+        ) && write.fragments.iter().enumerate().all(|(index, fragment)| {
+        u32::try_from(index).ok() == Some(fragment.order)
+            && fragment.id == format!("fragment-{index:04}")
+            && fragment.outline_entity_id == format!("{}:outline", fragment.id)
+            && fragment.fill_entity_id == format!("{}:fill", fragment.id)
+            && fragment.fill_rule == FillRuleV1::NonZero
+            && studio_write_fragment_id_is_portable(&fragment.id)
+            && fragment_ids.insert(fragment.id.as_str())
+            && fragment.paint.red.to_bits() == 1.0_f64.to_bits()
+            && fragment.paint.green.to_bits() == 1.0_f64.to_bits()
+            && fragment.paint.blue.to_bits() == 1.0_f64.to_bits()
+            && fragment.paint.alpha.to_bits() == 1.0_f64.to_bits()
+            && fragment.source_correlation
+                == (StudioCreationSegmentedMathTexSourceCorrelation {
+                    kind: StudioCreationSegmentedMathTexSourceCorrelationKind::ExpressionByteRange,
+                    source_end_byte,
+                    source_start_byte: 0,
+                })
+            && studio_write_path_has_closed_renderable_contours(&fragment.path)
+            && ["outline", "fill"]
+                .into_iter()
+                .all(|role| format!("{}/write/{}/{role}", entity.id, fragment.id).len() <= 240)
     })
 }
 
@@ -4032,6 +4257,7 @@ fn validate_create_scene_entities_command(
                     || !rotation_is_noop(entity.rotation)
                     || entity.instant_transform.is_some()))
             || !create_entity_draw_is_valid(entity)
+            || !create_entity_write_is_valid(entity)
             || !create_entity_property_keyframes_are_valid(entity)
             || (!entity.material_parameter_keyframes.is_empty() && has_color_override)
             || (appearance_changed && entity.appearance_at.is_none())
@@ -4048,6 +4274,178 @@ fn validate_create_scene_entities_command(
     Ok(())
 }
 
+fn write_fragment_entity_id(root_id: &str, fragment_id: &str, role: &str) -> String {
+    format!("{root_id}/write/{fragment_id}/{role}")
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    reason = "the helper appends one already-validated retained Write subtree without hidden state"
+)]
+fn append_created_write_fragments(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    root_id: &str,
+    root_lifetime: &IntervalV1,
+    write: CreateSceneEntityWriteIn,
+    provenance_id: &str,
+    first_scene_order: u32,
+    source_z_index: f64,
+    visible: bool,
+    capabilities: &mut BTreeSet<SceneCapabilityV1>,
+) -> Result<u32, CreateSceneEntitiesError> {
+    let fragment_count = write.fragments.len();
+    let trailing_fragment_count = u32::try_from(fragment_count.saturating_sub(1))
+        .map_err(|_| CreateSceneEntitiesError::InvalidHierarchy)?;
+    let full_length = f64::from(trailing_fragment_count) * write.plan.fragment_lag_ratio + 1.0;
+    let write_duration = write.interval.end - write.interval.start;
+    let outline_stroke_width = manim_stroke_width_to_scene_world(write.plan.outline_stroke_width);
+    let mut scene_order = first_scene_order;
+
+    capabilities.extend([
+        SceneCapabilityV1::CubicPathGeometry,
+        SceneCapabilityV1::PathTrimAnimation,
+        SceneCapabilityV1::VectorAppearanceAnimation,
+    ]);
+
+    for fragment in write.fragments {
+        let lagged_start = f64::from(fragment.order) * write.plan.fragment_lag_ratio;
+        let outline_start = write.interval.start + write_duration * lagged_start / full_length;
+        let phase_boundary = write.interval.start
+            + write_duration * (lagged_start + write.plan.phase_boundary) / full_length;
+        let fragment_end =
+            write.interval.start + write_duration * (lagged_start + 1.0) / full_length;
+        if !outline_start.is_finite()
+            || !phase_boundary.is_finite()
+            || !fragment_end.is_finite()
+            || outline_start >= phase_boundary
+            || phase_boundary >= fragment_end
+            || fragment_end > write.interval.end + TIMELINE_ANCHOR_EPSILON
+            || phase_boundary >= root_lifetime.end
+        {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        }
+
+        let outline_id = write_fragment_entity_id(root_id, &fragment.id, "outline");
+        let fill_id = write_fragment_entity_id(root_id, &fragment.id, "fill");
+        let stroke = poietra_scene_ir::StrokeStyleV1 {
+            cap: poietra_scene_ir::StrokeCapV1::Butt,
+            color: fragment.paint.clone(),
+            join: poietra_scene_ir::StrokeJoinV1::Miter,
+            miter_limit: 10.0,
+            width_world: outline_stroke_width,
+        };
+        scene.entities.push(SceneEntityV1 {
+            appearance: SceneAppearanceV1::Vector {
+                fill: None,
+                opacity: 1.0,
+                stroke: Some(stroke.clone()),
+            },
+            geometry: SceneGeometryV1::CubicPath {
+                path: fragment.path.clone(),
+            },
+            id: outline_id.clone(),
+            lifetimes: vec![IntervalV1 {
+                start: outline_start,
+                end: phase_boundary,
+            }],
+            parent_id: Some(root_id.to_owned()),
+            provenance_id: provenance_id.to_owned(),
+            scene_order,
+            source_z_index,
+            transform: AffineTransformV1::identity(),
+            visible,
+        });
+        scene_order = scene_order
+            .checked_add(1)
+            .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
+        scene.animation_channels.push(AnimationChannelV1::PathTrim {
+            entity_id: outline_id,
+            id: unused_channel_id(scene, &format!("studio-write-outline-{scene_order}")),
+            keyframes: vec![
+                KeyframeV1 {
+                    at: outline_start,
+                    easing_to_next: Some(write.easing.clone()),
+                    value: 0.0,
+                },
+                KeyframeV1 {
+                    at: phase_boundary,
+                    easing_to_next: None,
+                    value: 1.0,
+                },
+            ],
+            parameterization: Some(PathTrimParameterizationV1::UniformCubicParameterV1),
+            provenance_id: provenance_id.to_owned(),
+        });
+
+        let mut transparent_paint = fragment.paint.clone();
+        transparent_paint.alpha = 0.0;
+        let initial_fill = FillStyleV1 {
+            color: transparent_paint,
+            fragment_material: None,
+            rule: fragment.fill_rule,
+        };
+        let final_fill = FillStyleV1 {
+            color: fragment.paint,
+            fragment_material: None,
+            rule: fragment.fill_rule,
+        };
+        scene.entities.push(SceneEntityV1 {
+            appearance: SceneAppearanceV1::Vector {
+                fill: Some(initial_fill.clone()),
+                opacity: 1.0,
+                stroke: Some(stroke.clone()),
+            },
+            geometry: SceneGeometryV1::CubicPath {
+                path: fragment.path,
+            },
+            id: fill_id.clone(),
+            lifetimes: vec![IntervalV1 {
+                start: phase_boundary,
+                end: root_lifetime.end,
+            }],
+            parent_id: Some(root_id.to_owned()),
+            provenance_id: provenance_id.to_owned(),
+            scene_order,
+            source_z_index,
+            transform: AffineTransformV1::identity(),
+            visible,
+        });
+        scene_order = scene_order
+            .checked_add(1)
+            .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
+        let mut final_stroke = stroke.clone();
+        final_stroke.width_world = 0.0;
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::VectorAppearance {
+                entity_id: fill_id,
+                id: unused_channel_id(scene, &format!("studio-write-fill-{scene_order}")),
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: phase_boundary,
+                        easing_to_next: Some(write.easing.clone()),
+                        value: VectorAppearanceValueV1 {
+                            fill: Some(initial_fill),
+                            stroke: Some(stroke),
+                        },
+                    },
+                    KeyframeV1 {
+                        at: fragment_end,
+                        easing_to_next: None,
+                        value: VectorAppearanceValueV1 {
+                            fill: Some(final_fill),
+                            stroke: Some(final_stroke),
+                        },
+                    },
+                ],
+                provenance_id: provenance_id.to_owned(),
+            });
+    }
+    u32::try_from(fragment_count.saturating_mul(2))
+        .map_err(|_| CreateSceneEntitiesError::InvalidHierarchy)
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one append path keeps base entity and its three optional canonical channels together"
@@ -4059,8 +4457,10 @@ fn append_created_entity(
     scene_order: u32,
     source_z_index: f64,
     capabilities: &mut BTreeSet<SceneCapabilityV1>,
-) -> Result<(), CreateSceneEntitiesError> {
+) -> Result<u32, CreateSceneEntitiesError> {
+    let write_in = entity.write_in.clone();
     let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
+    let is_logical_group = matches!(&geometry, SceneGeometryV1::Group {});
     let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
     if let Some(color) = &entity.fill_color {
         let SceneAppearanceV1::Vector { fill, .. } = &mut appearance else {
@@ -4106,7 +4506,7 @@ fn append_created_entity(
         scene_order,
         source_z_index,
         transform: base_transform.clone(),
-        visible: entity.visible,
+        visible: is_logical_group || entity.visible,
     });
     let mut opacity_keyframes = Vec::new();
     if let Some(fade) = entity.fade_in {
@@ -4250,49 +4650,75 @@ fn append_created_entity(
                 || entity.stroke_color.is_some())
         {
             let mut changed_appearance = appearance.clone();
-            let SceneAppearanceV1::Vector { fill, stroke, .. } = &mut changed_appearance else {
-                unreachable!("supported Studio creation geometry always uses vector appearance");
-            };
-            if let Some(color) = &entity.fill_color {
-                *fill = Some(FillStyleV1 {
-                    color: color.clone(),
-                    fragment_material: None,
-                    rule: FillRuleV1::NonZero,
-                });
-            }
-            if let Some(color) = &entity.stroke_color {
-                let stroke = stroke
-                    .as_mut()
-                    .expect("Studio shape color admission requires an existing stroke");
-                stroke.color = color.clone();
-            }
-            set_vector_paint_alpha(&mut changed_appearance, entity.paint_opacity)
-                .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?;
-            let SceneAppearanceV1::Vector { fill, stroke, .. } = changed_appearance else {
-                unreachable!("supported Studio creation geometry always uses vector appearance");
-            };
-            let value = VectorAppearanceValueV1 { fill, stroke };
-            capabilities.insert(SceneCapabilityV1::VectorAppearanceAnimation);
-            let channel_id = unused_channel_id(scene, &format!("studio-appearance-{scene_order}"));
-            scene
-                .animation_channels
-                .push(AnimationChannelV1::VectorAppearance {
+            if let SceneAppearanceV1::Vector { fill, stroke, .. } = &mut changed_appearance {
+                if let Some(color) = &entity.fill_color {
+                    *fill = Some(FillStyleV1 {
+                        color: color.clone(),
+                        fragment_material: None,
+                        rule: FillRuleV1::NonZero,
+                    });
+                }
+                if let Some(color) = &entity.stroke_color {
+                    let stroke = stroke
+                        .as_mut()
+                        .expect("Studio shape color admission requires an existing stroke");
+                    stroke.color = color.clone();
+                }
+                set_vector_paint_alpha(&mut changed_appearance, entity.paint_opacity)
+                    .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?;
+                let SceneAppearanceV1::Vector { fill, stroke, .. } = changed_appearance else {
+                    unreachable!("the matched appearance remains vector-valued");
+                };
+                let value = VectorAppearanceValueV1 { fill, stroke };
+                capabilities.insert(SceneCapabilityV1::VectorAppearanceAnimation);
+                let channel_id =
+                    unused_channel_id(scene, &format!("studio-appearance-{scene_order}"));
+                scene
+                    .animation_channels
+                    .push(AnimationChannelV1::VectorAppearance {
+                        entity_id: created_id.clone(),
+                        id: channel_id,
+                        keyframes: vec![
+                            KeyframeV1 {
+                                at,
+                                easing_to_next: Some(EasingV1::Linear {}),
+                                value: value.clone(),
+                            },
+                            KeyframeV1 {
+                                at: lifetime.end,
+                                easing_to_next: None,
+                                value,
+                            },
+                        ],
+                        provenance_id: provenance_id.to_owned(),
+                    });
+            } else if matches!(changed_appearance, SceneAppearanceV1::Group { .. })
+                && entity.fill_color.is_none()
+                && entity.stroke_color.is_none()
+            {
+                capabilities.insert(SceneCapabilityV1::OpacityAnimation);
+                let channel_id =
+                    unused_channel_id(scene, &format!("studio-group-opacity-{scene_order}"));
+                scene.animation_channels.push(AnimationChannelV1::Opacity {
                     entity_id: created_id.clone(),
                     id: channel_id,
                     keyframes: vec![
                         KeyframeV1 {
                             at,
                             easing_to_next: Some(EasingV1::Linear {}),
-                            value: value.clone(),
+                            value: entity.paint_opacity,
                         },
                         KeyframeV1 {
                             at: lifetime.end,
                             easing_to_next: None,
-                            value,
+                            value: entity.paint_opacity,
                         },
                     ],
                     provenance_id: provenance_id.to_owned(),
                 });
+            } else {
+                return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+            }
         }
         if !rotation_is_noop(entity.rotation) {
             let mut rotated = base_transform.clone();
@@ -4349,13 +4775,32 @@ fn append_created_entity(
         scene
             .animation_channels
             .push(AnimationChannelV1::AffineTransform {
-                entity_id: created_id,
+                entity_id: created_id.clone(),
                 id: channel_id,
                 keyframes,
                 provenance_id: provenance_id.to_owned(),
             });
     }
-    Ok(())
+    let write_leaf_count = if let Some(write) = write_in {
+        append_created_write_fragments(
+            scene,
+            &created_id,
+            &lifetime,
+            write,
+            provenance_id,
+            scene_order
+                .checked_add(1)
+                .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?,
+            source_z_index,
+            entity.visible,
+            capabilities,
+        )?
+    } else {
+        0
+    };
+    1_u32
+        .checked_add(write_leaf_count)
+        .ok_or(CreateSceneEntitiesError::InvalidHierarchy)
 }
 
 fn validate_studio_logical_group(
@@ -4387,7 +4832,7 @@ fn validate_studio_logical_group(
         // Visibility is a document property, not hierarchy membership. The
         // planner already proves that each child was visible when Group was
         // authored; a later Hide must not invalidate the retained group.
-        if child.parent_id.is_some() || matches!(child.geometry, SceneGeometryV1::Group {}) {
+        if child.parent_id.is_some() {
             return Err(CreateSceneEntitiesError::InvalidHierarchy);
         }
         paint_indexes.push(
@@ -4437,9 +4882,7 @@ fn append_studio_logical_groups(
     let mut roots = scene
         .entities
         .iter()
-        .filter(|entity| {
-            entity.parent_id.is_none() && !matches!(entity.geometry, SceneGeometryV1::Group {})
-        })
+        .filter(|entity| entity.parent_id.is_none())
         .map(|entity| (entity.id.clone(), entity.source_z_index, entity.scene_order))
         .collect::<Vec<_>>();
     roots.sort_by(|left, right| left.1.total_cmp(&right.1).then(left.2.cmp(&right.2)));
@@ -4521,7 +4964,7 @@ impl EngineSessionV1 {
             matches!(
                 &entity.geometry,
                 CreateSceneEntityGeometry::CubicOutline { .. }
-            )
+            ) || entity.write_in.is_some()
         });
         for insertion in &command.timeline_insertions {
             insert_scene_time(&mut candidate.scene, insertion);
@@ -4560,16 +5003,20 @@ impl EngineSessionV1 {
             .map(|entity| entity.id.clone())
             .collect::<BTreeSet<_>>();
 
-        for (scene_order, entity) in (first_scene_order..).zip(command.entities) {
+        let mut next_scene_order = first_scene_order;
+        for entity in command.entities {
             let entity_source_z_index = entity.source_z_index.unwrap_or(source_z_index);
-            append_created_entity(
+            let appended_entity_count = append_created_entity(
                 &mut candidate.scene,
                 entity,
                 &command.provenance.id,
-                scene_order,
+                next_scene_order,
                 entity_source_z_index,
                 &mut capabilities,
             )?;
+            next_scene_order = next_scene_order
+                .checked_add(appended_entity_count)
+                .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
             source_z_index += 1.0;
         }
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
@@ -4633,6 +5080,7 @@ impl EngineSessionV1 {
             math_tex_outlines,
             next_revision,
             programs,
+            segmented_math_tex_outlines,
             text_outlines,
             viewport,
         } = command;
@@ -4676,6 +5124,20 @@ impl EngineSessionV1 {
         .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
         for state in &plan.entities {
             let matching_outline_count = match state.kind {
+                StudioAuthoringEntityKind::MathTex if state.write_interval.is_some() => {
+                    let source = state
+                        .spec
+                        .tex_parts
+                        .as_ref()
+                        .map(|parts| parts.join(" "))
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    segmented_math_tex_outlines
+                        .iter()
+                        .filter(|outline| {
+                            outline.entity_id == state.spec.id && outline.source == source
+                        })
+                        .count()
+                }
                 StudioAuthoringEntityKind::MathTex => math_tex_outlines
                     .iter()
                     .filter(|outline| {
@@ -4742,6 +5204,9 @@ impl EngineSessionV1 {
                         height: size.height,
                         width: size.width,
                     }
+                }
+                StudioAuthoringEntityKind::MathTex if state.write_interval.is_some() => {
+                    CreateSceneEntityGeometry::LogicalGroup
                 }
                 StudioAuthoringEntityKind::MathTex => {
                     let outline = math_tex_outlines
@@ -4835,6 +5300,33 @@ impl EngineSessionV1 {
                 .as_deref()
                 .map(color_with_opacity)
                 .transpose()?;
+            let write_in = match (&state.write_interval, &state.write_easing) {
+                (Some(interval), Some(easing)) => {
+                    let source = state
+                        .spec
+                        .tex_parts
+                        .as_ref()
+                        .map(|parts| parts.join(" "))
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    let outline = segmented_math_tex_outlines
+                        .iter()
+                        .find(|outline| {
+                            outline.entity_id == state.spec.id && outline.source == source
+                        })
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    Some(CreateSceneEntityWriteIn {
+                        easing: easing.clone(),
+                        fragments: outline.fragments.clone(),
+                        interval: interval.clone(),
+                        plan: outline.write_plan,
+                        source,
+                    })
+                }
+                (None, None) => None,
+                (Some(_), None) | (None, Some(_)) => {
+                    return Err(ApplyStudioCreationEditError::Unsupported);
+                }
+            };
             entities.push(CreateSceneEntity {
                 appearance_at: state.appearance_at,
                 draw_in: state
@@ -4870,6 +5362,7 @@ impl EngineSessionV1 {
                 source_z_index: state.source_z_index,
                 stroke_color,
                 visible: state.visible,
+                write_in,
             });
         }
         let motions = plan
@@ -5085,6 +5578,7 @@ mod tests {
                     stroke_color: None,
                     instant_transform: None,
                     visible: true,
+                    write_in: None,
                 },
                 CreateSceneEntity {
                     appearance_at: None,
@@ -5118,6 +5612,7 @@ mod tests {
                         scale_y: 1.0,
                     }),
                     visible: true,
+                    write_in: None,
                 },
                 CreateSceneEntity {
                     appearance_at: None,
@@ -5144,6 +5639,7 @@ mod tests {
                     stroke_color: None,
                     instant_transform: None,
                     visible: true,
+                    write_in: None,
                 },
             ],
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
@@ -5297,6 +5793,7 @@ mod tests {
                     transaction_id: "resize".to_owned(),
                 },
             ],
+            segmented_math_tex_outlines: vec![],
             text_outlines: vec![],
             viewport: StudioAuthoringSize {
                 height: 360.0,
@@ -5322,6 +5819,93 @@ mod tests {
             to: Some(1.0),
         };
         program.schedule_order[2] = "draw".to_owned();
+        command
+    }
+
+    fn studio_math_tex_write_creation_command(
+        bundle: &SceneIrBundleV1,
+    ) -> ApplyStudioCreationEditCommand {
+        let mut command = studio_creation_command(bundle);
+        command.programs.truncate(1);
+        let program = &mut command.programs[0];
+        let entity_id = {
+            let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind
+            else {
+                unreachable!();
+            };
+            entity.kind = StudioAuthoringEntityKind::MathTex;
+            entity.dimensions = StudioAuthoringDimensions::default();
+            entity.tex_parts = Some(vec!["E".to_owned(), "=".to_owned(), "mc^2".to_owned()]);
+            entity.id.clone()
+        };
+        let write = program
+            .operations
+            .iter_mut()
+            .find(|operation| matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. }))
+            .expect("creation fixture contains one fade-in");
+        write.id = "write".to_owned();
+        write.interval.end = 1.5;
+        write.kind = StudioCreationOperationKind::WriteIn {
+            easing: StudioPropertyEasing::Linear,
+        };
+        let StudioCreationOperationKind::Position {
+            position: Some(position),
+        } = &mut program.operations[1].kind
+        else {
+            unreachable!();
+        };
+        position.x = 400.0;
+        program.schedule_order[2] = "write".to_owned();
+        let white_paint = RgbaColorV1 {
+            alpha: 1.0,
+            blue: 1.0,
+            green: 1.0,
+            red: 1.0,
+        };
+        let source_end_byte = u32::try_from("E = mc^2".len()).unwrap();
+        command.segmented_math_tex_outlines = vec![StudioCreationSegmentedMathTexOutline {
+            entity_id,
+            fragments: vec![
+                StudioCreationSegmentedMathTexFragment {
+                    fill_entity_id: "fragment-0000:fill".to_owned(),
+                    fill_rule: FillRuleV1::NonZero,
+                    id: "fragment-0000".to_owned(),
+                    order: 0,
+                    outline_entity_id: "fragment-0000:outline".to_owned(),
+                    paint: white_paint.clone(),
+                    path: mathtex_fixture_path(),
+                    source_correlation: StudioCreationSegmentedMathTexSourceCorrelation {
+                        kind:
+                            StudioCreationSegmentedMathTexSourceCorrelationKind::ExpressionByteRange,
+                        source_end_byte,
+                        source_start_byte: 0,
+                    },
+                },
+                StudioCreationSegmentedMathTexFragment {
+                    fill_entity_id: "fragment-0001:fill".to_owned(),
+                    fill_rule: FillRuleV1::NonZero,
+                    id: "fragment-0001".to_owned(),
+                    order: 1,
+                    outline_entity_id: "fragment-0001:outline".to_owned(),
+                    paint: white_paint,
+                    path: mathtex_fixture_path(),
+                    source_correlation: StudioCreationSegmentedMathTexSourceCorrelation {
+                        kind:
+                            StudioCreationSegmentedMathTexSourceCorrelationKind::ExpressionByteRange,
+                        source_end_byte,
+                        source_start_byte: 0,
+                    },
+                },
+            ],
+            source: "E = mc^2".to_owned(),
+            write_plan: StudioCreationSegmentedMathTexWritePlan {
+                fragment_lag_ratio: 0.2,
+                outline_stroke_width: 2.0,
+                phase_boundary: 0.5,
+                representation:
+                    StudioCreationSegmentedMathTexRepresentation::SeparateOutlineAndFillEntities,
+            },
+        }];
         command
     }
 
@@ -7324,6 +7908,329 @@ mod tests {
             project_studio_creation_edits(bundle.scene.duration, &command.programs),
             Err(ProjectStudioCreationEditError::Unsupported)
         ));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one vertical-slice test pins the root hierarchy, both Write phases, and sampling"
+    )]
+    fn normalized_math_tex_write_projects_and_appends_one_retained_subtree() {
+        let bundle = static_imported_bundle();
+        let command = studio_math_tex_write_creation_command(&bundle);
+        assert!(
+            (command.segmented_math_tex_outlines[0]
+                .write_plan
+                .outline_stroke_width
+                - 2.0)
+                .abs()
+                < 1e-12
+        );
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert!((projection.projected_duration - (bundle.scene.duration + 1.0)).abs() < 1e-12);
+        assert!(matches!(
+            &projection.mutations[1],
+            StudioCreationProjectedMutation {
+                entity_id,
+                interval: IntervalV1 { start: 0.5, end: 1.5 },
+                kind: StudioCreationProjectedMutationKind::WriteIn {
+                    easing: EasingV1::Linear {},
+                    from: 0.0,
+                    to: 1.0,
+                },
+                operation_id,
+                transaction_id,
+            } if entity_id == "tx:create/entity:circle"
+                && operation_id == "write"
+                && transaction_id == "create"
+        ));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        let scene = &result.bundle.scene;
+        assert!(matches!(scene.fidelity, FidelityV1::Approximate { .. }));
+        for capability in [
+            SceneCapabilityV1::CubicPathGeometry,
+            SceneCapabilityV1::LogicalGroup,
+            SceneCapabilityV1::PathTrimAnimation,
+            SceneCapabilityV1::VectorAppearanceAnimation,
+        ] {
+            assert!(scene.required_capabilities.contains(&capability));
+        }
+
+        let root_id = "tx:create/entity:circle";
+        let root = scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == root_id)
+            .unwrap();
+        assert!(matches!(root.geometry, SceneGeometryV1::Group {}));
+        assert!(root.parent_id.is_none());
+        assert!(root.transform.tx > 0.0);
+        let children = scene
+            .entities
+            .iter()
+            .filter(|entity| entity.parent_id.as_deref() == Some(root_id))
+            .collect::<Vec<_>>();
+        assert_eq!(children.len(), 4);
+        assert!(
+            children
+                .iter()
+                .all(|child| child.transform == AffineTransformV1::identity())
+        );
+
+        let outline_zero = format!("{root_id}/write/fragment-0000/outline");
+        let fill_zero = format!("{root_id}/write/fragment-0000/fill");
+        let outline_one = format!("{root_id}/write/fragment-0001/outline");
+        let fill_one = format!("{root_id}/write/fragment-0001/fill");
+        let outline_zero_entity = scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == outline_zero)
+            .unwrap();
+        let SceneAppearanceV1::Vector {
+            stroke: Some(outline_stroke),
+            ..
+        } = &outline_zero_entity.appearance
+        else {
+            panic!("Write outline must retain its stroke appearance");
+        };
+        assert!((outline_stroke.width_world - 0.02).abs() < 1e-12);
+        let path_trim_channels = scene
+            .animation_channels
+            .iter()
+            .filter_map(|channel| match channel {
+                AnimationChannelV1::PathTrim {
+                    entity_id,
+                    keyframes,
+                    ..
+                } => Some((entity_id.as_str(), keyframes)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        let appearance_channels = scene
+            .animation_channels
+            .iter()
+            .filter_map(|channel| match channel {
+                AnimationChannelV1::VectorAppearance {
+                    entity_id,
+                    keyframes,
+                    ..
+                } => Some((entity_id.as_str(), keyframes)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(path_trim_channels.len(), 2);
+        assert_eq!(appearance_channels.len(), 2);
+        let outline_zero_keyframes = path_trim_channels[outline_zero.as_str()];
+        assert!((outline_zero_keyframes[0].at - 0.5).abs() < 1e-12);
+        assert!((outline_zero_keyframes[1].at - (0.5 + 0.5 / 1.2)).abs() < 1e-12);
+        let fill_one_keyframes = appearance_channels[fill_one.as_str()];
+        assert!((fill_one_keyframes[0].at - (0.5 + 0.7 / 1.2)).abs() < 1e-12);
+        assert!((fill_one_keyframes[1].at - 1.5).abs() < 1e-12);
+        assert!(matches!(
+            &fill_one_keyframes[1].value,
+            VectorAppearanceValueV1 {
+                stroke: Some(stroke),
+                ..
+            } if stroke.color.alpha.to_bits() == 1.0_f64.to_bits()
+                && stroke.width_world.to_bits() == 0.0_f64.to_bits()
+        ));
+
+        let sample = |session: &EngineSessionV1, sample_time| {
+            session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "studio-math-tex-write",
+                    sample_time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap()
+        };
+        let early = sample(&session, 0.6);
+        assert!(
+            early
+                .draws
+                .iter()
+                .any(|draw| draw.entity_id() == outline_zero)
+        );
+        assert!(early.draws.iter().all(|draw| {
+            ![fill_zero.as_str(), outline_one.as_str(), fill_one.as_str()]
+                .contains(&draw.entity_id())
+        }));
+        let frame_grid_boundary = sample(&session, 40.0 / 30.0);
+        assert!(frame_grid_boundary.draws.iter().any(|draw| {
+            matches!(
+                draw,
+                poietra_scene_ir::RenderDrawV1::Path {
+                    entity_id,
+                    stroke: None,
+                    ..
+                } if entity_id == &fill_zero
+            )
+        }));
+        let complete = sample(&session, 1.5);
+        assert!(
+            complete
+                .draws
+                .iter()
+                .any(|draw| draw.entity_id() == fill_zero)
+        );
+        assert!(
+            complete
+                .draws
+                .iter()
+                .any(|draw| draw.entity_id() == fill_one)
+        );
+        assert!(complete.draws.iter().all(|draw| {
+            ![root_id, outline_zero.as_str(), outline_one.as_str()].contains(&draw.entity_id())
+        }));
+    }
+
+    #[test]
+    fn normalized_math_tex_write_root_can_join_a_logical_group() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_math_tex_write_creation_command(&bundle);
+        let second = studio_creation_command(&bundle);
+        command
+            .programs
+            .push(second_group_resize_creation(&second.programs[0]));
+        let root_id = "tx:create/entity:circle";
+        let sibling_id = "tx:second/entity:rectangle";
+        let group_id = "tx:write-group/entity:group";
+        command.programs.push(studio_hierarchy_edit_input(
+            "write-group",
+            1.5,
+            StudioCreationOperationKind::Group {
+                child_entity_ids: vec![root_id.to_owned(), sibling_id.to_owned()],
+                group_id: group_id.to_owned(),
+            },
+        ));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let scene = &result.bundle.scene;
+        assert!(scene.entities.iter().any(|entity| {
+            entity.id == root_id && entity.parent_id.as_deref() == Some(group_id)
+        }));
+        assert!(scene.entities.iter().any(|entity| {
+            entity.id == sibling_id && entity.parent_id.as_deref() == Some(group_id)
+        }));
+        assert!(scene.entities.iter().any(|entity| {
+            entity.id == format!("{root_id}/write/fragment-0000/fill")
+                && entity.parent_id.as_deref() == Some(root_id)
+        }));
+    }
+
+    #[test]
+    fn normalized_math_tex_write_rejects_wrong_artifacts_and_conflicting_entrances() {
+        let bundle = static_imported_bundle();
+        let command = studio_math_tex_write_creation_command(&bundle);
+
+        let mut wrong_source = command.clone();
+        wrong_source.segmented_math_tex_outlines[0].source = "E=mc^2".to_owned();
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+        assert!(matches!(
+            session.apply_studio_creation_edit(wrong_source),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &bundle.scene);
+
+        let mut wrong_order = command.clone();
+        wrong_order.segmented_math_tex_outlines[0].fragments[1].order = 0;
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+        assert!(matches!(
+            session.apply_studio_creation_edit(wrong_order),
+            Err(ApplyStudioCreationEditError::Create(
+                CreateSceneEntitiesError::InvalidAppearanceEdit
+            ))
+        ));
+        assert_eq!(session.scene(), &bundle.scene);
+
+        let mut unsupported_smooth = command.clone();
+        let write = unsupported_smooth.programs[0]
+            .operations
+            .iter_mut()
+            .find(|operation| matches!(operation.kind, StudioCreationOperationKind::WriteIn { .. }))
+            .unwrap();
+        write.kind = StudioCreationOperationKind::WriteIn {
+            easing: StudioPropertyEasing::Smooth,
+        };
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &unsupported_smooth.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        let corruptions: [fn(&mut ApplyStudioCreationEditCommand); 4] = [
+            |command: &mut ApplyStudioCreationEditCommand| {
+                command.segmented_math_tex_outlines[0].fragments[0]
+                    .source_correlation
+                    .source_end_byte -= 1;
+            },
+            |command: &mut ApplyStudioCreationEditCommand| {
+                command.segmented_math_tex_outlines[0].fragments[0]
+                    .path
+                    .subpaths[0]
+                    .closed = false;
+            },
+            |command: &mut ApplyStudioCreationEditCommand| {
+                command.segmented_math_tex_outlines[0].fragments[0].outline_entity_id =
+                    "fragment-0000:wrong".to_owned();
+            },
+            |command: &mut ApplyStudioCreationEditCommand| {
+                command.segmented_math_tex_outlines[0].fragments[0]
+                    .paint
+                    .red = 0.5;
+            },
+        ];
+        for corrupt in corruptions {
+            let mut malformed = command.clone();
+            corrupt(&mut malformed);
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+            assert!(matches!(
+                session.apply_studio_creation_edit(malformed),
+                Err(ApplyStudioCreationEditError::Create(
+                    CreateSceneEntitiesError::InvalidAppearanceEdit
+                ))
+            ));
+            assert_eq!(session.scene(), &bundle.scene);
+        }
+
+        for conflicting_kind in [
+            StudioCreationOperationKind::FadeIn { persistent: true },
+            StudioCreationOperationKind::DrawIn {
+                easing: StudioPropertyEasing::Linear,
+                from: Some(0.0),
+                to: Some(1.0),
+            },
+        ] {
+            let mut conflict = command.clone();
+            let program = &mut conflict.programs[0];
+            program.operations.push(StudioCreationOperation {
+                depends_on: vec!["write".to_owned()],
+                entity_id: Some("tx:create/entity:circle".to_owned()),
+                id: "conflicting-entrance".to_owned(),
+                interval: IntervalV1 {
+                    end: 1.5,
+                    start: 0.5,
+                },
+                kind: conflicting_kind,
+                origin: StudioAuthoringOrigin::StudioDefault,
+            });
+            program
+                .schedule_order
+                .push("conflicting-entrance".to_owned());
+            program.schedule_edge_count = 6;
+            assert!(matches!(
+                project_studio_creation_edits(bundle.scene.duration, &conflict.programs),
+                Err(ProjectStudioCreationEditError::Unsupported)
+            ));
+        }
     }
 
     #[test]

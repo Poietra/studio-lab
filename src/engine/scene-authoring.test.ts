@@ -77,6 +77,7 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
   expectedBaseRevision: "a".repeat(64),
   frame: { height: 9, width: 16 },
   mathTexOutlines: [],
+  segmentedMathTexOutlines: [],
   nextRevision: "d".repeat(64),
   programs: [
     {

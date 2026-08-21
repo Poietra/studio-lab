@@ -27,10 +27,11 @@ type StaticRootTransformCommandInput = Omit<
 
 type StudioCreationCommandInput = Omit<
   ApplyStudioCreationEditWireCommandV1,
-  "programs" | "schema" | "textOutlines" | "version"
+  "programs" | "schema" | "segmentedMathTexOutlines" | "textOutlines" | "version"
 > &
   Readonly<{
     programs: readonly SceneEdit[];
+    segmentedMathTexOutlines?: ApplyStudioCreationEditWireCommandV1["segmentedMathTexOutlines"];
     textOutlines?: ApplyStudioCreationEditWireCommandV1["textOutlines"];
   }>;
 
@@ -315,6 +316,14 @@ function normalizedStudioCreationOperation(
       to: 1,
     };
   }
+  if (operation.kind === "WriteIn") {
+    return {
+      ...common,
+      easing: operation.easing,
+      entityId: operation.entityId,
+      kind: "write-in",
+    };
+  }
   if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
     return { ...common, entityId: operation.entityId, kind: "persistent-remove", persistent: true };
   }
@@ -410,6 +419,7 @@ export function buildStudioCreationEditCommand(
       operations: program.operations.map(normalizedStudioCreationOperation),
     })),
     schema: "poietra.apply-studio-creation-edit",
+    segmentedMathTexOutlines: input.segmentedMathTexOutlines ?? [],
     textOutlines: input.textOutlines ?? [],
     version: 1,
   };
