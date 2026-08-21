@@ -31,6 +31,9 @@ export const INSERT_ENTITY_TYPES = [
   "MathTex",
   "Rectangle",
   "Circle",
+  "Ellipse",
+  "Arc",
+  "Sector",
   "Triangle",
   "RegularPolygon",
   "Line",
@@ -54,6 +57,10 @@ export type StudioEntityInput = Readonly<{
 export function defaultEntityDimensions(type: InsertEntityType | "ImageMobject"): EntityDimensions | undefined {
   if (type === "Circle") return { radius: 1 };
   if (type === "Rectangle") return { height: 2, width: 4 };
+  if (type === "Ellipse") return { height: 2, width: 3 };
+  if (type === "Arc" || type === "Sector") {
+    return { angles: { start: 0, sweep: Math.PI / 2 }, radius: 1 };
+  }
   if (type === "Triangle") return { radius: 1, sides: 3 };
   if (type === "RegularPolygon") return { radius: 1, sides: 6 };
   return undefined;
@@ -845,7 +852,21 @@ export function duplicateEntityInput(
             knownDimensions.width === undefined &&
             knownDimensions.sides !== undefined
           ? { radius: knownDimensions.radius, sides: knownDimensions.sides }
-          : undefined;
+          : entity.type === "Ellipse" &&
+              knownDimensions?.height !== undefined &&
+              knownDimensions.width !== undefined &&
+              knownDimensions.angles === undefined &&
+              knownDimensions.radius === undefined &&
+              knownDimensions.sides === undefined
+            ? { height: knownDimensions.height, width: knownDimensions.width }
+            : (entity.type === "Arc" || entity.type === "Sector") &&
+                knownDimensions?.angles !== undefined &&
+                knownDimensions.radius !== undefined &&
+                knownDimensions.height === undefined &&
+                knownDimensions.sides === undefined &&
+                knownDimensions.width === undefined
+              ? { angles: knownDimensions.angles, radius: knownDimensions.radius }
+              : undefined;
   return {
     content: entity.content,
     ...(dimensions ? { dimensions } : {}),

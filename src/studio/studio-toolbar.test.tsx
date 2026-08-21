@@ -6,7 +6,15 @@ import { StudioToolbar, type StudioToolbarProps } from "./studio-toolbar";
 function props(overrides: Partial<StudioToolbarProps> = {}): StudioToolbarProps {
   return {
     authoringAvailable: true,
+    curveInsertSettings: {
+      ellipseHeight: 2,
+      ellipseWidth: 3,
+      radius: 1,
+      startDegrees: 0,
+      sweepDegrees: 90,
+    },
     insertValue: "",
+    onCurveInsertSettingsChange: vi.fn(),
     onInsertAtCenter: vi.fn(),
     onInsertValueChange: vi.fn(),
     onPolygonSidesChange: vi.fn(),
@@ -31,8 +39,22 @@ describe("StudioToolbar selection layout", () => {
 
     expect(tools).toContain("Insert triangle (G)");
     expect(tools).toContain("Insert regular polygon (P)");
+    expect(tools).toContain("Insert ellipse (E)");
+    expect(tools).toContain("Insert arc (U)");
+    expect(tools).toContain("Insert sector (S)");
     expect(polygon).toMatch(/aria-label="Polygon sides"[^>]*max="32"[^>]*min="3"/u);
     expect(polygon).toMatch(/aria-label="Polygon sides"[^>]*value="6"/u);
+  });
+
+  it("exposes bounded creation controls for curve primitives", () => {
+    const ellipse = renderToStaticMarkup(<StudioToolbar {...props({ tool: "Ellipse" })} />);
+    const arc = renderToStaticMarkup(<StudioToolbar {...props({ tool: "Arc" })} />);
+
+    expect(ellipse).toContain('aria-label="Ellipse width"');
+    expect(ellipse).toContain('aria-label="Ellipse height"');
+    expect(arc).toContain('aria-label="Arc radius"');
+    expect(arc).toContain('aria-label="Arc start angle"');
+    expect(arc).toContain('aria-label="Arc sweep angle"');
   });
 
   it("offers alignment for two selected objects and requires three for distribution", () => {

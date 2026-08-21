@@ -140,16 +140,35 @@ function sameProjectionNumber(left: number, right: number) {
 }
 
 function sameProjectionDimensions(
-  left: Readonly<{ height?: number; radius?: number; sides?: number; width?: number }>,
-  right: Readonly<{ height?: number; radius?: number; sides?: number; width?: number }>,
+  left: Readonly<{
+    angles?: Readonly<{ start: number; sweep: number }>;
+    height?: number;
+    radius?: number;
+    sides?: number;
+    width?: number;
+  }>,
+  right: Readonly<{
+    angles?: Readonly<{ start: number; sweep: number }>;
+    height?: number;
+    radius?: number;
+    sides?: number;
+    width?: number;
+  }>,
 ) {
-  return (["height", "radius", "sides", "width"] as const).every((key) => {
+  const scalarDimensionsMatch = (["height", "radius", "sides", "width"] as const).every((key) => {
     const leftValue = left[key];
     const rightValue = right[key];
     return leftValue === undefined || rightValue === undefined
       ? leftValue === rightValue
       : sameProjectionNumber(leftValue, rightValue);
   });
+  return (
+    scalarDimensionsMatch &&
+    (left.angles === undefined || right.angles === undefined
+      ? left.angles === right.angles
+      : sameProjectionNumber(left.angles.start, right.angles.start) &&
+        sameProjectionNumber(left.angles.sweep, right.angles.sweep))
+  );
 }
 
 function sameProjectionCameraView(
@@ -290,13 +309,16 @@ export function selectMotionProjection(
 }
 
 function creationEntityKind(type: string): StudioCreationProjectionV1["entities"][number]["kind"] | null {
+  if (type === "Arc") return "arc";
   if (type === "Arrow") return "arrow";
   if (type === "Circle") return "circle";
+  if (type === "Ellipse") return "ellipse";
   if (type === "Triangle" || type === "RegularPolygon") return "regular-polygon";
   if (type === "ImageMobject") return "image";
   if (type === "Line") return "line";
   if (type === "MathTex") return "math-tex";
   if (type === "Rectangle") return "rectangle";
+  if (type === "Sector") return "sector";
   if (type === "Text") return "text";
   return null;
 }
@@ -1376,7 +1398,12 @@ function projectCreationWorkingState(
       throw new TypeError(`Created entity ${entity.entityId} already exists in the Studio workspace.`);
     }
     const hasShapeGeometry =
-      entity.kind === "circle" || entity.kind === "rectangle" || entity.kind === "regular-polygon";
+      entity.kind === "arc" ||
+      entity.kind === "circle" ||
+      entity.kind === "ellipse" ||
+      entity.kind === "rectangle" ||
+      entity.kind === "regular-polygon" ||
+      entity.kind === "sector";
     draft.entities[entity.entityId] = {
       ...(operation.entity.content ? { content: operation.entity.content } : {}),
       ...(hasShapeGeometry

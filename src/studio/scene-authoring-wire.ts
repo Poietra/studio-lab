@@ -215,23 +215,29 @@ function normalizedStudioCreationOperation(
         id: operation.entity.id,
         ...(type === "ImageMobject" ? { image: operation.entity.image ?? null } : {}),
         kind:
-          type === "Arrow"
-            ? "arrow"
-            : type === "Circle"
-              ? "circle"
-              : type === "Triangle" || type === "RegularPolygon"
-                ? "regular-polygon"
-                : type === "Line"
-                  ? "line"
-                  : type === "ImageMobject"
-                    ? "image"
-                    : type === "MathTex"
-                      ? "math-tex"
-                      : type === "Rectangle"
-                        ? "rectangle"
-                        : type === "Text"
-                          ? "text"
-                          : "other",
+          type === "Arc"
+            ? "arc"
+            : type === "Arrow"
+              ? "arrow"
+              : type === "Circle"
+                ? "circle"
+                : type === "Ellipse"
+                  ? "ellipse"
+                  : type === "Triangle" || type === "RegularPolygon"
+                    ? "regular-polygon"
+                    : type === "Line"
+                      ? "line"
+                      : type === "ImageMobject"
+                        ? "image"
+                        : type === "MathTex"
+                          ? "math-tex"
+                          : type === "Rectangle"
+                            ? "rectangle"
+                            : type === "Sector"
+                              ? "sector"
+                              : type === "Text"
+                                ? "text"
+                                : "other",
         layout: textContent?.layout ?? null,
         lifetimeEnd: operation.entity.lifetime.end,
         lifetimeStart: operation.entity.lifetime.start,
@@ -778,17 +784,23 @@ export function staticRootTransformStudioEntities(
     dimensions: entity.geometry?.dimensions.kind === "known" ? entity.geometry.dimensions.value : {},
     id: entity.id,
     kind:
-      entity.type === "Circle"
-        ? "circle"
-        : entity.type === "Triangle" || entity.type === "RegularPolygon"
-          ? "regular-polygon"
-          : entity.type === "ImageMobject"
-            ? "image"
-            : entity.type === "MathTex"
-              ? "math-tex"
-              : entity.type === "Rectangle"
-                ? "rectangle"
-                : "other",
+      entity.type === "Arc"
+        ? "arc"
+        : entity.type === "Circle"
+          ? "circle"
+          : entity.type === "Ellipse"
+            ? "ellipse"
+            : entity.type === "Triangle" || entity.type === "RegularPolygon"
+              ? "regular-polygon"
+              : entity.type === "ImageMobject"
+                ? "image"
+                : entity.type === "MathTex"
+                  ? "math-tex"
+                  : entity.type === "Rectangle"
+                    ? "rectangle"
+                    : entity.type === "Sector"
+                      ? "sector"
+                      : "other",
     objectGraphKey,
     position: entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null,
     provisional: entity.provisional,

@@ -602,6 +602,44 @@ describe("manual Studio authoring commands", () => {
     });
   });
 
+  it("writes bounded native curve defaults into creation Programs", () => {
+    const creations = (["Ellipse", "Arc", "Sector"] as const).map((type) =>
+      createStudioEntitiesProgram({
+        capturedPlayhead: 5,
+        entities: [{ position: { x: 180, y: 120 }, type }],
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: `default-${type}`,
+      }),
+    );
+
+    expect(creations.every((creation) => creation.validation.kind === "valid")).toBe(true);
+    const entities = creations.map((creation) => {
+      const operation = creation.validation.program.operations.find(({ kind }) => kind === "CreateEntity");
+      if (operation?.kind !== "CreateEntity") throw new Error("Curve creation fixture is incomplete.");
+      return operation.entity;
+    });
+    expect(entities).toEqual([
+      expect.objectContaining({ dimensions: { height: 2, width: 3 }, type: "Ellipse" }),
+      expect.objectContaining({ dimensions: { angles: { start: 0, sweep: Math.PI / 2 }, radius: 1 }, type: "Arc" }),
+      expect.objectContaining({ dimensions: { angles: { start: 0, sweep: Math.PI / 2 }, radius: 1 }, type: "Sector" }),
+    ]);
+  });
+
+  it.each([
+    ["Arc", { angles: { start: 0, sweep: 0 }, radius: 1 }],
+    ["Sector", { angles: { start: 0, sweep: Math.PI * 3 }, radius: 1 }],
+    ["Ellipse", { height: 2, radius: 1, width: 3 }],
+  ] as const)("rejects invalid %s curve dimensions", (type, dimensions) => {
+    const result = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ dimensions, position: { x: 180, y: 120 }, type }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: `invalid-${type}`,
+    });
+
+    expect(result.validation.kind).toBe("invalid");
+  });
+
   it.each([
     ["RegularPolygon", { radius: 1, sides: 2 }],
     ["RegularPolygon", { radius: 1, sides: 33 }],

@@ -12,8 +12,15 @@ export function isCanonicalRgbHex(value: unknown): value is string {
 }
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
+const anglePairSchema = z
+  .object({
+    start: z.number().finite(),
+    sweep: z.number().finite(),
+  })
+  .strict();
 const dimensionsSchema = z
   .object({
+    angles: anglePairSchema.optional(),
     height: z.number().positive().optional(),
     radius: z.number().positive().optional(),
     sides: z.number().int().min(3).max(32).optional(),
