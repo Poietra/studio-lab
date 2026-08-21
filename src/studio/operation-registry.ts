@@ -880,20 +880,25 @@ export const OPERATION_REGISTRY = {
       ]),
     }),
     execution: createMotionExecution,
-    validate: (operation, scene) => [
-      ...entityIssues(operation.targetEntityIds, operation, scene),
-      ...(operation.rotationDeltaRadians !== undefined && operation.targetEntityIds.length !== 1
-        ? [
-            {
-              code: "schema-invalid" as const,
-              field: "targetEntityIds",
-              message: "Motion spin requires exactly one Studio-created target.",
-              operationId: operation.id,
-              severity: "error" as const,
-            },
-          ]
-        : []),
-    ],
+    validate: (operation, scene) => {
+      const issues = entityIssues(operation.targetEntityIds, operation, scene);
+      if (operation.rotationDeltaRadians === undefined) return issues;
+      const target = scene.objectGraph.entities[operation.targetEntityIds[0] ?? ""];
+      const missingTargetAlreadyReported = issues.some(({ code }) => code === "target-missing");
+      if (
+        operation.targetEntityIds.length !== 1 ||
+        (!missingTargetAlreadyReported && target?.transactionId === undefined)
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "targetEntityIds",
+          message: "Motion spin requires exactly one Studio-created target.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
   } satisfies Capability<"CreateMotion">,
   TransformContent: {
     access: (operation) => ({

@@ -29,13 +29,28 @@ const MOTION: CreateMotionSuggestion = {
   targetObjectIds: ["equation_1"],
 };
 
+const STUDIO_CREATED_SCENE = {
+  ...STUDIO_FIXTURE_SCENE,
+  objectGraph: {
+    ...STUDIO_FIXTURE_SCENE.objectGraph,
+    entities: {
+      ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+      equation_1: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph.entities.equation_1,
+        sourceIdentity: { kind: "unknown" as const, reason: "Created in Studio." },
+        transactionId: "spin-created",
+      },
+    },
+  },
+};
+
 describe("DraftInspector execution capabilities", () => {
   it("edits motion spin in degrees while keeping client Apply available", () => {
     const spinningMotion = { ...MOTION, rotationDeltaRadians: 2 * Math.PI };
     const validation = canonicalizeSuggestionProgram(spinningMotion, {
       capturedPlayhead: 5,
       origin: "direct-manipulation",
-      scene: STUDIO_FIXTURE_SCENE,
+      scene: STUDIO_CREATED_SCENE,
       transactionId: "spinning-motion-inspector",
     });
     expect(validation.kind).toBe("valid");
@@ -56,6 +71,23 @@ describe("DraftInspector execution capabilities", () => {
     expect(markup).toContain("Remove spin");
     expect(markup).toMatch(/<dd class="mt-0.5 text-zinc-300">unsupported<\/dd>/);
     expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
+  });
+
+  it("rejects motion spin for a source-bound target", () => {
+    const validation = canonicalizeSuggestionProgram(
+      { ...MOTION, rotationDeltaRadians: Math.PI },
+      {
+        capturedPlayhead: 5,
+        origin: "direct-manipulation",
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "source-bound-motion-spin",
+      },
+    );
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({ message: "Motion spin requires exactly one Studio-created target." }),
+    );
   });
 
   it("shows StyleProfile warnings without blocking Apply", () => {
