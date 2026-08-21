@@ -1161,3 +1161,92 @@ test("authors and edits a smooth data plot through reload and MP4 export", async
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
 });
+
+test("authors one cubic Bezier through direct controls, Draw, reload, and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Cubic Bezier fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    const waitForPresentedPreview = () => expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.getByRole("button", { name: "Pen tool (K)" }).click();
+    await canvas.click({ position: { x: 180, y: 180 } });
+    await expect(canvas.locator("text").filter({ hasText: "start" })).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(canvas.locator("text").filter({ hasText: "start" })).toHaveCount(0);
+    for (const position of [
+      { x: 220, y: 230 },
+      { x: 440, y: 150 },
+      { x: 260, y: 90 },
+      { x: 400, y: 290 },
+    ]) {
+      await canvas.click({ position });
+    }
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await waitForPresentedPreview();
+
+    const curve = page.getByRole("button", { name: "Move CubicBezier", exact: true });
+    await expect(curve).toBeVisible();
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(curve).toHaveCount(0);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(curve).toBeVisible();
+    await waitForPresentedPreview();
+    await curve.click();
+    for (const [name, delta] of [
+      ["start", { x: -8, y: 5 }],
+      ["end", { x: 10, y: -6 }],
+      ["control1", { x: -6, y: -12 }],
+      ["control2", { x: 7, y: 10 }],
+    ] as const) {
+      await dragBy(page, page.locator(`[data-cubic-bezier-control="${name}"]`), delta);
+      await page.getByRole("button", { name: "Replace program" }).click();
+      await waitForPresentedPreview();
+    }
+
+    await page.getByRole("combobox", { name: "Cubic Bézier stroke cap" }).selectOption("square");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForPresentedPreview();
+    const strokeWidth = page.getByRole("spinbutton", { name: "Cubic Bézier stroke width" });
+    await strokeWidth.fill("0.08");
+    await strokeWidth.press("Tab");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForPresentedPreview();
+    await page.getByRole("checkbox", { name: "Arrow end" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForPresentedPreview();
+
+    await page.getByRole("button", { name: "Set position" }).click();
+    await dragBy(page, curve, { x: 25, y: -15 });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await waitForPresentedPreview();
+    await page.getByRole("button", { name: "Resize CubicBezier from bottom-right corner" }).press("ArrowRight");
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await waitForPresentedPreview();
+    await page.getByRole("button", { name: "Rotate CubicBezier counterclockwise by 15 degrees" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await waitForPresentedPreview();
+
+    await page.getByRole("button", { name: "Add Draw entrance for CubicBezier" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForPresentedPreview();
+    let drawClip = page.getByRole("button", { name: "Edit CubicBezier Draw entrance" });
+    await expect(drawClip).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Cubic Bezier fixture workspace" }).click();
+    await expect(page.getByRole("button", { name: "Move CubicBezier", exact: true })).toBeVisible();
+    drawClip = page.getByRole("button", { name: "Edit CubicBezier Draw entrance" });
+    await expect(drawClip).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const mp4 = await exportLocalMp4(page);
+    const [brightPixels = 0] = await decodedBrightPixelCounts(page, mp4, [1]);
+    expect(brightPixels).toBeGreaterThan(50);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
