@@ -2197,6 +2197,50 @@ describe("compileStudioPreviewSceneV1", () => {
       expect(entity?.transform.m22).toBeCloseTo(1.5);
     }
 
+    const secondResizeValidation = createDirectManipulationGroupResizeProgram({
+      capturedPlayhead: 0,
+      scene: workingBase.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: "source:circle", fromScale: 1.5, toPosition: { x: 330, y: 190 }, toScale: 2 },
+        { entityId: "source:second", fromScale: 1.5, toPosition: { x: 490, y: 190 }, toScale: 2 },
+      ],
+      transactionId: "resize-imported-selection-again",
+    });
+    if (secondResizeValidation.kind !== "valid") {
+      throw new Error(JSON.stringify(secondResizeValidation.issues));
+    }
+    const secondResizeRecord = {
+      ...programRecord(secondResizeValidation.program, secondResizeValidation),
+      validation: { issues: secondResizeValidation.issues, status: "valid" as const },
+    };
+    const resizedTwiceAppliedEdits = [...resizedAppliedEdits, secondResizeRecord];
+    const resizedTwice = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: compileApplyStaticRootTransformEdit,
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits: resizedTwiceAppliedEdits },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits: resizedTwiceAppliedEdits,
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (resizedTwice.kind !== "compiled") throw new Error(resizedTwice.error);
+    expect(resizedTwice.scene.staticRootProjection?.mutations.slice(-4)).toEqual([
+      expect.objectContaining({ entityId: "source:circle", kind: "position", value: { x: 330, y: 190 } }),
+      expect.objectContaining({ entityId: "source:second", kind: "position", value: { x: 490, y: 190 } }),
+      expect.objectContaining({ entityId: "source:circle", from: 1.5, kind: "uniform-scale", to: 2 }),
+      expect.objectContaining({ entityId: "source:second", from: 1.5, kind: "uniform-scale", to: 2 }),
+    ]);
+    for (const entityId of ["earlier", "second-root"]) {
+      const entity = resizedTwice.scene.bundle.scene.entities.find(({ id }) => id === entityId);
+      expect(entity?.transform.m11).toBeCloseTo(2);
+      expect(entity?.transform.m22).toBeCloseTo(2);
+    }
+
     const rotationValidation = createDirectManipulationGroupRotationProgram({
       angleRadians: Math.PI / 2,
       capturedPlayhead: 0,

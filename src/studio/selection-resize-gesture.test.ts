@@ -2,11 +2,102 @@ import { describe, expect, it } from "vitest";
 
 import {
   createSelectionResizeGesture,
+  importedGroupResizeHistoryIsSupported,
   resizeSelectionAtPoint,
   selectionResizeCommandTargets,
 } from "./selection-resize-gesture";
 
+const positionMutation = (transactionId: string, entityId: string) => ({
+  entityId,
+  interval: { end: 0, start: 0 },
+  kind: "position" as const,
+  operationId: `${transactionId}:position:${entityId}`,
+  transactionId,
+  value: { x: 0, y: 0 },
+});
+
+const scaleMutation = (transactionId: string, entityId: string, from: number, to: number) => ({
+  entityId,
+  from,
+  interval: { end: 0, start: 0 },
+  kind: "uniform-scale" as const,
+  operationId: `${transactionId}:scale:${entityId}`,
+  to,
+  transactionId,
+});
+
 describe("selection resize gesture", () => {
+  it("admits the first imported group resize before any static-root edit exists", () => {
+    expect(importedGroupResizeHistoryIsSupported(null, null)).toBe(true);
+    expect(importedGroupResizeHistoryIsSupported(undefined, null)).toBe(false);
+  });
+
+  it("admits repeated Rust-projected group resize transactions", () => {
+    expect(
+      importedGroupResizeHistoryIsSupported(
+        {
+          insertions: [],
+          mutations: [
+            positionMutation("resize-once", "left"),
+            positionMutation("resize-once", "right"),
+            scaleMutation("resize-once", "left", 1, 1.5),
+            scaleMutation("resize-once", "right", 1, 1.5),
+            positionMutation("resize-twice", "left"),
+            positionMutation("resize-twice", "right"),
+            scaleMutation("resize-twice", "left", 1.5, 2),
+            scaleMutation("resize-twice", "right", 1.5, 2),
+          ],
+          projectedDuration: 0,
+        },
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects single-object move-and-scale history", () => {
+    expect(
+      importedGroupResizeHistoryIsSupported(
+        {
+          insertions: [],
+          mutations: [positionMutation("resize-image", "image"), scaleMutation("resize-image", "image", 1, 2)],
+          projectedDuration: 0,
+        },
+        null,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects group resize after a persistent remove", () => {
+    expect(
+      importedGroupResizeHistoryIsSupported(
+        {
+          insertions: [],
+          mutations: [
+            positionMutation("resize", "left"),
+            positionMutation("resize", "right"),
+            scaleMutation("resize", "left", 1, 2),
+            scaleMutation("resize", "right", 1, 2),
+          ],
+          projectedDuration: 0,
+        },
+        {
+          removals: [
+            {
+              affectedSceneEntityIds: ["left"],
+              fadeInterval: null,
+              operationId: "remove-left",
+              removedAt: 0,
+              resultingLifetimeEnd: 0,
+              sceneEntityId: "left",
+              studioEntityId: "source:left",
+              transactionId: "remove-left",
+            },
+          ],
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("keeps prepared centers, preview deltas, and command positions in Studio viewport units", () => {
     const gesture = createSelectionResizeGesture({
       basis: {
