@@ -10,8 +10,13 @@ const PNG = encodeRgbaPngV1(
   2,
   2,
 );
+const PNG_2 = encodeRgbaPngV1(
+  Uint8Array.from([255, 255, 64, 255, 64, 255, 255, 255, 255, 64, 255, 255, 32, 32, 32, 255]),
+  2,
+  2,
+);
 
-test("restores a Studio-native Image and MP4 export after a page reload", async ({ page }) => {
+test("restores multiple Studio-native Images and MP4 export after a page reload", async ({ page }) => {
   test.setTimeout(180_000);
   let projectId: string | null = null;
   try {
@@ -31,17 +36,21 @@ test("restores a Studio-native Image and MP4 export after a page reload", async 
     await expect(page.getByLabel("Current workspace")).toHaveText("Native reload fixture");
     const assets = page.getByRole("region", { name: "Assets" });
     await expect(assets.getByRole("button", { name: "+ Import PNG" })).toBeEnabled();
-    await assets.locator("input[type=file]").setInputFiles({
-      buffer: Buffer.from(PNG),
-      mimeType: "image/png",
-      name: "image.png",
-    });
-    await expect(page.getByRole("list", { name: "Project images" })).toContainText("image.png");
-    await page.getByRole("button", { name: "+ Add" }).click();
+    await assets.locator("input[type=file]").setInputFiles([
+      { buffer: Buffer.from(PNG), mimeType: "image/png", name: "first.png" },
+      { buffer: Buffer.from(PNG_2), mimeType: "image/png", name: "second.png" },
+    ]);
+    const projectImages = page.getByRole("list", { name: "Project images" });
+    await expect(projectImages.getByRole("listitem")).toHaveCount(2);
+    await projectImages.getByRole("button", { name: "+ Add" }).nth(0).click();
     await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toBeVisible();
     await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
+    await projectImages.getByRole("button", { name: "+ Add" }).nth(1).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toHaveCount(2);
 
     const localStorageText = await page.evaluate(() =>
       Object.keys(localStorage)
@@ -54,9 +63,9 @@ test("restores a Studio-native Image and MP4 export after a page reload", async 
     await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
     await page.getByRole("button", { name: "Open Native reload fixture workspace" }).click();
     await expect(page.getByLabel("Current workspace")).toHaveText("Native reload fixture");
-    await expect(page.getByRole("list", { name: "Project images" })).toContainText("image.png");
-    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Move insert-0" })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Project images" }).getByRole("listitem")).toHaveCount(2);
+    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toHaveCount(2);
+    await expect(page.getByRole("button", { name: "Move insert-0" })).toHaveCount(2);
     await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
 
     const exportControl = page.locator("[data-studio-export-mp4-state]");

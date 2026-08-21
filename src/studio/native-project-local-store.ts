@@ -53,11 +53,9 @@ function copyAssetPayloads(payloads: readonly CanvasPngAssetTransferV1[]) {
   );
 }
 
-/**
- * Browser-local persistence for the single native PNG and its material state.
- * Editor Programs remain in EditorSessionStore; raw image bytes only cross
- * this IndexedDB-backed boundary.
- */
+/** Browser-local persistence for native PNGs and their material state. Editor
+ * Programs remain in EditorSessionStore; raw image bytes only cross this
+ * IndexedDB-backed boundary. */
 export class NativeProjectLocalStore {
   private pendingMutation: Promise<void> = Promise.resolve();
 
@@ -82,8 +80,7 @@ export class NativeProjectLocalStore {
     const bundle = await parseVerifiedSceneIrBundleV1(record.bundle);
     if (
       bundle.scene.source.kind !== "studio-edit-program" ||
-      bundle.scene.sceneId !== `native:${identity.documentKey}` ||
-      bundle.assets.assets.length > 1
+      bundle.scene.sceneId !== `native:${identity.documentKey}`
     ) {
       throw new TypeError("The stored native project Scene is not supported by this local document.");
     }
@@ -103,10 +100,9 @@ export class NativeProjectLocalStore {
     const identity = parseIdentity(identityValue);
     if (
       state.bundle.scene.source.kind !== "studio-edit-program" ||
-      state.bundle.scene.sceneId !== `native:${identity.documentKey}` ||
-      state.bundle.assets.assets.length > 1
+      state.bundle.scene.sceneId !== `native:${identity.documentKey}`
     ) {
-      throw new TypeError("Only the current single-image native document can be stored locally.");
+      throw new TypeError("Only the current native document can be stored locally.");
     }
     const record = {
       ...identity,

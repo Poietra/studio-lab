@@ -108,10 +108,9 @@ export function nativeProjectPngAssetIdV1(digest: string) {
   return `asset:studio-png:${digest}`;
 }
 
-function samePngMetadata(left: PngAssetV1, right: PngAssetV1) {
+function samePngContentMetadata(left: PngAssetV1, right: PngAssetV1) {
   return (
     left.byteLength === right.byteLength &&
-    left.id === right.id &&
     left.pixelHeight === right.pixelHeight &&
     left.pixelWidth === right.pixelWidth &&
     left.sha256 === right.sha256
@@ -119,20 +118,20 @@ function samePngMetadata(left: PngAssetV1, right: PngAssetV1) {
 }
 
 async function verifiedUpdatedManifest(bundle: SceneIrBundleV1, asset: PngAssetV1) {
-  if (bundle.assets.assets.length > 1) {
-    throw new NativeProjectAssetValidationError("Local PNG ingress currently supports one project image.");
-  }
-  const existing = bundle.assets.assets[0];
-  if (existing && existing.sha256 !== asset.sha256) {
-    throw new NativeProjectAssetValidationError("Replacing the existing local project image is not supported yet.");
-  }
-  if (existing && !samePngMetadata(existing, asset)) {
+  const existing = bundle.assets.assets.find((candidate) => candidate.sha256 === asset.sha256);
+  if (existing && !samePngContentMetadata(existing, asset)) {
     throw new NativeProjectAssetValidationError(
       `PNG digest ${asset.sha256} conflicts with immutable metadata already present in this project.`,
     );
   }
+  const collidingId = bundle.assets.assets.find((candidate) => candidate.id === asset.id);
+  if (collidingId && collidingId.sha256 !== asset.sha256) {
+    throw new NativeProjectAssetValidationError(`PNG asset ID ${asset.id} already refers to different content.`);
+  }
   const selected = existing ?? asset;
-  const assets = existing ? bundle.assets.assets : [asset];
+  const assets = existing
+    ? bundle.assets.assets
+    : [...bundle.assets.assets, asset].sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
   const draft = assetManifestV1Schema.parse({
     ...bundle.assets,
     assets,

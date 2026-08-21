@@ -11,7 +11,9 @@ import {
 } from "./native-project-assets";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+const PNG_2 = new Uint8Array([...PNG, 5]);
 const DIGEST = createHash("sha256").update(PNG).digest("hex");
+const DIGEST_2 = createHash("sha256").update(PNG_2).digest("hex");
 
 async function emptyNativeState(): Promise<NativeProjectAssetStateV1> {
   const draft = {
@@ -120,23 +122,35 @@ describe("Studio-native project PNG ingress", () => {
     expect(second.assetPayloads).toHaveLength(1);
   });
 
-  it("keeps the first native PNG boundary explicit instead of silently replacing it", async () => {
+  it("adds distinct PNGs in canonical ID order and keeps both retained payloads", async () => {
     const initial = await emptyNativeState();
     const first = await ingestNativeProjectPngV1({
       decodeDimensions: dimensions,
       source: { bytes: PNG.slice().buffer, kind: "bytes", mediaType: "image/png" },
       state: initial,
     });
-    const differentPng = new Uint8Array([...PNG, 5]);
+    const second = await ingestNativeProjectPngV1({
+      decodeDimensions: dimensions,
+      source: { bytes: PNG_2.slice().buffer, kind: "bytes", mediaType: "image/png" },
+      state: first,
+    });
 
-    await expect(
-      ingestNativeProjectPngV1({
-        decodeDimensions: dimensions,
-        source: { bytes: differentPng.buffer, kind: "bytes", mediaType: "image/png" },
-        state: first,
-      }),
-    ).rejects.toThrow(/replacing.*not supported/i);
-    expect(first.bundle.assets.assets).toEqual([first.asset]);
+    expect(second.added).toBe(true);
+    expect(second.asset.id).toBe(nativeProjectPngAssetIdV1(DIGEST_2));
+    expect(second.bundle.assets.assets.map((asset) => asset.id)).toEqual(
+      [nativeProjectPngAssetIdV1(DIGEST), nativeProjectPngAssetIdV1(DIGEST_2)].sort(),
+    );
+    expect(second.assetPayloads.map((payload) => payload.sha256).sort()).toEqual([DIGEST, DIGEST_2].sort());
+    await expect(parseVerifiedSceneIrBundleV1(second.bundle)).resolves.toEqual(second.bundle);
+
+    const duplicate = await ingestNativeProjectPngV1({
+      decodeDimensions: dimensions,
+      source: { bytes: PNG.slice().buffer, kind: "bytes", mediaType: "image/png" },
+      state: second,
+    });
+    expect(duplicate.added).toBe(false);
+    expect(duplicate.bundle.assets).toEqual(second.bundle.assets);
+    expect(duplicate.assetPayloads).toHaveLength(2);
   });
 
   it("rejects an invalid MIME, signature, bounded size, and decoded dimensions before committing", async () => {
