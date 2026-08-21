@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import { expect, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { encodeRgbaPngV1 } from "./png-rgba";
 import { cleanupFixtureWorkspace } from "./workspace";
@@ -16,8 +16,25 @@ const PNG_2 = encodeRgbaPngV1(
   2,
 );
 
-test("restores multiple Studio-native Images and MP4 export after a page reload", async ({ page }) => {
+async function dragBy(
+  page: Page,
+  locator: Locator,
+  delta: Readonly<{ x: number; y: number }>,
+  expectMotionPreview = false,
+) {
+  const box = await locator.boundingBox();
+  if (!box) throw new Error("The object is not visible in the Studio canvas.");
+  const origin = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.move(origin.x, origin.y);
+  await page.mouse.down();
+  await page.mouse.move(origin.x + delta.x, origin.y + delta.y, { steps: 4 });
+  if (expectMotionPreview) await expect(page.locator("[data-motion-preview]")).toHaveCount(1);
+  await page.mouse.up();
+}
+
+test("authors Text, shape, motion, and Images in a blank workspace and restores MP4 export", async ({ page }) => {
   test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
   let projectId: string | null = null;
   try {
     await page.goto("/");
@@ -34,6 +51,37 @@ test("restores multiple Studio-native Images and MP4 export after a page reload"
     projectId = ((await createResponse.json()) as { project: { id: string } }).project.id;
 
     await expect(page.getByLabel("Current workspace")).toHaveText("Native reload fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert text/ }).click();
+    await page.getByRole("textbox", { name: "Text content" }).fill("Poietra");
+    await canvas.click({ position: { x: 280, y: 160 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("button", { name: "Move Poietra", exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await canvas.click({ position: { x: 500, y: 280 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const rectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
+    await expect(rectangle).toBeVisible();
+
+    await page.getByRole("button", { name: "Set position" }).click();
+    await rectangle.click();
+    const resize = page.getByRole("button", { name: "Resize Rectangle from bottom-right corner" });
+    await resize.focus();
+    await page.keyboard.press("Shift+ArrowRight");
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await page.getByRole("button", { name: "Rotate Rectangle counterclockwise by 15 degrees" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await dragBy(page, rectangle, { x: -60, y: 20 });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await page.getByRole("button", { name: "Create animation" }).click();
+    await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
+    await dragBy(page, rectangle, { x: 90, y: -35 }, true);
+    await expect(page.locator("[data-motion-path]")).toHaveCount(1);
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-revision", /^[0-9a-f]{64}$/u);
+
     const assets = page.getByRole("region", { name: "Assets" });
     await expect(assets.getByRole("button", { name: "+ Import PNG" })).toBeEnabled();
     await assets.locator("input[type=file]").setInputFiles([
@@ -66,6 +114,8 @@ test("restores multiple Studio-native Images and MP4 export after a page reload"
     await expect(page.getByRole("list", { name: "Project images" }).getByRole("listitem")).toHaveCount(2);
     await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toHaveCount(2);
     await expect(page.getByRole("button", { name: "Move insert-0" })).toHaveCount(2);
+    await expect(page.getByRole("button", { name: "Move Poietra", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move Rectangle", exact: true })).toBeVisible();
     await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
 
     const exportControl = page.locator("[data-studio-export-mp4-state]");
