@@ -55,6 +55,43 @@ async function preparedDimensions(wrapper: Locator) {
   }));
 }
 
+async function exportLocalMp4(page: Page) {
+  const exportControl = page.locator("[data-studio-export-mp4-state]");
+  const exportButton = page.getByRole("button", { name: "Export MP4" });
+  await expect(exportButton).toBeEnabled();
+  const downloadPromise = page.waitForEvent("download", { timeout: 90_000 }).catch(() => null);
+  await exportButton.click();
+  await expect
+    .poll(async () => exportControl.getAttribute("data-studio-export-mp4-state"), { timeout: 90_000 })
+    .toMatch(/^(done|refused)$/u);
+  if ((await exportControl.getAttribute("data-studio-export-mp4-state")) === "refused") {
+    const reason = await exportControl.getAttribute("data-studio-export-mp4-reason");
+    test.skip(reason === "unsupported-codec", "This Chromium build has no supported H.264 WebCodecs encoder.");
+    throw new Error(`The native MP4 export was refused: ${reason ?? "unknown"}.`);
+  }
+  const download = await downloadPromise;
+  expect(download).not.toBeNull();
+  expect(download!.suggestedFilename()).toMatch(/\.mp4$/u);
+  const path = await download!.path();
+  if (!path) throw new Error("The native MP4 download was not persisted by Playwright.");
+  expect((await readFile(path)).byteLength).toBeGreaterThan(0);
+}
+
+async function createBlankWorkspace(page: Page, name: string) {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Add workspace" }).click();
+  const addDialog = page.getByRole("dialog", { name: "Add workspace" });
+  await expect(addDialog.getByRole("radio", { name: /Blank Scene/ })).toBeChecked();
+  await addDialog.getByRole("textbox", { name: "Workspace name" }).fill(name);
+  const createResponsePromise = page.waitForResponse(
+    (response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/projects",
+  );
+  await addDialog.getByRole("button", { name: "Create workspace" }).click();
+  const createResponse = await createResponsePromise;
+  expect(createResponse.request().postDataJSON()).toEqual({ kind: "studio-native", name });
+  return ((await createResponse.json()) as { project: { id: string } }).project.id;
+}
+
 test("authors Text, shape, spinning motion, and Images in a blank workspace and restores MP4 export", async ({
   page,
 }) => {
@@ -62,18 +99,7 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
   page.setDefaultTimeout(10_000);
   let projectId: string | null = null;
   try {
-    await page.goto("/");
-    await page.getByRole("button", { name: "Add workspace" }).click();
-    const addDialog = page.getByRole("dialog", { name: "Add workspace" });
-    await expect(addDialog.getByRole("radio", { name: /Blank Scene/ })).toBeChecked();
-    await addDialog.getByRole("textbox", { name: "Workspace name" }).fill("Native reload fixture");
-    const createResponsePromise = page.waitForResponse(
-      (response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/api/projects",
-    );
-    await addDialog.getByRole("button", { name: "Create workspace" }).click();
-    const createResponse = await createResponsePromise;
-    expect(createResponse.request().postDataJSON()).toEqual({ kind: "studio-native", name: "Native reload fixture" });
-    projectId = ((await createResponse.json()) as { project: { id: string } }).project.id;
+    projectId = await createBlankWorkspace(page, "Native reload fixture");
 
     await expect(page.getByLabel("Current workspace")).toHaveText("Native reload fixture");
     const canvas = page.locator("[data-studio-canvas]");
@@ -166,25 +192,7 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     expect(restoredTurningDimensions.height).toBeGreaterThan(restoredTurningDimensions.width);
     await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
 
-    const exportControl = page.locator("[data-studio-export-mp4-state]");
-    const exportButton = page.getByRole("button", { name: "Export MP4" });
-    await expect(exportButton).toBeEnabled();
-    const downloadPromise = page.waitForEvent("download", { timeout: 90_000 }).catch(() => null);
-    await exportButton.click();
-    await expect
-      .poll(async () => exportControl.getAttribute("data-studio-export-mp4-state"), { timeout: 90_000 })
-      .toMatch(/^(done|refused)$/u);
-    if ((await exportControl.getAttribute("data-studio-export-mp4-state")) === "refused") {
-      const reason = await exportControl.getAttribute("data-studio-export-mp4-reason");
-      test.skip(reason === "unsupported-codec", "This Chromium build has no supported H.264 WebCodecs encoder.");
-      throw new Error(`The restored native MP4 export was refused: ${reason ?? "unknown"}.`);
-    }
-    const download = await downloadPromise;
-    expect(download).not.toBeNull();
-    expect(download!.suggestedFilename()).toMatch(/\.mp4$/u);
-    const path = await download!.path();
-    if (!path) throw new Error("The restored native MP4 download was not persisted by Playwright.");
-    expect((await readFile(path)).byteLength).toBeGreaterThan(0);
+    await exportLocalMp4(page);
 
     const deletedProjectId = projectId;
     await page.getByRole("button", { name: "Back to workspaces" }).click();
@@ -227,6 +235,85 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
       ),
     ).toBe(false);
     projectId = null;
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
+test("orients an Arrow along a curved motion path through reload and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Path direction fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert arrow/ }).click();
+    await canvas.click({ position: { x: 360, y: 260 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const arrow = page.getByRole("button", { name: "Move Arrow", exact: true });
+    await expect(arrow).toBeVisible();
+
+    await page.getByRole("button", { name: "Create animation" }).click();
+    await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
+    await dragBy(page, arrow, { x: 120, y: 0 }, true);
+    const revisionBeforeCurve = await canvas.getAttribute("data-preview-revision");
+    await page.getByLabel("Curve Y").fill("-80");
+    await expect.poll(async () => canvas.getAttribute("data-preview-revision")).not.toBe(revisionBeforeCurve);
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    const motionClip = page.getByRole("button", { name: "Edit Arrow motion clip" });
+    const arrowId = await arrow.getAttribute("data-studio-entity");
+    if (!arrowId) throw new Error("The Arrow did not expose its Studio entity id.");
+    const arrowWrapper = page.locator(`[data-studio-entity-wrapper="${arrowId}"]`);
+    await scrubMotionClip(page, motionClip, 0);
+    const fixedStart = await preparedDimensions(arrowWrapper);
+    expect(fixedStart.width).toBeGreaterThan(fixedStart.height);
+
+    await motionClip.click();
+    const followPath = page.getByRole("checkbox", { name: "Follow path direction" });
+    await expect(followPath).not.toBeChecked();
+    let revisionBeforeToggle = await canvas.getAttribute("data-preview-revision");
+    await followPath.check();
+    await expect.poll(async () => canvas.getAttribute("data-preview-revision")).not.toBe(revisionBeforeToggle);
+    await scrubMotionClip(page, motionClip, 0);
+    const orientedDraftStart = await preparedDimensions(arrowWrapper);
+    expect(orientedDraftStart.height).toBeGreaterThan(orientedDraftStart.width);
+
+    revisionBeforeToggle = await canvas.getAttribute("data-preview-revision");
+    await followPath.uncheck();
+    await expect.poll(async () => canvas.getAttribute("data-preview-revision")).not.toBe(revisionBeforeToggle);
+    await scrubMotionClip(page, motionClip, 0);
+    const restoredFixedStart = await preparedDimensions(arrowWrapper);
+    expect(restoredFixedStart.width).toBeGreaterThan(restoredFixedStart.height);
+
+    revisionBeforeToggle = await canvas.getAttribute("data-preview-revision");
+    await followPath.check();
+    await expect.poll(async () => canvas.getAttribute("data-preview-revision")).not.toBe(revisionBeforeToggle);
+    await page.getByRole("button", { name: "Replace program" }).click();
+
+    await scrubMotionClip(page, motionClip, 0);
+    const orientedStart = await preparedDimensions(arrowWrapper);
+    expect(orientedStart.height).toBeGreaterThan(orientedStart.width);
+    await scrubMotionClip(page, motionClip, 0.5);
+    const orientedMiddle = await preparedDimensions(arrowWrapper);
+    expect(orientedMiddle.width).toBeGreaterThan(orientedMiddle.height);
+    await scrubMotionClip(page, motionClip, 1);
+    const orientedEnd = await preparedDimensions(arrowWrapper);
+    expect(orientedEnd.height).toBeGreaterThan(orientedEnd.width);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Path direction fixture workspace" }).click();
+    const restoredArrow = page.getByRole("button", { name: "Move Arrow", exact: true });
+    const restoredArrowId = await restoredArrow.getAttribute("data-studio-entity");
+    if (!restoredArrowId) throw new Error("The restored Arrow did not expose its Studio entity id.");
+    const restoredArrowWrapper = page.locator(`[data-studio-entity-wrapper="${restoredArrowId}"]`);
+    await scrubMotionClip(page, page.getByRole("button", { name: "Edit Arrow motion clip" }), 0);
+    const restoredOrientedStart = await preparedDimensions(restoredArrowWrapper);
+    expect(restoredOrientedStart.height).toBeGreaterThan(restoredOrientedStart.width);
+
+    await exportLocalMp4(page);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
