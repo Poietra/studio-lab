@@ -142,6 +142,7 @@ export type PropertyChannel = Readonly<{
     | "presence"
     | "rotation"
     | "scale"
+    | "shape"
     | "strokeColor"
     | "visibility";
   samples: readonly PropertyChannelSample[];

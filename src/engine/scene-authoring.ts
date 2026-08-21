@@ -644,6 +644,20 @@ const studioCreationProjectionV1Schema = z
           .object({
             easing: easingV1Schema,
             entityId: z.string().min(1),
+            fromDimensions: studioStaticRootDimensionsV1Schema,
+            fromShape: z.enum(["circle", "rectangle"]),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("shape-transform"),
+            operationId: z.string().min(1),
+            toDimensions: studioStaticRootDimensionsV1Schema,
+            toShape: z.enum(["circle", "rectangle"]),
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            easing: easingV1Schema,
+            entityId: z.string().min(1),
             from: z.literal(0),
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("draw-in"),
@@ -1060,6 +1074,15 @@ type StudioCreationOperationV1 = Readonly<{
         strategy: "replacement-transform" | "transform-matching-tex";
         targetEntityId: string;
         targetType: string | null;
+      }>
+    | Readonly<{
+        easing: "linear" | "smooth";
+        entityId: string;
+        fromDimensions: StudioCreationDimensionsV1;
+        fromShape: "circle" | "rectangle";
+        kind: "shape-transform";
+        toDimensions: StudioCreationDimensionsV1;
+        toShape: "circle" | "rectangle";
       }>
     | Readonly<{
         controlOffset: Readonly<{ x: number; y: number }>;

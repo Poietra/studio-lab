@@ -149,6 +149,23 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     targetEntityIds: z.array(z.string()).min(1),
   }),
   operationBaseSchema.extend({
+    easing: z.enum(["linear", "smooth"]),
+    entityId: z.string(),
+    from: z
+      .object({
+        dimensions: dimensionsSchema,
+        shape: z.enum(["circle", "rectangle"]),
+      })
+      .strict(),
+    kind: z.literal("TransformShape"),
+    to: z
+      .object({
+        dimensions: dimensionsSchema,
+        shape: z.enum(["circle", "rectangle"]),
+      })
+      .strict(),
+  }),
+  operationBaseSchema.extend({
     easing: z.enum(["linear", "smooth"]).optional(),
     kind: z.literal("TransformContent"),
     replacement: contentSchema,

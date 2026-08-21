@@ -383,6 +383,18 @@ function normalizedStudioCreationOperation(
       toPosition: operation.to.position,
     };
   }
+  if (operation.kind === "TransformShape") {
+    return {
+      ...common,
+      easing: operation.easing,
+      entityId: operation.entityId,
+      fromDimensions: operation.from.dimensions,
+      fromShape: operation.from.shape,
+      kind: "shape-transform",
+      toDimensions: operation.to.dimensions,
+      toShape: operation.to.shape,
+    };
+  }
   if (operation.kind === "TransformContent") {
     const replacement = canonicalEditableContent(operation.replacement, "MathTex");
     return {

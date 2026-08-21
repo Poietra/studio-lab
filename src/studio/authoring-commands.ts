@@ -610,7 +610,8 @@ function operationTargetsEntity(operation: SceneEditOperation, entityId: string)
     operation.kind === "AnimateProperty" ||
     operation.kind === "ChangePresence" ||
     operation.kind === "DrawIn" ||
-    operation.kind === "WriteIn"
+    operation.kind === "WriteIn" ||
+    operation.kind === "TransformShape"
   )
     return operation.entityId === entityId;
   if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entityId);

@@ -134,6 +134,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const dimensions = channelAt(proposedState.evaluatedScene, entity.id, "dimensions", time);
       const fillColor = channelAt(proposedState.evaluatedScene, entity.id, "fillColor", time);
       const scale = channelAt(proposedState.evaluatedScene, entity.id, "scale", time);
+      const shape = channelAt(proposedState.evaluatedScene, entity.id, "shape", time);
       const strokeColor = channelAt(proposedState.evaluatedScene, entity.id, "strokeColor", time);
       const positionValue = isPointValue(position) ? position : undefined;
       const dimensionsValue = isEntityDimensionsValue(dimensions) ? dimensions : undefined;
@@ -188,7 +189,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         scale: sampledScale,
         sourceIdentity: entity.sourceIdentity,
         transactionId: entity.transactionId,
-        type: entity.type,
+        type: shape === "circle" ? "Circle" : shape === "rectangle" ? "Rectangle" : entity.type,
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));

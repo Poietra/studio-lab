@@ -18,6 +18,7 @@ export type PropertyChannelKey =
   | "presence"
   | "rotation"
   | "scale"
+  | "shape"
   | "strokeColor"
   | "visibility";
 
@@ -36,6 +37,7 @@ export type SetPropertyOperation = Extract<SceneEditOperation, { kind: "SetPrope
 export type AnimatePropertyOperation = Extract<SceneEditOperation, { kind: "AnimateProperty" }>;
 export type CreateMotionOperation = Extract<SceneEditOperation, { kind: "CreateMotion" }>;
 export type TransformContentOperation = Extract<SceneEditOperation, { kind: "TransformContent" }>;
+export type TransformShapeOperation = Extract<SceneEditOperation, { kind: "TransformShape" }>;
 export type SetRelationOperation = Extract<SceneEditOperation, { kind: "SetRelation" }>;
 export type ChangePresenceOperation = Extract<SceneEditOperation, { kind: "ChangePresence" }>;
 export type InsertTimelineEventOperation = Extract<SceneEditOperation, { kind: "InsertTimelineEvent" }>;
