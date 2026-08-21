@@ -2294,6 +2294,74 @@ describe("compileStudioPreviewSceneV1", () => {
       expect(Math.abs(entity?.transform.m12 ?? 0)).toBeCloseTo(1);
     }
 
+    const secondRotationValidation = createDirectManipulationGroupRotationProgram({
+      angleRadians: Math.PI / 2,
+      capturedPlayhead: 0,
+      scene: workingBase.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: "source:circle", toPosition: { x: 450, y: 190 } },
+        { entityId: "source:second", toPosition: { x: 370, y: 190 } },
+      ],
+      transactionId: "rotate-imported-selection-again",
+    });
+    if (secondRotationValidation.kind !== "valid") {
+      throw new Error(JSON.stringify(secondRotationValidation.issues));
+    }
+    const secondRotationRecord = {
+      ...programRecord(secondRotationValidation.program, secondRotationValidation),
+      validation: { issues: secondRotationValidation.issues, status: "valid" as const },
+    };
+    const rotatedTwiceAppliedEdits = [...rotatedAppliedEdits, secondRotationRecord];
+    const rotatedTwice = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: compileApplyStaticRootTransformEdit,
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits: rotatedTwiceAppliedEdits },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits: rotatedTwiceAppliedEdits,
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (rotatedTwice.kind !== "compiled") throw new Error(rotatedTwice.error);
+    expect(rotatedTwice.scene.staticRootProjection?.mutations.slice(-4)).toEqual([
+      expect.objectContaining({ entityId: "source:circle", kind: "position", value: { x: 450, y: 190 } }),
+      expect.objectContaining({ entityId: "source:second", kind: "position", value: { x: 370, y: 190 } }),
+      expect.objectContaining({ entityId: "source:circle", kind: "rotation", to: Math.PI / 2 }),
+      expect.objectContaining({ entityId: "source:second", kind: "rotation", to: Math.PI / 2 }),
+    ]);
+    for (const entityId of ["earlier", "second-root"]) {
+      const entity = rotatedTwice.scene.bundle.scene.entities.find(({ id }) => id === entityId);
+      expect(entity?.transform.m11).toBeCloseTo(-1);
+      expect(entity?.transform.m22).toBeCloseTo(-1);
+      expect(entity?.transform.m12).toBeCloseTo(0);
+      expect(entity?.transform.m21).toBeCloseTo(0);
+    }
+
+    const secondRotationUndo = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: compileApplyStaticRootTransformEdit,
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits: rotatedAppliedEdits },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits: rotatedAppliedEdits,
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [{ kind: "mutation", mutation: { index: 3, kind: "append", value: secondRotationRecord } }],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (secondRotationUndo.kind !== "compiled") throw new Error(secondRotationUndo.error);
+    expect(secondRotationUndo.scene.staticRootProjection).toEqual(rotated.scene.staticRootProjection);
+    for (const entityId of ["earlier", "second-root"]) {
+      expect(secondRotationUndo.scene.bundle.scene.entities.find(({ id }) => id === entityId)?.transform).toEqual(
+        rotated.scene.bundle.scene.entities.find(({ id }) => id === entityId)?.transform,
+      );
+    }
+
     const rotationUndo = await compileStudioPreviewSceneV1({
       applyStaticRootTransformEditCompiler: compileApplyStaticRootTransformEdit,
       frame: { height: 9, width: 16 },

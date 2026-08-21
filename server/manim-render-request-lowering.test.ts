@@ -907,7 +907,7 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source).toContain("equation.move_to((0, 0, 0))");
   });
 
-  it("authorizes and lowers imported selection move and rotation as one ordered final-render history", async () => {
+  it("authorizes and lowers repeated imported selection rotation as one ordered final-render history", async () => {
     const groupSource = `from manim import *
 
 class GroupedEquation(Scene):
@@ -988,7 +988,29 @@ class GroupedEquation(Scene):
         order: [...rotationPositions.schedule.order, ...rotations.map(({ id }) => id)],
       },
     } satisfies CanonicalEditProgram;
-    const programs = [first, second, rotation];
+    const secondRotationPositions = groupProgram("rotate-selection-again", { x: 450, y: 190 }, { x: 370, y: 190 });
+    const secondRotations: CanonicalEditOperation[] = [leftId, rightId].map((targetEntityId, index) => ({
+      dependsOn: [],
+      easing: "smooth",
+      entityId: targetEntityId,
+      from: 0,
+      id: `tx:rotate-selection-again/operation:rotation-${index}`,
+      interval: { end: 0, start: 0 },
+      key: "rotation",
+      kind: "AnimateProperty",
+      provenance: { evidence: ["selection rotation"], origin: "direct-manipulation" },
+      relativeDelta: Math.PI / 2,
+      to: Math.PI / 2,
+    }));
+    const secondRotation = {
+      ...secondRotationPositions,
+      operations: [...secondRotationPositions.operations, ...secondRotations],
+      schedule: {
+        ...secondRotationPositions.schedule,
+        order: [...secondRotationPositions.schedule.order, ...secondRotations.map(({ id }) => id)],
+      },
+    } satisfies CanonicalEditProgram;
+    const programs = [first, second, rotation, secondRotation];
     const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
 
     const result = await lower(
@@ -1009,11 +1031,14 @@ class GroupedEquation(Scene):
 
     expect(authorizations).toHaveLength(1);
     expect(authorizations[0]?.programs).toEqual(programs);
-    expect(result.lowered.insertedCode.match(/left\.move_to\(/g)).toHaveLength(3);
-    expect(result.lowered.insertedCode.match(/right\.move_to\(/g)).toHaveLength(3);
-    expect(result.lowered.insertedCode.match(/\.rotate\(/g)).toHaveLength(2);
+    expect(result.lowered.insertedCode.match(/left\.move_to\(/g)).toHaveLength(4);
+    expect(result.lowered.insertedCode.match(/right\.move_to\(/g)).toHaveLength(4);
+    expect(result.lowered.insertedCode.match(/\.rotate\(/g)).toHaveLength(4);
     expect(result.lowered.insertedCode.indexOf('poietra:transaction "move-selection"')).toBeLessThan(
       result.lowered.insertedCode.indexOf('poietra:transaction "move-selection-again"'),
+    );
+    expect(result.lowered.insertedCode.indexOf('poietra:transaction "rotate-selection"')).toBeLessThan(
+      result.lowered.insertedCode.indexOf('poietra:transaction "rotate-selection-again"'),
     );
   });
 

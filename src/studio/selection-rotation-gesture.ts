@@ -1,3 +1,4 @@
+import type { StudioPersistentRemoveProjectionV1, StudioStaticRootProjectionV1 } from "../engine/scene-authoring";
 import type { Point } from "./model";
 import type { PreparedSelectionResizeBasis } from "./selection-resize-gesture";
 import type { EntityGroupRotationPreview, SurfaceBounds } from "./studio-viewport-geometry";
@@ -41,6 +42,41 @@ function finiteProjectedPoint(value: unknown): Point | null {
     return null;
   }
   return { x: value.x, y: value.y };
+}
+
+/** Correlates the closed history already admitted and projected by Rust. This
+ * does not replay positions or evaluate rotation geometry in the browser. */
+export function importedGroupRotationHistoryIsSupported(
+  staticRootProjection: StudioStaticRootProjectionV1 | null | undefined,
+  persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null | undefined,
+) {
+  if (staticRootProjection === undefined || persistentRemoveProjection !== null) {
+    return false;
+  }
+  if (staticRootProjection === null) return true;
+  if (staticRootProjection.insertions.length > 0) return false;
+
+  const transactions = new Map<string, { positions: string[]; rotations: string[] }>();
+  for (const mutation of staticRootProjection.mutations) {
+    if (mutation.kind !== "position" && mutation.kind !== "rotation") return false;
+    const transaction = transactions.get(mutation.transactionId) ?? { positions: [], rotations: [] };
+    (mutation.kind === "position" ? transaction.positions : transaction.rotations).push(mutation.entityId);
+    transactions.set(mutation.transactionId, transaction);
+  }
+
+  return [...transactions.values()].every(({ positions, rotations }) => {
+    if (rotations.length === 0) return true;
+    const positionIds = new Set(positions);
+    const rotationIds = new Set(rotations);
+    return (
+      positionIds.size >= 2 &&
+      positionIds.size <= 8 &&
+      positions.length === positionIds.size &&
+      rotations.length === rotationIds.size &&
+      positionIds.size === rotationIds.size &&
+      [...positionIds].every((entityId) => rotationIds.has(entityId))
+    );
+  });
 }
 
 export function latestCreationPositionForEntity(
