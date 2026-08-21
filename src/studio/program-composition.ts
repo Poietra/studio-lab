@@ -13,6 +13,7 @@ export function insertedProgramDuration(program: SceneEdit) {
     (operation) =>
       operation.kind === "ChangePresence" ||
       operation.kind === "CreateMotion" ||
+      operation.kind === "DrawIn" ||
       operation.kind === "ResizeEntity" ||
       operation.kind === "TransformContent" ||
       (operation.kind === "AnimateProperty" && operation.key === "scale" && operation.timelineTrack !== true) ||
@@ -168,6 +169,7 @@ function remapOperation(operation: SceneEditOperation, offset: number, maps: IdM
     case "AnimateProperty":
     case "ResizeEntity":
     case "ChangePresence":
+    case "DrawIn":
       return { ...operation, ...base, entityId: remapEntity(operation.entityId, maps) };
     case "CreateMotion":
       return {

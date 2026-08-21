@@ -76,6 +76,45 @@ function followupProgram(transactionId: string, operation: SceneEdit["operations
 }
 
 describe("Studio creation wire", () => {
+  it("normalizes DrawIn as the fixed zero-to-one path-trim operation", () => {
+    const create = creationProgram("Line");
+    const drawIn = {
+      dependsOn: ["create:Line"],
+      easing: "smooth" as const,
+      entityId: "entity:Line",
+      id: "draw-in:Line",
+      interval: { end: 1, start: 0 },
+      kind: "DrawIn" as const,
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+    };
+    const program: SceneEdit = {
+      ...create,
+      intentCount: 2,
+      loweringStatus: "unsupported",
+      operations: [...create.operations, drawIn],
+      requestedExecution: "sequence",
+      schedule: {
+        edges: [{ from: "create:Line", reason: "identity", to: "draw-in:Line" }],
+        mode: "sequence",
+        order: ["create:Line", "draw-in:Line"],
+      },
+    };
+
+    const command = buildStudioCreationProjectionCommand({ baseDuration: 2, programs: [program] });
+
+    expect(command.programs[0]?.operations[1]).toEqual({
+      dependsOn: ["create:Line"],
+      easing: "smooth",
+      entityId: "entity:Line",
+      from: 0,
+      id: "draw-in:Line",
+      interval: { end: 1, start: 0 },
+      kind: "draw-in",
+      origin: "direct-manipulation",
+      to: 1,
+    });
+  });
+
   it("forwards motion spin only through the Studio creation authority", () => {
     const entityId = "entity:Rectangle";
     const motion = followupProgram("spin:Rectangle", {

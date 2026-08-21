@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetReferenceV1, ContractVersionV1, CubicPathV1,
     CubicSegmentV1, CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1,
-    FragmentMaterialV1, ImageLocalRectV1, ImageSamplerV1, IntervalV1, KeyframeV1, PointV1,
-    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCapabilityV1,
-    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, VectorAppearanceValueV1,
+    FragmentMaterialV1, ImageLocalRectV1, ImageSamplerV1, IntervalV1, KeyframeV1,
+    PathTrimParameterizationV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
+    SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
+    SceneSourceV1, VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
@@ -62,6 +63,12 @@ struct CreateSceneEntityFadeIn {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct CreateSceneEntityDrawIn {
+    easing: EasingV1,
+    end: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct CreateSceneEntityInstantTransform {
     at: f64,
     position: PointV1,
@@ -73,6 +80,7 @@ struct CreateSceneEntityInstantTransform {
 #[derive(Clone, Debug, PartialEq)]
 struct CreateSceneEntity {
     appearance_at: Option<f64>,
+    draw_in: Option<CreateSceneEntityDrawIn>,
     fade_in: Option<CreateSceneEntityFadeIn>,
     fill_color: Option<RgbaColorV1>,
     geometry: CreateSceneEntityGeometry,
@@ -147,6 +155,11 @@ pub enum StudioCreationProjectedMutationKind {
         value: PointV1,
     },
     FadeIn {
+        from: f64,
+        to: f64,
+    },
+    DrawIn {
+        easing: EasingV1,
         from: f64,
         to: f64,
     },
@@ -271,6 +284,11 @@ pub enum StudioCreationOperationKind {
     },
     FadeIn {
         persistent: bool,
+    },
+    DrawIn {
+        easing: StudioPropertyEasing,
+        from: Option<f64>,
+        to: Option<f64>,
     },
     UniformScale {
         control_present: bool,
@@ -462,6 +480,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             }
             StudioCreationOperationKind::Position { .. }
             | StudioCreationOperationKind::FadeIn { .. }
+            | StudioCreationOperationKind::DrawIn { .. }
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Rotation { .. }
             | StudioCreationOperationKind::Opacity { .. }
@@ -604,6 +623,8 @@ struct PlannedStudioCreationEntity {
     fill_color_override: Option<String>,
     current_opacity: f64,
     current_rotation: f64,
+    draw_easing: Option<EasingV1>,
+    draw_interval: Option<IntervalV1>,
     stroke_color_override: Option<String>,
     fade_interval: Option<IntervalV1>,
     initial_dimensions: StudioAuthoringDimensions,
@@ -644,7 +665,11 @@ fn studio_creation_insertion_duration(program: &StudioCreationEditInput) -> f64 
         .iter()
         .filter(|operation| {
             if creates_entity {
-                matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::DrawIn { .. }
+                )
             } else {
                 matches!(
                     operation.kind,
@@ -833,11 +858,19 @@ impl StudioCreationPlan {
     }
 }
 
+fn studio_creation_initial_appearance_end(state: &PlannedStudioCreationEntity) -> Option<f64> {
+    state
+        .fade_interval
+        .as_ref()
+        .or(state.draw_interval.as_ref())
+        .map(|interval| interval.end)
+}
+
 fn studio_creation_motion_is_compatible(
     state: &PlannedStudioCreationEntity,
     motion_interval: &IntervalV1,
 ) -> bool {
-    let fade_end = state.fade_interval.as_ref().map(|interval| interval.end);
+    let appearance_end = studio_creation_initial_appearance_end(state);
     let instant_is_compatible = state.instant_at.is_none_or(|at| {
         at <= motion_interval.start + TIMELINE_ANCHOR_EPSILON
             || (!state.has_position_or_resize_instant
@@ -846,14 +879,14 @@ fn studio_creation_motion_is_compatible(
     });
     motion_interval.start >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
         && motion_interval.end <= state.lifetime.end + TIMELINE_ANCHOR_EPSILON
-        && fade_end.is_none_or(|end| motion_interval.start >= end - TIMELINE_ANCHOR_EPSILON)
+        && appearance_end.is_none_or(|end| motion_interval.start >= end - TIMELINE_ANCHOR_EPSILON)
         && instant_is_compatible
         && state.persistent_removal.as_ref().is_none_or(|removal| {
             removal.interval.start >= motion_interval.end - TIMELINE_ANCHOR_EPSILON
                 && state
                     .instant_at
                     .is_none_or(|at| removal.interval.start >= at - TIMELINE_ANCHOR_EPSILON)
-                && fade_end
+                && appearance_end
                     .is_none_or(|end| removal.interval.start >= end - TIMELINE_ANCHOR_EPSILON)
         })
 }
@@ -1631,6 +1664,7 @@ fn plan_studio_creation_edits(
                     StudioCreationOperationKind::Create { .. }
                         | StudioCreationOperationKind::Position { .. }
                         | StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::DrawIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1690,6 +1724,7 @@ fn plan_studio_creation_edits(
                     StudioCreationOperationKind::Create { .. }
                         | StudioCreationOperationKind::Position { .. }
                         | StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::DrawIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1731,6 +1766,7 @@ fn plan_studio_creation_edits(
                     StudioCreationOperationKind::Create { .. }
                         | StudioCreationOperationKind::Position { .. }
                         | StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::DrawIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1772,6 +1808,7 @@ fn plan_studio_creation_edits(
                     StudioCreationOperationKind::Create { .. }
                         | StudioCreationOperationKind::Position { .. }
                         | StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::DrawIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1869,6 +1906,28 @@ fn plan_studio_creation_edits(
                         )
                         || operation.interval.end <= operation.interval.start
                 }
+                StudioCreationOperationKind::DrawIn {
+                    easing,
+                    from: Some(from),
+                    to: Some(to),
+                } => {
+                    operation
+                        .entity_id
+                        .as_deref()
+                        .is_none_or(|entity_id| !program_created_ids.contains(entity_id))
+                        || !matches!(
+                            easing,
+                            StudioPropertyEasing::Linear | StudioPropertyEasing::Smooth
+                        )
+                        || !close_transform_baseline_value(*from, 0.0)
+                        || !close_transform_baseline_value(*to, 1.0)
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        || !operation.interval.end.is_finite()
+                        || operation.interval.end <= operation.interval.start
+                }
                 StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1876,7 +1935,8 @@ fn plan_studio_creation_edits(
                     .entity_id
                     .as_deref()
                     .is_none_or(|entity_id| !program_created_ids.contains(entity_id)),
-                StudioCreationOperationKind::UniformScale { .. }
+                StudioCreationOperationKind::DrawIn { .. }
+                | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
                 | StudioCreationOperationKind::SourceZIndex { .. }
@@ -1906,6 +1966,7 @@ fn plan_studio_creation_edits(
                 }
                 StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
+                | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -1916,6 +1977,7 @@ fn plan_studio_creation_edits(
                         .is_some_and(|entity_id| scheduled_created_ids.contains(entity_id)) => {}
                 StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
+                | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -2092,7 +2154,20 @@ fn plan_studio_creation_edits(
                 matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
             })
             .collect::<Vec<_>>();
-        if positions.len() != 1 || fades.len() > 1 {
+        let draws = program
+            .operations
+            .iter()
+            .filter(|operation| operation.entity_id.as_deref() == Some(spec.id.as_str()))
+            .filter_map(|operation| match &operation.kind {
+                StudioCreationOperationKind::DrawIn { easing, .. } => Some((operation, *easing)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if positions.len() != 1
+            || fades.len() > 1
+            || draws.len() > 1
+            || (!fades.is_empty() && !draws.is_empty())
+        {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
         let (position_operation, initial_position) = positions[0];
@@ -2153,6 +2228,53 @@ fn plan_studio_creation_edits(
                 },
             ));
         }
+        let mut draw_interval = draws.first().map(|(draw, _)| IntervalV1 {
+            end: draw.interval.end + program_offset,
+            start: draw.interval.start + program_offset,
+        });
+        if let Some(draw) = &mut draw_interval {
+            for (rank, insertion) in &timeline.ranked_insertions {
+                if *rank > program_rank {
+                    shift_interval_for_insertion(draw, insertion);
+                }
+            }
+        }
+        if draw_interval.as_ref().is_some_and(|draw| {
+            !matches!(
+                spec.kind,
+                StudioAuthoringEntityKind::Circle
+                    | StudioAuthoringEntityKind::Line
+                    | StudioAuthoringEntityKind::Rectangle
+            ) || !studio_timeline_semantic_values_match(draw.start, lifetime.start)
+                || draw.end > lifetime.end
+        }) {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let draw_easing = draws.first().map(|(_, easing)| property_easing(*easing));
+        if let (Some((draw, _)), Some(interval), Some(easing)) =
+            (draws.first(), draw_interval.as_ref(), draw_easing.as_ref())
+        {
+            let draw_order = program
+                .schedule_order
+                .iter()
+                .position(|operation_id| operation_id == &draw.id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            ranked_mutations.push((
+                program_rank,
+                draw_order,
+                StudioCreationProjectedMutation {
+                    entity_id: spec.id.clone(),
+                    interval: interval.clone(),
+                    kind: StudioCreationProjectedMutationKind::DrawIn {
+                        easing: easing.clone(),
+                        from: 0.0,
+                        to: 1.0,
+                    },
+                    operation_id: draw.id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                },
+            ));
+        }
         entities.push(PlannedStudioCreationEntity {
             appearance_at: None,
             create_operation_id: create_operation.id.clone(),
@@ -2163,6 +2285,8 @@ fn plan_studio_creation_edits(
             fill_color_override: None,
             current_opacity: 1.0,
             current_rotation: 0.0,
+            draw_easing,
+            draw_interval,
             stroke_color_override: None,
             fade_interval,
             has_position_or_resize_instant: false,
@@ -2231,10 +2355,8 @@ fn plan_studio_creation_edits(
             }
             if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
                 || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
-                || state
-                    .fade_interval
-                    .as_ref()
-                    .is_some_and(|fade| interval.start <= fade.end + TIMELINE_ANCHOR_EPSILON)
+                || studio_creation_initial_appearance_end(state)
+                    .is_some_and(|end| interval.start <= end + TIMELINE_ANCHOR_EPSILON)
             {
                 return Err(ProjectStudioCreationEditError::Unsupported);
             }
@@ -2337,10 +2459,8 @@ fn plan_studio_creation_edits(
             }
             if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
                 || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
-                || state
-                    .fade_interval
-                    .as_ref()
-                    .is_some_and(|fade| interval.start <= fade.end + TIMELINE_ANCHOR_EPSILON)
+                || studio_creation_initial_appearance_end(state)
+                    .is_some_and(|end| interval.start <= end + TIMELINE_ANCHOR_EPSILON)
             {
                 return Err(ProjectStudioCreationEditError::Unsupported);
             }
@@ -2450,10 +2570,8 @@ fn plan_studio_creation_edits(
             }
             if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
                 || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
-                || state
-                    .fade_interval
-                    .as_ref()
-                    .is_some_and(|fade| interval.start <= fade.end + TIMELINE_ANCHOR_EPSILON)
+                || studio_creation_initial_appearance_end(state)
+                    .is_some_and(|end| interval.start <= end + TIMELINE_ANCHOR_EPSILON)
             {
                 return Err(ProjectStudioCreationEditError::Unsupported);
             }
@@ -2555,10 +2673,8 @@ fn plan_studio_creation_edits(
             }
             if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
                 || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
-                || state
-                    .fade_interval
-                    .as_ref()
-                    .is_some_and(|fade| interval.start <= fade.end + TIMELINE_ANCHOR_EPSILON)
+                || studio_creation_initial_appearance_end(state)
+                    .is_some_and(|end| interval.start <= end + TIMELINE_ANCHOR_EPSILON)
             {
                 return Err(ProjectStudioCreationEditError::Unsupported);
             }
@@ -3262,6 +3378,7 @@ fn plan_studio_creation_edits(
                 StudioCreationOperationKind::Create { .. }
                 | StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
+                | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -3318,10 +3435,7 @@ fn plan_studio_creation_edits(
         if state.appearance_at.is_some_and(|at| {
             at < state.lifetime.start
                 || at >= state.lifetime.end
-                || state
-                    .fade_interval
-                    .as_ref()
-                    .is_some_and(|fade| at < fade.end)
+                || studio_creation_initial_appearance_end(state).is_some_and(|end| at < end)
         }) {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
@@ -3336,10 +3450,8 @@ fn plan_studio_creation_edits(
                 || removal.interval.start >= state.lifetime.end
                 || removal.interval.end <= state.lifetime.start
                 || removal.interval.end > state.lifetime.end
-                || state
-                    .fade_interval
-                    .as_ref()
-                    .is_some_and(|fade| removal.interval.start < fade.end)
+                || studio_creation_initial_appearance_end(state)
+                    .is_some_and(|end| removal.interval.start < end)
                 || state
                     .instant_at
                     .is_some_and(|at| removal.interval.start < at))
@@ -3480,6 +3592,17 @@ fn plan_studio_creation_edits(
             })
         })
         .collect::<Result<Vec<_>, ProjectStudioCreationEditError>>()?;
+
+    if entities.iter().any(|state| {
+        state.draw_interval.is_some()
+            && (state.fill_color_override.is_some()
+                || !state.material_parameter_keyframes.is_empty()
+                || groups
+                    .iter()
+                    .any(|group| group.child_entity_ids.contains(&state.spec.id)))
+    }) {
+        return Err(ProjectStudioCreationEditError::Unsupported);
+    }
 
     for motion in &planned_motions {
         for entity_id in &motion.target_entity_ids {
@@ -3713,6 +3836,32 @@ fn created_geometry_and_appearance(
     }
 }
 
+fn create_entity_initial_appearance_end(entity: &CreateSceneEntity) -> Option<f64> {
+    entity
+        .fade_in
+        .as_ref()
+        .map(|fade| fade.end)
+        .or_else(|| entity.draw_in.as_ref().map(|draw| draw.end))
+}
+
+fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
+    entity.draw_in.as_ref().is_none_or(|draw| {
+        draw.end.is_finite()
+            && draw.end > entity.lifetime.start
+            && draw.end <= entity.lifetime.end
+            && entity.fade_in.is_none()
+            && entity.fill_color.is_none()
+            && entity.material_parameter_keyframes.is_empty()
+            && matches!(draw.easing, EasingV1::Linear {} | EasingV1::ManimSmooth {})
+            && matches!(
+                entity.geometry,
+                CreateSceneEntityGeometry::Circle { .. }
+                    | CreateSceneEntityGeometry::Line
+                    | CreateSceneEntityGeometry::Rectangle { .. }
+            )
+    })
+}
+
 fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> bool {
     let opacity_is_valid = entity.opacity_keyframes.iter().all(|keyframe| {
         keyframe.at.is_finite()
@@ -3770,29 +3919,30 @@ fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> boo
             .rotation_keyframes
             .first()
             .is_none_or(|keyframe| close_transform_baseline_value(keyframe.value, entity.rotation));
-    let starts_after_fade = entity.fade_in.as_ref().is_none_or(|fade| {
-        entity
-            .opacity_keyframes
-            .first()
-            .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
-            && entity
-                .material_parameter_keyframes
+    let starts_after_initial_appearance =
+        create_entity_initial_appearance_end(entity).is_none_or(|appearance_end| {
+            entity
+                .opacity_keyframes
                 .first()
-                .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
-            && entity
-                .uniform_scale_keyframes
-                .first()
-                .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
-            && entity
-                .rotation_keyframes
-                .first()
-                .is_none_or(|keyframe| keyframe.at > fade.end + TIMELINE_ANCHOR_EPSILON)
-    });
+                .is_none_or(|keyframe| keyframe.at > appearance_end + TIMELINE_ANCHOR_EPSILON)
+                && entity
+                    .material_parameter_keyframes
+                    .first()
+                    .is_none_or(|keyframe| keyframe.at > appearance_end + TIMELINE_ANCHOR_EPSILON)
+                && entity
+                    .uniform_scale_keyframes
+                    .first()
+                    .is_none_or(|keyframe| keyframe.at > appearance_end + TIMELINE_ANCHOR_EPSILON)
+                && entity
+                    .rotation_keyframes
+                    .first()
+                    .is_none_or(|keyframe| keyframe.at > appearance_end + TIMELINE_ANCHOR_EPSILON)
+        });
     opacity_is_valid
         && material_is_valid
         && rotation_is_valid
         && scale_is_valid
-        && starts_after_fade
+        && starts_after_initial_appearance
 }
 
 fn validate_create_scene_entities_command(
@@ -3881,6 +4031,7 @@ fn validate_create_scene_entities_command(
                 && (!entity.uniform_scale_keyframes.is_empty()
                     || !rotation_is_noop(entity.rotation)
                     || entity.instant_transform.is_some()))
+            || !create_entity_draw_is_valid(entity)
             || !create_entity_property_keyframes_are_valid(entity)
             || (!entity.material_parameter_keyframes.is_empty() && has_color_override)
             || (appearance_changed && entity.appearance_at.is_none())
@@ -3888,7 +4039,7 @@ fn validate_create_scene_entities_command(
                 !at.is_finite()
                     || at < entity.lifetime.start
                     || at >= entity.lifetime.end
-                    || entity.fade_in.as_ref().is_some_and(|fade| at < fade.end)
+                    || create_entity_initial_appearance_end(entity).is_some_and(|end| at < end)
             })
         {
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
@@ -3983,6 +4134,28 @@ fn append_created_entity(
             entity_id: created_id.clone(),
             id: channel_id,
             keyframes: opacity_keyframes,
+            provenance_id: provenance_id.to_owned(),
+        });
+    }
+    if let Some(draw) = entity.draw_in {
+        capabilities.insert(SceneCapabilityV1::PathTrimAnimation);
+        let channel_id = unused_channel_id(scene, &format!("studio-draw-{scene_order}"));
+        scene.animation_channels.push(AnimationChannelV1::PathTrim {
+            entity_id: created_id.clone(),
+            id: channel_id,
+            keyframes: vec![
+                KeyframeV1 {
+                    at: lifetime.start,
+                    easing_to_next: Some(draw.easing),
+                    value: 0.0,
+                },
+                KeyframeV1 {
+                    at: draw.end,
+                    easing_to_next: None,
+                    value: 1.0,
+                },
+            ],
+            parameterization: Some(PathTrimParameterizationV1::UniformCubicParameterV1),
             provenance_id: provenance_id.to_owned(),
         });
     }
@@ -4664,6 +4837,14 @@ impl EngineSessionV1 {
                 .transpose()?;
             entities.push(CreateSceneEntity {
                 appearance_at: state.appearance_at,
+                draw_in: state
+                    .draw_interval
+                    .as_ref()
+                    .zip(state.draw_easing.as_ref())
+                    .map(|(interval, easing)| CreateSceneEntityDrawIn {
+                        easing: easing.clone(),
+                        end: interval.end,
+                    }),
                 fade_in: state
                     .fade_interval
                     .as_ref()
@@ -4883,6 +5064,7 @@ mod tests {
             entities: vec![
                 CreateSceneEntity {
                     appearance_at: None,
+                    draw_in: None,
                     fade_in: None,
                     fill_color: None,
                     geometry: CreateSceneEntityGeometry::Circle { radius: 0.75 },
@@ -4906,6 +5088,7 @@ mod tests {
                 },
                 CreateSceneEntity {
                     appearance_at: None,
+                    draw_in: None,
                     fade_in: Some(CreateSceneEntityFadeIn { end: 0.9 }),
                     fill_color: None,
                     geometry: CreateSceneEntityGeometry::Rectangle {
@@ -4938,6 +5121,7 @@ mod tests {
                 },
                 CreateSceneEntity {
                     appearance_at: None,
+                    draw_in: None,
                     fade_in: None,
                     fill_color: None,
                     geometry: CreateSceneEntityGeometry::CubicOutline {
@@ -5119,6 +5303,26 @@ mod tests {
                 width: 640.0,
             },
         }
+    }
+
+    fn studio_draw_creation_command(bundle: &SceneIrBundleV1) -> ApplyStudioCreationEditCommand {
+        let mut command = studio_creation_command(bundle);
+        command.programs.truncate(1);
+        let program = &mut command.programs[0];
+        let draw = program
+            .operations
+            .iter_mut()
+            .find(|operation| matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. }))
+            .expect("creation fixture contains one fade-in");
+        draw.id = "draw".to_owned();
+        draw.interval.end = 1.25;
+        draw.kind = StudioCreationOperationKind::DrawIn {
+            easing: StudioPropertyEasing::Smooth,
+            from: Some(0.0),
+            to: Some(1.0),
+        };
+        program.schedule_order[2] = "draw".to_owned();
+        command
     }
 
     fn studio_text_creation_command(
@@ -7024,6 +7228,101 @@ mod tests {
                 stroke: Some(_),
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn normalized_creation_draw_emits_one_path_trim_channel() {
+        let bundle = static_imported_bundle();
+        let command = studio_draw_creation_command(&bundle);
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert!((projection.projected_duration - (bundle.scene.duration + 0.75)).abs() < 1e-12);
+        assert!(matches!(
+            &projection.mutations[1].kind,
+            StudioCreationProjectedMutationKind::DrawIn {
+                easing: EasingV1::ManimSmooth {},
+                from,
+                to,
+            } if from.abs() < 1e-12 && (*to - 1.0).abs() < 1e-12
+        ));
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let scene = &result.bundle.scene;
+        assert!(
+            scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::PathTrimAnimation)
+        );
+        assert!(scene.animation_channels.iter().any(|channel| matches!(
+            channel,
+            AnimationChannelV1::PathTrim {
+                entity_id,
+                keyframes,
+                parameterization: Some(PathTrimParameterizationV1::UniformCubicParameterV1),
+                ..
+            } if entity_id == "tx:create/entity:circle"
+                && matches!(keyframes.as_slice(), [
+                    KeyframeV1 {
+                        at: 0.5,
+                        easing_to_next: Some(EasingV1::ManimSmooth {}),
+                        value: 0.0,
+                    },
+                    KeyframeV1 {
+                        at: 1.25,
+                        easing_to_next: None,
+                        value: 1.0,
+                    },
+                ])
+        )));
+        assert!(!scene.animation_channels.iter().any(|channel| matches!(
+            channel,
+            AnimationChannelV1::Opacity { entity_id, .. }
+                if entity_id == "tx:create/entity:circle"
+        )));
+    }
+
+    #[test]
+    fn normalized_creation_rejects_invalid_draw_admission() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_draw_creation_command(&bundle);
+        let draw_index = command.programs[0]
+            .operations
+            .iter()
+            .position(|operation| {
+                matches!(operation.kind, StudioCreationOperationKind::DrawIn { .. })
+            })
+            .unwrap();
+
+        let mut unsupported_easing = command.clone();
+        let StudioCreationOperationKind::DrawIn { easing, .. } =
+            &mut unsupported_easing.programs[0].operations[draw_index].kind
+        else {
+            unreachable!();
+        };
+        *easing = StudioPropertyEasing::EaseIn;
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &unsupported_easing.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        let program = &mut command.programs[0];
+        program.operations.push(StudioCreationOperation {
+            depends_on: vec!["draw".to_owned()],
+            entity_id: Some("tx:create/entity:circle".to_owned()),
+            id: "fade-too".to_owned(),
+            interval: IntervalV1 {
+                end: 1.25,
+                start: 0.5,
+            },
+            kind: StudioCreationOperationKind::FadeIn { persistent: true },
+            origin: StudioAuthoringOrigin::StudioDefault,
+        });
+        program.schedule_order.push("fade-too".to_owned());
+        program.schedule_edge_count = 6;
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &command.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
         ));
     }
 

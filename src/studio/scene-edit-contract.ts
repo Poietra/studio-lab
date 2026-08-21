@@ -78,6 +78,11 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     kind: z.literal("CreateEntity"),
   }),
   operationBaseSchema.extend({
+    easing: z.enum(["linear", "smooth"]),
+    entityId: z.string(),
+    kind: z.literal("DrawIn"),
+  }),
+  operationBaseSchema.extend({
     documentStatic: z.boolean().optional(),
     entityId: z.string(),
     from: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]).optional(),

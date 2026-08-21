@@ -631,6 +631,18 @@ const studioCreationProjectionV1Schema = z
           .object({
             easing: easingV1Schema,
             entityId: z.string().min(1),
+            from: z.literal(0),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("draw-in"),
+            operationId: z.string().min(1),
+            to: z.literal(1),
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            easing: easingV1Schema,
+            entityId: z.string().min(1),
             from: finiteNumberSchema,
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("material-parameter-keyframes"),
@@ -937,6 +949,7 @@ type StudioCreationOperationV1 = Readonly<{
     | Readonly<{ entityId: string; kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
     | Readonly<{ color: string | null; entityId: string; kind: "fill-color" | "stroke-color" }>
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
+    | Readonly<{ easing: "linear" | "smooth"; entityId: string; from: 0; kind: "draw-in"; to: 1 }>
     | Readonly<{ alpha: number | null; entityId: string; kind: "opacity" }>
     | Readonly<{
         documentStatic: boolean;

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CreateCameraFocusSuggestion } from "../ai/edit-suggestions";
 import { STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
-import { programExecutionCapabilities } from "./operation-registry";
+import { operationAccess, operationExecutionCapabilities, programExecutionCapabilities } from "./operation-registry";
 import type { CanonicalEditOperation } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
 import {
@@ -68,6 +68,28 @@ function resizeWithConcurrentMotion(
 }
 
 describe("EditProgram execution capabilities", () => {
+  it("keeps DrawIn on the client-side path-trim authority", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: ["tx:draw/operation:create"],
+      easing: "smooth",
+      entityId: "tx:draw/entity:line",
+      id: "tx:draw/operation:draw-in",
+      interval: { end: 1, start: 0 },
+      kind: "DrawIn",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+    };
+
+    expect(operationAccess(operation)).toEqual({
+      reads: [{ channel: "pathTrim", entityId: operation.entityId }],
+      writes: [{ channel: "pathTrim", entityId: operation.entityId }],
+    });
+    expect(operationExecutionCapabilities(operation)).toEqual({
+      apply: "supported",
+      applyBlocker: null,
+      lowering: "unsupported",
+    });
+  });
+
   it("supports only finite numeric opacity values between zero and one", () => {
     const validateOpacity = (value: number | string) => {
       const operation: CanonicalEditOperation = {

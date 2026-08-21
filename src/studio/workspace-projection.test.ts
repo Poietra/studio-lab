@@ -21,6 +21,7 @@ import {
   clampPlayheadToResolvedSourceDuration,
   resolveVerifiedSourceDurationBasis,
 } from "./editor-revision-policy";
+import { replaceDrawInProgram } from "./draw-in-edit";
 import { programRecord } from "./evaluator";
 import { type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
 import type { Interval } from "./model";
@@ -275,6 +276,86 @@ function mathTexTransformMotionFixture(sourceEntityId: string, splitMotionProgra
 }
 
 describe("Studio workspace projection", () => {
+  it("correlates Draw from its exact Rust interval and easing", () => {
+    const imported = workspaceScene("First", null);
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [{ position: { x: 320, y: 180 }, type: "Line" }],
+      scene: imported.runtimeSceneState,
+      transactionId: "draw-correlation",
+    });
+    const entityId = creation.entityIds[0]!;
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "smooth", end: 1 },
+      entityId,
+      scene: imported.runtimeSceneState,
+    }).program;
+    const create = drawn.operations.find((operation) => operation.kind === "CreateEntity");
+    const position = drawn.operations.find(
+      (operation) => operation.kind === "SetProperty" && operation.key === "position",
+    );
+    const draw = drawn.operations.find((operation) => operation.kind === "DrawIn");
+    if (create?.kind !== "CreateEntity" || position?.kind !== "SetProperty" || draw?.kind !== "DrawIn") {
+      throw new Error("Draw correlation fixture is incomplete.");
+    }
+    const projectedDuration = imported.runtimeSceneState.duration + 1;
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: projectedDuration, start: 0 },
+          entityId,
+          initialDimensions: {},
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "line",
+          operationId: create.id,
+          transactionId: drawn.transactionId,
+        },
+      ],
+      insertions: [{ at: 0, duration: 1, transactionId: drawn.transactionId }],
+      motions: [],
+      mutations: [
+        {
+          entityId,
+          interval: { end: 0, start: 0 },
+          kind: "position",
+          operationId: position.id,
+          transactionId: drawn.transactionId,
+          value: { x: 320, y: 180 },
+        },
+        {
+          easing: { kind: "manim-smooth" },
+          entityId,
+          from: 0,
+          interval: { end: 1, start: 0 },
+          kind: "draw-in",
+          operationId: draw.id,
+          to: 1,
+          transactionId: drawn.transactionId,
+        },
+      ],
+      projectedDuration,
+      removals: [],
+    };
+
+    expect(selectCreationProjection(imported.runtimeSceneState.duration, [drawn], projection)).toBe(projection);
+    const staleDraw = projection.mutations[1];
+    if (!staleDraw || staleDraw.kind !== "draw-in") throw new Error("Draw projection fixture is incomplete.");
+    expect(() =>
+      selectCreationProjection(imported.runtimeSceneState.duration, [drawn], {
+        ...projection,
+        mutations: [projection.mutations[0]!, { ...staleDraw, easing: { kind: "linear" } }],
+      }),
+    ).toThrow(/not correlated/);
+    expect(() =>
+      selectCreationProjection(imported.runtimeSceneState.duration, [drawn], {
+        ...projection,
+        mutations: [projection.mutations[0]!, { ...staleDraw, interval: { end: 1.25, start: 0 } }],
+      }),
+    ).toThrow(/not correlated/);
+  });
+
   it("correlates Image placement structurally and rejects a stale asset reference", () => {
     const imported = workspaceScene("First", null);
     const image = {

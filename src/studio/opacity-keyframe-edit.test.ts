@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createStudioEntitiesProgram } from "./authoring-commands";
+import { replaceDrawInProgram } from "./draw-in-edit";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { opacityKeyframeTrackFromProgram, replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
@@ -128,7 +129,7 @@ describe("opacity keyframe editing", () => {
     expect(opacityKeyframeTrackFromProgram(removed.program, 0)).toBeNull();
   });
 
-  it("rejects markers during the initial fade and a second track in one creation Program", () => {
+  it("rejects markers through the initial Draw entrance and a second track in one creation Program", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
       entities: [
@@ -139,17 +140,27 @@ describe("opacity keyframe editing", () => {
       transactionId: "shared-opacity",
     });
     const [firstId, secondId] = creation.entityIds;
-    expect(() =>
-      replaceOpacityKeyframeProgram({
-        baseProgram: creation.validation.program,
-        entityId: firstId!,
-        keyframes: [{ easing: "smooth", time: 1.2, value: 1 }],
-        scene: STUDIO_FIXTURE_SCENE,
-      }),
-    ).toThrow(/after the object's initial fade/i);
+    const drawEnd = 1.8;
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "smooth", end: drawEnd },
+      entityId: firstId!,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
+    for (const time of [drawEnd - 0.1, drawEnd]) {
+      expect(() =>
+        replaceOpacityKeyframeProgram({
+          baseProgram: drawn.program,
+          entityId: firstId!,
+          keyframes: [{ easing: "smooth", time, value: 1 }],
+          scene: STUDIO_FIXTURE_SCENE,
+        }),
+      ).toThrow(/after the object's initial entrance/i);
+    }
 
     const firstTrack = replaceOpacityKeyframeProgram({
-      baseProgram: creation.validation.program,
+      baseProgram: drawn.program,
       entityId: firstId!,
       keyframes: [{ easing: "smooth", time: 2, value: 1 }],
       scene: STUDIO_FIXTURE_SCENE,

@@ -583,9 +583,8 @@ function shiftStudioCreationOperation(
     };
   }
   if (
-    operation.kind === "ChangePresence" &&
+    ((operation.kind === "ChangePresence" && operation.effect === "fade-in") || operation.kind === "DrawIn") &&
     operation.entityId === entityId &&
-    operation.effect === "fade-in" &&
     interval.end > target.end
   ) {
     return { ...operation, interval: { ...interval, end: target.end } };
@@ -598,7 +597,12 @@ function shiftStudioCreationOperation(
 
 function operationTargetsEntity(operation: SceneEditOperation, entityId: string) {
   if (operation.kind === "CreateEntity") return operation.entity.id === entityId;
-  if (operation.kind === "SetProperty" || operation.kind === "AnimateProperty" || operation.kind === "ChangePresence")
+  if (
+    operation.kind === "SetProperty" ||
+    operation.kind === "AnimateProperty" ||
+    operation.kind === "ChangePresence" ||
+    operation.kind === "DrawIn"
+  )
     return operation.entityId === entityId;
   if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entityId);
   if (operation.kind === "TransformContent") {

@@ -1,12 +1,12 @@
 import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import type { RuntimeSceneState } from "./model";
-import { operationId } from "./operations";
+import { initialAppearanceEnd, operationId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 
 const OPACITY_KEYFRAME_EPSILON = 0.0005;
 const MAX_OPACITY_KEYFRAMES = 32;
-const POST_FADE_OPACITY = 1;
+const POST_ENTRANCE_OPACITY = 1;
 
 export type OpacityKeyframeEasing = StudioPropertyKeyframeEasing;
 
@@ -97,19 +97,16 @@ export function replaceOpacityKeyframeProgram(
   if (input.keyframes.length > 0 && !validKeyframes(input.keyframes, input.scene.duration)) {
     throw new TypeError("Opacity keyframes must be ordered, distinct, inside the Scene, and use values from 0 to 1.");
   }
-  if (input.keyframes[0] && Math.abs(input.keyframes[0].value - POST_FADE_OPACITY) > OPACITY_KEYFRAME_EPSILON) {
-    throw new TypeError("The first opacity keyframe must preserve the object's post-fade opacity of 1.");
+  if (input.keyframes[0] && Math.abs(input.keyframes[0].value - POST_ENTRANCE_OPACITY) > OPACITY_KEYFRAME_EPSILON) {
+    throw new TypeError("The first opacity keyframe must preserve the object's post-entrance opacity of 1.");
   }
-  const fadeEnd = Math.max(
+  const entranceEnd = initialAppearanceEnd(
+    input.baseProgram.operations,
+    input.entityId,
     targetCreate.entity.lifetime.start,
-    ...input.baseProgram.operations.flatMap((operation) =>
-      operation.kind === "ChangePresence" && operation.effect === "fade-in" && operation.entityId === input.entityId
-        ? [operation.interval.end]
-        : [],
-    ),
   );
-  if (input.keyframes[0] && input.keyframes[0].time <= fadeEnd + OPACITY_KEYFRAME_EPSILON) {
-    throw new TypeError("The first opacity keyframe must be after the object's initial fade.");
+  if (input.keyframes[0] && input.keyframes[0].time <= entranceEnd + OPACITY_KEYFRAME_EPSILON) {
+    throw new TypeError("The first opacity keyframe must be after the object's initial entrance.");
   }
   const existingTrack = opacityKeyframeTrackFromProgram(input.baseProgram, 0);
   if (existingTrack && existingTrack.entityId !== input.entityId) {

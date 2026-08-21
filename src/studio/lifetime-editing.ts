@@ -253,11 +253,13 @@ function ownerDuration(owner: StudioLifetimeOwner, entityId: string, source: Int
     const inserted =
       operation.kind === "ChangePresence" ||
       operation.kind === "CreateMotion" ||
+      operation.kind === "DrawIn" ||
       operation.kind === "TransformContent" ||
       (operation.kind === "AnimateProperty" && operation.key === "scale" && operation.timelineTrack !== true);
     if (!inserted) return [];
     const end =
-      operation.kind === "ChangePresence" && operation.entityId === entityId && operation.effect === "fade-in"
+      ((operation.kind === "ChangePresence" && operation.effect === "fade-in") || operation.kind === "DrawIn") &&
+      operation.entityId === entityId
         ? Math.min(source.end, operation.interval.end + delta)
         : operation.interval.end + delta;
     return [end];

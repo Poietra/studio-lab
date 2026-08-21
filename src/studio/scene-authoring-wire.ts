@@ -305,6 +305,16 @@ function normalizedStudioCreationOperation(
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {
     return { ...common, entityId: operation.entityId, kind: "fade-in", persistent: operation.persistent };
   }
+  if (operation.kind === "DrawIn") {
+    return {
+      ...common,
+      easing: operation.easing,
+      entityId: operation.entityId,
+      from: 0,
+      kind: "draw-in",
+      to: 1,
+    };
+  }
   if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
     return { ...common, entityId: operation.entityId, kind: "persistent-remove", persistent: true };
   }
