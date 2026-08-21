@@ -112,12 +112,14 @@ const CLASS_PATTERN = /^\s*class\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^)]*Scene[^)]*
 const ASSIGNMENT_PREFIX_PATTERN = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/;
 const SUPPORTED_TYPES = new Set([
   "Arrow",
+  "Axes",
   "Circle",
   "Dot",
   "Group",
   "ImageMobject",
   "Line",
   "MathTex",
+  "NumberLine",
   "NumberPlane",
   "Polygon",
   "Rectangle",
@@ -129,6 +131,7 @@ const SUPPORTED_TYPES = new Set([
   "Triangle",
   "VGroup",
 ]);
+const STATIC_DEFAULT_COMPOSITE_TYPES = new Set(["Axes", "NumberLine", "NumberPlane"]);
 const ENTITY_MARKER_PATTERN = /^\s*#\s*poietra:entity\s+(.+)\s*$/;
 const ANCHOR_PATTERN = /^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const CURSOR_PATTERN = /^\s*#\s*poietra:cursor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
@@ -2033,7 +2036,7 @@ export function importManimScene(
     const binding = canonicalImportedBinding(analysis, statement, sourceVariable, type);
     if (!binding) return;
     if (
-      type === "NumberPlane" &&
+      STATIC_DEFAULT_COMPOSITE_TYPES.has(type) &&
       (argumentsSource.trim() !== "" ||
         !/^(?:#.*)?$/s.test(suffix.trim()) ||
         binding.capabilities.move.status !== "source-eligible" ||

@@ -269,38 +269,42 @@ class MixedScene(Scene):
     expect(imported?.importOutcomes.some(({ sourceVariable }) => sourceVariable === "documentation")).toBe(false);
   });
 
-  it("imports one default static NumberPlane binding with stable source identity and lifetime", () => {
-    const imported = importManimScene(
-      `from manim import *
+  it.each(["Axes", "NumberLine", "NumberPlane"] as const)(
+    "imports one default static %s binding with stable source identity and lifetime",
+    (type) => {
+      const variable = type === "NumberPlane" ? "grid" : type === "NumberLine" ? "numberLine" : "axes";
+      const imported = importManimScene(
+        `from manim import *
 
-class StaticPlane(Scene):
+class StaticComposite(Scene):
     def construct(self):
-        grid = NumberPlane()
-        self.add(grid)
+        ${variable} = ${type}()
+        self.add(${variable})
         self.wait(2)
 `,
-      "scene.py",
-      "StaticPlane",
-    );
-    const entityId = "source:scene.py#StaticPlane:grid";
+        "scene.py",
+        "StaticComposite",
+      );
+      const entityId = `source:scene.py#StaticComposite:${variable}`;
 
-    expect(imported?.sourceVariables).toEqual({ [entityId]: "grid" });
-    expect(imported?.initialization).toEqual(["grid = NumberPlane()"]);
-    expect(imported?.initialVisibleSourceVariables).toEqual(["grid"]);
-    expect(imported?.importOutcomes).toEqual([]);
-    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
-      lifetime: [{ end: 2, start: 0 }],
-      provisional: false,
-      sourceIdentity: { kind: "known", value: "grid" },
-      type: "NumberPlane",
-    });
-    expect(imported?.staticSemanticState.entities).toContainEqual({
-      runtimeIdentities: { kind: "known", value: [entityId] },
-      sourceIdentity: "grid",
-      type: { kind: "known", value: "NumberPlane" },
-    });
-    expect(runtimeSceneStateSchema.parse(imported?.runtimeSceneState)).toEqual(imported?.runtimeSceneState);
-  });
+      expect(imported?.sourceVariables).toEqual({ [entityId]: variable });
+      expect(imported?.initialization).toEqual([`${variable} = ${type}()`]);
+      expect(imported?.initialVisibleSourceVariables).toEqual([variable]);
+      expect(imported?.importOutcomes).toEqual([]);
+      expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
+        lifetime: [{ end: 2, start: 0 }],
+        provisional: false,
+        sourceIdentity: { kind: "known", value: variable },
+        type,
+      });
+      expect(imported?.staticSemanticState.entities).toContainEqual({
+        runtimeIdentities: { kind: "known", value: [entityId] },
+        sourceIdentity: variable,
+        type: { kind: "known", value: type },
+      });
+      expect(runtimeSceneStateSchema.parse(imported?.runtimeSceneState)).toEqual(imported?.runtimeSceneState);
+    },
+  );
 
   it("admits the official OpeningManim NumberPlane as one source-bound root", async () => {
     const officialSource = await readFile(
@@ -318,100 +322,106 @@ class StaticPlane(Scene):
     });
   });
 
-  it("keeps non-default, updater-driven, rebound, and controlled NumberPlane bindings read-only", () => {
-    const imported = importManimScene(
-      `from manim import *
+  it.each(["Axes", "NumberLine", "NumberPlane"] as const)(
+    "keeps non-default, updater-driven, rebound, and controlled %s bindings read-only",
+    (type) => {
+      const imported = importManimScene(
+        `from manim import *
 
-class UnsupportedPlanes(Scene):
+class UnsupportedComposites(Scene):
     def construct(self):
-        configured = NumberPlane(x_range=[-4, 4, 1])
-        chained = NumberPlane().shift(RIGHT)
-        updated = NumberPlane()
-        updated.add_updater(lambda plane: plane.shift(RIGHT))
-        rebound = NumberPlane()
-        rebound = NumberPlane()
+        configured = ${type}(x_range=[-4, 4, 1])
+        chained = ${type}().shift(RIGHT)
+        updated = ${type}()
+        updated.add_updater(lambda item: item.shift(RIGHT))
+        rebound = ${type}()
+        rebound = ${type}()
         if enabled:
-            controlled = NumberPlane()
+            controlled = ${type}()
         self.add(configured, chained, updated, rebound, controlled)
 `,
-      "scene.py",
-      "UnsupportedPlanes",
-    );
+        "scene.py",
+        "UnsupportedComposites",
+      );
 
-    expect(imported?.sourceVariables).toEqual({});
-    expect(imported?.runtimeSceneState.objectGraph.entities).toEqual({});
-    expect(imported?.importOutcomes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          access: "read-only",
-          kind: "source-preserved",
-          reason: "constructor-not-supported",
-          sourceVariable: "configured",
-        }),
-        expect.objectContaining({
-          access: "read-only",
-          kind: "source-preserved",
-          reason: "constructor-not-supported",
-          sourceVariable: "chained",
-        }),
-        expect.objectContaining({
-          access: "read-only",
-          kind: "source-preserved",
-          reason: "constructor-not-supported",
-          sourceVariable: "updated",
-        }),
-        expect.objectContaining({
-          access: "read-only",
-          kind: "unsupported",
-          reason: "ambiguous-binding",
-          sourceVariable: "rebound",
-        }),
-        expect.objectContaining({
-          access: "read-only",
-          kind: "runtime-only",
-          reason: "dynamic-control-flow",
-          sourceVariable: "controlled",
-        }),
-      ]),
-    );
-  });
+      expect(imported?.sourceVariables).toEqual({});
+      expect(imported?.runtimeSceneState.objectGraph.entities).toEqual({});
+      expect(imported?.importOutcomes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            access: "read-only",
+            kind: "source-preserved",
+            reason: "constructor-not-supported",
+            sourceVariable: "configured",
+          }),
+          expect.objectContaining({
+            access: "read-only",
+            kind: "source-preserved",
+            reason: "constructor-not-supported",
+            sourceVariable: "chained",
+          }),
+          expect.objectContaining({
+            access: "read-only",
+            kind: "source-preserved",
+            reason: "constructor-not-supported",
+            sourceVariable: "updated",
+          }),
+          expect.objectContaining({
+            access: "read-only",
+            kind: "unsupported",
+            reason: "ambiguous-binding",
+            sourceVariable: "rebound",
+          }),
+          expect.objectContaining({
+            access: "read-only",
+            kind: "runtime-only",
+            reason: "dynamic-control-flow",
+            sourceVariable: "controlled",
+          }),
+        ]),
+      );
+    },
+  );
 
-  it("keeps aliased NumberPlane bindings read-only even when an updater is attached through the alias", () => {
-    const imported = importManimScene(
-      `from manim import *
+  it.each(["Axes", "NumberLine", "NumberPlane"] as const)(
+    "keeps aliased %s bindings read-only even when an updater is attached through the alias",
+    (type) => {
+      const imported = importManimScene(
+        `from manim import *
 
-class AliasedPlanes(Scene):
+class AliasedComposites(Scene):
     def construct(self):
-        plain = NumberPlane()
+        plain = ${type}()
         plain_alias = plain
-        updated = NumberPlane()
+        updated = ${type}()
         updated_alias = updated
-        updated_alias.add_updater(lambda plane: plane.shift(RIGHT))
+        updated_alias.add_updater(lambda item: item.shift(RIGHT))
         self.add(plain, updated)
 `,
-      "scene.py",
-      "AliasedPlanes",
-    );
+        "scene.py",
+        "AliasedComposites",
+      );
 
-    expect(imported?.sourceVariables).toEqual({});
-    expect(imported?.runtimeSceneState.objectGraph.entities).toEqual({});
-    expect(imported?.importOutcomes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          access: "read-only",
-          kind: "unsupported",
-          reason: "unsupported-binding-form",
-          sourceVariable: "plain",
-        }),
-        expect.objectContaining({
-          access: "read-only",
-          kind: "unsupported",
-          reason: "unsupported-binding-form",
-          sourceVariable: "updated",
-        }),
-      ]),
-    );
-  });
+      expect(imported?.sourceVariables).toEqual({});
+      expect(imported?.runtimeSceneState.objectGraph.entities).toEqual({});
+      expect(imported?.importOutcomes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            access: "read-only",
+            kind: "unsupported",
+            reason: "unsupported-binding-form",
+            sourceVariable: "plain",
+          }),
+          expect.objectContaining({
+            access: "read-only",
+            kind: "unsupported",
+            reason: "unsupported-binding-form",
+            sourceVariable: "updated",
+          }),
+        ]),
+      );
+    },
+  );
 
   it("restores a transaction-scoped Studio identity from a committed source marker", () => {
     const marked = source
