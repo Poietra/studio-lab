@@ -614,7 +614,7 @@ fn quadratic_motion_segment(
     }
 }
 
-fn motion_easing(easing: StudioMotionEasing) -> EasingV1 {
+pub(super) fn motion_easing(easing: StudioMotionEasing) -> EasingV1 {
     match easing {
         StudioMotionEasing::Linear => EasingV1::Linear {},
         StudioMotionEasing::Smooth => EasingV1::ManimSmooth {},
