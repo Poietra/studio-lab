@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use poietra_geometry::align_cubic_path_morph_chain;
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetReferenceV1, ContractVersionV1, CubicPathV1,
     CubicSegmentV1, CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1,
@@ -30,13 +31,14 @@ use super::{
     StudioCreationSegmentedMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
     StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationSegmentedMathTexWritePlan,
-    StudioCreationTextOutline, StudioPersistentRemoveProjection,
-    StudioPersistentRemoveProjectionEntry, StudioTextContent, StudioTextLayout,
-    TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value, scene_edit_anchor_is_closed,
-    scene_edit_structure_is_closed, studio_arrow_appearance, studio_authoring_point_is_finite,
-    studio_authoring_shape_size, studio_authoring_size_is_positive, studio_math_tex_appearance,
-    studio_point_to_scene_point, studio_shape_appearance, studio_timeline_semantic_values_match,
-    studio_vector_to_scene_vector, unused_channel_id,
+    StudioCreationTextOutline, StudioMathTexContent, StudioMathTexTransformStrategy,
+    StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry, StudioTextContent,
+    StudioTextLayout, TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value,
+    scene_edit_anchor_is_closed, scene_edit_structure_is_closed, studio_arrow_appearance,
+    studio_authoring_point_is_finite, studio_authoring_shape_size,
+    studio_authoring_size_is_positive, studio_math_tex_appearance,
+    studio_math_tex_content_is_canonical, studio_point_to_scene_point, studio_shape_appearance,
+    studio_timeline_semantic_values_match, studio_vector_to_scene_vector, unused_channel_id,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -81,6 +83,13 @@ struct CreateSceneEntityWriteIn {
     source: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct CreateSceneEntityMathTexMorph {
+    initial_path: CubicPathV1,
+    keyframes: Vec<KeyframeV1<CubicPathV1>>,
+    start: f64,
+}
+
 const SEGMENTED_MATH_TEX_MAX_FRAGMENTS: usize = 128;
 const SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS: usize = 2_048;
 const SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES: usize = 256;
@@ -111,6 +120,7 @@ struct CreateSceneEntity {
     id: String,
     lifetime: IntervalV1,
     material_parameter_keyframes: Vec<KeyframeV1<FragmentMaterialV1>>,
+    math_tex_morph: Option<CreateSceneEntityMathTexMorph>,
     opacity_keyframes: Vec<KeyframeV1<f64>>,
     paint_opacity: f64,
     position: PointV1,
@@ -192,6 +202,12 @@ pub enum StudioCreationProjectedMutationKind {
         easing: EasingV1,
         from: f64,
         to: f64,
+    },
+    MathTexTransform {
+        content: StudioMathTexContent,
+        easing: EasingV1,
+        source_entity_id: String,
+        target_entity_id: String,
     },
     UniformScale {
         from: f64,
@@ -322,6 +338,14 @@ pub enum StudioCreationOperationKind {
     },
     WriteIn {
         easing: StudioPropertyEasing,
+    },
+    TransformContent {
+        easing: StudioPropertyEasing,
+        replacement: StudioMathTexContent,
+        source_entity_id: String,
+        strategy: StudioMathTexTransformStrategy,
+        target_entity_id: String,
+        target_type: Option<String>,
     },
     UniformScale {
         control_present: bool,
@@ -517,6 +541,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::FadeIn { .. }
             | StudioCreationOperationKind::DrawIn { .. }
             | StudioCreationOperationKind::WriteIn { .. }
+            | StudioCreationOperationKind::TransformContent { .. }
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Rotation { .. }
             | StudioCreationOperationKind::Opacity { .. }
@@ -671,6 +696,7 @@ struct PlannedStudioCreationEntity {
     kind: StudioAuthoringEntityKind,
     lifetime: IntervalV1,
     material_parameter_keyframes: Vec<KeyframeV1<FragmentMaterialV1>>,
+    math_tex_transforms: Vec<PlannedStudioMathTexTransform>,
     opacity_keyframes: Vec<KeyframeV1<f64>>,
     persistent_removal: Option<PersistentSceneRemoval>,
     position: PointV1,
@@ -682,6 +708,17 @@ struct PlannedStudioCreationEntity {
     visible: bool,
     write_easing: Option<EasingV1>,
     write_interval: Option<IntervalV1>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedStudioMathTexTransform {
+    content: StudioMathTexContent,
+    easing: EasingV1,
+    interval: IntervalV1,
+    operation_id: String,
+    source_entity_id: String,
+    target_entity_id: String,
+    transaction_id: String,
 }
 
 struct StudioCreationTimelinePlan {
@@ -713,6 +750,7 @@ fn studio_creation_insertion_duration(program: &StudioCreationEditInput) -> f64 
                 matches!(
                     operation.kind,
                     StudioCreationOperationKind::CreateMotion { .. }
+                        | StudioCreationOperationKind::TransformContent { .. }
                 )
             }
         })
@@ -1863,6 +1901,19 @@ fn plan_studio_creation_edits(
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
     }
+    let math_tex_transform_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| {
+            programs[*index].operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::TransformContent { .. }
+                )
+            })
+        })
+        .collect::<Vec<_>>();
     let hierarchy_programs = programs
         .iter()
         .enumerate()
@@ -1890,6 +1941,7 @@ fn plan_studio_creation_edits(
                 && !material_parameter_programs.contains(index)
                 && !uniform_scale_programs.contains(index)
                 && !rotation_programs.contains(index)
+                && !math_tex_transform_programs.contains(index)
                 && !hierarchy_programs.contains(index)
         })
         .collect::<Vec<_>>();
@@ -1993,6 +2045,7 @@ fn plan_studio_creation_edits(
                     .as_deref()
                     .is_none_or(|entity_id| !program_created_ids.contains(entity_id)),
                 StudioCreationOperationKind::DrawIn { .. }
+                | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -2037,6 +2090,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::WriteIn { .. }
+                | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -2411,6 +2465,7 @@ fn plan_studio_creation_edits(
             kind: spec.kind,
             lifetime,
             material_parameter_keyframes: Vec::new(),
+            math_tex_transforms: Vec::new(),
             opacity_keyframes: Vec::new(),
             persistent_removal: None,
             position: initial_position.clone(),
@@ -2423,6 +2478,116 @@ fn plan_studio_creation_edits(
             write_easing,
             write_interval,
         });
+    }
+
+    let mut math_tex_transform_target_ids = created_ids
+        .iter()
+        .map(|id| (*id).to_owned())
+        .collect::<BTreeSet<_>>();
+    let mut math_tex_transform_root_by_identity = created_ids
+        .iter()
+        .map(|id| ((*id).to_owned(), (*id).to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    let mut current_math_tex_transform_identity = created_ids
+        .iter()
+        .map(|id| ((*id).to_owned(), (*id).to_owned()))
+        .collect::<BTreeMap<_, _>>();
+    for program_index in math_tex_transform_programs {
+        let program = &programs[program_index];
+        if program.operations.len() != 1
+            || program.schedule_order != [program.operations[0].id.clone()]
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let operation = &program.operations[0];
+        let StudioCreationOperationKind::TransformContent {
+            easing,
+            replacement,
+            source_entity_id,
+            strategy,
+            target_entity_id,
+            target_type,
+        } = &operation.kind
+        else {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        };
+        let entity_id = operation
+            .entity_id
+            .as_deref()
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let source_root_id = math_tex_transform_root_by_identity
+            .get(source_entity_id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let state = entities
+            .iter_mut()
+            .find(|state| state.spec.id == entity_id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let program_rank = timeline.ranks[program_index];
+        let interval = IntervalV1 {
+            end: operation.interval.end + timeline.offsets[program_index],
+            start: operation.interval.start + timeline.offsets[program_index],
+        };
+        if state.creation_program_rank >= program_rank
+            || state.kind != StudioAuthoringEntityKind::MathTex
+            || operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || source_root_id != entity_id
+            || current_math_tex_transform_identity.get(entity_id) != Some(source_entity_id)
+            || *strategy != StudioMathTexTransformStrategy::ReplacementTransform
+            || target_type.as_deref().is_some_and(|kind| kind != "MathTex")
+            || !target_entity_id.starts_with(&format!("tx:{}/entity:", program.transaction_id))
+            || !math_tex_transform_target_ids.insert(target_entity_id.clone())
+            || !studio_math_tex_content_is_canonical(replacement)
+            || !matches!(
+                easing,
+                StudioPropertyEasing::Linear | StudioPropertyEasing::Smooth
+            )
+            || !studio_timeline_semantic_values_match(
+                operation.interval.start,
+                program.anchor_resolved_seconds,
+            )
+            || interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+            || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+            || interval.end <= interval.start
+            || studio_creation_initial_appearance_end(state)
+                .is_some_and(|end| interval.start < end - TIMELINE_ANCHOR_EPSILON)
+            || state
+                .math_tex_transforms
+                .last()
+                .is_some_and(|prior| interval.start < prior.interval.end - TIMELINE_ANCHOR_EPSILON)
+            || state.persistent_removal.as_ref().is_some_and(|removal| {
+                interval.end > removal.interval.start + TIMELINE_ANCHOR_EPSILON
+            })
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let planned = PlannedStudioMathTexTransform {
+            content: replacement.clone(),
+            easing: property_easing(*easing),
+            interval: interval.clone(),
+            operation_id: operation.id.clone(),
+            source_entity_id: source_entity_id.clone(),
+            target_entity_id: target_entity_id.clone(),
+            transaction_id: program.transaction_id.clone(),
+        };
+        math_tex_transform_root_by_identity.insert(target_entity_id.clone(), entity_id.to_owned());
+        current_math_tex_transform_identity.insert(entity_id.to_owned(), target_entity_id.clone());
+        ranked_mutations.push((
+            program_rank,
+            0,
+            StudioCreationProjectedMutation {
+                entity_id: entity_id.to_owned(),
+                interval,
+                kind: StudioCreationProjectedMutationKind::MathTexTransform {
+                    content: planned.content.clone(),
+                    easing: planned.easing.clone(),
+                    source_entity_id: planned.source_entity_id.clone(),
+                    target_entity_id: planned.target_entity_id.clone(),
+                },
+                operation_id: planned.operation_id.clone(),
+                transaction_id: planned.transaction_id.clone(),
+            },
+        ));
+        state.math_tex_transforms.push(planned);
     }
 
     for program_index in opacity_programs {
@@ -3496,6 +3661,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::WriteIn { .. }
+                | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -3571,7 +3737,10 @@ fn plan_studio_creation_edits(
                     .is_some_and(|end| removal.interval.start < end)
                 || state
                     .instant_at
-                    .is_some_and(|at| removal.interval.start < at))
+                    .is_some_and(|at| removal.interval.start < at)
+                || state.math_tex_transforms.last().is_some_and(|transform| {
+                    removal.interval.start < transform.interval.end - TIMELINE_ANCHOR_EPSILON
+                }))
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
@@ -4446,6 +4615,72 @@ fn append_created_write_fragments(
         .map_err(|_| CreateSceneEntitiesError::InvalidHierarchy)
 }
 
+fn planned_math_tex_morph(
+    state: &PlannedStudioCreationEntity,
+    outlines: &[StudioCreationMathTexOutline],
+) -> Result<Option<CreateSceneEntityMathTexMorph>, ApplyStudioCreationEditError> {
+    let Some(first_transform) = state.math_tex_transforms.first() else {
+        return Ok(None);
+    };
+    let initial_parts = state
+        .spec
+        .tex_parts
+        .as_ref()
+        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+    let initial = outlines
+        .iter()
+        .find(|outline| outline.entity_id == state.spec.id && &outline.tex_parts == initial_parts)
+        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+    let mut paths = Vec::with_capacity(state.math_tex_transforms.len() + 1);
+    paths.push(initial.path.clone());
+    for transform in &state.math_tex_transforms {
+        let outline = outlines
+            .iter()
+            .find(|outline| {
+                outline.entity_id == transform.target_entity_id
+                    && outline.tex_parts == transform.content.tex_parts
+            })
+            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+        paths.push(outline.path.clone());
+    }
+    let aligned = align_cubic_path_morph_chain(&paths)
+        .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
+    let mut keyframes = Vec::with_capacity(state.math_tex_transforms.len() * 2 + 1);
+    for (index, transform) in state.math_tex_transforms.iter().enumerate() {
+        if index == 0 {
+            keyframes.push(KeyframeV1 {
+                at: transform.interval.start,
+                easing_to_next: Some(transform.easing.clone()),
+                value: aligned[0].clone(),
+            });
+        } else {
+            let previous = keyframes
+                .last_mut()
+                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+            if transform.interval.start > previous.at + TIMELINE_ANCHOR_EPSILON {
+                previous.easing_to_next = Some(EasingV1::Linear {});
+                keyframes.push(KeyframeV1 {
+                    at: transform.interval.start,
+                    easing_to_next: Some(transform.easing.clone()),
+                    value: aligned[index].clone(),
+                });
+            } else {
+                previous.easing_to_next = Some(transform.easing.clone());
+            }
+        }
+        keyframes.push(KeyframeV1 {
+            at: transform.interval.end,
+            easing_to_next: None,
+            value: aligned[index + 1].clone(),
+        });
+    }
+    Ok(Some(CreateSceneEntityMathTexMorph {
+        initial_path: aligned[0].clone(),
+        keyframes,
+        start: first_transform.interval.start,
+    }))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one append path keeps base entity and its three optional canonical channels together"
@@ -4459,6 +4694,7 @@ fn append_created_entity(
     capabilities: &mut BTreeSet<SceneCapabilityV1>,
 ) -> Result<u32, CreateSceneEntitiesError> {
     let write_in = entity.write_in.clone();
+    let math_tex_morph = entity.math_tex_morph.clone();
     let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
     let is_logical_group = matches!(&geometry, SceneGeometryV1::Group {});
     let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
@@ -4782,10 +5018,16 @@ fn append_created_entity(
             });
     }
     let write_leaf_count = if let Some(write) = write_in {
+        let write_lifetime = IntervalV1 {
+            end: math_tex_morph
+                .as_ref()
+                .map_or(lifetime.end, |morph| morph.start),
+            start: lifetime.start,
+        };
         append_created_write_fragments(
             scene,
             &created_id,
-            &lifetime,
+            &write_lifetime,
             write,
             provenance_id,
             scene_order
@@ -4798,8 +5040,50 @@ fn append_created_entity(
     } else {
         0
     };
+    let morph_leaf_count = if let Some(morph) = math_tex_morph {
+        capabilities.insert(SceneCapabilityV1::PathMorphAnimation);
+        let target_id = if is_logical_group {
+            let id = format!("{created_id}/math-tex-morph");
+            scene.entities.push(SceneEntityV1 {
+                appearance: studio_math_tex_appearance(),
+                geometry: SceneGeometryV1::CubicPath {
+                    path: morph.initial_path,
+                },
+                id: id.clone(),
+                lifetimes: vec![IntervalV1 {
+                    end: lifetime.end,
+                    start: morph.start,
+                }],
+                parent_id: Some(created_id.clone()),
+                provenance_id: provenance_id.to_owned(),
+                scene_order: scene_order
+                    .checked_add(1)
+                    .and_then(|order| order.checked_add(write_leaf_count))
+                    .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?,
+                source_z_index,
+                transform: AffineTransformV1::identity(),
+                visible: entity.visible,
+            });
+            id
+        } else {
+            created_id.clone()
+        };
+        let channel_id = unused_channel_id(scene, &format!("studio-math-tex-morph-{scene_order}"));
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::PathMorph {
+                entity_id: target_id,
+                id: channel_id,
+                keyframes: morph.keyframes,
+                provenance_id: provenance_id.to_owned(),
+            });
+        u32::from(is_logical_group)
+    } else {
+        0
+    };
     1_u32
         .checked_add(write_leaf_count)
+        .and_then(|count| count.checked_add(morph_leaf_count))
         .ok_or(CreateSceneEntitiesError::InvalidHierarchy)
 }
 
@@ -5123,52 +5407,78 @@ impl EngineSessionV1 {
         )
         .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
         for state in &plan.entities {
-            let matching_outline_count = match state.kind {
-                StudioAuthoringEntityKind::MathTex if state.write_interval.is_some() => {
+            match state.kind {
+                StudioAuthoringEntityKind::MathTex => {
+                    let needs_full_outline =
+                        state.write_interval.is_none() || !state.math_tex_transforms.is_empty();
+                    let initial_count = needs_full_outline.then(|| {
+                        math_tex_outlines
+                            .iter()
+                            .filter(|outline| {
+                                outline.entity_id == state.spec.id
+                                    && Some(&outline.tex_parts) == state.spec.tex_parts.as_ref()
+                            })
+                            .count()
+                    });
+                    let targets_are_exact = state.math_tex_transforms.iter().all(|transform| {
+                        math_tex_outlines
+                            .iter()
+                            .filter(|outline| {
+                                outline.entity_id == transform.target_entity_id
+                                    && outline.tex_parts == transform.content.tex_parts
+                            })
+                            .count()
+                            == 1
+                    });
+                    if initial_count.is_some_and(|count| count != 1) || !targets_are_exact {
+                        return Err(ApplyStudioCreationEditError::Unsupported);
+                    }
+                    if state.write_interval.is_none() {
+                        continue;
+                    }
                     let source = state
                         .spec
                         .tex_parts
                         .as_ref()
                         .map(|parts| parts.join(" "))
                         .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    segmented_math_tex_outlines
+                    let segmented_count = segmented_math_tex_outlines
                         .iter()
                         .filter(|outline| {
                             outline.entity_id == state.spec.id && outline.source == source
                         })
-                        .count()
+                        .count();
+                    if segmented_count != 1 {
+                        return Err(ApplyStudioCreationEditError::Unsupported);
+                    }
                 }
-                StudioAuthoringEntityKind::MathTex => math_tex_outlines
-                    .iter()
-                    .filter(|outline| {
-                        outline.entity_id == state.spec.id
-                            && Some(&outline.tex_parts) == state.spec.tex_parts.as_ref()
-                    })
-                    .count(),
-                StudioAuthoringEntityKind::Text => text_outlines
-                    .iter()
-                    .filter(|outline| {
-                        outline.entity_id == state.spec.id
-                            && state.current_text_content.as_ref().is_some_and(|content| {
-                                outline.text == content.text && outline.layout == content.layout
-                            })
-                    })
-                    .count(),
+                StudioAuthoringEntityKind::Text => {
+                    let matching_outline_count = text_outlines
+                        .iter()
+                        .filter(|outline| {
+                            outline.entity_id == state.spec.id
+                                && state.current_text_content.as_ref().is_some_and(|content| {
+                                    outline.text == content.text && outline.layout == content.layout
+                                })
+                        })
+                        .count();
+                    if matching_outline_count != 1 {
+                        return Err(ApplyStudioCreationEditError::Unsupported);
+                    }
+                }
                 StudioAuthoringEntityKind::Arrow
                 | StudioAuthoringEntityKind::Circle
                 | StudioAuthoringEntityKind::Image
                 | StudioAuthoringEntityKind::Line
                 | StudioAuthoringEntityKind::Other
-                | StudioAuthoringEntityKind::Rectangle => continue,
-            };
-            if matching_outline_count != 1 {
-                return Err(ApplyStudioCreationEditError::Unsupported);
+                | StudioAuthoringEntityKind::Rectangle => {}
             }
         }
 
         let mut entities = Vec::with_capacity(plan.entities.len());
         let mut persistent_removals = Vec::new();
         for state in &plan.entities {
+            let math_tex_morph = planned_math_tex_morph(state, &math_tex_outlines)?;
             let geometry = match state.kind {
                 StudioAuthoringEntityKind::Arrow => CreateSceneEntityGeometry::Arrow,
                 StudioAuthoringEntityKind::Circle => {
@@ -5209,15 +5519,21 @@ impl EngineSessionV1 {
                     CreateSceneEntityGeometry::LogicalGroup
                 }
                 StudioAuthoringEntityKind::MathTex => {
-                    let outline = math_tex_outlines
-                        .iter()
-                        .find(|outline| {
-                            outline.entity_id == state.spec.id
-                                && Some(&outline.tex_parts) == state.spec.tex_parts.as_ref()
-                        })
-                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    CreateSceneEntityGeometry::CubicOutline {
-                        path: outline.path.clone(),
+                    if let Some(morph) = &math_tex_morph {
+                        CreateSceneEntityGeometry::CubicOutline {
+                            path: morph.initial_path.clone(),
+                        }
+                    } else {
+                        let outline = math_tex_outlines
+                            .iter()
+                            .find(|outline| {
+                                outline.entity_id == state.spec.id
+                                    && Some(&outline.tex_parts) == state.spec.tex_parts.as_ref()
+                            })
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        CreateSceneEntityGeometry::CubicOutline {
+                            path: outline.path.clone(),
+                        }
                     }
                 }
                 StudioAuthoringEntityKind::Text => {
@@ -5347,6 +5663,7 @@ impl EngineSessionV1 {
                 instant_transform,
                 lifetime: state.lifetime.clone(),
                 material_parameter_keyframes: state.material_parameter_keyframes.clone(),
+                math_tex_morph,
                 opacity_keyframes: state.opacity_keyframes.clone(),
                 paint_opacity: state.current_opacity,
                 position: studio_point_to_scene_point(
@@ -5567,6 +5884,7 @@ mod tests {
                         start: 0.5,
                     },
                     material_parameter_keyframes: vec![],
+                    math_tex_morph: None,
                     paint_opacity: 1.0,
                     opacity_keyframes: vec![],
                     position: PointV1 { x: 2.0, y: -1.0 },
@@ -5595,6 +5913,7 @@ mod tests {
                         start: 0.5,
                     },
                     material_parameter_keyframes: vec![],
+                    math_tex_morph: None,
                     paint_opacity: 1.0,
                     opacity_keyframes: vec![],
                     position: PointV1 { x: -2.0, y: 1.0 },
@@ -5628,6 +5947,7 @@ mod tests {
                         start: 0.5,
                     },
                     material_parameter_keyframes: vec![],
+                    math_tex_morph: None,
                     paint_opacity: 1.0,
                     opacity_keyframes: vec![],
                     position: PointV1 { x: 0.0, y: 1.5 },
@@ -5906,6 +6226,146 @@ mod tests {
                     StudioCreationSegmentedMathTexRepresentation::SeparateOutlineAndFillEntities,
             },
         }];
+        command
+    }
+
+    fn closed_polygon_path(points: &[PointV1]) -> CubicPathV1 {
+        assert!(points.len() >= 3);
+        let mut segments = points
+            .windows(2)
+            .map(|pair| straight_cubic_segment(&pair[0], pair[1].clone()))
+            .collect::<Vec<_>>();
+        segments.push(straight_cubic_segment(
+            points.last().unwrap(),
+            points[0].clone(),
+        ));
+        CubicPathV1 {
+            subpaths: vec![CubicSubpathV1 {
+                closed: true,
+                segments,
+                start: points[0].clone(),
+            }],
+        }
+    }
+
+    fn studio_math_tex_transform_program(
+        transaction_id: &str,
+        operation_id: &str,
+        root_entity_id: &str,
+        source_entity_id: &str,
+        target_entity_id: &str,
+        replacement: StudioMathTexContent,
+    ) -> StudioCreationEditInput {
+        StudioCreationEditInput {
+            anchor_captured_playhead: 0.5,
+            anchor_resolved_seconds: 0.5,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(0.5),
+            },
+            intent_count: 1,
+            lowering_supported: true,
+            operations: vec![StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some(root_entity_id.to_owned()),
+                id: operation_id.to_owned(),
+                interval: IntervalV1 {
+                    end: 1.0,
+                    start: 0.5,
+                },
+                kind: StudioCreationOperationKind::TransformContent {
+                    easing: StudioPropertyEasing::Smooth,
+                    replacement,
+                    source_entity_id: source_entity_id.to_owned(),
+                    strategy: StudioMathTexTransformStrategy::ReplacementTransform,
+                    target_entity_id: target_entity_id.to_owned(),
+                    target_type: Some("MathTex".to_owned()),
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            }],
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Sequence,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Sequence,
+            schedule_order: vec![operation_id.to_owned()],
+            transaction_id: transaction_id.to_owned(),
+        }
+    }
+
+    fn studio_math_tex_write_transform_chain_command(
+        bundle: &SceneIrBundleV1,
+    ) -> ApplyStudioCreationEditCommand {
+        let mut command = studio_math_tex_write_creation_command(bundle);
+        let root_id = "tx:create/entity:circle";
+        let middle_id = "tx:transform-middle/entity:formula";
+        let restored_id = "tx:transform-restored/entity:formula";
+        let initial_content = StudioMathTexContent {
+            display_lines: vec!["E = mc^2".to_owned()],
+            label: Some("energy".to_owned()),
+            tex_parts: vec!["E".to_owned(), "=".to_owned(), "mc^2".to_owned()],
+        };
+        let middle_content = StudioMathTexContent {
+            display_lines: vec!["B".to_owned()],
+            label: Some("middle".to_owned()),
+            tex_parts: vec!["B".to_owned()],
+        };
+        let restored_content = StudioMathTexContent {
+            display_lines: initial_content.display_lines.clone(),
+            label: Some("restored".to_owned()),
+            tex_parts: initial_content.tex_parts.clone(),
+        };
+        let initial_path = closed_polygon_path(&[
+            PointV1 { x: -1.0, y: -0.5 },
+            PointV1 { x: 1.0, y: -0.5 },
+            PointV1 { x: 0.0, y: 1.0 },
+        ]);
+        let mut middle_path = closed_polygon_path(&[
+            PointV1 { x: -1.0, y: -1.0 },
+            PointV1 { x: 1.0, y: -1.0 },
+            PointV1 { x: 1.0, y: 1.0 },
+            PointV1 { x: -1.0, y: 1.0 },
+        ]);
+        middle_path.subpaths.push(
+            closed_polygon_path(&[
+                PointV1 { x: 1.5, y: -0.25 },
+                PointV1 { x: 2.0, y: -0.25 },
+                PointV1 { x: 1.75, y: 0.5 },
+            ])
+            .subpaths
+            .remove(0),
+        );
+        command.math_tex_outlines = vec![
+            StudioCreationMathTexOutline {
+                entity_id: root_id.to_owned(),
+                path: initial_path.clone(),
+                tex_parts: initial_content.tex_parts,
+            },
+            StudioCreationMathTexOutline {
+                entity_id: middle_id.to_owned(),
+                path: middle_path,
+                tex_parts: middle_content.tex_parts.clone(),
+            },
+            StudioCreationMathTexOutline {
+                entity_id: restored_id.to_owned(),
+                path: initial_path,
+                tex_parts: restored_content.tex_parts.clone(),
+            },
+        ];
+        command.programs.push(studio_math_tex_transform_program(
+            "transform-middle",
+            "transform-to-middle",
+            root_id,
+            root_id,
+            middle_id,
+            middle_content,
+        ));
+        command.programs.push(studio_math_tex_transform_program(
+            "transform-restored",
+            "transform-to-restored",
+            root_id,
+            middle_id,
+            restored_id,
+            restored_content,
+        ));
         command
     }
 
@@ -8090,6 +8550,201 @@ mod tests {
         assert!(complete.draws.iter().all(|draw| {
             ![root_id, outline_zero.as_str(), outline_one.as_str()].contains(&draw.entity_id())
         }));
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one vertical slice pins projection, Write handoff, morph topology, and evaluator samples"
+    )]
+    fn normalized_math_tex_write_switches_to_one_root_owned_a_b_a_path_morph() {
+        let bundle = static_imported_bundle();
+        let base_duration = bundle.scene.duration;
+        let command = studio_math_tex_write_transform_chain_command(&bundle);
+        let root_id = "tx:create/entity:circle";
+        let middle_id = "tx:transform-middle/entity:formula";
+        let restored_id = "tx:transform-restored/entity:formula";
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(projection.entities.len(), 1);
+        assert_eq!(projection.entities[0].entity_id, root_id);
+        assert!((projection.projected_duration - (base_duration + 2.0)).abs() < 1e-12);
+        let transforms = projection
+            .mutations
+            .iter()
+            .filter(|mutation| {
+                matches!(
+                    mutation.kind,
+                    StudioCreationProjectedMutationKind::MathTexTransform { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(transforms.len(), 2);
+        assert!(
+            transforms
+                .iter()
+                .all(|mutation| mutation.entity_id == root_id)
+        );
+        assert!(matches!(
+            &transforms[0].kind,
+            StudioCreationProjectedMutationKind::MathTexTransform {
+                source_entity_id,
+                target_entity_id,
+                ..
+            } if source_entity_id == root_id && target_entity_id == middle_id
+        ));
+        assert!(matches!(
+            &transforms[1].kind,
+            StudioCreationProjectedMutationKind::MathTexTransform {
+                source_entity_id,
+                target_entity_id,
+                ..
+            } if source_entity_id == middle_id && target_entity_id == restored_id
+        ));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let scene = &result.bundle.scene;
+        assert!(
+            !scene
+                .entities
+                .iter()
+                .any(|entity| { entity.id == middle_id || entity.id == restored_id })
+        );
+        let morph_id = format!("{root_id}/math-tex-morph");
+        let morph_entity = scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == morph_id)
+            .unwrap();
+        assert_eq!(morph_entity.parent_id.as_deref(), Some(root_id));
+        assert!((morph_entity.lifetimes[0].start - 1.5).abs() < 1e-12);
+        assert!(
+            scene
+                .entities
+                .iter()
+                .filter(|entity| {
+                    entity.parent_id.as_deref() == Some(root_id) && entity.id.ends_with("/fill")
+                })
+                .all(|entity| (entity.lifetimes[0].end - 1.5).abs() < 1e-12)
+        );
+        assert!(
+            scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::PathMorphAnimation)
+        );
+        let keyframes = scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::PathMorph {
+                    entity_id,
+                    keyframes,
+                    ..
+                } if entity_id == &morph_id => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(keyframes.len(), 3);
+        assert_eq!(
+            keyframes
+                .iter()
+                .map(|keyframe| keyframe.at)
+                .collect::<Vec<_>>(),
+            [1.5, 2.0, 2.5]
+        );
+        assert_eq!(keyframes[0].value, keyframes[2].value);
+        assert_ne!(keyframes[0].value, keyframes[1].value);
+        assert!(keyframes.iter().all(|keyframe| {
+            keyframe.value.subpaths.len() == 2
+                && keyframe.value.subpaths[0].segments.len() == 4
+                && keyframe.value.subpaths[1].segments.len() == 3
+        }));
+
+        let sample_path = |sample_time| {
+            session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "studio-math-tex-write-transform",
+                    sample_time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap()
+                .draws
+                .into_iter()
+                .find_map(|draw| match draw {
+                    poietra_scene_ir::RenderDrawV1::Path {
+                        entity_id, path, ..
+                    } if entity_id == morph_id => Some(path),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let start = sample_path(1.5);
+        let first_midpoint = sample_path(1.75);
+        let middle = sample_path(2.0);
+        let second_midpoint = sample_path(2.25);
+        let restored = sample_path(2.5);
+        assert_eq!(start, keyframes[0].value);
+        assert_eq!(middle, keyframes[1].value);
+        assert_eq!(restored, start);
+        assert_ne!(first_midpoint, start);
+        assert_ne!(first_midpoint, middle);
+        assert_ne!(second_midpoint, middle);
+        assert_ne!(second_midpoint, restored);
+    }
+
+    #[test]
+    fn normalized_math_tex_transform_chain_rejects_non_replacement_or_broken_identity() {
+        let bundle = static_imported_bundle();
+        let command = studio_math_tex_write_transform_chain_command(&bundle);
+
+        let mut matching = command.clone();
+        let StudioCreationOperationKind::TransformContent { strategy, .. } =
+            &mut matching.programs[1].operations[0].kind
+        else {
+            unreachable!();
+        };
+        *strategy = StudioMathTexTransformStrategy::TransformMatchingTex;
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &matching.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        let mut broken_chain = command;
+        let StudioCreationOperationKind::TransformContent {
+            source_entity_id, ..
+        } = &mut broken_chain.programs[2].operations[0].kind
+        else {
+            unreachable!();
+        };
+        *source_entity_id = "tx:create/entity:circle".to_owned();
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &broken_chain.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn normalized_math_tex_transform_topology_failure_is_atomic() {
+        let bundle = static_imported_bundle();
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut command = studio_math_tex_write_transform_chain_command(&bundle);
+        command.math_tex_outlines[1].path.subpaths[0].closed = false;
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
     }
 
     #[test]

@@ -585,6 +585,127 @@ pub fn sample_cubic_path_manim_point_from_proportion_v1(
     })
 }
 
+fn split_cubic_at_half(
+    start: &PointV1,
+    segment: &CubicSegmentV1,
+) -> (CubicSegmentV1, CubicSegmentV1) {
+    let first = interpolate_point(start, &segment.control1, 0.5);
+    let second = interpolate_point(&segment.control1, &segment.control2, 0.5);
+    let third = interpolate_point(&segment.control2, &segment.end, 0.5);
+    let fourth = interpolate_point(&first, &second, 0.5);
+    let fifth = interpolate_point(&second, &third, 0.5);
+    let middle = interpolate_point(&fourth, &fifth, 0.5);
+    (
+        CubicSegmentV1 {
+            control1: first,
+            control2: fourth,
+            end: middle.clone(),
+        },
+        CubicSegmentV1 {
+            control1: fifth,
+            control2: third,
+            end: segment.end.clone(),
+        },
+    )
+}
+
+fn split_subpath_to_segment_count(
+    subpath: &CubicSubpathV1,
+    target_count: usize,
+) -> Result<CubicSubpathV1, GeometryError> {
+    if subpath.segments.is_empty() || target_count < subpath.segments.len() {
+        return Err(GeometryError::EmptyPath);
+    }
+    let mut aligned = subpath.clone();
+    while aligned.segments.len() < target_count {
+        let mut start = aligned.start.clone();
+        let mut selected = None;
+        for (index, segment) in aligned.segments.iter().enumerate() {
+            let length = measure_cubic(&start, segment).length;
+            if selected
+                .as_ref()
+                .is_none_or(|(_, selected_length, _)| length > *selected_length)
+            {
+                selected = Some((index, length, start.clone()));
+            }
+            start = segment.end.clone();
+        }
+        let (index, _, segment_start) = selected.ok_or(GeometryError::EmptyPath)?;
+        let (left, right) = split_cubic_at_half(&segment_start, &aligned.segments[index]);
+        aligned.segments.splice(index..=index, [left, right]);
+    }
+    Ok(aligned)
+}
+
+fn degenerate_subpath(template: &CubicSubpathV1, segment_count: usize) -> CubicSubpathV1 {
+    let point = template.start.clone();
+    CubicSubpathV1 {
+        closed: template.closed,
+        segments: (0..segment_count)
+            .map(|_| CubicSegmentV1 {
+                control1: point.clone(),
+                control2: point.clone(),
+                end: point.clone(),
+            })
+            .collect(),
+        start: point,
+    }
+}
+
+/// Aligns a sequence of cubic paths to one interpolation-safe topology.
+///
+/// Existing curves are preserved exactly by de Casteljau subdivision. A subpath
+/// absent from one stage becomes a degenerate copy at the corresponding stage
+/// position, so glyphs can grow into or shrink out of a `MathTex` transform.
+///
+/// # Errors
+///
+/// Returns [`GeometryError::EmptyPath`] for an empty path/subpath and
+/// [`GeometryError::PathTopologyMismatch`] when corresponding subpaths disagree
+/// about whether they are closed.
+pub fn align_cubic_path_morph_chain(
+    paths: &[CubicPathV1],
+) -> Result<Vec<CubicPathV1>, GeometryError> {
+    if paths.is_empty() || paths.iter().any(|path| path.subpaths.is_empty()) {
+        return Err(GeometryError::EmptyPath);
+    }
+    let subpath_count = paths
+        .iter()
+        .map(|path| path.subpaths.len())
+        .max()
+        .ok_or(GeometryError::EmptyPath)?;
+    let mut aligned = paths.to_vec();
+    for subpath_index in 0..subpath_count {
+        let template = paths
+            .iter()
+            .find_map(|path| path.subpaths.get(subpath_index))
+            .ok_or(GeometryError::EmptyPath)?;
+        let segment_count = paths
+            .iter()
+            .filter_map(|path| path.subpaths.get(subpath_index))
+            .map(|subpath| subpath.segments.len())
+            .max()
+            .filter(|count| *count > 0)
+            .ok_or(GeometryError::EmptyPath)?;
+        if paths
+            .iter()
+            .filter_map(|path| path.subpaths.get(subpath_index))
+            .any(|subpath| subpath.segments.is_empty() || subpath.closed != template.closed)
+        {
+            return Err(GeometryError::PathTopologyMismatch);
+        }
+        for path in &mut aligned {
+            if let Some(subpath) = path.subpaths.get_mut(subpath_index) {
+                *subpath = split_subpath_to_segment_count(subpath, segment_count)?;
+            } else {
+                path.subpaths
+                    .push(degenerate_subpath(template, segment_count));
+            }
+        }
+    }
+    Ok(aligned)
+}
+
 /// Interpolates matching cubic path topology component-wise.
 ///
 /// # Errors
@@ -1089,6 +1210,58 @@ mod tests {
         two.subpaths[0].segments.push(second_segment);
         assert_eq!(
             interpolate_cubic_path_v1(&one, &two, 0.5),
+            Err(GeometryError::PathTopologyMismatch)
+        );
+    }
+
+    #[test]
+    fn morph_chain_alignment_preserves_curves_and_pads_missing_subpaths() {
+        let one = line_path(PointV1 { x: 0.0, y: 0.0 }, &PointV1 { x: 8.0, y: 0.0 });
+        let mut two = one.clone();
+        let original = two.subpaths[0].clone();
+        two.subpaths[0].segments.push(CubicSegmentV1 {
+            control1: PointV1 { x: 9.0, y: 0.0 },
+            control2: PointV1 { x: 10.0, y: 0.0 },
+            end: PointV1 { x: 11.0, y: 0.0 },
+        });
+        two.subpaths.push(
+            line_path(PointV1 { x: 20.0, y: 3.0 }, &PointV1 { x: 22.0, y: 3.0 })
+                .subpaths
+                .remove(0),
+        );
+
+        let aligned =
+            align_cubic_path_morph_chain(&[one.clone(), two.clone(), one.clone()]).unwrap();
+
+        assert_eq!(aligned.len(), 3);
+        assert!(aligned.iter().all(|path| path.subpaths.len() == 2));
+        assert!(aligned.iter().all(|path| {
+            path.subpaths
+                .iter()
+                .map(|subpath| subpath.segments.len())
+                .collect::<Vec<_>>()
+                == [2, 1]
+        }));
+        assert_eq!(aligned[1], two);
+        assert_eq!(aligned[0].subpaths[0].start, one.subpaths[0].start);
+        assert_eq!(
+            aligned[0].subpaths[0].segments.last().unwrap().end,
+            PointV1 { x: 8.0, y: 0.0 }
+        );
+        assert_eq!(aligned[2], aligned[0]);
+        assert_ne!(aligned[0].subpaths[0], original);
+        let padded = &aligned[0].subpaths[1];
+        assert_eq!(padded.start, PointV1 { x: 20.0, y: 3.0 });
+        assert_eq!(padded.segments[0].end, padded.start);
+    }
+
+    #[test]
+    fn morph_chain_alignment_rejects_open_closed_mismatch() {
+        let open = line_path(PointV1 { x: 0.0, y: 0.0 }, &PointV1 { x: 1.0, y: 0.0 });
+        let mut closed = open.clone();
+        closed.subpaths[0].closed = true;
+        assert_eq!(
+            align_cubic_path_morph_chain(&[open, closed]),
             Err(GeometryError::PathTopologyMismatch)
         );
     }
