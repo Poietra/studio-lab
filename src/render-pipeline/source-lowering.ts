@@ -1052,6 +1052,12 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
       "Relative rotation requires the Runtime Trace source lowerer.",
     );
   }
+  if (operation.kind === "CreateMotion" && operation.orientToPath === true) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "CreateMotion path orientation is available in the canonical client preview and video export, but not Manim source export.",
+    );
+  }
   if (operation.kind === "CreateMotion" && operation.rotationDeltaRadians !== undefined) {
     throw new ProgramLoweringError(
       "operation-unsupported",

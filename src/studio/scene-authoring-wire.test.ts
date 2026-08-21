@@ -104,6 +104,34 @@ describe("Studio creation wire", () => {
     expect(studioMotionProjectionBatchKind([motion])).toBeNull();
   });
 
+  it("forwards path orientation only through the Studio creation authority", () => {
+    const entityId = "entity:Arrow";
+    const motion = followupProgram("orient:Arrow", {
+      controlOffset: { x: 30, y: -20 },
+      delta: { x: 100, y: 40 },
+      dependsOn: [],
+      easing: "smooth",
+      id: "orient:Arrow",
+      interval: { end: 2, start: 0 },
+      kind: "CreateMotion",
+      orientToPath: true,
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      targetEntityIds: [entityId],
+    });
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 4,
+      programs: [creationProgram("Arrow"), motion],
+    });
+    expect(command.programs[1]?.operations[0]).toMatchObject({
+      kind: "create-motion",
+      orientToPath: true,
+      targetEntityIds: [entityId],
+    });
+    expect(isExactStudioMotionProgramBatch([motion])).toBe(false);
+    expect(studioMotionProjectionBatchKind([motion])).toBeNull();
+  });
+
   it("normalizes Arrow as a first-class creation kind in apply and projection commands", () => {
     const programs = [creationProgram("Arrow")];
     const apply = buildStudioCreationEditCommand({

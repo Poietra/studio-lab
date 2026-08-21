@@ -222,6 +222,7 @@ function correlateMotionProjection(
       !insertion ||
       motion.transactionId !== program.transactionId ||
       motion.easing !== (operation.easing === "smooth" ? "manim-smooth" : "linear") ||
+      motion.orientToPath !== (operation.orientToPath === true) ||
       !Number.isFinite(motion.interval.start) ||
       !Number.isFinite(motion.interval.end) ||
       motion.interval.end <= motion.interval.start ||

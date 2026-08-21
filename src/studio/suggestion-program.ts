@@ -277,6 +277,7 @@ function motionOperation(
     interval: { end: operation.end, start: operation.start },
     kind: "CreateMotion",
     provenance: provenance(origin, ["language/direct-manipulation constraint", "new motion"]),
+    ...(operation.orientToPath === true ? { orientToPath: true } : {}),
     ...(operation.rotationDeltaRadians == null ? {} : { rotationDeltaRadians: operation.rotationDeltaRadians }),
     targetEntityIds: operation.targetObjectIds.map(
       (entityId, targetIndex) => replacements[targetIndex]?.targetEntityId ?? entityId,

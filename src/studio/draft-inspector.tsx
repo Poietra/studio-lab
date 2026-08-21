@@ -7,7 +7,7 @@ import {
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { cn } from "../lib/cn";
 import type { ProgramRecord } from "./model";
-import { setMotionSpinDegrees } from "./motion-clip-edit";
+import { setMotionOrientToPath, setMotionSpinDegrees } from "./motion-clip-edit";
 import { programExecutionCapabilities } from "./operation-registry";
 import { EquationContent } from "./prototype-rendering";
 
@@ -314,6 +314,16 @@ function StepEditor({
               <option value="smooth">Smooth</option>
               <option value="linear">Linear</option>
             </select>
+          </label>
+          <label className="mt-3 flex cursor-pointer items-center gap-2 text-[10px] text-zinc-400">
+            <input
+              aria-label="Follow path direction"
+              checked={step.orientToPath === true}
+              className="size-3.5 accent-sky-400"
+              onChange={(event) => onChange(setMotionOrientToPath(step, event.currentTarget.checked))}
+              type="checkbox"
+            />
+            Follow path direction
           </label>
           <label className="mt-2 block text-[10px] text-zinc-500">
             Relative spin (degrees)

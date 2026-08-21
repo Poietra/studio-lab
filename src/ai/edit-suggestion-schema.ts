@@ -70,6 +70,7 @@ const createMotionFields = {
   easing: z.enum(["linear", "smooth"]),
   end: z.number(),
   kind: z.literal("create-motion"),
+  orientToPath: z.boolean().nullish(),
   rotationDeltaRadians: z
     .number()
     .finite()
