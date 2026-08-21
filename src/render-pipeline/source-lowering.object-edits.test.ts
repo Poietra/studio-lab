@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../studio/operations";
 import {
+  createDirectManipulationGroupRotationProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationScaleProgram,
 } from "../studio/suggestion-program";
@@ -722,6 +723,61 @@ class GroupedEquation(Scene):
       kind: "known",
       value: { x: right.geometry.position.value.x + 30, y: right.geometry.position.value.y + 10 },
     });
+
+    const leftPosition = { x: left.geometry.position.value.x + 30, y: left.geometry.position.value.y + 10 };
+    const rightPosition = { x: right.geometry.position.value.x + 30, y: right.geometry.position.value.y + 10 };
+    const center = { x: (leftPosition.x + rightPosition.x) / 2, y: (leftPosition.y + rightPosition.y) / 2 };
+    const rotatePosition = (position: Readonly<{ x: number; y: number }>) => ({
+      x: center.x + (position.y - center.y),
+      y: center.y - (position.x - center.x),
+    });
+    const rotationValidation = createDirectManipulationGroupRotationProgram({
+      angleRadians: Math.PI / 2,
+      capturedPlayhead: 0,
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: leftId, toPosition: rotatePosition(leftPosition) },
+        { entityId: rightId, toPosition: rotatePosition(rightPosition) },
+      ],
+      transactionId: "rotate-imported-selection",
+    });
+    if (rotationValidation.kind !== "valid") throw new Error(JSON.stringify(rotationValidation.issues));
+    const rotated = lowerCanonicalProgramBatchSource(
+      groupSource,
+      request(validation.program, [
+        { entityId: leftId, sourceVariable: "left" },
+        { entityId: rightId, sourceVariable: "right" },
+      ]),
+      [
+        { program: validation.program, sourceAnchor: 0 },
+        { program: secondValidation.program, sourceAnchor: 0 },
+        { program: rotationValidation.program, sourceAnchor: 0 },
+      ],
+      frame,
+      null,
+      null,
+      { snapshotAuthorizedSourceBoundRotation: true },
+    );
+    const rotatedReimported = importManimScene(rotated.source, "examples/relativity.py", "GroupedEquation", frame);
+
+    expect(rotated.insertedCode.match(/\.rotate\(/g)).toHaveLength(2);
+    expect(rotated.insertedCode).toContain("left.rotate(");
+    expect(rotated.insertedCode).toContain("right.rotate(");
+    expect(rotated.insertedCode).toContain('# poietra:transaction "rotate-imported-selection"');
+    expect(rotatedReimported?.runtimeSceneState.objectGraph.entities[leftId]?.geometry?.position).toEqual({
+      kind: "known",
+      value: rotatePosition(leftPosition),
+    });
+    expect(rotatedReimported?.runtimeSceneState.objectGraph.entities[rightId]?.geometry?.position).toEqual({
+      kind: "known",
+      value: rotatePosition(rightPosition),
+    });
+    for (const entityId of [leftId, rightId]) {
+      const rotation = rotatedReimported?.runtimeSceneState.propertyChannels[`${entityId}/rotation`]?.samples.at(-1);
+      expect(rotation).toMatchObject({ from: 0, relative: true });
+      expect(rotation?.value).toBeCloseTo(Math.PI / 2);
+    }
   });
 
   it("round-trips viewport positions as world-space move_to calls through a non-origin camera", () => {

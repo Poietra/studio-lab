@@ -189,6 +189,7 @@ export async function lowerManimRenderRequest({
   );
   let validatedPrograms: readonly SceneEdit[];
   let timelineTransforms: readonly StudioTimelineEditTransformV1[] | null = null;
+  let snapshotAuthorizedSourceBoundRotation = false;
   if (isSceneDurationProgramBatch(sourceOrderedPrograms)) {
     try {
       const projected = await projectTimelineProgramBatch(
@@ -234,6 +235,11 @@ export async function lowerManimRenderRequest({
     // Rust owns Scene admission and lifetime semantics. Python alias and
     // reference safety remain in the source lowerer below.
     validatedPrograms = sourceOrderedPrograms;
+    snapshotAuthorizedSourceBoundRotation =
+      isStaticRootTransformBatch &&
+      sourceOrderedPrograms.some((program) =>
+        program.operations.some((operation) => operation.kind === "AnimateProperty" && operation.key === "rotation"),
+      );
   } else {
     if (containsSceneDurationOperation) {
       throw new HttpError(
@@ -294,6 +300,7 @@ export async function lowerManimRenderRequest({
       frame,
       incoming,
       timelineTransforms,
+      { snapshotAuthorizedSourceBoundRotation },
     );
     return { lowered, renderRequest };
   } catch (error) {

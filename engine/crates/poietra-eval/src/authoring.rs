@@ -711,6 +711,7 @@ fn project_static_root_motion_edits(
                         ))
                         .is_none() => {}
                 StaticRootTransformOperationKind::Position { .. }
+                | StaticRootTransformOperationKind::Rotation { .. }
                 | StaticRootTransformOperationKind::UniformScale { .. }
                 | StaticRootTransformOperationKind::Resize { .. }
                 | StaticRootTransformOperationKind::PersistentRemove { .. }
