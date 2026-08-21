@@ -30,15 +30,57 @@ export type SelectionResizeGesture = Readonly<{
 }>;
 
 type CreationRotationAuthority = Readonly<{
-  entities: readonly Readonly<{ entityId: string }>[];
+  entities: readonly Readonly<{
+    createdLifetime?: Readonly<{ start: number }>;
+    entityId: string;
+    initialRotation?: number;
+  }>[];
   motions?: readonly Readonly<{ targetEntityId: string }>[];
   mutations: readonly Readonly<{
     entityId: string;
+    interval?: Readonly<{ start: number }>;
     kind: string;
     to?: number;
     transactionId?: string;
   }>[];
 }>;
+
+const ROTATION_NOOP_EPSILON = 1e-12;
+const TIMELINE_ANCHOR_EPSILON = 0.0005;
+
+function projectedRotationIsNoop(angleRadians: number) {
+  return Math.abs(Math.atan2(Math.sin(angleRadians), Math.cos(angleRadians))) <= ROTATION_NOOP_EPSILON;
+}
+
+function projectedRotationLanes(projection: CreationRotationAuthority) {
+  const lanes = new Map<string, "base" | "instant">();
+  for (const entity of projection.entities) {
+    if (
+      typeof entity.initialRotation === "number" &&
+      Number.isFinite(entity.initialRotation) &&
+      !projectedRotationIsNoop(entity.initialRotation)
+    ) {
+      lanes.set(entity.entityId, "base");
+    }
+  }
+  for (const mutation of projection.mutations) {
+    if (mutation.kind !== "rotation" || typeof mutation.to !== "number" || !Number.isFinite(mutation.to)) continue;
+    if (projectedRotationIsNoop(mutation.to)) {
+      lanes.delete(mutation.entityId);
+      continue;
+    }
+    const entity = projection.entities.find(({ entityId }) => entityId === mutation.entityId);
+    const createdAt = entity?.createdLifetime?.start;
+    const rotatedAt = mutation.interval?.start;
+    lanes.set(
+      mutation.entityId,
+      createdAt !== undefined && rotatedAt !== undefined && rotatedAt > createdAt + TIMELINE_ANCHOR_EPSILON
+        ? "instant"
+        : "base",
+    );
+  }
+  return lanes;
+}
 
 function validSelectionBounds(bounds: PreparedSelectionResizeBasis["bounds"]) {
   return (
@@ -96,45 +138,35 @@ export function groupResizeEligibleCreationEntityIds(
   projection: CreationRotationAuthority | null | undefined,
 ): ReadonlySet<string> {
   if (!projection) return new Set();
-  const positionsByTransaction = new Map<string, Set<string>>();
-  const rotationsByTransaction = new Map<string, Set<string>>();
-  for (const mutation of projection.mutations) {
-    if (!mutation.transactionId) continue;
-    const target =
-      mutation.kind === "position"
-        ? positionsByTransaction
-        : mutation.kind === "rotation"
-          ? rotationsByTransaction
-          : null;
-    if (!target) continue;
-    const entityIds = target.get(mutation.transactionId) ?? new Set<string>();
-    entityIds.add(mutation.entityId);
-    target.set(mutation.transactionId, entityIds);
-  }
-  const admittedGroupRotationTransactions = new Set(
-    [...rotationsByTransaction].flatMap(([transactionId, rotationEntityIds]) => {
-      const positionEntityIds = positionsByTransaction.get(transactionId);
-      return rotationEntityIds.size >= 2 &&
-        positionEntityIds &&
-        [...rotationEntityIds].every((entityId) => positionEntityIds.has(entityId))
-        ? [transactionId]
-        : [];
-    }),
-  );
-  const unsupportedRotatedEntityIds = new Set(
-    projection.mutations.flatMap((mutation) =>
-      mutation.kind === "rotation" &&
-      (mutation.to ?? Number.NaN) !== 0 &&
-      (!mutation.transactionId || !admittedGroupRotationTransactions.has(mutation.transactionId))
-        ? [mutation.entityId]
-        : [],
-    ),
-  );
   const motionTargetEntityIds = new Set(projection.motions?.map(({ targetEntityId }) => targetEntityId) ?? []);
+  const rotationLanes = projectedRotationLanes(projection);
   return new Set(
     projection.entities
-      .filter(({ entityId }) => !unsupportedRotatedEntityIds.has(entityId) && !motionTargetEntityIds.has(entityId))
+      .filter(({ entityId }) => !motionTargetEntityIds.has(entityId) && rotationLanes.get(entityId) !== "base")
       .map(({ entityId }) => entityId),
+  );
+}
+
+/** Uses the final rotation already admitted by the Rust creation planner to
+ * select the canonical uniform-scale resize lane. Shape-aware edge resize is
+ * intentionally unavailable until the core owns local-axis resize. */
+export function uniformScaleResizeOnlyCreationEntityIds(
+  projection: CreationRotationAuthority | null | undefined,
+): ReadonlySet<string> {
+  if (!projection) return new Set();
+  return new Set(
+    [...projectedRotationLanes(projection)].flatMap(([entityId, lane]) => (lane === "instant" ? [entityId] : [])),
+  );
+}
+
+/** Keeps handles hidden for base-rotation histories that the current Rust
+ * planner cannot combine with a later instant transform. */
+export function resizeUnavailableCreationEntityIds(
+  projection: CreationRotationAuthority | null | undefined,
+): ReadonlySet<string> {
+  if (!projection) return new Set();
+  return new Set(
+    [...projectedRotationLanes(projection)].flatMap(([entityId, lane]) => (lane === "base" ? [entityId] : [])),
   );
 }
 

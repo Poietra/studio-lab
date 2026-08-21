@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   createSelectionResizeGesture,
+  groupResizeEligibleCreationEntityIds,
   importedGroupResizeHistoryIsSupported,
   resizeSelectionAtPoint,
+  resizeUnavailableCreationEntityIds,
   selectionResizeCommandTargets,
+  uniformScaleResizeOnlyCreationEntityIds,
 } from "./selection-resize-gesture";
 
 const positionMutation = (transactionId: string, entityId: string) => ({
@@ -37,6 +40,64 @@ const rotationMutation = (transactionId: string, entityId: string) => ({
 });
 
 describe("selection resize gesture", () => {
+  it("routes only non-identity Rust-projected rotation through uniform resize", () => {
+    const entities = [
+      { createdLifetime: { start: 0 }, entityId: "rectangle", initialRotation: 0 },
+      { createdLifetime: { start: 0 }, entityId: "circle", initialRotation: 0 },
+      { createdLifetime: { start: 0 }, entityId: "base-rotated", initialRotation: 0 },
+      { createdLifetime: { start: 0 }, entityId: "near-base", initialRotation: 0 },
+      { createdLifetime: { start: 0 }, entityId: "after-boundary", initialRotation: 0 },
+    ];
+    const mutations = [
+      { entityId: "rectangle", interval: { start: 0.4 }, kind: "rotation", to: Math.PI / 4 },
+      { entityId: "circle", interval: { start: 0.4 }, kind: "rotation", to: Math.PI * 2 },
+      { entityId: "base-rotated", interval: { start: 0 }, kind: "rotation", to: Math.PI / 2 },
+      { entityId: "near-base", interval: { start: 0.0001 }, kind: "rotation", to: Math.PI / 2 },
+      { entityId: "after-boundary", interval: { start: 0.0006 }, kind: "rotation", to: Math.PI / 2 },
+    ];
+    const eligible = uniformScaleResizeOnlyCreationEntityIds({
+      entities,
+      mutations,
+    });
+
+    expect([...eligible]).toEqual(["rectangle", "after-boundary"]);
+    expect([...resizeUnavailableCreationEntityIds({ entities, mutations })]).toEqual(["base-rotated", "near-base"]);
+  });
+
+  it("keeps individually rotated Studio-created members eligible for canonical group transforms", () => {
+    const entities = [
+      { createdLifetime: { start: 0 }, entityId: "left", initialRotation: 0 },
+      { createdLifetime: { start: 0 }, entityId: "right", initialRotation: 0 },
+    ];
+    const eligible = groupResizeEligibleCreationEntityIds({
+      entities,
+      mutations: [
+        {
+          entityId: "left",
+          interval: { start: 0.4 },
+          kind: "rotation",
+          to: Math.PI / 4,
+          transactionId: "rotate-left",
+        },
+      ],
+    });
+
+    expect([...eligible]).toEqual(["left", "right"]);
+    expect(
+      groupResizeEligibleCreationEntityIds({
+        entities,
+        mutations: [{ entityId: "left", interval: { start: 0 }, kind: "rotation", to: Math.PI / 4 }],
+      }),
+    ).toEqual(new Set(["right"]));
+    expect(
+      groupResizeEligibleCreationEntityIds({
+        entities,
+        motions: [{ targetEntityId: "left" }],
+        mutations: [],
+      }),
+    ).toEqual(new Set(["right"]));
+  });
+
   it("admits the first imported group resize before any static-root edit exists", () => {
     expect(importedGroupResizeHistoryIsSupported(null, null)).toBe(true);
     expect(importedGroupResizeHistoryIsSupported(undefined, null)).toBe(false);
