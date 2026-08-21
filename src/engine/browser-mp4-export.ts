@@ -20,15 +20,24 @@ import {
   type FragmentMaterialRegistryV1,
 } from "./fragment-material-registry";
 
-export const DEFAULT_BROWSER_MP4_EXPORT_PROFILE: ExportProfileV1 = parseExportProfileV1({
-  codec: "h264-mp4",
-  colorContractVersion: 1,
+export function browserMp4ExportProfileV1(
+  selection: Pick<ExportProfileV1, "frameRate" | "resolution">,
+): ExportProfileV1 {
+  return parseExportProfileV1({
+    codec: "h264-mp4",
+    colorContractVersion: 1,
+    frameRate: selection.frameRate,
+    maxDurationSeconds: MAX_EXPORT_DURATION_SECONDS,
+    maxOutputBytes: MAX_EXPORT_OUTPUT_BYTES,
+    resolution: selection.resolution,
+    schema: "poietra.export-profile",
+    version: 1,
+  });
+}
+
+export const DEFAULT_BROWSER_MP4_EXPORT_PROFILE = browserMp4ExportProfileV1({
   frameRate: 30,
-  maxDurationSeconds: MAX_EXPORT_DURATION_SECONDS,
-  maxOutputBytes: MAX_EXPORT_OUTPUT_BYTES,
   resolution: "854x480",
-  schema: "poietra.export-profile",
-  version: 1,
 });
 
 export class BrowserMp4ExportRefused extends Error {
