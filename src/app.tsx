@@ -4475,12 +4475,16 @@ export function App({
       setIsPlaying(false);
       return null;
     }
-    const sourceAnchor = isStudioNativeWorkspaceScene(activeEditorScene)
-      ? {
-          sourceTime: clamp(currentTime, 0, input.scene.duration),
-          workingTime: clamp(currentTime, 0, input.scene.duration),
-        }
-      : latestSafeSourceAnchor(input.sourcePrograms, activeEditorScene.anchors, currentTime);
+    const nativeSourceTime = isStudioNativeWorkspaceScene(activeEditorScene)
+      ? clamp(workingTimeToSourceTimeWithoutTimeline(input.sourcePrograms, currentTime), 0, input.scene.duration)
+      : null;
+    const sourceAnchor =
+      nativeSourceTime !== null
+        ? {
+            sourceTime: nativeSourceTime,
+            workingTime: sourceTimeToWorkingTimeWithoutTimeline(input.sourcePrograms, nativeSourceTime),
+          }
+        : latestSafeSourceAnchor(input.sourcePrograms, activeEditorScene.anchors, currentTime);
     const runtimePresenceAuthority = input.allowSyntheticPreviewAnchor
       ? runtimeTraceEditCandidateFor(input.targetEntityIds?.length === 1 ? input.targetEntityIds[0] : null)
       : null;
