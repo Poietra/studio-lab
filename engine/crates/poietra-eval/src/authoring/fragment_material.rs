@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use poietra_scene_ir::{
-    ContractVersionV1, FragmentMaterialV1, ProvenanceOriginV1, ProvenanceRecordV1,
-    RenderCompositingV1, SceneAppearanceV1, SceneCapabilityV1, SceneIrBundleV1, SceneSourceV1,
+    AnimationChannelV1, ContractVersionV1, FragmentMaterialV1, KeyframeV1, ProvenanceOriginV1,
+    ProvenanceRecordV1, RenderCompositingV1, SceneAppearanceV1, SceneCapabilityV1, SceneIrBundleV1,
+    SceneSourceV1, VectorAppearanceValueV1,
 };
 use serde::Deserialize;
 
@@ -46,6 +47,54 @@ fn fragment_material_capability_flags(scene: &poietra_scene_ir::SceneIrV1) -> (b
         }
     }
     (has_fragment_material, has_png_image)
+}
+
+fn fragment_materials_share_animation_identity(
+    left: &FragmentMaterialV1,
+    right: &FragmentMaterialV1,
+) -> bool {
+    left.shader_id == right.shader_id
+        && left.revision == right.revision
+        && left.texture == right.texture
+        && left.parameters.len() == right.parameters.len()
+}
+
+fn apply_fragment_material_to_appearance_keyframes(
+    keyframes: &mut [KeyframeV1<VectorAppearanceValueV1>],
+    material: Option<&FragmentMaterialV1>,
+) -> bool {
+    let preserves_parameter_animation = material.is_some_and(|material| {
+        keyframes
+            .first()
+            .and_then(|keyframe| keyframe.value.fill.as_ref())
+            .and_then(|fill| fill.fragment_material.as_ref())
+            == Some(material)
+            && keyframes.iter().all(|keyframe| {
+                keyframe
+                    .value
+                    .fill
+                    .as_ref()
+                    .and_then(|fill| fill.fragment_material.as_ref())
+                    .is_some_and(|candidate| {
+                        fragment_materials_share_animation_identity(candidate, material)
+                    })
+            })
+    });
+    if preserves_parameter_animation {
+        return false;
+    }
+
+    let mut changed = false;
+    for keyframe in keyframes {
+        let Some(fill) = &mut keyframe.value.fill else {
+            continue;
+        };
+        if fill.fragment_material.as_ref() != material {
+            fill.fragment_material = material.cloned();
+            changed = true;
+        }
+    }
+    changed
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -134,8 +183,27 @@ impl EngineSessionV1 {
             else {
                 return Err(ApplyStudioFragmentMaterialsError::UnsupportedTarget);
             };
-            fill.fragment_material = assignment.material;
+            fill.fragment_material.clone_from(&assignment.material);
             entity.provenance_id.clone_from(&provenance_id);
+            for channel in &mut candidate.scene.animation_channels {
+                let AnimationChannelV1::VectorAppearance {
+                    entity_id,
+                    keyframes,
+                    provenance_id: channel_provenance_id,
+                    ..
+                } = channel
+                else {
+                    continue;
+                };
+                if *entity_id == assignment.entity_id
+                    && apply_fragment_material_to_appearance_keyframes(
+                        keyframes,
+                        assignment.material.as_ref(),
+                    )
+                {
+                    channel_provenance_id.clone_from(&provenance_id);
+                }
+            }
         }
         let (has_fragment_material, has_png_image) =
             fragment_material_capability_flags(&candidate.scene);
@@ -227,6 +295,94 @@ mod tests {
         assert_eq!(
             non_linear_session.scene().source.revision_hash(),
             BASE_REVISION
+        );
+    }
+
+    #[test]
+    fn assigns_the_same_material_to_existing_appearance_keyframes() {
+        let mut input = imported_bundle();
+        let target = input
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        let SceneAppearanceV1::Vector { fill, stroke, .. } = &target.appearance else {
+            panic!("the fixture target must have vector appearance");
+        };
+        let mut first_fill = fill.clone().unwrap();
+        first_fill.color.alpha = 0.4;
+        let mut last_fill = fill.clone().unwrap();
+        last_fill.color.alpha = 0.8;
+        input
+            .scene
+            .required_capabilities
+            .push(SceneCapabilityV1::VectorAppearanceAnimation);
+        input
+            .scene
+            .animation_channels
+            .push(AnimationChannelV1::VectorAppearance {
+                entity_id: "later".to_owned(),
+                id: "appearance:later".to_owned(),
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: 0.0,
+                        easing_to_next: Some(poietra_scene_ir::EasingV1::Linear {}),
+                        value: VectorAppearanceValueV1 {
+                            fill: Some(first_fill),
+                            stroke: stroke.clone(),
+                        },
+                    },
+                    KeyframeV1 {
+                        at: input.scene.duration,
+                        easing_to_next: None,
+                        value: VectorAppearanceValueV1 {
+                            fill: Some(last_fill),
+                            stroke: stroke.clone(),
+                        },
+                    },
+                ],
+                provenance_id: target.provenance_id.clone(),
+            });
+
+        let mut session = EngineSessionV1::new(input).unwrap();
+        let bundle = session
+            .apply_studio_fragment_materials(ApplyStudioFragmentMaterialsCommand {
+                assignments: vec![assignment()],
+                expected_base_revision: BASE_REVISION.to_owned(),
+                next_revision: NEXT_REVISION.to_owned(),
+            })
+            .unwrap();
+
+        let material = assignment().material.unwrap();
+        let appearance_material = bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::VectorAppearance {
+                    entity_id,
+                    keyframes,
+                    ..
+                } if entity_id == "later" => Some(
+                    keyframes
+                        .iter()
+                        .map(|keyframe| {
+                            keyframe
+                                .value
+                                .fill
+                                .as_ref()
+                                .and_then(|fill| fill.fragment_material.as_ref())
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                _ => None,
+            })
+            .unwrap();
+        assert!(
+            appearance_material
+                .into_iter()
+                .all(|candidate| candidate == Some(&material))
         );
     }
 }
