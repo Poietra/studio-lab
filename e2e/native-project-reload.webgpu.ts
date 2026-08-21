@@ -255,7 +255,7 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
 
     const assets = page.getByRole("region", { name: "Assets" });
     await expect(assets.getByRole("button", { name: "+ Import PNG" })).toBeEnabled();
-    await assets.locator("input[type=file]").setInputFiles([
+    await assets.locator('input[accept="image/png,.png"]').setInputFiles([
       { buffer: Buffer.from(PNG), mimeType: "image/png", name: "first.png" },
       { buffer: Buffer.from(PNG_2), mimeType: "image/png", name: "second.png" },
     ]);
@@ -342,6 +342,110 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
       ),
     ).toBe(false);
     projectId = null;
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
+test("imports one canonical SVG path and preserves editing, WGSL material, reload, and MP4 export", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "SVG path fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    const assets = page.getByRole("region", { name: "Assets" });
+    const svgInput = assets.locator('input[accept="image/svg+xml,.svg"]');
+    await expect(assets.getByRole("button", { name: "+ Import SVG" })).toBeEnabled();
+
+    await svgInput.setInputFiles({
+      buffer: Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 80"><path d="M10 70 L60 10 Q90 5 110 30 C100 60 80 75 10 70 Z M45 45 L60 25 L75 45 Z" fill="#38bdf8" fill-rule="evenodd" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/></svg>',
+      ),
+      mimeType: "image/svg+xml",
+      name: "diagram.svg",
+    });
+    const vectors = page.getByRole("list", { name: "Project vectors" });
+    await expect(vectors.getByRole("listitem")).toHaveCount(1);
+    await expect(vectors).toContainText("diagram.svg");
+    await vectors.getByRole("button", { name: "+ Add" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const vector = page.getByRole("button", { name: "Move insert-0", exact: true });
+    await expect(vector).toBeVisible();
+    const vectorId = await vector.getAttribute("data-studio-entity");
+    if (!vectorId) throw new Error("The SVG path did not expose its Studio entity id.");
+    const wrapper = page.locator(`[data-studio-entity-wrapper="${vectorId}"]`);
+    const initialDimensions = await preparedDimensions(wrapper);
+    expect(initialDimensions.width).toBeGreaterThan(2);
+    expect(initialDimensions.height).toBeGreaterThan(1);
+
+    await page.getByRole("button", { name: "Set position" }).click();
+    await dragBy(page, vector, { x: 40, y: -20 });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const scaleBefore = Number(await wrapper.getAttribute("data-studio-entity-scale"));
+    await dragBy(page, page.getByRole("button", { name: "Resize insert-0 from bottom-right corner" }), {
+      x: 28,
+      y: 20,
+    });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect
+      .poll(async () => Number(await wrapper.getAttribute("data-studio-entity-scale")))
+      .toBeGreaterThan(scaleBefore);
+    await page.getByRole("button", { name: "Rotate insert-0 counterclockwise by 15 degrees" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    const opacity = page.getByRole("spinbutton", { name: "Opacity insert-0" });
+    await opacity.fill("0.65");
+    await opacity.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(opacity).toHaveValue("0.65");
+
+    const wavePreset = page.getByText("Wave preset").locator("xpath=../..");
+    await wavePreset.getByRole("button", { name: "Create & apply" }).click();
+    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await svgInput.setInputFiles({
+      buffer: Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><path d="M10 50 Q50 0 90 50" fill="none" stroke="#f59e0b" stroke-width="5" stroke-linecap="round"/></svg>',
+      ),
+      mimeType: "image/svg+xml",
+      name: "stroke.svg",
+    });
+    await expect(vectors.getByRole("listitem")).toHaveCount(2);
+    await vectors
+      .getByRole("listitem")
+      .filter({ hasText: "stroke.svg" })
+      .getByRole("button", { name: "+ Add" })
+      .click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const draw = page.getByRole("button", { name: /^Add Draw entrance for / });
+    await expect(draw).toHaveAttribute("aria-disabled", "false");
+    await draw.click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.locator("[data-draw-in-clip]")).toHaveCount(1);
+
+    await page
+      .locator(`[data-timeline-track="${vectorId}"]`)
+      .getByRole("button", { name: "insert-0", exact: true })
+      .click();
+    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open SVG path fixture workspace" }).click();
+    await expect(page.getByRole("list", { name: "Project vectors" })).toContainText("diagram.svg");
+    await expect(page.locator(`[data-studio-entity="${vectorId}"]`)).toBeVisible();
+    await page
+      .locator(`[data-timeline-track="${vectorId}"]`)
+      .getByRole("button", { name: "insert-0", exact: true })
+      .click();
+    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    await exportLocalMp4(page);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
