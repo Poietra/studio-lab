@@ -242,6 +242,10 @@ import {
 import { projectRuntimeSceneToSourceTimeline as projectRuntimeSceneToSourceTimelineWithProjection } from "./studio/source-timeline";
 import { studioStarterCompositionEntities } from "./studio/starter-composition";
 import { preparedGeometryBounds, verifiedPreviewGeometryForStudioEntity } from "./studio/studio-canvas";
+import {
+  type StudioEmptyWorkspaceEntityType,
+  studioNativeWorkspaceOnboardingAvailable,
+} from "./studio/studio-empty-workspace";
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
@@ -2176,6 +2180,11 @@ export function App({
       ),
     workspaceProjection?.editableEntities ?? [],
   );
+  const nativeWorkspaceOnboardingAvailable = studioNativeWorkspaceOnboardingAvailable({
+    authoredObjectCount: editableEntities.length,
+    draftActive: draftEdit !== null,
+    nativeSceneActive,
+  });
   const creationSourceAnchors = new Map(
     (workspaceCreationProjection?.entities ?? []).flatMap((entity) => {
       const owner = previewEditRecords.find(({ program }) => program.transactionId === entity.transactionId);
@@ -3732,6 +3741,12 @@ export function App({
   function beginInlineTextCreation(point: Point) {
     setIsPlaying(false);
     setInlineTextEditor({ initialValue: insertValue, kind: "create", point });
+  }
+
+  function createEmptyWorkspaceEntity(type: StudioEmptyWorkspaceEntityType) {
+    const position = { x: 320, y: 180 };
+    setIsPlaying(false);
+    void insertEntitiesAt(position, [{ content: defaultEntityContent(type, ""), position, type }]);
   }
 
   function beginInlineTextEdit(entityId: string, point: Point) {
@@ -7124,10 +7139,15 @@ export function App({
                 if (insertTool === "Text") beginInlineTextCreation(point);
                 else void insertEntitiesAt(point);
               }}
-              onCreateStarterComposition={() => {
-                setIsPlaying(false);
-                void insertEntitiesAt({ x: 320, y: 180 }, studioStarterCompositionEntities());
-              }}
+              onCreateEmptyWorkspaceEntity={nativeWorkspaceOnboardingAvailable ? createEmptyWorkspaceEntity : undefined}
+              onCreateStarterComposition={
+                !nativeSceneActive || nativeWorkspaceOnboardingAvailable
+                  ? () => {
+                      setIsPlaying(false);
+                      void insertEntitiesAt({ x: 320, y: 180 }, studioStarterCompositionEntities());
+                    }
+                  : undefined
+              }
               onEntityKeyDown={nudgeEntity}
               onEntityPointerCancel={cancelEntityDrag}
               onEntityPointerDown={beginEntityDrag}

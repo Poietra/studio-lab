@@ -18,6 +18,7 @@ import {
   type ResizeHandleDirection,
   resizeKindForType,
 } from "./shape-resize";
+import { StudioEmptyWorkspace, type StudioEmptyWorkspaceEntityType } from "./studio-empty-workspace";
 import { StudioInlineTextEditor, type StudioInlineTextEditorSession } from "./studio-inline-text-editor";
 import { StudioMotionOverlay } from "./studio-motion-overlay";
 import {
@@ -68,6 +69,7 @@ export type StudioCanvasProps = Readonly<{
   lockedEntityIds?: ReadonlySet<string>;
   motionPaths: readonly StudioMotionPath[];
   onCanvasPlace: (point: Point) => void;
+  onCreateEmptyWorkspaceEntity?: (type: StudioEmptyWorkspaceEntityType) => void;
   onCreateStarterComposition?: () => void;
   onEntityKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string) => void;
   onEntityPointerCancel: (event: PointerEvent<HTMLButtonElement>) => void;
@@ -570,6 +572,7 @@ export function StudioCanvas({
   lockedEntityIds = new Set(),
   motionPaths,
   onCanvasPlace,
+  onCreateEmptyWorkspaceEntity,
   onCreateStarterComposition,
   onEntityKeyDown,
   onEntityPointerCancel,
@@ -620,6 +623,13 @@ export function StudioCanvas({
   const showingCanvasPixels = presentingCanvasPixels;
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
+  const emptyInteractiveCanvas =
+    entities.length === 0 &&
+    showingCanvasPixels &&
+    preview?.interactionAuthority.kind === "interactive" &&
+    !readOnly &&
+    !boundaryActive &&
+    inlineTextEditor === null;
   const runtimeTraceEditActive =
     presentingCanvasPixels &&
     preview?.interactionAuthority.kind === "bounded-interactive" &&
@@ -837,13 +847,12 @@ export function StudioCanvas({
             ref={preview.attachCanvas}
           />
         ) : null}
-        {onCreateStarterComposition &&
-        entities.length === 0 &&
-        showingCanvasPixels &&
-        preview?.interactionAuthority.kind === "interactive" &&
-        !readOnly &&
-        !boundaryActive &&
-        inlineTextEditor === null ? (
+        {onCreateEmptyWorkspaceEntity && emptyInteractiveCanvas ? (
+          <StudioEmptyWorkspace
+            onCreateEntity={onCreateEmptyWorkspaceEntity}
+            onCreateStarterComposition={onCreateStarterComposition}
+          />
+        ) : onCreateStarterComposition && emptyInteractiveCanvas ? (
           <div className="absolute left-1/2 top-1/2 z-30 w-72 -translate-x-1/2 -translate-y-1/2 border border-zinc-700 bg-zinc-950/95 p-4 text-center shadow-lg">
             <p className="text-sm font-medium text-zinc-100">Start with an editable title card</p>
             <p className="mt-1 text-pretty text-xs leading-5 text-zinc-400">

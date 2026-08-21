@@ -781,6 +781,42 @@ describe("StudioCanvas retained preview layer", () => {
     ).not.toContain("Add starter composition");
   });
 
+  it("shows native empty-workspace actions only on an empty interactive canvas", () => {
+    const presented = previewView({
+      frame: {
+        packetId: "native-empty-canvas",
+        revision: "a".repeat(64),
+        sampleTime: 0,
+        viewport: { heightPx: 360, widthPx: 640 },
+      },
+      phase: "presented",
+    });
+    const emptyMarkup = renderToStaticMarkup(
+      <StudioCanvas {...baseProps()} entities={[]} onCreateEmptyWorkspaceEntity={vi.fn()} preview={presented} />,
+    );
+
+    expect(emptyMarkup).toContain("data-studio-empty-workspace");
+    expect(emptyMarkup).toContain("Add Text");
+    expect(emptyMarkup).toContain("Add Circle");
+    expect(emptyMarkup).toContain("Add Rectangle");
+    expect(
+      renderToStaticMarkup(
+        <StudioCanvas {...baseProps()} onCreateEmptyWorkspaceEntity={vi.fn()} preview={presented} />,
+      ),
+    ).not.toContain("data-studio-empty-workspace");
+    expect(
+      renderToStaticMarkup(
+        <StudioCanvas
+          {...baseProps()}
+          entities={[]}
+          onCreateEmptyWorkspaceEntity={vi.fn()}
+          preview={presented}
+          readOnly
+        />,
+      ),
+    ).not.toContain("data-studio-empty-workspace");
+  });
+
   it("exposes the whole-Scene failure without invoking a DOM renderer", () => {
     const markup = renderToStaticMarkup(
       <StudioCanvas
