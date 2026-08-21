@@ -16,7 +16,7 @@ use super::motion::{
     ApplyStudioMotionEditError, PlannedSceneMotion, PlannedStudioMotion, StudioMotionEasing,
     StudioMotionPlan, StudioMotionProjection, StudioMotionProjectionInsertion,
     StudioMotionProjectionTarget, StudioProjectedMotion, append_planned_scene_motions,
-    authored_motion_easing, project_studio_motion_plan,
+    authored_motion_easing, motion_easing, project_studio_motion_plan,
 };
 use super::presence::{PersistentSceneRemoval, apply_persistent_scene_removals};
 use super::timeline::{SceneTimelineInsertion, insert_scene_time, shift_interval_for_insertion};
@@ -341,6 +341,8 @@ pub enum StudioCreationOperationKind {
         control_offset: PointV1,
         delta: PointV1,
         easing: StudioMotionEasing,
+        #[serde(default)]
+        rotation_delta_radians: Option<f64>,
         target_entity_ids: Vec<String>,
     },
     Group {
@@ -2609,6 +2611,7 @@ fn plan_studio_creation_edits(
     }
 
     let mut planned_motions = Vec::new();
+    let mut spun_entity_ids = BTreeSet::new();
     for program_index in followup_programs {
         let program = &programs[program_index];
         let contains_motion = program.operations.iter().any(|operation| {
@@ -2628,6 +2631,7 @@ fn plan_studio_creation_edits(
             }
             let operations = closed_studio_creation_motion_operations(program, base_duration)
                 .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let operation_count = operations.len();
             let mut parallel_bucket_start: Option<f64> = None;
             let mut parallel_targets = BTreeSet::new();
             for operation in operations {
@@ -2635,6 +2639,7 @@ fn plan_studio_creation_edits(
                     control_offset,
                     delta,
                     easing,
+                    rotation_delta_radians,
                     target_entity_ids,
                 } = &operation.kind
                 else {
@@ -2647,6 +2652,17 @@ fn plan_studio_creation_edits(
                         && control_offset.y == 0.0
                         && delta.x == 0.0
                         && delta.y == 0.0)
+                {
+                    return Err(ProjectStudioCreationEditError::Unsupported);
+                }
+                let spin_requested = rotation_delta_radians.is_some();
+                let planned_rotation_delta = rotation_delta_radians
+                    .as_ref()
+                    .copied()
+                    .filter(|delta| delta.is_finite() && delta.abs() > 1.0e-9);
+                if spin_requested != planned_rotation_delta.is_some()
+                    || planned_rotation_delta.is_some()
+                        && (operation_count != 1 || target_entity_ids.len() != 1)
                 {
                     return Err(ProjectStudioCreationEditError::Unsupported);
                 }
@@ -2672,20 +2688,68 @@ fn plan_studio_creation_edits(
                         return Err(ProjectStudioCreationEditError::Unsupported);
                     }
                 }
+                let projected_interval = IntervalV1 {
+                    end: operation.interval.end + timeline.offsets[program_index],
+                    start: operation.interval.start + timeline.offsets[program_index],
+                };
                 planned_motions.push(PlannedStudioMotion {
                     base_interval: operation.interval.clone(),
                     control_offset: control_offset.clone(),
                     delta: delta.clone(),
                     easing: *easing,
-                    interval: IntervalV1 {
-                        end: operation.interval.end + timeline.offsets[program_index],
-                        start: operation.interval.start + timeline.offsets[program_index],
-                    },
+                    interval: projected_interval.clone(),
                     operation_id: operation.id.clone(),
                     parallel: program.requested_execution == SceneEditExecution::Parallel,
                     target_entity_ids: target_entity_ids.clone(),
                     transaction_id: program.transaction_id.clone(),
                 });
+                if let Some(rotation_delta_radians) = planned_rotation_delta {
+                    let entity_id = &target_entity_ids[0];
+                    let state = entities
+                        .iter_mut()
+                        .find(|state| state.spec.id == *entity_id)
+                        .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                    if !spun_entity_ids.insert(entity_id.clone())
+                        || !state.rotation_keyframes.is_empty()
+                        || !state.uniform_scale_keyframes.is_empty()
+                        || state.persistent_removal.is_some()
+                    {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                    let easing = motion_easing(*easing);
+                    state.rotation_keyframes = vec![
+                        KeyframeV1 {
+                            at: projected_interval.start,
+                            easing_to_next: Some(easing.clone()),
+                            value: 0.0,
+                        },
+                        KeyframeV1 {
+                            at: projected_interval.end,
+                            easing_to_next: None,
+                            value: rotation_delta_radians,
+                        },
+                    ];
+                    let schedule_index = program
+                        .schedule_order
+                        .iter()
+                        .position(|operation_id| operation_id == &operation.id)
+                        .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.clone(),
+                            interval: projected_interval,
+                            kind: StudioCreationProjectedMutationKind::RotationKeyframes {
+                                easing,
+                                from: 0.0,
+                                to: rotation_delta_radians,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
             }
             continue;
         }
@@ -3213,6 +3277,16 @@ fn plan_studio_creation_edits(
         }
     }
 
+    if spun_entity_ids.iter().any(|entity_id| {
+        planned_motions
+            .iter()
+            .filter(|motion| motion.target_entity_ids.iter().any(|id| id == entity_id))
+            .count()
+            != 1
+    }) {
+        return Err(ProjectStudioCreationEditError::Unsupported);
+    }
+
     for state in &entities {
         if (!state.rotation_keyframes.is_empty()
             && (!state.uniform_scale_keyframes.is_empty()
@@ -3223,6 +3297,7 @@ fn plan_studio_creation_edits(
                 && (state.instant_at.is_some()
                     || !rotation_is_noop(state.current_rotation)
                     || !rotation_is_noop(state.instant_rotation)))
+            || (spun_entity_ids.contains(&state.spec.id) && state.persistent_removal.is_some())
             || (!rotation_is_noop(state.current_rotation) && state.instant_at.is_some())
             || (!rotation_is_noop(state.instant_rotation) && state.instant_at.is_none())
         {
@@ -3400,7 +3475,7 @@ fn plan_studio_creation_edits(
                 .iter()
                 .find(|state| state.spec.id == *entity_id)
                 .ok_or(ProjectStudioCreationEditError::Unsupported)?;
-            if !state.rotation_keyframes.is_empty()
+            if (!state.rotation_keyframes.is_empty() && !spun_entity_ids.contains(entity_id))
                 || !state.uniform_scale_keyframes.is_empty()
                 || !studio_creation_motion_is_compatible(state, &motion.interval)
             {
@@ -5112,6 +5187,7 @@ mod tests {
                     control_offset: PointV1 { x: 0.0, y: -160.0 },
                     delta: PointV1 { x: 240.0, y: -80.0 },
                     easing: StudioMotionEasing::Smooth,
+                    rotation_delta_radians: None,
                     target_entity_ids,
                 },
                 origin: StudioAuthoringOrigin::DirectManipulation,
@@ -6599,6 +6675,172 @@ mod tests {
         }
         assert_eq!(result.creation_projection.as_ref(), Some(&projection));
         assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[allow(
+        clippy::float_cmp,
+        clippy::too_many_lines,
+        reason = "one end-to-end assertion pins both canonical channels and their composed samples"
+    )]
+    fn assert_normalized_creation_motion_spin(motion_program_first: bool) {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let mut motion = studio_created_motion_edit_input(vec![entity_id.to_owned()]);
+        let StudioCreationOperationKind::CreateMotion {
+            easing,
+            rotation_delta_radians,
+            ..
+        } = &mut motion.operations[0].kind
+        else {
+            unreachable!();
+        };
+        *easing = StudioMotionEasing::Linear;
+        *rotation_delta_radians = Some(2.0 * PI);
+        if motion_program_first {
+            command.programs.insert(0, motion);
+        } else {
+            command.programs.push(motion);
+        }
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert!(matches!(
+            projection.mutations.last().map(|mutation| &mutation.kind),
+            Some(StudioCreationProjectedMutationKind::RotationKeyframes {
+                easing: EasingV1::Linear {},
+                from: 0.0,
+                to,
+            }) if (*to - 2.0 * PI).abs() < 1e-12
+        ));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let (motion_keyframes, rotation_keyframes) =
+            result.bundle.scene.animation_channels.iter().fold(
+                (None, None),
+                |(motion, rotation), channel| match channel {
+                    AnimationChannelV1::MotionPath {
+                        entity_id: target,
+                        keyframes,
+                        ..
+                    } if target == entity_id => (Some(keyframes), rotation),
+                    AnimationChannelV1::Rotation {
+                        entity_id: target,
+                        keyframes,
+                        ..
+                    } if target == entity_id => (motion, Some(keyframes)),
+                    _ => (motion, rotation),
+                },
+            );
+        let motion_keyframes = motion_keyframes.unwrap();
+        let rotation_keyframes = rotation_keyframes.unwrap();
+        assert_eq!(motion_keyframes.len(), 2);
+        assert_eq!(rotation_keyframes.len(), 2);
+        assert_eq!(motion_keyframes[0].at, rotation_keyframes[0].at);
+        assert_eq!(motion_keyframes[1].at, rotation_keyframes[1].at);
+        assert_eq!(rotation_keyframes[0].value, 0.0);
+        assert!((rotation_keyframes[1].value - 2.0 * PI).abs() < 1e-12);
+
+        let start = motion_keyframes[0].at;
+        let duration = motion_keyframes[1].at - start;
+        for progress in [0.25, 0.5, 1.0] {
+            let time = start + duration * progress;
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "motion-spin-sample",
+                    sample_time: time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            let poietra_scene_ir::RenderDrawV1::Path { transform, .. } = packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == entity_id)
+                .unwrap()
+            else {
+                panic!("the spinning motion target must remain a path draw");
+            };
+            let angle = 2.0 * PI * progress;
+            assert!(
+                (transform.m11 - angle.cos()).abs() < 1e-12,
+                "progress={progress}"
+            );
+            assert!(
+                (transform.m12 + angle.sin()).abs() < 1e-12,
+                "progress={progress}"
+            );
+            assert!(
+                (transform.m21 - angle.sin()).abs() < 1e-12,
+                "progress={progress}"
+            );
+            assert!(
+                (transform.m22 - angle.cos()).abs() < 1e-12,
+                "progress={progress}"
+            );
+            assert!(
+                (transform.tx - 6.0 * progress).abs() < 1e-12,
+                "progress={progress}"
+            );
+            assert!(
+                (transform.ty - (2.0 * progress + 8.0 * progress * (1.0 - progress))).abs() < 1e-12,
+                "progress={progress}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalized_creation_composes_motion_and_spin_after_creation() {
+        assert_normalized_creation_motion_spin(false);
+    }
+
+    #[test]
+    fn normalized_creation_composes_motion_and_spin_before_creation_in_input() {
+        assert_normalized_creation_motion_spin(true);
+    }
+
+    #[test]
+    fn normalized_creation_rejects_zero_or_multi_target_motion_spin_atomically() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        for (rotation_delta_radians, target_entity_ids, retain_static_transform) in [
+            (Some(0.0), vec![entity_id.to_owned()], false),
+            (
+                Some(2.0 * PI),
+                vec![entity_id.to_owned(), entity_id.to_owned()],
+                false,
+            ),
+            (Some(2.0 * PI), vec![entity_id.to_owned()], true),
+        ] {
+            let mut command = studio_creation_command(&bundle);
+            if !retain_static_transform {
+                command.programs.truncate(1);
+            }
+            let mut motion = studio_created_motion_edit_input(target_entity_ids);
+            let StudioCreationOperationKind::CreateMotion {
+                rotation_delta_radians: candidate,
+                ..
+            } = &mut motion.operations[0].kind
+            else {
+                unreachable!();
+            };
+            *candidate = rotation_delta_radians;
+            command.programs.push(motion);
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+
+            assert!(matches!(
+                session.apply_studio_creation_edit(command),
+                Err(ApplyStudioCreationEditError::Unsupported)
+            ));
+            assert_eq!(session.scene(), &bundle.scene);
+            assert_eq!(session.assets(), &bundle.assets);
+            assert_eq!(session.retained_index_stats().build_count, 1);
+        }
     }
 
     #[test]
