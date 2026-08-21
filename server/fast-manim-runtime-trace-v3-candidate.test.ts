@@ -194,6 +194,26 @@ describe("verifyFastManimRuntimeTraceMoveEditCandidateV3", () => {
     expect(input.base.draws).toEqual(input.candidate.draws);
   });
 
+  it("accepts a selected draw path ID split caused only by signed zero canonicalization", () => {
+    const input = fixture();
+    const basePath = input.base.resources.paths[0]!;
+    const baseStart = basePath.path.subpaths[0]!.start;
+    baseStart.x = -0;
+    const alternatePath = structuredClone(basePath);
+    alternatePath.id = `path:${"e".repeat(64)}`;
+    alternatePath.path.subpaths[0]!.start.x = 0;
+    input.candidate.resources.paths = [alternatePath];
+    input.candidate.frames[0]!.states[0]!.pathId = alternatePath.id;
+
+    expect(verifyFastManimRuntimeTraceMoveEditCandidateV3(input)).toEqual(input.candidate);
+    expect(input.base.frames[0]!.states[0]!.pathId).not.toBe(input.candidate.frames[0]!.states[0]!.pathId);
+
+    alternatePath.path.subpaths[0]!.start.x = 0.1;
+    expect(() => verifyFastManimRuntimeTraceMoveEditCandidateV3(input)).toThrowError(
+      expect.objectContaining({ code: "candidate-resource" }),
+    );
+  });
+
   it("accepts a suffix-only translation for a root with a later lifetime and protects the prefix", () => {
     const input = settledMoveFixture();
 
@@ -426,6 +446,43 @@ describe("verifyFastManimRuntimeTraceResizeEditCandidateV3", () => {
     expect(input.base.draws).toEqual(input.candidate.draws);
     expect(input.base.resources.appearances).toEqual(input.candidate.resources.appearances);
     expect(input.base.resources.paths).not.toEqual(input.candidate.resources.paths);
+  });
+
+  it("accepts one scaled geometry class split across signed-zero path aliases", () => {
+    const input = resizeFixture();
+    const rootId = input.base.roots[0]!.id;
+    const aliasDraw = {
+      familyPath: [1],
+      id: `${rootId}/draw:1`,
+      lifetimes: structuredClone(input.base.draws[0]!.lifetimes),
+      rootId,
+    };
+    input.base.draws.push(structuredClone(aliasDraw));
+    input.candidate.draws.push(structuredClone(aliasDraw));
+    input.base.resources.paths[0]!.path.subpaths[0]!.start.x = -0;
+    input.candidate.resources.paths[0]!.path.subpaths[0]!.start.x = 0;
+    const alternateCandidatePath = structuredClone(input.candidate.resources.paths[0]!);
+    alternateCandidatePath.id = `path:${"e".repeat(64)}`;
+    alternateCandidatePath.path.subpaths[0]!.start.x = -0;
+    input.candidate.resources.paths.push(alternateCandidatePath);
+    input.base.frames[0]!.states.push({
+      ...structuredClone(input.base.frames[0]!.states[0]!),
+      drawId: aliasDraw.id,
+      paintOrder: 1,
+    });
+    input.candidate.frames[0]!.states.push({
+      ...structuredClone(input.candidate.frames[0]!.states[0]!),
+      drawId: aliasDraw.id,
+      paintOrder: 1,
+      pathId: alternateCandidatePath.id,
+    });
+
+    expect(verifyFastManimRuntimeTraceResizeEditCandidateV3(input)).toEqual(input.candidate);
+
+    alternateCandidatePath.path.subpaths[0]!.start.x = 0.1;
+    expect(() => verifyFastManimRuntimeTraceResizeEditCandidateV3(input)).toThrowError(
+      expect.objectContaining({ code: "candidate-semantic" }),
+    );
   });
 
   it("accepts suffix-only scaling while retaining the original path for a later-lifetime prefix", () => {

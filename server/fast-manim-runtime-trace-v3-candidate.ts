@@ -202,13 +202,12 @@ function exactRequestedBinding(
   return binding;
 }
 
-function fixedState(state: FastManimRuntimeTraceV3["frames"][number]["states"][number]) {
+function fixedMoveState(state: FastManimRuntimeTraceV3["frames"][number]["states"][number]) {
   return {
     appearanceId: state.appearanceId,
     drawId: state.drawId,
     opacity: state.opacity,
     paintOrder: state.paintOrder,
-    pathId: state.pathId,
     pathTrim: state.pathTrim,
     sourceZIndex: state.sourceZIndex,
     transform: {
@@ -362,8 +361,13 @@ export function verifyFastManimRuntimeTraceMoveEditCandidateV3(
   };
   const { base, baseMapping, candidate, candidateMapping, selectedRoot } = verifiedGenericEditCandidatePairV3(input);
   const sourceAnchor = verifiedRuntimeTraceEditSourceAnchorV3(input.sourceAnchor, base, selectedRoot, true);
-  if (!same(base.resources, candidate.resources)) {
-    reject("candidate-resource", "A generic move edit changed visual resources.");
+  if (!same(base.resources.appearances, candidate.resources.appearances)) {
+    reject("candidate-resource", "A generic move edit changed paint appearances.");
+  }
+  const basePathGeometry = indexPathGeometryClasses(base.resources.paths);
+  const candidatePathGeometry = indexPathGeometryClasses(candidate.resources.paths);
+  if (!samePathGeometryClasses(basePathGeometry, candidatePathGeometry)) {
+    reject("candidate-resource", "A generic move edit introduced or removed local path geometry.");
   }
 
   const baseInitial = baseMapping.endpoints.initial;
@@ -454,13 +458,25 @@ export function verifyFastManimRuntimeTraceMoveEditCandidateV3(
         return;
       }
       if (
-        !same(fixedState(baseState), fixedState(candidateState)) ||
+        !same(fixedMoveState(baseState), fixedMoveState(candidateState)) ||
         !coordinateMatches(candidateState.transform.tx, baseState.transform.tx + delta.x) ||
         !coordinateMatches(candidateState.transform.ty, baseState.transform.ty + delta.y)
       ) {
         reject(
           "candidate-semantic",
           `A generic move edit changed non-translation semantics in frame ${frameIndex}, state ${stateIndex}.`,
+        );
+      }
+      const basePathClass = basePathGeometry.classByPathId.get(baseState.pathId);
+      const candidatePathClass = candidatePathGeometry.classByPathId.get(candidateState.pathId);
+      // Content addressing preserves binary64 signed zero, while the
+      // renderer-neutral path contract does not. A composite translation can
+      // therefore change a path ID only because -0 became +0; require exact
+      // canonical path equality rather than admitting any geometric drift.
+      if (basePathClass === undefined || basePathClass !== candidatePathClass) {
+        reject(
+          "candidate-resource",
+          `A generic move edit changed local path geometry in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
       if (
@@ -476,6 +492,32 @@ export function verifyFastManimRuntimeTraceMoveEditCandidateV3(
 }
 
 type FastManimRuntimeTracePathResourceV3 = FastManimRuntimeTraceV3["resources"]["paths"][number];
+type PathGeometryClassIndex = Readonly<{
+  classByPathId: ReadonlyMap<string, string>;
+  representativeByClass: ReadonlyMap<string, FastManimRuntimeTracePathResourceV3>;
+}>;
+
+function pathGeometryClass(path: FastManimRuntimeTracePathResourceV3["path"]) {
+  return canonicalJsonV1(path);
+}
+
+function indexPathGeometryClasses(paths: FastManimRuntimeTraceV3["resources"]["paths"]): PathGeometryClassIndex {
+  const classByPathId = new Map<string, string>();
+  const representativeByClass = new Map<string, FastManimRuntimeTracePathResourceV3>();
+  for (const resource of paths) {
+    const geometryClass = pathGeometryClass(resource.path);
+    classByPathId.set(resource.id, geometryClass);
+    if (!representativeByClass.has(geometryClass)) representativeByClass.set(geometryClass, resource);
+  }
+  return { classByPathId, representativeByClass };
+}
+
+function samePathGeometryClasses(base: PathGeometryClassIndex, candidate: PathGeometryClassIndex) {
+  return (
+    base.representativeByClass.size === candidate.representativeByClass.size &&
+    [...base.representativeByClass.keys()].every((pathClass) => candidate.representativeByClass.has(pathClass))
+  );
+}
 
 function scaledPathMatches(
   basePath: FastManimRuntimeTracePathResourceV3["path"],
@@ -643,10 +685,14 @@ export function verifyFastManimRuntimeTraceResizeEditCandidateV3(
   }
 
   const drawById = new Map(base.draws.map((draw) => [draw.id, draw] as const));
-  const candidatePathIdByBasePathId = new Map<string, string>();
+  const basePaths = pathResourcesById(base, "base");
+  const candidatePaths = pathResourcesById(candidate, "candidate");
+  const basePathGeometry = indexPathGeometryClasses(base.resources.paths);
+  const candidatePathGeometry = indexPathGeometryClasses(candidate.resources.paths);
+  const candidatePathClassByBasePathClass = new Map<string, string>();
+  const basePathClassByCandidatePathClass = new Map<string, string>();
   const referencedBasePathIds = new Set<string>();
   const referencedCandidatePathIds = new Set<string>();
-  const basePathIdByCandidatePathId = new Map<string, string>();
   if (base.frames.length !== candidate.frames.length) {
     reject("candidate-semantic", "A generic resize edit changed its frame count.");
   }
@@ -723,26 +769,29 @@ export function verifyFastManimRuntimeTraceResizeEditCandidateV3(
           `A generic resize edit changed non-scale semantics in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
-      const mappedCandidatePathId = candidatePathIdByBasePathId.get(baseState.pathId);
-      const mappedBasePathId = basePathIdByCandidatePathId.get(candidateState.pathId);
+      const basePathClass = basePathGeometry.classByPathId.get(baseState.pathId);
+      const candidatePathClass = candidatePathGeometry.classByPathId.get(candidateState.pathId);
+      if (basePathClass === undefined || candidatePathClass === undefined) {
+        reject("candidate-resource", "A generic resize edit path is not the exact uniformly scaled base path.");
+      }
+      const mappedCandidatePathClass = candidatePathClassByBasePathClass.get(basePathClass);
+      const mappedBasePathClass = basePathClassByCandidatePathClass.get(candidatePathClass);
       if (
-        (mappedCandidatePathId !== undefined && mappedCandidatePathId !== candidateState.pathId) ||
-        (mappedBasePathId !== undefined && mappedBasePathId !== baseState.pathId)
+        (mappedCandidatePathClass !== undefined && mappedCandidatePathClass !== candidatePathClass) ||
+        (mappedBasePathClass !== undefined && mappedBasePathClass !== basePathClass)
       ) {
         reject(
           "candidate-semantic",
           `A generic resize edit broke its path correspondence in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
-      candidatePathIdByBasePathId.set(baseState.pathId, candidateState.pathId);
-      basePathIdByCandidatePathId.set(candidateState.pathId, baseState.pathId);
+      candidatePathClassByBasePathClass.set(basePathClass, candidatePathClass);
+      basePathClassByCandidatePathClass.set(candidatePathClass, basePathClass);
       referencedBasePathIds.add(baseState.pathId);
       referencedCandidatePathIds.add(candidateState.pathId);
     });
   });
 
-  const basePaths = pathResourcesById(base, "base");
-  const candidatePaths = pathResourcesById(candidate, "candidate");
   if (
     basePaths.size !== referencedBasePathIds.size ||
     candidatePaths.size !== referencedCandidatePathIds.size ||
@@ -760,14 +809,18 @@ export function verifyFastManimRuntimeTraceResizeEditCandidateV3(
       reject("candidate-resource", "A generic resize edit changed a retained path resource in place.");
     }
   }
-  for (const [basePathId, candidatePathId] of candidatePathIdByBasePathId) {
-    const basePath = basePaths.get(basePathId);
-    const candidatePath = candidatePaths.get(candidatePathId);
+  for (const [basePathClass, candidatePathClass] of candidatePathClassByBasePathClass) {
+    const basePath = basePathGeometry.representativeByClass.get(basePathClass);
+    const candidatePath = candidatePathGeometry.representativeByClass.get(candidatePathClass);
     if (!basePath || !candidatePath || !scaledPathMatches(basePath.path, candidatePath.path, factor)) {
       reject("candidate-resource", "A generic resize edit path is not the exact uniformly scaled base path.");
     }
   }
-  if ([...candidatePathIdByBasePathId].every(([basePathId, candidatePathId]) => basePathId === candidatePathId)) {
+  if (
+    [...candidatePathClassByBasePathClass].every(
+      ([basePathClass, candidatePathClass]) => basePathClass === candidatePathClass,
+    )
+  ) {
     reject("candidate-noop", "A generic resize edit did not scale any presented path.");
   }
   return candidate;

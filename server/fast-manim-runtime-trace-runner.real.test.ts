@@ -25,6 +25,10 @@ const GENERIC_STATIC_SQUARE_SOURCE = readFileSync(
   new URL("../fixtures/real-preview-harness/scene_runtime_trace_v3.py", import.meta.url),
   "utf8",
 );
+const GENERIC_STATIC_NUMBER_PLANE_SOURCE = readFileSync(
+  new URL("../fixtures/real-preview-harness/scene_number_plane.py", import.meta.url),
+  "utf8",
+);
 const UPDATERS_SOURCE_HASH = createHash("sha256").update(RUNTIME_TRACE_SOURCE_TEXT, "utf8").digest("hex");
 
 describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
@@ -182,6 +186,89 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         expect(paths).toHaveLength(1);
         expect(paths[0]?.transform.tx).toBeCloseTo(plan.expectedWorldCenter.x, 12);
         expect(paths[0]?.transform.ty).toBeCloseTo(plan.expectedWorldCenter.y, 12);
+      } finally {
+        await runner.close();
+        await rm(root, { force: true, recursive: true });
+      }
+    });
+
+    it("verifies real static NumberPlane move and resize edits as fresh V3 candidate pairs", {
+      timeout: 120_000,
+    }, async () => {
+      const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-number-plane-move-real-"));
+      await mkdir(join(root, "scenes"));
+      const sourcePath = "scenes/static_number_plane.py";
+      await writeFile(join(root, sourcePath), GENERIC_STATIC_NUMBER_PLANE_SOURCE, "utf8");
+      const candidateSource = GENERIC_STATIC_NUMBER_PLANE_SOURCE.replace(
+        "        grid = NumberPlane()\n",
+        "        grid = NumberPlane()\n        grid.move_to((1.25, -0.5, 0))\n",
+      );
+      const plan = deriveRuntimeTraceMoveSourceEditPlan(candidateSource, "StaticNumberPlane", sourcePath, "grid");
+      const runner = new FastManimSnapshotRunner({
+        backend: createConfiguredFastManimSandboxBackendV1({
+          command: producerCommand,
+          deployment: "test",
+          localProcessDevOptIn: true,
+          producerEnv: fastManimRuntimeTraceProducerEnvironment(),
+          projectRoot: root,
+        }),
+        deployment: "test",
+        frame: { height: 8, width: 14.222222222222221 },
+        projectId: "demo",
+        projectRoot: root,
+        tenantId: "test-tenant",
+        timeoutMs: 120_000,
+      });
+      try {
+        const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
+          moveEdit: {
+            baseBinding: plan.baseBinding,
+            baseSourceHash: plan.baseSourceHash,
+            entityId: `source:${sourcePath}#StaticNumberPlane:grid`,
+            expectedWorldCenter: plan.expectedWorldCenter,
+            kind: "runtime-trace-move-edit",
+            sourceAnchor: plan.sourceAnchor,
+          },
+          projectId: "demo",
+          requestId: "runtime-trace-v3-number-plane-move-real-1",
+          sceneName: "StaticNumberPlane",
+          sourcePath,
+        });
+        expect(preflight).toMatchObject({
+          sourceHash: createHash("sha256").update(candidateSource).digest("hex"),
+          status: "verified",
+          traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        });
+
+        const resizeCandidateSource = GENERIC_STATIC_NUMBER_PLANE_SOURCE.replace(
+          "        grid = NumberPlane()\n",
+          "        grid = NumberPlane()\n        grid.scale(0.8)\n",
+        );
+        const resizePlan = deriveRuntimeTraceResizeSourceEditPlan(
+          resizeCandidateSource,
+          "StaticNumberPlane",
+          sourcePath,
+          "grid",
+        );
+        const resizePreflight = await runner.runRuntimeTraceCandidateUnpublished(resizeCandidateSource, {
+          resizeEdit: {
+            baseBinding: resizePlan.baseBinding,
+            baseSourceHash: resizePlan.baseSourceHash,
+            entityId: `source:${sourcePath}#StaticNumberPlane:grid`,
+            expectedScaleFactor: resizePlan.expectedScaleFactor,
+            kind: "runtime-trace-resize-edit",
+            sourceAnchor: resizePlan.sourceAnchor,
+          },
+          projectId: "demo",
+          requestId: "runtime-trace-v3-number-plane-resize-real-1",
+          sceneName: "StaticNumberPlane",
+          sourcePath,
+        });
+        expect(resizePreflight).toMatchObject({
+          sourceHash: createHash("sha256").update(resizeCandidateSource).digest("hex"),
+          status: "verified",
+          traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        });
       } finally {
         await runner.close();
         await rm(root, { force: true, recursive: true });
