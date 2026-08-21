@@ -6540,9 +6540,15 @@ export function App({
         : [],
     ),
   ]);
+  const currentCanonicalSourceKind = previewRenderer?.canonicalScene?.bundle.scene.source.kind;
+  const importedStaticSnapshotTransformSupported =
+    previewRenderer?.canonicalScene?.bundle.scene.animationChannels.length === 0 &&
+    (currentCanonicalSourceKind === "imported-manim-server-snapshot" ||
+      (currentCanonicalSourceKind === "studio-edit-program" && workspaceEditAuthority === "static-imported-root"));
   const importedGroupRotationHistorySupported =
     activeEditorScene !== null &&
     !isStudioNativeWorkspaceScene(activeEditorScene) &&
+    importedStaticSnapshotTransformSupported &&
     workspaceStaticRootProjection !== undefined &&
     !gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits) &&
     !workspaceStaticRootProjection?.mutations.some(({ kind }) => kind === "rotation");
@@ -6561,11 +6567,12 @@ export function App({
   const importedGroupResizeHistorySupported =
     activeEditorScene !== null &&
     !isStudioNativeWorkspaceScene(activeEditorScene) &&
+    importedStaticSnapshotTransformSupported &&
     workspaceStaticRootProjection !== undefined &&
     !gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits) &&
     !workspaceStaticRootProjection?.mutations.some(({ kind }) => kind === "rotation" || kind === "uniform-scale");
   const importedGroupResizeEligibleIds = new Set(
-    importedGroupResizeHistorySupported
+    importedGroupResizeHistorySupported && selectedObjectIds.length <= 8
       ? editableEntities.flatMap((entity) =>
           entity.present &&
           !entity.provisional &&
