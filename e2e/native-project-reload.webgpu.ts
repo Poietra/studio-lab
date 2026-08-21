@@ -914,3 +914,79 @@ test("authors Ellipse, Arc, and Sector through Draw, reload, and MP4 export", as
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
 });
+
+test("authors coordinate systems as editable roots through reload and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Coordinate system fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert number line/ }).click();
+    await page.getByRole("spinbutton", { name: "X minimum" }).fill("-4");
+    await page.getByRole("spinbutton", { name: "X maximum" }).fill("4");
+    await page.getByRole("spinbutton", { name: "X step" }).fill("2");
+    await page.getByRole("spinbutton", { name: "Display width" }).fill("5");
+    await canvas.click({ position: { x: 170, y: 110 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("button", { name: "Move NumberLine", exact: true })).toBeVisible();
+    await expect(page.getByText("x -4…4 / 2 · w 5", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: /Insert axes/ }).click();
+    await page.getByRole("spinbutton", { name: "Y minimum" }).fill("-2");
+    await page.getByRole("spinbutton", { name: "Y maximum" }).fill("2");
+    await page.getByRole("spinbutton", { name: "Y step" }).fill("1");
+    await canvas.click({ position: { x: 330, y: 190 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("button", { name: "Move Axes", exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: /Insert number plane/ }).click();
+    await page.getByRole("spinbutton", { name: "X minimum" }).fill("-3");
+    await page.getByRole("spinbutton", { name: "X maximum" }).fill("3");
+    await page.getByRole("spinbutton", { name: "X step" }).fill("1");
+    await page.getByRole("spinbutton", { name: "Display width" }).fill("6");
+    await page.getByRole("spinbutton", { name: "Display height" }).fill("4");
+    await canvas.click({ position: { x: 485, y: 280 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    const plane = page.getByRole("button", { name: "Move NumberPlane", exact: true });
+    await expect(plane).toBeVisible();
+    const planeId = await plane.getAttribute("data-studio-entity");
+    if (!planeId) throw new Error("The NumberPlane did not expose its Studio entity id.");
+    const planeWrapper = page.locator(`[data-studio-entity-wrapper="${planeId}"]`);
+    const initialScale = Number(await planeWrapper.getAttribute("data-studio-entity-scale"));
+
+    await page.getByRole("button", { name: "Set position" }).click();
+    await dragBy(page, plane, { x: 20, y: -12 });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const resize = page.getByRole("button", { name: "Resize NumberPlane from bottom-right corner" });
+    await resize.press("ArrowRight");
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect
+      .poll(async () => Number(await planeWrapper.getAttribute("data-studio-entity-scale")))
+      .toBeGreaterThan(initialScale);
+
+    await page.getByRole("button", { name: "Rotate NumberPlane counterclockwise by 15 degrees" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await page.getByRole("button", { name: "Add Draw entrance for NumberPlane" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    let drawClip = page.getByRole("button", { name: "Edit NumberPlane Draw entrance" });
+    await expect(drawClip).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Coordinate system fixture workspace" }).click();
+    await expect(page.getByRole("button", { name: "Move NumberLine", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move Axes", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move NumberPlane", exact: true })).toBeVisible();
+    drawClip = page.getByRole("button", { name: "Edit NumberPlane Draw entrance" });
+    await expect(drawClip).toBeVisible();
+
+    const mp4 = await exportLocalMp4(page);
+    const [brightPixels = 0] = await decodedBrightPixelCounts(page, mp4, [1]);
+    expect(brightPixels).toBeGreaterThan(100);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
