@@ -83,6 +83,10 @@ describe("WorkspaceSidebar Layers", () => {
 
     expect(markup).toContain("Assets");
     expect(markup).toContain("Images");
+    expect(markup).toContain('aria-label="Search project images"');
+    expect(markup).toContain('aria-controls="studio-project-images"');
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain("1 project image");
     expect(markup).toContain("image.png");
     expect(markup).toContain('alt="image.png"');
     expect(markup).toContain("2 × 1");

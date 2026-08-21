@@ -26,6 +26,7 @@ import {
   STUDIO_IMAGE_ASSET_DRAG_TYPE,
   type StudioNativeImageAssetV1,
   studioImageAssetDragPayload,
+  studioImageAssetsMatchingQuery,
 } from "./studio-image-assets";
 import type { AuthorableWorkspaceScene } from "./studio-native-workspace";
 import { entityLabel } from "./studio-viewport";
@@ -266,6 +267,7 @@ export function WorkspaceSidebar({
   undoAvailable?: boolean;
 }>) {
   const imageFileInput = useRef<HTMLInputElement | null>(null);
+  const [imageAssetSearchQuery, setImageAssetSearchQuery] = useState("");
   const [layerDrag, setLayerDrag] = useState<Readonly<{
     boundary: number;
     id: string;
@@ -284,6 +286,7 @@ export function WorkspaceSidebar({
       visible: true,
     }));
   const rootLayerEntries = layerEntries.filter(({ isGroup, parentGroupId }) => isGroup || !parentGroupId);
+  const matchingImageAssets = studioImageAssetsMatchingQuery(imageAssets, imageAssetSearchQuery);
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       <section className="mb-4 border-b border-zinc-800 pb-4" aria-labelledby="studio-assets-heading">
@@ -326,57 +329,80 @@ export function WorkspaceSidebar({
             No verified project image is available in this Scene.
           </p>
         ) : (
-          <ul className="mt-2 space-y-1" aria-label="Project images">
-            {imageAssets.map((asset) => {
-              const imageAssetDraggable =
-                imageAssetDragAvailable && authoringAvailable && !draftActive && onAddImageAsset !== undefined;
-              return (
-                <li
-                  className="border border-zinc-800 p-2"
-                  key={`${asset.image.asset.assetId}:${asset.image.asset.sha256}`}
-                >
-                  <div className="flex items-center justify-between gap-2">
-                    <button
-                      aria-label={`Add ${asset.label} at canvas center`}
-                      className={cn(
-                        "flex min-w-0 items-center gap-2 text-left disabled:cursor-not-allowed",
-                        imageAssetDraggable ? "cursor-grab active:cursor-grabbing" : null,
-                      )}
-                      disabled={!authoringAvailable || draftActive || onAddImageAsset === undefined}
-                      draggable={imageAssetDraggable}
-                      onClick={() => onAddImageAsset?.(asset)}
-                      onDragStart={(event) => {
-                        if (!imageAssetDraggable) {
-                          event.preventDefault();
-                          return;
-                        }
-                        event.dataTransfer.effectAllowed = "copy";
-                        event.dataTransfer.setData(STUDIO_IMAGE_ASSET_DRAG_TYPE, studioImageAssetDragPayload(asset));
-                      }}
-                      title={imageAssetDraggable ? "Drag to place on the canvas, or use Add." : undefined}
-                      type="button"
-                    >
-                      <NativeImageThumbnail asset={asset} />
-                      <span className="min-w-0">
-                        <span className="block truncate text-xs text-zinc-300">{asset.label}</span>
-                        <span className="mt-0.5 block tabular-nums text-[10px] text-zinc-600">
-                          {asset.pixelWidth} × {asset.pixelHeight}
+          <>
+            <label className="mt-2 block text-[10px] font-medium text-zinc-500" htmlFor="studio-image-asset-search">
+              Project images
+            </label>
+            <input
+              aria-controls="studio-project-images"
+              aria-describedby="studio-image-asset-search-status"
+              aria-label="Search project images"
+              className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
+              id="studio-image-asset-search"
+              onChange={(event) => setImageAssetSearchQuery(event.currentTarget.value)}
+              placeholder="Search by name or dimensions"
+              type="search"
+              value={imageAssetSearchQuery}
+            />
+            <p className="mt-1 text-[10px] text-zinc-600" id="studio-image-asset-search-status" role="status">
+              {imageAssetSearchQuery.trim().length === 0
+                ? `${imageAssets.length} project image${imageAssets.length === 1 ? "" : "s"}`
+                : matchingImageAssets.length === 0
+                  ? `No images match “${imageAssetSearchQuery.trim()}”.`
+                  : `${matchingImageAssets.length} matching image${matchingImageAssets.length === 1 ? "" : "s"}`}
+            </p>
+            <ul className="mt-2 space-y-1" aria-label="Project images" id="studio-project-images">
+              {matchingImageAssets.map((asset) => {
+                const imageAssetDraggable =
+                  imageAssetDragAvailable && authoringAvailable && !draftActive && onAddImageAsset !== undefined;
+                return (
+                  <li
+                    className="border border-zinc-800 p-2"
+                    key={`${asset.image.asset.assetId}:${asset.image.asset.sha256}`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <button
+                        aria-label={`Add ${asset.label} at canvas center`}
+                        className={cn(
+                          "flex min-w-0 items-center gap-2 text-left disabled:cursor-not-allowed",
+                          imageAssetDraggable ? "cursor-grab active:cursor-grabbing" : null,
+                        )}
+                        disabled={!authoringAvailable || draftActive || onAddImageAsset === undefined}
+                        draggable={imageAssetDraggable}
+                        onClick={() => onAddImageAsset?.(asset)}
+                        onDragStart={(event) => {
+                          if (!imageAssetDraggable) {
+                            event.preventDefault();
+                            return;
+                          }
+                          event.dataTransfer.effectAllowed = "copy";
+                          event.dataTransfer.setData(STUDIO_IMAGE_ASSET_DRAG_TYPE, studioImageAssetDragPayload(asset));
+                        }}
+                        title={imageAssetDraggable ? "Drag to place on the canvas, or use Add." : undefined}
+                        type="button"
+                      >
+                        <NativeImageThumbnail asset={asset} />
+                        <span className="min-w-0">
+                          <span className="block truncate text-xs text-zinc-300">{asset.label}</span>
+                          <span className="mt-0.5 block tabular-nums text-[10px] text-zinc-600">
+                            {asset.pixelWidth} × {asset.pixelHeight}
+                          </span>
                         </span>
-                      </span>
-                    </button>
-                    <button
-                      className="h-7 shrink-0 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
-                      disabled={!authoringAvailable || draftActive || onAddImageAsset === undefined}
-                      onClick={() => onAddImageAsset?.(asset)}
-                      type="button"
-                    >
-                      + Add
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
+                      </button>
+                      <button
+                        className="h-7 shrink-0 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                        disabled={!authoringAvailable || draftActive || onAddImageAsset === undefined}
+                        onClick={() => onAddImageAsset?.(asset)}
+                        type="button"
+                      >
+                        + Add
+                      </button>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </>
         )}
         <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
           Studio-native Images use canonical Preview and MP4 export. Manim source export is unsupported.

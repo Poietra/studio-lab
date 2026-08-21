@@ -5,6 +5,7 @@ import type { CanvasPngAssetTransferV1 } from "../engine/canvas-png-assets";
 import {
   resolveStudioImageAssetDrag,
   studioImageAssetDragPayload,
+  studioImageAssetsMatchingQuery,
   studioNativeImageAssetsV1,
 } from "./studio-image-assets";
 
@@ -104,5 +105,20 @@ describe("Studio native image assets", () => {
       resolveStudioImageAssetDrag(assets, JSON.stringify({ ...asset.image.asset, sha256: "f".repeat(64) })),
     ).toBeNull();
     expect(resolveStudioImageAssetDrag(assets, "not-json")).toBeNull();
+  });
+
+  it("filters the canonical projection by visible name or dimensions without changing asset identity", async () => {
+    const { bundle, payload } = await imageFixture();
+    const first = studioNativeImageAssetsV1({ assetPayloads: [payload], bundle })[0];
+    if (!first) throw new Error("Expected one projected image asset.");
+    const second = { ...first, label: "Cover Art.PNG", pixelHeight: 1080, pixelWidth: 1920 };
+    const assets = [first, second];
+    const nameMatches = studioImageAssetsMatchingQuery(assets, "  COVER ");
+
+    expect(nameMatches).toEqual([second]);
+    expect(nameMatches[0]).toBe(second);
+    expect(studioImageAssetsMatchingQuery(assets, "1920x1080")).toEqual([second]);
+    expect(studioImageAssetsMatchingQuery(assets, "missing")).toEqual([]);
+    expect(studioImageAssetsMatchingQuery(assets, " ")).toBe(assets);
   });
 });

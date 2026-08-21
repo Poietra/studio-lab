@@ -69,6 +69,20 @@ export function studioNativeImageAssetsV1(source: CanonicalImageSourceV1 | null)
   });
 }
 
+/** Filters the current canonical image projection for presentation only. */
+export function studioImageAssetsMatchingQuery(
+  assets: readonly StudioNativeImageAssetV1[],
+  query: string,
+): readonly StudioNativeImageAssetV1[] {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length === 0) return assets;
+  return assets.filter((asset) =>
+    `${asset.label} ${asset.pixelWidth} × ${asset.pixelHeight} ${asset.pixelWidth}x${asset.pixelHeight}`
+      .toLowerCase()
+      .includes(normalizedQuery),
+  );
+}
+
 export function studioImageAssetDragPayload(asset: StudioNativeImageAssetV1): string {
   return JSON.stringify(asset.image.asset);
 }
