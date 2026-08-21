@@ -5000,7 +5000,7 @@ export function App({
       )
     ) {
       setDraftError(
-        "Group resize requires 2–8 objects from one supported authority; imported objects must be independent static roots with position/resize history.",
+        "Group resize requires 2–8 objects from one supported authority; imported objects must be independent static roots with position/resize/rotation history.",
       );
       return null;
     }
@@ -5204,7 +5204,7 @@ export function App({
       )
     ) {
       setDraftError(
-        "Group rotation requires 2–8 objects from one supported authority; imported objects must be independent static roots with position/rotation history.",
+        "Group rotation requires 2–8 objects from one supported authority; imported objects must be independent static roots with position/resize/rotation history.",
       );
       return null;
     }

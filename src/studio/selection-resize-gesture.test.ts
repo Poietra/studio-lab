@@ -26,6 +26,16 @@ const scaleMutation = (transactionId: string, entityId: string, from: number, to
   transactionId,
 });
 
+const rotationMutation = (transactionId: string, entityId: string) => ({
+  entityId,
+  from: 0,
+  interval: { end: 0, start: 0 },
+  kind: "rotation" as const,
+  operationId: `${transactionId}:rotation:${entityId}`,
+  to: Math.PI / 2,
+  transactionId,
+});
+
 describe("selection resize gesture", () => {
   it("admits the first imported group resize before any static-root edit exists", () => {
     expect(importedGroupResizeHistoryIsSupported(null, null)).toBe(true);
@@ -46,6 +56,24 @@ describe("selection resize gesture", () => {
             positionMutation("resize-twice", "right"),
             scaleMutation("resize-twice", "left", 1.5, 2),
             scaleMutation("resize-twice", "right", 1.5, 2),
+          ],
+          projectedDuration: 0,
+        },
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it("admits a complete Rust-projected rotation before group resize", () => {
+    expect(
+      importedGroupResizeHistoryIsSupported(
+        {
+          insertions: [],
+          mutations: [
+            positionMutation("rotate", "left"),
+            positionMutation("rotate", "right"),
+            rotationMutation("rotate", "left"),
+            rotationMutation("rotate", "right"),
           ],
           projectedDuration: 0,
         },

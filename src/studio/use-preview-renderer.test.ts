@@ -1970,7 +1970,7 @@ describe("compileStudioPreviewSceneV1", () => {
     },
   );
 
-  it("replays repeated imported multi-root moves for preview, undo, and redo", async () => {
+  it("replays imported multi-root transform histories for preview, undo, and redo", async () => {
     const fixture = await editedStaticRootPreviewInput();
     const firstRuntime = fixture.snapshot.snapshot.scene.entities[0];
     const firstStudio = fixture.workingState.runtimeSceneState.objectGraph.entities["source:circle"];
@@ -2339,6 +2339,117 @@ describe("compileStudioPreviewSceneV1", () => {
       expect(entity?.transform.m22).toBeCloseTo(-1);
       expect(entity?.transform.m12).toBeCloseTo(0);
       expect(entity?.transform.m21).toBeCloseTo(0);
+    }
+
+    const rotationAfterResizeValidation = createDirectManipulationGroupRotationProgram({
+      angleRadians: Math.PI / 2,
+      capturedPlayhead: 0,
+      scene: workingBase.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: "source:circle", toPosition: { x: 410, y: 250 } },
+        { entityId: "source:second", toPosition: { x: 410, y: 130 } },
+      ],
+      transactionId: "rotate-imported-selection-after-resize",
+    });
+    if (rotationAfterResizeValidation.kind !== "valid") {
+      throw new Error(JSON.stringify(rotationAfterResizeValidation.issues));
+    }
+    const rotationAfterResizeRecord = {
+      ...programRecord(rotationAfterResizeValidation.program, rotationAfterResizeValidation),
+      validation: { issues: rotationAfterResizeValidation.issues, status: "valid" as const },
+    };
+    const resizedThenRotatedAppliedEdits = [...resizedAppliedEdits, rotationAfterResizeRecord];
+    const resizedThenRotated = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: compileApplyStaticRootTransformEdit,
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits: resizedThenRotatedAppliedEdits },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits: resizedThenRotatedAppliedEdits,
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (resizedThenRotated.kind !== "compiled") throw new Error(resizedThenRotated.error);
+
+    const resizeAfterRotationValidation = createDirectManipulationGroupResizeProgram({
+      capturedPlayhead: 0,
+      scene: workingBase.runtimeSceneState,
+      start: 0,
+      targets: [
+        {
+          entityId: "source:circle",
+          fromScale: 1,
+          toPosition: { x: 410, y: 250 },
+          toScale: 1.5,
+        },
+        {
+          entityId: "source:second",
+          fromScale: 1,
+          toPosition: { x: 410, y: 130 },
+          toScale: 1.5,
+        },
+      ],
+      transactionId: "resize-imported-selection-after-rotation",
+    });
+    if (resizeAfterRotationValidation.kind !== "valid") {
+      throw new Error(JSON.stringify(resizeAfterRotationValidation.issues));
+    }
+    const resizeAfterRotationRecord = {
+      ...programRecord(resizeAfterRotationValidation.program, resizeAfterRotationValidation),
+      validation: { issues: resizeAfterRotationValidation.issues, status: "valid" as const },
+    };
+    const rotatedThenResizedAppliedEdits = [...rotatedAppliedEdits, resizeAfterRotationRecord];
+    const rotatedThenResized = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: compileApplyStaticRootTransformEdit,
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits: rotatedThenResizedAppliedEdits },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits: rotatedThenResizedAppliedEdits,
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (rotatedThenResized.kind !== "compiled") throw new Error(rotatedThenResized.error);
+
+    expect(
+      resizedThenRotated.scene.staticRootProjection?.mutations.slice(-8).map(({ transactionId }) => transactionId),
+    ).toEqual([
+      "resize-imported-selection",
+      "resize-imported-selection",
+      "resize-imported-selection",
+      "resize-imported-selection",
+      "rotate-imported-selection-after-resize",
+      "rotate-imported-selection-after-resize",
+      "rotate-imported-selection-after-resize",
+      "rotate-imported-selection-after-resize",
+    ]);
+    expect(
+      rotatedThenResized.scene.staticRootProjection?.mutations.slice(-8).map(({ transactionId }) => transactionId),
+    ).toEqual([
+      "rotate-imported-selection",
+      "rotate-imported-selection",
+      "rotate-imported-selection",
+      "rotate-imported-selection",
+      "resize-imported-selection-after-rotation",
+      "resize-imported-selection-after-rotation",
+      "resize-imported-selection-after-rotation",
+      "resize-imported-selection-after-rotation",
+    ]);
+    for (const entityId of ["earlier", "second-root"]) {
+      for (const composition of [resizedThenRotated, rotatedThenResized]) {
+        const entity = composition.scene.bundle.scene.entities.find(({ id }) => id === entityId);
+        expect(entity?.transform.m11).toBeCloseTo(0);
+        expect(entity?.transform.m22).toBeCloseTo(0);
+        expect(Math.abs(entity?.transform.m12 ?? 0)).toBeCloseTo(1.5);
+        expect(Math.abs(entity?.transform.m21 ?? 0)).toBeCloseTo(1.5);
+      }
     }
 
     const secondRotationUndo = await compileStudioPreviewSceneV1({
