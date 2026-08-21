@@ -801,6 +801,17 @@ describe("StudioCanvas retained preview layer", () => {
     expect(emptyMarkup).toContain("Add Rectangle");
     expect(
       renderToStaticMarkup(
+        <StudioCanvas
+          {...baseProps()}
+          entities={[]}
+          insertTool="Circle"
+          onCreateEmptyWorkspaceEntity={vi.fn()}
+          preview={presented}
+        />,
+      ),
+    ).not.toContain("data-studio-empty-workspace");
+    expect(
+      renderToStaticMarkup(
         <StudioCanvas {...baseProps()} onCreateEmptyWorkspaceEntity={vi.fn()} preview={presented} />,
       ),
     ).not.toContain("data-studio-empty-workspace");

@@ -625,6 +625,7 @@ export function StudioCanvas({
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
   const emptyInteractiveCanvas =
     entities.length === 0 &&
+    insertTool === "select" &&
     showingCanvasPixels &&
     preview?.interactionAuthority.kind === "interactive" &&
     !readOnly &&
