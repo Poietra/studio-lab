@@ -76,12 +76,13 @@ function createEntityExecution(
   const hasMathTexContent =
     type === "MathTex" && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
   const hasTextContent = type === "Text" && studioCreationText(content) !== null;
+  const hasNativeCubicBezier = type === "CubicBezier" && operation.entity.cubicBezier !== undefined;
   const hasNativeImage = type === "ImageMobject" && operation.entity.image !== undefined;
   const hasNativeSvgPath = type === "SvgPath" && operation.entity.svg !== undefined;
   const isNativePath = ["Arc", "Axes", "DataPlot", "Ellipse", "NumberLine", "NumberPlane", "Sector"].includes(type);
   const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "RegularPolygon", "Square", "Triangle"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
-  if (hasNativeImage || hasNativeSvgPath || isNativePath) return CLIENT_ONLY_EXECUTION;
+  if (hasNativeCubicBezier || hasNativeImage || hasNativeSvgPath || isNativePath) return CLIENT_ONLY_EXECUTION;
   if (hasMathTexContent || hasTextContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
   return previewOnlyExecution(`CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`);
 }
@@ -353,6 +354,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
     return (
       type !== "Arc" &&
       type !== "Axes" &&
+      type !== "CubicBezier" &&
       type !== "DataPlot" &&
       type !== "Ellipse" &&
       type !== "NumberLine" &&
@@ -447,6 +449,17 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       dimensions.width !== undefined &&
       Number.isFinite(dimensions.width) &&
       dimensions.width > 0 &&
+      dimensions.angles === undefined &&
+      dimensions.coordinateSystem === undefined &&
+      dimensions.radius === undefined &&
+      dimensions.sides === undefined
+    );
+  }
+  if (type === "CubicBezier") {
+    return (
+      (dimensions.height !== undefined || dimensions.width !== undefined) &&
+      dimensions.height !== 0 &&
+      dimensions.width !== 0 &&
       dimensions.angles === undefined &&
       dimensions.coordinateSystem === undefined &&
       dimensions.radius === undefined &&
@@ -650,6 +663,7 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
             "Arc",
             "Axes",
             "Circle",
+            "CubicBezier",
             "DataPlot",
             "Ellipse",
             "NumberLine",
@@ -658,6 +672,7 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
             "RegularPolygon",
             "Sector",
             "Triangle",
+            "CubicBezier",
           ];
     if (!entity?.transactionId || !colorableTypes.includes(entity.type)) {
       issues.push({
@@ -741,6 +756,15 @@ export const OPERATION_REGISTRY = {
           severity: "error",
         });
       }
+      if ((operation.entity.type === "CubicBezier") !== (operation.entity.cubicBezier !== undefined)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "entity.cubicBezier",
+          message: "A Studio-native CubicBezier requires one Rust-normalized four-point primitive.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
       return issues;
     },
   } satisfies Capability<"CreateEntity">,
@@ -769,6 +793,7 @@ export const OPERATION_REGISTRY = {
             "Arc",
             "Axes",
             "Circle",
+            "CubicBezier",
             "DataPlot",
             "Ellipse",
             "Line",

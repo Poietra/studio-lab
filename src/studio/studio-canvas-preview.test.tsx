@@ -8,6 +8,7 @@ import type { StudioPreviewRuntimeTraceEditCandidate } from "./preview-temporal-
 import { groupResizeEligibleCreationEntityIds } from "./selection-resize-gesture";
 import {
   compensatePreparedGeometryForOverlayScales,
+  cubicBezierOverlayPointFromViewport,
   rotationHandleLayoutStyle,
   StudioCanvas,
   type StudioCanvasProps,
@@ -51,6 +52,18 @@ const REGULAR_POLYGON_ENTITY: ProjectedEntity = {
   sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
   transactionId: "create-regular-polygon",
   type: "RegularPolygon",
+};
+
+const CUBIC_BEZIER_ENTITY: ProjectedEntity = {
+  ...CIRCLE_ENTITY,
+  geometry: {
+    ...CIRCLE_ENTITY.geometry,
+    dimensions: { kind: "known", value: { height: 2, width: 3 } },
+  },
+  id: "entity:cubic-bezier",
+  sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
+  transactionId: "create-cubic-bezier",
+  type: "CubicBezier",
 };
 
 function lineJointsTriangle(sourceName: "t1" | "t2" | "t3", x: number): ProjectedEntity {
@@ -1883,6 +1896,25 @@ describe("StudioCanvas retained preview layer", () => {
     expect(polygon).toContain("6 sides");
   });
 
+  it("exposes stroke but not fill color for a Studio-created cubic Bezier", () => {
+    const markup = renderSelectedInspector(
+      CUBIC_BEZIER_ENTITY,
+      null,
+      null,
+      false,
+      false,
+      null,
+      true,
+      "#123456",
+      "#abcdef",
+    );
+    const stroke = /<input aria-label="Stroke color cubic-bezier"[^>]*>/u;
+
+    expect(markup).not.toContain('aria-label="Fill color cubic-bezier"');
+    expect(markup.match(stroke)?.[0]).not.toContain('disabled=""');
+    expect(markup.match(stroke)?.[0]).toContain('value="#abcdef"');
+  });
+
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {
     const state = {
       frame: {
@@ -1922,5 +1954,84 @@ describe("StudioCanvas retained preview layer", () => {
     );
     expect(duplicateSource).not.toContain("left:15.625%");
     expect(duplicateSource).not.toContain("data-studio-runtime-entity");
+  });
+
+  it("keeps Pen clicks and four direct controls in the camera-scaled layer coordinate space", () => {
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        cameraScale={2}
+        cubicBezierControls={{
+          entityId: "curve",
+          points: {
+            control1: { x: 240, y: 100 },
+            control2: { x: 400, y: 260 },
+            end: { x: 480, y: 180 },
+            start: { x: 160, y: 180 },
+          },
+        }}
+        cubicBezierPenPoints={[{ x: 120, y: 90 }]}
+        onCubicBezierControlChange={vi.fn()}
+      />,
+    );
+
+    expect(markup).toContain('data-cubic-bezier-controls="curve"');
+    expect(markup).toContain('data-cubic-bezier-control="start"');
+    expect(markup).toContain('data-cubic-bezier-control="end"');
+    expect(markup).toContain('data-cubic-bezier-control="control1"');
+    expect(markup).toContain('data-cubic-bezier-control="control2"');
+    expect(markup).toContain("start</text>");
+    expect(markup).toContain('<circle cx="120" cy="90"');
+    expect(markup).toContain('<line x1="160" x2="240" y1="180" y2="100"></line>');
+    expect(markup).toMatch(/aria-label="Move Bézier start"[^>]+style="left:25%;top:50%"/);
+    expect(markup).not.toContain("<path");
+  });
+
+  it("inverse maps a zoomed Pen placement so the committed point remains under the pointer", () => {
+    const onCanvasPlace = vi.fn();
+    const surface = findCanvasSurface(
+      StudioCanvas({
+        ...baseProps(),
+        cameraScale: 2,
+        insertTool: "CubicBezier",
+        onCanvasPlace,
+        preview: previewView({
+          frame: {
+            packetId: "canvas:cubic-bezier-zoom",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        }),
+      }),
+    );
+    const onPointerDown = surface.props.onPointerDown as (event: {
+      clientX: number;
+      clientY: number;
+      currentTarget: Readonly<{ getBoundingClientRect: () => DOMRect }>;
+      target: null;
+    }) => void;
+    const bounds: DOMRect = {
+      bottom: 360,
+      height: 360,
+      left: 0,
+      right: 640,
+      top: 0,
+      width: 640,
+      x: 0,
+      y: 0,
+      toJSON: vi.fn(),
+    };
+
+    onPointerDown({ clientX: 480, clientY: 180, currentTarget: { getBoundingClientRect: () => bounds }, target: null });
+
+    const localPoint = cubicBezierOverlayPointFromViewport({ x: 480, y: 180 }, 2);
+    expect(onCanvasPlace).toHaveBeenCalledWith(localPoint);
+    expect(localPoint).toEqual({ x: 400, y: 180 });
+    expect({
+      x: 320 + (localPoint.x - 320) * 2,
+      y: 180 + (localPoint.y - 180) * 2,
+    }).toEqual({ x: 480, y: 180 });
   });
 });

@@ -22,6 +22,7 @@ const TOOL_COMMANDS: readonly Readonly<{
   { commandId: "insert-mathtex", label: "Math", tool: "MathTex" },
   { commandId: "insert-rectangle", label: "Rectangle", tool: "Rectangle" },
   { commandId: "insert-circle", label: "Circle", tool: "Circle" },
+  { commandId: "insert-cubic-bezier", label: "Pen", tool: "CubicBezier" },
   { commandId: "insert-ellipse", label: "Ellipse", tool: "Ellipse" },
   { commandId: "insert-arc", label: "Arc", tool: "Arc" },
   { commandId: "insert-sector", label: "Sector", tool: "Sector" },
@@ -48,9 +49,11 @@ const LAYOUT_BUTTON_LABELS: Readonly<Record<SelectionLayoutCommand, string>> = {
 export type StudioToolbarProps = Readonly<{
   authoringAvailable: boolean;
   coordinateInsertSettings: CoordinateInsertSettings;
+  cubicBezierStyle?: CubicBezierStyleSettings | null;
   curveInsertSettings: CurveInsertSettings;
   insertValue: string;
   onCoordinateInsertSettingsChange: (settings: CoordinateInsertSettings) => void;
+  onCubicBezierStyleChange?: (change: CubicBezierStyleChange) => void;
   onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
   onInsertAtCenter: () => void;
   onInsertValueChange: (value: string) => void;
@@ -62,6 +65,17 @@ export type StudioToolbarProps = Readonly<{
   selectionLayoutUnavailableReason: string | null;
   tool: StudioTool;
 }>;
+
+export type CubicBezierStyleSettings = Readonly<{
+  arrowEnd: boolean;
+  entityId: string;
+  strokeCap: "butt" | "round" | "square";
+  strokeWidth: number;
+}>;
+
+export type CubicBezierStyleChange = Readonly<
+  Partial<Pick<CubicBezierStyleSettings, "arrowEnd" | "strokeCap" | "strokeWidth">>
+>;
 
 export type CurveInsertSettings = Readonly<{
   ellipseHeight: number;
@@ -85,9 +99,11 @@ export type CoordinateInsertSettings = Readonly<{
 export function StudioToolbar({
   authoringAvailable,
   coordinateInsertSettings,
+  cubicBezierStyle = null,
   curveInsertSettings,
   insertValue,
   onCoordinateInsertSettingsChange,
+  onCubicBezierStyleChange,
   onCurveInsertSettingsChange,
   onInsertAtCenter,
   onInsertValueChange,
@@ -154,7 +170,11 @@ export function StudioToolbar({
           );
         })}
         <span className="ml-2 hidden text-pretty text-[10px] text-zinc-600 md:inline">
-          {tool === "select" ? "Select and move objects" : "Click the canvas to place the object"}
+          {tool === "select"
+            ? "Select and move objects"
+            : tool === "CubicBezier"
+              ? "Click start, end, first control, then second control"
+              : "Click the canvas to place the object"}
         </span>
         {selectionCount > 1 ? (
           <div aria-label="Selection layout" className="ml-2 flex flex-wrap items-center gap-1" role="group">
@@ -185,6 +205,57 @@ export function StudioToolbar({
           </div>
         ) : null}
       </div>
+      {cubicBezierStyle && onCubicBezierStyleChange ? (
+        <div aria-label="Cubic Bézier style" className="mt-2 flex flex-wrap items-end gap-2" role="group">
+          <label className="w-28 text-[10px] text-zinc-500">
+            Stroke cap
+            <select
+              aria-label="Cubic Bézier stroke cap"
+              className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-sky-500"
+              disabled={!authoringAvailable}
+              onChange={(event) =>
+                onCubicBezierStyleChange({
+                  strokeCap: event.currentTarget.value as CubicBezierStyleSettings["strokeCap"],
+                })
+              }
+              value={cubicBezierStyle.strokeCap}
+            >
+              <option value="butt">Butt</option>
+              <option value="round">Round</option>
+              <option value="square">Square</option>
+            </select>
+          </label>
+          <label className="w-28 text-[10px] text-zinc-500">
+            Stroke width
+            <input
+              aria-label="Cubic Bézier stroke width"
+              className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs tabular-nums text-zinc-100 outline-none focus:border-sky-500"
+              defaultValue={cubicBezierStyle.strokeWidth}
+              disabled={!authoringAvailable}
+              key={`${cubicBezierStyle.entityId}:${cubicBezierStyle.strokeWidth}`}
+              max={0.5}
+              min={0.005}
+              onBlur={(event) => {
+                const strokeWidth = event.currentTarget.valueAsNumber;
+                if (Number.isFinite(strokeWidth) && strokeWidth !== cubicBezierStyle.strokeWidth) {
+                  onCubicBezierStyleChange({ strokeWidth });
+                }
+              }}
+              step={0.005}
+              type="number"
+            />
+          </label>
+          <label className="flex h-8 items-center gap-2 border border-zinc-700 px-2 text-xs text-zinc-300">
+            <input
+              checked={cubicBezierStyle.arrowEnd}
+              disabled={!authoringAvailable}
+              onChange={(event) => onCubicBezierStyleChange({ arrowEnd: event.currentTarget.checked })}
+              type="checkbox"
+            />
+            Arrow end
+          </label>
+        </div>
+      ) : null}
       {requiresContent || requiresPolygonSides || requiresCurveParameters || requiresCoordinateParameters ? (
         <form
           className="mt-2 flex max-w-4xl flex-wrap items-end gap-2"

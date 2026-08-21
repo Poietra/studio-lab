@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 mod bound_entity;
 mod creation;
+mod cubic_bezier;
 mod fragment_material;
 mod identity;
 mod math_tex_transform;
@@ -33,6 +34,10 @@ pub use creation::{
     StudioCreationProjectedMutation, StudioCreationProjectedMutationKind, StudioCreationProjection,
     StudioCreationSvgPathSpec, StudioProjectedCreationEntity, StudioPropertyEasing,
     project_studio_creation_edits,
+};
+pub use cubic_bezier::{
+    StudioCreationCubicBezierSpec, StudioCubicBezierError, StudioCubicBezierInspection,
+    StudioCubicBezierStrokeCap, inspect_studio_cubic_bezier,
 };
 pub use fragment_material::{
     ApplyStudioFragmentMaterialsCommand, ApplyStudioFragmentMaterialsError,
@@ -202,6 +207,7 @@ pub enum StudioAuthoringEntityKind {
     Arrow,
     Axes,
     Circle,
+    CubicBezier,
     DataPlot,
     Ellipse,
     Image,

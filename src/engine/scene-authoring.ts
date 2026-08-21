@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { easingV1Schema, type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
+import { type StudioCubicBezierSpec, studioCubicBezierSpecSchema } from "./cubic-bezier-authoring";
 import { loadPoietraWasmModule } from "./poietra-wasm-module";
 
 const encoder = new TextEncoder();
@@ -116,6 +117,7 @@ type StaticRootTransformEntityKind =
   | "arc"
   | "axes"
   | "circle"
+  | "cubic-bezier"
   | "data-plot"
   | "ellipse"
   | "image"
@@ -618,6 +620,7 @@ const studioCreationProjectionV1Schema = z
       z
         .object({
           createdLifetime: studioTimelineProjectionIntervalV1Schema,
+          cubicBezier: studioCubicBezierSpecSchema.optional(),
           dataSeries: studioDataSeriesV1Schema.optional(),
           entityId: z.string().min(1),
           initialDimensions: studioStaticRootDimensionsV1Schema,
@@ -629,6 +632,7 @@ const studioCreationProjectionV1Schema = z
             "arrow",
             "axes",
             "circle",
+            "cubic-bezier",
             "data-plot",
             "ellipse",
             "image",
@@ -1031,6 +1035,7 @@ type StudioCreationEntityKindV1 =
   | "arrow"
   | "axes"
   | "circle"
+  | "cubic-bezier"
   | "data-plot"
   | "ellipse"
   | "image"
@@ -1073,6 +1078,7 @@ type StudioCreationOperationV1 = Readonly<{
   (
     | Readonly<{
         entity: Readonly<{
+          cubicBezier?: StudioCubicBezierSpec | null;
           dataSeries?: StudioDataSeriesV1 | null;
           dimensions: StudioCreationDimensionsV1;
           id: string;

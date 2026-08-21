@@ -48,7 +48,7 @@ export type SurfaceBounds = Readonly<{
 
 const ZERO_DELTA = { x: 0, y: 0 } as const;
 const CANVAS_INTERACTION_SELECTOR =
-  "[data-studio-entity], [data-motion-control], [data-studio-resize-handle], [data-studio-selection-resize-handle], [data-studio-rotation-handle], [data-studio-selection-rotation-handle], [data-studio-inline-text-editor], [data-studio-empty-workspace]";
+  "[data-studio-entity], [data-motion-control], [data-cubic-bezier-control], [data-studio-resize-handle], [data-studio-selection-resize-handle], [data-studio-rotation-handle], [data-studio-selection-rotation-handle], [data-studio-inline-text-editor], [data-studio-empty-workspace]";
 
 export function entityDragDelta(preview: EntityDragPreview | null, entityId: string) {
   return preview?.entityIds.includes(entityId) ? preview.delta : ZERO_DELTA;

@@ -1,5 +1,6 @@
-import type { DragEvent, KeyboardEvent, PointerEvent } from "react";
+import { type DragEvent, type KeyboardEvent, type PointerEvent, useState } from "react";
 
+import type { StudioCubicBezierPointName } from "../engine/cubic-bezier-authoring";
 import { cn } from "../lib/cn";
 import type { CanvasSelectionMode } from "./canvas-selection";
 import type {
@@ -53,6 +54,8 @@ export type StudioCanvasProps = Readonly<{
   appliedTransactionIds: ReadonlySet<string>;
   boundaryActive: boolean;
   cameraScale: number;
+  cubicBezierControls?: StudioCubicBezierCanvasControls | null;
+  cubicBezierPenPoints?: readonly Point[];
   dragPreview: EntityDragPreview | null;
   editableMotionIds: ReadonlySet<string>;
   entities: readonly ProjectedEntity[];
@@ -70,6 +73,7 @@ export type StudioCanvasProps = Readonly<{
   lockedEntityIds?: ReadonlySet<string>;
   motionPaths: readonly StudioMotionPath[];
   onCanvasPlace: (point: Point) => void;
+  onCubicBezierControlChange?: (name: StudioCubicBezierPointName, point: Point) => void;
   onCreateEmptyWorkspaceEntity?: (type: StudioEmptyWorkspaceEntityType) => void;
   onCreateStarterComposition?: () => void;
   onImageAssetDrop?: (payload: string, point: Point) => void;
@@ -135,6 +139,11 @@ export type StudioCanvasProps = Readonly<{
   scalePreview: EntityScalePreview | null;
   selectedIds: ReadonlySet<string>;
   uniformScaleResizeOnlyIds: ReadonlySet<string>;
+}>;
+
+export type StudioCubicBezierCanvasControls = Readonly<{
+  entityId: string;
+  points: Readonly<Record<StudioCubicBezierPointName, Point>>;
 }>;
 
 export function entityLabel(entity: ProjectedEntity) {
@@ -235,6 +244,105 @@ function entityDimensionStyle(dimensions: EntityDimensions | null, frame: Readon
   };
 }
 
+const CUBIC_BEZIER_CONTROL_POINTS: readonly StudioCubicBezierPointName[] = ["start", "end", "control1", "control2"];
+
+function CubicBezierPenOverlay({ points }: Readonly<{ points: readonly Point[] }>) {
+  if (points.length === 0) return null;
+  return (
+    <svg aria-hidden="true" className="pointer-events-none absolute inset-0 z-30 size-full" viewBox="0 0 640 360">
+      {points.map((point, index) => (
+        <g key={`${index}:${point.x}:${point.y}`}>
+          <circle cx={point.x} cy={point.y} fill="#38bdf8" r="4" stroke="#082f49" strokeWidth="1.5" />
+          <text fill="#e0f2fe" fontSize="9" x={point.x + 7} y={point.y - 7}>
+            {CUBIC_BEZIER_CONTROL_POINTS[index]}
+          </text>
+        </g>
+      ))}
+    </svg>
+  );
+}
+
+function CubicBezierControlOverlay({
+  cameraScale,
+  controls,
+  onChange,
+}: Readonly<{
+  cameraScale: number;
+  controls: StudioCubicBezierCanvasControls;
+  onChange: (name: StudioCubicBezierPointName, point: Point) => void;
+}>) {
+  const [drag, setDrag] = useState<Readonly<{
+    name: StudioCubicBezierPointName;
+    point: Point;
+    pointerId: number;
+  }> | null>(null);
+  const pointFor = (name: StudioCubicBezierPointName) => (drag?.name === name ? drag.point : controls.points[name]);
+  const clientPoint = (event: PointerEvent<HTMLButtonElement>) => {
+    const canvas = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]");
+    if (!canvas) return null;
+    return cubicBezierOverlayPointFromViewport(
+      clientPointToViewport(canvas.getBoundingClientRect(), { x: event.clientX, y: event.clientY }),
+      cameraScale,
+    );
+  };
+  const start = pointFor("start");
+  const end = pointFor("end");
+  const control1 = pointFor("control1");
+  const control2 = pointFor("control2");
+  return (
+    <div className="pointer-events-none absolute inset-0 z-30" data-cubic-bezier-controls={controls.entityId}>
+      <svg aria-hidden="true" className="absolute inset-0 size-full" viewBox="0 0 640 360">
+        <g fill="none" stroke="#38bdf8" strokeDasharray="4 3" strokeWidth="1">
+          <line x1={start.x} x2={control1.x} y1={start.y} y2={control1.y} />
+          <line x1={end.x} x2={control2.x} y1={end.y} y2={control2.y} />
+        </g>
+      </svg>
+      {CUBIC_BEZIER_CONTROL_POINTS.map((name) => {
+        const point = pointFor(name);
+        const endpoint = name === "start" || name === "end";
+        return (
+          <button
+            aria-label={`Move Bézier ${name}`}
+            className={cn(
+              "pointer-events-auto absolute size-3 -translate-x-1/2 -translate-y-1/2 border border-sky-950 outline-none focus-visible:ring-2 focus-visible:ring-sky-200",
+              endpoint ? "bg-sky-300" : "rotate-45 bg-sky-500",
+            )}
+            data-cubic-bezier-control={name}
+            key={name}
+            onLostPointerCapture={() => setDrag(null)}
+            onPointerCancel={() => setDrag(null)}
+            onPointerDown={(event) => {
+              const point = clientPoint(event);
+              if (!point) return;
+              event.preventDefault();
+              event.stopPropagation();
+              event.currentTarget.setPointerCapture(event.pointerId);
+              setDrag({ name, point, pointerId: event.pointerId });
+            }}
+            onPointerMove={(event) => {
+              if (drag?.name !== name || drag.pointerId !== event.pointerId) return;
+              const point = clientPoint(event);
+              if (point) setDrag({ ...drag, point });
+            }}
+            onPointerUp={(event) => {
+              if (drag?.name !== name || drag.pointerId !== event.pointerId) return;
+              const point = clientPoint(event) ?? drag.point;
+              event.preventDefault();
+              event.stopPropagation();
+              event.currentTarget.releasePointerCapture(event.pointerId);
+              setDrag(null);
+              onChange(name, point);
+            }}
+            style={viewportPositionStyle(point)}
+            title={`Drag ${name}`}
+            type="button"
+          />
+        );
+      })}
+    </div>
+  );
+}
+
 /** Cancels the camera/entity CSS scales surrounding the interaction overlay so
  * an engine-projected visual AABB lands at its sampled pixel box once. */
 export function compensatePreparedGeometryForOverlayScales(
@@ -257,6 +365,10 @@ export function compensatePreparedGeometryForOverlayScales(
       y: STUDIO_VIEWPORT.height / 2 + (geometry.position.y - STUDIO_VIEWPORT.height / 2) / safeCameraScale,
     },
   };
+}
+
+export function cubicBezierOverlayPointFromViewport(point: Point, cameraScale: number): Point {
+  return compensatePreparedGeometryForOverlayScales({ dimensions: null, position: point }, cameraScale, 1).position;
 }
 
 /** Resolves hit geometry only from the exact prepared WebGPU frame. Imported
@@ -559,6 +671,8 @@ export function StudioCanvas({
   appliedTransactionIds,
   boundaryActive,
   cameraScale,
+  cubicBezierControls = null,
+  cubicBezierPenPoints = [],
   dragPreview,
   editableMotionIds,
   entities,
@@ -576,6 +690,7 @@ export function StudioCanvas({
   lockedEntityIds = new Set(),
   motionPaths,
   onCanvasPlace,
+  onCubicBezierControlChange,
   onCreateEmptyWorkspaceEntity,
   onCreateStarterComposition,
   onImageAssetDrop,
@@ -873,9 +988,11 @@ export function StudioCanvas({
             isCanvasInteractionTarget(event.target)
           )
             return;
-          onCanvasPlace(
-            clientPointToViewport(event.currentTarget.getBoundingClientRect(), { x: event.clientX, y: event.clientY }),
-          );
+          const point = clientPointToViewport(event.currentTarget.getBoundingClientRect(), {
+            x: event.clientX,
+            y: event.clientY,
+          });
+          onCanvasPlace(insertTool === "CubicBezier" ? cubicBezierOverlayPointFromViewport(point, cameraScale) : point);
         }}
         role="group"
       >
@@ -1193,6 +1310,14 @@ export function StudioCanvas({
               </div>
             );
           })}
+          <CubicBezierPenOverlay points={cubicBezierPenPoints} />
+          {cubicBezierControls && onCubicBezierControlChange ? (
+            <CubicBezierControlOverlay
+              cameraScale={cameraScale}
+              controls={cubicBezierControls}
+              onChange={onCubicBezierControlChange}
+            />
+          ) : null}
         </div>
         <AlignmentGuides guides={dragPreview?.guides ?? groupResizePreview?.guides ?? scalePreview?.guides ?? []} />
         {compositeSelectionBounds ? (

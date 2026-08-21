@@ -26,6 +26,7 @@ describe("Studio command shortcuts", () => {
     expect(key("n")).toBe("insert-number-line");
     expect(key("x")).toBe("insert-axes");
     expect(key("b")).toBe("insert-number-plane");
+    expect(key("k")).toBe("insert-cubic-bezier");
     expect(key("Delete")).toBe("delete");
     expect(key(" ")).toBe("play-pause");
   });

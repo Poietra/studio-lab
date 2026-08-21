@@ -10,6 +10,7 @@ import {
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioCreatedContentProgram,
+  replaceStudioCreatedCubicBezierProgram,
   replaceStudioCreatedDataSeriesProgram,
   replaceStudioEntityLifetimeProgram,
 } from "./authoring-commands";
@@ -540,6 +541,61 @@ describe("manual Studio authoring commands", () => {
     if (!appearance) return;
     expect(appearance.interval.end - appearance.interval.start).toBeCloseTo(STUDIO_STYLE_PROFILE.durationSeconds.brief);
     expect(result.validation.program.provenance.styleProfileRef).toEqual(styleProfileRef(STUDIO_STYLE_PROFILE));
+  });
+
+  it("keeps one canonical cubic primitive and four-point replacement in its creation Program", () => {
+    const cubicBezier = {
+      arrowEnd: false,
+      control1: { x: -1, y: 1 },
+      control2: { x: 1, y: -1 },
+      end: { x: 2, y: 0 },
+      start: { x: -2, y: 0 },
+      strokeCap: "round" as const,
+      strokeWidth: 0.04,
+    };
+    const created = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [
+        {
+          cubicBezier,
+          dimensions: { height: 2, width: 4 },
+          position: { x: 320, y: 180 },
+          type: "CubicBezier",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "insert-cubic-bezier",
+    });
+    expect(created.validation.kind).toBe("valid");
+    const entityId = created.entityIds[0]!;
+    expect(created.validation.program.operations[0]).toEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({ cubicBezier, dimensions: { height: 2, width: 4 }, type: "CubicBezier" }),
+        kind: "CreateEntity",
+      }),
+    );
+
+    const owner = programRecord(created.validation.program, created.validation);
+    const replacement = replaceStudioCreatedCubicBezierProgram({
+      cubicBezier: { ...cubicBezier, control1: { x: -0.5, y: 1 } },
+      dimensions: { height: 2, width: 4 },
+      entityId,
+      owner,
+      position: { x: 325, y: 175 },
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(replacement.kind).toBe("valid");
+    expect(replacement.program.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entity: expect.objectContaining({
+            cubicBezier: expect.objectContaining({ control1: { x: -0.5, y: 1 } }),
+          }),
+          kind: "CreateEntity",
+        }),
+        expect.objectContaining({ kind: "SetProperty", key: "position", value: { x: 325, y: 175 } }),
+      ]),
+    );
   });
 
   it("creates a manifest-backed Image through the canonical Program while reporting source export unsupported", () => {
