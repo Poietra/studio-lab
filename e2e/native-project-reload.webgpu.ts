@@ -64,14 +64,19 @@ async function scrubMotionClip(page: Page, clip: Locator, progress: number) {
     .toBeCloseTo(time, 1);
 }
 
-async function scrubEntranceClip(page: Page, clip: Locator, progress: number) {
+async function entranceClipTime(page: Page, clip: Locator, progress: number) {
   const slider = page.getByRole("slider", { name: "Scene playhead" });
   const sceneDuration = Number(await slider.getAttribute("max"));
   const placement = await clip.evaluate((element) => ({
     left: Number.parseFloat((element as HTMLElement).style.left),
     width: Number.parseFloat((element as HTMLElement).style.width),
   }));
-  const time = Number(((sceneDuration * (placement.left + placement.width * progress)) / 100).toFixed(2));
+  return Number(((sceneDuration * (placement.left + placement.width * progress)) / 100).toFixed(2));
+}
+
+async function scrubEntranceClip(page: Page, clip: Locator, progress: number) {
+  const slider = page.getByRole("slider", { name: "Scene playhead" });
+  const time = await entranceClipTime(page, clip, progress);
   await slider.fill(String(time));
   await expect
     .poll(async () => Number(await page.locator("[data-studio-canvas]").getAttribute("data-preview-sample-time")))
@@ -574,6 +579,113 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await page.getByRole("button", { name: "Group", exact: true }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(page.getByRole("button", { name: "Hide group of 2 objects" })).toBeEnabled();
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
+test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "MathTex Transform fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    const playhead = page.getByRole("slider", { name: "Scene playhead" });
+
+    await page.getByRole("button", { name: /Insert equation/ }).click();
+    await page.getByRole("textbox", { name: "MathTex" }).fill("E = mc^2");
+    await canvas.click({ position: { x: 400, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const root = page.getByRole("button", { name: "Move E = mc^2", exact: true });
+    const rootId = await root.getAttribute("data-studio-entity");
+    if (!rootId) throw new Error("The Studio MathTex did not expose its logical root id.");
+    const rootWrapper = page.locator(`[data-studio-entity-wrapper="${rootId}"]`);
+    await playhead.fill("1");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1, 1);
+
+    const target = page.getByRole("textbox", { name: /MathTex transform target of/ });
+    const transformDuration = page.getByRole("spinbutton", { name: /MathTex transform duration of/ });
+    await target.fill(String.raw`\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}`);
+    await transformDuration.fill("1");
+    await page.getByRole("button", { name: "Create Transform clip" }).click();
+    await expect(page.getByRole("button", { name: "Apply program" })).toBeEnabled();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    let transformClips = page.locator("[data-mathtex-transform-clip]");
+    await expect(transformClips).toHaveCount(1);
+    let firstClip = transformClips.nth(0);
+    await scrubEntranceClip(page, firstClip, 1);
+    await expect(page.getByRole("checkbox", { name: /Select \\nabla/ })).toHaveCount(1);
+    await expect(page.locator("[data-studio-entity-wrapper]")).toHaveCount(1);
+
+    await page.getByRole("textbox", { name: /MathTex transform target of/ }).fill("E = mc^2");
+    await page.getByRole("spinbutton", { name: /MathTex transform duration of/ }).fill("1");
+    await page.getByRole("combobox", { name: /MathTex transform easing of/ }).selectOption("linear");
+    await page.getByRole("button", { name: "Create Transform clip" }).click();
+    await expect(page.getByRole("button", { name: "Apply program" })).toBeEnabled();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    transformClips = page.locator("[data-mathtex-transform-clip]");
+    await expect(transformClips).toHaveCount(2);
+    firstClip = transformClips.nth(0);
+    let secondClip = transformClips.nth(1);
+    await scrubEntranceClip(page, secondClip, 1);
+    await expect(page.getByRole("checkbox", { name: "Select E = mc^2" })).toHaveCount(1);
+    await expect(rootWrapper).toHaveAttribute("data-studio-entity-wrapper", rootId);
+
+    await secondClip.click();
+    const durationEditor = page.getByRole("spinbutton", { name: /Transform duration for/ });
+    await durationEditor.fill("0.8");
+    await durationEditor.press("Enter");
+    await page.getByRole("combobox", { name: /Transform easing for/ }).selectOption("smooth");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    secondClip = page.locator("[data-mathtex-transform-clip]").nth(1);
+    await expect(secondClip).toHaveAttribute("title", /–2[.]80s · smooth$/u);
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.locator("[data-mathtex-transform-clip]").nth(1)).toHaveAttribute("title", /–3[.]00s · linear$/u);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(page.locator("[data-mathtex-transform-clip]").nth(1)).toHaveAttribute("title", /–2[.]80s · smooth$/u);
+    await page.getByRole("button", { name: "Undo" }).click();
+
+    secondClip = page.locator("[data-mathtex-transform-clip]").nth(1);
+    await secondClip.click();
+    await page.getByRole("button", { name: "Remove Transform" }).click();
+    await expect(page.locator("[data-mathtex-transform-clip]")).toHaveCount(1);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(page.locator("[data-mathtex-transform-clip]")).toHaveCount(2);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open MathTex Transform fixture workspace" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    transformClips = page.locator("[data-mathtex-transform-clip]");
+    await expect(transformClips).toHaveCount(2);
+    firstClip = transformClips.nth(0);
+    secondClip = transformClips.nth(1);
+    await expect(page.locator("[data-studio-entity-wrapper]")).toHaveCount(1);
+    await scrubEntranceClip(page, secondClip, 1);
+    const restoredRoot = page.getByRole("button", { name: "Move E = mc^2", exact: true });
+    await expect(restoredRoot).toHaveAttribute("data-studio-entity", rootId);
+
+    const sampleTimes = await Promise.all([
+      entranceClipTime(page, firstClip, 0),
+      entranceClipTime(page, firstClip, 0.5),
+      entranceClipTime(page, firstClip, 1),
+      entranceClipTime(page, secondClip, 0.5),
+      entranceClipTime(page, secondClip, 1),
+    ]);
+    const mp4 = await exportLocalMp4(page);
+    const pixels = await decodedBrightPixelCounts(page, mp4, sampleTimes);
+    expect(Math.max(...pixels) - Math.min(...pixels)).toBeGreaterThan(20);
+    expect(Math.abs((pixels[1] ?? 0) - (pixels[0] ?? 0))).toBeGreaterThan(10);
+    expect(Math.abs((pixels[3] ?? 0) - (pixels[4] ?? 0))).toBeGreaterThan(10);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
