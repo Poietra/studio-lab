@@ -41,6 +41,7 @@ pub struct StudioProjectedMotion {
     pub from: PointV1,
     pub interval: IntervalV1,
     pub operation_id: String,
+    pub orient_to_path: bool,
     pub source_interval: IntervalV1,
     pub target_entity_id: String,
     pub to: PointV1,
@@ -82,6 +83,7 @@ pub(super) struct PlannedSceneMotion {
     pub(super) easing: StudioMotionEasing,
     pub(super) initial_position: Option<PointV1>,
     pub(super) interval: IntervalV1,
+    pub(super) orient_to_path: bool,
     pub(super) target_entity_ids: Vec<String>,
 }
 
@@ -93,6 +95,7 @@ pub(super) struct PlannedStudioMotion {
     pub(super) easing: StudioMotionEasing,
     pub(super) interval: IntervalV1,
     pub(super) operation_id: String,
+    pub(super) orient_to_path: bool,
     pub(super) parallel: bool,
     pub(super) target_entity_ids: Vec<String>,
     pub(super) transaction_id: String,
@@ -116,6 +119,7 @@ struct PlannedEntityMotionSegment {
 #[derive(Clone, Debug, PartialEq)]
 struct PlannedEntityMotionPath {
     current: PointV1,
+    orient_to_path: bool,
     segments: Vec<PlannedEntityMotionSegment>,
     start: PointV1,
 }
@@ -441,6 +445,7 @@ pub(super) fn plan_studio_motion_edits(
                     start: interval.start + resolved_offset,
                 },
                 operation_id: operation.id().to_owned(),
+                orient_to_path: false,
                 parallel: program.requested_execution == SceneEditExecution::Parallel,
                 target_entity_ids: target_entity_ids.clone(),
                 transaction_id: program.transaction_id.clone(),
@@ -523,6 +528,7 @@ pub(super) fn project_studio_motion_plan(
                 from,
                 interval: motion.interval.clone(),
                 operation_id: motion.operation_id.clone(),
+                orient_to_path: motion.orient_to_path,
                 source_interval: motion.base_interval.clone(),
                 target_entity_id: target_entity_id.clone(),
                 to,
@@ -718,6 +724,7 @@ pub(super) fn append_planned_scene_motions(
                     entity_id.clone(),
                     PlannedEntityMotionPath {
                         current: start.clone(),
+                        orient_to_path: motion.orient_to_path,
                         segments: Vec::new(),
                         start,
                     },
@@ -726,6 +733,9 @@ pub(super) fn append_planned_scene_motions(
             let path = entity_paths
                 .get_mut(entity_id)
                 .ok_or_else(|| ApplyStudioMotionEditError::TargetMissing(entity_id.clone()))?;
+            if path.orient_to_path != motion.orient_to_path {
+                return Err(ApplyStudioMotionEditError::InvalidMotion);
+            }
             let segment =
                 quadratic_motion_segment(&path.current, &motion.delta, &motion.control_offset);
             path.current = segment.end.clone();
@@ -748,7 +758,7 @@ pub(super) fn append_planned_scene_motions(
                 entity_id,
                 id: channel_id,
                 keyframes: stitched_motion_keyframes(&path.start, &path.segments)?,
-                orient_to_path: false,
+                orient_to_path: path.orient_to_path,
                 parameterization: Some(MotionPathParameterizationV1::ManimPointFromProportionV1),
                 path: CubicPathV1 {
                     subpaths: vec![CubicSubpathV1 {
@@ -963,6 +973,7 @@ impl EngineSessionV1 {
                 easing: motion.easing,
                 initial_position: None,
                 interval: motion.interval.clone(),
+                orient_to_path: false,
                 target_entity_ids: runtime_entity_ids,
             });
         }
@@ -999,6 +1010,7 @@ impl EngineSessionV1 {
                 easing: command.easing,
                 initial_position: None,
                 interval: command.interval.clone(),
+                orient_to_path: false,
                 target_entity_ids: command.target_entity_ids,
             }],
             &[SceneTimelineInsertion {

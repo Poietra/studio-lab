@@ -342,6 +342,8 @@ pub enum StudioCreationOperationKind {
         delta: PointV1,
         easing: StudioMotionEasing,
         #[serde(default)]
+        orient_to_path: bool,
+        #[serde(default)]
         rotation_delta_radians: Option<f64>,
         target_entity_ids: Vec<String>,
     },
@@ -2611,6 +2613,7 @@ fn plan_studio_creation_edits(
     }
 
     let mut planned_motions = Vec::new();
+    let mut oriented_entity_ids = BTreeSet::new();
     let mut spun_entity_ids = BTreeSet::new();
     for program_index in followup_programs {
         let program = &programs[program_index];
@@ -2639,6 +2642,7 @@ fn plan_studio_creation_edits(
                     control_offset,
                     delta,
                     easing,
+                    orient_to_path,
                     rotation_delta_radians,
                     target_entity_ids,
                 } = &operation.kind
@@ -2661,7 +2665,7 @@ fn plan_studio_creation_edits(
                     .copied()
                     .filter(|delta| delta.is_finite() && *delta != 0.0);
                 if spin_requested != planned_rotation_delta.is_some()
-                    || planned_rotation_delta.is_some()
+                    || (planned_rotation_delta.is_some() || *orient_to_path)
                         && (operation_count != 1 || target_entity_ids.len() != 1)
                 {
                     return Err(ProjectStudioCreationEditError::Unsupported);
@@ -2699,10 +2703,14 @@ fn plan_studio_creation_edits(
                     easing: *easing,
                     interval: projected_interval.clone(),
                     operation_id: operation.id.clone(),
+                    orient_to_path: *orient_to_path,
                     parallel: program.requested_execution == SceneEditExecution::Parallel,
                     target_entity_ids: target_entity_ids.clone(),
                     transaction_id: program.transaction_id.clone(),
                 });
+                if *orient_to_path && !oriented_entity_ids.insert(target_entity_ids[0].clone()) {
+                    return Err(ProjectStudioCreationEditError::Unsupported);
+                }
                 if let Some(rotation_delta_radians) = planned_rotation_delta {
                     let entity_id = &target_entity_ids[0];
                     let state = entities
@@ -3277,13 +3285,17 @@ fn plan_studio_creation_edits(
         }
     }
 
-    if spun_entity_ids.iter().any(|entity_id| {
-        planned_motions
-            .iter()
-            .filter(|motion| motion.target_entity_ids.iter().any(|id| id == entity_id))
-            .count()
-            != 1
-    }) {
+    if spun_entity_ids
+        .iter()
+        .chain(&oriented_entity_ids)
+        .any(|entity_id| {
+            planned_motions
+                .iter()
+                .filter(|motion| motion.target_entity_ids.iter().any(|id| id == entity_id))
+                .count()
+                != 1
+        })
+    {
         return Err(ProjectStudioCreationEditError::Unsupported);
     }
 
@@ -4698,6 +4710,7 @@ impl EngineSessionV1 {
                     &self.scene().camera.view.center,
                 )),
                 interval: motion.interval.clone(),
+                orient_to_path: motion.orient_to_path,
                 target_entity_ids: vec![motion.target_entity_id.clone()],
             })
             .collect();
@@ -5187,6 +5200,7 @@ mod tests {
                     control_offset: PointV1 { x: 0.0, y: -160.0 },
                     delta: PointV1 { x: 240.0, y: -80.0 },
                     easing: StudioMotionEasing::Smooth,
+                    orient_to_path: false,
                     rotation_delta_radians: None,
                     target_entity_ids,
                 },
@@ -7030,9 +7044,15 @@ mod tests {
         entity.id = "tx:create/entity:arrow".to_owned();
         entity.kind = StudioAuthoringEntityKind::Arrow;
         entity.dimensions = StudioAuthoringDimensions::default();
-        command.programs.push(studio_created_motion_edit_input(vec![
-            "tx:create/entity:arrow".to_owned(),
-        ]));
+        let mut motion =
+            studio_created_motion_edit_input(vec!["tx:create/entity:arrow".to_owned()]);
+        let StudioCreationOperationKind::CreateMotion { orient_to_path, .. } =
+            &mut motion.operations[0].kind
+        else {
+            unreachable!();
+        };
+        *orient_to_path = true;
+        command.programs.push(motion);
 
         let projection =
             project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
@@ -7041,6 +7061,7 @@ mod tests {
             StudioAuthoringEntityKind::Arrow
         );
         assert_eq!(projection.motions.len(), 1);
+        assert!(projection.motions[0].orient_to_path);
 
         let mut session = EngineSessionV1::new(bundle).unwrap();
         let result = session.apply_studio_creation_edit(command).unwrap();
@@ -7083,11 +7104,44 @@ mod tests {
                 .any(|channel| {
                     matches!(
                         channel,
-                        AnimationChannelV1::MotionPath { entity_id, .. }
-                            if entity_id == "tx:create/entity:arrow"
+                        AnimationChannelV1::MotionPath {
+                            entity_id,
+                            orient_to_path: true,
+                            parameterization: Some(
+                                poietra_scene_ir::MotionPathParameterizationV1::ManimPointFromProportionV1
+                            ),
+                            ..
+                        } if entity_id == "tx:create/entity:arrow"
                     )
                 })
         );
+    }
+
+    #[test]
+    fn normalized_creation_rejects_stationary_path_orientation() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let mut motion = studio_created_motion_edit_input(vec![entity_id.to_owned()]);
+        let StudioCreationOperationKind::CreateMotion {
+            control_offset,
+            delta,
+            orient_to_path,
+            ..
+        } = &mut motion.operations[0].kind
+        else {
+            unreachable!();
+        };
+        *control_offset = PointV1 { x: 0.0, y: 0.0 };
+        *delta = PointV1 { x: 0.0, y: 0.0 };
+        *orient_to_path = true;
+        command.programs.push(motion);
+
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &command.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
     }
 
     #[test]

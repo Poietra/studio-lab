@@ -1959,6 +1959,7 @@ impl EngineSessionV1 {
                     easing: motion.easing,
                     initial_position: None,
                     interval: motion.interval.clone(),
+                    orient_to_path: false,
                     target_entity_ids: runtime_entity_ids,
                 });
             }

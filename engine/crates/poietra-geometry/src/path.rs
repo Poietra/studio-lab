@@ -423,51 +423,12 @@ fn tangent_is_zero(tangent: &PointV1) -> bool {
     tangent.x.hypot(tangent.y) <= TANGENT_EPSILON_V1
 }
 
-/// Samples path position by fixed-subdivision arc length.
-///
-/// Tangent lookup searches backward first, then forward, matching ADR 0002's
-/// cusp semantics. A wholly stationary path returns `None` instead of inventing
-/// a direction.
-///
-/// # Errors
-///
-/// Returns [`GeometryError::EmptyPath`] when the input is not structurally valid
-/// v1 cubic geometry.
-pub fn sample_cubic_path_v1(
-    path: &CubicPathV1,
-    progress: f64,
-) -> Result<PathSampleV1, GeometryError> {
-    let entries: Vec<_> = measured_segment_entries_by_subpath(path)?
-        .into_iter()
-        .flatten()
-        .collect();
-    let first_point = path
-        .subpaths
-        .first()
-        .ok_or(GeometryError::EmptyPath)?
-        .start
-        .clone();
-    let total_length: f64 = entries.iter().map(|entry| entry.length).sum();
-    if total_length == 0.0 {
-        return Ok(PathSampleV1 {
-            point: first_point,
-            tangent: None,
-        });
-    }
-
-    let mut target = total_length * progress.clamp(0.0, 1.0);
-    let mut selected_index = entries.len() - 1;
-    for (index, entry) in entries.iter().enumerate() {
-        selected_index = index;
-        if target <= entry.length {
-            break;
-        }
-        target -= entry.length;
-    }
-    let selected = &entries[selected_index];
-    let measurement = measure_cubic(selected.start, selected.segment.as_ref());
-    let parameter = parameter_at_length(&measurement, target);
-    let point = point_on_cubic_v1(selected.start, selected.segment.as_ref(), parameter);
+fn nearby_path_tangent(
+    entries: &[&SegmentEntry<'_>],
+    selected_index: usize,
+    parameter: f64,
+) -> Option<PointV1> {
+    let selected = entries[selected_index];
     let mut tangent = tangent_on_cubic(selected.start, selected.segment.as_ref(), parameter);
 
     for step in 1..=PATH_ARC_SUBDIVISIONS_V1 {
@@ -514,13 +475,64 @@ pub fn sample_cubic_path_v1(
         }
     }
 
+    (!tangent_is_zero(&tangent)).then_some(tangent)
+}
+
+/// Samples path position by fixed-subdivision arc length.
+///
+/// Tangent lookup searches backward first, then forward, matching ADR 0002's
+/// cusp semantics. A wholly stationary path returns `None` instead of inventing
+/// a direction.
+///
+/// # Errors
+///
+/// Returns [`GeometryError::EmptyPath`] when the input is not structurally valid
+/// v1 cubic geometry.
+pub fn sample_cubic_path_v1(
+    path: &CubicPathV1,
+    progress: f64,
+) -> Result<PathSampleV1, GeometryError> {
+    let entries: Vec<_> = measured_segment_entries_by_subpath(path)?
+        .into_iter()
+        .flatten()
+        .collect();
+    let first_point = path
+        .subpaths
+        .first()
+        .ok_or(GeometryError::EmptyPath)?
+        .start
+        .clone();
+    let total_length: f64 = entries.iter().map(|entry| entry.length).sum();
+    if total_length == 0.0 {
+        return Ok(PathSampleV1 {
+            point: first_point,
+            tangent: None,
+        });
+    }
+
+    let mut target = total_length * progress.clamp(0.0, 1.0);
+    let mut selected_index = entries.len() - 1;
+    for (index, entry) in entries.iter().enumerate() {
+        selected_index = index;
+        if target <= entry.length {
+            break;
+        }
+        target -= entry.length;
+    }
+    let selected = &entries[selected_index];
+    let measurement = measure_cubic(selected.start, selected.segment.as_ref());
+    let parameter = parameter_at_length(&measurement, target);
+    let point = point_on_cubic_v1(selected.start, selected.segment.as_ref(), parameter);
+    let tangent_entries = entries.iter().map(|entry| &entry.entry).collect::<Vec<_>>();
+
     Ok(PathSampleV1 {
         point,
-        tangent: (!tangent_is_zero(&tangent)).then_some(tangent),
+        tangent: nearby_path_tangent(&tangent_entries, selected_index, parameter),
     })
 }
 
-/// Mirrors `VMobject.point_from_proportion` for canonical two-dimensional cubics.
+/// Mirrors `VMobject.point_from_proportion` for canonical two-dimensional cubics
+/// and returns the tangent at the exact selected cubic parameter.
 ///
 /// Each serialized cubic receives a length estimated from ten equally spaced
 /// points (nine chords). The chosen cubic is then sampled with a uniform local
@@ -532,38 +544,45 @@ pub fn sample_cubic_path_v1(
 pub fn sample_cubic_path_manim_point_from_proportion_v1(
     path: &CubicPathV1,
     progress: f64,
-) -> Result<PointV1, GeometryError> {
+) -> Result<PathSampleV1, GeometryError> {
     let entries: Vec<_> = serialized_segment_entries_by_subpath(path)?
         .into_iter()
         .flatten()
         .collect();
     let last = entries.last().ok_or(GeometryError::EmptyPath)?;
-    if progress >= 1.0 {
-        return Ok(last.segment.end.clone());
-    }
-
-    let lengths: Vec<_> = entries
-        .iter()
-        .map(|entry| manim_cubic_chord_length_v1(entry.start, entry.segment.as_ref()))
-        .collect();
-    let target = progress.clamp(0.0, 1.0) * lengths.iter().sum::<f64>();
-    let mut current = 0.0;
-    for (entry, length) in entries.iter().zip(lengths) {
-        if current + length >= target {
-            let parameter = if length == 0.0 {
-                0.0
-            } else {
-                (target - current) / length
-            };
-            return Ok(point_on_cubic_v1(
-                entry.start,
-                entry.segment.as_ref(),
-                parameter,
-            ));
+    let (selected_index, parameter, point) = if progress >= 1.0 {
+        (entries.len() - 1, 1.0, last.segment.end.clone())
+    } else {
+        let lengths = entries
+            .iter()
+            .map(|entry| manim_cubic_chord_length_v1(entry.start, entry.segment.as_ref()))
+            .collect::<Vec<_>>();
+        let target = progress.clamp(0.0, 1.0) * lengths.iter().sum::<f64>();
+        let mut current = 0.0;
+        let mut selected = None;
+        for (index, (entry, length)) in entries.iter().zip(lengths).enumerate() {
+            if current + length >= target {
+                let parameter = if length == 0.0 {
+                    0.0
+                } else {
+                    (target - current) / length
+                };
+                selected = Some((
+                    index,
+                    parameter,
+                    point_on_cubic_v1(entry.start, entry.segment.as_ref(), parameter),
+                ));
+                break;
+            }
+            current += length;
         }
-        current += length;
-    }
-    Ok(last.segment.end.clone())
+        selected.unwrap_or((entries.len() - 1, 1.0, last.segment.end.clone()))
+    };
+    let tangent_entries = entries.iter().collect::<Vec<_>>();
+    Ok(PathSampleV1 {
+        point,
+        tangent: nearby_path_tangent(&tangent_entries, selected_index, parameter),
+    })
 }
 
 /// Interpolates matching cubic path topology component-wise.
@@ -904,28 +923,38 @@ mod tests {
             },
         );
         assert_eq!(
-            sample_cubic_path_manim_point_from_proportion_v1(&path, 0.0).unwrap(),
+            sample_cubic_path_manim_point_from_proportion_v1(&path, 0.0)
+                .unwrap()
+                .point,
             PointV1 { x: 0.0, y: 0.0 }
         );
         assert_eq!(
-            sample_cubic_path_manim_point_from_proportion_v1(&path, 0.5).unwrap(),
+            sample_cubic_path_manim_point_from_proportion_v1(&path, 0.5)
+                .unwrap()
+                .point,
             PointV1 { x: 1.0, y: 0.0 }
         );
         let mut all_zero = path.clone();
         all_zero.subpaths[0].segments.truncate(1);
         assert_eq!(
-            sample_cubic_path_manim_point_from_proportion_v1(&all_zero, 0.5).unwrap(),
+            sample_cubic_path_manim_point_from_proportion_v1(&all_zero, 0.5)
+                .unwrap()
+                .point,
             PointV1 { x: 0.0, y: 0.0 }
         );
 
         path.subpaths[0].segments.remove(0);
         path.subpaths[0].closed = true;
         assert_eq!(
-            sample_cubic_path_manim_point_from_proportion_v1(&path, 0.75).unwrap(),
+            sample_cubic_path_manim_point_from_proportion_v1(&path, 0.75)
+                .unwrap()
+                .point,
             PointV1 { x: 1.5, y: 0.0 }
         );
         assert_eq!(
-            sample_cubic_path_manim_point_from_proportion_v1(&path, 1.0).unwrap(),
+            sample_cubic_path_manim_point_from_proportion_v1(&path, 1.0)
+                .unwrap()
+                .point,
             PointV1 { x: 2.0, y: 0.0 }
         );
     }

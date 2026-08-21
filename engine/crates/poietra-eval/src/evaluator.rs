@@ -535,7 +535,7 @@ fn sample_local_entity(
                     apply_motion_path_v1(&transform, path, progress, *orient_to_path)?
                 }
                 Some(MotionPathParameterizationV1::ManimPointFromProportionV1) => {
-                    apply_manim_motion_path_v1(&transform, path, progress)?
+                    apply_manim_motion_path_v1(&transform, path, progress, *orient_to_path)?
                 }
             };
         }
