@@ -3,6 +3,7 @@ import {
   filterStudioCanvasEntitiesByVisibility,
   planStudioLayerGroup,
   planStudioLayerGroupOrder,
+  planStudioLayerGroupReorder,
   planStudioLayerOrder,
   planStudioLayerReorder,
   projectStudioLayers,
@@ -309,6 +310,28 @@ describe("Studio Layers paint order", () => {
         { entityId: "studio:a", fromSourceZIndex: 2, sourceZIndex: 13 / 3 },
         { entityId: "studio:b", fromSourceZIndex: 3, sourceZIndex: 14 / 3 },
       ],
+    });
+    expect(planStudioLayerGroupReorder(projected, targetGroupId, 0)).toEqual({
+      kind: "planned",
+      targets: [
+        { entityId: "studio:a", fromSourceZIndex: 2, sourceZIndex: 6 },
+        { entityId: "studio:b", fromSourceZIndex: 3, sourceZIndex: 7 },
+      ],
+    });
+    expect(planStudioLayerGroupReorder(projected, targetGroupId, 4)).toEqual({
+      kind: "planned",
+      targets: [
+        { entityId: "studio:a", fromSourceZIndex: 2, sourceZIndex: -2 },
+        { entityId: "studio:b", fromSourceZIndex: 3, sourceZIndex: -1 },
+      ],
+    });
+    expect(planStudioLayerGroupReorder(projected, targetGroupId, 2)).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/already/i),
+    });
+    expect(planStudioLayerGroupReorder(projected, targetGroupId, 5)).toMatchObject({
+      kind: "unavailable",
+      reason: expect.stringMatching(/outside/i),
     });
     expect(
       planStudioLayerGroupOrder(

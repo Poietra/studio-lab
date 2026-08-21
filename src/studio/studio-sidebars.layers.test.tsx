@@ -207,7 +207,8 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("Layers");
     expect(markup.indexOf("Select front")).toBeLessThan(markup.indexOf("Select back"));
     expect(markup).toMatch(/aria-label="Select front"[^>]*checked=""/);
-    expect(markup).toMatch(/draggable="true"[^>]*title="Drag to reorder this layer"/);
+    expect(markup).toMatch(/<span[^>]*draggable="true"[^>]*title="Drag to reorder this layer"/);
+    expect(markup).not.toMatch(/<li[^>]*draggable=/);
     expect(markup.match(/draggable="true"/g)).toHaveLength(1);
     expect(markup).toContain('title="Imported Manim object: z-order round-trip is not supported yet."');
     expect(markup).toContain('aria-label="Backward front"');
@@ -377,6 +378,7 @@ describe("WorkspaceSidebar Layers", () => {
         onDurationChange={vi.fn()}
         onEditAppliedProgram={vi.fn()}
         onLayerGroupOrder={vi.fn()}
+        onLayerGroupReorder={vi.fn()}
         onLayerOrder={vi.fn()}
         onLayerReorder={vi.fn()}
         onRedo={vi.fn()}
@@ -390,7 +392,9 @@ describe("WorkspaceSidebar Layers", () => {
       />,
     );
 
-    expect(markup).not.toContain('draggable="true"');
+    expect(markup).toMatch(/<span[^>]*draggable="true"[^>]*title="Drag to reorder this group"/);
+    expect(markup).not.toMatch(/<li[^>]*draggable=/);
+    expect(markup.match(/draggable="true"/g)).toHaveLength(1);
     expect(markup).toContain('aria-label="Hide group of 2 objects"');
     expect(markup).toMatch(/aria-label="Lock group of 2 objects"[^>]*aria-pressed="false"/);
     expect(markup).toContain('title="Hide group"');
