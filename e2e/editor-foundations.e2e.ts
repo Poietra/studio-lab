@@ -511,7 +511,7 @@ test("opens and byte-preserves a browser-imported Python file through export", a
   }
 });
 
-test("creates, persists, renames, and deletes a browser-managed workspace", { tag: "@ci-smoke" }, async ({ page }) => {
+test("creates, persists, renames, and deletes a browser-created workspace", { tag: "@ci-smoke" }, async ({ page }) => {
   let projectId: string | null = null;
   try {
     await page.goto("/");
