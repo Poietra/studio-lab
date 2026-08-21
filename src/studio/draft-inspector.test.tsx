@@ -99,6 +99,50 @@ describe("DraftInspector execution capabilities", () => {
     );
   });
 
+  it("offers path orientation for a Studio-created motion", () => {
+    const orientedMotion = { ...STUDIO_MOTION, orientToPath: true };
+    const validation = canonicalizeSuggestionProgram(orientedMotion, {
+      capturedPlayhead: 5,
+      origin: "direct-manipulation",
+      scene: STUDIO_CREATED_SCENE,
+      transactionId: "oriented-motion-inspector",
+    });
+    expect(validation.kind).toBe("valid");
+    const markup = renderToStaticMarkup(
+      <DraftInspector
+        error={null}
+        isApplying={false}
+        onApply={() => undefined}
+        onDiscard={() => undefined}
+        onOperationChange={() => undefined}
+        operation={orientedMotion}
+        record={programRecord(validation.program, validation)}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Follow path direction"');
+    expect(markup).toMatch(/<input[^>]*aria-label="Follow path direction"[^>]*checked=""/);
+    expect(markup).toMatch(/<dd class="mt-0.5 text-zinc-300">unsupported<\/dd>/);
+    expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
+  });
+
+  it("rejects path orientation for a source-bound target", () => {
+    const validation = canonicalizeSuggestionProgram(
+      { ...MOTION, orientToPath: true },
+      {
+        capturedPlayhead: 5,
+        origin: "direct-manipulation",
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "source-bound-motion-orientation",
+      },
+    );
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({ message: "Follow path direction requires exactly one Studio-created target." }),
+    );
+  });
+
   it("shows StyleProfile warnings without blocking Apply", () => {
     const validation = canonicalizeSuggestionProgram(MOTION, {
       capturedPlayhead: 5,

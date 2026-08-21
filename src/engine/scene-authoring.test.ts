@@ -672,6 +672,7 @@ describe("Scene authoring WASM adapter", () => {
           from: { x: 320, y: 180 },
           interval: { end: 1, start: 0 },
           operationId: "motion",
+          orientToPath: false,
           sourceInterval: { end: 1, start: 0 },
           targetEntityId: "replacement",
           to: { x: 360, y: 180 },
@@ -720,7 +721,10 @@ describe("Scene authoring WASM adapter", () => {
       },
     }));
 
-    await expect(project(studioMotionProjectionCommand)).resolves.toEqual(projection);
+    await expect(project(studioMotionProjectionCommand)).resolves.toEqual({
+      ...projection,
+      motions: projection.motions.map((motion) => ({ ...motion, orientToPath: false })),
+    });
     expect(calls).toEqual([studioMotionProjectionCommand]);
   });
 

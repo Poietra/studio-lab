@@ -302,6 +302,14 @@ describe("Canonical EditProgram source lowering", () => {
     );
   });
 
+  it("does not silently lower path orientation as translation only", () => {
+    const program = canonicalProgram([motionOperation({ orientToPath: true })], "client-motion-orientation");
+
+    expect(() => lowerCanonicalProgramSource(source, request(program), { height: 8, width: 14.222 }, null)).toThrow(
+      /path orientation is available in the canonical client preview and video export, but not Manim source export/i,
+    );
+  });
+
   it("lowers Studio-created Text with the preview font and canonical size", () => {
     const entityId = "tx:created-text/entity:label";
     const create = canonicalProgram(

@@ -6,6 +6,7 @@ import {
   adjustAppliedMotionClipControl,
   appliedMotionClipReadOnlyReason,
   retimeAppliedMotionClip,
+  setMotionOrientToPath,
   setMotionSpinDegrees,
 } from "./motion-clip-edit";
 import { samplePropertyValue } from "./property-sampling";
@@ -101,6 +102,26 @@ describe("applied motion clip editing", () => {
     expect(retimed.kind).toBe("valid");
     if (retimed.kind !== "valid" || retimed.operation.kind !== "create-motion") return;
     expect(retimed.operation.rotationDeltaRadians).toBeCloseTo(2 * Math.PI);
+  });
+
+  it("adds, removes, and preserves path orientation", () => {
+    const orientedStep = setMotionOrientToPath(studioMotion, true);
+    expect(orientedStep.orientToPath).toBe(true);
+    expect(setMotionOrientToPath(orientedStep, false)).not.toHaveProperty("orientToPath");
+
+    const oriented = { ...studioMotion, orientToPath: orientedStep.orientToPath } satisfies EditSuggestionOperation;
+    const program = canonical(oriented, studioScene);
+    const canonicalMotion = program.operations.find((operation) => operation.kind === "CreateMotion");
+    expect(canonicalMotion).toMatchObject({ orientToPath: true });
+    if (!canonicalMotion) throw new Error("Expected a canonical motion.");
+    const retimed = retimeAppliedMotionClip({
+      duration: 2,
+      operation: oriented,
+      operationId: canonicalMotion.id,
+      program,
+      start: 7,
+    });
+    expect(retimed).toMatchObject({ kind: "valid", operation: { orientToPath: true } });
   });
 
   it("retimes every parallel step as one composed interval", () => {

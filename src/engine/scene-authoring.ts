@@ -271,6 +271,7 @@ export type StudioProjectedMotionV1 = Readonly<{
   from: Readonly<{ x: number; y: number }>;
   interval: Readonly<{ end: number; start: number }>;
   operationId: string;
+  orientToPath: boolean;
   sourceInterval: Readonly<{ end: number; start: number }>;
   targetEntityId: string;
   to: Readonly<{ x: number; y: number }>;
@@ -539,6 +540,7 @@ const studioProjectedMotionV1Schema = z
     from: studioStaticRootPointV1Schema,
     interval: studioTimelineProjectionIntervalV1Schema,
     operationId: z.string().min(1),
+    orientToPath: z.boolean().default(false),
     sourceInterval: studioTimelineProjectionIntervalV1Schema,
     targetEntityId: z.string().min(1),
     to: studioStaticRootPointV1Schema,
@@ -1015,6 +1017,7 @@ type StudioCreationOperationV1 = Readonly<{
         delta: Readonly<{ x: number; y: number }>;
         easing: "linear" | "smooth";
         kind: "create-motion";
+        orientToPath?: boolean;
         rotationDeltaRadians?: number;
         targetEntityIds: readonly string[];
       }>
