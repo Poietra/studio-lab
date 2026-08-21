@@ -193,74 +193,18 @@ describe("DraftInspector execution capabilities", () => {
     expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
   });
 
-  it("shows the shared apply/lowering contract and disables blocked Apply", () => {
+  it("directs approximate CameraFocus suggestions to the exact Inspector controls", () => {
     const validation = canonicalizeSuggestionProgram(CAMERA_FOCUS, {
       capturedPlayhead: 4.42,
       origin: "remote-model",
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "camera-focus-inspector",
     });
-    expect(validation.kind).toBe("valid");
-    const markup = renderToStaticMarkup(
-      <DraftInspector
-        error="A newer transient error."
-        isApplying={false}
-        onApply={() => undefined}
-        onDiscard={() => undefined}
-        onOperationChange={() => undefined}
-        operation={null}
-        record={programRecord(validation.program, validation)}
-      />,
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        message: expect.stringMatching(/exact prepared WebGPU bounds.*Studio Inspector Camera controls/),
+      }),
     );
-
-    expect(markup).toContain("Apply");
-    expect(markup).toContain("Lowering");
-    expect(markup).toContain(
-      "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
-    );
-    expect(markup).not.toContain("A newer transient error.");
-    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
-
-    const replacementMarkup = renderToStaticMarkup(
-      <DraftInspector
-        applyLabel="Replace program"
-        error={null}
-        isApplying={false}
-        onApply={() => undefined}
-        onDiscard={() => undefined}
-        onOperationChange={() => undefined}
-        operation={null}
-        record={programRecord(validation.program, validation)}
-      />,
-    );
-    expect(replacementMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Replace program<\/button>/);
-
-    const applyingMarkup = renderToStaticMarkup(
-      <DraftInspector
-        error={null}
-        isApplying
-        onApply={() => undefined}
-        onDiscard={() => undefined}
-        onOperationChange={() => undefined}
-        operation={null}
-        record={programRecord(validation.program, validation)}
-      />,
-    );
-    expect(applyingMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Checking source…<\/button>/);
-
-    const unavailablePreviewMarkup = renderToStaticMarkup(
-      <DraftInspector
-        editingDisabled
-        error="Canonical preview is unavailable."
-        isApplying={false}
-        onApply={() => undefined}
-        onDiscard={() => undefined}
-        onOperationChange={() => undefined}
-        operation={null}
-        record={programRecord(validation.program, validation)}
-      />,
-    );
-    expect(unavailablePreviewMarkup).toMatch(/<fieldset[^>]*disabled=""/);
-    expect(unavailablePreviewMarkup).toMatch(/<button[^>]*>Discard<\/button>/);
   });
 });

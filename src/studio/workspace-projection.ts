@@ -152,6 +152,18 @@ function sameProjectionDimensions(
   });
 }
 
+function sameProjectionCameraView(
+  left: Readonly<{ center: Readonly<{ x: number; y: number }>; frameHeight: number; frameWidth: number }>,
+  right: Readonly<{ center: Readonly<{ x: number; y: number }>; frameHeight: number; frameWidth: number }>,
+) {
+  return (
+    sameProjectionNumber(left.center.x, right.center.x) &&
+    sameProjectionNumber(left.center.y, right.center.y) &&
+    sameProjectionNumber(left.frameHeight, right.frameHeight) &&
+    sameProjectionNumber(left.frameWidth, right.frameWidth)
+  );
+}
+
 function isFiniteProjectionPoint(point: Readonly<{ x: number; y: number }>) {
   return Number.isFinite(point.x) && Number.isFinite(point.y);
 }
@@ -319,6 +331,7 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "WriteIn") return "write-in";
   if (operation.kind === "TransformContent") return "math-tex-transform";
   if (operation.kind === "TransformShape") return "shape-transform";
+  if (operation.kind === "AnimateCamera") return "animate-camera";
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") return "rotation";
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
   if (operation.kind === "ResizeEntity") return "resize";
@@ -544,13 +557,29 @@ function correlateCreationProjection(
         operation.interval.end - operation.interval.start,
       ) &&
       sameProjectionNumber(shapeTransformInsertion.duration, operation.interval.end - operation.interval.start);
+    const cameraInsertion = expected ? insertionsByTransaction.get(expected.program.transactionId) : undefined;
+    const isCorrelatedCamera =
+      operation?.kind === "AnimateCamera" &&
+      cameraInsertion !== undefined &&
+      mutation.kind === "animate-camera" &&
+      mutation.easing.kind === (operation.easing === "smooth" ? "manim-smooth" : "linear") &&
+      sameProjectionCameraView(mutation.fromView, operation.from) &&
+      sameProjectionCameraView(mutation.toView, operation.to) &&
+      sameProjectionNumber(mutation.interval.start, cameraInsertion.at) &&
+      sameProjectionNumber(
+        mutation.interval.end - mutation.interval.start,
+        operation.interval.end - operation.interval.start,
+      ) &&
+      sameProjectionNumber(cameraInsertion.duration, operation.interval.end - operation.interval.start);
     const isCorrelatedMutation =
       operation?.kind !== "TransformContent" &&
       operation?.kind !== "TransformShape" &&
+      operation?.kind !== "AnimateCamera" &&
       operation?.kind !== "DrawIn" &&
       operation?.kind !== "WriteIn" &&
       expectedMutationKind !== null &&
       expectedMutationKind === mutation.kind &&
+      "entityId" in mutation &&
       mutation.entityId === (operation && "entityId" in operation ? operation.entityId : undefined);
     if (
       !expected ||
@@ -559,6 +588,7 @@ function correlateCreationProjection(
       (!isCorrelatedMutation &&
         !isCorrelatedMathTexTransform &&
         !isCorrelatedShapeTransform &&
+        !isCorrelatedCamera &&
         !isCorrelatedSpin &&
         !isCorrelatedDraw &&
         !isCorrelatedWrite)
@@ -977,6 +1007,11 @@ function appendProjectedMutation(
   mutation: StudioBoundEntityProjectionV1 | StudioCreationProjectionMutationV1 | StudioStaticRootMutationV1,
   projectedDuration?: number,
 ) {
+  if (mutation.kind === "animate-camera") {
+    // The exact prepared interaction bounds already include the sampled Rust
+    // camera. Adding a TypeScript camera channel would transform overlays twice.
+    return;
+  }
   const entityId = "studioEntityId" in mutation ? mutation.studioEntityId : mutation.entityId;
   const metadata = {
     operationId: mutation.operationId,
@@ -1384,7 +1419,7 @@ function projectCreationWorkingState(
 
   const recordedMotionOperationIds = new Set<string>();
   for (const { mutation, operation, program } of correlated.mutations) {
-    if (!draft.entities[mutation.entityId]) {
+    if (mutation.kind !== "animate-camera" && !draft.entities[mutation.entityId]) {
       throw new TypeError(`Creation mutation ${mutation.operationId} targets a missing projected entity.`);
     }
     appendProjectedOperationRecord(draft, operation, program, mutation.interval);

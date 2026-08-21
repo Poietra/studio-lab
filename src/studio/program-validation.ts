@@ -84,6 +84,7 @@ function sourceAnimationEasing(operation: SceneEditOperation): MotionEasing | nu
     return operation.easing;
   if (operation.kind === "TransformContent") return operation.easing ?? "smooth";
   if (operation.kind === "TransformShape") return operation.easing;
+  if (operation.kind === "AnimateCamera") return operation.easing;
   if (operation.kind === "ChangePresence" || operation.kind === "ResizeEntity") return "smooth";
   return null;
 }

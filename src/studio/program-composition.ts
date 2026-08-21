@@ -18,6 +18,7 @@ export function insertedProgramDuration(program: SceneEdit) {
       operation.kind === "ResizeEntity" ||
       operation.kind === "TransformContent" ||
       operation.kind === "TransformShape" ||
+      operation.kind === "AnimateCamera" ||
       (operation.kind === "AnimateProperty" && operation.key === "scale" && operation.timelineTrack !== true) ||
       (operation.kind === "InsertTimelineEvent" &&
         !isSceneDurationOperation(operation) &&
@@ -207,7 +208,7 @@ function remapOperation(operation: SceneEditOperation, offset: number, maps: IdM
     case "InsertSceneBoundary":
       return { ...operation, ...base, at: operation.at + offset };
     case "InsertTimelineEvent":
-    case "ChangeCamera":
+    case "AnimateCamera":
       return { ...operation, ...base };
     case "TrimSceneDuration":
       return {

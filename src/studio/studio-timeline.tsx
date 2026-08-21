@@ -2,6 +2,7 @@ import { type KeyboardEvent, type PointerEvent, useRef, useState } from "react";
 
 import { STUDIO_PROPERTY_KEYFRAME_EASINGS, type StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import { cn } from "../lib/cn";
+import type { CameraClipEasing, CameraView } from "./camera-clip-edit";
 import type { DrawInEasing } from "./draw-in-edit";
 import { LOCKED_ENTITY_MUTATION_MESSAGE } from "./entity-lock";
 import {
@@ -28,6 +29,7 @@ export type StudioTimelineProps = Readonly<{
   appliedMotionClips: readonly AppliedMotionClip[];
   appliedTransactionIds: ReadonlySet<string>;
   currentTime: number;
+  cameraClips?: readonly StudioCameraTimelineClip[];
   duration: number;
   drawInClips: readonly StudioDrawInTimelineClip[];
   drawInAvailability: ReadonlyMap<string, string | null>;
@@ -55,6 +57,9 @@ export type StudioTimelineProps = Readonly<{
   writeInAvailability: ReadonlyMap<string, string | null>;
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
   onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
+  onCameraClipChange?: (clip: StudioCameraTimelineClip, change: StudioCameraClipChange) => void;
+  onCameraClipDelete?: (clip: StudioCameraTimelineClip) => void;
+  onCameraClipSelect?: (clip: StudioCameraTimelineClip) => void;
   onDrawInAdd: (entityId: string) => void;
   onDrawInChange: (clip: StudioDrawInTimelineClip, change: StudioDrawInClipChange) => void;
   onDrawInDelete: (clip: StudioDrawInTimelineClip) => void;
@@ -179,6 +184,55 @@ export type StudioShapeTransformClipChange = Readonly<{
   duration?: number;
   easing?: ShapeTransformEasing;
 }>;
+
+export type StudioCameraTimelineClip = Readonly<{
+  easing: CameraClipEasing;
+  from: CameraView;
+  interval: Interval;
+  maximumDuration: number;
+  operationId: string;
+  readOnlyReason: string | null;
+  to: CameraView;
+  transactionId: string;
+}>;
+
+export type StudioCameraClipChange = Readonly<{
+  duration?: number;
+  easing?: CameraClipEasing;
+}>;
+
+function CameraDurationInput({
+  clip,
+  onCommit,
+}: Readonly<{ clip: StudioCameraTimelineClip; onCommit: (duration: number) => void }>) {
+  const duration = Math.max(0.1, clip.interval.end - clip.interval.start);
+  const [draft, setDraft] = useState(String(duration));
+  function commit() {
+    const next = Number(draft);
+    if (!Number.isFinite(next) || next < 0.1 || next > clip.maximumDuration) {
+      setDraft(String(duration));
+      return;
+    }
+    if (Math.abs(next - duration) > 0.0005) onCommit(next);
+  }
+  return (
+    <input
+      aria-label="Camera duration"
+      className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-sky-500"
+      disabled={clip.readOnlyReason !== null}
+      max={clip.maximumDuration}
+      min="0.1"
+      onBlur={commit}
+      onChange={(event) => setDraft(event.currentTarget.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+      step="0.1"
+      type="number"
+      value={draft}
+    />
+  );
+}
 
 function EntranceDurationInput({
   clip,
@@ -711,6 +765,7 @@ export function StudioTimeline({
   anchors,
   appliedMotionClips,
   appliedTransactionIds,
+  cameraClips = [],
   currentTime,
   duration,
   drawInClips,
@@ -739,6 +794,9 @@ export function StudioTimeline({
   writeInAvailability,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
+  onCameraClipChange,
+  onCameraClipDelete,
+  onCameraClipSelect,
   onDrawInAdd,
   onDrawInChange,
   onDrawInDelete,
@@ -800,6 +858,17 @@ export function StudioTimeline({
     : EMPTY_LIFETIME_CONTROLS;
   const editingMotionClip = editingAppliedTransactionId
     ? (appliedMotionClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
+    : null;
+  const selectedCameraClip = editingAppliedTransactionId
+    ? (cameraClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
+    : null;
+  const editingCameraClip = selectedCameraClip
+    ? {
+        ...selectedCameraClip,
+        readOnlyReason: readOnly
+          ? "The timeline is read-only."
+          : (selectedCameraClip.readOnlyReason ?? (!onCameraClipChange ? "Camera clip editing is unavailable." : null)),
+      }
     : null;
   const selectedDrawInClip = editingAppliedTransactionId
     ? (drawInClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
@@ -1067,6 +1136,50 @@ export function StudioTimeline({
           </button>
           {editingMathTexTransformClip.readOnlyReason ? (
             <span className="text-amber-500">{editingMathTexTransformClip.readOnlyReason}</span>
+          ) : (
+            <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
+          )}
+        </div>
+      ) : null}
+      {editingCameraClip ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="text-sky-300">Camera</span>
+          <div className="flex items-center gap-1 text-zinc-500">
+            Duration
+            <CameraDurationInput
+              clip={editingCameraClip}
+              key={`${editingCameraClip.transactionId}/${editingCameraClip.interval.start}/${editingCameraClip.interval.end}/${editingCameraClip.maximumDuration}`}
+              onCommit={(duration) => onCameraClipChange?.(editingCameraClip, { duration })}
+            />
+            s
+          </div>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label="Camera easing"
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-sky-500"
+              disabled={editingCameraClip.readOnlyReason !== null}
+              onChange={(event) =>
+                onCameraClipChange?.(editingCameraClip, {
+                  easing: event.currentTarget.value as CameraClipEasing,
+                })
+              }
+              value={editingCameraClip.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={editingCameraClip.readOnlyReason !== null || !onCameraClipDelete}
+            onClick={() => onCameraClipDelete?.(editingCameraClip)}
+            type="button"
+          >
+            Remove Camera clip
+          </button>
+          {editingCameraClip.readOnlyReason ? (
+            <span className="text-amber-500">{editingCameraClip.readOnlyReason}</span>
           ) : (
             <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
           )}
@@ -1641,6 +1754,43 @@ export function StudioTimeline({
                   type="button"
                 />
               ))}
+              <TimelinePlayhead currentTime={currentTime} duration={duration} />
+            </div>
+          </div>
+          <div
+            className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]"
+            data-camera-track
+          >
+            <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-sky-300">Camera</div>
+            <div className="relative h-8 min-w-0 overflow-hidden">
+              {cameraClips.map((clip) => {
+                const readOnlyReason = readOnly
+                  ? "The timeline is read-only."
+                  : (clip.readOnlyReason ?? (!onCameraClipSelect ? "Camera clip editing is unavailable." : null));
+                const displayedClip = { ...clip, readOnlyReason };
+                return (
+                  <button
+                    aria-label="Edit Camera clip"
+                    className={cn(
+                      "absolute top-1 z-10 h-5 min-w-2 border border-sky-500 bg-sky-950/90 px-1 text-left text-[9px] leading-4 text-sky-200 hover:bg-sky-900",
+                      editingAppliedTransactionId === clip.transactionId && "ring-1 ring-sky-300",
+                      readOnlyReason && "cursor-not-allowed border-zinc-700 bg-zinc-900 text-zinc-600",
+                    )}
+                    data-camera-clip={clip.operationId}
+                    disabled={readOnlyReason !== null}
+                    key={clip.operationId}
+                    onClick={() => onCameraClipSelect?.(displayedClip)}
+                    style={timelineIntervalStyle(clip.interval, duration)}
+                    title={
+                      readOnlyReason ??
+                      `Camera ${clip.interval.start.toFixed(2)}–${clip.interval.end.toFixed(2)}s · ${clip.easing}`
+                    }
+                    type="button"
+                  >
+                    <span className="block truncate">Camera</span>
+                  </button>
+                );
+              })}
               <TimelinePlayhead currentTime={currentTime} duration={duration} />
             </div>
           </div>

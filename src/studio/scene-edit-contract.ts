@@ -216,9 +216,22 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     kind: z.literal("InsertSceneBoundary"),
   }),
   operationBaseSchema.extend({
-    kind: z.literal("ChangeCamera"),
-    property: z.enum(["position", "rotation", "scale"]),
-    value: z.union([z.number(), pointSchema]),
+    easing: z.enum(["linear", "smooth"]),
+    from: z
+      .object({
+        center: pointSchema,
+        frameHeight: z.number().finite().positive(),
+        frameWidth: z.number().finite().positive(),
+      })
+      .strict(),
+    kind: z.literal("AnimateCamera"),
+    to: z
+      .object({
+        center: pointSchema,
+        frameHeight: z.number().finite().positive(),
+        frameWidth: z.number().finite().positive(),
+      })
+      .strict(),
   }),
 ]);
 

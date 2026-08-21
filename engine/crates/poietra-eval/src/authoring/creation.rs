@@ -5,9 +5,9 @@ use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetReferenceV1, ContractVersionV1, CubicPathV1,
     CubicSegmentV1, CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1,
     FragmentMaterialV1, ImageLocalRectV1, ImageSamplerV1, IntervalV1, KeyframeV1,
-    PathTrimParameterizationV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
-    SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
-    SceneSourceV1, VectorAppearanceValueV1,
+    MAX_COORDINATE_V1, PathTrimParameterizationV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1,
+    RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1,
+    SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
@@ -147,6 +147,7 @@ struct CreateSceneEntity {
 
 #[derive(Clone, Debug, PartialEq)]
 struct CreateSceneEntitiesCommand {
+    camera_animation: Option<PlannedStudioCameraAnimation>,
     entities: Vec<CreateSceneEntity>,
     expected_base_revision: String,
     groups: Vec<PlannedStudioLogicalGroup>,
@@ -196,6 +197,11 @@ pub struct StudioCreationImageSpec {
     rename_all_fields = "camelCase"
 )]
 pub enum StudioCreationProjectedMutationKind {
+    AnimateCamera {
+        easing: EasingV1,
+        from_view: SceneCameraViewV1,
+        to_view: SceneCameraViewV1,
+    },
     Position {
         value: PointV1,
     },
@@ -282,6 +288,7 @@ pub enum StudioCreationProjectedMutationKind {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioCreationProjectedMutation {
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub entity_id: String,
     pub interval: IntervalV1,
     #[serde(flatten)]
@@ -377,6 +384,11 @@ pub enum StudioCreationOperationKind {
         from_shape: StudioAuthoringEntityKind,
         to_dimensions: StudioAuthoringDimensions,
         to_shape: StudioAuthoringEntityKind,
+    },
+    AnimateCamera {
+        easing: StudioPropertyEasing,
+        from_view: SceneCameraViewV1,
+        to_view: SceneCameraViewV1,
     },
     UniformScale {
         control_present: bool,
@@ -516,8 +528,10 @@ pub enum CreateSceneEntitiesError {
     RevisionDidNotAdvance,
     #[error("the timeline insertion must be finite, non-negative, and start inside the base Scene")]
     InvalidTimelineInsertion,
-    #[error("an entity creation command must contain at least one entity")]
+    #[error("a Studio creation command must contain an entity or camera animation")]
     EmptyBatch,
+    #[error("the Studio camera animation does not match the base Scene camera contract")]
+    InvalidCameraAnimation,
     #[error("the entity creation provenance must use the Studio Edit Program origin")]
     InvalidProvenanceOrigin,
     #[error("created entity fade-in must end inside its lifetime")]
@@ -574,6 +588,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::WriteIn { .. }
             | StudioCreationOperationKind::TransformContent { .. }
             | StudioCreationOperationKind::TransformShape { .. }
+            | StudioCreationOperationKind::AnimateCamera { .. }
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Rotation { .. }
             | StudioCreationOperationKind::Opacity { .. }
@@ -766,6 +781,20 @@ struct PlannedStudioShapeTransform {
     transaction_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedStudioCameraClip {
+    easing: EasingV1,
+    from_view: SceneCameraViewV1,
+    interval: IntervalV1,
+    to_view: SceneCameraViewV1,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedStudioCameraAnimation {
+    initial_view: SceneCameraViewV1,
+    keyframes: Vec<KeyframeV1<SceneCameraViewV1>>,
+}
+
 struct StudioCreationTimelinePlan {
     insertions: Vec<StudioMotionProjectionInsertion>,
     offsets: Vec<f64>,
@@ -797,6 +826,7 @@ fn studio_creation_insertion_duration(program: &StudioCreationEditInput) -> f64 
                     StudioCreationOperationKind::CreateMotion { .. }
                         | StudioCreationOperationKind::TransformContent { .. }
                         | StudioCreationOperationKind::TransformShape { .. }
+                        | StudioCreationOperationKind::AnimateCamera { .. }
                 )
             }
         })
@@ -915,6 +945,7 @@ fn shift_studio_creation_time(
 }
 
 struct StudioCreationPlan {
+    camera_animation: Option<PlannedStudioCameraAnimation>,
     entities: Vec<PlannedStudioCreationEntity>,
     groups: Vec<PlannedStudioLogicalGroup>,
     motion_projection: StudioMotionProjection,
@@ -1075,6 +1106,81 @@ fn property_easing(easing: StudioPropertyEasing) -> EasingV1 {
             y2: 1.0,
         },
     }
+}
+
+fn studio_camera_view_is_bounded(view: &SceneCameraViewV1) -> bool {
+    view.center.x.is_finite()
+        && view.center.y.is_finite()
+        && (-MAX_COORDINATE_V1..=MAX_COORDINATE_V1).contains(&view.center.x)
+        && (-MAX_COORDINATE_V1..=MAX_COORDINATE_V1).contains(&view.center.y)
+        && view.frame_width.is_finite()
+        && view.frame_width > 0.0
+        && view.frame_width <= MAX_COORDINATE_V1
+        && view.frame_height.is_finite()
+        && view.frame_height > 0.0
+        && view.frame_height <= MAX_COORDINATE_V1
+        && (view.frame_width / view.frame_height).is_finite()
+}
+
+fn studio_camera_views_match(left: &SceneCameraViewV1, right: &SceneCameraViewV1) -> bool {
+    close_transform_baseline_value(left.center.x, right.center.x)
+        && close_transform_baseline_value(left.center.y, right.center.y)
+        && close_transform_baseline_value(left.frame_width, right.frame_width)
+        && close_transform_baseline_value(left.frame_height, right.frame_height)
+}
+
+fn studio_camera_aspects_match(left: &SceneCameraViewV1, right: &SceneCameraViewV1) -> bool {
+    close_transform_baseline_value(
+        left.frame_width / left.frame_height,
+        right.frame_width / right.frame_height,
+    )
+}
+
+fn studio_camera_view_is_within_zoom_bounds(
+    initial: &SceneCameraViewV1,
+    candidate: &SceneCameraViewV1,
+) -> bool {
+    let width_scale = candidate.frame_width / initial.frame_width;
+    let height_scale = candidate.frame_height / initial.frame_height;
+    (1.0 / 16.0..=4.0).contains(&width_scale) && (1.0 / 16.0..=4.0).contains(&height_scale)
+}
+
+fn planned_studio_camera_animation(
+    clips: &[PlannedStudioCameraClip],
+) -> Option<PlannedStudioCameraAnimation> {
+    let first = clips.first()?;
+    let mut keyframes = Vec::with_capacity(clips.len() * 2 + 1);
+    keyframes.push(KeyframeV1 {
+        at: first.interval.start,
+        easing_to_next: Some(first.easing.clone()),
+        value: first.from_view.clone(),
+    });
+    for pair in clips.windows(2) {
+        let prior = &pair[0];
+        let next = &pair[1];
+        if next.interval.start > prior.interval.end + TIMELINE_ANCHOR_EPSILON {
+            keyframes.push(KeyframeV1 {
+                at: prior.interval.end,
+                easing_to_next: Some(EasingV1::Linear {}),
+                value: prior.to_view.clone(),
+            });
+        }
+        keyframes.push(KeyframeV1 {
+            at: next.interval.start,
+            easing_to_next: Some(next.easing.clone()),
+            value: next.from_view.clone(),
+        });
+    }
+    let final_clip = clips.last()?;
+    keyframes.push(KeyframeV1 {
+        at: final_clip.interval.end,
+        easing_to_next: None,
+        value: final_clip.to_view.clone(),
+    });
+    Some(PlannedStudioCameraAnimation {
+        initial_view: first.from_view.clone(),
+        keyframes,
+    })
 }
 
 fn closed_studio_uniform_scale_track(
@@ -1754,7 +1860,20 @@ fn plan_studio_creation_edits(
             })
         })
         .collect::<Vec<_>>();
-    if create_programs.is_empty() {
+    let camera_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| {
+            programs[*index].operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::AnimateCamera { .. }
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if create_programs.is_empty() && camera_programs.is_empty() {
         return Err(ProjectStudioCreationEditError::Unsupported);
     }
     let opacity_programs = timeline
@@ -1989,6 +2108,7 @@ fn plan_studio_creation_edits(
                 && !rotation_programs.contains(index)
                 && !math_tex_transform_programs.contains(index)
                 && !hierarchy_programs.contains(index)
+                && !camera_programs.contains(index)
         })
         .collect::<Vec<_>>();
 
@@ -2093,6 +2213,7 @@ fn plan_studio_creation_edits(
                 StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::TransformShape { .. }
+                | StudioCreationOperationKind::AnimateCamera { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -2139,6 +2260,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::TransformShape { .. }
+                | StudioCreationOperationKind::AnimateCamera { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -2189,8 +2311,98 @@ fn plan_studio_creation_edits(
         }
     }
 
-    let mut entities = Vec::with_capacity(create_records.len());
     let mut ranked_mutations = Vec::new();
+    let mut camera_clips = Vec::with_capacity(camera_programs.len());
+    for program_index in &camera_programs {
+        let program = &programs[*program_index];
+        if program.origin != StudioAuthoringOrigin::DirectManipulation
+            || program.requested_execution != SceneEditExecution::Sequence
+            || program.schedule_mode != SceneEditScheduleMode::Sequence
+            || program.schedule_edge_count != 0
+            || program.intent_count != 1
+            || program.operations.len() != 1
+            || program.schedule_order != [program.operations[0].id.clone()]
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let operation = &program.operations[0];
+        let StudioCreationOperationKind::AnimateCamera {
+            easing,
+            from_view,
+            to_view,
+        } = &operation.kind
+        else {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        };
+        let initial_view = camera_clips
+            .first()
+            .map_or(from_view, |first: &PlannedStudioCameraClip| {
+                &first.from_view
+            });
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || operation.entity_id.is_some()
+            || !operation.depends_on.is_empty()
+            || !matches!(
+                easing,
+                StudioPropertyEasing::Linear | StudioPropertyEasing::Smooth
+            )
+            || !studio_timeline_semantic_values_match(
+                operation.interval.start,
+                program.anchor_resolved_seconds,
+            )
+            || !operation.interval.end.is_finite()
+            || operation.interval.end <= operation.interval.start
+            || !studio_camera_view_is_bounded(from_view)
+            || !studio_camera_view_is_bounded(to_view)
+            || !studio_camera_aspects_match(from_view, to_view)
+            || !studio_camera_aspects_match(initial_view, from_view)
+            || !studio_camera_view_is_within_zoom_bounds(initial_view, from_view)
+            || !studio_camera_view_is_within_zoom_bounds(initial_view, to_view)
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let interval = IntervalV1 {
+            end: operation.interval.end + timeline.offsets[*program_index],
+            start: operation.interval.start + timeline.offsets[*program_index],
+        };
+        if !interval.start.is_finite()
+            || !interval.end.is_finite()
+            || interval.end > timeline.projected_duration + TIMELINE_ANCHOR_EPSILON
+            || camera_clips
+                .last()
+                .is_some_and(|prior: &PlannedStudioCameraClip| {
+                    interval.start < prior.interval.end - TIMELINE_ANCHOR_EPSILON
+                        || !studio_camera_views_match(&prior.to_view, from_view)
+                        || !studio_camera_aspects_match(&prior.from_view, from_view)
+                })
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let easing = property_easing(*easing);
+        camera_clips.push(PlannedStudioCameraClip {
+            easing: easing.clone(),
+            from_view: from_view.clone(),
+            interval: interval.clone(),
+            to_view: to_view.clone(),
+        });
+        ranked_mutations.push((
+            timeline.ranks[*program_index],
+            0,
+            StudioCreationProjectedMutation {
+                entity_id: String::new(),
+                interval,
+                kind: StudioCreationProjectedMutationKind::AnimateCamera {
+                    easing,
+                    from_view: from_view.clone(),
+                    to_view: to_view.clone(),
+                },
+                operation_id: operation.id.clone(),
+                transaction_id: program.transaction_id.clone(),
+            },
+        ));
+    }
+    let camera_animation = planned_studio_camera_animation(&camera_clips);
+    let mut entities = Vec::with_capacity(create_records.len());
     for (program_index, operation_index) in create_records {
         let program = &programs[program_index];
         let create_operation = &program.operations[operation_index];
@@ -3834,6 +4046,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::TransformShape { .. }
+                | StudioCreationOperationKind::AnimateCamera { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -4103,6 +4316,7 @@ fn plan_studio_creation_edits(
     .map_err(|_| ProjectStudioCreationEditError::Unsupported)?;
     ranked_mutations.sort_by_key(|(rank, schedule_index, _)| (*rank, *schedule_index));
     Ok(StudioCreationPlan {
+        camera_animation,
         entities,
         groups,
         motion_projection,
@@ -4520,6 +4734,50 @@ fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> boo
         && starts_after_initial_appearance
 }
 
+fn studio_camera_animation_is_valid(
+    animation: &PlannedStudioCameraAnimation,
+    base_view: &SceneCameraViewV1,
+    duration: f64,
+) -> bool {
+    studio_camera_views_match(&animation.initial_view, base_view)
+        && animation.keyframes.len() >= 2
+        && animation
+            .keyframes
+            .iter()
+            .enumerate()
+            .all(|(index, keyframe)| {
+                keyframe.at.is_finite()
+                    && keyframe.at >= 0.0
+                    && keyframe.at <= duration
+                    && studio_camera_view_is_bounded(&keyframe.value)
+                    && studio_camera_aspects_match(base_view, &keyframe.value)
+                    && studio_camera_view_is_within_zoom_bounds(base_view, &keyframe.value)
+                    && (index + 1 == animation.keyframes.len()) == keyframe.easing_to_next.is_none()
+            })
+        && animation
+            .keyframes
+            .windows(2)
+            .all(|pair| pair[1].at > pair[0].at)
+}
+
+fn validate_studio_camera_animation_command(
+    session: &EngineSessionV1,
+    animation: Option<&PlannedStudioCameraAnimation>,
+    duration: f64,
+) -> Result<(), CreateSceneEntitiesError> {
+    if animation.is_some_and(|animation| {
+        session
+            .scene()
+            .animation_channels
+            .iter()
+            .any(|channel| matches!(channel, AnimationChannelV1::Camera { .. }))
+            || !studio_camera_animation_is_valid(animation, &session.scene().camera.view, duration)
+    }) {
+        return Err(CreateSceneEntitiesError::InvalidCameraAnimation);
+    }
+    Ok(())
+}
+
 fn validate_create_scene_entities_command(
     session: &EngineSessionV1,
     command: &CreateSceneEntitiesCommand,
@@ -4543,9 +4801,10 @@ fn validate_create_scene_entities_command(
         }
         duration += insertion.duration;
     }
-    if command.entities.is_empty() {
+    if command.entities.is_empty() && command.camera_animation.is_none() {
         return Err(CreateSceneEntitiesError::EmptyBatch);
     }
+    validate_studio_camera_animation_command(session, command.camera_animation.as_ref(), duration)?;
     if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
         return Err(CreateSceneEntitiesError::InvalidProvenanceOrigin);
     }
@@ -5504,6 +5763,33 @@ fn append_studio_logical_groups(
     Ok(())
 }
 
+fn append_planned_studio_camera_animation(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    animation: Option<PlannedStudioCameraAnimation>,
+    provenance_id: &str,
+    capabilities: &mut BTreeSet<SceneCapabilityV1>,
+) {
+    let Some(animation) = animation else {
+        return;
+    };
+    let channel_id = unused_channel_id(scene, "studio-camera");
+    scene.animation_channels.push(AnimationChannelV1::Camera {
+        id: channel_id,
+        keyframes: animation.keyframes,
+        provenance_id: provenance_id.to_owned(),
+    });
+    capabilities.insert(SceneCapabilityV1::CameraAnimation);
+}
+
+fn creates_browser_outline(entities: &[CreateSceneEntity]) -> bool {
+    entities.iter().any(|entity| {
+        matches!(
+            &entity.geometry,
+            CreateSceneEntityGeometry::CubicOutline { .. }
+        ) || entity.write_in.is_some()
+    })
+}
+
 impl EngineSessionV1 {
     /// Authorizes normalized Studio duration edits and applies them atomically.
     fn create_scene_entities(
@@ -5516,12 +5802,7 @@ impl EngineSessionV1 {
             assets: self.assets().clone(),
             scene: self.scene().clone(),
         };
-        let creates_browser_outline = command.entities.iter().any(|entity| {
-            matches!(
-                &entity.geometry,
-                CreateSceneEntityGeometry::CubicOutline { .. }
-            ) || entity.write_in.is_some()
-        });
+        let creates_browser_outline = creates_browser_outline(&command.entities);
         for insertion in &command.timeline_insertions {
             insert_scene_time(&mut candidate.scene, insertion);
         }
@@ -5575,6 +5856,12 @@ impl EngineSessionV1 {
                 .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
             source_z_index += 1.0;
         }
+        append_planned_studio_camera_animation(
+            &mut candidate.scene,
+            command.camera_animation,
+            &command.provenance.id,
+            &mut capabilities,
+        );
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
         candidate.scene.provenance.push(command.provenance.clone());
         append_planned_scene_motions(
@@ -5678,6 +5965,16 @@ impl EngineSessionV1 {
             Some(&base_scene_paint_order),
         )
         .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
+        if plan.camera_animation.as_ref().is_some_and(|animation| {
+            !studio_camera_views_match(&animation.initial_view, &self.scene().camera.view)
+                || self
+                    .scene()
+                    .animation_channels
+                    .iter()
+                    .any(|channel| matches!(channel, AnimationChannelV1::Camera { .. }))
+        }) {
+            return Err(ApplyStudioCreationEditError::Unsupported);
+        }
         for state in &plan.entities {
             match state.kind {
                 StudioAuthoringEntityKind::MathTex => {
@@ -6007,6 +6304,7 @@ impl EngineSessionV1 {
             .sum::<usize>();
         let creation_projection = plan.projection();
         let mut result = self.create_scene_entities(CreateSceneEntitiesCommand {
+            camera_animation: plan.camera_animation,
             entities,
             expected_base_revision,
             groups: plan.groups,
@@ -6130,6 +6428,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn camera_animation_wire_uses_scene_level_views() {
+        let operation: StudioCreationOperationKind = serde_json::from_value(serde_json::json!({
+            "kind": "animate-camera",
+            "easing": "smooth",
+            "fromView": {
+                "center": { "x": 0.0, "y": 0.0 },
+                "frameHeight": 9.0,
+                "frameWidth": 16.0
+            },
+            "toView": {
+                "center": { "x": 4.0, "y": 0.0 },
+                "frameHeight": 4.5,
+                "frameWidth": 8.0
+            }
+        }))
+        .unwrap();
+        assert!(matches!(
+            operation,
+            StudioCreationOperationKind::AnimateCamera {
+                easing: StudioPropertyEasing::Smooth,
+                ..
+            }
+        ));
+
+        let mutation = StudioCreationProjectedMutation {
+            entity_id: String::new(),
+            interval: IntervalV1 {
+                start: 0.25,
+                end: 0.75,
+            },
+            kind: StudioCreationProjectedMutationKind::AnimateCamera {
+                easing: EasingV1::ManimSmooth {},
+                from_view: camera_view(0.0, 16.0),
+                to_view: camera_view(4.0, 8.0),
+            },
+            operation_id: "camera-focus".to_owned(),
+            transaction_id: "camera-focus".to_owned(),
+        };
+        let serialized = serde_json::to_value(mutation).unwrap();
+        assert!(serialized.get("entityId").is_none());
+        assert_eq!(serialized["kind"], "animate-camera");
+        assert_eq!(serialized["fromView"]["frameWidth"], 16.0);
+        assert_eq!(serialized["toView"]["frameWidth"], 8.0);
+    }
+
     fn studio_persistent_remove_edit_input(
         entity_id: &str,
         start: f64,
@@ -6216,6 +6560,7 @@ mod tests {
     )]
     fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
         CreateSceneEntitiesCommand {
+            camera_animation: None,
             entities: vec![
                 CreateSceneEntity {
                     appearance_at: None,
@@ -6468,6 +6813,275 @@ mod tests {
                 width: 640.0,
             },
         }
+    }
+
+    fn camera_view(center_x: f64, frame_width: f64) -> SceneCameraViewV1 {
+        SceneCameraViewV1 {
+            center: PointV1 {
+                x: center_x,
+                y: 0.0,
+            },
+            frame_height: frame_width * 9.0 / 16.0,
+            frame_width,
+        }
+    }
+
+    fn studio_camera_program(
+        transaction_id: &str,
+        operation_id: &str,
+        start: f64,
+        end: f64,
+        from_view: SceneCameraViewV1,
+        to_view: SceneCameraViewV1,
+    ) -> StudioCreationEditInput {
+        StudioCreationEditInput {
+            anchor_captured_playhead: start,
+            anchor_resolved_seconds: start,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(start),
+            },
+            intent_count: 1,
+            lowering_supported: false,
+            operations: vec![StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: None,
+                id: operation_id.to_owned(),
+                interval: IntervalV1 { end, start },
+                kind: StudioCreationOperationKind::AnimateCamera {
+                    easing: StudioPropertyEasing::Smooth,
+                    from_view,
+                    to_view,
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            }],
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Sequence,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Sequence,
+            schedule_order: vec![operation_id.to_owned()],
+            transaction_id: transaction_id.to_owned(),
+        }
+    }
+
+    fn studio_camera_command(bundle: &SceneIrBundleV1) -> ApplyStudioCreationEditCommand {
+        let base = bundle.scene.camera.view.clone();
+        let focused = camera_view(4.0, 8.0);
+        ApplyStudioCreationEditCommand {
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            frame: StudioAuthoringSize {
+                height: base.frame_height,
+                width: base.frame_width,
+            },
+            math_tex_outlines: vec![],
+            next_revision: NEXT_REVISION.to_owned(),
+            programs: vec![
+                studio_camera_program(
+                    "camera-focus",
+                    "camera-focus",
+                    0.25,
+                    0.75,
+                    base.clone(),
+                    focused.clone(),
+                ),
+                studio_camera_program("camera-reset", "camera-reset", 1.0, 1.5, focused, base),
+            ],
+            segmented_math_tex_outlines: vec![],
+            text_outlines: vec![],
+            viewport: StudioAuthoringSize {
+                height: 360.0,
+                width: 640.0,
+            },
+        }
+    }
+
+    #[test]
+    fn camera_focus_and_reset_share_one_held_camera_channel() {
+        let bundle = static_imported_bundle();
+        let original_geometry = bundle
+            .scene
+            .entities
+            .iter()
+            .map(|entity| (entity.id.clone(), entity.geometry.clone()))
+            .collect::<Vec<_>>();
+        let command = studio_camera_command(&bundle);
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert!((projection.projected_duration - 3.0).abs() < 1e-12);
+        assert_eq!(projection.insertions.len(), 2);
+        assert_eq!(projection.mutations.len(), 2);
+        assert!(matches!(
+            &projection.mutations[0],
+            StudioCreationProjectedMutation {
+                entity_id,
+                interval: IntervalV1 { start: 0.25, end: 0.75 },
+                kind: StudioCreationProjectedMutationKind::AnimateCamera {
+                    easing: EasingV1::ManimSmooth {},
+                    from_view,
+                    to_view,
+                },
+                operation_id,
+                transaction_id,
+            } if entity_id.is_empty()
+                && from_view == &camera_view(0.0, 16.0)
+                && to_view == &camera_view(4.0, 8.0)
+                && operation_id == "camera-focus"
+                && transaction_id == "camera-focus"
+        ));
+        assert_eq!(projection.mutations[1].interval.start, 1.5);
+        assert_eq!(projection.mutations[1].interval.end, 2.0);
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        assert_eq!(result.bundle.scene.camera.view, camera_view(0.0, 16.0));
+        assert_eq!(
+            result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .map(|entity| (entity.id.clone(), entity.geometry.clone()))
+                .collect::<Vec<_>>(),
+            original_geometry
+        );
+        let camera_channels = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .filter_map(|channel| match channel {
+                AnimationChannelV1::Camera { keyframes, .. } => Some(keyframes),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(camera_channels.len(), 1);
+        let keyframes = camera_channels[0];
+        assert_eq!(keyframes.len(), 4);
+        assert_eq!(keyframes[0].value, camera_view(0.0, 16.0));
+        assert_eq!(keyframes[0].at, 0.25);
+        assert_eq!(keyframes[1].value, camera_view(4.0, 8.0));
+        assert_eq!(keyframes[1].at, 0.75);
+        assert!(matches!(
+            keyframes[1].easing_to_next,
+            Some(EasingV1::Linear {})
+        ));
+        assert_eq!(keyframes[2].value, camera_view(4.0, 8.0));
+        assert_eq!(keyframes[2].at, 1.5);
+        assert_eq!(keyframes[3].value, camera_view(0.0, 16.0));
+        assert_eq!(keyframes[3].at, 2.0);
+
+        let sample = |at| {
+            session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "studio-camera",
+                    sample_time: at,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap()
+                .camera
+        };
+        let start = sample(0.25);
+        assert!((start.left + 8.0).abs() < 1e-12);
+        assert!((start.right - 8.0).abs() < 1e-12);
+        let focus_midpoint = sample(0.5);
+        assert!((focus_midpoint.left + 4.0).abs() < 1e-12);
+        assert!((focus_midpoint.right - 8.0).abs() < 1e-12);
+        let focused = sample(1.0);
+        assert!(focused.left.abs() < 1e-12);
+        assert!((focused.right - 8.0).abs() < 1e-12);
+        let reset_midpoint = sample(1.75);
+        assert!((reset_midpoint.left + 4.0).abs() < 1e-12);
+        assert!((reset_midpoint.right - 8.0).abs() < 1e-12);
+        let reset = sample(2.0);
+        assert!((reset.left + 8.0).abs() < 1e-12);
+        assert!((reset.right - 8.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn camera_animation_refuses_broken_chains_aspect_zoom_and_existing_channel() {
+        let bundle = static_imported_bundle();
+        let command = studio_camera_command(&bundle);
+
+        let mut broken_chain = command.clone();
+        let StudioCreationOperationKind::AnimateCamera { from_view, .. } =
+            &mut broken_chain.programs[1].operations[0].kind
+        else {
+            unreachable!();
+        };
+        from_view.center.x += 0.25;
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &broken_chain.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        let mut changed_aspect = command.clone();
+        let StudioCreationOperationKind::AnimateCamera { to_view, .. } =
+            &mut changed_aspect.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        to_view.frame_height = 5.0;
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &changed_aspect.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        for width in [0.5, 80.0] {
+            let mut invalid_zoom = command.clone();
+            let StudioCreationOperationKind::AnimateCamera { to_view, .. } =
+                &mut invalid_zoom.programs[0].operations[0].kind
+            else {
+                unreachable!();
+            };
+            *to_view = camera_view(4.0, width);
+            assert!(matches!(
+                project_studio_creation_edits(bundle.scene.duration, &invalid_zoom.programs),
+                Err(ProjectStudioCreationEditError::Unsupported)
+            ));
+        }
+
+        let mut same_source_anchor = command.clone();
+        let second = &mut same_source_anchor.programs[1];
+        second.anchor_captured_playhead = 0.5;
+        second.anchor_resolved_seconds = 0.5;
+        second.anchor_source = SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(0.5),
+        };
+        second.operations[0].interval = IntervalV1 {
+            start: 0.5,
+            end: 1.0,
+        };
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &same_source_anchor.programs)
+                .expect("timeline insertion order makes same-source camera clips non-overlapping");
+        assert_eq!(
+            projection.mutations[0].interval,
+            IntervalV1 {
+                start: 0.25,
+                end: 0.75
+            }
+        );
+        assert_eq!(
+            projection.mutations[1].interval,
+            IntervalV1 {
+                start: 1.0,
+                end: 1.5
+            }
+        );
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let mut second_command = studio_camera_command(&result.bundle);
+        second_command.next_revision =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned();
+        assert!(matches!(
+            session.apply_studio_creation_edit(second_command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
     }
 
     fn studio_draw_creation_command(bundle: &SceneIrBundleV1) -> ApplyStudioCreationEditCommand {

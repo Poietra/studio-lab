@@ -72,6 +72,7 @@ export function StudioViewport({
   anchors,
   appliedMotionClips,
   appliedTransactionIds,
+  cameraClips,
   boundaryActive,
   className,
   currentTime,
@@ -113,6 +114,9 @@ export function StudioViewport({
   uniformScaleResizeOnlyIds,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
+  onCameraClipChange,
+  onCameraClipDelete,
+  onCameraClipSelect,
   onDrawInAdd,
   onDrawInChange,
   onDrawInDelete,
@@ -278,6 +282,7 @@ export function StudioViewport({
           anchors={anchors}
           appliedMotionClips={appliedMotionClips}
           appliedTransactionIds={appliedTransactionIds}
+          cameraClips={cameraClips}
           currentTime={currentTime}
           duration={duration}
           drawInClips={drawInClips}
@@ -306,6 +311,9 @@ export function StudioViewport({
           writeInAvailability={writeInAvailability}
           onAppliedMotionClipChange={onAppliedMotionClipChange}
           onAppliedMotionClipSelect={onAppliedMotionClipSelect}
+          onCameraClipChange={onCameraClipChange}
+          onCameraClipDelete={onCameraClipDelete}
+          onCameraClipSelect={onCameraClipSelect}
           onDrawInAdd={onDrawInAdd}
           onDrawInChange={onDrawInChange}
           onDrawInDelete={onDrawInDelete}

@@ -1,6 +1,7 @@
 import { type FormEvent, type KeyboardEvent, useEffect, useState } from "react";
 
 import { cn } from "../lib/cn";
+import { CAMERA_CLIP_EASINGS, type CameraClipEasing } from "./camera-clip-edit";
 import {
   type InspectorEditField,
   type InspectorEditValues,
@@ -39,6 +40,98 @@ export type ShapeTransformInspectorAuthoring = Readonly<{
   onCreate: (entityId: string, input: ShapeTransformInspectorInput) => boolean;
   unavailableReason: string | null;
 }>;
+
+export type CameraInspectorAuthoring = Readonly<{
+  defaultDuration: number;
+  focusUnavailableReason: string | null;
+  onFocus: (input: Readonly<{ duration: number; easing: CameraClipEasing }>) => boolean;
+  onReset: (input: Readonly<{ duration: number; easing: CameraClipEasing }>) => boolean;
+  resetUnavailableReason: string | null;
+}>;
+
+export function CameraInspectorEditor({ authoring }: Readonly<{ authoring: CameraInspectorAuthoring }>) {
+  const [duration, setDuration] = useState(String(authoring.defaultDuration));
+  const [easing, setEasing] = useState<CameraClipEasing>("smooth");
+  const [message, setMessage] = useState<string | null>(null);
+
+  function invoke(kind: "focus" | "reset") {
+    const seconds = Number(duration);
+    if (!Number.isFinite(seconds) || seconds < 0.1) {
+      setMessage("Camera duration must be at least 0.1 seconds.");
+      return;
+    }
+    const unavailable = kind === "focus" ? authoring.focusUnavailableReason : authoring.resetUnavailableReason;
+    if (unavailable) {
+      setMessage(unavailable);
+      return;
+    }
+    const accepted =
+      kind === "focus"
+        ? authoring.onFocus({ duration: seconds, easing })
+        : authoring.onReset({ duration: seconds, easing });
+    setMessage(accepted ? null : `Camera ${kind === "focus" ? "Focus" : "Reset"} could not be created.`);
+  }
+
+  return (
+    <fieldset className="mt-3 border border-zinc-800 bg-zinc-950/40 p-2">
+      <legend className="text-balance text-xs font-medium text-zinc-300">Camera</legend>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <label className="text-[10px] text-zinc-500">
+          Duration
+          <input
+            aria-label="New Camera duration"
+            className={inputClass}
+            min="0.1"
+            onChange={(event) => setDuration(event.currentTarget.value)}
+            step="0.1"
+            type="number"
+            value={duration}
+          />
+        </label>
+        <label className="text-[10px] text-zinc-500">
+          Easing
+          <select
+            aria-label="New Camera easing"
+            className={inputClass}
+            onChange={(event) => setEasing(event.currentTarget.value as CameraClipEasing)}
+            value={easing}
+          >
+            {CAMERA_CLIP_EASINGS.map((candidate) => (
+              <option key={candidate} value={candidate}>
+                {candidate === "smooth" ? "Smooth" : "Linear"}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <button
+          aria-disabled={authoring.focusUnavailableReason !== null}
+          className="h-8 border border-sky-800 text-xs text-sky-300 hover:bg-sky-950 aria-disabled:cursor-not-allowed aria-disabled:border-zinc-800 aria-disabled:text-zinc-600"
+          onClick={() => invoke("focus")}
+          title={authoring.focusUnavailableReason ?? "Pan and zoom to the exact prepared selection bounds"}
+          type="button"
+        >
+          Focus selection
+        </button>
+        <button
+          aria-disabled={authoring.resetUnavailableReason !== null}
+          className="h-8 border border-zinc-700 text-xs text-zinc-300 hover:bg-zinc-800 aria-disabled:cursor-not-allowed aria-disabled:border-zinc-800 aria-disabled:text-zinc-600"
+          onClick={() => invoke("reset")}
+          title={authoring.resetUnavailableReason ?? "Return to the base Scene view"}
+          type="button"
+        >
+          Reset view
+        </button>
+      </div>
+      {message ? (
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-500" role="status">
+          {message}
+        </p>
+      ) : null}
+    </fieldset>
+  );
+}
 
 type EntityInspectorEditorProps = Readonly<{
   entity: ProjectedEntity;

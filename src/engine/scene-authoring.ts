@@ -444,6 +444,13 @@ const studioPersistentRemoveProjectionV1Schema = z
   })
   .strict();
 const studioStaticRootPointV1Schema = z.object({ x: finiteNumberSchema, y: finiteNumberSchema }).strict();
+const studioCameraViewV1Schema = z
+  .object({
+    center: studioStaticRootPointV1Schema,
+    frameHeight: finiteNumberSchema.positive(),
+    frameWidth: finiteNumberSchema.positive(),
+  })
+  .strict();
 const studioBoundEntityProjectionCommonV1Shape = {
   interval: studioTimelineProjectionIntervalV1Schema,
   operationId: z.string().min(1),
@@ -651,6 +658,17 @@ const studioCreationProjectionV1Schema = z
             operationId: z.string().min(1),
             toDimensions: studioStaticRootDimensionsV1Schema,
             toShape: z.enum(["circle", "rectangle"]),
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            easing: easingV1Schema,
+            fromView: studioCameraViewV1Schema,
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("animate-camera"),
+            operationId: z.string().min(1),
+            toView: studioCameraViewV1Schema,
             transactionId: z.string().min(1),
           })
           .strict(),
@@ -1083,6 +1101,20 @@ type StudioCreationOperationV1 = Readonly<{
         kind: "shape-transform";
         toDimensions: StudioCreationDimensionsV1;
         toShape: "circle" | "rectangle";
+      }>
+    | Readonly<{
+        easing: "linear" | "smooth";
+        fromView: Readonly<{
+          center: Readonly<{ x: number; y: number }>;
+          frameHeight: number;
+          frameWidth: number;
+        }>;
+        kind: "animate-camera";
+        toView: Readonly<{
+          center: Readonly<{ x: number; y: number }>;
+          frameHeight: number;
+          frameWidth: number;
+        }>;
       }>
     | Readonly<{
         controlOffset: Readonly<{ x: number; y: number }>;

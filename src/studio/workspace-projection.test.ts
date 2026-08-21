@@ -16,6 +16,7 @@ import {
   createSceneDurationProgram,
   createStudioEntitiesProgram,
 } from "./authoring-commands";
+import { createCameraProgram } from "./camera-clip-edit";
 import { replaceDrawInProgram } from "./draw-in-edit";
 import {
   canResolveSourceDurationMismatch,
@@ -354,6 +355,114 @@ describe("Studio workspace projection", () => {
         mutations: [projection.mutations[0]!, { ...staleDraw, interval: { end: 1.25, start: 0 } }],
       }),
     ).toThrow(/not correlated/);
+  });
+
+  it("correlates Camera animation from exact Rust views without an entity identity", () => {
+    const imported = workspaceScene("First", null);
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [{ position: { x: 320, y: 180 }, type: "Line" }],
+      scene: imported.runtimeSceneState,
+      transactionId: "camera-creation",
+    });
+    const authoredCreationProgram = creation.validation.program;
+    const retainedCreationOperations = authoredCreationProgram.operations.filter(
+      (operation) => operation.kind === "CreateEntity" || operation.kind === "SetProperty",
+    );
+    const retainedCreationOperationIds = new Set(retainedCreationOperations.map(({ id }) => id));
+    const creationProgram: CanonicalEditProgram = {
+      ...authoredCreationProgram,
+      intentCount: retainedCreationOperations.length,
+      operations: retainedCreationOperations,
+      schedule: {
+        ...authoredCreationProgram.schedule,
+        edges: authoredCreationProgram.schedule.edges.filter(
+          ({ from, to }) => retainedCreationOperationIds.has(from) && retainedCreationOperationIds.has(to),
+        ),
+        order: authoredCreationProgram.schedule.order.filter((id) => retainedCreationOperationIds.has(id)),
+      },
+    };
+    const cameraValidation = createCameraProgram({
+      baseView: { center: { x: 0, y: 0 }, frameHeight: 8, frameWidth: 16 },
+      capturedPlayhead: 1,
+      easing: "smooth",
+      end: 2,
+      from: { center: { x: 0, y: 0 }, frameHeight: 8, frameWidth: 16 },
+      scene: imported.runtimeSceneState,
+      start: 1,
+      to: { center: { x: 1, y: -0.5 }, frameHeight: 4, frameWidth: 8 },
+      transactionId: "camera-focus",
+      workspaceOrigin: "studio-native",
+    });
+    expect(cameraValidation.kind, JSON.stringify(cameraValidation.issues)).toBe("valid");
+    const cameraProgram = cameraValidation.program;
+    const create = creationProgram.operations.find((operation) => operation.kind === "CreateEntity");
+    const position = creationProgram.operations.find(
+      (operation) => operation.kind === "SetProperty" && operation.key === "position",
+    );
+    const camera = cameraProgram.operations[0];
+    if (create?.kind !== "CreateEntity" || position?.kind !== "SetProperty" || camera?.kind !== "AnimateCamera") {
+      throw new Error("Camera correlation fixture is incomplete.");
+    }
+    const projectedDuration = imported.runtimeSceneState.duration + 1;
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: projectedDuration, start: 0 },
+          entityId: creation.entityIds[0]!,
+          initialDimensions: {},
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "line",
+          operationId: create.id,
+          transactionId: creationProgram.transactionId,
+        },
+      ],
+      insertions: [{ at: 1, duration: 1, transactionId: cameraProgram.transactionId }],
+      motions: [],
+      mutations: [
+        {
+          entityId: creation.entityIds[0]!,
+          interval: { end: 0, start: 0 },
+          kind: "position",
+          operationId: position.id,
+          transactionId: creationProgram.transactionId,
+          value: { x: 320, y: 180 },
+        },
+        {
+          easing: { kind: "manim-smooth" },
+          fromView: camera.from,
+          interval: { end: 2, start: 1 },
+          kind: "animate-camera",
+          operationId: camera.id,
+          toView: camera.to,
+          transactionId: cameraProgram.transactionId,
+        },
+      ],
+      projectedDuration,
+      removals: [],
+    };
+
+    expect(
+      selectCreationProjection(imported.runtimeSceneState.duration, [creationProgram, cameraProgram], projection),
+    ).toBe(projection);
+    const projectedCamera = projection.mutations[1];
+    if (!projectedCamera || projectedCamera.kind !== "animate-camera") {
+      throw new Error("Camera projection fixture is incomplete.");
+    }
+    expect(() =>
+      selectCreationProjection(imported.runtimeSceneState.duration, [creationProgram, cameraProgram], {
+        ...projection,
+        mutations: [
+          projection.mutations[0]!,
+          {
+            ...projectedCamera,
+            toView: { ...projectedCamera.toView, frameWidth: projectedCamera.toView.frameWidth + 1 },
+          },
+        ],
+      }),
+    ).toThrow(/not correlated/);
+    expect("entityId" in projectedCamera).toBe(false);
   });
 
   it("correlates Image placement structurally and rejects a stale asset reference", () => {

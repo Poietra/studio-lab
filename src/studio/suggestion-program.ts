@@ -1,5 +1,4 @@
 import type {
-  CreateCameraFocusSuggestion,
   CreateEquationSuggestion,
   CreateExplainedEquationSuggestion,
   CreateExplanationSuggestion,
@@ -147,35 +146,6 @@ function equationOperations(
       persistent: true,
       provenance: provenance(origin, [operation.animation, "persistent after interval"]),
     },
-  ] satisfies readonly SceneEditOperation[];
-}
-
-function cameraFocusOperations(operation: CreateCameraFocusSuggestion, transactionId: string, origin: OperationOrigin) {
-  const cameraId = operationId(transactionId, "camera-zoom");
-  return [
-    {
-      dependsOn: [],
-      id: cameraId,
-      interval: { end: operation.end, start: operation.start },
-      kind: "ChangeCamera",
-      property: "scale",
-      provenance: provenance(origin, ["bounded camera focus", `${operation.zoomScale}x zoom`]),
-      value: operation.zoomScale,
-    },
-    ...operation.targetObjectIds.map(
-      (entityId, index): SceneEditOperation => ({
-        dependsOn: [],
-        easing: operation.easing,
-        entityId,
-        from: 1,
-        id: operationId(transactionId, `emphasize-${index}`),
-        interval: { end: operation.end, start: operation.start },
-        key: "scale",
-        kind: "AnimateProperty",
-        provenance: provenance(origin, ["important region", `${operation.emphasisScale}x emphasis`]),
-        to: operation.emphasisScale,
-      }),
-    ),
   ] satisfies readonly SceneEditOperation[];
 }
 
@@ -472,10 +442,7 @@ function intentCount(operation: EditSuggestionOperation) {
 }
 
 function requiresIllustrativeLowering(operation: EditSuggestionOperation) {
-  const illustrativeKinds = new Set(["create-camera-focus"]);
-  return operation.kind === "edit-program"
-    ? operation.operations.some((step) => illustrativeKinds.has(step.kind))
-    : illustrativeKinds.has(operation.kind);
+  return operation.kind === "create-camera-focus";
 }
 
 function requestedExecution(operation: EditSuggestionOperation) {
@@ -546,11 +513,15 @@ export function canonicalizeSuggestionProgram(
     },
   });
 
+  if (operation.kind === "create-camera-focus") {
+    return invalidCanonicalization(
+      "Camera Focus requires exact prepared WebGPU bounds. Use the Studio Inspector Camera controls.",
+    );
+  }
+
   let operations: readonly SceneEditOperation[];
   if (operation.kind === "create-scene-transition") {
     operations = transitionOperations(operation, context.transactionId, context.origin);
-  } else if (operation.kind === "create-camera-focus") {
-    operations = cameraFocusOperations(operation, context.transactionId, context.origin);
   } else if (operation.kind === "create-equation") {
     operations = equationOperations(operation, context.transactionId, context.origin);
   } else if (operation.kind === "create-explained-equation") {
