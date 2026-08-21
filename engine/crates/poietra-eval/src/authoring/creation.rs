@@ -2659,7 +2659,7 @@ fn plan_studio_creation_edits(
                 let planned_rotation_delta = rotation_delta_radians
                     .as_ref()
                     .copied()
-                    .filter(|delta| delta.is_finite() && delta.abs() > 1.0e-9);
+                    .filter(|delta| delta.is_finite() && *delta != 0.0);
                 if spin_requested != planned_rotation_delta.is_some()
                     || planned_rotation_delta.is_some()
                         && (operation_count != 1 || target_entity_ids.len() != 1)
@@ -6810,6 +6810,7 @@ mod tests {
         let entity_id = "tx:create/entity:circle";
         for (rotation_delta_radians, target_entity_ids, retain_static_transform) in [
             (Some(0.0), vec![entity_id.to_owned()], false),
+            (Some(-0.0), vec![entity_id.to_owned()], false),
             (
                 Some(2.0 * PI),
                 vec![entity_id.to_owned(), entity_id.to_owned()],
