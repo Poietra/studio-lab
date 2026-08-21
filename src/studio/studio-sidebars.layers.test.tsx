@@ -374,36 +374,40 @@ describe("WorkspaceSidebar Layers", () => {
       entities: [first, second, outside],
       sourceRuntimeIdentity: null,
     });
-    const markup = renderToStaticMarkup(
-      <WorkspaceSidebar
-        activeScene={activeScene()}
-        appliedProgramReadOnlyReasons={{}}
-        appliedEdits={[]}
-        appliedTransactionIds={new Set()}
-        draftActive={false}
-        duration={1}
-        durationError={null}
-        durationMinimum={0.1}
-        editingAppliedTransactionId={null}
-        entities={[first, second, outside]}
-        layers={layers}
-        nextScene={null}
-        onDurationChange={vi.fn()}
-        onEditAppliedProgram={vi.fn()}
-        onLayerGroupOrder={vi.fn()}
-        onLayerGroupReorder={vi.fn()}
-        onLayerOrder={vi.fn()}
-        onLayerReorder={vi.fn()}
-        onRedo={vi.fn()}
-        onToggleLayerGroupLock={vi.fn()}
-        onToggleLayerGroupVisibility={vi.fn()}
-        onToggleEntity={vi.fn()}
-        onUndo={vi.fn()}
-        redoCount={0}
-        selectedIds={new Set(["first", "second"])}
-        sourceImportOutcomes={[]}
-      />,
-    );
+    const renderGroup = (groupLifetimeTrimUnavailableReason: string | null = null) =>
+      renderToStaticMarkup(
+        <WorkspaceSidebar
+          activeScene={activeScene()}
+          appliedProgramReadOnlyReasons={{}}
+          appliedEdits={[]}
+          appliedTransactionIds={new Set()}
+          draftActive={false}
+          duration={1}
+          durationError={null}
+          durationMinimum={0.1}
+          editingAppliedTransactionId={null}
+          entities={[first, second, outside]}
+          groupLifetimeTrimUnavailableReason={groupLifetimeTrimUnavailableReason}
+          layers={layers}
+          nextScene={null}
+          onDurationChange={vi.fn()}
+          onEditAppliedProgram={vi.fn()}
+          onLayerGroupOrder={vi.fn()}
+          onLayerGroupReorder={vi.fn()}
+          onLayerOrder={vi.fn()}
+          onLayerReorder={vi.fn()}
+          onRedo={vi.fn()}
+          onTrimLayerGroupLifetime={vi.fn()}
+          onToggleLayerGroupLock={vi.fn()}
+          onToggleLayerGroupVisibility={vi.fn()}
+          onToggleEntity={vi.fn()}
+          onUndo={vi.fn()}
+          redoCount={0}
+          selectedIds={new Set(["first", "second"])}
+          sourceImportOutcomes={[]}
+        />,
+      );
+    const markup = renderGroup();
 
     expect(markup).toMatch(/<span[^>]*draggable="true"[^>]*title="Drag to reorder this group"/);
     expect(markup).not.toMatch(/<li[^>]*draggable=/);
@@ -415,5 +419,10 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toMatch(/aria-label="Backward group of 2 objects"[^>]*disabled=""/);
     expect(markup).toMatch(/aria-label="Forward group of 2 objects"(?![^>]* disabled="")/);
     expect(markup).toMatch(/aria-label="Front group of 2 objects"(?![^>]* disabled="")/);
+    expect(markup).toMatch(/aria-label="End lifetime for group of 2 objects at playhead"(?![^>]* disabled="")/);
+    expect(markup).toContain("End group at playhead");
+    const unavailableMarkup = renderGroup("Move the playhead before the Scene end to trim this group lifetime.");
+    expect(unavailableMarkup).toMatch(/aria-label="End lifetime for group of 2 objects at playhead"[^>]*disabled=""/);
+    expect(unavailableMarkup).toContain('title="Move the playhead before the Scene end to trim this group lifetime."');
   });
 });

@@ -37,6 +37,7 @@ import {
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
+  createStudioGroupLifetimeTrimProgram,
   createStudioGroupProgram,
   createStudioUngroupProgram,
   defaultEntityContent,
@@ -132,6 +133,7 @@ import {
   findImportedLifetimeEdit,
   findStudioLifetimeOwner,
   programSourceAnchorBounds,
+  studioLogicalGroupLifetimeTrimUnavailableReason,
 } from "./studio/lifetime-editing";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE, magicEditCapabilities } from "./studio/magic-edit-capabilities";
 import { MagicEditPanel } from "./studio/magic-edit-panel";
@@ -2199,6 +2201,32 @@ export function App({
   });
   const selectedSet = new Set(selectedObjectIds);
   const selectedLayerGroup = selectedStudioLayerGroup(studioLayers, selectedSet);
+  const selectedLayerGroupLifetimeAnchor = selectedLayerGroup
+    ? nativeSceneActive && draftSourceScene
+      ? {
+          sourceTime: clamp(currentTime, 0, draftSourceScene.duration),
+          workingTime: clamp(currentTime, 0, draftSourceScene.duration),
+        }
+      : (timelineAnchors.find(({ workingTime }) => Math.abs(workingTime - currentTime) < 0.0005) ?? null)
+    : null;
+  const selectedLayerGroupLifetimeUnavailableReason =
+    !selectedLayerGroup?.groupId || !selectedLayerGroup.childEntityIds
+      ? null
+      : !draftSourceScene
+        ? "Wait for the canonical Scene before trimming this group lifetime."
+        : appliedTimelineProjection === undefined
+          ? "Wait for the Rust timeline projection before trimming this group lifetime."
+          : appliedTimelineProjection !== null
+            ? "Apply timeline-only duration edits separately before trimming this group lifetime."
+            : !selectedLayerGroupLifetimeAnchor
+              ? "Move the playhead to a safe source anchor before trimming this group lifetime."
+              : studioLogicalGroupLifetimeTrimUnavailableReason({
+                  capturedPlayhead: selectedLayerGroupLifetimeAnchor.sourceTime,
+                  childEntityIds: selectedLayerGroup.childEntityIds,
+                  groupId: selectedLayerGroup.groupId,
+                  programs: appliedSceneEdits,
+                  scene: draftSourceScene,
+                });
   const layerGroupPlan = planStudioLayerGroup(studioLayers, selectedSet);
   const layerGroupUnavailableReason = studioAuthoringLocked
     ? (readDurationBlocker() ?? EDITOR_SESSION_LOADING_BLOCKER)
@@ -4346,6 +4374,57 @@ export function App({
       return acceptDirectManipulationDraft(validation, gestureContext, sourceAnchor);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The group visibility could not be changed.");
+      return false;
+    }
+  }
+
+  function trimLayerGroupLifetime(groupId: string) {
+    if (rejectSelectionOnlyPreviewMutation()) return false;
+    const group = studioLayers.find((layer) => layer.isGroup && layer.groupId === groupId);
+    if (!group?.childEntityIds || !draftSourceScene) return false;
+    if (draftEdit || editingAppliedProgram) {
+      setDraftError("Apply or discard the current draft before trimming this group lifetime.");
+      return false;
+    }
+    if (group.childEntityIds.some((entityId) => lockedEntityIdsRef.current.has(entityId))) {
+      setDraftError("Unlock every grouped object before trimming this group lifetime.");
+      return false;
+    }
+    if (groupId === selectedLayerGroup?.groupId && selectedLayerGroupLifetimeUnavailableReason) {
+      setDraftError(selectedLayerGroupLifetimeUnavailableReason);
+      return false;
+    }
+    const anchor = manualAuthoringAnchor({
+      action: "trimming the group lifetime",
+      requireAlignedPlayhead: true,
+      scene: draftSourceScene,
+      sourcePrograms: appliedSceneEdits,
+      targetEntityIds: group.childEntityIds,
+    });
+    if (!anchor) return false;
+    const unavailableReason = studioLogicalGroupLifetimeTrimUnavailableReason({
+      capturedPlayhead: anchor.sourceTime,
+      childEntityIds: group.childEntityIds,
+      groupId,
+      programs: appliedSceneEdits,
+      scene: draftSourceScene,
+    });
+    if (unavailableReason) {
+      setDraftError(unavailableReason);
+      return false;
+    }
+    try {
+      const validation = createStudioGroupLifetimeTrimProgram({
+        capturedPlayhead: anchor.sourceTime,
+        childEntityIds: group.childEntityIds,
+        scene: draftSourceScene,
+        transactionId: `studio-group-lifetime-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record, group.childEntityIds);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The group lifetime could not be trimmed.");
       return false;
     }
   }
@@ -7053,6 +7132,7 @@ export function App({
               imageImportError={nativeSceneActive ? nativeProjectAssetError : null}
               imageImportPending={nativeSceneActive && nativeProjectAssetPending}
               layers={studioLayers}
+              groupLifetimeTrimUnavailableReason={selectedLayerGroupLifetimeUnavailableReason}
               lockToggleDisabled={draftApplyPending || draftEdit !== null}
               lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
@@ -7070,6 +7150,7 @@ export function App({
               onLayerGroupOrder={changeLayerGroupOrder}
               onLayerGroupReorder={reorderLayerGroup}
               onLayerReorder={reorderLayer}
+              onTrimLayerGroupLifetime={trimLayerGroupLifetime}
               onToggleLayerGroup={(childEntityIds, selected) =>
                 setSelectedObjectIds(selected ? [] : [...childEntityIds])
               }

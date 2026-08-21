@@ -4682,6 +4682,43 @@ mod tests {
         }
     }
 
+    fn studio_group_lifetime_trim_edit_input(
+        entity_ids: &[String],
+        at: f64,
+    ) -> StudioCreationEditInput {
+        let operations = entity_ids
+            .iter()
+            .enumerate()
+            .map(|(index, entity_id)| StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some(entity_id.clone()),
+                id: format!("trim-group-lifetime-{index}"),
+                interval: IntervalV1 { end: at, start: at },
+                kind: StudioCreationOperationKind::PersistentRemove { persistent: true },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            })
+            .collect::<Vec<_>>();
+        StudioCreationEditInput {
+            anchor_captured_playhead: at,
+            anchor_resolved_seconds: at,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(at),
+            },
+            intent_count: 1,
+            lowering_supported: true,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Parallel,
+            schedule_order: operations
+                .iter()
+                .map(|operation| operation.id.clone())
+                .collect(),
+            operations,
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Parallel,
+            transaction_id: "trim-group-lifetime".to_owned(),
+        }
+    }
+
     fn mathtex_fixture_path() -> CubicPathV1 {
         let SceneGeometryV1::CubicPath { path } =
             fixture_bundle("mathtex-nested-radical-fraction.json")
@@ -7912,6 +7949,115 @@ mod tests {
         let mut redo_session = EngineSessionV1::new(base).unwrap();
         let redo = redo_session.apply_studio_creation_edit(command).unwrap();
         assert!(!bundle_contains_entity(&redo.bundle, &group_id));
+    }
+
+    #[test]
+    fn normalized_creation_trims_one_logical_group_lifetime_atomically() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command
+            .programs
+            .push(second_group_resize_creation(&command.programs[0]));
+        let child_ids = vec![
+            "tx:create/entity:circle".to_owned(),
+            "tx:second/entity:rectangle".to_owned(),
+        ];
+        let group_id = "tx:lifetime-group/entity:group".to_owned();
+        command.programs.push(studio_hierarchy_edit_input(
+            "lifetime-group",
+            1.0,
+            StudioCreationOperationKind::Group {
+                child_entity_ids: child_ids.clone(),
+                group_id: group_id.clone(),
+            },
+        ));
+        let grouped_history = command.clone();
+        command
+            .programs
+            .push(studio_group_lifetime_trim_edit_input(&child_ids, 1.5));
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(projection.removals.len(), 2);
+        assert!(projection.removals.iter().all(|removal| {
+            removal.transaction_id == "trim-group-lifetime"
+                && child_ids.contains(&removal.studio_entity_id)
+                && removal.fade_interval.is_none()
+        }));
+
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+        let result = session.apply_studio_creation_edit(command.clone()).unwrap();
+        let group = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == group_id)
+            .unwrap();
+        let lifetime_end = group.lifetimes[0].end;
+        assert!(child_ids.iter().all(|child_id| {
+            result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == *child_id)
+                .is_some_and(|entity| {
+                    entity.parent_id.as_deref() == Some(group_id.as_str())
+                        && entity.lifetimes[0].end == lifetime_end
+                })
+        }));
+        let visible = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "group-before-lifetime-end",
+                sample_time: lifetime_end - 1e-6,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert!(child_ids.iter().all(|child_id| {
+            visible
+                .draws
+                .iter()
+                .any(|draw| draw.entity_id() == child_id)
+        }));
+        let hidden = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "group-at-lifetime-end",
+                sample_time: lifetime_end,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert!(
+            child_ids
+                .iter()
+                .all(|child_id| { hidden.draws.iter().all(|draw| draw.entity_id() != child_id) })
+        );
+
+        let untrimmed = EngineSessionV1::new(bundle.clone())
+            .unwrap()
+            .apply_studio_creation_edit(grouped_history)
+            .unwrap();
+        let untrimmed_group = untrimmed
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == group_id)
+            .unwrap();
+        assert!(untrimmed_group.lifetimes[0].end > lifetime_end);
+        let redone = EngineSessionV1::new(bundle)
+            .unwrap()
+            .apply_studio_creation_edit(command)
+            .unwrap();
+        assert_eq!(redone.bundle, result.bundle);
     }
 
     #[test]

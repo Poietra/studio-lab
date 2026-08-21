@@ -8,6 +8,7 @@ import {
   importedLifetimeEditEvidence,
   MIN_OBJECT_LIFETIME_SECONDS,
   type ProgramSourceAnchorBounds,
+  studioGroupLifetimeTrimTargetUnavailableReason,
 } from "./lifetime-editing";
 import type {
   EntityContent,
@@ -427,6 +428,42 @@ export function createRemoveEntitiesProgram(
     origin: "studio-default",
     scene: input.scene,
     styleProfileRef: styleProfileRef(STUDIO_STYLE_PROFILE),
+    transactionId: input.transactionId,
+  });
+}
+
+/** Trims every child in one Studio logical group at the same source time.
+ * The zero-duration persistent removals are replayed by the Rust creation
+ * authority before it rebuilds the canonical logical parent. */
+export function createStudioGroupLifetimeTrimProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    childEntityIds: readonly string[];
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  const unavailableReason = studioGroupLifetimeTrimTargetUnavailableReason(input);
+  if (unavailableReason) throw new Error(unavailableReason);
+  const childEntityIds = [...input.childEntityIds];
+  const operations = childEntityIds.map(
+    (entityId, index): SceneEditOperation => ({
+      dependsOn: [],
+      effect: "remove",
+      entityId,
+      id: operationId(input.transactionId, `trim-group-lifetime-${index}`),
+      interval: { end: input.capturedPlayhead, start: input.capturedPlayhead },
+      kind: "ChangePresence",
+      persistent: true,
+      provenance: provenance("direct-manipulation", ["Layers panel", "logical group lifetime end"]),
+    }),
+  );
+  return authoringProgram(operations, {
+    capturedPlayhead: input.capturedPlayhead,
+    origin: "direct-manipulation",
+    programEvidence: ["atomic logical group lifetime trim"],
+    requestedExecution: "parallel",
+    scene: input.scene,
     transactionId: input.transactionId,
   });
 }
