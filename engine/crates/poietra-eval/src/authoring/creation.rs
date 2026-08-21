@@ -25,11 +25,11 @@ use super::timeline::{SceneTimelineInsertion, insert_scene_time, shift_interval_
 use super::transform::{apply_world_rotation, rotation_is_noop, set_vector_paint_alpha};
 use super::{
     ApplyStudioPersistentRemoveError, SceneEditAnchorSource, SceneEditExecution,
-    SceneEditOperationFacts, SceneEditScheduleMode, StudioAuthoringDimensions,
-    StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioAuthoringOrigin,
-    StudioAuthoringSize, StudioCreationMathTexOutline, StudioCreationSegmentedMathTexFragment,
-    StudioCreationSegmentedMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
-    StudioCreationSegmentedMathTexSourceCorrelation,
+    SceneEditOperationFacts, SceneEditScheduleMode, StudioAuthoringAngles,
+    StudioAuthoringDimensions, StudioAuthoringEditResult, StudioAuthoringEntityKind,
+    StudioAuthoringOrigin, StudioAuthoringSize, StudioCreationMathTexOutline,
+    StudioCreationSegmentedMathTexFragment, StudioCreationSegmentedMathTexOutline,
+    StudioCreationSegmentedMathTexRepresentation, StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationSegmentedMathTexWritePlan,
     StudioCreationTextOutline, StudioMathTexContent, StudioMathTexTransformStrategy,
     StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry, StudioTextContent,
@@ -2296,13 +2296,16 @@ fn plan_studio_creation_edits(
             if !created_ids.insert(entity.id.as_str())
                 || !matches!(
                     entity.kind,
-                    StudioAuthoringEntityKind::Arrow
+                    StudioAuthoringEntityKind::Arc
+                        | StudioAuthoringEntityKind::Arrow
                         | StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::Ellipse
                         | StudioAuthoringEntityKind::Image
                         | StudioAuthoringEntityKind::Line
                         | StudioAuthoringEntityKind::MathTex
                         | StudioAuthoringEntityKind::Rectangle
                         | StudioAuthoringEntityKind::RegularPolygon
+                        | StudioAuthoringEntityKind::Sector
                         | StudioAuthoringEntityKind::Text
                 )
             {
@@ -2465,6 +2468,20 @@ fn plan_studio_creation_edits(
                         && spec.tex_parts.is_none()
                         && studio_regular_polygon_parameters(spec.dimensions).is_some()
                 }
+                StudioAuthoringEntityKind::Ellipse => {
+                    spec.image.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && studio_ellipse_parameters(spec.dimensions).is_some()
+                }
+                StudioAuthoringEntityKind::Arc | StudioAuthoringEntityKind::Sector => {
+                    spec.image.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && studio_arc_parameters(spec.dimensions).is_some()
+                }
                 StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
                     spec.image.is_none()
                         && spec.text.is_none()
@@ -2476,6 +2493,7 @@ fn plan_studio_creation_edits(
                     spec.image.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
+                        && spec.dimensions.angles.is_none()
                         && spec.dimensions.sides.is_none()
                         && spec.tex_parts.as_ref().is_some_and(|parts| {
                             !parts.is_empty() && parts.iter().all(|part| !part.trim().is_empty())
@@ -2634,10 +2652,13 @@ fn plan_studio_creation_edits(
         if draw_interval.as_ref().is_some_and(|draw| {
             !matches!(
                 spec.kind,
-                StudioAuthoringEntityKind::Circle
+                StudioAuthoringEntityKind::Arc
+                    | StudioAuthoringEntityKind::Circle
+                    | StudioAuthoringEntityKind::Ellipse
                     | StudioAuthoringEntityKind::Line
                     | StudioAuthoringEntityKind::Rectangle
                     | StudioAuthoringEntityKind::RegularPolygon
+                    | StudioAuthoringEntityKind::Sector
             ) || !studio_timeline_semantic_values_match(draw.start, lifetime.start)
                 || draw.end > lifetime.end
         }) {
@@ -3815,8 +3836,10 @@ fn plan_studio_creation_edits(
                         && matches!(
                             state.kind,
                             StudioAuthoringEntityKind::Circle
+                                | StudioAuthoringEntityKind::Ellipse
                                 | StudioAuthoringEntityKind::Rectangle
                                 | StudioAuthoringEntityKind::RegularPolygon
+                                | StudioAuthoringEntityKind::Sector
                         )
                         && canonical_studio_hex_color(color).is_some()
                         && state.fill_color_override.as_deref() != Some(color.as_str())
@@ -3850,9 +3873,12 @@ fn plan_studio_creation_edits(
                     if operation.origin == StudioAuthoringOrigin::DirectManipulation
                         && matches!(
                             state.kind,
-                            StudioAuthoringEntityKind::Circle
+                            StudioAuthoringEntityKind::Arc
+                                | StudioAuthoringEntityKind::Circle
+                                | StudioAuthoringEntityKind::Ellipse
                                 | StudioAuthoringEntityKind::Rectangle
                                 | StudioAuthoringEntityKind::RegularPolygon
+                                | StudioAuthoringEntityKind::Sector
                         )
                         && canonical_studio_hex_color(color).is_some()
                         && state.stroke_color_override.as_deref().unwrap_or("#ffffff") != color
@@ -4427,15 +4453,17 @@ fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
 
 const STUDIO_REGULAR_POLYGON_MIN_SIDES: u32 = 3;
 const STUDIO_REGULAR_POLYGON_MAX_SIDES: u32 = 32;
+const STUDIO_CURVE_MIN_SWEEP_RADIANS: f64 = 1.0e-6;
 
 fn studio_regular_polygon_parameters(dimensions: StudioAuthoringDimensions) -> Option<(u32, f64)> {
     match (
+        dimensions.angles,
         dimensions.height,
         dimensions.radius,
         dimensions.sides,
         dimensions.width,
     ) {
-        (None, Some(radius), Some(sides), None)
+        (None, None, Some(radius), Some(sides), None)
             if radius.is_finite()
                 && radius > 0.0
                 && (STUDIO_REGULAR_POLYGON_MIN_SIDES..=STUDIO_REGULAR_POLYGON_MAX_SIDES)
@@ -4444,6 +4472,140 @@ fn studio_regular_polygon_parameters(dimensions: StudioAuthoringDimensions) -> O
             Some((sides, radius))
         }
         _ => None,
+    }
+}
+
+fn studio_ellipse_parameters(dimensions: StudioAuthoringDimensions) -> Option<(f64, f64)> {
+    match (
+        dimensions.angles,
+        dimensions.height,
+        dimensions.radius,
+        dimensions.sides,
+        dimensions.width,
+    ) {
+        (None, Some(height), None, None, Some(width))
+            if height.is_finite() && height > 0.0 && width.is_finite() && width > 0.0 =>
+        {
+            Some((width, height))
+        }
+        _ => None,
+    }
+}
+
+fn studio_arc_parameters(
+    dimensions: StudioAuthoringDimensions,
+) -> Option<(f64, StudioAuthoringAngles)> {
+    match (
+        dimensions.angles,
+        dimensions.height,
+        dimensions.radius,
+        dimensions.sides,
+        dimensions.width,
+    ) {
+        (Some(angles), None, Some(radius), None, None)
+            if radius.is_finite()
+                && radius > 0.0
+                && angles.start.is_finite()
+                && angles.sweep.is_finite()
+                && angles.sweep.abs() >= STUDIO_CURVE_MIN_SWEEP_RADIANS
+                && angles.sweep.abs() <= std::f64::consts::TAU =>
+        {
+            Some((radius, angles))
+        }
+        _ => None,
+    }
+}
+
+fn studio_elliptic_arc(
+    radius_x: f64,
+    radius_y: f64,
+    start: f64,
+    sweep: f64,
+) -> (PointV1, Vec<CubicSegmentV1>) {
+    let quarter_turns = sweep.abs() / std::f64::consts::FRAC_PI_2;
+    let segment_count = if quarter_turns <= 1.0 {
+        1
+    } else if quarter_turns <= 2.0 {
+        2
+    } else if quarter_turns <= 3.0 {
+        3
+    } else {
+        4
+    };
+    let step = sweep / f64::from(segment_count);
+    let start_point = PointV1 {
+        x: radius_x * start.cos(),
+        y: radius_y * start.sin(),
+    };
+    let segments = (0..segment_count)
+        .map(|index| {
+            let from_angle = start + step * f64::from(index);
+            let to_angle = from_angle + step;
+            let tangent_factor = 4.0 / 3.0 * (step / 4.0).tan();
+            let from = PointV1 {
+                x: radius_x * from_angle.cos(),
+                y: radius_y * from_angle.sin(),
+            };
+            let to = PointV1 {
+                x: radius_x * to_angle.cos(),
+                y: radius_y * to_angle.sin(),
+            };
+            CubicSegmentV1 {
+                control1: PointV1 {
+                    x: from.x - tangent_factor * radius_x * from_angle.sin(),
+                    y: from.y + tangent_factor * radius_y * from_angle.cos(),
+                },
+                control2: PointV1 {
+                    x: to.x + tangent_factor * radius_x * to_angle.sin(),
+                    y: to.y - tangent_factor * radius_y * to_angle.cos(),
+                },
+                end: to,
+            }
+        })
+        .collect();
+    (start_point, segments)
+}
+
+fn studio_ellipse_path(width: f64, height: f64) -> CubicPathV1 {
+    let (start, mut segments) =
+        studio_elliptic_arc(width / 2.0, height / 2.0, 0.0, std::f64::consts::TAU);
+    if let Some(last) = segments.last_mut() {
+        last.end = start.clone();
+    }
+    CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: true,
+            segments,
+            start,
+        }],
+    }
+}
+
+fn studio_arc_path(radius: f64, angles: StudioAuthoringAngles) -> CubicPathV1 {
+    let (start, segments) = studio_elliptic_arc(radius, radius, angles.start, angles.sweep);
+    CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: false,
+            segments,
+            start,
+        }],
+    }
+}
+
+fn studio_sector_path(radius: f64, angles: StudioAuthoringAngles) -> CubicPathV1 {
+    let center = PointV1 { x: 0.0, y: 0.0 };
+    let (arc_start, mut segments) = studio_elliptic_arc(radius, radius, angles.start, angles.sweep);
+    let arc_end = segments
+        .last()
+        .map_or_else(|| arc_start.clone(), |segment| segment.end.clone());
+    segments.insert(0, straight_cubic_segment(&center, arc_start));
+    segments.push(straight_cubic_segment(&arc_end, center.clone()));
+    CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: true,
+            segments,
+            start: center,
+        }],
     }
 }
 
@@ -5225,12 +5387,15 @@ fn studio_creation_shape_path(
             height: size.height,
             width: size.width,
         },
-        StudioAuthoringEntityKind::Arrow
+        StudioAuthoringEntityKind::Arc
+        | StudioAuthoringEntityKind::Arrow
+        | StudioAuthoringEntityKind::Ellipse
         | StudioAuthoringEntityKind::Image
         | StudioAuthoringEntityKind::Line
         | StudioAuthoringEntityKind::MathTex
         | StudioAuthoringEntityKind::Other
         | StudioAuthoringEntityKind::RegularPolygon
+        | StudioAuthoringEntityKind::Sector
         | StudioAuthoringEntityKind::Text => {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
@@ -6123,13 +6288,16 @@ impl EngineSessionV1 {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
                 }
-                StudioAuthoringEntityKind::Arrow
+                StudioAuthoringEntityKind::Arc
+                | StudioAuthoringEntityKind::Arrow
                 | StudioAuthoringEntityKind::Circle
+                | StudioAuthoringEntityKind::Ellipse
                 | StudioAuthoringEntityKind::Image
                 | StudioAuthoringEntityKind::Line
                 | StudioAuthoringEntityKind::Other
                 | StudioAuthoringEntityKind::Rectangle
-                | StudioAuthoringEntityKind::RegularPolygon => {}
+                | StudioAuthoringEntityKind::RegularPolygon
+                | StudioAuthoringEntityKind::Sector => {}
             }
         }
 
@@ -6139,6 +6307,13 @@ impl EngineSessionV1 {
             let math_tex_morph = planned_math_tex_morph(state, &math_tex_outlines)?;
             let shape_morph = planned_shape_morph(state)?;
             let geometry = match state.kind {
+                StudioAuthoringEntityKind::Arc => {
+                    let (radius, angles) = studio_arc_parameters(state.initial_dimensions)
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    CreateSceneEntityGeometry::ShapeOutline {
+                        path: studio_arc_path(radius, angles),
+                    }
+                }
                 StudioAuthoringEntityKind::Arrow => CreateSceneEntityGeometry::Arrow,
                 StudioAuthoringEntityKind::Circle => {
                     if let Some(morph) = &shape_morph {
@@ -6152,6 +6327,13 @@ impl EngineSessionV1 {
                         CreateSceneEntityGeometry::Circle {
                             radius: size.width / 2.0,
                         }
+                    }
+                }
+                StudioAuthoringEntityKind::Ellipse => {
+                    let (width, height) = studio_ellipse_parameters(state.initial_dimensions)
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    CreateSceneEntityGeometry::ShapeOutline {
+                        path: studio_ellipse_path(width, height),
                     }
                 }
                 StudioAuthoringEntityKind::Image => {
@@ -6194,6 +6376,13 @@ impl EngineSessionV1 {
                             .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                     CreateSceneEntityGeometry::ShapeOutline {
                         path: studio_regular_polygon_path(sides, radius),
+                    }
+                }
+                StudioAuthoringEntityKind::Sector => {
+                    let (radius, angles) = studio_arc_parameters(state.initial_dimensions)
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    CreateSceneEntityGeometry::ShapeOutline {
+                        path: studio_sector_path(radius, angles),
                     }
                 }
                 StudioAuthoringEntityKind::MathTex if state.write_interval.is_some() => {
@@ -6262,11 +6451,14 @@ impl EngineSessionV1 {
                             current.height / initial.height,
                         )
                     }
-                    StudioAuthoringEntityKind::Arrow
+                    StudioAuthoringEntityKind::Arc
+                    | StudioAuthoringEntityKind::Arrow
+                    | StudioAuthoringEntityKind::Ellipse
                     | StudioAuthoringEntityKind::Image
                     | StudioAuthoringEntityKind::Line
                     | StudioAuthoringEntityKind::MathTex
                     | StudioAuthoringEntityKind::RegularPolygon
+                    | StudioAuthoringEntityKind::Sector
                     | StudioAuthoringEntityKind::Text => (1.0, 1.0),
                     StudioAuthoringEntityKind::Other => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
@@ -6501,6 +6693,7 @@ mod tests {
         let projection = StudioCreationProjectedMutationKind::ShapeTransform {
             easing: EasingV1::ManimSmooth {},
             from_dimensions: StudioAuthoringDimensions {
+                angles: None,
                 height: Some(2.0),
                 radius: None,
                 sides: None,
@@ -6508,6 +6701,7 @@ mod tests {
             },
             from_shape: StudioAuthoringEntityKind::Rectangle,
             to_dimensions: StudioAuthoringDimensions {
+                angles: None,
                 height: None,
                 radius: Some(1.0),
                 sides: None,
@@ -6818,6 +7012,7 @@ mod tests {
                             kind: StudioCreationOperationKind::Create {
                                 entity: StudioCreationEntitySpec {
                                     dimensions: StudioAuthoringDimensions {
+                                        angles: None,
                                         height: None,
                                         radius: Some(1.0),
                                         sides: None,
@@ -6883,6 +7078,7 @@ mod tests {
                         interval: resize_interval,
                         kind: StudioCreationOperationKind::Resize {
                             from_dimensions: StudioAuthoringDimensions {
+                                angles: None,
                                 height: None,
                                 radius: Some(1.0),
                                 sides: None,
@@ -6892,6 +7088,7 @@ mod tests {
                             from_scale: 1.0,
                             shape: StudioAuthoringEntityKind::Circle,
                             to_dimensions: StudioAuthoringDimensions {
+                                angles: None,
                                 height: None,
                                 radius: Some(2.0),
                                 sides: None,
@@ -7226,11 +7423,36 @@ mod tests {
         entity.id = "tx:create/entity:regular-polygon".to_owned();
         entity.kind = StudioAuthoringEntityKind::RegularPolygon;
         entity.dimensions = StudioAuthoringDimensions {
+            angles: None,
             height: None,
             radius: Some(radius),
             sides: Some(sides),
             width: None,
         };
+        command
+    }
+
+    fn studio_curve_creation_command(
+        bundle: &SceneIrBundleV1,
+        slug: &str,
+        kind: StudioAuthoringEntityKind,
+        dimensions: StudioAuthoringDimensions,
+    ) -> ApplyStudioCreationEditCommand {
+        let mut command = studio_creation_command(bundle);
+        command.programs.truncate(1);
+        let program = &mut command.programs[0];
+        let entity_id = format!("tx:create/entity:{slug}");
+        for operation in &mut program.operations {
+            if operation.entity_id.as_deref() == Some("tx:create/entity:circle") {
+                operation.entity_id = Some(entity_id.clone());
+            }
+        }
+        let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
+            unreachable!();
+        };
+        entity.id = entity_id;
+        entity.kind = kind;
+        entity.dimensions = dimensions;
         command
     }
 
@@ -7518,6 +7740,7 @@ mod tests {
                 entity.id = root_id.to_owned();
                 entity.kind = StudioAuthoringEntityKind::Rectangle;
                 entity.dimensions = StudioAuthoringDimensions {
+                    angles: None,
                     height: Some(2.0),
                     radius: None,
                     sides: None,
@@ -7526,12 +7749,14 @@ mod tests {
             }
         }
         let rectangle = StudioAuthoringDimensions {
+            angles: None,
             height: Some(2.0),
             radius: None,
             sides: None,
             width: Some(4.0),
         };
         let circle = StudioAuthoringDimensions {
+            angles: None,
             height: None,
             radius: Some(1.0),
             sides: None,
@@ -7859,6 +8084,7 @@ mod tests {
                     entity.id = entity_id.to_owned();
                     entity.kind = StudioAuthoringEntityKind::Rectangle;
                     entity.dimensions = StudioAuthoringDimensions {
+                        angles: None,
                         height: Some(1.0),
                         radius: None,
                         sides: None,
@@ -8935,6 +9161,7 @@ mod tests {
             "resize-before-rotation",
             StudioCreationOperationKind::Resize {
                 from_dimensions: StudioAuthoringDimensions {
+                    angles: None,
                     height: Some(1.0),
                     radius: None,
                     sides: None,
@@ -8944,6 +9171,7 @@ mod tests {
                 from_scale: 1.0,
                 shape: StudioAuthoringEntityKind::Rectangle,
                 to_dimensions: StudioAuthoringDimensions {
+                    angles: None,
                     height: Some(1.5),
                     radius: None,
                     sides: None,
@@ -8969,6 +9197,7 @@ mod tests {
             "resize-after-rotation",
             StudioCreationOperationKind::Resize {
                 from_dimensions: StudioAuthoringDimensions {
+                    angles: None,
                     height: Some(1.5),
                     radius: None,
                     sides: None,
@@ -8978,6 +9207,7 @@ mod tests {
                 from_scale: 1.0,
                 shape: StudioAuthoringEntityKind::Rectangle,
                 to_dimensions: StudioAuthoringDimensions {
+                    angles: None,
                     height: Some(1.0),
                     radius: None,
                     sides: None,
@@ -9449,6 +9679,7 @@ mod tests {
         assert_eq!(
             projection.entities[0].initial_dimensions,
             StudioAuthoringDimensions {
+                angles: None,
                 height: None,
                 radius: Some(2.0),
                 sides: Some(5),
@@ -9547,42 +9778,49 @@ mod tests {
         let valid = studio_regular_polygon_creation_command(&bundle, 6, 1.0);
         let mut invalid_dimensions = vec![
             StudioAuthoringDimensions {
+                angles: None,
                 height: None,
                 radius: Some(1.0),
                 sides: None,
                 width: None,
             },
             StudioAuthoringDimensions {
+                angles: None,
                 height: None,
                 radius: Some(1.0),
                 sides: Some(2),
                 width: None,
             },
             StudioAuthoringDimensions {
+                angles: None,
                 height: None,
                 radius: Some(1.0),
                 sides: Some(33),
                 width: None,
             },
             StudioAuthoringDimensions {
+                angles: None,
                 height: None,
                 radius: None,
                 sides: Some(6),
                 width: None,
             },
             StudioAuthoringDimensions {
+                angles: None,
                 height: None,
                 radius: Some(0.0),
                 sides: Some(6),
                 width: None,
             },
             StudioAuthoringDimensions {
+                angles: None,
                 height: None,
                 radius: Some(f64::INFINITY),
                 sides: Some(6),
                 width: None,
             },
             StudioAuthoringDimensions {
+                angles: None,
                 height: None,
                 radius: Some(1.0),
                 sides: Some(6),
@@ -9590,6 +9828,7 @@ mod tests {
             },
         ];
         invalid_dimensions.push(StudioAuthoringDimensions {
+            angles: None,
             height: None,
             radius: Some(f64::NAN),
             sides: Some(6),
@@ -9619,6 +9858,254 @@ mod tests {
         }
     }
 
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table pins all three bounded curve primitives through the same creation path"
+    )]
+    fn normalized_creation_projects_and_applies_curve_primitives_as_cubic_paths() {
+        let bundle = static_imported_bundle();
+        let cases = [
+            (
+                "ellipse",
+                StudioAuthoringEntityKind::Ellipse,
+                StudioAuthoringDimensions {
+                    height: Some(2.0),
+                    width: Some(4.0),
+                    ..StudioAuthoringDimensions::default()
+                },
+                true,
+                4,
+                PointV1 { x: 2.0, y: 0.0 },
+                PointV1 { x: 0.0, y: 1.0 },
+                PointV1 { x: 2.0, y: 0.0 },
+            ),
+            (
+                "arc",
+                StudioAuthoringEntityKind::Arc,
+                StudioAuthoringDimensions {
+                    angles: Some(StudioAuthoringAngles {
+                        start: FRAC_PI_2,
+                        sweep: PI,
+                    }),
+                    radius: Some(2.0),
+                    ..StudioAuthoringDimensions::default()
+                },
+                false,
+                2,
+                PointV1 { x: 0.0, y: 2.0 },
+                PointV1 { x: -2.0, y: 0.0 },
+                PointV1 { x: 0.0, y: -2.0 },
+            ),
+            (
+                "sector",
+                StudioAuthoringEntityKind::Sector,
+                StudioAuthoringDimensions {
+                    angles: Some(StudioAuthoringAngles {
+                        start: 0.0,
+                        sweep: FRAC_PI_2,
+                    }),
+                    radius: Some(2.0),
+                    ..StudioAuthoringDimensions::default()
+                },
+                true,
+                3,
+                PointV1 { x: 0.0, y: 0.0 },
+                PointV1 { x: 2.0, y: 0.0 },
+                PointV1 { x: 0.0, y: 0.0 },
+            ),
+        ];
+        let point_is_near = |actual: &PointV1, expected: &PointV1| {
+            (actual.x - expected.x).abs() < 1.0e-12 && (actual.y - expected.y).abs() < 1.0e-12
+        };
+
+        for (slug, kind, dimensions, closed, segment_count, start, first_end, end) in cases {
+            let mut command = studio_curve_creation_command(&bundle, slug, kind, dimensions);
+            if kind == StudioAuthoringEntityKind::Arc {
+                let program = &mut command.programs[0];
+                let draw = program
+                    .operations
+                    .iter_mut()
+                    .find(|operation| {
+                        matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+                    })
+                    .unwrap();
+                draw.id = "draw".to_owned();
+                draw.interval.end = 1.25;
+                draw.kind = StudioCreationOperationKind::DrawIn {
+                    easing: StudioPropertyEasing::Smooth,
+                    from: Some(0.0),
+                    to: Some(1.0),
+                };
+                program.schedule_order[2] = "draw".to_owned();
+            }
+
+            let projection =
+                project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+            assert_eq!(projection.entities[0].kind, kind);
+            assert_eq!(projection.entities[0].initial_dimensions, dimensions);
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+            let result = session.apply_studio_creation_edit(command).unwrap();
+            let created = result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == format!("tx:create/entity:{slug}"))
+                .unwrap();
+            let SceneGeometryV1::CubicPath { path } = &created.geometry else {
+                panic!("curve primitive must reuse cubic-path geometry");
+            };
+            let subpath = &path.subpaths[0];
+            assert_eq!(subpath.closed, closed);
+            assert_eq!(subpath.segments.len(), segment_count);
+            assert!(point_is_near(&subpath.start, &start));
+            assert!(point_is_near(&subpath.segments[0].end, &first_end));
+            assert!(point_is_near(&subpath.segments.last().unwrap().end, &end));
+            assert!(
+                result
+                    .bundle
+                    .scene
+                    .required_capabilities
+                    .contains(&SceneCapabilityV1::CubicPathGeometry)
+            );
+            if kind == StudioAuthoringEntityKind::Arc {
+                assert_eq!(
+                    serde_json::to_value(&projection).unwrap()["entities"][0]["initialDimensions"],
+                    serde_json::json!({
+                        "angles": { "start": FRAC_PI_2, "sweep": PI },
+                        "radius": 2.0
+                    })
+                );
+                assert!(
+                    result
+                        .bundle
+                        .scene
+                        .animation_channels
+                        .iter()
+                        .any(|channel| {
+                            matches!(
+                                channel,
+                                AnimationChannelV1::PathTrim { entity_id, .. }
+                                    if entity_id == "tx:create/entity:arc"
+                            )
+                        })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalized_creation_rejects_invalid_curve_dimensions_atomically() {
+        let bundle = static_imported_bundle();
+        let ellipse = |width, height| StudioAuthoringDimensions {
+            height: Some(height),
+            width: Some(width),
+            ..StudioAuthoringDimensions::default()
+        };
+        let radial = |radius, start, sweep| StudioAuthoringDimensions {
+            angles: Some(StudioAuthoringAngles { start, sweep }),
+            radius: Some(radius),
+            ..StudioAuthoringDimensions::default()
+        };
+        let invalid = [
+            (StudioAuthoringEntityKind::Ellipse, ellipse(0.0, 2.0)),
+            (
+                StudioAuthoringEntityKind::Ellipse,
+                ellipse(2.0, f64::INFINITY),
+            ),
+            (StudioAuthoringEntityKind::Arc, radial(1.0, 0.0, 0.0)),
+            (
+                StudioAuthoringEntityKind::Arc,
+                radial(1.0, f64::NAN, FRAC_PI_2),
+            ),
+            (
+                StudioAuthoringEntityKind::Sector,
+                radial(1.0, 0.0, std::f64::consts::TAU + 1.0e-6),
+            ),
+            (
+                StudioAuthoringEntityKind::Sector,
+                StudioAuthoringDimensions {
+                    radius: Some(1.0),
+                    ..StudioAuthoringDimensions::default()
+                },
+            ),
+        ];
+
+        for (kind, dimensions) in invalid {
+            let command = studio_curve_creation_command(&bundle, "invalid", kind, dimensions);
+            assert!(matches!(
+                project_studio_creation_edits(bundle.scene.duration, &command.programs),
+                Err(ProjectStudioCreationEditError::Unsupported)
+            ));
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+            assert!(matches!(
+                session.apply_studio_creation_edit(command),
+                Err(ApplyStudioCreationEditError::Unsupported)
+            ));
+            assert_eq!(session.scene(), &bundle.scene);
+        }
+    }
+
+    #[test]
+    fn normalized_creation_limits_curve_colors_to_closed_fill_and_vector_stroke() {
+        let bundle = static_imported_bundle();
+        let dimensions = |kind| match kind {
+            StudioAuthoringEntityKind::Ellipse => StudioAuthoringDimensions {
+                height: Some(1.0),
+                width: Some(2.0),
+                ..StudioAuthoringDimensions::default()
+            },
+            StudioAuthoringEntityKind::Arc | StudioAuthoringEntityKind::Sector => {
+                StudioAuthoringDimensions {
+                    angles: Some(StudioAuthoringAngles {
+                        start: 0.0,
+                        sweep: PI,
+                    }),
+                    radius: Some(1.0),
+                    ..StudioAuthoringDimensions::default()
+                }
+            }
+            _ => unreachable!(),
+        };
+        let cases = [
+            (StudioAuthoringEntityKind::Arc, false, true),
+            (StudioAuthoringEntityKind::Ellipse, true, true),
+            (StudioAuthoringEntityKind::Sector, true, true),
+        ];
+
+        for (kind, accepts_fill, accepts_stroke) in cases {
+            for (operation_id, operation, accepted) in [
+                (
+                    "fill",
+                    StudioCreationOperationKind::FillColor {
+                        color: Some("#e07a5f".to_owned()),
+                    },
+                    accepts_fill,
+                ),
+                (
+                    "stroke",
+                    StudioCreationOperationKind::StrokeColor {
+                        color: Some("#81b29a".to_owned()),
+                    },
+                    accepts_stroke,
+                ),
+            ] {
+                let mut command =
+                    studio_curve_creation_command(&bundle, "curve", kind, dimensions(kind));
+                command.programs.push(studio_created_appearance_edit_input(
+                    0.5,
+                    "tx:create/entity:curve",
+                    operation_id,
+                    operation,
+                ));
+                assert_eq!(
+                    project_studio_creation_edits(bundle.scene.duration, &command.programs).is_ok(),
+                    accepted
+                );
+            }
+        }
+    }
     #[test]
     fn normalized_creation_projects_and_applies_a_line() {
         let bundle = static_imported_bundle();
@@ -10241,6 +10728,7 @@ mod tests {
             unreachable!();
         };
         *from_dimensions = StudioAuthoringDimensions {
+            angles: None,
             height: None,
             radius: Some(2.0),
             sides: None,
@@ -10287,6 +10775,7 @@ mod tests {
                 },
                 kind: StudioCreationOperationKind::Resize {
                     from_dimensions: StudioAuthoringDimensions {
+                        angles: None,
                         height: Some(2.0),
                         radius: None,
                         sides: None,
@@ -10296,6 +10785,7 @@ mod tests {
                     from_scale: 1.0,
                     shape: StudioAuthoringEntityKind::Rectangle,
                     to_dimensions: StudioAuthoringDimensions {
+                        angles: None,
                         height: Some(3.0),
                         radius: None,
                         sides: None,
@@ -11733,6 +12223,7 @@ mod tests {
                     kind: StudioCreationOperationKind::Create {
                         entity: StudioCreationEntitySpec {
                             dimensions: StudioAuthoringDimensions {
+                                angles: None,
                                 height: Some(1.0),
                                 radius: None,
                                 sides: None,
