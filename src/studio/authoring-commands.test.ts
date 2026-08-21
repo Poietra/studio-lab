@@ -627,6 +627,8 @@ describe("manual Studio authoring commands", () => {
 
   it.each([
     ["Arc", { angles: { start: 0, sweep: 0 }, radius: 1 }],
+    ["Arc", { angles: { start: 0, sweep: 5e-7 }, radius: 1 }],
+    ["Sector", { angles: { start: 0, sweep: Math.PI * 2 + 5e-10 }, radius: 1 }],
     ["Sector", { angles: { start: 0, sweep: Math.PI * 3 }, radius: 1 }],
     ["Ellipse", { height: 2, radius: 1, width: 3 }],
   ] as const)("rejects invalid %s curve dimensions", (type, dimensions) => {

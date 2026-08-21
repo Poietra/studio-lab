@@ -334,6 +334,7 @@ function entityIssues(entityIds: readonly string[], operation: SceneEditOperatio
 }
 
 const TIME_EPSILON = 0.0005;
+const MIN_CURVE_SWEEP_RADIANS = 1e-6;
 
 function validCreateDimensions(type: string, dimensions: EntityDimensions | undefined) {
   if (dimensions === undefined) {
@@ -357,8 +358,8 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       dimensions.angles !== undefined &&
       Number.isFinite(dimensions.angles.start) &&
       Number.isFinite(dimensions.angles.sweep) &&
-      Math.abs(dimensions.angles.sweep) > 1e-9 &&
-      Math.abs(dimensions.angles.sweep) <= Math.PI * 2 + 1e-9 &&
+      Math.abs(dimensions.angles.sweep) >= MIN_CURVE_SWEEP_RADIANS &&
+      Math.abs(dimensions.angles.sweep) <= Math.PI * 2 &&
       dimensions.radius !== undefined &&
       Number.isFinite(dimensions.radius) &&
       dimensions.radius > 0 &&
