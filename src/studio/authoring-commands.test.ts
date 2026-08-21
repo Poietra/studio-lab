@@ -642,6 +642,79 @@ describe("manual Studio authoring commands", () => {
     expect(result.validation.kind).toBe("invalid");
   });
 
+  it("writes bounded coordinate object defaults into creation Programs", () => {
+    const creations = (["NumberLine", "Axes", "NumberPlane"] as const).map((type) =>
+      createStudioEntitiesProgram({
+        capturedPlayhead: 5,
+        entities: [{ position: { x: 180, y: 120 }, type }],
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: `default-${type}`,
+      }),
+    );
+
+    expect(creations.every(({ validation }) => validation.kind === "valid")).toBe(true);
+    const dimensions = creations.map(({ validation }) => {
+      const operation = validation.program.operations.find(({ kind }) => kind === "CreateEntity");
+      if (operation?.kind !== "CreateEntity") throw new Error("Coordinate creation fixture is incomplete.");
+      return operation.entity.dimensions;
+    });
+    expect(dimensions).toEqual([
+      { coordinateSystem: { x: { maximum: 5, minimum: -5, step: 1 } }, width: 6 },
+      {
+        coordinateSystem: {
+          x: { maximum: 5, minimum: -5, step: 1 },
+          y: { maximum: 3, minimum: -3, step: 1 },
+        },
+        height: 4,
+        width: 6,
+      },
+      {
+        coordinateSystem: {
+          x: { maximum: 5, minimum: -5, step: 1 },
+          y: { maximum: 3, minimum: -3, step: 1 },
+        },
+        height: 4,
+        width: 6,
+      },
+    ]);
+  });
+
+  it.each([
+    [
+      "NumberLine",
+      {
+        coordinateSystem: { x: { maximum: 5, minimum: -5, step: 1 }, y: { maximum: 3, minimum: -3, step: 1 } },
+        width: 6,
+      },
+    ],
+    ["Axes", { coordinateSystem: { x: { maximum: 5, minimum: -5, step: 1 } }, height: 4, width: 6 }],
+    [
+      "NumberPlane",
+      {
+        coordinateSystem: { x: { maximum: 1, minimum: 1, step: 1 }, y: { maximum: 3, minimum: -3, step: 1 } },
+        height: 4,
+        width: 6,
+      },
+    ],
+    ["NumberLine", { coordinateSystem: { x: { maximum: 128, minimum: 0, step: 1 } }, width: 6 }],
+    [
+      "NumberLine",
+      {
+        coordinateSystem: { x: { maximum: Number.MAX_VALUE, minimum: -Number.MAX_VALUE, step: 1 } },
+        width: 6,
+      },
+    ],
+  ] as const)("rejects invalid %s coordinate dimensions", (type, dimensions) => {
+    const result = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ dimensions, position: { x: 180, y: 120 }, type }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: `invalid-${type}`,
+    });
+
+    expect(result.validation.kind).toBe("invalid");
+  });
+
   it.each([
     ["RegularPolygon", { radius: 1, sides: 2 }],
     ["RegularPolygon", { radius: 1, sides: 33 }],

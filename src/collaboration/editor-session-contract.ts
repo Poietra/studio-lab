@@ -3,6 +3,7 @@ import { z } from "zod";
 import { editProgramSuggestionSchema, editSuggestionLeafOperationSchema } from "../ai/edit-suggestion-schema";
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
+import { INSERT_ENTITY_TYPES } from "../studio/authoring-commands";
 import type { ProgramRecord } from "../studio/model";
 import { programExecutionCapabilities } from "../studio/operation-registry";
 import type { SceneEdit, SceneEditDraft } from "../studio/scene-edit-contract";
@@ -206,7 +207,7 @@ const editorSessionSnapshotBaseSchemaV1 = z
     draftOperation: editSuggestionOperationSchema.nullable(),
     draftProgram: draftEditorProgramRecordSchema.nullable(),
     editingAppliedProgram: appliedProgramEditSchema.nullable(),
-    insertTool: z.enum(["select", "Text", "MathTex", "Rectangle", "Circle", "Line", "Arrow"]),
+    insertTool: z.enum(["select", ...INSERT_ENTITY_TYPES]),
     interactionMode: z.enum(["animate", "position"]),
     lockedEntityIds: selectionSchema.optional().default([]),
     motionDuration: finiteNumber.min(0.1).max(600),

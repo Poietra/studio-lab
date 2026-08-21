@@ -1,6 +1,44 @@
 import { applyEngineEasingV1 } from "../engine/easing";
 import type { EntityDimensions, Knowledge, Point, PropertyChannelSample, PropertyValue, Unknown } from "./model";
 
+function isCoordinateAxis(value: unknown) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const axis = value as Readonly<Record<string, unknown>>;
+  return (
+    Object.keys(axis).length === 3 &&
+    [axis.minimum, axis.maximum, axis.step].every((item) => typeof item === "number" && Number.isFinite(item)) &&
+    typeof axis.step === "number" &&
+    axis.step > 0
+  );
+}
+
+function isCoordinateSystem(value: unknown) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const system = value as Readonly<Record<string, unknown>>;
+  return (
+    Object.keys(system).every((key) => key === "x" || key === "y") &&
+    isCoordinateAxis(system.x) &&
+    (system.y === undefined || isCoordinateAxis(system.y))
+  );
+}
+
+function sameCoordinateAxis(
+  left: Readonly<{ maximum: number; minimum: number; step: number }>,
+  right: Readonly<{ maximum: number; minimum: number; step: number }>,
+) {
+  return left.maximum === right.maximum && left.minimum === right.minimum && left.step === right.step;
+}
+
+function sameCoordinateSystem(
+  left: NonNullable<EntityDimensions["coordinateSystem"]>,
+  right: NonNullable<EntityDimensions["coordinateSystem"]>,
+) {
+  return (
+    sameCoordinateAxis(left.x, right.x) &&
+    (left.y === undefined || right.y === undefined ? left.y === right.y : sameCoordinateAxis(left.y, right.y))
+  );
+}
+
 function smooth(value: number) {
   return value * value * (3 - 2 * value);
 }
@@ -33,15 +71,23 @@ export function isEntityDimensionsValue(value: unknown): value is EntityDimensio
       Number.isFinite(angles.start) &&
       typeof angles.sweep === "number" &&
       Number.isFinite(angles.sweep));
+  const coordinateSystemIsValid = record.coordinateSystem === undefined || isCoordinateSystem(record.coordinateSystem);
   return (
     keys.length > 0 &&
     keys.every(
-      (key) => key === "angles" || key === "height" || key === "radius" || key === "sides" || key === "width",
+      (key) =>
+        key === "angles" ||
+        key === "coordinateSystem" ||
+        key === "height" ||
+        key === "radius" ||
+        key === "sides" ||
+        key === "width",
     ) &&
     keys
-      .filter((key) => key !== "angles")
+      .filter((key) => key !== "angles" && key !== "coordinateSystem")
       .every((key) => typeof record[key] === "number" && Number.isFinite(record[key])) &&
     anglesAreValid &&
+    coordinateSystemIsValid &&
     (record.sides === undefined ||
       (typeof record.sides === "number" && Number.isInteger(record.sides) && record.sides >= 3 && record.sides <= 32))
   );
@@ -59,12 +105,18 @@ function interpolateDimensions(from: EntityDimensions, to: EntityDimensions, pro
   ) as EntityDimensions;
   const withSides =
     from.sides !== undefined && from.sides === to.sides ? { ...interpolated, sides: from.sides } : interpolated;
-  return from.angles !== undefined &&
+  const withAngles =
+    from.angles !== undefined &&
     to.angles !== undefined &&
     from.angles.start === to.angles.start &&
     from.angles.sweep === to.angles.sweep
-    ? { ...withSides, angles: from.angles }
-    : withSides;
+      ? { ...withSides, angles: from.angles }
+      : withSides;
+  return from.coordinateSystem !== undefined &&
+    to.coordinateSystem !== undefined &&
+    sameCoordinateSystem(from.coordinateSystem, to.coordinateSystem)
+    ? { ...withAngles, coordinateSystem: from.coordinateSystem }
+    : withAngles;
 }
 
 function sameStartPriority(sample: PropertyChannelSample, index: number, baseIndex: number) {

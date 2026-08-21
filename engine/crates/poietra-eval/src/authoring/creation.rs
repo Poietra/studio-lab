@@ -26,10 +26,11 @@ use super::transform::{apply_world_rotation, rotation_is_noop, set_vector_paint_
 use super::{
     ApplyStudioPersistentRemoveError, SceneEditAnchorSource, SceneEditExecution,
     SceneEditOperationFacts, SceneEditScheduleMode, StudioAuthoringAngles,
-    StudioAuthoringDimensions, StudioAuthoringEditResult, StudioAuthoringEntityKind,
-    StudioAuthoringOrigin, StudioAuthoringSize, StudioCreationMathTexOutline,
-    StudioCreationSegmentedMathTexFragment, StudioCreationSegmentedMathTexOutline,
-    StudioCreationSegmentedMathTexRepresentation, StudioCreationSegmentedMathTexSourceCorrelation,
+    StudioAuthoringCoordinateRange, StudioAuthoringCoordinateSystem, StudioAuthoringDimensions,
+    StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioAuthoringOrigin,
+    StudioAuthoringSize, StudioCreationMathTexOutline, StudioCreationSegmentedMathTexFragment,
+    StudioCreationSegmentedMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
+    StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationSegmentedMathTexWritePlan,
     StudioCreationTextOutline, StudioMathTexContent, StudioMathTexTransformStrategy,
     StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry, StudioTextContent,
@@ -2298,11 +2299,14 @@ fn plan_studio_creation_edits(
                     entity.kind,
                     StudioAuthoringEntityKind::Arc
                         | StudioAuthoringEntityKind::Arrow
+                        | StudioAuthoringEntityKind::Axes
                         | StudioAuthoringEntityKind::Circle
                         | StudioAuthoringEntityKind::Ellipse
                         | StudioAuthoringEntityKind::Image
                         | StudioAuthoringEntityKind::Line
                         | StudioAuthoringEntityKind::MathTex
+                        | StudioAuthoringEntityKind::NumberLine
+                        | StudioAuthoringEntityKind::NumberPlane
                         | StudioAuthoringEntityKind::Rectangle
                         | StudioAuthoringEntityKind::RegularPolygon
                         | StudioAuthoringEntityKind::Sector
@@ -2482,6 +2486,15 @@ fn plan_studio_creation_edits(
                         && spec.tex_parts.is_none()
                         && studio_arc_parameters(spec.dimensions).is_some()
                 }
+                StudioAuthoringEntityKind::Axes
+                | StudioAuthoringEntityKind::NumberLine
+                | StudioAuthoringEntityKind::NumberPlane => {
+                    spec.image.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && studio_coordinate_system_parameters(spec.kind, spec.dimensions).is_some()
+                }
                 StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
                     spec.image.is_none()
                         && spec.text.is_none()
@@ -2494,6 +2507,7 @@ fn plan_studio_creation_edits(
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.dimensions.angles.is_none()
+                        && spec.dimensions.coordinate_system.is_none()
                         && spec.dimensions.sides.is_none()
                         && spec.tex_parts.as_ref().is_some_and(|parts| {
                             !parts.is_empty() && parts.iter().all(|part| !part.trim().is_empty())
@@ -2653,9 +2667,12 @@ fn plan_studio_creation_edits(
             !matches!(
                 spec.kind,
                 StudioAuthoringEntityKind::Arc
+                    | StudioAuthoringEntityKind::Axes
                     | StudioAuthoringEntityKind::Circle
                     | StudioAuthoringEntityKind::Ellipse
                     | StudioAuthoringEntityKind::Line
+                    | StudioAuthoringEntityKind::NumberLine
+                    | StudioAuthoringEntityKind::NumberPlane
                     | StudioAuthoringEntityKind::Rectangle
                     | StudioAuthoringEntityKind::RegularPolygon
                     | StudioAuthoringEntityKind::Sector
@@ -3874,8 +3891,11 @@ fn plan_studio_creation_edits(
                         && matches!(
                             state.kind,
                             StudioAuthoringEntityKind::Arc
+                                | StudioAuthoringEntityKind::Axes
                                 | StudioAuthoringEntityKind::Circle
                                 | StudioAuthoringEntityKind::Ellipse
+                                | StudioAuthoringEntityKind::NumberLine
+                                | StudioAuthoringEntityKind::NumberPlane
                                 | StudioAuthoringEntityKind::Rectangle
                                 | StudioAuthoringEntityKind::RegularPolygon
                                 | StudioAuthoringEntityKind::Sector
@@ -4454,16 +4474,19 @@ fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
 const STUDIO_REGULAR_POLYGON_MIN_SIDES: u32 = 3;
 const STUDIO_REGULAR_POLYGON_MAX_SIDES: u32 = 32;
 const STUDIO_CURVE_MIN_SWEEP_RADIANS: f64 = 1.0e-6;
+const STUDIO_COORDINATE_SYSTEM_MAX_MARKS: u32 = 128;
+const STUDIO_COORDINATE_TICK_HALF_LENGTH_RATIO: f64 = 0.025;
 
 fn studio_regular_polygon_parameters(dimensions: StudioAuthoringDimensions) -> Option<(u32, f64)> {
     match (
         dimensions.angles,
+        dimensions.coordinate_system,
         dimensions.height,
         dimensions.radius,
         dimensions.sides,
         dimensions.width,
     ) {
-        (None, None, Some(radius), Some(sides), None)
+        (None, None, None, Some(radius), Some(sides), None)
             if radius.is_finite()
                 && radius > 0.0
                 && (STUDIO_REGULAR_POLYGON_MIN_SIDES..=STUDIO_REGULAR_POLYGON_MAX_SIDES)
@@ -4478,12 +4501,13 @@ fn studio_regular_polygon_parameters(dimensions: StudioAuthoringDimensions) -> O
 fn studio_ellipse_parameters(dimensions: StudioAuthoringDimensions) -> Option<(f64, f64)> {
     match (
         dimensions.angles,
+        dimensions.coordinate_system,
         dimensions.height,
         dimensions.radius,
         dimensions.sides,
         dimensions.width,
     ) {
-        (None, Some(height), None, None, Some(width))
+        (None, None, Some(height), None, None, Some(width))
             if height.is_finite() && height > 0.0 && width.is_finite() && width > 0.0 =>
         {
             Some((width, height))
@@ -4497,12 +4521,13 @@ fn studio_arc_parameters(
 ) -> Option<(f64, StudioAuthoringAngles)> {
     match (
         dimensions.angles,
+        dimensions.coordinate_system,
         dimensions.height,
         dimensions.radius,
         dimensions.sides,
         dimensions.width,
     ) {
-        (Some(angles), None, Some(radius), None, None)
+        (Some(angles), None, None, Some(radius), None, None)
             if radius.is_finite()
                 && radius > 0.0
                 && angles.start.is_finite()
@@ -4514,6 +4539,172 @@ fn studio_arc_parameters(
         }
         _ => None,
     }
+}
+
+fn studio_coordinate_marks(range: StudioAuthoringCoordinateRange) -> Option<Vec<f64>> {
+    let span = range.maximum - range.minimum;
+    if !range.minimum.is_finite()
+        || !range.maximum.is_finite()
+        || !range.step.is_finite()
+        || range.minimum >= range.maximum
+        || range.step <= 0.0
+        || !span.is_finite()
+    {
+        return None;
+    }
+    let mut marks = Vec::new();
+    for index in 0..STUDIO_COORDINATE_SYSTEM_MAX_MARKS {
+        let value = range.minimum + range.step * f64::from(index);
+        if !value.is_finite() || value > range.maximum {
+            return Some(marks);
+        }
+        marks.push(value);
+    }
+    let next = range.minimum + range.step * f64::from(STUDIO_COORDINATE_SYSTEM_MAX_MARKS);
+    (!next.is_finite() || next > range.maximum).then_some(marks)
+}
+
+fn studio_coordinate_system_parameters(
+    kind: StudioAuthoringEntityKind,
+    dimensions: StudioAuthoringDimensions,
+) -> Option<(f64, Option<f64>, StudioAuthoringCoordinateSystem)> {
+    let (width, height, coordinates) = match (
+        kind,
+        dimensions.angles,
+        dimensions.coordinate_system,
+        dimensions.height,
+        dimensions.radius,
+        dimensions.sides,
+        dimensions.width,
+    ) {
+        (
+            StudioAuthoringEntityKind::NumberLine,
+            None,
+            Some(coordinates @ StudioAuthoringCoordinateSystem { y: None, .. }),
+            None,
+            None,
+            None,
+            Some(width),
+        ) if width.is_finite() && width > 0.0 => (width, None, coordinates),
+        (
+            StudioAuthoringEntityKind::Axes | StudioAuthoringEntityKind::NumberPlane,
+            None,
+            Some(coordinates @ StudioAuthoringCoordinateSystem { y: Some(_), .. }),
+            Some(height),
+            None,
+            None,
+            Some(width),
+        ) if width.is_finite() && width > 0.0 && height.is_finite() && height > 0.0 => {
+            (width, Some(height), coordinates)
+        }
+        _ => return None,
+    };
+    let x_mark_count = studio_coordinate_marks(coordinates.x)?.len();
+    let y_mark_count = match coordinates.y {
+        Some(range) => studio_coordinate_marks(range)?.len(),
+        None => 0,
+    };
+    (x_mark_count + y_mark_count <= STUDIO_COORDINATE_SYSTEM_MAX_MARKS as usize).then_some((
+        width,
+        height,
+        coordinates,
+    ))
+}
+
+fn studio_coordinate_to_local(
+    value: f64,
+    range: StudioAuthoringCoordinateRange,
+    length: f64,
+) -> f64 {
+    -length / 2.0 + (value - range.minimum) / (range.maximum - range.minimum) * length
+}
+
+fn push_studio_coordinate_line(
+    subpaths: &mut Vec<CubicSubpathV1>,
+    start: PointV1,
+    end: PointV1,
+) -> Option<()> {
+    if ![start.x, start.y, end.x, end.y]
+        .into_iter()
+        .all(f64::is_finite)
+    {
+        return None;
+    }
+    subpaths.push(CubicSubpathV1 {
+        closed: false,
+        segments: vec![straight_cubic_segment(&start, end)],
+        start,
+    });
+    Some(())
+}
+
+fn push_studio_horizontal_line(
+    subpaths: &mut Vec<CubicSubpathV1>,
+    y: f64,
+    left: f64,
+    right: f64,
+) -> Option<()> {
+    push_studio_coordinate_line(subpaths, PointV1 { x: left, y }, PointV1 { x: right, y })
+}
+
+fn push_studio_vertical_line(
+    subpaths: &mut Vec<CubicSubpathV1>,
+    x: f64,
+    bottom: f64,
+    top: f64,
+) -> Option<()> {
+    push_studio_coordinate_line(subpaths, PointV1 { x, y: bottom }, PointV1 { x, y: top })
+}
+
+fn studio_coordinate_system_path(
+    kind: StudioAuthoringEntityKind,
+    width: f64,
+    height: Option<f64>,
+    coordinates: StudioAuthoringCoordinateSystem,
+) -> Option<CubicPathV1> {
+    let x_marks = studio_coordinate_marks(coordinates.x)?;
+    let y_range = coordinates.y;
+    let height = height.unwrap_or(width);
+    let tick_half_length = width.min(height) * STUDIO_COORDINATE_TICK_HALF_LENGTH_RATIO;
+    let axis_x = studio_coordinate_to_local(0.0, coordinates.x, width);
+    let axis_y = y_range.map_or(0.0, |range| studio_coordinate_to_local(0.0, range, height));
+    let mut subpaths = Vec::new();
+    push_studio_horizontal_line(&mut subpaths, axis_y, -width / 2.0, width / 2.0)?;
+    let has_y_axis = match kind {
+        StudioAuthoringEntityKind::NumberLine => false,
+        StudioAuthoringEntityKind::Axes | StudioAuthoringEntityKind::NumberPlane => true,
+        _ => return None,
+    };
+    if has_y_axis {
+        push_studio_vertical_line(&mut subpaths, axis_x, -height / 2.0, height / 2.0)?;
+    }
+    for value in x_marks {
+        let x = studio_coordinate_to_local(value, coordinates.x, width);
+        push_studio_vertical_line(
+            &mut subpaths,
+            x,
+            axis_y - tick_half_length,
+            axis_y + tick_half_length,
+        )?;
+        if kind == StudioAuthoringEntityKind::NumberPlane && value.abs() > 1.0e-12 {
+            push_studio_vertical_line(&mut subpaths, x, -height / 2.0, height / 2.0)?;
+        }
+    }
+    if let Some(y_range) = y_range {
+        for value in studio_coordinate_marks(y_range)? {
+            let y = studio_coordinate_to_local(value, y_range, height);
+            push_studio_horizontal_line(
+                &mut subpaths,
+                y,
+                axis_x - tick_half_length,
+                axis_x + tick_half_length,
+            )?;
+            if kind == StudioAuthoringEntityKind::NumberPlane && value.abs() > 1.0e-12 {
+                push_studio_horizontal_line(&mut subpaths, y, -width / 2.0, width / 2.0)?;
+            }
+        }
+    }
+    Some(CubicPathV1 { subpaths })
 }
 
 fn studio_elliptic_arc(
@@ -5389,10 +5580,13 @@ fn studio_creation_shape_path(
         },
         StudioAuthoringEntityKind::Arc
         | StudioAuthoringEntityKind::Arrow
+        | StudioAuthoringEntityKind::Axes
         | StudioAuthoringEntityKind::Ellipse
         | StudioAuthoringEntityKind::Image
         | StudioAuthoringEntityKind::Line
         | StudioAuthoringEntityKind::MathTex
+        | StudioAuthoringEntityKind::NumberLine
+        | StudioAuthoringEntityKind::NumberPlane
         | StudioAuthoringEntityKind::Other
         | StudioAuthoringEntityKind::RegularPolygon
         | StudioAuthoringEntityKind::Sector
@@ -6290,10 +6484,13 @@ impl EngineSessionV1 {
                 }
                 StudioAuthoringEntityKind::Arc
                 | StudioAuthoringEntityKind::Arrow
+                | StudioAuthoringEntityKind::Axes
                 | StudioAuthoringEntityKind::Circle
                 | StudioAuthoringEntityKind::Ellipse
                 | StudioAuthoringEntityKind::Image
                 | StudioAuthoringEntityKind::Line
+                | StudioAuthoringEntityKind::NumberLine
+                | StudioAuthoringEntityKind::NumberPlane
                 | StudioAuthoringEntityKind::Other
                 | StudioAuthoringEntityKind::Rectangle
                 | StudioAuthoringEntityKind::RegularPolygon
@@ -6315,6 +6512,17 @@ impl EngineSessionV1 {
                     }
                 }
                 StudioAuthoringEntityKind::Arrow => CreateSceneEntityGeometry::Arrow,
+                StudioAuthoringEntityKind::Axes
+                | StudioAuthoringEntityKind::NumberLine
+                | StudioAuthoringEntityKind::NumberPlane => {
+                    let (width, height, coordinates) =
+                        studio_coordinate_system_parameters(state.kind, state.initial_dimensions)
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    let path =
+                        studio_coordinate_system_path(state.kind, width, height, coordinates)
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    CreateSceneEntityGeometry::ShapeOutline { path }
+                }
                 StudioAuthoringEntityKind::Circle => {
                     if let Some(morph) = &shape_morph {
                         CreateSceneEntityGeometry::ShapeOutline {
@@ -6453,10 +6661,13 @@ impl EngineSessionV1 {
                     }
                     StudioAuthoringEntityKind::Arc
                     | StudioAuthoringEntityKind::Arrow
+                    | StudioAuthoringEntityKind::Axes
                     | StudioAuthoringEntityKind::Ellipse
                     | StudioAuthoringEntityKind::Image
                     | StudioAuthoringEntityKind::Line
                     | StudioAuthoringEntityKind::MathTex
+                    | StudioAuthoringEntityKind::NumberLine
+                    | StudioAuthoringEntityKind::NumberPlane
                     | StudioAuthoringEntityKind::RegularPolygon
                     | StudioAuthoringEntityKind::Sector
                     | StudioAuthoringEntityKind::Text => (1.0, 1.0),
@@ -6694,6 +6905,7 @@ mod tests {
             easing: EasingV1::ManimSmooth {},
             from_dimensions: StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: Some(2.0),
                 radius: None,
                 sides: None,
@@ -6702,6 +6914,7 @@ mod tests {
             from_shape: StudioAuthoringEntityKind::Rectangle,
             to_dimensions: StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(1.0),
                 sides: None,
@@ -7013,6 +7226,7 @@ mod tests {
                                 entity: StudioCreationEntitySpec {
                                     dimensions: StudioAuthoringDimensions {
                                         angles: None,
+                                        coordinate_system: None,
                                         height: None,
                                         radius: Some(1.0),
                                         sides: None,
@@ -7079,6 +7293,7 @@ mod tests {
                         kind: StudioCreationOperationKind::Resize {
                             from_dimensions: StudioAuthoringDimensions {
                                 angles: None,
+                                coordinate_system: None,
                                 height: None,
                                 radius: Some(1.0),
                                 sides: None,
@@ -7089,6 +7304,7 @@ mod tests {
                             shape: StudioAuthoringEntityKind::Circle,
                             to_dimensions: StudioAuthoringDimensions {
                                 angles: None,
+                                coordinate_system: None,
                                 height: None,
                                 radius: Some(2.0),
                                 sides: None,
@@ -7424,6 +7640,7 @@ mod tests {
         entity.kind = StudioAuthoringEntityKind::RegularPolygon;
         entity.dimensions = StudioAuthoringDimensions {
             angles: None,
+            coordinate_system: None,
             height: None,
             radius: Some(radius),
             sides: Some(sides),
@@ -7432,7 +7649,7 @@ mod tests {
         command
     }
 
-    fn studio_curve_creation_command(
+    fn studio_path_creation_command(
         bundle: &SceneIrBundleV1,
         slug: &str,
         kind: StudioAuthoringEntityKind,
@@ -7741,6 +7958,7 @@ mod tests {
                 entity.kind = StudioAuthoringEntityKind::Rectangle;
                 entity.dimensions = StudioAuthoringDimensions {
                     angles: None,
+                    coordinate_system: None,
                     height: Some(2.0),
                     radius: None,
                     sides: None,
@@ -7750,6 +7968,7 @@ mod tests {
         }
         let rectangle = StudioAuthoringDimensions {
             angles: None,
+            coordinate_system: None,
             height: Some(2.0),
             radius: None,
             sides: None,
@@ -7757,6 +7976,7 @@ mod tests {
         };
         let circle = StudioAuthoringDimensions {
             angles: None,
+            coordinate_system: None,
             height: None,
             radius: Some(1.0),
             sides: None,
@@ -8085,6 +8305,7 @@ mod tests {
                     entity.kind = StudioAuthoringEntityKind::Rectangle;
                     entity.dimensions = StudioAuthoringDimensions {
                         angles: None,
+                        coordinate_system: None,
                         height: Some(1.0),
                         radius: None,
                         sides: None,
@@ -9162,6 +9383,7 @@ mod tests {
             StudioCreationOperationKind::Resize {
                 from_dimensions: StudioAuthoringDimensions {
                     angles: None,
+                    coordinate_system: None,
                     height: Some(1.0),
                     radius: None,
                     sides: None,
@@ -9172,6 +9394,7 @@ mod tests {
                 shape: StudioAuthoringEntityKind::Rectangle,
                 to_dimensions: StudioAuthoringDimensions {
                     angles: None,
+                    coordinate_system: None,
                     height: Some(1.5),
                     radius: None,
                     sides: None,
@@ -9198,6 +9421,7 @@ mod tests {
             StudioCreationOperationKind::Resize {
                 from_dimensions: StudioAuthoringDimensions {
                     angles: None,
+                    coordinate_system: None,
                     height: Some(1.5),
                     radius: None,
                     sides: None,
@@ -9208,6 +9432,7 @@ mod tests {
                 shape: StudioAuthoringEntityKind::Rectangle,
                 to_dimensions: StudioAuthoringDimensions {
                     angles: None,
+                    coordinate_system: None,
                     height: Some(1.0),
                     radius: None,
                     sides: None,
@@ -9680,6 +9905,7 @@ mod tests {
             projection.entities[0].initial_dimensions,
             StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(2.0),
                 sides: Some(5),
@@ -9779,6 +10005,7 @@ mod tests {
         let mut invalid_dimensions = vec![
             StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(1.0),
                 sides: None,
@@ -9786,6 +10013,7 @@ mod tests {
             },
             StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(1.0),
                 sides: Some(2),
@@ -9793,6 +10021,7 @@ mod tests {
             },
             StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(1.0),
                 sides: Some(33),
@@ -9800,6 +10029,7 @@ mod tests {
             },
             StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: None,
                 sides: Some(6),
@@ -9807,6 +10037,7 @@ mod tests {
             },
             StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(0.0),
                 sides: Some(6),
@@ -9814,6 +10045,7 @@ mod tests {
             },
             StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(f64::INFINITY),
                 sides: Some(6),
@@ -9821,6 +10053,7 @@ mod tests {
             },
             StudioAuthoringDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(1.0),
                 sides: Some(6),
@@ -9829,6 +10062,7 @@ mod tests {
         ];
         invalid_dimensions.push(StudioAuthoringDimensions {
             angles: None,
+            coordinate_system: None,
             height: None,
             radius: Some(f64::NAN),
             sides: Some(6),
@@ -9920,7 +10154,7 @@ mod tests {
         };
 
         for (slug, kind, dimensions, closed, segment_count, start, first_end, end) in cases {
-            let mut command = studio_curve_creation_command(&bundle, slug, kind, dimensions);
+            let mut command = studio_path_creation_command(&bundle, slug, kind, dimensions);
             if kind == StudioAuthoringEntityKind::Arc {
                 let program = &mut command.programs[0];
                 let draw = program
@@ -9996,6 +10230,250 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one table pins the three coordinate primitives through projection and retained Scene IR"
+    )]
+    fn normalized_creation_projects_and_applies_coordinate_system_primitives() {
+        let bundle = static_imported_bundle();
+        let x = StudioAuthoringCoordinateRange {
+            maximum: 2.0,
+            minimum: -2.0,
+            step: 1.0,
+        };
+        let y = StudioAuthoringCoordinateRange {
+            maximum: 1.0,
+            minimum: -1.0,
+            step: 1.0,
+        };
+        let cases = [
+            (
+                "number-line",
+                StudioAuthoringEntityKind::NumberLine,
+                StudioAuthoringDimensions {
+                    coordinate_system: Some(StudioAuthoringCoordinateSystem { x, y: None }),
+                    width: Some(6.0),
+                    ..StudioAuthoringDimensions::default()
+                },
+                6,
+            ),
+            (
+                "axes",
+                StudioAuthoringEntityKind::Axes,
+                StudioAuthoringDimensions {
+                    coordinate_system: Some(StudioAuthoringCoordinateSystem { x, y: Some(y) }),
+                    height: Some(4.0),
+                    width: Some(6.0),
+                    ..StudioAuthoringDimensions::default()
+                },
+                10,
+            ),
+            (
+                "number-plane",
+                StudioAuthoringEntityKind::NumberPlane,
+                StudioAuthoringDimensions {
+                    coordinate_system: Some(StudioAuthoringCoordinateSystem { x, y: Some(y) }),
+                    height: Some(4.0),
+                    width: Some(6.0),
+                    ..StudioAuthoringDimensions::default()
+                },
+                16,
+            ),
+        ];
+
+        for (slug, kind, dimensions, expected_subpath_count) in cases {
+            let mut command = studio_path_creation_command(&bundle, slug, kind, dimensions);
+            if kind == StudioAuthoringEntityKind::NumberLine {
+                let program = &mut command.programs[0];
+                let draw = program
+                    .operations
+                    .iter_mut()
+                    .find(|operation| {
+                        matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+                    })
+                    .unwrap();
+                draw.id = "draw".to_owned();
+                draw.interval.end = 1.25;
+                draw.kind = StudioCreationOperationKind::DrawIn {
+                    easing: StudioPropertyEasing::Smooth,
+                    from: Some(0.0),
+                    to: Some(1.0),
+                };
+                program.schedule_order[2] = "draw".to_owned();
+            }
+
+            let projection =
+                project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+            assert_eq!(projection.entities[0].kind, kind);
+            assert_eq!(projection.entities[0].initial_dimensions, dimensions);
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+            let result = session.apply_studio_creation_edit(command).unwrap();
+            let created = result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == format!("tx:create/entity:{slug}"))
+                .unwrap();
+            let SceneGeometryV1::CubicPath { path } = &created.geometry else {
+                panic!("coordinate primitive must reuse cubic-path geometry");
+            };
+            assert_eq!(path.subpaths.len(), expected_subpath_count);
+            assert!(
+                path.subpaths
+                    .iter()
+                    .all(|subpath| { !subpath.closed && subpath.segments.len() == 1 })
+            );
+            assert!(matches!(
+                &created.appearance,
+                SceneAppearanceV1::Vector {
+                    fill: None,
+                    stroke: Some(_),
+                    ..
+                }
+            ));
+            if kind == StudioAuthoringEntityKind::NumberLine {
+                let axis = &path.subpaths[0];
+                assert_eq!(axis.start, PointV1 { x: -3.0, y: 0.0 });
+                assert_eq!(axis.segments[0].end, PointV1 { x: 3.0, y: 0.0 });
+                assert!(
+                    result
+                        .bundle
+                        .scene
+                        .animation_channels
+                        .iter()
+                        .any(|channel| {
+                            matches!(
+                                channel,
+                                AnimationChannelV1::PathTrim { entity_id, .. }
+                                    if entity_id == "tx:create/entity:number-line"
+                            )
+                        })
+                );
+            }
+            if kind == StudioAuthoringEntityKind::NumberPlane {
+                assert_eq!(
+                    serde_json::to_value(&projection).unwrap()["entities"][0]["initialDimensions"],
+                    serde_json::json!({
+                        "coordinateSystem": {
+                            "x": { "maximum": 2.0, "minimum": -2.0, "step": 1.0 },
+                            "y": { "maximum": 1.0, "minimum": -1.0, "step": 1.0 }
+                        },
+                        "height": 4.0,
+                        "width": 6.0
+                    })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn normalized_creation_rejects_invalid_coordinate_systems_atomically() {
+        let bundle = static_imported_bundle();
+        let range = |minimum, maximum, step| StudioAuthoringCoordinateRange {
+            maximum,
+            minimum,
+            step,
+        };
+        let number_line = |coordinates| StudioAuthoringDimensions {
+            coordinate_system: coordinates,
+            width: Some(6.0),
+            ..StudioAuthoringDimensions::default()
+        };
+        let axes = |coordinates, height| StudioAuthoringDimensions {
+            coordinate_system: Some(coordinates),
+            height,
+            width: Some(6.0),
+            ..StudioAuthoringDimensions::default()
+        };
+        let invalid = [
+            (StudioAuthoringEntityKind::NumberLine, number_line(None)),
+            (
+                StudioAuthoringEntityKind::NumberLine,
+                number_line(Some(StudioAuthoringCoordinateSystem {
+                    x: range(-2.0, 2.0, 1.0),
+                    y: Some(range(-1.0, 1.0, 1.0)),
+                })),
+            ),
+            (
+                StudioAuthoringEntityKind::Axes,
+                axes(
+                    StudioAuthoringCoordinateSystem {
+                        x: range(-2.0, 2.0, 1.0),
+                        y: None,
+                    },
+                    Some(4.0),
+                ),
+            ),
+            (
+                StudioAuthoringEntityKind::Axes,
+                axes(
+                    StudioAuthoringCoordinateSystem {
+                        x: range(-2.0, 2.0, 1.0),
+                        y: Some(range(-1.0, 1.0, 1.0)),
+                    },
+                    None,
+                ),
+            ),
+            (
+                StudioAuthoringEntityKind::NumberLine,
+                number_line(Some(StudioAuthoringCoordinateSystem {
+                    x: range(1.0, 1.0, 1.0),
+                    y: None,
+                })),
+            ),
+            (
+                StudioAuthoringEntityKind::NumberLine,
+                number_line(Some(StudioAuthoringCoordinateSystem {
+                    x: range(-2.0, 2.0, 0.0),
+                    y: None,
+                })),
+            ),
+            (
+                StudioAuthoringEntityKind::NumberLine,
+                number_line(Some(StudioAuthoringCoordinateSystem {
+                    x: range(f64::NAN, 2.0, 1.0),
+                    y: None,
+                })),
+            ),
+            (
+                StudioAuthoringEntityKind::NumberLine,
+                number_line(Some(StudioAuthoringCoordinateSystem {
+                    x: range(0.0, 128.0, 1.0),
+                    y: None,
+                })),
+            ),
+            (
+                StudioAuthoringEntityKind::NumberLine,
+                StudioAuthoringDimensions {
+                    coordinate_system: Some(StudioAuthoringCoordinateSystem {
+                        x: range(-2.0, 2.0, 1.0),
+                        y: None,
+                    }),
+                    radius: Some(1.0),
+                    width: Some(6.0),
+                    ..StudioAuthoringDimensions::default()
+                },
+            ),
+        ];
+
+        for (kind, dimensions) in invalid {
+            let command = studio_path_creation_command(&bundle, "invalid", kind, dimensions);
+            assert!(matches!(
+                project_studio_creation_edits(bundle.scene.duration, &command.programs),
+                Err(ProjectStudioCreationEditError::Unsupported)
+            ));
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+            assert!(matches!(
+                session.apply_studio_creation_edit(command),
+                Err(ApplyStudioCreationEditError::Unsupported)
+            ));
+            assert_eq!(session.scene(), &bundle.scene);
+            assert_eq!(session.retained_index_stats().build_count, 1);
+        }
+    }
+
+    #[test]
     fn normalized_creation_rejects_invalid_curve_dimensions_atomically() {
         let bundle = static_imported_bundle();
         let ellipse = |width, height| StudioAuthoringDimensions {
@@ -10033,7 +10511,7 @@ mod tests {
         ];
 
         for (kind, dimensions) in invalid {
-            let command = studio_curve_creation_command(&bundle, "invalid", kind, dimensions);
+            let command = studio_path_creation_command(&bundle, "invalid", kind, dimensions);
             assert!(matches!(
                 project_studio_creation_edits(bundle.scene.duration, &command.programs),
                 Err(ProjectStudioCreationEditError::Unsupported)
@@ -10092,7 +10570,7 @@ mod tests {
                 ),
             ] {
                 let mut command =
-                    studio_curve_creation_command(&bundle, "curve", kind, dimensions(kind));
+                    studio_path_creation_command(&bundle, "curve", kind, dimensions(kind));
                 command.programs.push(studio_created_appearance_edit_input(
                     0.5,
                     "tx:create/entity:curve",
@@ -10729,6 +11207,7 @@ mod tests {
         };
         *from_dimensions = StudioAuthoringDimensions {
             angles: None,
+            coordinate_system: None,
             height: None,
             radius: Some(2.0),
             sides: None,
@@ -10776,6 +11255,7 @@ mod tests {
                 kind: StudioCreationOperationKind::Resize {
                     from_dimensions: StudioAuthoringDimensions {
                         angles: None,
+                        coordinate_system: None,
                         height: Some(2.0),
                         radius: None,
                         sides: None,
@@ -10786,6 +11266,7 @@ mod tests {
                     shape: StudioAuthoringEntityKind::Rectangle,
                     to_dimensions: StudioAuthoringDimensions {
                         angles: None,
+                        coordinate_system: None,
                         height: Some(3.0),
                         radius: None,
                         sides: None,
@@ -12224,6 +12705,7 @@ mod tests {
                         entity: StudioCreationEntitySpec {
                             dimensions: StudioAuthoringDimensions {
                                 angles: None,
+                                coordinate_system: None,
                                 height: Some(1.0),
                                 radius: None,
                                 sides: None,

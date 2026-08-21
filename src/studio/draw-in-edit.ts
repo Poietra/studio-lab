@@ -19,9 +19,12 @@ export type DrawInClip = Readonly<{
 
 const DRAWABLE_STUDIO_TYPES = new Set([
   "Arc",
+  "Axes",
   "Circle",
   "Ellipse",
   "Line",
+  "NumberLine",
+  "NumberPlane",
   "Rectangle",
   "RegularPolygon",
   "Sector",

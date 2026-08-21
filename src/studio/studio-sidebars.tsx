@@ -47,6 +47,9 @@ const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
   "insert-ellipse",
   "insert-arc",
   "insert-sector",
+  "insert-number-line",
+  "insert-axes",
+  "insert-number-plane",
   "insert-triangle",
   "insert-regular-polygon",
   "insert-line",
@@ -87,11 +90,17 @@ function NativeImageThumbnail({ asset }: Readonly<{ asset: StudioNativeImageAsse
 
 function dimensionSummary(entity: ProjectedEntity) {
   if (entity.geometry.dimensions.kind === "unknown") return "Runtime-dependent";
-  const { angles, height, radius, sides, width } = entity.geometry.dimensions.value;
+  const { angles, coordinateSystem, height, radius, sides, width } = entity.geometry.dimensions.value;
   const values = [
     radius === undefined ? null : `r ${radius}`,
     angles === undefined ? null : `start ${Math.round((angles.start * 180) / Math.PI)}°`,
     angles === undefined ? null : `sweep ${Math.round((angles.sweep * 180) / Math.PI)}°`,
+    coordinateSystem === undefined
+      ? null
+      : `x ${coordinateSystem.x.minimum}…${coordinateSystem.x.maximum} / ${coordinateSystem.x.step}`,
+    coordinateSystem?.y === undefined
+      ? null
+      : `y ${coordinateSystem.y.minimum}…${coordinateSystem.y.maximum} / ${coordinateSystem.y.step}`,
     sides === undefined ? null : `${sides} sides`,
     width === undefined ? null : `w ${width}`,
     height === undefined ? null : `h ${height}`,
@@ -1170,8 +1179,19 @@ export function StudioInspector({
     [label: string, property: "fillColor" | "strokeColor", value: string | null]
   >[] =
     selectedEntity &&
-    ["Arc", "Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"].includes(selectedEntity.type)
-      ? selectedEntity.type === "Arc"
+    [
+      "Arc",
+      "Axes",
+      "Circle",
+      "Ellipse",
+      "NumberLine",
+      "NumberPlane",
+      "Rectangle",
+      "RegularPolygon",
+      "Sector",
+      "Triangle",
+    ].includes(selectedEntity.type)
+      ? ["Arc", "Axes", "NumberLine", "NumberPlane"].includes(selectedEntity.type)
         ? [["Stroke", "strokeColor", strokeColorValue]]
         : [
             ["Fill", "fillColor", fillColorValue],

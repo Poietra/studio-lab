@@ -76,10 +76,10 @@ function createEntityExecution(
     type === "MathTex" && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
   const hasTextContent = type === "Text" && studioCreationText(content) !== null;
   const hasNativeImage = type === "ImageMobject" && operation.entity.image !== undefined;
-  const isNativeCurve = type === "Arc" || type === "Ellipse" || type === "Sector";
+  const isNativePath = ["Arc", "Axes", "Ellipse", "NumberLine", "NumberPlane", "Sector"].includes(type);
   const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "RegularPolygon", "Square", "Triangle"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
-  if (hasNativeImage || isNativeCurve) return CLIENT_ONLY_EXECUTION;
+  if (hasNativeImage || isNativePath) return CLIENT_ONLY_EXECUTION;
   if (hasMathTexContent || hasTextContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
   return previewOnlyExecution(`CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`);
 }
@@ -335,11 +335,28 @@ function entityIssues(entityIds: readonly string[], operation: SceneEditOperatio
 
 const TIME_EPSILON = 0.0005;
 const MIN_CURVE_SWEEP_RADIANS = 1e-6;
+const MAX_COORDINATE_SYSTEM_MARKS = 128;
+
+function coordinateMarkCount(axis: Readonly<{ maximum: number; minimum: number; step: number }>) {
+  for (let index = 0; index < MAX_COORDINATE_SYSTEM_MARKS; index += 1) {
+    const value = axis.minimum + axis.step * index;
+    if (!Number.isFinite(value) || value > axis.maximum) return index;
+  }
+  const next = axis.minimum + axis.step * MAX_COORDINATE_SYSTEM_MARKS;
+  return !Number.isFinite(next) || next > axis.maximum ? MAX_COORDINATE_SYSTEM_MARKS : null;
+}
 
 function validCreateDimensions(type: string, dimensions: EntityDimensions | undefined) {
   if (dimensions === undefined) {
     return (
-      type !== "Arc" && type !== "Ellipse" && type !== "Sector" && type !== "Triangle" && type !== "RegularPolygon"
+      type !== "Arc" &&
+      type !== "Axes" &&
+      type !== "Ellipse" &&
+      type !== "NumberLine" &&
+      type !== "NumberPlane" &&
+      type !== "Sector" &&
+      type !== "Triangle" &&
+      type !== "RegularPolygon"
     );
   }
   if (type === "Circle") return exactShapeDimensions("circle", dimensions);
@@ -349,6 +366,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       dimensions.height !== undefined &&
       dimensions.width !== undefined &&
       dimensions.angles === undefined &&
+      dimensions.coordinateSystem === undefined &&
       dimensions.radius === undefined &&
       dimensions.sides === undefined
     );
@@ -363,6 +381,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       dimensions.radius !== undefined &&
       Number.isFinite(dimensions.radius) &&
       dimensions.radius > 0 &&
+      dimensions.coordinateSystem === undefined &&
       dimensions.height === undefined &&
       dimensions.sides === undefined &&
       dimensions.width === undefined
@@ -374,6 +393,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       Number.isFinite(dimensions.radius) &&
       dimensions.radius > 0 &&
       dimensions.angles === undefined &&
+      dimensions.coordinateSystem === undefined &&
       dimensions.height === undefined &&
       dimensions.width === undefined &&
       dimensions.sides !== undefined &&
@@ -383,6 +403,39 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       (type !== "Triangle" || dimensions.sides === 3)
     );
   }
+  if (type === "NumberLine" || type === "Axes" || type === "NumberPlane") {
+    const system = dimensions.coordinateSystem;
+    const axisIsValid = (axis: Readonly<{ maximum: number; minimum: number; step: number }> | undefined) =>
+      axis !== undefined &&
+      Number.isFinite(axis.minimum) &&
+      Number.isFinite(axis.maximum) &&
+      Number.isFinite(axis.step) &&
+      Number.isFinite(axis.maximum - axis.minimum) &&
+      axis.minimum < axis.maximum &&
+      axis.step > 0;
+    const xMarkCount = system !== undefined && axisIsValid(system.x) ? coordinateMarkCount(system.x) : null;
+    const yMarkCount =
+      system?.y !== undefined && axisIsValid(system.y)
+        ? coordinateMarkCount(system.y)
+        : type === "NumberLine"
+          ? 0
+          : null;
+    return (
+      system !== undefined &&
+      xMarkCount !== null &&
+      yMarkCount !== null &&
+      xMarkCount + yMarkCount <= MAX_COORDINATE_SYSTEM_MARKS &&
+      (type === "NumberLine" ? system.y === undefined && dimensions.height === undefined : true) &&
+      dimensions.width !== undefined &&
+      Number.isFinite(dimensions.width) &&
+      dimensions.width > 0 &&
+      (type === "NumberLine" ||
+        (dimensions.height !== undefined && Number.isFinite(dimensions.height) && dimensions.height > 0)) &&
+      dimensions.angles === undefined &&
+      dimensions.radius === undefined &&
+      dimensions.sides === undefined
+    );
+  }
   return false;
 }
 
@@ -390,12 +443,14 @@ function exactShapeDimensions(shape: "circle" | "rectangle", dimensions: EntityD
   return shape === "circle"
     ? dimensions.radius !== undefined &&
         dimensions.angles === undefined &&
+        dimensions.coordinateSystem === undefined &&
         dimensions.height === undefined &&
         dimensions.sides === undefined &&
         dimensions.width === undefined
     : dimensions.height !== undefined &&
         dimensions.width !== undefined &&
         dimensions.angles === undefined &&
+        dimensions.coordinateSystem === undefined &&
         dimensions.radius === undefined &&
         dimensions.sides === undefined;
 }
@@ -574,7 +629,18 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
     const colorableTypes =
       operation.key === "fillColor"
         ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"]
-        : ["Arc", "Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"];
+        : [
+            "Arc",
+            "Axes",
+            "Circle",
+            "Ellipse",
+            "NumberLine",
+            "NumberPlane",
+            "Rectangle",
+            "RegularPolygon",
+            "Sector",
+            "Triangle",
+          ];
     if (!entity?.transactionId || !colorableTypes.includes(entity.type)) {
       issues.push({
         code: "schema-invalid" as const,
@@ -651,9 +717,19 @@ export const OPERATION_REGISTRY = {
       if (
         entity &&
         (!entity.transactionId ||
-          !["Arc", "Circle", "Ellipse", "Line", "Rectangle", "RegularPolygon", "Sector", "Triangle"].includes(
-            entity.type,
-          ))
+          ![
+            "Arc",
+            "Axes",
+            "Circle",
+            "Ellipse",
+            "Line",
+            "NumberLine",
+            "NumberPlane",
+            "Rectangle",
+            "RegularPolygon",
+            "Sector",
+            "Triangle",
+          ].includes(entity.type))
       ) {
         issues.push({
           code: "lowering-unsupported",

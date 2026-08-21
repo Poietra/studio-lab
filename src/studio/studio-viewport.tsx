@@ -7,7 +7,12 @@ import { StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import type { StudioGesturePreviewStore } from "./studio-gesture-preview-store";
 import { recordStudioCommitProfile } from "./studio-render-profiler";
 import { StudioTimeline, type StudioTimelineProps } from "./studio-timeline";
-import { type CurveInsertSettings, type StudioTool, StudioToolbar } from "./studio-toolbar";
+import {
+  type CoordinateInsertSettings,
+  type CurveInsertSettings,
+  type StudioTool,
+  StudioToolbar,
+} from "./studio-toolbar";
 
 type StudioGestureCanvasBaseProps = Omit<
   StudioCanvasProps,
@@ -55,10 +60,12 @@ export type StudioViewportProps = Readonly<
   > &
     Omit<StudioTimelineProps, "events" | "objectTracks" | "readOnly"> & {
       className?: string;
+      coordinateInsertSettings: CoordinateInsertSettings;
       curveInsertSettings: CurveInsertSettings;
       previewPaintAvailable: boolean;
       gesturePreviewStore: StudioGesturePreviewStore;
       insertValue: string;
+      onCoordinateInsertSettingsChange: (settings: CoordinateInsertSettings) => void;
       onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
       onInsertAtCenter: () => void;
       onInsertToolChange: (tool: StudioTool) => void;
@@ -79,6 +86,7 @@ export function StudioViewport({
   cameraClips,
   boundaryActive,
   className,
+  coordinateInsertSettings,
   currentTime,
   curveInsertSettings,
   duration,
@@ -148,6 +156,7 @@ export function StudioViewport({
   onInlineTextCancel,
   onInlineTextCommit,
   onInteractionModeChange,
+  onCoordinateInsertSettingsChange,
   onCurveInsertSettingsChange,
   onInsertAtCenter,
   onImageAssetDrop,
@@ -214,8 +223,10 @@ export function StudioViewport({
       <Profiler id="toolbar" onRender={recordStudioCommitProfile}>
         <StudioToolbar
           authoringAvailable={previewPaintAvailable}
+          coordinateInsertSettings={coordinateInsertSettings}
           curveInsertSettings={curveInsertSettings}
           insertValue={insertValue}
+          onCoordinateInsertSettingsChange={onCoordinateInsertSettingsChange}
           onCurveInsertSettingsChange={onCurveInsertSettingsChange}
           onInsertAtCenter={onInsertAtCenter}
           onInsertValueChange={onInsertValueChange}

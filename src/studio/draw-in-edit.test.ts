@@ -68,7 +68,7 @@ describe("Draw entrance editing", () => {
     expect(drawInClipFromProgram(shortened.program)?.interval).toEqual({ end: 2, start: 1 });
   });
 
-  it.each(["Arc", "Ellipse", "Sector", "Triangle", "RegularPolygon"] as const)(
+  it.each(["Arc", "Axes", "Ellipse", "NumberLine", "NumberPlane", "Sector", "Triangle", "RegularPolygon"] as const)(
     "supports Draw on a Studio-created %s",
     (type) => {
       const creation = createStudioEntitiesProgram({
