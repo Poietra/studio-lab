@@ -28,6 +28,7 @@ import {
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   projectFragmentMaterialsForSceneV1,
   recordStudioFragmentMaterialGlslDiagnosticV1,
+  removeStudioFragmentMaterialAssetV1,
   removeStudioFragmentMaterialV1,
   updateStudioFragmentMaterialFromGlslV1,
   updateStudioFragmentMaterialParameterSchemaV1,
@@ -46,6 +47,7 @@ import {
 } from "./use-editor-controller";
 
 class MemoryAdapter implements EditorSessionStorageAdapter {
+  failMutations = false;
   value: string | null;
 
   constructor(value: string | null = null) {
@@ -53,6 +55,7 @@ class MemoryAdapter implements EditorSessionStorageAdapter {
   }
 
   clear() {
+    if (this.failMutations) throw new Error("storage unavailable");
     this.value = null;
   }
 
@@ -61,6 +64,7 @@ class MemoryAdapter implements EditorSessionStorageAdapter {
   }
 
   write(serialized: string) {
+    if (this.failMutations) throw new Error("storage unavailable");
     this.value = serialized;
   }
 }
@@ -137,6 +141,38 @@ function record(transactionId: string) {
   } as const satisfies ProgramRecord;
 }
 
+function materialTrackRecord(transactionId: string, shaderId = "project-material-1") {
+  const operationId = `${transactionId}/material-parameter`;
+  return {
+    program: {
+      ...record(transactionId).program,
+      loweringStatus: "unsupported",
+      operations: [
+        {
+          dependsOn: [],
+          easing: "smooth",
+          entityId: "circle",
+          from: 0.35,
+          id: operationId,
+          interval: { end: 3, start: 2 },
+          key: "appearance",
+          kind: "AnimateProperty",
+          materialParameter: {
+            material: { parameters: [0.35, 8], revision: 1, shaderId },
+            name: "Speed",
+            parameterIndex: 0,
+          },
+          provenance: { evidence: ["Studio material f32 parameter track"], origin: "direct-manipulation" },
+          to: 0.7,
+        },
+      ],
+      provenance: { evidence: ["Studio material f32 parameter keyframes"], origin: "direct-manipulation" },
+      schedule: { edges: [], mode: "sequence", order: [operationId] },
+    },
+    validation: { issues: [], status: "valid" },
+  } as const satisfies ProgramRecord;
+}
+
 function draftRecord(transactionId: string) {
   return {
     program: {
@@ -204,6 +240,96 @@ function snapshot(): EditorSessionSnapshot {
 }
 
 describe("durable editor session storage", () => {
+  it("finds material parameter tracks in inactive local Scene history and active unsaved state", () => {
+    const adapter = new MemoryAdapter();
+    const store = new EditorSessionStore(adapter);
+    const tracked = materialTrackRecord("tracked");
+    const inactiveIdentity = identity("examples/scene.py#InactiveScene");
+    const inactive = snapshotEditorSession({
+      ...createInitialEditorState(),
+      redoPrograms: [{ kind: "mutation", mutation: { index: 0, kind: "append", value: tracked } }],
+    });
+    expect(store.save(inactiveIdentity, inactive)).toBe(true);
+    const reloaded = new EditorSessionStore(adapter);
+    expect(reloaded.projectHasMaterialParameterTrack("project-a", "project-material-1")).toBe(true);
+    expect(reloaded.projectHasMaterialParameterTrack("project-b", "project-material-1")).toBe(false);
+    expect(reloaded.restore(inactiveIdentity)).toMatchObject({
+      kind: "restored",
+      snapshot: { redoPrograms: [{ kind: "mutation" }] },
+    });
+
+    const clean = snapshotEditorSession(createInitialEditorState());
+    expect(
+      reloaded.projectHasMaterialParameterTrack("project-a", "project-material-1", {
+        identity: inactiveIdentity,
+        snapshot: clean,
+      }),
+    ).toBe(false);
+    expect(
+      reloaded.projectHasMaterialParameterTrack("project-a", "project-material-1", {
+        identity: identity("examples/scene.py#UnsavedScene"),
+        snapshot: snapshotEditorSession({ ...createInitialEditorState(), appliedPrograms: [tracked] }),
+      }),
+    ).toBe(true);
+
+    const nativeHistory = snapshotEditorSession({
+      ...createInitialEditorState(),
+      programUndoEntries: [{ index: 0, kind: "append", value: tracked }],
+    });
+    expect(reloaded.save(nativeIdentity(), nativeHistory)).toBe(true);
+    expect(
+      reloaded.projectHasMaterialParameterTrack("project-a", "project-material-1", {
+        identity: inactiveIdentity,
+        snapshot: clean,
+      }),
+    ).toBe(true);
+  });
+
+  it("checks every material-track history position without mutating the session", () => {
+    const tracked = materialTrackRecord("tracked");
+    const clean = record("clean");
+    const cases = [
+      snapshotEditorSession({ ...createInitialEditorState(), draftProgram: tracked }),
+      snapshotEditorSession({
+        ...createInitialEditorState(),
+        appliedPrograms: [tracked],
+        draftProgram: tracked,
+        editingAppliedProgram: { index: 0, original: tracked },
+      }),
+      snapshotEditorSession({
+        ...createInitialEditorState(),
+        appliedPrograms: [clean],
+        programUndoEntries: [{ index: 0, kind: "replace", previous: tracked, value: clean }],
+      }),
+      snapshotEditorSession({
+        ...createInitialEditorState(),
+        appliedPrograms: [tracked],
+        programUndoEntries: [{ index: 0, kind: "replace", previous: clean, value: tracked }],
+      }),
+      snapshotEditorSession({
+        ...createInitialEditorState(),
+        redoPrograms: [{ edit: null, kind: "draft", value: tracked }],
+      }),
+      snapshotEditorSession({
+        ...createInitialEditorState(),
+        appliedPrograms: [tracked],
+        redoPrograms: [{ edit: { index: 0, original: tracked }, kind: "draft", value: draftRecord("tracked") }],
+      }),
+    ];
+
+    cases.forEach((candidate, index) => {
+      const before = structuredClone(candidate);
+      const store = new EditorSessionStore();
+      expect(
+        store.projectHasMaterialParameterTrack("project-a", "project-material-1", {
+          identity: identity(`examples/scene.py#History${index}`),
+          snapshot: candidate,
+        }),
+      ).toBe(true);
+      expect(candidate).toEqual(before);
+    });
+  });
+
   it("uses disjoint validated browser keys for each account and organization", () => {
     const first = editorSessionStorageKey({
       organizationId: "organization-a",
@@ -435,6 +561,31 @@ describe("durable editor session storage", () => {
     const reopened = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
     expect(projectFragmentMaterialsForSceneV1(reopened, "scene.py#SceneA").assignments).toEqual({});
     expect(reopened.registry.materials[0]?.source).toBe(STUDIO_WAVE_FRAGMENT_SOURCE_V1);
+
+    const resolved = removeStudioFragmentMaterialAssetV1(reopened, material.shaderId, "unassign-all");
+    expect(resolved.kind).toBe("removed");
+    if (resolved.kind !== "removed") throw new Error("Expected the in-use material deletion to be resolved.");
+    expect(new EditorSessionStore(adapter).saveProjectFragmentMaterials("project-a", resolved.state)).toBe(true);
+    const afterDeletion = new EditorSessionStore(adapter).restoreProjectFragmentMaterials("project-a");
+    expect(afterDeletion).toEqual(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
+  });
+
+  it("rejects a material deletion when its durable storage mutation fails", () => {
+    const adapter = new MemoryAdapter();
+    const store = new EditorSessionStore(adapter);
+    const material = assignedFragmentMaterials("scene-a", "circle");
+    expect(store.saveProjectFragmentMaterials("project-a", material)).toBe(true);
+    const shaderId = material.registry.materials[0]!.shaderId;
+    const removed = removeStudioFragmentMaterialAssetV1(material, shaderId, "unassign-all");
+    expect(removed.kind).toBe("removed");
+    if (removed.kind !== "removed") throw new Error("Expected the material removal to be resolved.");
+
+    adapter.failMutations = true;
+    expect(store.saveProjectFragmentMaterials("project-a", removed.state)).toBe(false);
+    expect(store.restoreProjectFragmentMaterials("project-a")).toEqual(material);
+    expect(
+      new EditorSessionStore(new MemoryAdapter(adapter.value)).restoreProjectFragmentMaterials("project-a"),
+    ).toEqual(material);
   });
 
   it("restores a custom scalar schema and its assignment defaults through the existing storage authority", () => {

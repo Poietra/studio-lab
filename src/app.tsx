@@ -88,6 +88,7 @@ import {
   type StudioFragmentMaterialParameterSchemaV1,
   type StudioFragmentMaterialParameterValueV1,
   type StudioFragmentMaterialPresetId,
+  type StudioFragmentMaterialRemovalResolution,
   sceneHasFragmentMaterialAssignmentsV1,
   studioFragmentMaterialAssignmentCountV1,
   studioFragmentMaterialCompileErrorV1,
@@ -530,6 +531,7 @@ export function App({
     markSessionCloudManaged,
     openSession,
     pruneSessions,
+    projectHasLocalMaterialParameterTrack,
     readLocalSessionForCloudMigration,
     redoProgram: redoEditorProgram,
     resetPrograms,
@@ -6128,6 +6130,35 @@ export function App({
     return activeProjectId ? commitProjectFragmentMaterials(activeProjectId, next) : false;
   }
 
+  async function commitFragmentMaterialRemoval(next: ProjectFragmentMaterialStateV1) {
+    if (!nativeSceneActive) return activeProjectId ? commitProjectFragmentMaterials(activeProjectId, next) : false;
+    if (nativeProjectAssetPending) {
+      setDraftError("Wait for the current project image import to finish before deleting a material.");
+      return false;
+    }
+    if (!activeProjectId || !activeEditorScene || !isStudioNativeWorkspaceScene(activeEditorScene)) return false;
+    const documentKey = activeEditorScene.identity.documentKey;
+    if (
+      !nativeProjectState ||
+      nativeProjectState.projectId !== activeProjectId ||
+      nativeProjectState.documentKey !== documentKey ||
+      !nativeProjectLocalStore
+    )
+      return false;
+    const generation = nativeProjectAssetGeneration.current;
+    const stateKey = tabLocalNativeProjectKey(activeProjectId, documentKey);
+    const updated = { ...nativeProjectState, fragmentMaterials: next };
+    try {
+      await nativeProjectLocalStore.save({ documentKey, projectId: activeProjectId }, updated);
+    } catch (cause) {
+      setDraftError(cause instanceof Error ? cause.message : "The native project materials could not be saved.");
+      return false;
+    }
+    nativeProjectStates.current.set(stateKey, updated);
+    if (nativeProjectAssetGeneration.current === generation) setNativeProjectState(updated);
+    return true;
+  }
+
   function createFragmentMaterial(name: string) {
     try {
       const created = createStudioFragmentMaterialV1(activeProjectFragmentMaterials, { name });
@@ -6213,18 +6244,25 @@ export function App({
     }
   }
 
-  function removeFragmentMaterialAsset(shaderId: string) {
+  async function removeFragmentMaterialAsset(shaderId: string, resolution: StudioFragmentMaterialRemovalResolution) {
     try {
+      if (!activeProjectId) throw new Error("No project is open.");
       const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, { shaderId });
       if (blocker) throw new Error(blocker);
-      const result = removeStudioFragmentMaterialAssetV1(activeProjectFragmentMaterials, shaderId);
+      if (projectHasLocalMaterialParameterTrack(activeProjectId, shaderId)) {
+        throw new Error(
+          "Remove this material's parameter tracks from every Scene and its Undo/Redo history before deleting it.",
+        );
+      }
+      const result = removeStudioFragmentMaterialAssetV1(activeProjectFragmentMaterials, shaderId, resolution);
       if (result.kind === "in-use") {
         setDraftError(`Unassign this material from ${result.assignmentCount} object(s) before deleting it.`);
-        return;
+        return false;
       }
-      commitActiveProjectFragmentMaterials(result.state);
+      return await commitFragmentMaterialRemoval(result.state);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The material could not be deleted.");
+      return false;
     }
   }
 
