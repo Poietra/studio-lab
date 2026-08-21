@@ -118,6 +118,7 @@ const SUPPORTED_TYPES = new Set([
   "ImageMobject",
   "Line",
   "MathTex",
+  "NumberPlane",
   "Polygon",
   "Rectangle",
   "RegularPolygon",
@@ -1993,6 +1994,13 @@ export function importManimScene(
   const callPathsByStatementId = new Map(
     analysis.scene.statements.map((statement) => [statement.id, statement.calls.map(({ path }) => path)]),
   );
+  const updaterRoots = new Set(
+    analysis.scene.statements.flatMap((statement) =>
+      statement.calls.flatMap(({ path }) =>
+        path?.[0] !== undefined && path.at(-1) === "add_updater" ? [path[0]] : [],
+      ),
+    ),
+  );
   const returnIndex = collectedStatements.findIndex((statement) => /^return\b/.test(statement.text));
   const statements = returnIndex < 0 ? collectedStatements : collectedStatements.slice(0, returnIndex + 1);
   const sourceAnchors = statements.flatMap((statement, index) => {
@@ -2024,6 +2032,16 @@ export function importManimScene(
     const { argumentsSource, sourceVariable, suffix, type } = assignment;
     const binding = canonicalImportedBinding(analysis, statement, sourceVariable, type);
     if (!binding) return;
+    if (
+      type === "NumberPlane" &&
+      (argumentsSource.trim() !== "" ||
+        !/^(?:#.*)?$/s.test(suffix.trim()) ||
+        binding.capabilities.move.status !== "source-eligible" ||
+        binding.capabilities.uniformResize.status !== "source-eligible" ||
+        updaterRoots.has(sourceVariable))
+    ) {
+      return;
+    }
     const markedIdentity = markerIdentity(statements, index, sourceVariable);
     if (sourceVariable.startsWith("poietra_") && !markedIdentity) return;
     const approximatePosition = defaultPosition(mutableEntities.length);

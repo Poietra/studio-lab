@@ -269,6 +269,150 @@ class MixedScene(Scene):
     expect(imported?.importOutcomes.some(({ sourceVariable }) => sourceVariable === "documentation")).toBe(false);
   });
 
+  it("imports one default static NumberPlane binding with stable source identity and lifetime", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class StaticPlane(Scene):
+    def construct(self):
+        grid = NumberPlane()
+        self.add(grid)
+        self.wait(2)
+`,
+      "scene.py",
+      "StaticPlane",
+    );
+    const entityId = "source:scene.py#StaticPlane:grid";
+
+    expect(imported?.sourceVariables).toEqual({ [entityId]: "grid" });
+    expect(imported?.initialization).toEqual(["grid = NumberPlane()"]);
+    expect(imported?.initialVisibleSourceVariables).toEqual(["grid"]);
+    expect(imported?.importOutcomes).toEqual([]);
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
+      lifetime: [{ end: 2, start: 0 }],
+      provisional: false,
+      sourceIdentity: { kind: "known", value: "grid" },
+      type: "NumberPlane",
+    });
+    expect(imported?.staticSemanticState.entities).toContainEqual({
+      runtimeIdentities: { kind: "known", value: [entityId] },
+      sourceIdentity: "grid",
+      type: { kind: "known", value: "NumberPlane" },
+    });
+    expect(runtimeSceneStateSchema.parse(imported?.runtimeSceneState)).toEqual(imported?.runtimeSceneState);
+  });
+
+  it("admits the official OpeningManim NumberPlane as one source-bound root", async () => {
+    const officialSource = await readFile(
+      new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const imported = importManimScene(officialSource, "example_scenes/basic.py", "OpeningManim");
+    const entityId = "source:example_scenes/basic.py#OpeningManim:grid";
+
+    expect(imported?.sourceVariables[entityId]).toBe("grid");
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
+      lifetime: [{ end: 14, start: 4 }],
+      sourceIdentity: { kind: "known", value: "grid" },
+      type: "NumberPlane",
+    });
+  });
+
+  it("keeps non-default, updater-driven, rebound, and controlled NumberPlane bindings read-only", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class UnsupportedPlanes(Scene):
+    def construct(self):
+        configured = NumberPlane(x_range=[-4, 4, 1])
+        chained = NumberPlane().shift(RIGHT)
+        updated = NumberPlane()
+        updated.add_updater(lambda plane: plane.shift(RIGHT))
+        rebound = NumberPlane()
+        rebound = NumberPlane()
+        if enabled:
+            controlled = NumberPlane()
+        self.add(configured, chained, updated, rebound, controlled)
+`,
+      "scene.py",
+      "UnsupportedPlanes",
+    );
+
+    expect(imported?.sourceVariables).toEqual({});
+    expect(imported?.runtimeSceneState.objectGraph.entities).toEqual({});
+    expect(imported?.importOutcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          access: "read-only",
+          kind: "source-preserved",
+          reason: "constructor-not-supported",
+          sourceVariable: "configured",
+        }),
+        expect.objectContaining({
+          access: "read-only",
+          kind: "source-preserved",
+          reason: "constructor-not-supported",
+          sourceVariable: "chained",
+        }),
+        expect.objectContaining({
+          access: "read-only",
+          kind: "source-preserved",
+          reason: "constructor-not-supported",
+          sourceVariable: "updated",
+        }),
+        expect.objectContaining({
+          access: "read-only",
+          kind: "unsupported",
+          reason: "ambiguous-binding",
+          sourceVariable: "rebound",
+        }),
+        expect.objectContaining({
+          access: "read-only",
+          kind: "runtime-only",
+          reason: "dynamic-control-flow",
+          sourceVariable: "controlled",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps aliased NumberPlane bindings read-only even when an updater is attached through the alias", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class AliasedPlanes(Scene):
+    def construct(self):
+        plain = NumberPlane()
+        plain_alias = plain
+        updated = NumberPlane()
+        updated_alias = updated
+        updated_alias.add_updater(lambda plane: plane.shift(RIGHT))
+        self.add(plain, updated)
+`,
+      "scene.py",
+      "AliasedPlanes",
+    );
+
+    expect(imported?.sourceVariables).toEqual({});
+    expect(imported?.runtimeSceneState.objectGraph.entities).toEqual({});
+    expect(imported?.importOutcomes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          access: "read-only",
+          kind: "unsupported",
+          reason: "unsupported-binding-form",
+          sourceVariable: "plain",
+        }),
+        expect.objectContaining({
+          access: "read-only",
+          kind: "unsupported",
+          reason: "unsupported-binding-form",
+          sourceVariable: "updated",
+        }),
+      ]),
+    );
+  });
+
   it("restores a transaction-scoped Studio identity from a committed source marker", () => {
     const marked = source
       .replace(

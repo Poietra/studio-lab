@@ -28,6 +28,17 @@ const officialSource = readFileSync(
   "utf8",
 );
 const officialSourceHash = createHash("sha256").update(officialSource, "utf8").digest("hex");
+const numberPlaneSourcePath = "static_number_plane.py";
+const numberPlaneSceneName = "StaticNumberPlane";
+const numberPlaneEntityId = `source:${numberPlaneSourcePath}#${numberPlaneSceneName}:grid`;
+const numberPlaneSource = `from manim import *
+
+class StaticNumberPlane(Scene):
+    def construct(self):
+        grid = NumberPlane()
+        self.add(grid)
+        self.wait(2)
+`;
 
 function moveEditProgram(
   value = { x: 410, y: 135 },
@@ -191,6 +202,31 @@ function roundTripOfficialEdit(
   const imported = importManimScene(lowered.source, officialSourcePath, targetSceneName, frame);
   if (!imported) throw new Error(`${targetSceneName} emitted source did not reimport.`);
   return { imported, lowered };
+}
+
+function numberPlaneRequest(sourceText: string, program: CanonicalEditProgram): ProgramRenderRequest {
+  return {
+    cameraCenter: { x: 0, y: 0 },
+    destination: null,
+    program,
+    projectId: "number-plane-preview",
+    sceneName: numberPlaneSceneName,
+    sourceBindings: [{ entityId: numberPlaneEntityId, sourceVariable: "grid" }],
+    sourceHash: createHash("sha256").update(sourceText, "utf8").digest("hex"),
+    sourcePath: numberPlaneSourcePath,
+    viewport: { height: 360, width: 640 },
+  };
+}
+
+function lowerNumberPlane(sourceText: string, program: CanonicalEditProgram) {
+  const renderRequest = numberPlaneRequest(sourceText, program);
+  return lowerRuntimeTraceEditSource(
+    sourceText,
+    renderRequest,
+    [{ program, sourceAnchor: program.anchor.resolvedSeconds }],
+    frame,
+    null,
+  );
 }
 
 describe("Runtime Trace edit source lowering", () => {
@@ -715,6 +751,82 @@ describe("Runtime Trace edit source lowering", () => {
       testCase.assertImported(imported!);
       expect(testCase.derive(lowered!.source).baseSource, testCase.label).toBe(source);
     }
+  });
+
+  it("round-trips a default static NumberPlane move as the same source-bound root", () => {
+    const program = moveEditProgram({ x: 410, y: 135 }, 0, numberPlaneEntityId);
+    const lowered = lowerNumberPlane(numberPlaneSource, program);
+
+    expect(lowered?.insertedCode).toBe("        grid.move_to((2, 1, 0))");
+    expect(lowered?.source).toContain(
+      "        grid = NumberPlane()\n" + "        grid.move_to((2, 1, 0))\n" + "        self.add(grid)",
+    );
+    expect(lowered?.preflight).toMatchObject({
+      baseBinding: { name: "grid", ordinal: 1 },
+      baseSourceHash: createHash("sha256").update(numberPlaneSource, "utf8").digest("hex"),
+      entityId: numberPlaneEntityId,
+      expectedWorldCenter: { x: 2, y: 1 },
+      kind: "runtime-trace-move-edit",
+      sourceAnchor: 0,
+    });
+
+    const imported = importManimScene(lowered!.source, numberPlaneSourcePath, numberPlaneSceneName, frame);
+    expect(imported?.sourceVariables).toEqual({ [numberPlaneEntityId]: "grid" });
+    expect(imported?.runtimeSceneState.objectGraph.entities[numberPlaneEntityId]).toMatchObject({
+      sourceIdentity: { kind: "known", value: "grid" },
+      type: "NumberPlane",
+    });
+    expect(
+      imported?.runtimeSceneState.propertyChannels[`${numberPlaneEntityId}/position`]?.samples.at(-1)?.value,
+    ).toEqual({ x: 410, y: 135 });
+    expect(
+      deriveRuntimeTraceMoveSourceEditPlan(lowered!.source, numberPlaneSceneName, numberPlaneSourcePath, "grid"),
+    ).toMatchObject({
+      baseSource: numberPlaneSource,
+      expectedWorldCenter: { x: 2, y: 1 },
+      sourceAnchor: 0,
+    });
+  });
+
+  it("round-trips a positive uniform NumberPlane scale after reimporting a prior move", () => {
+    const moved = lowerNumberPlane(
+      numberPlaneSource,
+      moveEditProgram({ x: 410, y: 135 }, 0, numberPlaneEntityId),
+    )!.source;
+    const resize = resizeEditProgram(1.5, 1, 0, numberPlaneEntityId);
+    const lowered = lowerNumberPlane(moved, resize);
+
+    expect(lowered?.insertedCode).toBe("        grid.scale(1.5)");
+    expect(lowered?.source).toContain(
+      "        grid = NumberPlane()\n" +
+        "        grid.scale(1.5)\n" +
+        "        grid.move_to((2, 1, 0))\n" +
+        "        self.add(grid)",
+    );
+    expect(lowered?.preflight).toMatchObject({
+      baseBinding: { name: "grid", ordinal: 1 },
+      entityId: numberPlaneEntityId,
+      expectedScaleFactor: 1.5,
+      kind: "runtime-trace-resize-edit",
+      sourceAnchor: 0,
+    });
+
+    const imported = importManimScene(lowered!.source, numberPlaneSourcePath, numberPlaneSceneName, frame);
+    expect(imported?.sourceVariables).toEqual({ [numberPlaneEntityId]: "grid" });
+    expect(imported?.runtimeSceneState.objectGraph.entities[numberPlaneEntityId]).toMatchObject({
+      sourceIdentity: { kind: "known", value: "grid" },
+      type: "NumberPlane",
+    });
+    expect(imported?.runtimeSceneState.propertyChannels[`${numberPlaneEntityId}/scale`]?.samples.at(-1)?.value).toBe(
+      1.5,
+    );
+    expect(
+      deriveRuntimeTraceResizeSourceEditPlan(lowered!.source, numberPlaneSceneName, numberPlaneSourcePath, "grid"),
+    ).toMatchObject({
+      baseSource: moved,
+      expectedScaleFactor: 1.5,
+      sourceAnchor: 0,
+    });
   });
 
   it("round-trips the advertised OpeningManim terminal move through Python and fresh derivation", () => {
