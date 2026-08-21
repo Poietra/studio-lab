@@ -401,7 +401,7 @@ function programsHaveSceneBoundary(programs: readonly ProgramRecord["program"][]
   return programs.some((program) => program.operations.some((operation) => operation.kind === "InsertSceneBoundary"));
 }
 
-function gestureContextProgramsContainUnsupportedImportedRotationHistory(
+function gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(
   programs: readonly ProgramRecord["program"][],
 ) {
   return programs.some((program) =>
@@ -4846,21 +4846,70 @@ export function App({
     if (interactionMode !== "position" || previewSelectionOnly || boundedRuntimeEditTargetIds.size > 0) return null;
     const selectedEntities = selectedObjectIds.flatMap((entityId) => {
       const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
-      const transform = currentCreationTransformForEntity(workspaceCreationProjection, entityId);
-      return entity && transform ? [{ entity, transform }] : [];
+      return entity ? [entity] : [];
     });
+    const selectedTargets = selectedEntities.flatMap(
+      (
+        entity,
+      ): readonly Readonly<{
+        authority: "imported" | "studio-created";
+        entityId: string;
+        fromPosition: Point;
+        fromScale: number;
+      }>[] => {
+        const transform = currentCreationTransformForEntity(workspaceCreationProjection, entity.id);
+        if (transform) {
+          return [
+            {
+              authority: "studio-created" as const,
+              entityId: entity.id,
+              fromPosition: transform.transformOrigin,
+              fromScale: entity.scale,
+            },
+          ];
+        }
+        if (
+          activeEditorScene &&
+          !isStudioNativeWorkspaceScene(activeEditorScene) &&
+          !entity.provisional &&
+          entity.sourceIdentity.kind === "known" &&
+          entity.geometry.position.kind === "known" &&
+          entity.geometry.scale.kind === "known"
+        ) {
+          return [
+            {
+              authority: "imported" as const,
+              entityId: entity.id,
+              fromPosition:
+                latestCreationPositionForEntity(workspaceStaticRootProjection, entity.id) ??
+                entity.geometry.position.value,
+              fromScale: entity.geometry.scale.value,
+            },
+          ];
+        }
+        return [];
+      },
+    );
+    const authorities = new Set(selectedTargets.map(({ authority }) => authority));
+    const importedSelection = authorities.size === 1 && authorities.has("imported");
     if (
       selectedEntities.length < 2 ||
+      (importedSelection && selectedEntities.length > 8) ||
       selectedEntities.length !== selectedObjectIds.length ||
+      selectedTargets.length !== selectedEntities.length ||
+      authorities.size !== 1 ||
+      (importedSelection && gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits)) ||
       selectedEntities.some(
-        ({ entity }) =>
-          studioCreationProjectionEntityFor(entity.id) === null ||
+        (entity) =>
+          !groupResizeEligibleIds.has(entity.id) ||
           entity.geometry.position.kind === "unknown" ||
           entity.geometry.scale.kind === "unknown" ||
           (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
       )
     ) {
-      setDraftError("Group resize currently requires two or more editable Studio-created objects.");
+      setDraftError(
+        "Group resize requires 2–8 objects from one supported authority; imported objects must be independent static roots with position-only history.",
+      );
       return null;
     }
     const gestureContext = directGestureContext();
@@ -4878,6 +4927,10 @@ export function App({
       targetEntityIds: selectedObjectIds,
     });
     if (!anchor) return null;
+    if (importedSelection && Math.abs(anchor.sourceTime) >= 0.0005) {
+      setDraftError("Imported static-root group resize currently requires the source-time-zero anchor.");
+      return null;
+    }
     return createSelectionResizeGesture({
       basis,
       cameraScale: projection?.camera.scale ?? 1,
@@ -4888,10 +4941,10 @@ export function App({
       sourceAnchor: anchor.sourceTime,
       start,
       surfaceBounds,
-      targets: selectedEntities.map(({ entity, transform }) => ({
-        entityId: entity.id,
-        fromPosition: transform.transformOrigin,
-        fromScale: entity.scale,
+      targets: selectedTargets.map(({ entityId, fromPosition, fromScale }) => ({
+        entityId,
+        fromPosition,
+        fromScale,
       })),
     });
   }
@@ -5051,7 +5104,7 @@ export function App({
       selectedEntities.length !== selectedObjectIds.length ||
       selectedTargets.length !== selectedEntities.length ||
       authorities.size !== 1 ||
-      (importedSelection && gestureContextProgramsContainUnsupportedImportedRotationHistory(appliedSceneEdits)) ||
+      (importedSelection && gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits)) ||
       selectedEntities.some(
         (entity) =>
           !groupRotationEligibleIds.has(entity.id) ||
@@ -6469,7 +6522,7 @@ export function App({
       selectedRuntimeTraceEditCapabilities?.rotation === true)
       ? selectedEntity.id
       : null;
-  const groupResizeEligibleIds = new Set(
+  const studioGroupResizeEligibleIds = new Set(
     [...groupResizeEligibleCreationEntityIds(workspaceCreationProjection)].filter(
       (entityId) =>
         scaleKeyframeTransformConflictEntity(transformTrackPrograms, [entityId]) === null &&
@@ -6477,7 +6530,7 @@ export function App({
     ),
   );
   const groupTransformOrigins = new Map([
-    ...[...groupResizeEligibleIds].flatMap((entityId) => {
+    ...[...studioGroupResizeEligibleIds].flatMap((entityId) => {
       const transform = currentCreationTransformForEntity(workspaceCreationProjection, entityId);
       return transform ? [[entityId, transform.transformOrigin] as const] : [];
     }),
@@ -6491,7 +6544,7 @@ export function App({
     activeEditorScene !== null &&
     !isStudioNativeWorkspaceScene(activeEditorScene) &&
     workspaceStaticRootProjection !== undefined &&
-    !gestureContextProgramsContainUnsupportedImportedRotationHistory(appliedSceneEdits) &&
+    !gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits) &&
     !workspaceStaticRootProjection?.mutations.some(({ kind }) => kind === "rotation");
   const importedGroupRotationEligibleIds = new Set(
     importedGroupRotationHistorySupported
@@ -6505,11 +6558,32 @@ export function App({
         )
       : [],
   );
+  const importedGroupResizeHistorySupported =
+    activeEditorScene !== null &&
+    !isStudioNativeWorkspaceScene(activeEditorScene) &&
+    workspaceStaticRootProjection !== undefined &&
+    !gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits) &&
+    !workspaceStaticRootProjection?.mutations.some(({ kind }) => kind === "rotation" || kind === "uniform-scale");
+  const importedGroupResizeEligibleIds = new Set(
+    importedGroupResizeHistorySupported
+      ? editableEntities.flatMap((entity) =>
+          entity.present &&
+          !entity.provisional &&
+          entity.sourceIdentity.kind === "known" &&
+          entity.geometry.position.kind === "known" &&
+          entity.geometry.scale.kind === "known" &&
+          ["Circle", "ImageMobject", "MathTex", "Rectangle"].includes(entity.type)
+            ? [entity.id]
+            : [],
+        )
+      : [],
+  );
+  const groupResizeEligibleIds = new Set([...studioGroupResizeEligibleIds, ...importedGroupResizeEligibleIds]);
   const groupRotationEligibleIds = new Set(
     selectedObjectIds.filter(
       (entityId) =>
         groupTransformOrigins.has(entityId) &&
-        (groupResizeEligibleIds.has(entityId) || importedGroupRotationEligibleIds.has(entityId)),
+        (studioGroupResizeEligibleIds.has(entityId) || importedGroupRotationEligibleIds.has(entityId)),
     ),
   );
   const selectedOpacityAuthority =
