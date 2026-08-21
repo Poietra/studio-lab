@@ -113,9 +113,11 @@ import {
 import {
   filterStudioCanvasEntitiesByVisibility,
   planStudioLayerGroup,
+  planStudioLayerGroupOrder,
   planStudioLayerOrder,
   planStudioLayerReorder,
   projectStudioLayers,
+  type StudioLayerGroupOrderPlan,
   type StudioLayerOrderDirection,
   type StudioLayerOrderPlan,
   selectedStudioLayerGroup,
@@ -265,6 +267,7 @@ import { clientPointToViewport, rotationDeltaFromClientPoints } from "./studio/s
 import { STUDIO_STYLE_PROFILE } from "./studio/style-profile";
 import {
   createDirectManipulationColorProgram,
+  createDirectManipulationGroupLayerOrderProgram,
   createDirectManipulationGroupResizeProgram,
   createDirectManipulationGroupRotationProgram,
   createDirectManipulationGroupVisibilityProgram,
@@ -4126,6 +4129,67 @@ export function App({
     return stageLayerOrder(entityId, planStudioLayerReorder(studioLayers, entityId, frontFirstIndex));
   }
 
+  function stageLayerGroupOrder(groupId: string, plan: StudioLayerGroupOrderPlan) {
+    if (plan.kind === "unavailable") {
+      setDraftError(plan.reason);
+      return false;
+    }
+    if (plan.targets.some(({ entityId }) => lockedEntityIdsRef.current.has(entityId))) {
+      setDraftError(LOCKED_ENTITY_MUTATION_MESSAGE);
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const groupOwner = gestureContext.sourcePrograms.find(({ operations }) =>
+      operations.some((operation) => operation.kind === "GroupEntities" && operation.groupId === groupId),
+    );
+    if (!groupOwner) {
+      setDraftError("The canonical Group Program is unavailable; ungroup and group these objects again.");
+      return false;
+    }
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const requestedAnchor = manualAuthoringAnchor({
+      action: "changing group layer order",
+      requireAlignedPlayhead: false,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+    });
+    if (!requestedAnchor) return false;
+    const sourceAnchor = Math.max(
+      groupOwner.anchor.resolvedSeconds,
+      gestureContext.sourcePrograms.at(-1)?.anchor.resolvedSeconds ?? 0,
+      requestedAnchor.sourceTime,
+    );
+    if (
+      plan.targets.some(
+        ({ entityId }) => !studioPreviewRuntimeTraceEditTargetIsPresent(sourceScene, entityId, sourceAnchor, null),
+      )
+    ) {
+      setDraftError("The latest applied Program is outside this group's shared lifetime.");
+      return false;
+    }
+    try {
+      const validation = createDirectManipulationGroupLayerOrderProgram({
+        capturedPlayhead: sourceAnchor,
+        scene: sourceScene,
+        start: sourceAnchor,
+        targets: plan.targets,
+        transactionId: `studio-group-layer-order-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The logical group order could not be changed.");
+      return false;
+    }
+  }
+
+  function changeLayerGroupOrder(groupId: string, direction: "back" | "front") {
+    return stageLayerGroupOrder(groupId, planStudioLayerGroupOrder(studioLayers, groupId, direction));
+  }
+
   function groupLayerSelection() {
     if (layerGroupUnavailableReason || layerGroupPlan.kind !== "planned" || !draftSourceScene) {
       if (layerGroupUnavailableReason) setDraftError(layerGroupUnavailableReason);
@@ -6799,6 +6863,7 @@ export function App({
               }}
               onEditAppliedProgram={editAppliedProgram}
               onLayerOrder={changeLayerOrder}
+              onLayerGroupOrder={changeLayerGroupOrder}
               onLayerReorder={reorderLayer}
               onToggleLayerGroup={(childEntityIds, selected) =>
                 setSelectedObjectIds(selected ? [] : [...childEntityIds])

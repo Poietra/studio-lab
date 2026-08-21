@@ -195,6 +195,7 @@ export function WorkspaceSidebar({
   onDurationChange,
   onAddImageAsset,
   onEditAppliedProgram,
+  onLayerGroupOrder,
   onLayerOrder,
   onLayerReorder,
   onToggleLayerGroup,
@@ -237,6 +238,7 @@ export function WorkspaceSidebar({
   onDurationChange: (duration: number) => void;
   onAddImageAsset?: (asset: StudioNativeImageAssetV1) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
+  onLayerGroupOrder?: (groupId: string, direction: "back" | "front") => void;
   onLayerOrder?: (entityId: string, direction: StudioLayerOrderDirection) => void;
   onLayerReorder?: (entityId: string, frontFirstIndex: number) => void;
   onToggleLayerGroup?: (childEntityIds: readonly string[], selected: boolean) => void;
@@ -386,6 +388,15 @@ export function WorkspaceSidebar({
             const groupLocked =
               layer.childEntityIds.length > 0 &&
               layer.childEntityIds.every((entityId) => lockedEntityIds.has(entityId));
+            const groupHasLockedChild = layer.childEntityIds.some((entityId) => lockedEntityIds.has(entityId));
+            const groupOrderUnavailableReason =
+              onLayerGroupOrder === undefined
+                ? "Group layer order is unavailable."
+                : !authoringAvailable
+                  ? "Wait for the canonical preview before changing this group order."
+                  : groupHasLockedChild
+                    ? "Unlock every grouped object before changing group order."
+                    : layer.orderingReadOnlyReason;
             const visibilityUnavailableReason =
               onToggleLayerGroupVisibility === undefined
                 ? "Group visibility is unavailable."
@@ -453,6 +464,28 @@ export function WorkspaceSidebar({
                   ) : null}
                   <span className="tabular-nums text-[10px] text-zinc-600">{layer.childEntityIds.length}</span>
                 </div>
+                {selected && onLayerGroupOrder ? (
+                  <div className="grid grid-cols-2 border-t border-zinc-800" role="group" aria-label="Order group">
+                    {(
+                      [
+                        ["back", "Back", "⇤"],
+                        ["front", "Front", "⇥"],
+                      ] as const
+                    ).map(([direction, label, glyph]) => (
+                      <button
+                        aria-label={`${label} group of ${layer.childEntityIds!.length} objects`}
+                        className="h-7 border-r border-zinc-800 text-[11px] text-zinc-400 last:border-r-0 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                        disabled={groupOrderUnavailableReason !== null || !layer.canMove[direction]}
+                        key={direction}
+                        onClick={() => onLayerGroupOrder(layer.groupId!, direction)}
+                        title={groupOrderUnavailableReason ?? label}
+                        type="button"
+                      >
+                        {glyph}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </li>
             );
           }

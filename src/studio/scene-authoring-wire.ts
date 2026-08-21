@@ -250,7 +250,9 @@ function normalizedStudioCreationOperation(
   if (operation.kind === "SetProperty" && operation.key === "sourceZIndex") {
     return {
       ...common,
+      documentStatic: operation.documentStatic === true,
       entityId: operation.entityId,
+      fromSourceZIndex: typeof operation.from === "number" && Number.isFinite(operation.from) ? operation.from : null,
       kind: "source-z-index",
       sourceZIndex: typeof operation.value === "number" && Number.isFinite(operation.value) ? operation.value : null,
     };

@@ -990,6 +990,12 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
     throw new ProgramLoweringError("operation-unsupported", "Opacity requires the Runtime Trace source lowerer.");
   }
   if (operation.kind === "SetProperty" && operation.key === "sourceZIndex") {
+    if (operation.documentStatic) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "Document-static group layer order is available in Preview and MP4 export, but is not hoisted into Manim source yet.",
+      );
+    }
     if (
       options.generatedEntityIds?.has(operation.entityId) &&
       typeof operation.value === "number" &&

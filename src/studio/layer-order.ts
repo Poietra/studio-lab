@@ -35,8 +35,7 @@ const IMPORTED_ORDERING_REASON = "Imported Manim object: z-order round-trip is n
 const PREVIEW_ORDERING_REASON = "Wait for the canonical preview before changing this layer order.";
 const IMPORTED_VISIBILITY_REASON = "Imported Manim object: visibility round-trip is not supported yet.";
 const PREVIEW_VISIBILITY_REASON = "Wait for the canonical preview before changing this layer visibility.";
-const ACTIVE_GROUP_ORDERING_REASON =
-  "Ungroup every active group before changing layer order; atomic group reordering is not available yet.";
+const ACTIVE_GROUP_ORDERING_REASON = "Move the logical group as one layer before changing an individual child order.";
 
 function comparePaintOrder(left: CanonicalLayerEntity, right: CanonicalLayerEntity) {
   return left.sourceZIndex - right.sourceZIndex || left.sceneOrder - right.sceneOrder;
@@ -126,13 +125,15 @@ export function projectStudioLayers(
     if (right.sourceZIndex !== null) return 1;
     return left.fallbackIndex - right.fallbackIndex;
   });
-  const entityEntries = projected.map(({ fallbackIndex: _fallbackIndex, ...entry }, frontFirstIndex, entries) => ({
-    ...entry,
-    canMove:
-      entry.readOnlyReason === null
-        ? movementAvailability(entries.length - frontFirstIndex - 1, entries.length)
-        : entry.canMove,
-  }));
+  const entityEntries: StudioLayerEntry[] = projected.map(
+    ({ fallbackIndex: _fallbackIndex, ...entry }, frontFirstIndex, entries) => ({
+      ...entry,
+      canMove:
+        entry.readOnlyReason === null
+          ? movementAvailability(entries.length - frontFirstIndex - 1, entries.length)
+          : entry.canMove,
+    }),
+  );
   const groupChildren = new Map<string, StudioLayerEntry[]>();
   for (const entry of entityEntries) {
     if (!entry.parentGroupId) continue;
@@ -151,20 +152,33 @@ export function projectStudioLayers(
     const groupId = entry.parentGroupId;
     if (groupId && !emittedGroups.has(groupId)) {
       const children = groupChildren.get(groupId) ?? [];
+      const childIndexes = children.map((child) => entityEntries.indexOf(child));
+      const firstChildIndex = Math.min(...childIndexes);
+      const lastChildIndex = Math.max(...childIndexes);
       const visibilityReadOnlyReason = children.some(({ sourceAnchor }) => sourceAnchor === null)
         ? PREVIEW_VISIBILITY_REASON
         : null;
       emittedGroups.add(groupId);
       rows.push({
         ...orderingEntry,
-        canMove: movementAvailability(-1, 0),
+        canMove: {
+          back: lastChildIndex < entityEntries.length - 1,
+          backward: false,
+          forward: false,
+          front: firstChildIndex > 0,
+        },
         childEntityIds: children.map(({ entity }) => entity.id),
         depth: 0,
         groupId,
         isGroup: true,
-        orderingReadOnlyReason: ACTIVE_GROUP_ORDERING_REASON,
+        orderingReadOnlyReason: children.some(
+          ({ sceneOrder, sourceAnchor, sourceZIndex }) =>
+            sceneOrder === null || sourceAnchor === null || sourceZIndex === null,
+        )
+          ? PREVIEW_ORDERING_REASON
+          : null,
         parentGroupId: null,
-        readOnlyReason: "Group z-order is fixed for this vertical slice.",
+        readOnlyReason: null,
         visibilityReadOnlyReason,
         visible: children.every(({ visible }) => visible),
       });
@@ -229,6 +243,62 @@ export function selectedStudioLayerGroup(entries: readonly StudioLayerEntry[], s
         entry.childEntityIds.every((id) => selectedEntityIds.has(id)),
     ) ?? null
   );
+}
+
+export type StudioLayerGroupOrderPlan =
+  | Readonly<{
+      kind: "planned";
+      targets: readonly Readonly<{ entityId: string; fromSourceZIndex: number; sourceZIndex: number }>[];
+    }>
+  | Readonly<{ kind: "unavailable"; reason: string }>;
+
+/** Moves one contiguous logical group to the outer paint edge while retaining
+ * every child's canonical relative z-index. Adjacent group movement remains a
+ * separate gesture because it needs a block-level drop target. */
+export function planStudioLayerGroupOrder(
+  entries: readonly StudioLayerEntry[],
+  groupId: string,
+  direction: "back" | "front",
+): StudioLayerGroupOrderPlan {
+  const group = entries.find((entry) => entry.isGroup && entry.groupId === groupId);
+  if (!group?.childEntityIds?.length) {
+    return { kind: "unavailable", reason: "The selected logical group is not available in the canonical preview." };
+  }
+  if (
+    entries.some(({ isGroup, sceneOrder, sourceZIndex }) => !isGroup && (sceneOrder === null || sourceZIndex === null))
+  ) {
+    return { kind: "unavailable", reason: "Wait for every layer to resolve its canonical paint order." };
+  }
+  const canonical = canonicalPaintOrder(entries);
+  const childIds = new Set(group.childEntityIds);
+  const children = canonical.filter(({ entity }) => childIds.has(entity.id));
+  if (children.length !== childIds.size) {
+    return { kind: "unavailable", reason: "Wait for every grouped object to appear in the canonical preview." };
+  }
+  const indexes = children.map((child) => canonical.indexOf(child)).sort((left, right) => left - right);
+  if (indexes.some((index, offset) => offset > 0 && index !== indexes[offset - 1]! + 1)) {
+    return { kind: "unavailable", reason: "The logical group is no longer contiguous in canonical paint order." };
+  }
+  const atEdge = direction === "front" ? indexes.at(-1) === canonical.length - 1 : indexes[0] === 0;
+  if (atEdge) return { kind: "unavailable", reason: `This group is already at the ${direction} edge.` };
+
+  const outside = canonical.filter(({ entity }) => !childIds.has(entity.id));
+  const childMinimum = Math.min(...children.map(({ sourceZIndex }) => sourceZIndex));
+  const childMaximum = Math.max(...children.map(({ sourceZIndex }) => sourceZIndex));
+  const outsideMinimum = Math.min(...outside.map(({ sourceZIndex }) => sourceZIndex));
+  const outsideMaximum = Math.max(...outside.map(({ sourceZIndex }) => sourceZIndex));
+  const delta = direction === "front" ? outsideMaximum + 1 - childMinimum : outsideMinimum - 1 - childMaximum;
+  if (!Number.isFinite(delta)) {
+    return { kind: "unavailable", reason: "The canonical z-index range cannot be extended safely." };
+  }
+  return {
+    kind: "planned",
+    targets: children.map(({ entity, sourceZIndex }) => ({
+      entityId: entity.id,
+      fromSourceZIndex: sourceZIndex,
+      sourceZIndex: sourceZIndex + delta,
+    })),
+  };
 }
 
 export function selectionContainsGroupedChild(

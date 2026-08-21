@@ -78,7 +78,9 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     kind: z.literal("CreateEntity"),
   }),
   operationBaseSchema.extend({
+    documentStatic: z.boolean().optional(),
     entityId: z.string(),
+    from: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]).optional(),
     key: z.enum([
       "appearance",
       "camera",
@@ -187,6 +189,27 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superRefine((operation, context) => {
+  if (operation.kind === "SetProperty" && operation.documentStatic && operation.key !== "sourceZIndex") {
+    context.addIssue({
+      code: "custom",
+      message: "Only canonical paint order can be declared document-static.",
+      path: ["documentStatic"],
+    });
+  }
+  if (
+    operation.kind === "SetProperty" &&
+    (operation.documentStatic || operation.from !== undefined) &&
+    (operation.key !== "sourceZIndex" ||
+      operation.documentStatic !== true ||
+      typeof operation.from !== "number" ||
+      !Number.isFinite(operation.from))
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "A document-static paint-order edit requires one finite previous z-index.",
+      path: ["from"],
+    });
+  }
   if (
     operation.kind === "SetProperty" &&
     (operation.key === "fillColor" || operation.key === "strokeColor") &&

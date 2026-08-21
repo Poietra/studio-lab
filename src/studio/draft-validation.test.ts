@@ -5,9 +5,11 @@ import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } f
 import { projectProposedState } from "./evaluator";
 import { createFixtureProposedState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { canonicalOperationSchema, programExecutionCapabilities } from "./operation-registry";
+import { buildStudioCreationProjectionCommand } from "./scene-authoring-wire";
 import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
 import {
   createDirectManipulationColorProgram,
+  createDirectManipulationGroupLayerOrderProgram,
   createDirectManipulationGroupRotationProgram,
   createDirectManipulationGroupVisibilityProgram,
   createDirectManipulationLayerOrderProgram,
@@ -542,6 +544,71 @@ describe("Studio draft validation boundary", () => {
     ).toMatchObject({
       issues: expect.arrayContaining([expect.objectContaining({ code: "lowering-unsupported", field: "entityId" })]),
       kind: "invalid",
+    });
+  });
+
+  it("creates one atomic paint-order edit for every logical-group child", () => {
+    const entityIds = ["tx:layer/entity:a", "tx:layer/entity:b"] as const;
+    const scene = {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          ...Object.fromEntries(
+            entityIds.map((id) => [
+              id,
+              {
+                id,
+                lifetime: [{ end: STUDIO_FIXTURE_SCENE.duration, start: 0 }],
+                provisional: false,
+                sourceIdentity: { kind: "unknown" as const, reason: "Studio-created entity." },
+                transactionId: "layer",
+                type: "Circle",
+              },
+            ]),
+          ),
+        },
+      },
+    };
+
+    const validation = createDirectManipulationGroupLayerOrderProgram({
+      capturedPlayhead: 1,
+      scene,
+      start: 1,
+      targets: [
+        { entityId: entityIds[0], fromSourceZIndex: 2, sourceZIndex: 10 },
+        { entityId: entityIds[1], fromSourceZIndex: 3, sourceZIndex: 11 },
+      ],
+      transactionId: "group-layer-order",
+    });
+
+    expect(validation).toMatchObject({
+      kind: "valid",
+      program: {
+        intentCount: 1,
+        loweringStatus: "unsupported",
+        operations: [
+          { documentStatic: true, entityId: entityIds[0], from: 2, key: "sourceZIndex", value: 10 },
+          { documentStatic: true, entityId: entityIds[1], from: 3, key: "sourceZIndex", value: 11 },
+        ],
+        requestedExecution: "parallel",
+      },
+    });
+    if (validation.kind !== "valid") return;
+    expect(programExecutionCapabilities(validation.program)).toMatchObject({
+      apply: "supported",
+      lowering: "unsupported",
+    });
+    expect(
+      buildStudioCreationProjectionCommand({ baseDuration: scene.duration, programs: [validation.program] })
+        .programs[0],
+    ).toMatchObject({
+      loweringSupported: false,
+      operations: [
+        { documentStatic: true, fromSourceZIndex: 2, kind: "source-z-index", sourceZIndex: 10 },
+        { documentStatic: true, fromSourceZIndex: 3, kind: "source-z-index", sourceZIndex: 11 },
+      ],
     });
   });
 

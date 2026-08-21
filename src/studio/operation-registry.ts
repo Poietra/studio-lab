@@ -97,8 +97,9 @@ function setPropertyExecution(
     return SUPPORTED_EXECUTION;
   if ((operation.key === "fillColor" || operation.key === "strokeColor") && isCanonicalRgbHex(operation.value))
     return SUPPORTED_EXECUTION;
-  if (operation.key === "sourceZIndex" && typeof operation.value === "number" && Number.isFinite(operation.value))
-    return SUPPORTED_EXECUTION;
+  if (operation.key === "sourceZIndex" && typeof operation.value === "number" && Number.isFinite(operation.value)) {
+    return operation.documentStatic ? CLIENT_ONLY_EXECUTION : SUPPORTED_EXECUTION;
+  }
   if (operation.key === "visibility" && typeof operation.value === "boolean") return CLIENT_ONLY_EXECUTION;
   if (operation.key === "content") {
     if (canonicalEditableContent(operation.value, "Text") || canonicalEditableContent(operation.value, "MathTex"))
