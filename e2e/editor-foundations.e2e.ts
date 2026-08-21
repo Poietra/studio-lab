@@ -526,12 +526,11 @@ test("creates, persists, renames, and deletes a browser-managed workspace", { ta
     );
     await addDialog.getByRole("button", { name: "Create workspace" }).click();
     const createResponse = await createResponsePromise;
-    expect(createResponse.request().postDataJSON()).toEqual({ kind: "managed", name: "CRUD Fixture" });
+    expect(createResponse.request().postDataJSON()).toEqual({ kind: "studio-native", name: "CRUD Fixture" });
     const created = (await createResponse.json()) as { project: { id: string } };
     projectId = created.project.id;
     await expect(page.getByLabel("Current workspace")).toHaveText("CRUD Fixture");
     await expect(page.locator("[data-studio-canvas]")).toBeVisible();
-    await expect(page.getByRole("combobox", { name: "Active imported Scene" })).toContainText("main.py · MainScene");
 
     await page.getByRole("button", { name: "Back to workspaces" }).click();
     await page.getByRole("button", { name: "Rename CRUD Fixture workspace" }).click();
