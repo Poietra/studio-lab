@@ -2503,9 +2503,10 @@ fn plan_studio_creation_edits(
         } else {
             None
         };
-        let data_series_presence_is_valid =
-            (spec.kind == StudioAuthoringEntityKind::DataPlot) == spec.data_series.is_some();
-        let creation_payload_is_valid = data_series_presence_is_valid
+        let native_payload_presence_is_valid = (spec.kind == StudioAuthoringEntityKind::DataPlot)
+            == spec.data_series.is_some()
+            && (spec.kind == StudioAuthoringEntityKind::SvgPath) == spec.svg.is_some();
+        let creation_payload_is_valid = native_payload_presence_is_valid
             && match spec.kind {
                 StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
                     spec.image.is_none()
@@ -10955,6 +10956,27 @@ mod tests {
         ));
         assert_eq!(session.scene(), &bundle.scene);
         assert_eq!(session.retained_index_stats().build_count, 1);
+
+        let mut cross_payload = studio_data_plot_creation_command(
+            &bundle,
+            studio_data_plot_dimensions(3.0, 1.0),
+            StudioDataSeries {
+                interpolation: StudioDataPlotInterpolation::Linear,
+                points: vec![PointV1 { x: -1.0, y: 0.0 }, PointV1 { x: 1.0, y: 1.0 }],
+            },
+        );
+        let StudioCreationOperationKind::Create { entity } =
+            &mut cross_payload.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.svg = Some(StudioCreationSvgPathSpec {
+            source: r#"<svg viewBox="0 0 1 1"><path d="M0 0 L1 1"/></svg>"#.to_owned(),
+        });
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &cross_payload.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
     }
 
     #[test]
