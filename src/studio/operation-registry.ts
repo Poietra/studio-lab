@@ -1,3 +1,4 @@
+import { dataSeriesUnavailableReason } from "./data-plot";
 import { canonicalEditableContent, STUDIO_CREATION_TEXT_CONTRACT, studioCreationText } from "./editable-content";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type { EntityDimensions, PropertyChannel, RuntimeSceneState } from "./model";
@@ -77,7 +78,7 @@ function createEntityExecution(
   const hasTextContent = type === "Text" && studioCreationText(content) !== null;
   const hasNativeImage = type === "ImageMobject" && operation.entity.image !== undefined;
   const hasNativeSvgPath = type === "SvgPath" && operation.entity.svg !== undefined;
-  const isNativePath = ["Arc", "Axes", "Ellipse", "NumberLine", "NumberPlane", "Sector"].includes(type);
+  const isNativePath = ["Arc", "Axes", "DataPlot", "Ellipse", "NumberLine", "NumberPlane", "Sector"].includes(type);
   const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "RegularPolygon", "Square", "Triangle"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
   if (hasNativeImage || hasNativeSvgPath || isNativePath) return CLIENT_ONLY_EXECUTION;
@@ -352,6 +353,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
     return (
       type !== "Arc" &&
       type !== "Axes" &&
+      type !== "DataPlot" &&
       type !== "Ellipse" &&
       type !== "NumberLine" &&
       type !== "NumberPlane" &&
@@ -404,7 +406,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       (type !== "Triangle" || dimensions.sides === 3)
     );
   }
-  if (type === "NumberLine" || type === "Axes" || type === "NumberPlane") {
+  if (type === "NumberLine" || type === "Axes" || type === "DataPlot" || type === "NumberPlane") {
     const system = dimensions.coordinateSystem;
     const axisIsValid = (axis: Readonly<{ maximum: number; minimum: number; step: number }> | undefined) =>
       axis !== undefined &&
@@ -426,7 +428,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       xMarkCount !== null &&
       yMarkCount !== null &&
       xMarkCount + yMarkCount <= MAX_COORDINATE_SYSTEM_MARKS &&
-      (type === "NumberLine" ? system.y === undefined && dimensions.height === undefined : true) &&
+      (type === "NumberLine" ? system.y === undefined && dimensions.height === undefined : system.y !== undefined) &&
       dimensions.width !== undefined &&
       Number.isFinite(dimensions.width) &&
       dimensions.width > 0 &&
@@ -648,6 +650,7 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
             "Arc",
             "Axes",
             "Circle",
+            "DataPlot",
             "Ellipse",
             "NumberLine",
             "NumberPlane",
@@ -717,6 +720,27 @@ export const OPERATION_REGISTRY = {
           severity: "error",
         });
       }
+      const hasDataSeries = operation.entity.dataSeries !== undefined;
+      if (operation.entity.type === "DataPlot" && operation.entity.dimensions && operation.entity.dataSeries) {
+        const reason = dataSeriesUnavailableReason(operation.entity.dataSeries, operation.entity.dimensions);
+        if (reason) {
+          issues.push({
+            code: "schema-invalid",
+            field: "entity.dataSeries",
+            message: reason,
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
+      } else if ((operation.entity.type === "DataPlot") !== hasDataSeries) {
+        issues.push({
+          code: "schema-invalid",
+          field: "entity.dataSeries",
+          message: "A Studio-native DataPlot requires one bounded data series.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
       return issues;
     },
   } satisfies Capability<"CreateEntity">,
@@ -745,6 +769,7 @@ export const OPERATION_REGISTRY = {
             "Arc",
             "Axes",
             "Circle",
+            "DataPlot",
             "Ellipse",
             "Line",
             "NumberLine",

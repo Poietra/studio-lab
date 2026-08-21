@@ -116,6 +116,7 @@ type StaticRootTransformEntityKind =
   | "arc"
   | "axes"
   | "circle"
+  | "data-plot"
   | "ellipse"
   | "image"
   | "math-tex"
@@ -567,6 +568,12 @@ const studioCreationImageV1Schema = z
     sampler: z.enum(["linear", "nearest"]),
   })
   .strict();
+const studioDataSeriesV1Schema = z
+  .object({
+    interpolation: z.enum(["linear", "smooth"]),
+    points: z.array(studioStaticRootPointV1Schema).min(2).max(256),
+  })
+  .strict();
 const studioMathTexContentV1Schema = z
   .object({
     displayLines: z.array(z.string()).min(1),
@@ -611,6 +618,7 @@ const studioCreationProjectionV1Schema = z
       z
         .object({
           createdLifetime: studioTimelineProjectionIntervalV1Schema,
+          dataSeries: studioDataSeriesV1Schema.optional(),
           entityId: z.string().min(1),
           initialDimensions: studioStaticRootDimensionsV1Schema,
           initialRotation: finiteNumberSchema,
@@ -621,6 +629,7 @@ const studioCreationProjectionV1Schema = z
             "arrow",
             "axes",
             "circle",
+            "data-plot",
             "ellipse",
             "image",
             "line",
@@ -1022,6 +1031,7 @@ type StudioCreationEntityKindV1 =
   | "arrow"
   | "axes"
   | "circle"
+  | "data-plot"
   | "ellipse"
   | "image"
   | "line"
@@ -1038,6 +1048,10 @@ type StudioCreationImageV1 = Readonly<{
   asset: Readonly<{ assetId: string; sha256: string }>;
   localRect: Readonly<{ bottom: number; left: number; right: number; top: number }>;
   sampler: "linear" | "nearest";
+}>;
+type StudioDataSeriesV1 = Readonly<{
+  interpolation: "linear" | "smooth";
+  points: readonly Readonly<{ x: number; y: number }>[];
 }>;
 type StudioTextContentV1 = Readonly<{
   layout: Readonly<{
@@ -1059,6 +1073,7 @@ type StudioCreationOperationV1 = Readonly<{
   (
     | Readonly<{
         entity: Readonly<{
+          dataSeries?: StudioDataSeriesV1 | null;
           dimensions: StudioCreationDimensionsV1;
           id: string;
           image?: StudioCreationImageV1 | null;

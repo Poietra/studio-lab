@@ -12,6 +12,15 @@ export function isCanonicalRgbHex(value: unknown): value is string {
 }
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
+const dataSeriesSchema = z
+  .object({
+    interpolation: z.enum(["linear", "smooth"]),
+    points: z
+      .array(z.object({ x: z.number().finite(), y: z.number().finite() }).strict())
+      .min(2)
+      .max(256),
+  })
+  .strict();
 const anglePairSchema = z
   .object({
     start: z.number().finite(),
@@ -99,6 +108,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   operationBaseSchema.extend({
     entity: z.object({
       content: contentSchema.optional(),
+      dataSeries: dataSeriesSchema.optional(),
       dimensions: dimensionsSchema.optional(),
       id: z.string(),
       image: studioImagePlacementSchema.optional(),

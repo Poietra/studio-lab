@@ -10,6 +10,7 @@ import type {
 import { RenderPipelinePanel } from "../render-pipeline/render-pipeline-panel";
 import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../render-pipeline/render-pipeline-policy";
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
+import { DataPlotEditor, type DataPlotInspectorAuthoring, dataPlotEditorAuthorityKey } from "./data-plot-editor";
 import { DraftInspector } from "./draft-inspector";
 import {
   type CameraInspectorAuthoring,
@@ -1129,6 +1130,7 @@ export function StudioInspector({
   authoringAvailable = true,
   className,
   colorAvailable,
+  dataPlotAuthoring,
   cameraAuthoring,
   draftApplyPending,
   draftError,
@@ -1193,6 +1195,7 @@ export function StudioInspector({
   authoringAvailable?: boolean;
   className?: string;
   colorAvailable: boolean;
+  dataPlotAuthoring?: DataPlotInspectorAuthoring;
   cameraAuthoring?: CameraInspectorAuthoring;
   draftApplyPending: boolean;
   draftError: string | null;
@@ -1279,6 +1282,7 @@ export function StudioInspector({
       "Arc",
       "Axes",
       "Circle",
+      "DataPlot",
       "Ellipse",
       "NumberLine",
       "NumberPlane",
@@ -1287,7 +1291,7 @@ export function StudioInspector({
       "Sector",
       "Triangle",
     ].includes(selectedEntity.type)
-      ? ["Arc", "Axes", "NumberLine", "NumberPlane"].includes(selectedEntity.type)
+      ? ["Arc", "Axes", "DataPlot", "NumberLine", "NumberPlane"].includes(selectedEntity.type)
         ? [["Stroke", "strokeColor", strokeColorValue]]
         : [
             ["Fill", "fillColor", fillColorValue],
@@ -1495,6 +1499,9 @@ export function StudioInspector({
                 restoreFocus={inspectorReturnFocus}
                 shapeTransform={shapeTransform}
               />
+              {dataPlotAuthoring ? (
+                <DataPlotEditor authoring={dataPlotAuthoring} key={dataPlotEditorAuthorityKey(dataPlotAuthoring)} />
+              ) : null}
             </fieldset>
           ) : (
             <div className="mt-3 border border-dashed border-zinc-700 p-3">
