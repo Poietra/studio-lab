@@ -250,7 +250,7 @@ import {
 import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
-import { studioNativeImageAssetsV1 } from "./studio/studio-image-assets";
+import { resolveStudioImageAssetDrag, studioNativeImageAssetsV1 } from "./studio/studio-image-assets";
 import type { StudioInlineTextEditorSession } from "./studio/studio-inline-text-editor";
 import {
   createStudioNativeBlankSceneIrBundle,
@@ -7061,6 +7061,7 @@ export function App({
               entities={editableEntities}
               groupUnavailableReason={layerGroupUnavailableReason}
               imageAssets={studioImageAssets}
+              imageAssetDragAvailable={nativeSceneActive}
               imageImportError={nativeSceneActive ? nativeProjectAssetError : null}
               imageImportPending={nativeSceneActive && nativeProjectAssetPending}
               layers={studioLayers}
@@ -7174,6 +7175,19 @@ export function App({
               onInlineTextCommit={commitInlineTextEdit}
               onInteractionModeChange={setInteractionMode}
               onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
+              onImageAssetDrop={
+                nativeSceneActive
+                  ? (payload, point) => {
+                      const asset = resolveStudioImageAssetDrag(studioImageAssets, payload);
+                      if (!asset) {
+                        setDraftError("This project image is no longer available.");
+                        return;
+                      }
+                      setIsPlaying(false);
+                      void insertEntitiesAt(point, [{ image: asset.image, position: point, type: "ImageMobject" }]);
+                    }
+                  : undefined
+              }
               onInsertToolChange={(tool) => {
                 setInlineTextEditor(null);
                 setInsertTool(tool);

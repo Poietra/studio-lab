@@ -129,6 +129,7 @@ export function StudioViewport({
   onInlineTextCommit,
   onInteractionModeChange,
   onInsertAtCenter,
+  onImageAssetDrop,
   onInsertToolChange,
   onInsertValueChange,
   onLifetimeChange,
@@ -227,6 +228,7 @@ export function StudioViewport({
         onEntityTextEdit={onEntityTextEdit}
         onInlineTextCancel={onInlineTextCancel}
         onInlineTextCommit={onInlineTextCommit}
+        onImageAssetDrop={onImageAssetDrop}
         onMotionControlChange={onMotionControlChange}
         onPresenceCursorChange={onPresenceCursorChange}
         onSelectionResizeCancel={onSelectionResizeCancel}

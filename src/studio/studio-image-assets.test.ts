@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import { pngSnapshotBundleFixture } from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
 import type { CanvasPngAssetTransferV1 } from "../engine/canvas-png-assets";
-import { studioNativeImageAssetsV1 } from "./studio-image-assets";
+import {
+  resolveStudioImageAssetDrag,
+  studioImageAssetDragPayload,
+  studioNativeImageAssetsV1,
+} from "./studio-image-assets";
 
 async function imageFixture() {
   const bundle = await pngSnapshotBundleFixture({
@@ -87,5 +91,18 @@ describe("Studio native image assets", () => {
         bundle,
       }),
     ).toEqual([]);
+  });
+
+  it("resolves a dragged image only against the current canonical asset list", async () => {
+    const { bundle, payload } = await imageFixture();
+    const assets = studioNativeImageAssetsV1({ assetPayloads: [payload], bundle });
+    const asset = assets[0];
+    if (!asset) throw new Error("Expected one projected image asset.");
+
+    expect(resolveStudioImageAssetDrag(assets, studioImageAssetDragPayload(asset))).toBe(asset);
+    expect(
+      resolveStudioImageAssetDrag(assets, JSON.stringify({ ...asset.image.asset, sha256: "f".repeat(64) })),
+    ).toBeNull();
+    expect(resolveStudioImageAssetDrag(assets, "not-json")).toBeNull();
   });
 });

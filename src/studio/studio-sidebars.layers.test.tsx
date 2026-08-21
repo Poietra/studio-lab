@@ -38,44 +38,48 @@ function activeScene(): ManimWorkspaceScene {
 
 describe("WorkspaceSidebar Layers", () => {
   it("lists the verified native image.png with Add and an explicit source-export boundary", () => {
-    const markup = renderToStaticMarkup(
-      <WorkspaceSidebar
-        activeScene={activeScene()}
-        appliedProgramReadOnlyReasons={{}}
-        appliedEdits={[]}
-        appliedTransactionIds={new Set()}
-        draftActive={false}
-        duration={1}
-        durationError={null}
-        durationMinimum={0.1}
-        editingAppliedTransactionId={null}
-        entities={[]}
-        imageAssets={[
-          {
-            byteLength: 74,
-            bytes: new ArrayBuffer(74),
-            image: {
-              asset: { assetId: "image-scene/asset:image.png", sha256: "4".repeat(64) },
-              localRect: { bottom: -0.5, left: -1, right: 1, top: 0.5 },
-              sampler: "nearest",
+    const renderSidebar = (imageAssetDragAvailable: boolean) =>
+      renderToStaticMarkup(
+        <WorkspaceSidebar
+          activeScene={activeScene()}
+          appliedProgramReadOnlyReasons={{}}
+          appliedEdits={[]}
+          appliedTransactionIds={new Set()}
+          draftActive={false}
+          duration={1}
+          durationError={null}
+          durationMinimum={0.1}
+          editingAppliedTransactionId={null}
+          entities={[]}
+          imageAssetDragAvailable={imageAssetDragAvailable}
+          imageAssets={[
+            {
+              byteLength: 74,
+              bytes: new ArrayBuffer(74),
+              image: {
+                asset: { assetId: "image-scene/asset:image.png", sha256: "4".repeat(64) },
+                localRect: { bottom: -0.5, left: -1, right: 1, top: 0.5 },
+                sampler: "nearest",
+              },
+              label: "image.png",
+              pixelHeight: 1,
+              pixelWidth: 2,
             },
-            label: "image.png",
-            pixelHeight: 1,
-            pixelWidth: 2,
-          },
-        ]}
-        nextScene={null}
-        onAddImageAsset={vi.fn()}
-        onDurationChange={vi.fn()}
-        onEditAppliedProgram={vi.fn()}
-        onRedo={vi.fn()}
-        onToggleEntity={vi.fn()}
-        onUndo={vi.fn()}
-        redoCount={0}
-        selectedIds={new Set()}
-        sourceImportOutcomes={[]}
-      />,
-    );
+          ]}
+          nextScene={null}
+          onAddImageAsset={vi.fn()}
+          onDurationChange={vi.fn()}
+          onEditAppliedProgram={vi.fn()}
+          onRedo={vi.fn()}
+          onToggleEntity={vi.fn()}
+          onUndo={vi.fn()}
+          redoCount={0}
+          selectedIds={new Set()}
+          sourceImportOutcomes={[]}
+        />,
+      );
+    const markup = renderSidebar(true);
+    const clickOnlyMarkup = renderSidebar(false);
 
     expect(markup).toContain("Assets");
     expect(markup).toContain("Images");
@@ -83,6 +87,11 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain('alt="image.png"');
     expect(markup).toContain("2 × 1");
     expect(markup).toContain("+ Add");
+    expect(markup).toContain('draggable="true"');
+    expect(markup).toContain("Drag to place on the canvas, or use Add.");
+    expect(clickOnlyMarkup).toContain("+ Add");
+    expect(clickOnlyMarkup).not.toContain('draggable="true"');
+    expect(clickOnlyMarkup).not.toContain("Drag to place on the canvas, or use Add.");
     expect(markup).toContain("Manim source export is unsupported");
   });
 

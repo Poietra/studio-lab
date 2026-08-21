@@ -14,6 +14,7 @@ import {
   unionPreparedSelectionBounds,
   verifiedPreviewGeometryForStudioEntity,
 } from "./studio-canvas";
+import { STUDIO_IMAGE_ASSET_DRAG_TYPE } from "./studio-image-assets";
 import {
   StudioInlineTextEditor,
   studioInlineTextBlurCommits,
@@ -247,6 +248,69 @@ function previewView(
 }
 
 describe("StudioCanvas retained preview layer", () => {
+  it("places a canonical image drag at the dropped canvas point", () => {
+    const onImageAssetDrop = vi.fn();
+    const surface = findCanvasSurface(
+      StudioCanvas({
+        ...baseProps(),
+        onImageAssetDrop,
+        preview: previewView({
+          frame: {
+            packetId: "canvas:image-drop",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        }),
+      }),
+    );
+    const preventDefault = vi.fn();
+    const dataTransfer = {
+      dropEffect: "none",
+      getData: vi.fn(() => '{"assetId":"asset:image","sha256":"digest"}'),
+      types: [STUDIO_IMAGE_ASSET_DRAG_TYPE],
+    };
+    const onDragOver = surface.props.onDragOver as (event: {
+      dataTransfer: typeof dataTransfer;
+      preventDefault: () => void;
+    }) => void;
+    const onDrop = surface.props.onDrop as (event: {
+      clientX: number;
+      clientY: number;
+      currentTarget: Readonly<{ getBoundingClientRect: () => DOMRect }>;
+      dataTransfer: typeof dataTransfer;
+      preventDefault: () => void;
+    }) => void;
+    const bounds: DOMRect = {
+      bottom: 720,
+      height: 720,
+      left: 0,
+      right: 1280,
+      top: 0,
+      width: 1280,
+      x: 0,
+      y: 0,
+      toJSON: vi.fn(),
+    };
+
+    onDragOver({ dataTransfer, preventDefault });
+    onDrop({
+      clientX: 320,
+      clientY: 180,
+      currentTarget: { getBoundingClientRect: () => bounds },
+      dataTransfer,
+      preventDefault,
+    });
+
+    expect(preventDefault).toHaveBeenCalledTimes(2);
+    expect(dataTransfer.dropEffect).toBe("copy");
+    expect(onImageAssetDrop).toHaveBeenCalledWith('{"assetId":"asset:image","sha256":"digest"}', {
+      x: 160,
+      y: 90,
+    });
+  });
+
   it("unions prepared renderer AABBs without consulting entity shapes", () => {
     const bounds = unionPreparedSelectionBounds(
       [
