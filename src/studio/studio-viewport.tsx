@@ -76,6 +76,8 @@ export function StudioViewport({
   className,
   currentTime,
   duration,
+  drawInClips,
+  drawInAvailability,
   editableMotionIds,
   editingAppliedTransactionId,
   entities,
@@ -107,6 +109,10 @@ export function StudioViewport({
   uniformScaleResizeOnlyIds,
   onAppliedMotionClipChange,
   onAppliedMotionClipSelect,
+  onDrawInAdd,
+  onDrawInChange,
+  onDrawInDelete,
+  onDrawInSelect,
   onCanvasPlace,
   onCreateEmptyWorkspaceEntity,
   onCreateStarterComposition,
@@ -260,6 +266,8 @@ export function StudioViewport({
           appliedTransactionIds={appliedTransactionIds}
           currentTime={currentTime}
           duration={duration}
+          drawInClips={drawInClips}
+          drawInAvailability={drawInAvailability}
           editingAppliedTransactionId={editingAppliedTransactionId}
           events={projection.timeline.events}
           interactionMode={interactionMode}
@@ -280,6 +288,10 @@ export function StudioViewport({
           scaleTracks={scaleTracks}
           onAppliedMotionClipChange={onAppliedMotionClipChange}
           onAppliedMotionClipSelect={onAppliedMotionClipSelect}
+          onDrawInAdd={onDrawInAdd}
+          onDrawInChange={onDrawInChange}
+          onDrawInDelete={onDrawInDelete}
+          onDrawInSelect={onDrawInSelect}
           onInteractionModeChange={onInteractionModeChange}
           onLifetimeChange={onLifetimeChange}
           onMaterialParameterKeyframeAdd={onMaterialParameterKeyframeAdd}

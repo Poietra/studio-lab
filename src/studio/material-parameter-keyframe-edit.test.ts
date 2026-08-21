@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createStudioEntitiesProgram } from "./authoring-commands";
+import { replaceDrawInProgram } from "./draw-in-edit";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import {
   appendMaterialParameterKeyframe,
@@ -202,7 +203,7 @@ describe("material parameter keyframe editing", () => {
     expect(materialParameterKeyframeTrackFromProgram(recovered.program, 0)).toBeNull();
   });
 
-  it("keeps keyframe insertion append-only and rejects the initial fade interval", () => {
+  it("keeps keyframe insertion append-only and rejects the initial Draw entrance interval", () => {
     expect(() => appendMaterialParameterKeyframe([{ easing: "smooth", time: 3, value: 0.35 }], 2.5, 0.35)).toThrow(
       /after the final marker/i,
     );
@@ -213,27 +214,32 @@ describe("material parameter keyframe editing", () => {
 
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
-      entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Arrow" }],
+      entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Circle" }],
       scene: STUDIO_FIXTURE_SCENE,
-      transactionId: "material-fade-guard",
+      transactionId: "material-entrance-guard",
     });
     const entityId = creation.entityIds[0]!;
-    const fadeEnd = Math.max(
-      ...creation.validation.program.operations.flatMap((operation) =>
-        operation.kind === "ChangePresence" && operation.effect === "fade-in" ? [operation.interval.end] : [],
-      ),
-    );
-    expect(() =>
-      replaceMaterialParameterKeyframeProgram({
-        baseProgram: creation.validation.program,
-        entityId,
-        keyframes: [{ easing: "smooth", time: fadeEnd, value: 0.35 }],
-        material,
-        name: "amplitude",
-        parameterIndex: 0,
-        scene: STUDIO_FIXTURE_SCENE,
-      }),
-    ).toThrow(/after the object's initial fade/i);
+    const drawEnd = 2.5;
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "smooth", end: drawEnd },
+      entityId,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
+    for (const time of [drawEnd - 0.1, drawEnd]) {
+      expect(() =>
+        replaceMaterialParameterKeyframeProgram({
+          baseProgram: drawn.program,
+          entityId,
+          keyframes: [{ easing: "smooth", time, value: 0.35 }],
+          material,
+          name: "amplitude",
+          parameterIndex: 0,
+          scene: STUDIO_FIXTURE_SCENE,
+        }),
+      ).toThrow(/after the object's initial entrance/i);
+    }
   });
 
   it("blocks material identity edits only while a matching active track exists", () => {

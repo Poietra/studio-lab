@@ -1,6 +1,6 @@
 import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import type { RuntimeSceneState } from "./model";
-import { operationId } from "./operations";
+import { initialAppearanceEnd, operationId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 
@@ -104,16 +104,13 @@ export function replaceRotationKeyframeProgram(
   if (input.keyframes[0] && Math.abs(input.keyframes[0].value - input.baseline) > KEYFRAME_EPSILON) {
     throw new TypeError("The first rotation keyframe must preserve the object's baseline rotation.");
   }
-  const fadeEnd = Math.max(
+  const entranceEnd = initialAppearanceEnd(
+    input.baseProgram.operations,
+    input.entityId,
     targetCreate.entity.lifetime.start,
-    ...input.baseProgram.operations.flatMap((operation) =>
-      operation.kind === "ChangePresence" && operation.effect === "fade-in" && operation.entityId === input.entityId
-        ? [operation.interval.end]
-        : [],
-    ),
   );
-  if (input.keyframes[0] && input.keyframes[0].time <= fadeEnd + KEYFRAME_EPSILON) {
-    throw new TypeError("The first rotation keyframe must be after the object's initial fade.");
+  if (input.keyframes[0] && input.keyframes[0].time <= entranceEnd + KEYFRAME_EPSILON) {
+    throw new TypeError("The first rotation keyframe must be after the object's initial entrance.");
   }
   const existing = rotationKeyframeTrackFromProgram(input.baseProgram, 0);
   if (existing && existing.entityId !== input.entityId) {

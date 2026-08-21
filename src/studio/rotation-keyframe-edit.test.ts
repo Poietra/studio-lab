@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createStudioEntitiesProgram } from "./authoring-commands";
+import { replaceDrawInProgram } from "./draw-in-edit";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
@@ -78,7 +79,7 @@ describe("rotation keyframe editing", () => {
     expect(rotationKeyframeTrackFromProgram(removed.program, 0)).toBeNull();
   });
 
-  it("keeps the first marker at the Rust baseline and insertion append-only", () => {
+  it("keeps the first marker at the Rust baseline, after Draw, and insertion append-only", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
       entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Rectangle" }],
@@ -86,30 +87,35 @@ describe("rotation keyframe editing", () => {
       transactionId: "rotation-baseline",
     });
     const entityId = creation.entityIds[0]!;
-    const fadeEnd = Math.max(
-      ...creation.validation.program.operations.flatMap((operation) =>
-        operation.kind === "ChangePresence" && operation.effect === "fade-in" ? [operation.interval.end] : [],
-      ),
-    );
+    const drawEnd = 2.5;
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "smooth", end: drawEnd },
+      entityId,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
 
     expect(() =>
       replaceRotationKeyframeProgram({
-        baseProgram: creation.validation.program,
+        baseProgram: drawn.program,
         baseline: 0,
         entityId,
-        keyframes: [{ easing: "smooth", time: 2, value: Math.PI }],
+        keyframes: [{ easing: "smooth", time: 3, value: Math.PI }],
         scene: STUDIO_FIXTURE_SCENE,
       }),
     ).toThrow(/baseline rotation/i);
-    expect(() =>
-      replaceRotationKeyframeProgram({
-        baseProgram: creation.validation.program,
-        baseline: 0,
-        entityId,
-        keyframes: [{ easing: "smooth", time: fadeEnd, value: 0 }],
-        scene: STUDIO_FIXTURE_SCENE,
-      }),
-    ).toThrow(/initial fade/i);
+    for (const time of [drawEnd - 0.1, drawEnd]) {
+      expect(() =>
+        replaceRotationKeyframeProgram({
+          baseProgram: drawn.program,
+          baseline: 0,
+          entityId,
+          keyframes: [{ easing: "smooth", time, value: 0 }],
+          scene: STUDIO_FIXTURE_SCENE,
+        }),
+      ).toThrow(/initial entrance/i);
+    }
     expect(() => appendRotationKeyframe([{ easing: "smooth", time: 3, value: 0 }], 2.5, 0)).toThrow(
       /after the final marker/i,
     );

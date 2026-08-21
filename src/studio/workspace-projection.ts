@@ -298,6 +298,7 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "SetProperty" && operation.key === "sourceZIndex") return "source-z-index";
   if (operation.kind === "SetProperty" && operation.key === "visibility") return "visibility";
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") return "fade-in";
+  if (operation.kind === "DrawIn") return "draw-in";
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") return "rotation";
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
   if (operation.kind === "ResizeEntity") return "resize";
@@ -450,7 +451,25 @@ function correlateCreationProjection(
       sameProjectionNumber(mutation.to, operation.rotationDeltaRadians ?? Number.NaN) &&
       sameProjectionNumber(mutation.interval.start, motion.interval.start) &&
       sameProjectionNumber(mutation.interval.end, motion.interval.end);
+    const createdEntity =
+      operation?.kind === "DrawIn"
+        ? projection.entities.find((entity) => entity.entityId === operation.entityId)
+        : undefined;
+    const isCorrelatedDraw =
+      operation?.kind === "DrawIn" &&
+      mutation.kind === "draw-in" &&
+      createdEntity !== undefined &&
+      mutation.entityId === operation.entityId &&
+      mutation.easing.kind === (operation.easing === "smooth" ? "manim-smooth" : "linear") &&
+      sameProjectionNumber(mutation.from, 0) &&
+      sameProjectionNumber(mutation.to, 1) &&
+      sameProjectionNumber(mutation.interval.start, createdEntity.createdLifetime.start) &&
+      sameProjectionNumber(
+        mutation.interval.end - mutation.interval.start,
+        operation.interval.end - operation.interval.start,
+      );
     const isCorrelatedMutation =
+      operation?.kind !== "DrawIn" &&
       expectedMutationKind !== null &&
       expectedMutationKind === mutation.kind &&
       mutation.entityId === (operation && "entityId" in operation ? operation.entityId : undefined);
@@ -458,7 +477,7 @@ function correlateCreationProjection(
       !expected ||
       seenMutationIds.has(mutation.operationId) ||
       mutation.transactionId !== expected.program.transactionId ||
-      (!isCorrelatedMutation && !isCorrelatedSpin)
+      (!isCorrelatedMutation && !isCorrelatedSpin && !isCorrelatedDraw)
     ) {
       throw new TypeError(`Creation mutation ${mutation.operationId} is not correlated with the Rust projection.`);
     }
@@ -908,6 +927,9 @@ function appendProjectedMutation(
   } else if (mutation.kind === "material-parameter-keyframes") {
     // The canonical VectorAppearance channel is sampled in Rust; this correlated mutation
     // only supplies working-time marker positions to the timeline.
+  } else if (mutation.kind === "draw-in") {
+    // Rust evaluates the canonical path-trim channel. This projection only
+    // correlates the Studio timeline clip with that authoritative channel.
   } else if (mutation.kind === "fill-color" || mutation.kind === "stroke-color") {
     appendProjectedSample(
       draft.propertyChannels,

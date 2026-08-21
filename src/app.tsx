@@ -51,6 +51,12 @@ import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } fr
 import { runDraftSourcePreflight } from "./studio/draft-apply-preflight";
 import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } from "./studio/draft-validation";
 import {
+  drawInClipFromProgram,
+  drawInUnavailableReason,
+  replaceDrawInProgram,
+  sceneProgramsHaveDrawIn,
+} from "./studio/draw-in-edit";
+import {
   editorProgramsMatchAuthorityV1,
   materializeAuthoritativeEditorProgramsV1,
 } from "./studio/editor-authority-state";
@@ -268,6 +274,8 @@ import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
 import type {
+  StudioDrawInClipChange,
+  StudioDrawInTimelineClip,
   StudioMaterialParameterTimelineOption,
   StudioMaterialParameterTimelineTrack,
   StudioOpacityTimelineTrack,
@@ -348,6 +356,7 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
   ArrowRight: { x: 2, y: 0 },
   ArrowUp: { x: 0, y: -2 },
 };
+const DRAW_IN_GROUPING_BLOCKER = "Remove Draw from every selected object before grouping.";
 
 type CanvasDragState = Readonly<{
   cameraScale: number;
@@ -1441,6 +1450,104 @@ export function App({
             ? sourceTimeToWorkingTimeFromProjection(appliedTimelineProjection.transforms, sourceTime)
             : sourceTimeToWorkingTimeWithoutTimeline(previewAppliedSceneEdits, sourceTime),
     })) ?? [];
+  const canonicalGroupedChildIds = new Set(
+    previewRenderer?.canonicalScene?.bundle.scene.entities.flatMap(({ id, parentId }) => (parentId ? [id] : [])) ?? [],
+  );
+  const drawInAvailability = new Map(
+    (workspaceProjection?.projection.timeline.objectTracks ?? []).map(({ entityId }) => {
+      const owner = previewAppliedEdits.find(({ program }) =>
+        program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
+      );
+      const hasExternalFillOrMaterial = previewAppliedEdits.some(({ program }) =>
+        program.operations.some(
+          (operation) =>
+            "entityId" in operation &&
+            operation.entityId === entityId &&
+            ((operation.kind === "SetProperty" && operation.key === "fillColor") ||
+              (operation.kind === "AnimateProperty" && operation.materialParameter !== undefined)),
+        ),
+      );
+      const reason = !owner
+        ? "Draw supports only Studio-created objects."
+        : draftEdit && editingAppliedProgram?.original.program.transactionId !== owner.program.transactionId
+          ? "Apply or discard the current draft before adding Draw."
+          : canonicalGroupedChildIds.has(entityId)
+            ? "Draw currently supports only ungrouped root objects."
+            : activeSceneFragmentMaterials.assignments[entityId]
+              ? "Remove the object's fragment material before adding Draw."
+              : hasExternalFillOrMaterial
+                ? "Remove the object's fill or material animation before adding Draw."
+                : drawInUnavailableReason(owner.program, entityId);
+      return [entityId, reason] as const;
+    }),
+  );
+  const drawInClips: readonly StudioDrawInTimelineClip[] = previewAppliedEdits.flatMap((record) => {
+    const sourceClip = drawInClipFromProgram(record.program);
+    if (!sourceClip || !workspaceCreationProjection) return [];
+    const mutation = workspaceCreationProjection.mutations.find(
+      (candidate) => candidate.kind === "draw-in" && candidate.operationId === sourceClip.operationId,
+    );
+    if (!mutation || mutation.kind !== "draw-in") return [];
+    const activeDraftIsThisClip = editingAppliedProgram?.original.program.transactionId === sourceClip.transactionId;
+    return [
+      {
+        ...sourceClip,
+        interval: mutation.interval,
+        label:
+          workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === sourceClip.entityId)
+            ?.label ?? sourceClip.entityId,
+        maximumDuration: (() => {
+          const created = workspaceCreationProjection.entities.find(({ entityId }) => entityId === sourceClip.entityId);
+          const sourceCreated = record.program.operations.find(
+            (operation) => operation.kind === "CreateEntity" && operation.entity.id === sourceClip.entityId,
+          );
+          const sourceLifetimeEnd =
+            sourceCreated?.kind === "CreateEntity"
+              ? (sourceCreated.entity.lifetime.end ?? projectedEditorScene?.runtimeSceneState.duration)
+              : projectedEditorScene?.runtimeSceneState.duration;
+          const maximumEnds = [
+            ...workspaceCreationProjection.mutations.flatMap((candidate) =>
+              candidate.entityId === sourceClip.entityId &&
+              candidate.operationId !== sourceClip.operationId &&
+              candidate.interval.start > mutation.interval.start + 0.0005
+                ? [candidate.interval.start - (candidate.kind.endsWith("keyframes") ? 0.001 : 0)]
+                : [],
+            ),
+            ...workspaceCreationProjection.motions.flatMap((candidate) =>
+              candidate.targetEntityId === sourceClip.entityId &&
+              candidate.interval.start > mutation.interval.start + 0.0005
+                ? [candidate.interval.start]
+                : [],
+            ),
+            ...workspaceCreationProjection.removals.flatMap((candidate) =>
+              candidate.studioEntityId === sourceClip.entityId && candidate.removedAt > mutation.interval.start + 0.0005
+                ? [candidate.fadeInterval?.start ?? candidate.removedAt]
+                : [],
+            ),
+          ];
+          return Math.max(
+            0.1,
+            Math.min(
+              sourceLifetimeEnd !== undefined
+                ? sourceLifetimeEnd - sourceClip.interval.start
+                : Number.POSITIVE_INFINITY,
+              (workspaceProjection?.proposedState.evaluatedScene.duration ??
+                projectedEditorScene?.runtimeSceneState.duration ??
+                mutation.interval.start + 0.1) - mutation.interval.start,
+              created ? created.createdLifetime.end - mutation.interval.start : Number.POSITIVE_INFINITY,
+              ...maximumEnds.map((end) => end - mutation.interval.start),
+            ),
+          );
+        })(),
+        readOnlyReason:
+          previewRenderer?.state.phase !== "presented"
+            ? "Wait for the canonical WebGPU preview before editing Draw."
+            : draftEdit && !activeDraftIsThisClip
+              ? "Apply or discard the current draft before editing Draw."
+              : null,
+      },
+    ];
+  });
   const opacityTrackEligibleIds = new Set(
     workspaceCreationProjection?.entities.flatMap(({ entityId, transactionId }) => {
       const owner = previewAppliedEdits.find(({ program }) =>
@@ -1583,9 +1690,6 @@ export function App({
       },
     ];
   });
-  const canonicalGroupedChildIds = new Set(
-    previewRenderer?.canonicalScene?.bundle.scene.entities.flatMap(({ id, parentId }) => (parentId ? [id] : [])) ?? [],
-  );
   const rotationTrackEligibleIds = new Set(
     workspaceCreationProjection?.entities.flatMap(({ entityId, transactionId }) => {
       const owner = previewAppliedEdits.find(({ program }) =>
@@ -2224,15 +2328,20 @@ export function App({
                   scene: draftSourceScene,
                 });
   const layerGroupPlan = planStudioLayerGroup(studioLayers, selectedSet);
+  const selectedDrawInGroupingBlocked = selectedObjectIds.some((entityId) =>
+    sceneProgramsHaveDrawIn(previewAppliedSceneEdits, entityId),
+  );
   const layerGroupUnavailableReason = studioAuthoringLocked
     ? (readDurationBlocker() ?? EDITOR_SESSION_LOADING_BLOCKER)
     : draftEdit || editingAppliedProgram
       ? "Apply or discard the current draft before grouping."
       : selectedObjectIds.some((entityId) => lockedEntityIdSet.has(entityId))
         ? "Unlock every selected object before grouping."
-        : layerGroupPlan.kind === "unavailable"
-          ? layerGroupPlan.reason
-          : null;
+        : selectedDrawInGroupingBlocked
+          ? DRAW_IN_GROUPING_BLOCKER
+          : layerGroupPlan.kind === "unavailable"
+            ? layerGroupPlan.reason
+            : null;
   const selectedEntityLocked = selectedObjectIds.some((entityId) => lockedEntityIdSet.has(entityId));
   const selectedLayoutIds = [...selectedSet];
   let selectionLayoutUnavailableReason: string | null = null;
@@ -2997,6 +3106,116 @@ export function App({
     );
     const record = previewAppliedEdits[programIndex];
     return programIndex >= 0 && record ? { programIndex, record } : null;
+  }
+
+  function stageDrawIn(
+    entityId: string,
+    programIndex: number,
+    baseProgram: SceneEdit,
+    draw: Readonly<{ easing: "linear" | "smooth"; end: number }> | null,
+  ) {
+    if (!projectedEditorScene) return false;
+    const original = appliedEdits[programIndex];
+    if (!original || original.program.transactionId !== baseProgram.transactionId) {
+      setDraftError("The Draw entrance no longer matches the applied Program history.");
+      return false;
+    }
+    try {
+      const validation = replaceDrawInProgram({
+        baseProgram,
+        draw,
+        entityId,
+        scene: projectedEditorScene.runtimeSceneState,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return stageDraft({
+        appliedEdit: { index: programIndex, original },
+        clearSuggestion: true,
+        currentTime,
+        operation: null,
+        record: validated.record,
+        selectedObjectIds: [entityId],
+        stopPlayback: true,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Draw entrance could not be edited.");
+      setIsPlaying(false);
+      return false;
+    }
+  }
+
+  function addDrawIn(entityId: string) {
+    if (rejectLockedEntityMutation(entityId)) return;
+    const owner = studioCreationProgramOwner(entityId);
+    if (!owner || !projectedEditorScene) {
+      setDraftError("Draw supports only eligible Studio-created Line, Circle, and Rectangle objects.");
+      return;
+    }
+    const unavailable = drawInUnavailableReason(owner.record.program, entityId);
+    if (unavailable) {
+      setDraftError(unavailable);
+      return;
+    }
+    const create = owner.record.program.operations.find(
+      (operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId,
+    );
+    if (!create || create.kind !== "CreateEntity") return;
+    const fadeEnd = owner.record.program.operations.find(
+      (operation) =>
+        operation.kind === "ChangePresence" && operation.effect === "fade-in" && operation.entityId === entityId,
+    )?.interval.end;
+    const lifetimeEnd = create.entity.lifetime.end ?? projectedEditorScene.runtimeSceneState.duration;
+    const end = Math.min(
+      projectedEditorScene.runtimeSceneState.duration,
+      lifetimeEnd,
+      Math.max(create.entity.lifetime.start + 0.1, fadeEnd ?? create.entity.lifetime.start + 1),
+    );
+    stageDrawIn(entityId, owner.programIndex, owner.record.program, { easing: "smooth", end });
+  }
+
+  function editDrawIn(clip: StudioDrawInTimelineClip) {
+    if (rejectPropertyTrackMutation(clip.entityId, clip.readOnlyReason)) return;
+    const owner = studioCreationProgramOwner(clip.entityId);
+    if (!owner || owner.record.program.transactionId !== clip.transactionId) {
+      setDraftError("The Draw entrance no longer matches the applied Program history.");
+      return;
+    }
+    const sourceClip = drawInClipFromProgram(owner.record.program);
+    if (!sourceClip) return;
+    stageDrawIn(clip.entityId, owner.programIndex, owner.record.program, {
+      easing: sourceClip.easing,
+      end: sourceClip.interval.end,
+    });
+  }
+
+  function changeDrawIn(clip: StudioDrawInTimelineClip, change: StudioDrawInClipChange) {
+    if (rejectPropertyTrackMutation(clip.entityId, clip.readOnlyReason)) return;
+    const owner = studioCreationProgramOwner(clip.entityId);
+    const sourceClip = owner ? drawInClipFromProgram(owner.record.program) : null;
+    if (!owner || !sourceClip || owner.record.program.transactionId !== clip.transactionId) {
+      setDraftError("The Draw entrance no longer matches the applied Program history.");
+      return;
+    }
+    const duration = change.duration ?? sourceClip.interval.end - sourceClip.interval.start;
+    if (!Number.isFinite(duration) || duration > clip.maximumDuration + 0.0005) {
+      setDraftError(`Draw must finish before the object's next edit (${clip.maximumDuration.toFixed(2)}s maximum).`);
+      return;
+    }
+    stageDrawIn(clip.entityId, owner.programIndex, owner.record.program, {
+      easing: change.easing ?? sourceClip.easing,
+      end: sourceClip.interval.start + duration,
+    });
+  }
+
+  function deleteDrawIn(clip: StudioDrawInTimelineClip) {
+    if (rejectPropertyTrackMutation(clip.entityId, clip.readOnlyReason)) return;
+    const owner = studioCreationProgramOwner(clip.entityId);
+    if (!owner || owner.record.program.transactionId !== clip.transactionId) {
+      setDraftError("The Draw entrance no longer matches the applied Program history.");
+      return;
+    }
+    stageDrawIn(clip.entityId, owner.programIndex, owner.record.program, null);
   }
 
   function duplicateStudioPropertyKeyframe<
@@ -4247,6 +4466,13 @@ export function App({
   }
 
   function groupLayerSelection() {
+    if (
+      layerGroupPlan.kind === "planned" &&
+      layerGroupPlan.childEntityIds.some((entityId) => sceneProgramsHaveDrawIn(appliedSceneEdits, entityId))
+    ) {
+      setDraftError(DRAW_IN_GROUPING_BLOCKER);
+      return false;
+    }
     if (layerGroupUnavailableReason || layerGroupPlan.kind !== "planned" || !draftSourceScene) {
       if (layerGroupUnavailableReason) setDraftError(layerGroupUnavailableReason);
       return false;
@@ -5788,6 +6014,10 @@ export function App({
 
   function setEntityColorFromInspector(entityId: string, property: "fillColor" | "strokeColor", color: string) {
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    if (property === "fillColor" && sceneProgramsHaveDrawIn(previewAppliedSceneEdits, entityId)) {
+      setDraftError("Remove Draw before adding a fill to this object.");
+      return false;
+    }
     const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!createdAuthority || !entity || (entity.type !== "Circle" && entity.type !== "Rectangle")) {
@@ -6248,6 +6478,11 @@ export function App({
     ? (activeSceneFragmentMaterials.assignments[selectedFragmentMaterialEntity.id] ?? null)
     : null;
   const selectedFragmentMaterialAssigned = selectedFragmentMaterialAssignment !== null;
+  const selectedDrawInMaterialBlocker =
+    selectedFragmentMaterialEntity &&
+    sceneProgramsHaveDrawIn(previewAppliedSceneEdits, selectedFragmentMaterialEntity.id)
+      ? "Remove Draw before assigning a fragment material to this object."
+      : null;
   const selectedFragmentMaterialAvailable =
     previewMutationAvailable &&
     !selectedEntityLocked &&
@@ -6338,6 +6573,7 @@ export function App({
   function createFragmentMaterialPreset(preset: StudioFragmentMaterialPresetId) {
     try {
       if (activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
+        if (selectedDrawInMaterialBlocker) throw new Error(selectedDrawInMaterialBlocker);
         const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
           entityId: selectedFragmentMaterialEntity.id,
         });
@@ -6367,6 +6603,7 @@ export function App({
   function createTextureFragmentMaterialPreset() {
     try {
       if (activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
+        if (selectedDrawInMaterialBlocker) throw new Error(selectedDrawInMaterialBlocker);
         const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
           entityId: selectedFragmentMaterialEntity.id,
         });
@@ -6526,6 +6763,7 @@ export function App({
     }
     if (rejectLockedEntityMutation(selectedFragmentMaterialEntity.id)) return;
     try {
+      if (shaderId !== null && selectedDrawInMaterialBlocker) throw new Error(selectedDrawInMaterialBlocker);
       const material = shaderId
         ? activeProjectFragmentMaterials.registry.materials.find((candidate) => candidate.shaderId === shaderId)
         : null;
@@ -7208,6 +7446,8 @@ export function App({
               className="order-1 min-h-[30rem] md:order-2 md:col-start-2 md:row-start-1 md:min-h-[32rem] xl:min-h-0"
               currentTime={currentTime}
               duration={activeDuration}
+              drawInClips={drawInClips}
+              drawInAvailability={drawInAvailability}
               editableMotionIds={editableMotionIds}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
               entities={visibleEntities}
@@ -7240,6 +7480,10 @@ export function App({
               uniformScaleResizeOnlyIds={studioUniformScaleResizeOnlyIds}
               onAppliedMotionClipChange={changeAppliedMotionClip}
               onAppliedMotionClipSelect={editAppliedMotionClip}
+              onDrawInAdd={addDrawIn}
+              onDrawInChange={changeDrawIn}
+              onDrawInDelete={deleteDrawIn}
+              onDrawInSelect={editDrawIn}
               onCanvasPlace={(point) => {
                 if (insertTool === "Text") beginInlineTextCreation(point);
                 else void insertEntitiesAt(point);

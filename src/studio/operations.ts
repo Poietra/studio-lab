@@ -12,6 +12,7 @@ export type PropertyChannelKey =
   | "fillColor"
   | "identity"
   | `materialParameter:${string}:${number}`
+  | "pathTrim"
   | "sourceZIndex"
   | "position"
   | "presence"
@@ -28,6 +29,7 @@ export type ChannelAccess = Readonly<{
 export type OperationOrigin = SceneEditOrigin;
 export type OperationBase = Pick<SceneEditOperation, "dependsOn" | "id" | "interval" | "provenance">;
 export type CreateEntityOperation = Extract<SceneEditOperation, { kind: "CreateEntity" }>;
+export type DrawInOperation = Extract<SceneEditOperation, { kind: "DrawIn" }>;
 export type ResizeEntityOperation = Extract<SceneEditOperation, { kind: "ResizeEntity" }>;
 export type SetPropertyOperation = Extract<SceneEditOperation, { kind: "SetProperty" }>;
 export type AnimatePropertyOperation = Extract<SceneEditOperation, { kind: "AnimateProperty" }>;
@@ -148,6 +150,22 @@ export function provisionalEntityId(transactionId: string, localName: string) {
 
 export function operationId(transactionId: string, localName: string) {
   return `tx:${transactionId}/operation:${localName}`;
+}
+
+export function initialAppearanceEnd(
+  operations: readonly SceneEditOperation[],
+  entityId: string,
+  lifetimeStart: number,
+) {
+  return operations.reduce(
+    (end, operation) =>
+      "entityId" in operation &&
+      operation.entityId === entityId &&
+      (operation.kind === "DrawIn" || (operation.kind === "ChangePresence" && operation.effect === "fade-in"))
+        ? Math.max(end, operation.interval.end)
+        : end,
+    lifetimeStart,
+  );
 }
 
 export function channelKey(access: ChannelAccess) {

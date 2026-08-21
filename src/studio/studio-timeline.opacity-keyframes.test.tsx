@@ -10,6 +10,8 @@ function props(): StudioTimelineProps {
     appliedTransactionIds: new Set(["create-circle"]),
     currentTime: 2,
     duration: 5,
+    drawInClips: [],
+    drawInAvailability: new Map(),
     editingAppliedTransactionId: null,
     events: [],
     interactionMode: "position",
@@ -33,6 +35,10 @@ function props(): StudioTimelineProps {
     ],
     onAppliedMotionClipChange: vi.fn(),
     onAppliedMotionClipSelect: vi.fn(),
+    onDrawInAdd: vi.fn(),
+    onDrawInChange: vi.fn(),
+    onDrawInDelete: vi.fn(),
+    onDrawInSelect: vi.fn(),
     onInteractionModeChange: vi.fn(),
     onLifetimeChange: vi.fn(),
     onMaterialParameterKeyframeAdd: vi.fn(),
@@ -76,6 +82,54 @@ function props(): StudioTimelineProps {
 }
 
 describe("StudioTimeline opacity keyframes", () => {
+  it("keeps the Draw control visible with a reason for an unsupported target", () => {
+    const reason = "Draw supports only Studio-created Line, Circle, and Rectangle objects.";
+    const markup = renderToStaticMarkup(
+      <StudioTimeline {...props()} drawInAvailability={new Map([["circle", reason]])} />,
+    );
+
+    expect(markup).toContain('aria-label="Add Draw entrance for Circle"');
+    expect(markup).toContain(`title="${reason}"`);
+    expect(markup).toMatch(/aria-disabled="true"[^>]*aria-label="Add Draw entrance for Circle"/u);
+    expect(markup).toContain(`>${reason}</span>`);
+  });
+
+  it("enables the Draw control when availability has no blocker", () => {
+    const markup = renderToStaticMarkup(
+      <StudioTimeline {...props()} drawInAvailability={new Map([["circle", null]])} />,
+    );
+
+    expect(markup).toContain('aria-label="Add Draw entrance for Circle"');
+    expect(markup).toMatch(/aria-disabled="false"[^>]*aria-label="Add Draw entrance for Circle"/u);
+  });
+
+  it("renders a Studio Draw clip and its duration controls", () => {
+    const base = props();
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...base}
+        drawInClips={[
+          {
+            easing: "smooth",
+            entityId: "circle",
+            interval: { end: 2, start: 1 },
+            label: "Circle",
+            maximumDuration: 4,
+            operationId: "draw-circle",
+            readOnlyReason: null,
+            transactionId: "create-circle",
+          },
+        ]}
+        editingAppliedTransactionId="create-circle"
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Edit Circle Draw entrance"');
+    expect(markup).toContain('aria-label="Draw duration for Circle"');
+    expect(markup).toContain('aria-label="Draw easing for Circle"');
+    expect(markup).toContain("Remove Draw");
+  });
+
   it("renders the marker above lifetime and non-interactive playhead layers", () => {
     const markup = renderToStaticMarkup(<StudioTimeline {...props()} />);
 

@@ -2,7 +2,7 @@ import { MAX_FINITE_F32 } from "../engine/primitives";
 import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import type { StudioFragmentMaterialReferenceV1 } from "./fragment-material-authoring";
 import type { RuntimeSceneState } from "./model";
-import { operationId } from "./operations";
+import { initialAppearanceEnd, operationId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 
@@ -117,16 +117,13 @@ export function replaceMaterialParameterKeyframeProgram(
   if (input.keyframes[0] && Math.abs(input.keyframes[0].value - baseValue) > KEYFRAME_EPSILON) {
     throw new TypeError("The first material keyframe must preserve the assigned parameter value.");
   }
-  const fadeEnd = Math.max(
+  const entranceEnd = initialAppearanceEnd(
+    input.baseProgram.operations,
+    input.entityId,
     targetCreate.entity.lifetime.start,
-    ...input.baseProgram.operations.flatMap((operation) =>
-      operation.kind === "ChangePresence" && operation.effect === "fade-in" && operation.entityId === input.entityId
-        ? [operation.interval.end]
-        : [],
-    ),
   );
-  if (input.keyframes[0] && input.keyframes[0].time <= fadeEnd + KEYFRAME_EPSILON) {
-    throw new TypeError("The first material keyframe must be after the object's initial fade.");
+  if (input.keyframes[0] && input.keyframes[0].time <= entranceEnd + KEYFRAME_EPSILON) {
+    throw new TypeError("The first material keyframe must be after the object's initial entrance.");
   }
   const existing = materialParameterKeyframeTrackFromProgram(input.baseProgram, 0);
   if (
