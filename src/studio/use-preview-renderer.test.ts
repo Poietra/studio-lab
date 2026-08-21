@@ -70,6 +70,7 @@ import {
 } from "./studio-native-workspace";
 import {
   canonicalizeSuggestionProgram,
+  createDirectManipulationGroupResizeProgram,
   createDirectManipulationGroupRotationProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -2143,6 +2144,58 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     if (redo.kind !== "compiled") throw new Error(redo.error);
     expect(redo.scene.bundle).toEqual(result.scene.bundle);
+
+    const resizeValidation = createDirectManipulationGroupResizeProgram({
+      capturedPlayhead: 0,
+      scene: workingBase.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: "source:circle", fromScale: 1, toPosition: { x: 350, y: 190 }, toScale: 1.5 },
+        { entityId: "source:second", fromScale: 1, toPosition: { x: 470, y: 190 }, toScale: 1.5 },
+      ],
+      transactionId: "resize-imported-selection",
+    });
+    if (resizeValidation.kind !== "valid") throw new Error(JSON.stringify(resizeValidation.issues));
+    const resizeRecord = {
+      ...programRecord(resizeValidation.program, resizeValidation),
+      validation: { issues: resizeValidation.issues, status: "valid" as const },
+    };
+    const resizedAppliedEdits = [...appliedEdits, resizeRecord];
+    const resizedCommands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+    const resized = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(
+        resizedCommands,
+        compileApplyStaticRootTransformEdit,
+      ),
+      frame: { height: 9, width: 16 },
+      snapshot: correlatedSnapshot,
+      workingState: { ...workingBase, appliedEdits: resizedAppliedEdits },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedEdits: resizedAppliedEdits,
+        draftEdit: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+    if (resized.kind !== "compiled") throw new Error(resized.error);
+    expect(resizedCommands[0]?.programs.at(-1)?.operations).toMatchObject([
+      { entityId: "source:circle", kind: "position", position: { x: 350, y: 190 } },
+      { entityId: "source:second", kind: "position", position: { x: 470, y: 190 } },
+      { entityId: "source:circle", from: 1, kind: "uniform-scale", to: 1.5 },
+      { entityId: "source:second", from: 1, kind: "uniform-scale", to: 1.5 },
+    ]);
+    expect(resized.scene.staticRootProjection?.mutations.slice(-4)).toEqual([
+      expect.objectContaining({ entityId: "source:circle", kind: "position", value: { x: 350, y: 190 } }),
+      expect.objectContaining({ entityId: "source:second", kind: "position", value: { x: 470, y: 190 } }),
+      expect.objectContaining({ entityId: "source:circle", from: 1, kind: "uniform-scale", to: 1.5 }),
+      expect.objectContaining({ entityId: "source:second", from: 1, kind: "uniform-scale", to: 1.5 }),
+    ]);
+    for (const entityId of ["earlier", "second-root"]) {
+      const entity = resized.scene.bundle.scene.entities.find(({ id }) => id === entityId);
+      expect(entity?.transform.m11).toBeCloseTo(1.5);
+      expect(entity?.transform.m22).toBeCloseTo(1.5);
+    }
 
     const rotationValidation = createDirectManipulationGroupRotationProgram({
       angleRadians: Math.PI / 2,

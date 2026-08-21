@@ -753,8 +753,8 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
-    /// Replays static position history and one terminal rigid rotation for independent imported
-    /// roots.
+    /// Replays static position history and one terminal rigid rotation or uniform selection
+    /// resize for independent imported roots.
     ///
     /// Position operations carry absolute Studio coordinates. They are replayed in Program order
     /// on an isolated candidate so returning to the imported baseline remains a real edit. Every
@@ -822,6 +822,30 @@ impl EngineSessionV1 {
             [index] if *index + 1 == programs.len() => Some(*index),
             _ => return Err(ApplyStaticRootTransformEditError::Unsupported),
         };
+        let scale_program_indexes = programs
+            .iter()
+            .enumerate()
+            .filter_map(|(index, program)| {
+                program
+                    .operations
+                    .iter()
+                    .any(|operation| {
+                        matches!(
+                            operation.kind,
+                            StaticRootTransformOperationKind::UniformScale { .. }
+                        )
+                    })
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let scale_program_index = match scale_program_indexes.as_slice() {
+            [] => None,
+            [index] if *index + 1 == programs.len() => Some(*index),
+            _ => return Err(ApplyStaticRootTransformEditError::Unsupported),
+        };
+        if rotation_program_index.is_some() && scale_program_index.is_some() {
+            return Err(ApplyStaticRootTransformEditError::Unsupported);
+        }
         if let Some(index) = rotation_program_index {
             let program = &programs[index];
             let positions = program
@@ -847,6 +871,35 @@ impl EngineSessionV1 {
             if !(2..=8).contains(&positions)
                 || positions != rotations
                 || program.operations.len() != positions + rotations
+            {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            }
+        }
+        if let Some(index) = scale_program_index {
+            let program = &programs[index];
+            let positions = program
+                .operations
+                .iter()
+                .filter(|operation| {
+                    matches!(
+                        operation.kind,
+                        StaticRootTransformOperationKind::Position { .. }
+                    )
+                })
+                .count();
+            let scales = program
+                .operations
+                .iter()
+                .filter(|operation| {
+                    matches!(
+                        operation.kind,
+                        StaticRootTransformOperationKind::UniformScale { .. }
+                    )
+                })
+                .count();
+            if !(2..=8).contains(&positions)
+                || positions != scales
+                || program.operations.len() != positions + scales
             {
                 return Err(ApplyStaticRootTransformEditError::Unsupported);
             }
@@ -881,6 +934,7 @@ impl EngineSessionV1 {
                                 operation.kind,
                                 StaticRootTransformOperationKind::Position { .. }
                                     | StaticRootTransformOperationKind::Rotation { .. }
+                                    | StaticRootTransformOperationKind::UniformScale { .. }
                             )
                     })
             })
@@ -911,6 +965,9 @@ impl EngineSessionV1 {
             let mut program_rotation_studio_entity_ids = BTreeSet::new();
             let mut program_rotation_runtime_entity_ids = BTreeSet::new();
             let mut program_rotation_delta = None;
+            let mut program_scale_studio_entity_ids = BTreeSet::new();
+            let mut program_scale_runtime_entity_ids = BTreeSet::new();
+            let mut program_scale_factor = None;
             for scheduled_id in &program.schedule_order {
                 let operation = program
                     .operations
@@ -1060,6 +1117,60 @@ impl EngineSessionV1 {
                             transaction_id: program.transaction_id.clone(),
                         });
                     }
+                    StaticRootTransformOperationKind::UniformScale {
+                        control_present: false,
+                        from: Some(from),
+                        relative_factor: Some(relative_factor),
+                        to: Some(to),
+                    } if scale_program_index == Some(program_index)
+                        && from.is_finite()
+                        && *from > 0.0
+                        && to.is_finite()
+                        && *to > 0.0
+                        && relative_factor.is_finite()
+                        && *relative_factor > 0.0
+                        && !close_transform_baseline_value(*relative_factor, 1.0)
+                        && close_transform_baseline_value(*to / *from, *relative_factor)
+                        && studio_entity
+                            .scale
+                            .is_some_and(|scale| close_transform_baseline_value(scale, *from))
+                        && matches!(
+                            studio_entity.kind,
+                            StaticRootTransformEntityKind::Circle
+                                | StaticRootTransformEntityKind::Image
+                                | StaticRootTransformEntityKind::MathTex
+                                | StaticRootTransformEntityKind::Rectangle
+                        )
+                        && program_position_studio_entity_ids.contains(studio_entity_id)
+                        && program_position_runtime_entity_ids.contains(&runtime_entity_id)
+                        && program_scale_studio_entity_ids.insert(studio_entity_id.to_owned())
+                        && program_scale_runtime_entity_ids.insert(runtime_entity_id.clone())
+                        && program_scale_factor.is_none_or(|factor: f64| {
+                            close_transform_baseline_value(factor, *relative_factor)
+                        }) =>
+                    {
+                        program_scale_factor.get_or_insert(*relative_factor);
+                        let bounds = scene_entity_local_bounds(candidate_entity)
+                            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                        let pivot = scene_entity_world_center(candidate_entity, &bounds);
+                        apply_world_axis_scale(
+                            &mut candidate_entity.transform,
+                            *relative_factor,
+                            *relative_factor,
+                            &pivot,
+                        );
+                        mutations.push(StudioStaticRootProjectedMutation {
+                            mutation: StudioStaticRootMutation::UniformScale {
+                                easing: None,
+                                entity_id: studio_entity_id.to_owned(),
+                                from: *from,
+                                interval: operation.interval.clone(),
+                                to: *to,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        });
+                    }
                     _ => return Err(ApplyStaticRootTransformEditError::Unsupported),
                 }
                 candidate_entity.provenance_id.clone_from(&provenance_id);
@@ -1100,6 +1211,40 @@ impl EngineSessionV1 {
                     }
                 }
             }
+            if scale_program_index == Some(program_index)
+                && (program_position_studio_entity_ids != program_scale_studio_entity_ids
+                    || program_position_runtime_entity_ids != program_scale_runtime_entity_ids)
+            {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            }
+            if scale_program_index == Some(program_index) {
+                let factor =
+                    program_scale_factor.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                let first_id = program_position_from
+                    .first_key_value()
+                    .map(|(entity_id, _)| entity_id)
+                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                let first_from = program_position_from
+                    .get(first_id)
+                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                let first_to = program_position_to
+                    .get(first_id)
+                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                for (entity_id, from) in &program_position_from {
+                    let to = program_position_to
+                        .get(entity_id)
+                        .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                    if !close_transform_baseline_value(
+                        to.x - first_to.x,
+                        (from.x - first_from.x) * factor,
+                    ) || !close_transform_baseline_value(
+                        to.y - first_to.y,
+                        (from.y - first_from.y) * factor,
+                    ) {
+                        return Err(ApplyStaticRootTransformEditError::Unsupported);
+                    }
+                }
+            }
         }
         if mutations.len() != operation_count {
             return Err(ApplyStaticRootTransformEditError::Unsupported);
@@ -1109,11 +1254,16 @@ impl EngineSessionV1 {
             evidence: operation_ids
                 .into_iter()
                 .map(|operation_id| format!("authorized operation {operation_id}"))
-                .chain(std::iter::once(if rotation_program_index.is_some() {
-                    "Studio imported-root rigid rotation".to_owned()
-                } else {
-                    "Studio imported-root position history".to_owned()
-                }))
+                .chain(std::iter::once(
+                    if rotation_program_index.is_some() {
+                        "Studio imported-root rigid rotation"
+                    } else if scale_program_index.is_some() {
+                        "Studio imported-root uniform selection resize"
+                    } else {
+                        "Studio imported-root position history"
+                    }
+                    .to_owned(),
+                ))
                 .collect(),
             id: provenance_id,
             origin: ProvenanceOriginV1::StudioEditProgram,
@@ -1195,9 +1345,22 @@ impl EngineSessionV1 {
                         operation.kind,
                         StaticRootTransformOperationKind::Position { .. }
                             | StaticRootTransformOperationKind::Rotation { .. }
+                            | StaticRootTransformOperationKind::UniformScale { .. }
                     )
                 })
             })
+            && (command
+                .programs
+                .iter()
+                .flat_map(|program| program.operations.iter())
+                .filter(|operation| {
+                    matches!(
+                        operation.kind,
+                        StaticRootTransformOperationKind::UniformScale { .. }
+                    )
+                })
+                .count()
+                != 1)
         {
             return self.apply_static_root_transform_history(command);
         }
@@ -1973,6 +2136,41 @@ mod tests {
         command
     }
 
+    fn static_root_group_resize_command() -> ApplyStaticRootTransformEditCommand {
+        let mut command = static_root_group_position_command();
+        for operation in &mut command.programs[0].operations {
+            let position = match operation.entity_id.as_deref() {
+                Some("source:circle") => PointV1 { x: 380.0, y: 180.0 },
+                Some("source:earlier") => PointV1 { x: 260.0, y: 180.0 },
+                _ => continue,
+            };
+            operation.kind = StaticRootTransformOperationKind::Position {
+                position: Some(position),
+            };
+        }
+        let mut scales = command.programs[0]
+            .operations
+            .iter()
+            .enumerate()
+            .map(|(index, operation)| {
+                let mut scale = operation.clone();
+                scale.id = format!("scale-{index}");
+                scale.kind = StaticRootTransformOperationKind::UniformScale {
+                    control_present: false,
+                    from: Some(1.0),
+                    relative_factor: Some(1.5),
+                    to: Some(1.5),
+                };
+                scale
+            })
+            .collect::<Vec<_>>();
+        command.programs[0]
+            .schedule_order
+            .extend(scales.iter().map(|operation| operation.id.clone()));
+        command.programs[0].operations.append(&mut scales);
+        command
+    }
+
     fn append_group_position_program(
         command: &mut ApplyStaticRootTransformEditCommand,
         transaction_id: &str,
@@ -2180,6 +2378,84 @@ mod tests {
             assert!((entity.transform.m12.abs() - 1.0).abs() < 1e-12);
             assert!((entity.transform.m21.abs() - 1.0).abs() < 1e-12);
         }
+    }
+
+    #[test]
+    fn uniformly_resizes_independent_imported_roots_as_one_selection() {
+        let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
+
+        let result = session
+            .apply_static_root_transform_edit(static_root_group_resize_command())
+            .unwrap();
+        let projection = result.static_root_projection.as_ref().unwrap();
+
+        assert_eq!(projection.mutations.len(), 4);
+        assert!(matches!(
+            projection.mutations.as_slice(),
+            [
+                StudioStaticRootProjectedMutation {
+                    mutation: StudioStaticRootMutation::Position { .. },
+                    ..
+                },
+                StudioStaticRootProjectedMutation {
+                    mutation: StudioStaticRootMutation::Position { .. },
+                    ..
+                },
+                StudioStaticRootProjectedMutation {
+                    mutation: StudioStaticRootMutation::UniformScale { .. },
+                    ..
+                },
+                StudioStaticRootProjectedMutation {
+                    mutation: StudioStaticRootMutation::UniformScale { .. },
+                    ..
+                }
+            ]
+        ));
+        for (entity_id, expected_center_x) in [("later", 1.5), ("earlier", -1.5)] {
+            let entity = result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == entity_id)
+                .unwrap();
+            let bounds = scene_entity_local_bounds(entity).unwrap();
+            let center = scene_entity_world_center(entity, &bounds);
+            assert!((center.x - expected_center_x).abs() < 1e-12);
+            assert!(center.y.abs() < 1e-12);
+            assert!((entity.transform.m11 - 1.5).abs() < 1e-12);
+            assert!((entity.transform.m22 - 1.5).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn rejects_non_uniform_imported_group_resize_atomically() {
+        let mut mismatched_factor = static_root_group_resize_command();
+        let last_scale = mismatched_factor.programs[0].operations.last_mut().unwrap();
+        last_scale.kind = StaticRootTransformOperationKind::UniformScale {
+            control_present: false,
+            from: Some(1.0),
+            relative_factor: Some(2.0),
+            to: Some(2.0),
+        };
+        let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
+        assert!(matches!(
+            session.apply_static_root_transform_edit(mismatched_factor),
+            Err(ApplyStaticRootTransformEditError::Unsupported)
+        ));
+        assert_eq!(session.scene().source.revision_hash(), BASE_REVISION);
+
+        let mut mismatched_position = static_root_group_resize_command();
+        mismatched_position.programs[0].operations[0].kind =
+            StaticRootTransformOperationKind::Position {
+                position: Some(PointV1 { x: 390.0, y: 180.0 }),
+            };
+        let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
+        assert!(matches!(
+            session.apply_static_root_transform_edit(mismatched_position),
+            Err(ApplyStaticRootTransformEditError::Unsupported)
+        ));
+        assert_eq!(session.scene().source.revision_hash(), BASE_REVISION);
     }
 
     #[test]

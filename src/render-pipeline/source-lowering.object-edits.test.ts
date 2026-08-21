@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../studio/operations";
 import {
+  createDirectManipulationGroupResizeProgram,
   createDirectManipulationGroupRotationProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationScaleProgram,
@@ -727,6 +728,53 @@ class GroupedEquation(Scene):
     const leftPosition = { x: left.geometry.position.value.x + 30, y: left.geometry.position.value.y + 10 };
     const rightPosition = { x: right.geometry.position.value.x + 30, y: right.geometry.position.value.y + 10 };
     const center = { x: (leftPosition.x + rightPosition.x) / 2, y: (leftPosition.y + rightPosition.y) / 2 };
+    const resizePosition = (position: Readonly<{ x: number; y: number }>) => ({
+      x: center.x + (position.x - center.x) * 1.5,
+      y: center.y + (position.y - center.y) * 1.5,
+    });
+    const resizeValidation = createDirectManipulationGroupResizeProgram({
+      capturedPlayhead: 0,
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: leftId, fromScale: 1, toPosition: resizePosition(leftPosition), toScale: 1.5 },
+        { entityId: rightId, fromScale: 1, toPosition: resizePosition(rightPosition), toScale: 1.5 },
+      ],
+      transactionId: "resize-imported-selection",
+    });
+    if (resizeValidation.kind !== "valid") throw new Error(JSON.stringify(resizeValidation.issues));
+    const resized = lowerCanonicalProgramBatchSource(
+      groupSource,
+      request(validation.program, [
+        { entityId: leftId, sourceVariable: "left" },
+        { entityId: rightId, sourceVariable: "right" },
+      ]),
+      [
+        { program: validation.program, sourceAnchor: 0 },
+        { program: secondValidation.program, sourceAnchor: 0 },
+        { program: resizeValidation.program, sourceAnchor: 0 },
+      ],
+      frame,
+      null,
+    );
+    const resizedReimported = importManimScene(resized.source, "examples/relativity.py", "GroupedEquation", frame);
+
+    expect(resized.insertedCode.match(/\.scale\(/g)).toHaveLength(2);
+    expect(resized.insertedCode).toContain('# poietra:transaction "resize-imported-selection"');
+    for (const [entityId, expectedPosition] of [
+      [leftId, resizePosition(leftPosition)],
+      [rightId, resizePosition(rightPosition)],
+    ] as const) {
+      expect(resizedReimported?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position).toEqual({
+        kind: "known",
+        value: expectedPosition,
+      });
+      expect(resizedReimported?.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples.at(-1)).toMatchObject({
+        kind: "exact",
+        value: 1.5,
+      });
+    }
+
     const rotatePosition = (position: Readonly<{ x: number; y: number }>) => ({
       x: center.x + (position.y - center.y),
       y: center.y - (position.x - center.x),
