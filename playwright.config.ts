@@ -24,13 +24,18 @@ export default defineConfig({
       name: "chromium",
       // The retained-preview tests run on their own server via
       // playwright.preview.config.ts (pnpm test:e2e:preview).
-      testIgnore: ["**/*.webgpu.ts", "**/magic-edit.e2e.ts", "**/preview-renderer.e2e.ts"],
+      testIgnore: [
+        "**/*.webgpu.ts",
+        "**/magic-edit.e2e.ts",
+        "**/preview-renderer.e2e.ts",
+        ...(process.env.POIETRA_STUDIO_GESTURE_BENCHMARK === "1" ? [] : ["**/studio-gesture-performance.e2e.ts"]),
+      ],
       testMatch: "**/*.e2e.ts",
       use: { browserName: "chromium" },
     },
     {
       name: "chromium-webgpu",
-      testIgnore: ["**/preview-renderer.webgpu.ts", "**/real-scene-preview.webgpu.ts", "**/visual-parity.webgpu.ts"],
+      testIgnore: ["**/preview-renderer.webgpu.ts", "**/real-*-preview.webgpu.ts", "**/visual-parity.webgpu.ts"],
       testMatch: ["**/*.webgpu.ts", "**/magic-edit.e2e.ts"],
       use: {
         browserName: "chromium",

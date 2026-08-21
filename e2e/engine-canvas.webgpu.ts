@@ -217,7 +217,9 @@ async function expectSharedPixelReference(page: Page, fixturePath: string, packe
   }
 }
 
-test("samples and presents the shared Scene entirely inside a real WASM WebGPU Worker", async ({ page }) => {
+test("samples and presents the shared Scene entirely inside a real WASM WebGPU Worker", { tag: "@ci-main" }, async ({
+  page,
+}) => {
   const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as SharedFixture;
   await page.goto("/");
 

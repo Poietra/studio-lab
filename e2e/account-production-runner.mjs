@@ -281,7 +281,14 @@ try {
     { env: environment },
   );
   await waitForPreview(previewUrl, previewProcess, runId);
-  await run("pnpm", ["exec", "playwright", "test", "--config", "playwright.account.config.ts"], {
+  const playwrightArguments = ["exec", "playwright", "test", "--config", "playwright.account.config.ts"];
+  if (process.env.POIETRA_ACCOUNT_E2E_GREP) {
+    playwrightArguments.push("--grep", process.env.POIETRA_ACCOUNT_E2E_GREP);
+  }
+  if (process.env.POIETRA_ACCOUNT_E2E_MAX_FAILURES) {
+    playwrightArguments.push("--max-failures", process.env.POIETRA_ACCOUNT_E2E_MAX_FAILURES);
+  }
+  await run("pnpm", playwrightArguments, {
     env: environment,
   });
 } catch (error) {

@@ -22,7 +22,9 @@ async function placeOnCanvas(page: Page, fractionX: number, fractionY: number) {
   });
 }
 
-test("hides and restores a logical group from before its authoring playhead", async ({ page }) => {
+test("hides and restores a logical group from before its authoring playhead", { tag: "@manual-authority" }, async ({
+  page,
+}) => {
   test.setTimeout(60_000);
   await openWorkspace(page);
   const canvas = page.locator("[data-studio-canvas]");

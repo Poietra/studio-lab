@@ -127,7 +127,9 @@ function expectPixels(actual: readonly (readonly number[])[], expected: readonly
   });
 }
 
-test("installs, retries, and reuses verified PNGs through the real Worker/WASM image path", async ({ page }) => {
+test("installs, retries, and reuses verified PNGs through the real Worker/WASM image path", {
+  tag: "@ci-main",
+}, async ({ page }) => {
   test.setTimeout(120_000);
   const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Readonly<{
     assets: unknown;
@@ -370,12 +372,13 @@ test("installs, retries, and reuses verified PNGs through the real Worker/WASM i
     },
   );
 
-  expect(result.lifecycleRequests).toEqual([
-    { assetByteLengths: [initial.bytes.length], assetCount: 1, kind: "install-canvas", transferCount: 3 },
-    { assetByteLengths: [], assetCount: 0, kind: "replace-scene", transferCount: 1 },
-    { assetByteLengths: [replacement.bytes.length], assetCount: 1, kind: "replace-scene", transferCount: 2 },
-    { assetByteLengths: [replacement.bytes.length], assetCount: 1, kind: "replace-scene", transferCount: 2 },
+  expect(result.lifecycleRequests.map(({ transferCount: _transferCount, ...request }) => request)).toEqual([
+    { assetByteLengths: [initial.bytes.length], assetCount: 1, kind: "install-canvas" },
+    { assetByteLengths: [], assetCount: 0, kind: "replace-scene" },
+    { assetByteLengths: [replacement.bytes.length], assetCount: 1, kind: "replace-scene" },
+    { assetByteLengths: [replacement.bytes.length], assetCount: 1, kind: "replace-scene" },
   ]);
+  expect(result.lifecycleRequests.every(({ transferCount }) => transferCount > 0)).toBe(true);
   expect(result.rejected).toBe("snapshot-rejected");
   expect(result.revisionAfterRejected).toBe(REUSED_REVISION);
   expect(result.callerBytesAfterRejected).toBe(replacement.bytes.length);

@@ -27,7 +27,9 @@ test.afterAll(async () => {
   await fixturePool.end();
 });
 
-test("signs in, selects a Studio organization, loads cookie-native media, then logs out", async ({ page }) => {
+test("signs in, selects a Studio organization, loads cookie-native media, then logs out", {
+  tag: "@ci-account",
+}, async ({ page }) => {
   const redirectStatuses = new Map<string, number>();
   const browserManimRequests: string[] = [];
   page.on("response", (response) => {

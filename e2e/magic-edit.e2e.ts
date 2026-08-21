@@ -85,7 +85,9 @@ async function startCanonicalPreview(page: Page) {
   await expect(page.getByRole("textbox", { name: "Describe an edit" })).toBeEnabled();
 }
 
-test("previews, applies, and exports two sequential transforms of the same MathTex", async ({ page }) => {
+test("previews, applies, and exports two sequential transforms of the same MathTex", {
+  tag: "@manual-authority",
+}, async ({ page }) => {
   const requests: EditSuggestionRequest[] = [];
   await page.route("**/api/ai/edit-suggestions", async (route) => {
     const request = route.request().postDataJSON() as EditSuggestionRequest;
@@ -141,7 +143,9 @@ test("previews, applies, and exports two sequential transforms of the same MathT
   expect(relativityIndex).toBeGreaterThan(maxwellIndex);
 });
 
-test("continues a clarification choice into a fresh sequential-transform preview", async ({ page }) => {
+test("continues a clarification choice into a fresh sequential-transform preview", {
+  tag: "@manual-authority",
+}, async ({ page }) => {
   const requests: EditSuggestionRequest[] = [];
   await page.route("**/api/ai/edit-suggestions", async (route) => {
     const request = route.request().postDataJSON() as EditSuggestionRequest;

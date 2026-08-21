@@ -2,7 +2,19 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-const scopeNames = ["code", "engine_core", "engine_wasm", "web", "tests", "storage", "browser", "electron", "tauri"];
+const scopeNames = [
+  "account_browser",
+  "browser",
+  "code",
+  "electron",
+  "engine_core",
+  "engine_wasm",
+  "render_parity",
+  "storage",
+  "tauri",
+  "tests",
+  "web",
+];
 
 function emptyScopes() {
   return Object.fromEntries(scopeNames.map((name) => [name, false]));
@@ -39,6 +51,46 @@ function isGlobalConfiguration(path) {
   );
 }
 
+function isAccountBrowserPath(path) {
+  return (
+    path.startsWith("src/accounts/") ||
+    path.startsWith("src/billing/") ||
+    path.startsWith("src/collaboration/") ||
+    /^src\/studio\/(?:editor-collaboration-mutation|editor-mutation-pending-journal|editor-session-|use-editor-document-authority)/u.test(
+      path,
+    ) ||
+    path.startsWith("server/accounts/") ||
+    path.startsWith("server/billing/") ||
+    path.startsWith("server/collaboration/") ||
+    /^server\/(?:account-|billing-|cloudflare-account-|cloudflare-billing-|cloudflare-editor-collaboration-|editor-collaboration-|editor-document-|editor-project-room-)/u.test(
+      path,
+    ) ||
+    /^e2e\/(?:account-|editor-cloud-session)/u.test(path)
+  );
+}
+
+function isRenderParityPath(path) {
+  return (
+    path.startsWith("engine/") ||
+    path.startsWith("fixtures/engine-v1/") ||
+    path.startsWith("src/engine/") ||
+    path.startsWith("src/render-pipeline/") ||
+    /^src\/studio\/(?:preview-|prototype-rendering|studio-canvas|studio-gesture-preview|studio-preview|studio-render-profiler|use-preview-)/u.test(
+      path,
+    ) ||
+    /^server\/(?:durable-fast-manim-|durable-manim-render-|fast-manim-|manim-render-|production-durable-manim-)/u.test(
+      path,
+    ) ||
+    /^e2e\/(?:camera-focus|engine-|group-visibility|native-project-reload|persistent-dynamic-preview|preview-renderer|real-|shape-transform|visual-parity)/u.test(
+      path,
+    ) ||
+    path.startsWith("scripts/build-engine-wasm") ||
+    path.startsWith("scripts/measure-mathtex-wasm") ||
+    path.startsWith("scripts/smoke-engine-wasm") ||
+    path.startsWith("scripts/smoke-mathtex-")
+  );
+}
+
 export function classifyChangedPaths(paths) {
   const scopes = emptyScopes();
 
@@ -54,7 +106,7 @@ export function classifyChangedPaths(paths) {
     }
 
     if (path.startsWith("engine/") || path.startsWith("fixtures/engine-v1/")) {
-      enable(scopes, "engine_core", "engine_wasm", "web", "tests", "browser");
+      enable(scopes, "engine_core", "engine_wasm", "web", "tests", "browser", "render_parity");
       continue;
     }
 
@@ -70,6 +122,8 @@ export function classifyChangedPaths(paths) {
     if (path.startsWith("src/") || path.startsWith("server/") || path.startsWith("e2e/")) {
       enable(scopes, "engine_wasm", "web", "tests", "browser");
       if (path.startsWith("server/storage/") || path.includes("storage-e2e")) enable(scopes, "storage");
+      if (isAccountBrowserPath(path)) enable(scopes, "account_browser");
+      if (isRenderParityPath(path)) enable(scopes, "render_parity");
       continue;
     }
 
@@ -84,7 +138,7 @@ export function classifyChangedPaths(paths) {
       path.startsWith("scripts/smoke-mathtex-") ||
       path.startsWith("scripts/measure-mathtex-wasm")
     ) {
-      enable(scopes, "engine_core", "engine_wasm", "web", "tests", "browser");
+      enable(scopes, "engine_core", "engine_wasm", "web", "tests", "browser", "render_parity");
       continue;
     }
 
@@ -106,7 +160,14 @@ export function selectScopes(paths, { forceAll = false, fullForCode = false } = 
       return path && !isDocumentation(path);
     })
   ) {
-    return allScopes();
+    // Main still runs the regular compatibility matrix for every code change,
+    // while production-account and render-parity suites remain change-scoped.
+    const pathScopes = classifyChangedPaths(paths);
+    return {
+      ...allScopes(),
+      account_browser: pathScopes.account_browser,
+      render_parity: pathScopes.render_parity,
+    };
   }
   return classifyChangedPaths(paths);
 }
