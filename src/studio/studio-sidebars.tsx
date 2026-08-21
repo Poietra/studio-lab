@@ -10,7 +10,7 @@ import type {
 import { RenderPipelinePanel } from "../render-pipeline/render-pipeline-panel";
 import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../render-pipeline/render-pipeline-policy";
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
-import { DataPlotEditor, type DataPlotInspectorAuthoring } from "./data-plot-editor";
+import { DataPlotEditor, type DataPlotInspectorAuthoring, dataPlotEditorAuthorityKey } from "./data-plot-editor";
 import { DraftInspector } from "./draft-inspector";
 import {
   type CameraInspectorAuthoring,
@@ -1500,10 +1500,7 @@ export function StudioInspector({
                 shapeTransform={shapeTransform}
               />
               {dataPlotAuthoring ? (
-                <DataPlotEditor
-                  authoring={dataPlotAuthoring}
-                  key={`${dataPlotAuthoring.entityId}/${dataPlotAuthoring.mode}`}
-                />
+                <DataPlotEditor authoring={dataPlotAuthoring} key={dataPlotEditorAuthorityKey(dataPlotAuthoring)} />
               ) : null}
             </fieldset>
           ) : (

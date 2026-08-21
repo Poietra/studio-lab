@@ -1135,6 +1135,11 @@ test("authors and edits a smooth data plot through reload and MP4 export", async
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(samples).toHaveValue("-4,-1\n-2,1\n0,1.5\n2,2\n4,-1");
 
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(samples).toHaveValue("-4,-1\n-2,1\n0,0\n2,2\n4,-1");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(samples).toHaveValue("-4,-1\n-2,1\n0,1.5\n2,2\n4,-1");
+
     await page.reload();
     await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
     await page.getByRole("button", { name: "Open Data plot fixture workspace" }).click();

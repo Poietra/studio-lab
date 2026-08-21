@@ -12,6 +12,13 @@ export type DataPlotInspectorAuthoring = Readonly<{
   unavailableReason: string | null;
 }>;
 
+export function dataPlotEditorAuthorityKey(authoring: DataPlotInspectorAuthoring) {
+  const series = authoring.initialDataSeries;
+  return series
+    ? `${authoring.entityId}/${authoring.mode}/${series.interpolation}/${formatDataPlotCsv(series.points)}`
+    : `${authoring.entityId}/${authoring.mode}/empty`;
+}
+
 export function DataPlotEditor({ authoring }: Readonly<{ authoring: DataPlotInspectorAuthoring }>) {
   const [csv, setCsv] = useState(
     authoring.initialDataSeries ? formatDataPlotCsv(authoring.initialDataSeries.points) : "",

@@ -1,9 +1,39 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
-import { DataPlotEditor } from "./data-plot-editor";
+import { DataPlotEditor, type DataPlotInspectorAuthoring, dataPlotEditorAuthorityKey } from "./data-plot-editor";
 
 describe("DataPlotEditor", () => {
+  it("changes its authority key when Undo restores another stored series", () => {
+    const authoring = {
+      dimensions: {},
+      entityId: "plot-1",
+      initialDataSeries: {
+        interpolation: "smooth",
+        points: [
+          { x: -1, y: 0 },
+          { x: 1, y: 2 },
+        ],
+      },
+      mode: "update",
+      onSubmit: vi.fn(() => true),
+      unavailableReason: null,
+    } satisfies DataPlotInspectorAuthoring;
+    const updated = {
+      ...authoring,
+      initialDataSeries: {
+        ...authoring.initialDataSeries,
+        points: [
+          { x: -1, y: 0 },
+          { x: 1, y: 1 },
+        ],
+      },
+    } satisfies DataPlotInspectorAuthoring;
+
+    expect(dataPlotEditorAuthorityKey(updated)).not.toBe(dataPlotEditorAuthorityKey(authoring));
+    expect(dataPlotEditorAuthorityKey({ ...updated })).toBe(dataPlotEditorAuthorityKey(updated));
+  });
+
   it("shows stored CSV and interpolation for an owning DataPlot", () => {
     const markup = renderToStaticMarkup(
       <DataPlotEditor
