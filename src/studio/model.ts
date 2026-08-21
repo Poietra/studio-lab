@@ -27,6 +27,7 @@ export type Knowledge<T> = Known<T> | Unknown;
 export type EntityDimensions = Readonly<{
   height?: number;
   radius?: number;
+  sides?: number;
   width?: number;
 }>;
 

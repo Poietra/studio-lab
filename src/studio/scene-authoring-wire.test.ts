@@ -21,6 +21,11 @@ function creationProgram(type: string): SceneEdit {
       {
         dependsOn: [],
         entity: {
+          ...(type === "Triangle"
+            ? { dimensions: { radius: 1, sides: 3 } }
+            : type === "RegularPolygon"
+              ? { dimensions: { radius: 1, sides: 6 } }
+              : {}),
           ...(type === "Text"
             ? {
                 content: {
@@ -76,6 +81,24 @@ function followupProgram(transactionId: string, operation: SceneEdit["operations
 }
 
 describe("Studio creation wire", () => {
+  it("normalizes Triangle and Regular Polygon to the one Rust regular-polygon kind", () => {
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 2,
+      programs: [creationProgram("Triangle"), creationProgram("RegularPolygon")],
+    });
+
+    expect(command.programs.map((program) => program.operations[0])).toEqual([
+      expect.objectContaining({
+        entity: expect.objectContaining({ dimensions: { radius: 1, sides: 3 }, kind: "regular-polygon" }),
+        kind: "create",
+      }),
+      expect.objectContaining({
+        entity: expect.objectContaining({ dimensions: { radius: 1, sides: 6 }, kind: "regular-polygon" }),
+        kind: "create",
+      }),
+    ]);
+  });
+
   it("normalizes DrawIn as the fixed zero-to-one path-trim operation", () => {
     const create = creationProgram("Line");
     const drawIn = {

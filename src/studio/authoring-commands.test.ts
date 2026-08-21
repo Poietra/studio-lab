@@ -547,7 +547,9 @@ describe("manual Studio authoring commands", () => {
 
     expect(result.validation.kind).toBe("invalid");
     expect(result.validation.issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ field: "entity.dimensions", severity: "error" })]),
+      expect.arrayContaining([
+        expect.objectContaining({ field: expect.stringMatching(/^entity\.dimensions/u), severity: "error" }),
+      ]),
     );
   });
 
@@ -573,6 +575,51 @@ describe("manual Studio authoring commands", () => {
     });
     expect(creation.validation.program.operations.find((operation) => operation.kind === "CreateEntity")).toEqual(
       expect.objectContaining({ entity: expect.objectContaining({ dimensions: { radius: 1 } }) }),
+    );
+  });
+
+  it("writes Triangle and Regular Polygon as bounded regular-polygon presets", () => {
+    const triangle = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ position: { x: 180, y: 120 }, type: "Triangle" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "default-triangle",
+    });
+    const polygon = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ dimensions: { radius: 2, sides: 12 }, position: { x: 180, y: 120 }, type: "RegularPolygon" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "custom-regular-polygon",
+    });
+
+    expect(triangle.validation.kind, JSON.stringify(triangle.validation.issues)).toBe("valid");
+    expect(polygon.validation.kind, JSON.stringify(polygon.validation.issues)).toBe("valid");
+    expect(triangle.validation.program.operations.find(({ kind }) => kind === "CreateEntity")).toMatchObject({
+      entity: { dimensions: { radius: 1, sides: 3 }, type: "Triangle" },
+    });
+    expect(polygon.validation.program.operations.find(({ kind }) => kind === "CreateEntity")).toMatchObject({
+      entity: { dimensions: { radius: 2, sides: 12 }, type: "RegularPolygon" },
+    });
+  });
+
+  it.each([
+    ["RegularPolygon", { radius: 1, sides: 2 }],
+    ["RegularPolygon", { radius: 1, sides: 33 }],
+    ["RegularPolygon", { radius: 1, sides: 3.5 }],
+    ["Triangle", { radius: 1, sides: 4 }],
+  ] as const)("rejects invalid %s creation dimensions", (type, dimensions) => {
+    const result = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ dimensions, position: { x: 180, y: 120 }, type }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: `invalid-${type}-${dimensions.sides}`,
+    });
+
+    expect(result.validation.kind).toBe("invalid");
+    expect(result.validation.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: expect.stringMatching(/^entity\.dimensions/u), severity: "error" }),
+      ]),
     );
   });
 

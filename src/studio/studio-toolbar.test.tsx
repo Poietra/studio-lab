@@ -9,8 +9,10 @@ function props(overrides: Partial<StudioToolbarProps> = {}): StudioToolbarProps 
     insertValue: "",
     onInsertAtCenter: vi.fn(),
     onInsertValueChange: vi.fn(),
+    onPolygonSidesChange: vi.fn(),
     onSelectionLayout: vi.fn(),
     onToolChange: vi.fn(),
+    polygonSides: 6,
     selectionCount: 2,
     selectionLayoutUnavailableReason: null,
     tool: "select",
@@ -23,6 +25,16 @@ function layoutButton(markup: string, command: string) {
 }
 
 describe("StudioToolbar selection layout", () => {
+  it("offers Triangle and Regular Polygon with bounded creation-time sides", () => {
+    const tools = renderToStaticMarkup(<StudioToolbar {...props()} />);
+    const polygon = renderToStaticMarkup(<StudioToolbar {...props({ polygonSides: 6, tool: "RegularPolygon" })} />);
+
+    expect(tools).toContain("Insert triangle (G)");
+    expect(tools).toContain("Insert regular polygon (P)");
+    expect(polygon).toMatch(/aria-label="Polygon sides"[^>]*max="32"[^>]*min="3"/u);
+    expect(polygon).toMatch(/aria-label="Polygon sides"[^>]*value="6"/u);
+  });
+
   it("offers alignment for two selected objects and requires three for distribution", () => {
     const markup = renderToStaticMarkup(<StudioToolbar {...props()} />);
 

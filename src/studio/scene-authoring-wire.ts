@@ -219,17 +219,19 @@ function normalizedStudioCreationOperation(
             ? "arrow"
             : type === "Circle"
               ? "circle"
-              : type === "Line"
-                ? "line"
-                : type === "ImageMobject"
-                  ? "image"
-                  : type === "MathTex"
-                    ? "math-tex"
-                    : type === "Rectangle"
-                      ? "rectangle"
-                      : type === "Text"
-                        ? "text"
-                        : "other",
+              : type === "Triangle" || type === "RegularPolygon"
+                ? "regular-polygon"
+                : type === "Line"
+                  ? "line"
+                  : type === "ImageMobject"
+                    ? "image"
+                    : type === "MathTex"
+                      ? "math-tex"
+                      : type === "Rectangle"
+                        ? "rectangle"
+                        : type === "Text"
+                          ? "text"
+                          : "other",
         layout: textContent?.layout ?? null,
         lifetimeEnd: operation.entity.lifetime.end,
         lifetimeStart: operation.entity.lifetime.start,
@@ -778,13 +780,15 @@ export function staticRootTransformStudioEntities(
     kind:
       entity.type === "Circle"
         ? "circle"
-        : entity.type === "ImageMobject"
-          ? "image"
-          : entity.type === "MathTex"
-            ? "math-tex"
-            : entity.type === "Rectangle"
-              ? "rectangle"
-              : "other",
+        : entity.type === "Triangle" || entity.type === "RegularPolygon"
+          ? "regular-polygon"
+          : entity.type === "ImageMobject"
+            ? "image"
+            : entity.type === "MathTex"
+              ? "math-tex"
+              : entity.type === "Rectangle"
+                ? "rectangle"
+                : "other",
     objectGraphKey,
     position: entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null,
     provisional: entity.provisional,

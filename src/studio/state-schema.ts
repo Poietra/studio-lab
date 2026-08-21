@@ -8,6 +8,7 @@ const dimensionsSchema = z
   .object({
     height: finiteNumber.positive().optional(),
     radius: finiteNumber.positive().optional(),
+    sides: finiteNumber.int().min(3).max(32).optional(),
     width: finiteNumber.positive().optional(),
   })
   .strict();

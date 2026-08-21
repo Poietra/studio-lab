@@ -112,8 +112,8 @@ export type ApplyStudioFragmentMaterialsCompiler = (
   snapshot: SceneIrBundleV1,
   command: ApplyStudioFragmentMaterialsWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
-type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" | "rectangle";
-type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; width?: number }>;
+type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" | "rectangle" | "regular-polygon";
+type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; sides?: number; width?: number }>;
 type StaticRootTransformOperation = Readonly<{
   dependsOn: readonly string[];
   id: string;
@@ -499,6 +499,7 @@ const studioStaticRootDimensionsV1Schema = z
   .object({
     height: finiteNumberSchema.optional(),
     radius: finiteNumberSchema.optional(),
+    sides: z.number().int().min(3).max(32).optional(),
     width: finiteNumberSchema.optional(),
   })
   .strict();
@@ -580,7 +581,7 @@ const studioCreationProjectionV1Schema = z
           initialRotation: finiteNumberSchema,
           initialScale: finiteNumberSchema.positive(),
           image: studioCreationImageV1Schema.optional(),
-          kind: z.enum(["arrow", "circle", "image", "line", "math-tex", "rectangle", "text"]),
+          kind: z.enum(["arrow", "circle", "image", "line", "math-tex", "rectangle", "regular-polygon", "text"]),
           layout: studioTextLayoutV1Schema.optional(),
           operationId: z.string().min(1),
           text: z.string().min(1).max(256).optional(),
@@ -964,8 +965,17 @@ const studioTimelineProjectionV1Schema = z
   })
   .strict();
 
-type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
-type StudioCreationEntityKindV1 = "arrow" | "circle" | "image" | "line" | "math-tex" | "other" | "rectangle" | "text";
+type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; sides?: number; width?: number }>;
+type StudioCreationEntityKindV1 =
+  | "arrow"
+  | "circle"
+  | "image"
+  | "line"
+  | "math-tex"
+  | "other"
+  | "rectangle"
+  | "regular-polygon"
+  | "text";
 type StudioCreationImageV1 = Readonly<{
   asset: Readonly<{ assetId: string; sha256: string }>;
   localRect: Readonly<{ bottom: number; left: number; right: number; top: number }>;

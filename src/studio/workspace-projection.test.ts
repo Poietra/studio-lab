@@ -277,6 +277,68 @@ function mathTexTransformMotionFixture(sourceEntityId: string, splitMotionProgra
 }
 
 describe("Studio workspace projection", () => {
+  it("correlates regular-polygon dimensions and keeps them as known Studio geometry", () => {
+    const imported = workspaceScene("First", null);
+    const authored = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [{ dimensions: { radius: 1.5, sides: 7 }, position: { x: 320, y: 180 }, type: "RegularPolygon" }],
+      scene: imported.runtimeSceneState,
+      transactionId: "polygon-correlation",
+    });
+    const create = authored.validation.program.operations.find(({ kind }) => kind === "CreateEntity");
+    if (create?.kind !== "CreateEntity") throw new Error("Regular polygon creation fixture is incomplete.");
+    const program: CanonicalEditProgram = {
+      ...authored.validation.program,
+      intentCount: 1,
+      operations: [create],
+      schedule: { edges: [], mode: "parallel", order: [create.id] },
+    };
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
+          entityId: create.entity.id,
+          initialDimensions: { radius: 1.5, sides: 7 },
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "regular-polygon",
+          operationId: create.id,
+          transactionId: program.transactionId,
+        },
+      ],
+      insertions: [],
+      motions: [],
+      mutations: [],
+      projectedDuration: imported.runtimeSceneState.duration,
+      removals: [],
+    };
+
+    expect(selectCreationProjection(imported.runtimeSceneState.duration, [program], projection)).toBe(projection);
+    expect(() =>
+      selectCreationProjection(imported.runtimeSceneState.duration, [program], {
+        ...projection,
+        entities: [{ ...projection.entities[0]!, initialDimensions: { radius: 1.5, sides: 8 } }],
+      }),
+    ).toThrow(/not correlated/);
+
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedEdits: [programRecord(program, { issues: [], kind: "valid" })],
+      creationProjection: projection,
+      currentTime: 0,
+      draftEdit: null,
+      editAuthority: "rust-authorized-batch",
+      nextScene: null,
+      selectedObjectIds: [create.entity.id],
+    });
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[create.entity.id]?.geometry?.dimensions).toEqual(
+      {
+        kind: "known",
+        value: { radius: 1.5, sides: 7 },
+      },
+    );
+  });
+
   it("correlates Draw from its exact Rust interval and easing", () => {
     const imported = workspaceScene("First", null);
     const creation = createStudioEntitiesProgram({

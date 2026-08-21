@@ -44,6 +44,8 @@ const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
   "insert-mathtex",
   "insert-rectangle",
   "insert-circle",
+  "insert-triangle",
+  "insert-regular-polygon",
   "insert-line",
   "insert-arrow",
   "align-left",
@@ -82,9 +84,10 @@ function NativeImageThumbnail({ asset }: Readonly<{ asset: StudioNativeImageAsse
 
 function dimensionSummary(entity: ProjectedEntity) {
   if (entity.geometry.dimensions.kind === "unknown") return "Runtime-dependent";
-  const { height, radius, width } = entity.geometry.dimensions.value;
+  const { height, radius, sides, width } = entity.geometry.dimensions.value;
   const values = [
     radius === undefined ? null : `r ${radius}`,
+    sides === undefined ? null : `${sides} sides`,
     width === undefined ? null : `w ${width}`,
     height === undefined ? null : `h ${height}`,
   ].filter((value): value is string => value !== null);
@@ -1219,7 +1222,7 @@ export function StudioInspector({
                 <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>
                   {styleSummary(selectedEntity)}
                 </dd>
-                {selectedEntity.type === "Circle" || selectedEntity.type === "Rectangle"
+                {["Circle", "Rectangle", "RegularPolygon", "Triangle"].includes(selectedEntity.type)
                   ? (
                       [
                         ["Fill", "fillColor", fillColorValue],
@@ -1249,7 +1252,7 @@ export function StudioInspector({
                                   ? property === "fillColor"
                                     ? "Set a solid fill color and enable the shape fill"
                                     : "Set the shape stroke color"
-                                  : "Color editing currently requires a Studio-created circle or rectangle at its creation time"
+                                  : "Color editing currently requires a Studio-created circle, rectangle, or regular polygon at its creation time"
                               }
                               type="color"
                             />

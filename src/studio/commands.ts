@@ -11,8 +11,10 @@ export type StudioCommandId =
   | "insert-circle"
   | "insert-line"
   | "insert-mathtex"
+  | "insert-regular-polygon"
   | "insert-rectangle"
   | "insert-text"
+  | "insert-triangle"
   | "paste"
   | "play-pause"
   | "redo"
@@ -33,6 +35,8 @@ export const STUDIO_COMMANDS: readonly StudioCommandDefinition[] = [
   { id: "insert-mathtex", label: "Insert equation", shortcut: "M" },
   { id: "insert-rectangle", label: "Insert rectangle", shortcut: "R" },
   { id: "insert-circle", label: "Insert circle", shortcut: "O" },
+  { id: "insert-triangle", label: "Insert triangle", shortcut: "G" },
+  { id: "insert-regular-polygon", label: "Insert regular polygon", shortcut: "P" },
   { id: "insert-line", label: "Insert line", shortcut: "L" },
   { id: "insert-arrow", label: "Insert arrow", shortcut: "A" },
   { id: "align-left", label: "Align left", shortcut: "Alt+Shift+L" },
@@ -121,6 +125,8 @@ export function commandForShortcut(event: ShortcutEvent): StudioCommandId | null
       l: "insert-line",
       m: "insert-mathtex",
       o: "insert-circle",
+      g: "insert-triangle",
+      p: "insert-regular-polygon",
       r: "insert-rectangle",
       t: "insert-text",
       v: "select-tool",

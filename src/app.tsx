@@ -680,6 +680,7 @@ export function App({
   const [nativeProjectAssetPending, setNativeProjectAssetPending] = useState(false);
   const [nativeProjectAssetError, setNativeProjectAssetError] = useState<string | null>(null);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
+  const [regularPolygonSides, setRegularPolygonSides] = useState(6);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const nativeProjectLocalStore = useMemo(browserNativeProjectLocalStore, []);
   const gesturePreviewStore = useMemo(createStudioGesturePreviewStore, []);
@@ -3395,7 +3396,9 @@ export function App({
     if (rejectLockedEntityMutation(entityId)) return;
     const owner = studioCreationProgramOwner(entityId);
     if (!owner || !projectedEditorScene) {
-      setDraftError("Draw supports only eligible Studio-created Line, Circle, and Rectangle objects.");
+      setDraftError(
+        "Draw supports only eligible Studio-created Line, Circle, Rectangle, Triangle, and Regular Polygon objects.",
+      );
       return;
     }
     const unavailable = drawInUnavailableReason(owner.record.program, entityId);
@@ -4876,6 +4879,7 @@ export function App({
           : [
               {
                 content: defaultEntityContent(insertTool, insertValue),
+                ...(insertTool === "RegularPolygon" ? { dimensions: { radius: 1, sides: regularPolygonSides } } : {}),
                 position: point,
                 type: insertTool,
               },
@@ -6949,8 +6953,10 @@ export function App({
     }
     const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
-    if (!createdAuthority || !entity || (entity.type !== "Circle" && entity.type !== "Rectangle")) {
-      setDraftError("Fill and stroke colors can currently be changed on Studio-created circles and rectangles.");
+    if (!createdAuthority || !entity || !["Circle", "Rectangle", "RegularPolygon", "Triangle"].includes(entity.type)) {
+      setDraftError(
+        "Fill and stroke colors can currently be changed on Studio-created circles, rectangles, and regular polygons.",
+      );
       return false;
     }
     const normalizedColor = color.toLowerCase();
@@ -7306,8 +7312,10 @@ export function App({
       "insert-circle": "Circle",
       "insert-line": "Line",
       "insert-mathtex": "MathTex",
+      "insert-regular-polygon": "RegularPolygon",
       "insert-rectangle": "Rectangle",
       "insert-text": "Text",
+      "insert-triangle": "Triangle",
       "select-tool": "select",
     };
     const tool = toolByCommand[command];
@@ -8478,6 +8486,7 @@ export function App({
                 setInsertTool(tool);
               }}
               onInsertValueChange={setInsertValue}
+              onPolygonSidesChange={setRegularPolygonSides}
               onSelectionLayout={(command) => void arrangeSelection(command)}
               onLifetimeChange={(entityId, lifetimeStart, target) => {
                 void editEntityLifetime(entityId, lifetimeStart, target);
@@ -8538,6 +8547,7 @@ export function App({
               preview={previewRenderer}
               previewPaintAvailable={previewMutationAvailable}
               presenceParticipants={editorDocumentAuthority.presenceParticipants}
+              polygonSides={regularPolygonSides}
               projection={projection}
               readOnly={boundary !== null || canvasInteractionLocked}
               rotationHandleEntityId={rotationHandleEntityId}
@@ -8601,7 +8611,8 @@ export function App({
               replacingAppliedProgram={editingAppliedProgram !== null}
               colorAvailable={
                 selectedStudioCreationAppearanceAtAnchor &&
-                (selectedEntity?.type === "Circle" || selectedEntity?.type === "Rectangle")
+                selectedEntity !== null &&
+                ["Circle", "Rectangle", "RegularPolygon", "Triangle"].includes(selectedEntity.type)
               }
               fillColorValue={
                 selectedEntity?.geometry.style.kind === "known"
