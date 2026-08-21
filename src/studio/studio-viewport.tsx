@@ -98,6 +98,7 @@ export function StudioViewport({
   lockedEntityIds,
   materialParameterOptions,
   materialParameterTracks,
+  mathTexTransformClips,
   motionDuration,
   motionPaths,
   opacityTrackEligibleIds,
@@ -146,6 +147,9 @@ export function StudioViewport({
   onMaterialParameterKeyframeChange,
   onMaterialParameterKeyframeDelete,
   onMaterialParameterKeyframeDuplicate,
+  onMathTexTransformClipChange,
+  onMathTexTransformClipDelete,
+  onMathTexTransformClipSelect,
   onMotionControlChange,
   onMotionDurationChange,
   onOpacityKeyframeAdd,
@@ -284,6 +288,7 @@ export function StudioViewport({
           lockedEntityIds={lockedEntityIds}
           materialParameterOptions={materialParameterOptions}
           materialParameterTracks={materialParameterTracks}
+          mathTexTransformClips={mathTexTransformClips}
           motionDuration={motionDuration}
           objectTracks={projection.timeline.objectTracks}
           opacityTrackEligibleIds={opacityTrackEligibleIds}
@@ -306,6 +311,9 @@ export function StudioViewport({
           onMaterialParameterKeyframeChange={onMaterialParameterKeyframeChange}
           onMaterialParameterKeyframeDelete={onMaterialParameterKeyframeDelete}
           onMaterialParameterKeyframeDuplicate={onMaterialParameterKeyframeDuplicate}
+          onMathTexTransformClipChange={onMathTexTransformClipChange}
+          onMathTexTransformClipDelete={onMathTexTransformClipDelete}
+          onMathTexTransformClipSelect={onMathTexTransformClipSelect}
           onMotionDurationChange={onMotionDurationChange}
           onOpacityKeyframeAdd={onOpacityKeyframeAdd}
           onOpacityKeyframeChange={onOpacityKeyframeChange}

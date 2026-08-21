@@ -529,6 +529,53 @@ describe("Scene authoring WASM adapter", () => {
     ).resolves.toEqual(response);
   });
 
+  it("accepts a strict root-owned MathTex transform creation projection", async () => {
+    const response = {
+      entities: [
+        {
+          createdLifetime: { end: 4, start: 0 },
+          entityId: "tx:create/entity:math-tex",
+          initialDimensions: {},
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "math-tex",
+          operationId: "tx:create/operation:create",
+          texParts: ["A"],
+          transactionId: "tx:create",
+        },
+      ],
+      insertions: [{ at: 1, duration: 1, transactionId: "tx:transform" }],
+      motions: [],
+      mutations: [
+        {
+          content: { displayLines: ["B"], label: "B", texParts: ["B"] },
+          easing: { kind: "manim-smooth" },
+          entityId: "tx:create/entity:math-tex",
+          interval: { end: 2, start: 1 },
+          kind: "math-tex-transform",
+          operationId: "tx:transform/operation:transform",
+          sourceEntityId: "tx:create/entity:math-tex",
+          targetEntityId: "tx:transform/entity:target",
+          transactionId: "tx:transform",
+        },
+      ],
+      projectedDuration: 5,
+      removals: [],
+    } as const;
+    const compile = createProjectStudioCreationCompiler(async () => ({
+      projectStudioCreationEditV1: () => new TextEncoder().encode(JSON.stringify(response)),
+    }));
+
+    await expect(
+      compile({
+        baseDuration: 4,
+        programs: [],
+        schema: "poietra.project-studio-creation-edit",
+        version: 1,
+      }),
+    ).resolves.toEqual(response);
+  });
+
   it("returns the MathTex transform projection from the existing adapter", async () => {
     const bundle = await fixtureBundle();
     const command = {

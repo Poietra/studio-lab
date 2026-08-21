@@ -16,12 +16,12 @@ import {
   createSceneDurationProgram,
   createStudioEntitiesProgram,
 } from "./authoring-commands";
+import { replaceDrawInProgram } from "./draw-in-edit";
 import {
   canResolveSourceDurationMismatch,
   clampPlayheadToResolvedSourceDuration,
   resolveVerifiedSourceDurationBasis,
 } from "./editor-revision-policy";
-import { replaceDrawInProgram } from "./draw-in-edit";
 import { programRecord } from "./evaluator";
 import { type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
 import type { Interval } from "./model";
@@ -423,6 +423,200 @@ describe("Studio workspace projection", () => {
             image: { ...image, asset: { ...image.asset, sha256: "5".repeat(64) } },
           },
         ],
+      }),
+    ).toThrow(/not correlated/);
+  });
+
+  it("projects Studio-created MathTex A-to-B-to-A on one logical root", () => {
+    const imported = workspaceScene("First", null);
+    const initialContent = { displayLines: ["A"], label: "A", texParts: ["A"] };
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [{ content: initialContent, position: { x: 320, y: 180 }, type: "MathTex" }],
+      scene: imported.runtimeSceneState,
+      transactionId: "tx:create-math",
+    });
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const creationProgram = creation.validation.program;
+    const rootEntityId = creation.entityIds[0]!;
+    const create = creationProgram.operations.find((operation) => operation.kind === "CreateEntity");
+    const position = creationProgram.operations.find(
+      (operation) => operation.kind === "SetProperty" && operation.key === "position",
+    );
+    const fade = creationProgram.operations.find(
+      (operation) => operation.kind === "ChangePresence" && operation.effect === "fade-in",
+    );
+    if (create?.kind !== "CreateEntity" || position?.kind !== "SetProperty" || fade?.kind !== "ChangePresence") {
+      throw new Error("Studio MathTex creation fixture is incomplete.");
+    }
+    const creationDuration = fade.interval.end - fade.interval.start;
+    const firstTargetEntityId = "tx:transform-b/entity:math-tex-transform-target";
+    const secondTargetEntityId = "tx:transform-a/entity:math-tex-transform-target";
+    const transformProgram = (
+      transactionId: string,
+      sourceEntityId: string,
+      targetEntityId: string,
+      replacement: Readonly<{ displayLines: readonly string[]; label: string; texParts: readonly string[] }>,
+      start: number,
+      easing?: "linear" | "smooth",
+    ): CanonicalEditProgram => {
+      const operationId = `${transactionId}/operation:transform`;
+      return {
+        anchor: {
+          capturedPlayhead: start,
+          evidence: [],
+          resolvedSeconds: start,
+          source: { kind: "absolute", seconds: start },
+        },
+        intentCount: 1,
+        loweringStatus: "supported",
+        operations: [
+          {
+            dependsOn: [],
+            ...(easing ? { easing } : {}),
+            id: operationId,
+            interval: { end: start + 1, start },
+            kind: "TransformContent",
+            provenance: { evidence: [], origin: "direct-manipulation" },
+            replacement,
+            sourceEntityId,
+            strategy: "replacement-transform",
+            targetEntityId,
+            targetType: "MathTex",
+          },
+        ],
+        provenance: { evidence: [], origin: "direct-manipulation" },
+        requestedExecution: "sequence",
+        schedule: { edges: [], mode: "sequence", order: [operationId] },
+        transactionId,
+        version: 1,
+      };
+    };
+    const toB = transformProgram(
+      "tx:transform-b",
+      rootEntityId,
+      firstTargetEntityId,
+      { displayLines: ["B"], label: "B", texParts: ["B"] },
+      1,
+    );
+    const backToA = transformProgram(
+      "tx:transform-a",
+      firstTargetEntityId,
+      secondTargetEntityId,
+      initialContent,
+      2,
+      "linear",
+    );
+    const first = toB.operations[0];
+    const second = backToA.operations[0];
+    if (first?.kind !== "TransformContent" || second?.kind !== "TransformContent") {
+      throw new Error("Studio MathTex transform fixture is incomplete.");
+    }
+    const firstWorkingStart = 1 + creationDuration;
+    const secondWorkingStart = 3 + creationDuration;
+    const projectedDuration = imported.runtimeSceneState.duration + creationDuration + 2;
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: projectedDuration, start: 0 },
+          entityId: rootEntityId,
+          initialDimensions: {},
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "math-tex",
+          operationId: create.id,
+          texParts: initialContent.texParts,
+          transactionId: creationProgram.transactionId,
+        },
+      ],
+      insertions: [
+        { at: 0, duration: creationDuration, transactionId: creationProgram.transactionId },
+        { at: firstWorkingStart, duration: 1, transactionId: toB.transactionId },
+        { at: secondWorkingStart, duration: 1, transactionId: backToA.transactionId },
+      ],
+      motions: [],
+      mutations: [
+        {
+          entityId: rootEntityId,
+          interval: { end: 0, start: 0 },
+          kind: "position",
+          operationId: position.id,
+          transactionId: creationProgram.transactionId,
+          value: { x: 320, y: 180 },
+        },
+        {
+          entityId: rootEntityId,
+          from: 0,
+          interval: { end: creationDuration, start: 0 },
+          kind: "fade-in",
+          operationId: fade.id,
+          to: 1,
+          transactionId: creationProgram.transactionId,
+        },
+        {
+          content: { displayLines: ["B"], label: "B", texParts: ["B"] },
+          easing: { kind: "manim-smooth" },
+          entityId: rootEntityId,
+          interval: { end: firstWorkingStart + 1, start: firstWorkingStart },
+          kind: "math-tex-transform",
+          operationId: first.id,
+          sourceEntityId: rootEntityId,
+          targetEntityId: firstTargetEntityId,
+          transactionId: toB.transactionId,
+        },
+        {
+          content: initialContent,
+          easing: { kind: "linear" },
+          entityId: rootEntityId,
+          interval: { end: secondWorkingStart + 1, start: secondWorkingStart },
+          kind: "math-tex-transform",
+          operationId: second.id,
+          sourceEntityId: firstTargetEntityId,
+          targetEntityId: secondTargetEntityId,
+          transactionId: backToA.transactionId,
+        },
+      ],
+      projectedDuration,
+      removals: [],
+    };
+
+    expect(
+      selectCreationProjection(imported.runtimeSceneState.duration, [creationProgram, toB, backToA], projection),
+    ).toBe(projection);
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedEdits: [creationProgram, toB, backToA].map((program) =>
+        programRecord(program, { issues: [], kind: "valid" }),
+      ),
+      creationProjection: projection,
+      currentTime: projectedDuration,
+      draftEdit: null,
+      editAuthority: "rust-authorized-batch",
+      nextScene: null,
+      selectedObjectIds: [rootEntityId],
+    });
+
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[rootEntityId]).toBeDefined();
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[firstTargetEntityId]).toBeUndefined();
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[secondTargetEntityId]).toBeUndefined();
+    expect(projected.proposedState.evaluatedScene.propertyChannels[`${rootEntityId}/content`]?.samples).toEqual([
+      expect.objectContaining({
+        interval: { end: projectedDuration, start: firstWorkingStart + 1 },
+        value: { displayLines: ["B"], label: "B", texParts: ["B"] },
+      }),
+      expect.objectContaining({
+        interval: { end: projectedDuration, start: secondWorkingStart + 1 },
+        value: initialContent,
+      }),
+    ]);
+    const staleSecond = projection.mutations[3];
+    if (!staleSecond || staleSecond.kind !== "math-tex-transform") {
+      throw new Error("Studio MathTex projection fixture is incomplete.");
+    }
+    expect(() =>
+      selectCreationProjection(imported.runtimeSceneState.duration, [creationProgram, toB, backToA], {
+        ...projection,
+        mutations: [...projection.mutations.slice(0, 3), { ...staleSecond, entityId: secondTargetEntityId }],
       }),
     ).toThrow(/not correlated/);
   });

@@ -31,7 +31,11 @@ import {
   isStaticRootTransformOperation,
 } from "./operations";
 import { normalizeContentSamples } from "./property-sampling";
-import { isExactStudioMathTexTransformProgramBatch, studioMotionProjectionBatchKind } from "./scene-authoring-wire";
+import {
+  isExactStudioMathTexTransformProgramBatch,
+  studioCreationMathTexTransformRoots,
+  studioMotionProjectionBatchKind,
+} from "./scene-authoring-wire";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 import { type AuthorableWorkspaceScene, studioWorkspaceWorkingState } from "./studio-native-workspace";
 import {
@@ -300,6 +304,7 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") return "fade-in";
   if (operation.kind === "DrawIn") return "draw-in";
   if (operation.kind === "WriteIn") return "write-in";
+  if (operation.kind === "TransformContent") return "math-tex-transform";
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") return "rotation";
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
   if (operation.kind === "ResizeEntity") return "resize";
@@ -318,6 +323,7 @@ function correlateCreationProjection(
   if (createCount === 0) return null;
   if (!projection) throw new TypeError("A Rust creation projection is required to project CreateEntity Programs.");
   const operationById = new Map(operations.map((entry) => [entry.operation.id, entry] as const));
+  const mathTexTransformRoots = studioCreationMathTexTransformRoots(programs);
   const transactionIds = new Set(programs.map(({ transactionId }) => transactionId));
   if (operationById.size !== operations.length || transactionIds.size !== programs.length) {
     throw new TypeError("A Studio creation batch must contain unique operation and transaction IDs.");
@@ -482,7 +488,33 @@ function correlateCreationProjection(
         mutation.interval.end - mutation.interval.start,
         operation.interval.end - operation.interval.start,
       );
+    const expectedMathTexContent =
+      operation?.kind === "TransformContent" ? canonicalEditableContent(operation.replacement, "MathTex") : null;
+    const mathTexTransformInsertion = expected
+      ? insertionsByTransaction.get(expected.program.transactionId)
+      : undefined;
+    const isCorrelatedMathTexTransform =
+      operation?.kind === "TransformContent" &&
+      operation.strategy === "replacement-transform" &&
+      expectedMathTexContent !== null &&
+      expectedMathTexContent.texParts !== undefined &&
+      mathTexTransformInsertion !== undefined &&
+      mutation.kind === "math-tex-transform" &&
+      mutation.entityId === mathTexTransformRoots.get(operation.id) &&
+      mutation.sourceEntityId === operation.sourceEntityId &&
+      mutation.targetEntityId === operation.targetEntityId &&
+      mutation.easing.kind === ((operation.easing ?? "smooth") === "smooth" ? "manim-smooth" : "linear") &&
+      mutation.content.label === expectedMathTexContent.label &&
+      sameStrings(mutation.content.displayLines, expectedMathTexContent.displayLines) &&
+      sameStrings(mutation.content.texParts, expectedMathTexContent.texParts) &&
+      sameProjectionNumber(mutation.interval.start, mathTexTransformInsertion.at) &&
+      sameProjectionNumber(
+        mutation.interval.end - mutation.interval.start,
+        operation.interval.end - operation.interval.start,
+      ) &&
+      sameProjectionNumber(mathTexTransformInsertion.duration, operation.interval.end - operation.interval.start);
     const isCorrelatedMutation =
+      operation?.kind !== "TransformContent" &&
       operation?.kind !== "DrawIn" &&
       operation?.kind !== "WriteIn" &&
       expectedMutationKind !== null &&
@@ -492,7 +524,11 @@ function correlateCreationProjection(
       !expected ||
       seenMutationIds.has(mutation.operationId) ||
       mutation.transactionId !== expected.program.transactionId ||
-      (!isCorrelatedMutation && !isCorrelatedSpin && !isCorrelatedDraw && !isCorrelatedWrite)
+      (!isCorrelatedMutation &&
+        !isCorrelatedMathTexTransform &&
+        !isCorrelatedSpin &&
+        !isCorrelatedDraw &&
+        !isCorrelatedWrite)
     ) {
       throw new TypeError(`Creation mutation ${mutation.operationId} is not correlated with the Rust projection.`);
     }
@@ -1021,6 +1057,13 @@ function appendProjectedMutation(
         value,
       });
     }
+  } else if (mutation.kind === "math-tex-transform") {
+    appendProjectedSample(draft.propertyChannels, entityId, "content", {
+      ...metadata,
+      interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.end },
+      kind: "exact",
+      value: mutation.content,
+    });
   } else {
     appendProjectedSample(draft.propertyChannels, entityId, "content", {
       ...metadata,

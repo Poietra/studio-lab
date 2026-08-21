@@ -829,6 +829,15 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
               { content, entityId: operation.entity.id },
             );
           }
+        } else if (operation.kind === "TransformContent") {
+          const texParts = studioCreationMathTexParts(operation.replacement);
+          if (!texParts) {
+            return {
+              error: `MathTex transform target ${operation.targetEntityId} is invalid.`,
+              kind: "unsupported",
+            };
+          }
+          mathTexOutlineInputs.push({ entityId: operation.targetEntityId, texParts });
         }
       }
     }

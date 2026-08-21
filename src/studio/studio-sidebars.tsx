@@ -11,7 +11,7 @@ import { RenderPipelinePanel } from "../render-pipeline/render-pipeline-panel";
 import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../render-pipeline/render-pipeline-policy";
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { DraftInspector } from "./draft-inspector";
-import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
+import { EntityInspectorEditor, entityInspectorKey, type MathTexTransformInspectorAuthoring } from "./entity-inspector";
 import type {
   StudioFragmentMaterialParameterSchemaV1,
   StudioFragmentMaterialParameterValueV1,
@@ -1036,6 +1036,7 @@ export function StudioInspector({
     onUpdateTexture: () => undefined,
     textureAssets: [],
   },
+  mathTexTransform,
   onApplyDraft,
   onDiscardDraft,
   onDraftOperationChange,
@@ -1103,6 +1104,7 @@ export function StudioInspector({
     onUpdateTexture: (assetId: string, sampler: "linear" | "nearest") => void;
     textureAssets: readonly Readonly<{ assetId: string; label: string }>[];
   }>;
+  mathTexTransform?: MathTexTransformInspectorAuthoring;
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
@@ -1347,6 +1349,7 @@ export function StudioInspector({
               <EntityInspectorEditor
                 entity={selectedEntity}
                 key={entityInspectorKey(selectedEntity)}
+                mathTexTransform={mathTexTransform}
                 onCreateDraft={onEntityEdit}
                 onFocusRestored={onInspectorFocusRestored}
                 restoreFocus={inspectorReturnFocus}

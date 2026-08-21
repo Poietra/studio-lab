@@ -82,8 +82,8 @@ function sourceAnimationEasing(operation: SceneEditOperation): MotionEasing | nu
   if (operation.kind === "CreateMotion") return operation.easing;
   if (operation.kind === "AnimateProperty" && operation.key === "scale" && isMotionEasing(operation.easing))
     return operation.easing;
-  if (operation.kind === "ChangePresence" || operation.kind === "ResizeEntity" || operation.kind === "TransformContent")
-    return "smooth";
+  if (operation.kind === "TransformContent") return operation.easing ?? "smooth";
+  if (operation.kind === "ChangePresence" || operation.kind === "ResizeEntity") return "smooth";
   return null;
 }
 
@@ -237,6 +237,11 @@ export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeScene
       if (produced.has(entityId)) continue;
       const existingEntity = scene.objectGraph.entities[entityId];
       if (existingEntity && !existingEntity.provisional) continue;
+      // A Studio MathTex transform keeps one visible logical root while its
+      // retained path morph advances through transaction-scoped stage IDs.
+      // Only the Rust creation planner sees the complete Program batch and can
+      // prove that this source is the immediately preceding transform target.
+      if (operation.kind === "TransformContent" && entityId === operation.sourceEntityId) continue;
       if (!entityId.startsWith(`tx:${input.transactionId}/entity:`)) {
         issues.push({
           code: "provisional-id-invalid",
@@ -268,7 +273,8 @@ export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeScene
     }
     if (operation.kind === "TransformContent") {
       const source = scene.objectGraph.entities[operation.sourceEntityId];
-      if (source?.sourceIdentity.kind === "unknown") {
+      const isStudioOwned = Boolean(source?.transactionId);
+      if (source?.sourceIdentity.kind === "unknown" && !isStudioOwned) {
         issues.push({
           code: "identity-unknown",
           field: "sourceEntityId",
@@ -277,7 +283,7 @@ export function validateAndScheduleProgram(input: SceneEdit, scene: RuntimeScene
           severity: "error",
         });
       }
-      if (source) {
+      if (source && !isStudioOwned) {
         const scale = exactEntityScaleAt(scene, source, operation.interval.start);
         if (scale.kind !== "known" || !Number.isFinite(scale.value) || Math.abs(scale.value - 1) >= EPSILON) {
           issues.push({

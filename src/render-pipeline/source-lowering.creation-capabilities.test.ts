@@ -843,6 +843,24 @@ describe("Canonical EditProgram source lowering", () => {
     });
   });
 
+  it("preserves an explicit linear MathTex Transform easing in Python source", () => {
+    const target = "tx:linear-transform/entity:target";
+    const operation = {
+      ...transformOperation("linear-transform", 7, "equation_1", target, ["F", "=", "m", "a"]),
+      easing: "linear" as const,
+      strategy: "replacement-transform" as const,
+    };
+    const lowered = lowerCanonicalProgramSource(
+      roundTripSource,
+      request(canonicalProgram([operation], "linear-transform")),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    expect(lowered.insertedCode).toContain("ReplacementTransform(");
+    expect(lowered.insertedCode).toContain("rate_func=linear");
+  });
+
   it("carries transform alias lineage across Programs in one batch", () => {
     const firstTarget = "tx:alias-a/entity:first";
     const secondTarget = "tx:alias-b/entity:second";
