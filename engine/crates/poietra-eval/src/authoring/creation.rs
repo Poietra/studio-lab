@@ -2864,6 +2864,49 @@ fn plan_studio_creation_edits(
                         operation.interval.end,
                         program.anchor_resolved_seconds,
                     )
+                    && state.instant_at.is_some()
+                    && rotation_is_noop(state.current_rotation)
+                    && state.persistent_removal.is_none() =>
+                {
+                    record_planned_studio_creation_instant(state, instant_at)?;
+                    let projected_from = state.instant_rotation;
+                    let projected_to = projected_from + relative_delta;
+                    if !projected_to.is_finite() {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                    state.instant_rotation = projected_to;
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: instant_interval,
+                            kind: StudioCreationProjectedMutationKind::Rotation {
+                                from: projected_from,
+                                to: projected_to,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
+                StudioCreationOperationKind::Rotation {
+                    control_present,
+                    from: Some(from),
+                    relative_delta: Some(relative_delta),
+                    to: Some(to),
+                } if !control_present
+                    && operation.origin == StudioAuthoringOrigin::DirectManipulation
+                    && from.is_finite()
+                    && to.is_finite()
+                    && relative_delta.is_finite()
+                    && close_transform_baseline_value(*from, 0.0)
+                    && (*to - *from - *relative_delta).abs() < 0.000_001
+                    && !rotation_is_noop(*relative_delta)
+                    && studio_timeline_semantic_values_match(
+                        operation.interval.end,
+                        program.anchor_resolved_seconds,
+                    )
                     && studio_timeline_semantic_values_match(
                         program.anchor_resolved_seconds,
                         state.spec.lifetime_start,
@@ -6263,6 +6306,82 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the normalized static transform batch stores exact authored values"
+    )]
+    fn normalized_creation_composes_single_resize_rotation_and_scale_at_one_anchor() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.push(studio_created_appearance_edit_input(
+            0.85,
+            entity_id,
+            "rotation-after-resize",
+            StudioCreationOperationKind::Rotation {
+                control_present: false,
+                from: Some(0.0),
+                relative_delta: Some(std::f64::consts::FRAC_PI_2),
+                to: Some(std::f64::consts::FRAC_PI_2),
+            },
+        ));
+        command.programs.push(studio_created_appearance_edit_input(
+            0.85,
+            entity_id,
+            "scale-after-rotation",
+            StudioCreationOperationKind::UniformScale {
+                control_present: false,
+                from: Some(1.0),
+                relative_factor: Some(1.5),
+                to: Some(1.5),
+            },
+        ));
+        command.programs.push(studio_created_appearance_edit_input(
+            0.85,
+            entity_id,
+            "second-rotation",
+            StudioCreationOperationKind::Rotation {
+                control_present: false,
+                from: Some(0.0),
+                relative_delta: Some(std::f64::consts::FRAC_PI_2),
+                to: Some(std::f64::consts::FRAC_PI_2),
+            },
+        ));
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert!(matches!(
+            projection.mutations.last().map(|mutation| &mutation.kind),
+            Some(StudioCreationProjectedMutationKind::Rotation { from, to })
+                if (*from - std::f64::consts::FRAC_PI_2).abs() < 1e-12
+                    && (*to - std::f64::consts::PI).abs() < 1e-12
+        ));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let transform = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::AffineTransform {
+                    entity_id: target,
+                    keyframes,
+                    ..
+                } if target == entity_id => keyframes.first().map(|keyframe| &keyframe.value),
+                _ => None,
+            })
+            .unwrap();
+        assert!((transform.m11 + 3.0).abs() < 1e-12);
+        assert!(transform.m12.abs() < 1e-12);
+        assert!(transform.m21.abs() < 1e-12);
+        assert!((transform.m22 + 3.0).abs() < 1e-12);
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
     fn normalized_creation_rejects_invalid_or_animated_appearance_edits_atomically() {
         let bundle = static_imported_bundle();
         let entity_id = "tx:create/entity:circle";
@@ -6291,13 +6410,13 @@ mod tests {
                 "noop-opacity",
                 StudioCreationOperationKind::Opacity { alpha: Some(1.0) },
             ));
-        let mut rotation_after_resize = studio_creation_command(&bundle);
-        rotation_after_resize
+        let mut rotation_at_a_different_static_anchor = studio_creation_command(&bundle);
+        rotation_at_a_different_static_anchor
             .programs
             .push(studio_created_appearance_edit_input(
                 1.2,
                 entity_id,
-                "rotation-after-resize",
+                "rotation-at-a-different-static-anchor",
                 StudioCreationOperationKind::Rotation {
                     control_present: false,
                     from: Some(0.0),
@@ -6327,7 +6446,7 @@ mod tests {
         for command in [
             stale_rotation,
             noop_opacity,
-            rotation_after_resize,
+            rotation_at_a_different_static_anchor,
             rotation_with_motion,
         ] {
             let mut session = EngineSessionV1::new(bundle.clone()).unwrap();

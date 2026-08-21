@@ -28,6 +28,22 @@ type CreationPositionAuthority = Readonly<{
   }>[];
 }>;
 
+type CreationStaticTransformAuthority = Readonly<{
+  entities: readonly Readonly<{ entityId: string; transactionId: string }>[];
+  motions?: readonly Readonly<{ targetEntityId: string }>[];
+  mutations: readonly Readonly<{
+    entityId: string;
+    kind: string;
+    transactionId: string;
+  }>[];
+  removals?: readonly Readonly<{ studioEntityId: string }>[];
+}>;
+
+type CreationProgramAnchorAuthority = Readonly<{
+  anchor: Readonly<{ resolvedSeconds: number }>;
+  transactionId: string;
+}>;
+
 function finiteProjectedPoint(value: unknown): Point | null {
   if (
     typeof value !== "object" ||
@@ -118,6 +134,51 @@ export function currentCreationTransformForEntity(
     rotation = mutation.to;
   }
   return { rotation, transformOrigin };
+}
+
+/** Correlates one Rust-admitted static transform history back to its source
+ * Program anchor. Motion and transform keyframes deliberately stay outside
+ * this static direct-manipulation lane. */
+export function studioCreationStaticTransformAnchorForEntity(
+  projection: CreationStaticTransformAuthority | null | undefined,
+  programs: readonly CreationProgramAnchorAuthority[],
+  entityId: string,
+): number | null {
+  const entity = projection?.entities.find((candidate) => candidate.entityId === entityId);
+  if (!projection || !entity) return null;
+  if (projection.motions?.some((motion) => motion.targetEntityId === entityId)) return null;
+  if (projection.removals?.some((removal) => removal.studioEntityId === entityId)) return null;
+
+  const targetMutations = projection.mutations.filter((mutation) => mutation.entityId === entityId);
+  if (
+    targetMutations.some(
+      (mutation) => mutation.kind === "rotation-keyframes" || mutation.kind === "uniform-scale-keyframes",
+    )
+  ) {
+    return null;
+  }
+
+  const programsByTransaction = new Map(programs.map((program) => [program.transactionId, program]));
+  const creationAnchor = programsByTransaction.get(entity.transactionId)?.anchor.resolvedSeconds;
+  if (creationAnchor === undefined || !Number.isFinite(creationAnchor)) return null;
+
+  let staticAnchor: number | null = null;
+  for (const mutation of targetMutations) {
+    if (
+      mutation.transactionId === entity.transactionId ||
+      (mutation.kind !== "position" &&
+        mutation.kind !== "resize" &&
+        mutation.kind !== "rotation" &&
+        mutation.kind !== "uniform-scale")
+    ) {
+      continue;
+    }
+    const anchor = programsByTransaction.get(mutation.transactionId)?.anchor.resolvedSeconds;
+    if (anchor === undefined || !Number.isFinite(anchor)) return null;
+    if (staticAnchor !== null && Math.abs(staticAnchor - anchor) >= 0.0005) return null;
+    staticAnchor = anchor;
+  }
+  return staticAnchor ?? creationAnchor;
 }
 
 export function createSelectionRotationGesture(

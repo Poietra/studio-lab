@@ -227,6 +227,7 @@ import {
   type SelectionRotationGesture,
   selectionRotationCommandTargets,
   selectionRotationPreviewAtAngle,
+  studioCreationStaticTransformAnchorForEntity,
 } from "./studio/selection-rotation-gesture";
 import {
   hasShapeDimensions,
@@ -1791,28 +1792,20 @@ export function App({
       ({ program }) => program.transactionId === entity.transactionId,
     )?.program;
     if (!creationProgram) return null;
-    const rotationBlocked = previewEditRecords.some(({ program }) =>
-      program.operations.some((operation) => {
-        if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entity.entityId);
-        if (!("entityId" in operation) || operation.entityId !== entity.entityId) return false;
-        if (
-          program.transactionId === entity.transactionId &&
-          operation.kind === "SetProperty" &&
-          operation.key === "position"
-        )
-          return false;
-        return (
-          operation.kind === "ResizeEntity" ||
-          (operation.kind === "SetProperty" && operation.key === "position") ||
-          (operation.kind === "AnimateProperty" && operation.key === "scale")
-        );
-      }),
-    );
     return {
       entity,
-      rotationAvailable: !rotationBlocked,
       sourceAnchor: creationProgram.anchor.resolvedSeconds,
     };
+  };
+  const studioCreationStaticTransformAuthorityFor = (entityId: string | null | undefined) => {
+    if (!entityId) return null;
+    const entity = studioCreationProjectionEntityFor(entityId);
+    const sourceAnchor = studioCreationStaticTransformAnchorForEntity(
+      workspaceCreationProjection,
+      previewEditRecords.map(({ program }) => program),
+      entityId,
+    );
+    return entity && sourceAnchor !== null ? { entity, sourceAnchor } : null;
   };
   const boundedRuntimeEditTargetIds = new Set(runtimeTraceEditCandidates.map(({ studioEntityId }) => studioEntityId));
   const boundedRuntimeMutationIsLocked = (entityId: string) =>
@@ -5655,12 +5648,8 @@ export function App({
   function rotateEntityFromInspector(entityId: string, angleRadians: number) {
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
     if (blockTransformWhileTransformTrackExists([entityId], "rotating it")) return false;
-    const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
+    const createdAuthority = studioCreationStaticTransformAuthorityFor(entityId);
     const authority = runtimeTraceProjectionAuthorityFor(entityId);
-    if (createdAuthority && !createdAuthority.rotationAvailable) {
-      setDraftError("Rotate this object before adding a move, resize, or scale edit.");
-      return false;
-    }
     if (!createdAuthority && !authority?.capabilities.rotation) {
       setDraftError("Rotation requires a Studio-created object or one exact updater-free Runtime Trace binding.");
       return false;
@@ -6601,16 +6590,19 @@ export function App({
   const selectedRuntimeTraceEditAuthority = runtimeTraceProjectionAuthorityFor(selectedEntity?.id);
   const selectedRuntimeTraceEditCapabilities = selectedRuntimeTraceEditAuthority?.capabilities ?? null;
   const selectedStudioCreationAppearanceAuthority = studioCreationAppearanceAuthorityFor(selectedEntity?.id);
+  const selectedStudioCreationStaticTransformAuthority = studioCreationStaticTransformAuthorityFor(selectedEntity?.id);
   const selectedStudioCreationAppearanceAtAnchor =
     selectedStudioCreationAppearanceAuthority !== null &&
     Math.abs(sourceCurrentTime - selectedStudioCreationAppearanceAuthority.sourceAnchor) < 0.0005;
+  const selectedStudioCreationStaticTransformAtAnchor =
+    selectedStudioCreationStaticTransformAuthority !== null &&
+    Math.abs(sourceCurrentTime - selectedStudioCreationStaticTransformAuthority.sourceAnchor) < 0.0005;
   const rotationHandleEntityId =
     selectedObjectIds.length === 1 &&
     selectedEntity !== null &&
     scaleKeyframeTransformConflictEntity(transformTrackPrograms, [selectedEntity.id]) === null &&
     rotationKeyframeTransformConflictEntity(transformTrackPrograms, [selectedEntity.id]) === null &&
-    ((selectedStudioCreationAppearanceAtAnchor && selectedStudioCreationAppearanceAuthority.rotationAvailable) ||
-      selectedRuntimeTraceEditCapabilities?.rotation === true)
+    (selectedStudioCreationStaticTransformAtAnchor || selectedRuntimeTraceEditCapabilities?.rotation === true)
       ? selectedEntity.id
       : null;
   const studioGroupResizeEligibleIds = new Set(
@@ -7398,9 +7390,7 @@ export function App({
                   : (selectedOpacityAuthority?.baseOpacity ?? null)
               }
               rotationAvailable={
-                (selectedStudioCreationAppearanceAtAnchor &&
-                  selectedStudioCreationAppearanceAuthority.rotationAvailable) ||
-                selectedRuntimeTraceEditCapabilities?.rotation === true
+                selectedStudioCreationStaticTransformAtAnchor || selectedRuntimeTraceEditCapabilities?.rotation === true
               }
               selectedEntity={selectedEntity}
               selectedEntityLocked={selectedEntityLocked}
