@@ -98,6 +98,20 @@ describe("selection resize gesture", () => {
     ).toEqual(new Set(["right"]));
   });
 
+  it("hides single-object resize after motion because post-motion transforms are unsupported", () => {
+    const projection = {
+      entities: [
+        { createdLifetime: { start: 0 }, entityId: "rotated-motion", initialRotation: 0 },
+        { createdLifetime: { start: 0 }, entityId: "plain-motion", initialRotation: 0 },
+      ],
+      motions: [{ targetEntityId: "rotated-motion" }, { targetEntityId: "plain-motion" }],
+      mutations: [{ entityId: "rotated-motion", interval: { start: 0.4 }, kind: "rotation", to: Math.PI / 4 }],
+    };
+
+    expect(uniformScaleResizeOnlyCreationEntityIds(projection)).toEqual(new Set());
+    expect(resizeUnavailableCreationEntityIds(projection)).toEqual(new Set(["rotated-motion", "plain-motion"]));
+  });
+
   it("admits the first imported group resize before any static-root edit exists", () => {
     expect(importedGroupResizeHistoryIsSupported(null, null)).toBe(true);
     expect(importedGroupResizeHistoryIsSupported(undefined, null)).toBe(false);

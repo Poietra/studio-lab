@@ -154,20 +154,25 @@ export function uniformScaleResizeOnlyCreationEntityIds(
   projection: CreationRotationAuthority | null | undefined,
 ): ReadonlySet<string> {
   if (!projection) return new Set();
+  const motionTargetEntityIds = new Set(projection.motions?.map(({ targetEntityId }) => targetEntityId) ?? []);
   return new Set(
-    [...projectedRotationLanes(projection)].flatMap(([entityId, lane]) => (lane === "instant" ? [entityId] : [])),
+    [...projectedRotationLanes(projection)].flatMap(([entityId, lane]) =>
+      lane === "instant" && !motionTargetEntityIds.has(entityId) ? [entityId] : [],
+    ),
   );
 }
 
-/** Keeps handles hidden for base-rotation histories that the current Rust
- * planner cannot combine with a later instant transform. */
+/** Keeps handles hidden for base-rotation and motion histories that the
+ * current Rust planner cannot combine with a later instant transform. */
 export function resizeUnavailableCreationEntityIds(
   projection: CreationRotationAuthority | null | undefined,
 ): ReadonlySet<string> {
   if (!projection) return new Set();
-  return new Set(
-    [...projectedRotationLanes(projection)].flatMap(([entityId, lane]) => (lane === "base" ? [entityId] : [])),
-  );
+  const motionTargetEntityIds = new Set(projection.motions?.map(({ targetEntityId }) => targetEntityId) ?? []);
+  return new Set([
+    ...motionTargetEntityIds,
+    ...[...projectedRotationLanes(projection)].flatMap(([entityId, lane]) => (lane === "base" ? [entityId] : [])),
+  ]);
 }
 
 export function createSelectionResizeGesture(
