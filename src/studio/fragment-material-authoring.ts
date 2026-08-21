@@ -551,15 +551,29 @@ export type RemoveStudioFragmentMaterialResultV1 =
   | Readonly<{ assignmentCount: number; kind: "in-use" }>
   | Readonly<{ kind: "removed"; state: ProjectFragmentMaterialStateV1 }>;
 
+export type StudioFragmentMaterialRemovalResolution = "reject-if-in-use" | "unassign-all";
+
+function removeFragmentMaterialAssignments(state: ProjectFragmentMaterialStateV1, shaderId: string) {
+  return Object.fromEntries(
+    Object.entries(state.assignmentsByScene).flatMap(([sceneId, assignments]) => {
+      const remaining = Object.fromEntries(
+        Object.entries(assignments).filter(([, assignment]) => assignment.shaderId !== shaderId),
+      );
+      return Object.keys(remaining).length > 0 ? [[sceneId, remaining]] : [];
+    }),
+  );
+}
+
 export function removeStudioFragmentMaterialAssetV1(
   state: ProjectFragmentMaterialStateV1,
   shaderId: string,
+  resolution: StudioFragmentMaterialRemovalResolution = "reject-if-in-use",
 ): RemoveStudioFragmentMaterialResultV1 {
   if (!state.registry.materials.some((material) => material.shaderId === shaderId)) {
     throw new Error("The material no longer exists.");
   }
   const assignmentCount = studioFragmentMaterialAssignmentCountV1(state, shaderId);
-  if (assignmentCount > 0) return { assignmentCount, kind: "in-use" };
+  if (assignmentCount > 0 && resolution === "reject-if-in-use") return { assignmentCount, kind: "in-use" };
   const namesByShaderId = { ...state.namesByShaderId };
   delete namesByShaderId[shaderId];
   const glslSourcesByShaderId = { ...state.glslSourcesByShaderId };
@@ -569,7 +583,8 @@ export function removeStudioFragmentMaterialAssetV1(
   return {
     kind: "removed",
     state: parseProjectFragmentMaterialState({
-      assignmentsByScene: state.assignmentsByScene,
+      assignmentsByScene:
+        resolution === "unassign-all" ? removeFragmentMaterialAssignments(state, shaderId) : state.assignmentsByScene,
       glslSourcesByShaderId,
       namesByShaderId,
       parameterSchemasByShaderId,

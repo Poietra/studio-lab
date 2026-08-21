@@ -441,6 +441,41 @@ describe("project-local fragment material authoring", () => {
     });
   });
 
+  it("atomically unassigns an in-use material across Scenes before deleting its asset", () => {
+    const first = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "First" });
+    const second = createStudioFragmentMaterialV1(first.state, { name: "Second" });
+    const sceneAFirst = assignStudioFragmentMaterialV1(second.state, {
+      entityId: "circle",
+      sceneId: "scene-a",
+      shaderId: first.shaderId,
+    });
+    const sceneBFirst = assignStudioFragmentMaterialV1(sceneAFirst, {
+      entityId: "rectangle",
+      sceneId: "scene-b",
+      shaderId: first.shaderId,
+    });
+    const assigned = assignStudioFragmentMaterialV1(sceneBFirst, {
+      entityId: "label",
+      sceneId: "scene-a",
+      shaderId: second.shaderId,
+    });
+
+    expect(removeStudioFragmentMaterialAssetV1(assigned, first.shaderId)).toEqual({
+      assignmentCount: 2,
+      kind: "in-use",
+    });
+
+    const result = removeStudioFragmentMaterialAssetV1(assigned, first.shaderId, "unassign-all");
+    expect(result.kind).toBe("removed");
+    if (result.kind !== "removed") throw new Error("Expected the in-use material deletion to be resolved.");
+    expect(listStudioFragmentMaterialsV1(result.state)).toMatchObject([{ shaderId: second.shaderId }]);
+    expect(result.state.assignmentsByScene).toEqual({
+      "scene-a": {
+        label: expect.objectContaining({ shaderId: second.shaderId }),
+      },
+    });
+  });
+
   it("reports active Scene material compilation failure independently of the selected object", () => {
     const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
     const assigned = assignStudioFragmentMaterialV1(material.state, {

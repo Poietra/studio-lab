@@ -16,6 +16,7 @@ import type {
   StudioFragmentMaterialParameterSchemaV1,
   StudioFragmentMaterialParameterValueV1,
   StudioFragmentMaterialPresetId,
+  StudioFragmentMaterialRemovalResolution,
 } from "./fragment-material-authoring";
 import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragment-material-editor";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
@@ -897,7 +898,7 @@ export function StudioInspector({
     onCreateTexturePreset: () => null,
     onDuplicate: () => null,
     onImportGlsl: async () => undefined,
-    onRemoveAsset: () => undefined,
+    onRemoveAsset: async () => false,
     onRename: () => undefined,
     onUpdateParameterSchema: () => null,
     onUpdateSource: () => undefined,
@@ -961,7 +962,7 @@ export function StudioInspector({
     onCreateTexturePreset: () => string | null;
     onDuplicate: (shaderId: string) => string | null;
     onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
-    onRemoveAsset: (shaderId: string) => void;
+    onRemoveAsset: (shaderId: string, resolution: StudioFragmentMaterialRemovalResolution) => Promise<boolean>;
     onRename: (shaderId: string, name: string) => void;
     onUpdateParameterSchema: (
       shaderId: string,

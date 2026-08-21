@@ -791,6 +791,17 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     return sessionStore.current?.saveProjectFragmentMaterials(projectId, state) ?? false;
   }, []);
 
+  const projectHasLocalMaterialParameterTrack = useCallback((projectId: string, shaderId: string) => {
+    const identity = activeSession.current;
+    return (
+      sessionStore.current?.projectHasMaterialParameterTrack(
+        projectId,
+        shaderId,
+        identity?.projectId === projectId ? { identity, snapshot: snapshotEditorSession(stateRef.current) } : undefined,
+      ) ?? true
+    );
+  }, []);
+
   const openSession = useCallback(
     (
       identity: EditorSessionIdentity,
@@ -987,6 +998,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
       const projectId = activeSession.current?.projectId;
       if (projectId && !projectIds.has(projectId)) activeSession.current = null;
     },
+    projectHasLocalMaterialParameterTrack,
     readLocalSessionForCloudMigration,
     redoProgram,
     resetPrograms,

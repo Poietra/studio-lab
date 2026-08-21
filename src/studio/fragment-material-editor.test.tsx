@@ -92,8 +92,14 @@ describe("FragmentMaterialEditor", () => {
     expect(markup).toContain('aria-label="Material asset"');
     expect(markup).toContain("Ocean wave");
     expect(markup).toContain("Warm glow");
-    expect(markup).toContain("Assigned to 2 object(s). Unassign all uses before deleting.");
-    expect(markup).toContain("Unassign this material from 2 object(s) before deleting it.");
+    expect(markup).toContain("Assigned to 2 object(s). Delete can unassign every use across this project.");
+    expect(markup).toContain("Unassign this material from 2 object(s) and delete it.");
+    expect(markup).toContain('role="alertdialog"');
+    expect(markup).toContain('aria-describedby="remove-fragment-material-description"');
+    expect(markup).toContain('aria-label="New material name"');
+    expect(markup).toContain("Unassign and delete");
+    expect(markup).toContain("across every Scene in this project");
+    expect(markup).toContain("Unassign all &amp; delete");
     expect(markup).toContain("Shader parameter schema");
     expect(markup).toContain("Unassign this material from 2 object(s) before editing its parameter schema.");
     expect(markup).toContain("parameters_0.x");

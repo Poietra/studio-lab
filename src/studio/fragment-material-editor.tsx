@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import {
   MAX_FRAGMENT_MATERIAL_SOURCE_BYTES_V1,
@@ -10,6 +10,7 @@ import type {
   StudioFragmentMaterialParameterSchemaV1,
   StudioFragmentMaterialParameterValueV1,
   StudioFragmentMaterialPresetId,
+  StudioFragmentMaterialRemovalResolution,
 } from "./fragment-material-authoring";
 import { studioFragmentMaterialParameterLayoutV1 } from "./fragment-material-authoring";
 
@@ -105,7 +106,7 @@ export function FragmentMaterialEditor({
   onCreateTexturePreset: () => string | null;
   onDuplicate: (shaderId: string) => string | null;
   onImportGlsl: (shaderId: string, input: Readonly<{ entryPoint: "main"; source: string }>) => Promise<void>;
-  onRemoveAsset: (shaderId: string) => void;
+  onRemoveAsset: (shaderId: string, resolution: StudioFragmentMaterialRemovalResolution) => Promise<boolean>;
   onRename: (shaderId: string, name: string) => void;
   onUpdateParameterSchema?: (
     shaderId: string,
@@ -118,6 +119,12 @@ export function FragmentMaterialEditor({
 }>) {
   const [inputError, setInputError] = useState<string | null>(null);
   const [materialSearchQuery, setMaterialSearchQuery] = useState("");
+  const [removalError, setRemovalError] = useState<string | null>(null);
+  const [removalPending, setRemovalPending] = useState(false);
+  const newMaterialNameInput = useRef<HTMLInputElement>(null);
+  const removeDialog = useRef<HTMLDialogElement>(null);
+  const removalPendingRef = useRef(false);
+  const removalTarget = useRef<FragmentMaterialEditorItem | null>(null);
   const [editingShaderId, setEditingShaderId] = useState<string | null>(
     () => assignedShaderId ?? materials[0]?.shaderId ?? null,
   );
@@ -453,15 +460,16 @@ export function FragmentMaterialEditor({
         </button>
         <button
           className="h-8 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
-          disabled={!editingMaterial || editingMaterial.assignmentCount > 0}
+          disabled={!editingMaterial}
           onClick={() => {
             if (!editingMaterial) return;
-            if (!globalThis.confirm(`Delete “${editingMaterial.name}”? This cannot be undone.`)) return;
-            onRemoveAsset(editingMaterial.shaderId);
+            setRemovalError(null);
+            removalTarget.current = editingMaterial;
+            removeDialog.current?.showModal();
           }}
           title={
             editingMaterial && editingMaterial.assignmentCount > 0
-              ? `Unassign this material from ${editingMaterial.assignmentCount} object(s) before deleting it.`
+              ? `Unassign this material from ${editingMaterial.assignmentCount} object(s) and delete it.`
               : "Delete this material"
           }
           type="button"
@@ -489,6 +497,7 @@ export function FragmentMaterialEditor({
           maxLength={80}
           name="new-material-name"
           placeholder="New material name"
+          ref={newMaterialNameInput}
           required
         />
         <button
@@ -525,7 +534,8 @@ export function FragmentMaterialEditor({
           </form>
           {editingMaterial.assignmentCount > 0 ? (
             <p className="mt-1 text-[10px] leading-4 text-zinc-600">
-              Assigned to {editingMaterial.assignmentCount} object(s). Unassign all uses before deleting.
+              Assigned to {editingMaterial.assignmentCount} object(s). Delete can unassign every use across this
+              project.
             </p>
           ) : null}
           <FragmentMaterialParameterSchemaEditor
@@ -585,6 +595,89 @@ export function FragmentMaterialEditor({
         <p className="mt-2 whitespace-pre-wrap break-words border border-red-950 bg-red-950/20 p-2 font-mono text-[10px] leading-4 text-red-300">
           {inputError ?? compileError}
         </p>
+      ) : null}
+      {editingMaterial ? (
+        <dialog
+          aria-describedby={`remove-fragment-material-description${removalError ? " remove-fragment-material-error" : ""}`}
+          aria-labelledby="remove-fragment-material-title"
+          className="m-auto w-full max-w-md border border-zinc-700 bg-zinc-950 p-0 text-zinc-100 shadow-xl backdrop:bg-black/70"
+          onCancel={(event) => {
+            if (removalPendingRef.current) event.preventDefault();
+          }}
+          onClose={() => {
+            if (removalPendingRef.current) return;
+            setRemovalError(null);
+            removalTarget.current = null;
+          }}
+          onKeyDown={(event) => event.stopPropagation()}
+          ref={removeDialog}
+          role="alertdialog"
+        >
+          <form className="p-4" method="dialog">
+            <h3 className="text-balance text-sm font-medium" id="remove-fragment-material-title">
+              {editingMaterial.assignmentCount > 0 ? "Unassign and delete" : "Delete"} “{editingMaterial.name}”?
+            </h3>
+            <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400" id="remove-fragment-material-description">
+              {editingMaterial.assignmentCount > 0
+                ? `This removes the material from ${editingMaterial.assignmentCount} object(s) across every Scene in this project, then deletes the material. This cannot be undone.`
+                : "This permanently deletes the material from this project. This cannot be undone."}
+            </p>
+            {removalError ? (
+              <p
+                className="mt-3 text-pretty text-xs leading-5 text-red-300"
+                id="remove-fragment-material-error"
+                role="alert"
+              >
+                {removalError}
+              </p>
+            ) : null}
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                className="border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                disabled={removalPending}
+                onClick={(event) => {
+                  if (removalPendingRef.current) event.preventDefault();
+                }}
+                value="cancel"
+              >
+                Cancel
+              </button>
+              <button
+                className="bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
+                disabled={removalPending}
+                onClick={async (event) => {
+                  event.preventDefault();
+                  if (removalPendingRef.current) return;
+                  const target = removalTarget.current;
+                  if (!target) return;
+                  removalPendingRef.current = true;
+                  setRemovalPending(true);
+                  setRemovalError(null);
+                  const removed = await onRemoveAsset(
+                    target.shaderId,
+                    target.assignmentCount > 0 ? "unassign-all" : "reject-if-in-use",
+                  ).catch(() => false);
+                  if (!removed) {
+                    removalPendingRef.current = false;
+                    setRemovalPending(false);
+                    setRemovalError("The material could not be deleted. Resolve the reported issue and try again.");
+                    return;
+                  }
+                  removalPendingRef.current = false;
+                  setRemovalPending(false);
+                  setRemovalError(null);
+                  removeDialog.current?.close("confirm");
+                  if (materials.length === 1) {
+                    globalThis.requestAnimationFrame(() => newMaterialNameInput.current?.focus());
+                  }
+                }}
+                value="confirm"
+              >
+                {editingMaterial.assignmentCount > 0 ? "Unassign all & delete" : "Delete material"}
+              </button>
+            </div>
+          </form>
+        </dialog>
       ) : null}
     </section>
   );

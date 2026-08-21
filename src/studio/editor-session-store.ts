@@ -1,16 +1,19 @@
 import { z } from "zod";
 
 import {
+  type AppliedProgramMutation,
   type EditorSessionSnapshotV1,
   editorSessionSnapshotSchemaV1,
   MAX_EDITOR_SESSION_SNAPSHOT_BYTES_V1,
   parseEditorSessionSnapshotV1,
+  type RedoProgramEntry,
 } from "../collaboration/editor-session-contract";
 import {
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   type ProjectFragmentMaterialStateV1,
   projectFragmentMaterialStateV1Schema,
 } from "./fragment-material-authoring";
+import type { SceneEditOperation } from "./scene-edit-contract";
 
 export type {
   AcceptedProgramRecord,
@@ -297,6 +300,33 @@ function serializedBytes(value: string) {
   return new TextEncoder().encode(value).byteLength;
 }
 
+type EditorProgramWithOperations = Readonly<{ operations: readonly SceneEditOperation[] }>;
+
+function mutationPrograms(mutation: AppliedProgramMutation): readonly EditorProgramWithOperations[] {
+  return mutation.kind === "append" ? [mutation.value.program] : [mutation.previous.program, mutation.value.program];
+}
+
+function redoPrograms(entry: RedoProgramEntry): readonly EditorProgramWithOperations[] {
+  if (entry.kind === "mutation") return mutationPrograms(entry.mutation);
+  return entry.edit ? [entry.value.program, entry.edit.original.program] : [entry.value.program];
+}
+
+function editorSessionHasMaterialParameterTrack(snapshot: EditorSessionSnapshotV1, shaderId: string) {
+  const programs: readonly EditorProgramWithOperations[] = [
+    ...snapshot.appliedPrograms.map(({ program }) => program),
+    ...(snapshot.draftProgram ? [snapshot.draftProgram.program] : []),
+    ...(snapshot.editingAppliedProgram ? [snapshot.editingAppliedProgram.original.program] : []),
+    ...snapshot.programUndoEntries.flatMap(mutationPrograms),
+    ...snapshot.redoPrograms.flatMap(redoPrograms),
+  ];
+  return programs.some((program) =>
+    program.operations.some(
+      (operation) =>
+        operation.kind === "AnimateProperty" && operation.materialParameter?.material.shaderId === shaderId,
+    ),
+  );
+}
+
 /**
  * Version policy: v1 is read directly. Unknown older, newer, or malformed
  * payloads are discarded instead of guessed at. A future schema version must
@@ -480,6 +510,30 @@ export class EditorSessionStore {
     return this.projectFragmentMaterials.get(projectId) ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
   }
 
+  projectHasMaterialParameterTrack(
+    projectId: string,
+    shaderId: string,
+    active?: Readonly<{ identity: EditorSessionIdentity; snapshot: EditorSessionSnapshot }>,
+  ) {
+    const snapshots = new Map<string, EditorSessionSnapshotV1>();
+    for (const [key, entry] of this.persistedSessions) {
+      if (entry.identity.projectId === projectId) snapshots.set(key, entry.snapshot);
+    }
+    for (const [key, entry] of this.persistedNativeSessions) {
+      if (entry.identity.projectId === projectId) snapshots.set(key, entry.snapshot);
+    }
+    for (const [key, snapshot] of this.memorySessions) {
+      const [candidateProjectId] = JSON.parse(key) as readonly string[];
+      if (candidateProjectId === projectId) snapshots.set(key, durableEditorSessionSnapshotV1(snapshot));
+    }
+    if (active?.identity.projectId === projectId) {
+      const key = editorSessionIdentityKey(active.identity);
+      if (key === null) return true;
+      snapshots.set(key, durableEditorSessionSnapshotV1(active.snapshot));
+    }
+    return [...snapshots.values()].some((snapshot) => editorSessionHasMaterialParameterTrack(snapshot, shaderId));
+  }
+
   saveProjectFragmentMaterials(projectId: string, state: ProjectFragmentMaterialStateV1) {
     const parsedProjectId = projectIdSchema.safeParse(projectId);
     const parsedState = projectFragmentMaterialStateV1Schema.safeParse(state);
@@ -501,8 +555,10 @@ export class EditorSessionStore {
       else this.projectFragmentMaterials.delete(parsedProjectId.data);
       return false;
     }
-    this.flush();
-    return true;
+    if (this.flush()) return true;
+    if (previous) this.projectFragmentMaterials.set(parsedProjectId.data, previous);
+    else this.projectFragmentMaterials.delete(parsedProjectId.data);
+    return false;
   }
 
   save(identity: EditorSessionIdentity, snapshot: EditorSessionSnapshot) {
@@ -583,7 +639,7 @@ export class EditorSessionStore {
     for (const entry of envelope.nativeEntries) {
       this.persistedNativeSessions.set(nativeSessionKey(entry.identity), entry);
     }
-    if (!this.adapter) return;
+    if (!this.adapter) return true;
     try {
       if (
         envelope.entries.length === 0 &&
@@ -592,8 +648,10 @@ export class EditorSessionStore {
       )
         this.adapter.clear();
       else this.adapter.write(JSON.stringify(envelope));
+      return true;
     } catch {
       // Storage can be unavailable or over quota. The in-memory session remains usable.
+      return false;
     }
   }
 
