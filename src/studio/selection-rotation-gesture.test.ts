@@ -3,10 +3,40 @@ import { describe, expect, it } from "vitest";
 import {
   createSelectionRotationGesture,
   currentCreationTransformForEntity,
+  importedGroupRotationHistoryIsSupported,
   latestCreationPositionForEntity,
   selectionRotationCommandTargets,
   selectionRotationPreviewAtAngle,
 } from "./selection-rotation-gesture";
+
+const positionMutation = (transactionId: string, entityId: string) => ({
+  entityId,
+  interval: { end: 0, start: 0 },
+  kind: "position" as const,
+  operationId: `${transactionId}:position:${entityId}`,
+  transactionId,
+  value: { x: 0, y: 0 },
+});
+
+const rotationMutation = (transactionId: string, entityId: string) => ({
+  entityId,
+  from: 0,
+  interval: { end: 0, start: 0 },
+  kind: "rotation" as const,
+  operationId: `${transactionId}:rotation:${entityId}`,
+  to: Math.PI / 2,
+  transactionId,
+});
+
+const scaleMutation = (transactionId: string, entityId: string) => ({
+  entityId,
+  from: 1,
+  interval: { end: 0, start: 0 },
+  kind: "uniform-scale" as const,
+  operationId: `${transactionId}:scale:${entityId}`,
+  to: 2,
+  transactionId,
+});
 
 const basis = {
   bounds: { bottom: 260, left: 120, right: 520, top: 100 },
@@ -17,6 +47,96 @@ const basis = {
 };
 
 describe("selection rotation gesture", () => {
+  it("admits the first imported group rotation before any static-root edit exists", () => {
+    expect(importedGroupRotationHistoryIsSupported(null, null)).toBe(true);
+    expect(importedGroupRotationHistoryIsSupported(undefined, null)).toBe(false);
+  });
+
+  it("admits repeated Rust-projected group rotation transactions", () => {
+    expect(
+      importedGroupRotationHistoryIsSupported(
+        {
+          insertions: [],
+          mutations: [
+            positionMutation("rotate-once", "left"),
+            positionMutation("rotate-once", "right"),
+            rotationMutation("rotate-once", "left"),
+            rotationMutation("rotate-once", "right"),
+            positionMutation("rotate-twice", "left"),
+            positionMutation("rotate-twice", "right"),
+            rotationMutation("rotate-twice", "left"),
+            rotationMutation("rotate-twice", "right"),
+          ],
+          projectedDuration: 0,
+        },
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects incomplete rotation and rotation/resize composition histories", () => {
+    expect(
+      importedGroupRotationHistoryIsSupported(
+        {
+          insertions: [],
+          mutations: [
+            positionMutation("rotate", "left"),
+            positionMutation("rotate", "right"),
+            rotationMutation("rotate", "left"),
+          ],
+          projectedDuration: 0,
+        },
+        null,
+      ),
+    ).toBe(false);
+    expect(
+      importedGroupRotationHistoryIsSupported(
+        {
+          insertions: [],
+          mutations: [
+            positionMutation("resize", "left"),
+            positionMutation("resize", "right"),
+            scaleMutation("resize", "left"),
+            scaleMutation("resize", "right"),
+          ],
+          projectedDuration: 0,
+        },
+        null,
+      ),
+    ).toBe(false);
+  });
+
+  it("rejects group rotation after a persistent remove", () => {
+    expect(
+      importedGroupRotationHistoryIsSupported(
+        {
+          insertions: [],
+          mutations: [
+            positionMutation("rotate", "left"),
+            positionMutation("rotate", "right"),
+            rotationMutation("rotate", "left"),
+            rotationMutation("rotate", "right"),
+          ],
+          projectedDuration: 0,
+        },
+        {
+          removals: [
+            {
+              affectedSceneEntityIds: ["left"],
+              fadeInterval: null,
+              operationId: "remove-left",
+              removedAt: 0,
+              resultingLifetimeEnd: 0,
+              sceneEntityId: "left",
+              studioEntityId: "source:left",
+              transactionId: "remove-left",
+            },
+          ],
+        },
+      ),
+    ).toBe(false);
+  });
+
   it("uses the latest Rust creation position mutation as canonical command state", () => {
     const projection = {
       mutations: [

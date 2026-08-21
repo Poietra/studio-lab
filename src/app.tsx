@@ -220,6 +220,7 @@ import {
 import {
   createSelectionRotationGesture,
   currentCreationTransformForEntity,
+  importedGroupRotationHistoryIsSupported,
   latestCreationPositionForEntity,
   type SelectionRotationGesture,
   selectionRotationCommandTargets,
@@ -405,14 +406,6 @@ function clamp(value: number, minimum: number, maximum: number) {
 
 function programsHaveSceneBoundary(programs: readonly ProgramRecord["program"][]) {
   return programs.some((program) => program.operations.some((operation) => operation.kind === "InsertSceneBoundary"));
-}
-
-function gestureContextProgramsContainUnsupportedImportedGroupRotationHistory(
-  programs: readonly ProgramRecord["program"][],
-) {
-  return programs.some((program) =>
-    program.operations.some((operation) => operation.kind !== "SetProperty" || operation.key !== "position"),
-  );
 }
 
 function canvasPointerDelta(drag: CanvasDragState, point: Readonly<{ x: number; y: number }>) {
@@ -5124,7 +5117,6 @@ export function App({
       selectedEntities.length !== selectedObjectIds.length ||
       selectedTargets.length !== selectedEntities.length ||
       authorities.size !== 1 ||
-      (importedSelection && gestureContextProgramsContainUnsupportedImportedGroupRotationHistory(appliedSceneEdits)) ||
       selectedEntities.some(
         (entity) =>
           !groupRotationEligibleIds.has(entity.id) ||
@@ -5133,7 +5125,7 @@ export function App({
       )
     ) {
       setDraftError(
-        "Group rotation requires 2–8 objects from one supported authority; imported objects must be independent static roots with position-only history.",
+        "Group rotation requires 2–8 objects from one supported authority; imported objects must be independent static roots with position/rotation history.",
       );
       return null;
     }
@@ -6569,9 +6561,7 @@ export function App({
     activeEditorScene !== null &&
     !isStudioNativeWorkspaceScene(activeEditorScene) &&
     importedStaticSnapshotTransformSupported &&
-    workspaceStaticRootProjection !== undefined &&
-    !gestureContextProgramsContainUnsupportedImportedGroupRotationHistory(appliedSceneEdits) &&
-    !workspaceStaticRootProjection?.mutations.some(({ kind }) => kind === "rotation");
+    importedGroupRotationHistoryIsSupported(workspaceStaticRootProjection, workspacePersistentRemoveProjection);
   const importedGroupRotationEligibleIds = new Set(
     importedGroupRotationHistorySupported
       ? editableEntities.flatMap((entity) =>

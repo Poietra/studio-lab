@@ -878,6 +878,63 @@ class GroupedEquation(Scene):
       expect(rotation).toMatchObject({ from: 0, relative: true });
       expect(rotation?.value).toBeCloseTo(Math.PI / 2);
     }
+
+    const rotateAgainPosition = (position: Readonly<{ x: number; y: number }>) =>
+      rotatePosition(rotatePosition(position));
+    const secondRotationValidation = createDirectManipulationGroupRotationProgram({
+      angleRadians: Math.PI / 2,
+      capturedPlayhead: 0,
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: leftId, toPosition: rotateAgainPosition(leftPosition) },
+        { entityId: rightId, toPosition: rotateAgainPosition(rightPosition) },
+      ],
+      transactionId: "rotate-imported-selection-again",
+    });
+    if (secondRotationValidation.kind !== "valid") {
+      throw new Error(JSON.stringify(secondRotationValidation.issues));
+    }
+    const rotatedTwice = lowerCanonicalProgramBatchSource(
+      groupSource,
+      request(validation.program, [
+        { entityId: leftId, sourceVariable: "left" },
+        { entityId: rightId, sourceVariable: "right" },
+      ]),
+      [
+        { program: validation.program, sourceAnchor: 0 },
+        { program: secondValidation.program, sourceAnchor: 0 },
+        { program: rotationValidation.program, sourceAnchor: 0 },
+        { program: secondRotationValidation.program, sourceAnchor: 0 },
+      ],
+      frame,
+      null,
+      null,
+      { snapshotAuthorizedSourceBoundRotation: true },
+    );
+    const rotatedTwiceReimported = importManimScene(
+      rotatedTwice.source,
+      "examples/relativity.py",
+      "GroupedEquation",
+      frame,
+    );
+
+    expect(rotatedTwice.insertedCode.match(/\.rotate\(/g)).toHaveLength(4);
+    expect(rotatedTwice.insertedCode).toContain('# poietra:transaction "rotate-imported-selection-again"');
+    for (const [entityId, expectedPosition] of [
+      [leftId, rotateAgainPosition(leftPosition)],
+      [rightId, rotateAgainPosition(rightPosition)],
+    ] as const) {
+      expect(rotatedTwiceReimported?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position).toEqual({
+        kind: "known",
+        value: expectedPosition,
+      });
+      const rotation =
+        rotatedTwiceReimported?.runtimeSceneState.propertyChannels[`${entityId}/rotation`]?.samples.at(-1);
+      expect(rotation).toMatchObject({ relative: true });
+      expect(rotation?.from).toBeCloseTo(Math.PI / 2);
+      expect(rotation?.value).toBeCloseTo(Math.PI);
+    }
   });
 
   it("round-trips viewport positions as world-space move_to calls through a non-origin camera", () => {
