@@ -2174,7 +2174,10 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       }
       return host.generateThumbnail(presentedCompiledScene.engineRevisionHash, signal);
     },
-    boundEntityProjection: state.phase === "presented" ? (currentCompiledScene?.boundEntityProjection ?? null) : null,
+    // Keep the exact Rust projection available while the retained canvas
+    // replaces its Scene. App uses it to preserve the workspace projection;
+    // mutation remains gated by `state.phase === "presented"`.
+    boundEntityProjection: currentCompiledScene?.boundEntityProjection ?? null,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     canonicalScene: presentedCompiledScene
       ? {
