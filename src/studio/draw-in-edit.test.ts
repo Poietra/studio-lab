@@ -68,27 +68,56 @@ describe("Draw entrance editing", () => {
     expect(drawInClipFromProgram(shortened.program)?.interval).toEqual({ end: 2, start: 1 });
   });
 
-  it.each(["Arc", "Axes", "Ellipse", "NumberLine", "NumberPlane", "Sector", "Triangle", "RegularPolygon"] as const)(
-    "supports Draw on a Studio-created %s",
-    (type) => {
-      const creation = createStudioEntitiesProgram({
-        capturedPlayhead: 1,
-        entities: [{ position: { x: 320, y: 180 }, type }],
-        scene: STUDIO_FIXTURE_SCENE,
-        transactionId: `draw-${type}`,
-      });
-      const entityId = creation.entityIds[0]!;
-      const drawn = replaceDrawInProgram({
-        baseProgram: creation.validation.program,
-        draw: { easing: "linear", end: 2 },
-        entityId,
-        scene: STUDIO_FIXTURE_SCENE,
-      });
+  it.each([
+    "Arc",
+    "Axes",
+    "DataPlot",
+    "Ellipse",
+    "NumberLine",
+    "NumberPlane",
+    "Sector",
+    "Triangle",
+    "RegularPolygon",
+  ] as const)("supports Draw on a Studio-created %s", (type) => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        type === "DataPlot"
+          ? {
+              dataSeries: {
+                interpolation: "linear" as const,
+                points: [
+                  { x: -1, y: 0 },
+                  { x: 1, y: 1 },
+                ],
+              },
+              dimensions: {
+                coordinateSystem: {
+                  x: { maximum: 5, minimum: -5, step: 1 },
+                  y: { maximum: 3, minimum: -3, step: 1 },
+                },
+                height: 4,
+                width: 6,
+              },
+              position: { x: 320, y: 180 },
+              type,
+            }
+          : { position: { x: 320, y: 180 }, type },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: `draw-${type}`,
+    });
+    const entityId = creation.entityIds[0]!;
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "linear", end: 2 },
+      entityId,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
 
-      expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
-      expect(drawInClipFromProgram(drawn.program)?.entityId).toBe(entityId);
-    },
-  );
+    expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
+    expect(drawInClipFromProgram(drawn.program)?.entityId).toBe(entityId);
+  });
 
   it("supports Draw on a Rust-validated stroke-only SVG path and rejects filled SVG paths", () => {
     const creation = createStudioEntitiesProgram({

@@ -11,6 +11,7 @@ import {
   studioGroupLifetimeTrimTargetUnavailableReason,
 } from "./lifetime-editing";
 import type {
+  DataSeries,
   EntityContent,
   EntityDimensions,
   Interval,
@@ -47,6 +48,7 @@ export type InsertEntityType = (typeof INSERT_ENTITY_TYPES)[number];
 
 export type StudioEntityInput = Readonly<{
   content?: EntityContent;
+  dataSeries?: DataSeries;
   dimensions?: EntityDimensions;
   image?: Readonly<{
     asset: Readonly<{ assetId: string; sha256: string }>;
@@ -55,11 +57,11 @@ export type StudioEntityInput = Readonly<{
   }>;
   position: Point;
   svg?: Readonly<{ source: string }>;
-  type: InsertEntityType | "ImageMobject" | "SvgPath";
+  type: InsertEntityType | "DataPlot" | "ImageMobject" | "SvgPath";
 }>;
 
 export function defaultEntityDimensions(
-  type: InsertEntityType | "ImageMobject" | "SvgPath",
+  type: InsertEntityType | "DataPlot" | "ImageMobject" | "SvgPath",
 ): EntityDimensions | undefined {
   if (type === "Circle") return { radius: 1 };
   if (type === "Rectangle") return { height: 2, width: 4 };
@@ -241,6 +243,7 @@ export function createStudioEntitiesProgram(
         dependsOn: [],
         entity: {
           ...(content ? { content } : {}),
+          ...(entity.dataSeries ? { dataSeries: entity.dataSeries } : {}),
           ...(dimensions ? { dimensions } : {}),
           id: entityId,
           ...(entity.image ? { image: entity.image } : {}),
@@ -437,6 +440,32 @@ export function replaceStudioCreatedContentProgram(
   });
   if (replacementCount !== 1) {
     throw new Error("The Studio-created content has no unique creation owner.");
+  }
+  return validateAndScheduleProgram({ ...input.owner.program, operations }, input.scene);
+}
+
+export function replaceStudioCreatedDataSeriesProgram(
+  input: Readonly<{
+    dataSeries: DataSeries;
+    entityId: string;
+    owner: ProgramRecord;
+    scene: RuntimeSceneState;
+  }>,
+): SceneEditValidationResult {
+  let replacementCount = 0;
+  const operations = input.owner.program.operations.map((operation) => {
+    if (operation.kind !== "CreateEntity" || operation.entity.id !== input.entityId) return operation;
+    if (operation.entity.type !== "DataPlot") {
+      throw new Error("Only a Studio-created DataPlot can replace its creation data.");
+    }
+    replacementCount += 1;
+    return {
+      ...operation,
+      entity: { ...operation.entity, dataSeries: input.dataSeries },
+    } satisfies SceneEditOperation;
+  });
+  if (replacementCount !== 1) {
+    throw new Error("The Studio-created data plot has no unique creation owner.");
   }
   return validateAndScheduleProgram({ ...input.owner.program, operations }, input.scene);
 }

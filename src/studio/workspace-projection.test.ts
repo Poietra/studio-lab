@@ -397,6 +397,87 @@ describe("Studio workspace projection", () => {
     );
   });
 
+  it("correlates DataPlot samples without reconstructing its curve in TypeScript", () => {
+    const imported = workspaceScene("First", null);
+    const dimensions = {
+      coordinateSystem: {
+        x: { maximum: 5, minimum: -5, step: 1 },
+        y: { maximum: 3, minimum: -3, step: 1 },
+      },
+      height: 4,
+      width: 6,
+    } as const;
+    const dataSeries = {
+      interpolation: "smooth" as const,
+      points: [
+        { x: -2, y: -1 },
+        { x: 0, y: 2 },
+        { x: 2, y: 0 },
+      ],
+    };
+    const authored = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [{ dataSeries, dimensions, position: { x: 320, y: 180 }, type: "DataPlot" }],
+      scene: imported.runtimeSceneState,
+      transactionId: "data-plot-correlation",
+    });
+    const create = authored.validation.program.operations.find(({ kind }) => kind === "CreateEntity");
+    if (create?.kind !== "CreateEntity") throw new Error("Data plot creation fixture is incomplete.");
+    const program: CanonicalEditProgram = {
+      ...authored.validation.program,
+      intentCount: 1,
+      operations: [create],
+      schedule: { edges: [], mode: "parallel", order: [create.id] },
+    };
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
+          dataSeries,
+          entityId: create.entity.id,
+          initialDimensions: dimensions,
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "data-plot",
+          operationId: create.id,
+          transactionId: program.transactionId,
+        },
+      ],
+      insertions: [],
+      motions: [],
+      mutations: [],
+      projectedDuration: imported.runtimeSceneState.duration,
+      removals: [],
+    };
+
+    expect(selectCreationProjection(imported.runtimeSceneState.duration, [program], projection)).toBe(projection);
+    expect(() =>
+      selectCreationProjection(imported.runtimeSceneState.duration, [program], {
+        ...projection,
+        entities: [
+          {
+            ...projection.entities[0]!,
+            dataSeries: { ...dataSeries, points: [...dataSeries.points.slice(0, 2), { x: 2, y: 1 }] },
+          },
+        ],
+      }),
+    ).toThrow(/not correlated/u);
+
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedEdits: [programRecord(program, { issues: [], kind: "valid" })],
+      creationProjection: projection,
+      currentTime: 0,
+      draftEdit: null,
+      editAuthority: "rust-authorized-batch",
+      nextScene: null,
+      selectedObjectIds: [create.entity.id],
+    });
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[create.entity.id]?.geometry?.dimensions).toEqual(
+      { kind: "known", value: dimensions },
+    );
+  });
+
   it("correlates Draw from its exact Rust interval and easing", () => {
     const imported = workspaceScene("First", null);
     const creation = createStudioEntitiesProgram({

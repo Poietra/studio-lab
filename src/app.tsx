@@ -43,6 +43,7 @@ import {
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioCreatedContentProgram,
+  replaceStudioCreatedDataSeriesProgram,
   replaceStudioEntityLifetimeProgram,
   type StudioEntityInput,
 } from "./studio/authoring-commands";
@@ -56,6 +57,7 @@ import {
 } from "./studio/camera-clip-edit";
 import { canvasDragTargetEntityIds, toggleCanvasEntitySelection } from "./studio/canvas-selection";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
+import type { DataPlotInspectorAuthoring } from "./studio/data-plot-editor";
 import { runDraftSourcePreflight } from "./studio/draft-apply-preflight";
 import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } from "./studio/draft-validation";
 import {
@@ -167,7 +169,9 @@ import {
   replaceMathTexTransformProgram,
 } from "./studio/mathtex-transform-clip-edit";
 import type {
+  DataSeries,
   EntityContent,
+  EntityDimensions,
   Point,
   ProgramRecord,
   ProjectedEntity,
@@ -4925,6 +4929,111 @@ export function App({
     });
   }
 
+  function studioOwnedCreation(entityId: string, type: "Axes" | "DataPlot") {
+    const owner = studioCreationProgramOwner(entityId);
+    const creations =
+      owner?.record.program.operations.filter(
+        (operation) =>
+          operation.kind === "CreateEntity" && operation.entity.id === entityId && operation.entity.type === type,
+      ) ?? [];
+    const creation = creations[0];
+    return owner && creations.length === 1 && creation?.kind === "CreateEntity" ? { creation, owner } : null;
+  }
+
+  function dataPlotAxesUnavailableReason(entity: ProjectedEntity) {
+    if (selectedObjectIds.length !== 1) return "Select one Axes object to add a data plot.";
+    if (!previewMutationAvailable) return "Wait for an editable canonical WebGPU preview.";
+    if (selectedEntityLocked) return "Unlock this Axes object before adding a data plot.";
+    if (draftEdit || editingAppliedProgram) return "Apply or discard the current draft first.";
+    if (entity.sourceIdentity.kind !== "unknown" || !entity.transactionId) {
+      return "Data plots currently require a Studio-created Axes object.";
+    }
+    const owned = studioOwnedCreation(entity.id, "Axes");
+    if (!owned || owned.owner.record.program.transactionId !== entity.transactionId) {
+      return "The Axes creation Program is unavailable.";
+    }
+    const dimensions = owned.creation.entity.dimensions;
+    if (!dimensions?.coordinateSystem?.y || dimensions.width === undefined || dimensions.height === undefined) {
+      return "The Axes range and size are not exact enough to create a data plot.";
+    }
+    const transformed = previewAppliedSceneEdits.some((program) =>
+      program.operations.some(
+        (operation) =>
+          (operation.kind === "AnimateProperty" &&
+            operation.entityId === entity.id &&
+            (operation.key === "rotation" || operation.key === "scale")) ||
+          (operation.kind === "ResizeEntity" && operation.entityId === entity.id) ||
+          (operation.kind === "TransformShape" && operation.entityId === entity.id) ||
+          (operation.kind === "CreateMotion" && operation.targetEntityIds.includes(entity.id)),
+      ),
+    );
+    if (transformed || Math.abs(entity.scale - 1) >= 0.0005) {
+      return "Create a data plot from an unscaled, unrotated Axes object.";
+    }
+    return null;
+  }
+
+  function addDataPlotFromAxes(entityId: string, dataSeries: DataSeries) {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.type === "Axes");
+    if (!entity) return false;
+    const unavailable = dataPlotAxesUnavailableReason(entity);
+    if (unavailable) {
+      setDraftError(unavailable);
+      return false;
+    }
+    const dimensions = studioOwnedCreation(entity.id, "Axes")?.creation.entity.dimensions;
+    if (!dimensions) return false;
+    return insertEntitiesAt(entity.position, [{ dataSeries, dimensions, position: entity.position, type: "DataPlot" }]);
+  }
+
+  function dataPlotUpdateUnavailableReason(entity: ProjectedEntity) {
+    if (selectedObjectIds.length !== 1) return "Select one data plot to edit its samples.";
+    if (!previewMutationAvailable) return "Wait for an editable canonical WebGPU preview.";
+    if (selectedEntityLocked) return "Unlock this data plot before editing it.";
+    if (draftEdit || editingAppliedProgram) return "Apply or discard the current draft first.";
+    if (entity.sourceIdentity.kind !== "unknown" || !entity.transactionId) {
+      return "Only a Studio-created data plot can replace its stored samples.";
+    }
+    const owned = studioOwnedCreation(entity.id, "DataPlot");
+    return owned && owned.owner.record.program.transactionId === entity.transactionId
+      ? null
+      : "The data plot creation Program is unavailable.";
+  }
+
+  function updateDataPlot(entityId: string, dataSeries: DataSeries) {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.type === "DataPlot");
+    if (!entity) return false;
+    const unavailable = dataPlotUpdateUnavailableReason(entity);
+    if (unavailable) {
+      setDraftError(unavailable);
+      return false;
+    }
+    const owned = studioOwnedCreation(entityId, "DataPlot");
+    if (!owned) return false;
+    try {
+      const preceding = sourceSceneBeforeAppliedProgram(owned.owner.programIndex);
+      const original = appliedEdits[owned.owner.programIndex];
+      if (!original || original.program.transactionId !== owned.owner.record.program.transactionId) {
+        throw new Error("The applied data plot creation Program is unavailable.");
+      }
+      const validation = replaceStudioCreatedDataSeriesProgram({
+        dataSeries,
+        entityId,
+        owner: original,
+        scene: preceding.scene,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record, [entityId], preceding.canonical, null, {
+        index: owned.owner.programIndex,
+        original,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The data plot creation Program could not be updated.");
+      return false;
+    }
+  }
+
   function insertEntitiesAt(point: Point, entities?: readonly StudioEntityInput[]) {
     if (!draftBaseState || !draftSourceScene) return false;
     if (previewRenderer?.state.phase !== "presented") {
@@ -7066,6 +7175,7 @@ export function App({
             "Arc",
             "Axes",
             "Circle",
+            "DataPlot",
             "Ellipse",
             "NumberLine",
             "NumberPlane",
@@ -7539,6 +7649,31 @@ export function App({
       : null;
 
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
+  const selectedDataPlotAuthoring: DataPlotInspectorAuthoring | undefined = (() => {
+    if (!selectedEntity || (selectedEntity.type !== "Axes" && selectedEntity.type !== "DataPlot")) return undefined;
+    const owned = studioOwnedCreation(selectedEntity.id, selectedEntity.type);
+    const dimensions: EntityDimensions =
+      owned?.creation.entity.dimensions ??
+      (selectedEntity.geometry.dimensions.kind === "known" ? selectedEntity.geometry.dimensions.value : {});
+    if (selectedEntity.type === "Axes") {
+      return {
+        dimensions,
+        entityId: selectedEntity.id,
+        initialDataSeries: null,
+        mode: "add",
+        onSubmit: (dataSeries: DataSeries) => addDataPlotFromAxes(selectedEntity.id, dataSeries),
+        unavailableReason: dataPlotAxesUnavailableReason(selectedEntity),
+      };
+    }
+    return {
+      dimensions,
+      entityId: selectedEntity.id,
+      initialDataSeries: owned?.creation.entity.dataSeries ?? null,
+      mode: "update",
+      onSubmit: (dataSeries: DataSeries) => updateDataPlot(selectedEntity.id, dataSeries),
+      unavailableReason: dataPlotUpdateUnavailableReason(selectedEntity),
+    };
+  })();
   const selectedFragmentMaterialEntity = selectedSet.size === 1 ? selectedEntity : null;
   const selectedFragmentMaterialAssignment = selectedFragmentMaterialEntity
     ? (activeSceneFragmentMaterials.assignments[selectedFragmentMaterialEntity.id] ?? null)
@@ -8724,6 +8859,7 @@ export function App({
                 resetUnavailableReason: cameraResetUnavailableReason(),
               }}
               className="order-3 min-h-96 md:col-span-2 md:col-start-1 md:row-start-2 xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:min-h-0"
+              dataPlotAuthoring={selectedDataPlotAuthoring}
               draftError={draftError}
               draftApplyPending={draftApplyPending}
               draftOperation={draftOperation}
@@ -8774,6 +8910,7 @@ export function App({
                   "Arc",
                   "Axes",
                   "Circle",
+                  "DataPlot",
                   "Ellipse",
                   "NumberLine",
                   "NumberPlane",

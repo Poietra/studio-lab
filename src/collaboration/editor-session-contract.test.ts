@@ -155,6 +155,63 @@ describe("editor session snapshot V1 contract", () => {
     ).toThrow();
   });
 
+  it("restores authenticated Studio-native DataPlot creation payloads", () => {
+    const base = record("data-plot");
+    const operationId = "data-plot/create";
+    const dataPlot = {
+      ...base,
+      program: {
+        ...base.program,
+        loweringStatus: "unsupported" as const,
+        operations: [
+          {
+            dependsOn: [],
+            entity: {
+              dataSeries: {
+                interpolation: "smooth" as const,
+                points: [
+                  { x: -1, y: 0 },
+                  { x: 1, y: 2 },
+                ],
+              },
+              dimensions: {
+                coordinateSystem: {
+                  x: { maximum: 5, minimum: -5, step: 1 },
+                  y: { maximum: 3, minimum: -3, step: 1 },
+                },
+                height: 4,
+                width: 6,
+              },
+              id: "data-plot-1",
+              lifetime: { end: null, start: 2 },
+              type: "DataPlot",
+            },
+            id: operationId,
+            interval: { end: 2, start: 2 },
+            kind: "CreateEntity" as const,
+            provenance: { evidence: [], origin: "studio-default" as const },
+          },
+        ],
+        schedule: { edges: [], mode: "sequence" as const, order: [operationId] },
+      },
+    };
+    const value = {
+      ...snapshot(),
+      appliedPrograms: [dataPlot],
+      draftOperation: null,
+      draftProgram: null,
+      editingAppliedProgram: null,
+      programUndoEntries: [],
+      redoPrograms: [],
+      selectedObjectIds: ["data-plot-1"],
+    };
+
+    expect(parseEditorSessionSnapshotV1(value).appliedPrograms[0]?.program.operations[0]).toMatchObject({
+      entity: { dataSeries: { interpolation: "smooth" }, type: "DataPlot" },
+      kind: "CreateEntity",
+    });
+  });
+
   it("rejects unknown keys inside nested suggestion and Program schemas", () => {
     const value = snapshot();
     expect(() =>

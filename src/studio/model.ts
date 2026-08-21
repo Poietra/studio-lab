@@ -6,6 +6,11 @@ export const STUDIO_STATE_VERSION = 1 as const;
 
 export type Point = Readonly<{ x: number; y: number }>;
 
+export type DataSeries = Readonly<{
+  interpolation: "linear" | "smooth";
+  points: readonly Point[];
+}>;
+
 export type Interval = Readonly<{ end: number; start: number }>;
 
 export type MotionEasing = "linear" | "smooth";

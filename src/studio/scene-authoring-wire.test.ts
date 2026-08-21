@@ -36,7 +36,7 @@ function creationProgram(type: string): SceneEdit {
                           width: 6,
                         },
                       }
-                    : type === "Axes" || type === "NumberPlane"
+                    : type === "Axes" || type === "DataPlot" || type === "NumberPlane"
                       ? {
                           dimensions: {
                             coordinateSystem: {
@@ -48,6 +48,18 @@ function creationProgram(type: string): SceneEdit {
                           },
                         }
                       : {}),
+          ...(type === "DataPlot"
+            ? {
+                dataSeries: {
+                  interpolation: "smooth" as const,
+                  points: [
+                    { x: -2, y: -1 },
+                    { x: 0, y: 2 },
+                    { x: 2, y: 0 },
+                  ],
+                },
+              }
+            : {}),
           ...(type === "Text"
             ? {
                 content: {
@@ -172,6 +184,29 @@ describe("Studio creation wire", () => {
         kind: "create",
       }),
     );
+  });
+
+  it("carries DataPlot samples into the canonical Rust creation command", () => {
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 2,
+      programs: [creationProgram("DataPlot")],
+    });
+    const operation = command.programs[0]?.operations[0];
+
+    expect(operation).toMatchObject({
+      entity: {
+        dataSeries: {
+          interpolation: "smooth",
+          points: [
+            { x: -2, y: -1 },
+            { x: 0, y: 2 },
+            { x: 2, y: 0 },
+          ],
+        },
+        kind: "data-plot",
+      },
+      kind: "create",
+    });
   });
 
   it("normalizes DrawIn as the fixed zero-to-one path-trim operation", () => {

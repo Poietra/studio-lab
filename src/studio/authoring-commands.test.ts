@@ -10,6 +10,7 @@ import {
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioCreatedContentProgram,
+  replaceStudioCreatedDataSeriesProgram,
   replaceStudioEntityLifetimeProgram,
 } from "./authoring-commands";
 import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
@@ -154,6 +155,69 @@ describe("manual Studio authoring commands", () => {
     });
     expect(canonicalAppliedProgramsWorkingRevisionV1([creation.validation.program])).toBe(
       canonicalAppliedProgramsWorkingRevisionV1([lfCreation.validation.program]),
+    );
+  });
+
+  it("stores a bounded data series and replaces only its owning DataPlot payload", () => {
+    const dimensions = {
+      coordinateSystem: {
+        x: { maximum: 5, minimum: -5, step: 1 },
+        y: { maximum: 3, minimum: -3, step: 1 },
+      },
+      height: 4,
+      width: 6,
+    } as const;
+    const initial = {
+      interpolation: "linear" as const,
+      points: [
+        { x: -1, y: 0 },
+        { x: 1, y: 2 },
+      ],
+    };
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ dataSeries: initial, dimensions, position: { x: 300, y: 180 }, type: "DataPlot" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "create-data-plot",
+    });
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const owner = programRecord(creation.validation.program, creation.validation);
+    const replacement = replaceStudioCreatedDataSeriesProgram({
+      dataSeries: {
+        interpolation: "smooth",
+        points: [
+          { x: -2, y: -1 },
+          { x: 0, y: 2 },
+          { x: 2, y: 0 },
+        ],
+      },
+      entityId: creation.entityIds[0]!,
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(replacement.kind, JSON.stringify(replacement.issues)).toBe("valid");
+    expect(replacement.program.transactionId).toBe(owner.program.transactionId);
+    expect(replacement.program.operations).toHaveLength(owner.program.operations.length);
+    expect(replacement.program.operations).toContainEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({
+          dataSeries: {
+            interpolation: "smooth",
+            points: [
+              { x: -2, y: -1 },
+              { x: 0, y: 2 },
+              { x: 2, y: 0 },
+            ],
+          },
+          dimensions,
+          type: "DataPlot",
+        }),
+        kind: "CreateEntity",
+      }),
+    );
+    expect(replacement.program.operations.filter((operation) => operation.kind !== "CreateEntity")).toEqual(
+      owner.program.operations.filter((operation) => operation.kind !== "CreateEntity"),
     );
   });
 

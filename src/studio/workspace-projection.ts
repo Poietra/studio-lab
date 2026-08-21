@@ -316,6 +316,7 @@ function creationEntityKind(type: string): StudioCreationProjectionV1["entities"
   if (type === "Arrow") return "arrow";
   if (type === "Axes") return "axes";
   if (type === "Circle") return "circle";
+  if (type === "DataPlot") return "data-plot";
   if (type === "Ellipse") return "ellipse";
   if (type === "Triangle" || type === "RegularPolygon") return "regular-polygon";
   if (type === "ImageMobject") return "image";
@@ -343,6 +344,25 @@ function sameCreationImage(
     sameProjectionNumber(projected.localRect.left, expected.localRect.left) &&
     sameProjectionNumber(projected.localRect.right, expected.localRect.right) &&
     sameProjectionNumber(projected.localRect.top, expected.localRect.top)
+  );
+}
+
+function sameCreationDataSeries(
+  projected: StudioCreationProjectionV1["entities"][number]["dataSeries"],
+  expected: Extract<SceneEditOperation, { kind: "CreateEntity" }>["entity"]["dataSeries"],
+) {
+  if (!projected || !expected) return projected === undefined && expected === undefined;
+  return (
+    projected.interpolation === expected.interpolation &&
+    projected.points.length === expected.points.length &&
+    projected.points.every((point, index) => {
+      const expectedPoint = expected.points[index];
+      return (
+        expectedPoint !== undefined &&
+        sameProjectionNumber(point.x, expectedPoint.x) &&
+        sameProjectionNumber(point.y, expectedPoint.y)
+      );
+    })
   );
 }
 
@@ -452,6 +472,7 @@ function correlateCreationProjection(
         : undefined;
     const projectedLayout = entity.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
     const expectedImage = operation?.kind === "CreateEntity" ? operation.entity.image : undefined;
+    const expectedDataSeries = operation?.kind === "CreateEntity" ? operation.entity.dataSeries : undefined;
     const textContentMismatch = expectedTextContent
       ? entity.text !== expectedTextContent.text ||
         projectedLayout.alignment !== expectedTextContent.layout.alignment ||
@@ -469,6 +490,7 @@ function correlateCreationProjection(
       entity.entityId !== operation.entity.id ||
       entity.kind !== expectedKind ||
       !sameProjectionDimensions(entity.initialDimensions, operation.entity.dimensions ?? {}) ||
+      !sameCreationDataSeries(entity.dataSeries, expectedDataSeries) ||
       !sameCreationImage(entity.image, expectedImage) ||
       seenEntityIds.has(entity.entityId) ||
       seenEntityOperationIds.has(entity.operationId) ||
@@ -1408,6 +1430,7 @@ function projectCreationWorkingState(
       entity.kind === "arc" ||
       entity.kind === "axes" ||
       entity.kind === "circle" ||
+      entity.kind === "data-plot" ||
       entity.kind === "ellipse" ||
       entity.kind === "number-line" ||
       entity.kind === "number-plane" ||
