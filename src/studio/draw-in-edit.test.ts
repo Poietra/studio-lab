@@ -71,6 +71,7 @@ describe("Draw entrance editing", () => {
   it.each([
     "Arc",
     "Axes",
+    "CubicBezier",
     "DataPlot",
     "Ellipse",
     "NumberLine",
@@ -82,27 +83,42 @@ describe("Draw entrance editing", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
       entities: [
-        type === "DataPlot"
+        type === "CubicBezier"
           ? {
-              dataSeries: {
-                interpolation: "linear" as const,
-                points: [
-                  { x: -1, y: 0 },
-                  { x: 1, y: 1 },
-                ],
+              cubicBezier: {
+                arrowEnd: false,
+                control1: { x: -1, y: 1 },
+                control2: { x: 1, y: -1 },
+                end: { x: 2, y: 0 },
+                start: { x: -2, y: 0 },
+                strokeCap: "round" as const,
+                strokeWidth: 0.04,
               },
-              dimensions: {
-                coordinateSystem: {
-                  x: { maximum: 5, minimum: -5, step: 1 },
-                  y: { maximum: 3, minimum: -3, step: 1 },
-                },
-                height: 4,
-                width: 6,
-              },
+              dimensions: { height: 2, width: 4 },
               position: { x: 320, y: 180 },
               type,
             }
-          : { position: { x: 320, y: 180 }, type },
+          : type === "DataPlot"
+            ? {
+                dataSeries: {
+                  interpolation: "linear" as const,
+                  points: [
+                    { x: -1, y: 0 },
+                    { x: 1, y: 1 },
+                  ],
+                },
+                dimensions: {
+                  coordinateSystem: {
+                    x: { maximum: 5, minimum: -5, step: 1 },
+                    y: { maximum: 3, minimum: -3, step: 1 },
+                  },
+                  height: 4,
+                  width: 6,
+                },
+                position: { x: 320, y: 180 },
+                type,
+              }
+            : { position: { x: 320, y: 180 }, type },
       ],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: `draw-${type}`,

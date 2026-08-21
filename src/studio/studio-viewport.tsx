@@ -9,6 +9,8 @@ import { recordStudioCommitProfile } from "./studio-render-profiler";
 import { StudioTimeline, type StudioTimelineProps } from "./studio-timeline";
 import {
   type CoordinateInsertSettings,
+  type CubicBezierStyleChange,
+  type CubicBezierStyleSettings,
   type CurveInsertSettings,
   type StudioTool,
   StudioToolbar,
@@ -61,11 +63,13 @@ export type StudioViewportProps = Readonly<
     Omit<StudioTimelineProps, "events" | "objectTracks" | "readOnly"> & {
       className?: string;
       coordinateInsertSettings: CoordinateInsertSettings;
+      cubicBezierStyle?: CubicBezierStyleSettings | null;
       curveInsertSettings: CurveInsertSettings;
       previewPaintAvailable: boolean;
       gesturePreviewStore: StudioGesturePreviewStore;
       insertValue: string;
       onCoordinateInsertSettingsChange: (settings: CoordinateInsertSettings) => void;
+      onCubicBezierStyleChange?: (change: CubicBezierStyleChange) => void;
       onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
       onInsertAtCenter: () => void;
       onInsertToolChange: (tool: StudioTool) => void;
@@ -87,6 +91,9 @@ export function StudioViewport({
   boundaryActive,
   className,
   coordinateInsertSettings,
+  cubicBezierControls,
+  cubicBezierPenPoints,
+  cubicBezierStyle,
   currentTime,
   curveInsertSettings,
   duration,
@@ -135,6 +142,7 @@ export function StudioViewport({
   onDrawInDelete,
   onDrawInSelect,
   onCanvasPlace,
+  onCubicBezierControlChange,
   onCreateEmptyWorkspaceEntity,
   onCreateStarterComposition,
   onEntityKeyDown,
@@ -157,6 +165,7 @@ export function StudioViewport({
   onInlineTextCommit,
   onInteractionModeChange,
   onCoordinateInsertSettingsChange,
+  onCubicBezierStyleChange,
   onCurveInsertSettingsChange,
   onInsertAtCenter,
   onImageAssetDrop,
@@ -224,9 +233,11 @@ export function StudioViewport({
         <StudioToolbar
           authoringAvailable={previewPaintAvailable}
           coordinateInsertSettings={coordinateInsertSettings}
+          cubicBezierStyle={cubicBezierStyle}
           curveInsertSettings={curveInsertSettings}
           insertValue={insertValue}
           onCoordinateInsertSettingsChange={onCoordinateInsertSettingsChange}
+          onCubicBezierStyleChange={onCubicBezierStyleChange}
           onCurveInsertSettingsChange={onCurveInsertSettingsChange}
           onInsertAtCenter={onInsertAtCenter}
           onInsertValueChange={onInsertValueChange}
@@ -243,6 +254,8 @@ export function StudioViewport({
         appliedTransactionIds={appliedTransactionIds}
         boundaryActive={boundaryActive}
         cameraScale={projection.camera.scale}
+        cubicBezierControls={cubicBezierControls}
+        cubicBezierPenPoints={cubicBezierPenPoints}
         editableMotionIds={editableMotionIds}
         entities={entities}
         frame={frame}
@@ -257,6 +270,7 @@ export function StudioViewport({
         lockedEntityIds={lockedEntityIds}
         motionPaths={motionPaths}
         onCanvasPlace={onCanvasPlace}
+        onCubicBezierControlChange={onCubicBezierControlChange}
         onCreateEmptyWorkspaceEntity={onCreateEmptyWorkspaceEntity}
         onCreateStarterComposition={onCreateStarterComposition}
         onEntityKeyDown={onEntityKeyDown}

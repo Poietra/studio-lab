@@ -1282,6 +1282,7 @@ export function StudioInspector({
       "Arc",
       "Axes",
       "Circle",
+      "CubicBezier",
       "DataPlot",
       "Ellipse",
       "NumberLine",
@@ -1291,7 +1292,7 @@ export function StudioInspector({
       "Sector",
       "Triangle",
     ].includes(selectedEntity.type)
-      ? ["Arc", "Axes", "DataPlot", "NumberLine", "NumberPlane"].includes(selectedEntity.type)
+      ? ["Arc", "Axes", "CubicBezier", "DataPlot", "NumberLine", "NumberPlane"].includes(selectedEntity.type)
         ? [["Stroke", "strokeColor", strokeColorValue]]
         : [
             ["Fill", "fillColor", fillColorValue],

@@ -42,7 +42,7 @@ describe("canvas hit testing", () => {
 
     expect(isCanvasInteractionTarget({ closest })).toBe(true);
     expect(closest).toHaveBeenCalledWith(
-      "[data-studio-entity], [data-motion-control], [data-studio-resize-handle], [data-studio-selection-resize-handle], [data-studio-rotation-handle], [data-studio-selection-rotation-handle], [data-studio-inline-text-editor], [data-studio-empty-workspace]",
+      "[data-studio-entity], [data-motion-control], [data-cubic-bezier-control], [data-studio-resize-handle], [data-studio-selection-resize-handle], [data-studio-rotation-handle], [data-studio-selection-rotation-handle], [data-studio-inline-text-editor], [data-studio-empty-workspace]",
     );
     expect(isCanvasInteractionTarget(null)).toBe(false);
     expect(isCanvasInteractionTarget({ closest: () => null })).toBe(false);

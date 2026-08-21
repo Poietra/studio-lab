@@ -1,10 +1,10 @@
+import type { StudioCubicBezierSpec } from "../engine/cubic-bezier-authoring";
 import {
   canonicalEditableContent,
   STUDIO_CREATION_TEXT_CONTRACT,
   STUDIO_TEXT_DEFAULT_LAYOUT,
   studioCreationTextContent,
 } from "./editable-content";
-import type { StudioCubicBezierSpec } from "../engine/cubic-bezier-authoring";
 import {
   importedLifetimeEditEvidence,
   MIN_OBJECT_LIFETIME_SECONDS,

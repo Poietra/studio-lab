@@ -1,7 +1,6 @@
 import { z } from "zod";
-
-import { assetReferenceV1Schema, fragmentMaterialV1Schema } from "../engine/primitives";
 import { studioCubicBezierSpecSchema } from "../engine/cubic-bezier-authoring";
+import { assetReferenceV1Schema, fragmentMaterialV1Schema } from "../engine/primitives";
 import { studioPropertyKeyframeEasingSchema } from "../engine/scene-authoring";
 import { styleProfileRefSchema } from "./style-profile";
 

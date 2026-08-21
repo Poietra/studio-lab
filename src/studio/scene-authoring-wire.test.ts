@@ -29,25 +29,27 @@ function creationProgram(type: string): SceneEdit {
                 ? { dimensions: { height: 2, width: 3 } }
                 : type === "Arc" || type === "Sector"
                   ? { dimensions: { angles: { start: 0, sweep: Math.PI / 2 }, radius: 1 } }
-                  : type === "NumberLine"
-                    ? {
-                        dimensions: {
-                          coordinateSystem: { x: { maximum: 5, minimum: -5, step: 1 } },
-                          width: 6,
-                        },
-                      }
-                    : type === "Axes" || type === "DataPlot" || type === "NumberPlane"
+                  : type === "CubicBezier"
+                    ? { dimensions: { height: 2, width: 4 } }
+                    : type === "NumberLine"
                       ? {
                           dimensions: {
-                            coordinateSystem: {
-                              x: { maximum: 5, minimum: -5, step: 1 },
-                              y: { maximum: 3, minimum: -3, step: 1 },
-                            },
-                            height: 4,
+                            coordinateSystem: { x: { maximum: 5, minimum: -5, step: 1 } },
                             width: 6,
                           },
                         }
-                      : {}),
+                      : type === "Axes" || type === "DataPlot" || type === "NumberPlane"
+                        ? {
+                            dimensions: {
+                              coordinateSystem: {
+                                x: { maximum: 5, minimum: -5, step: 1 },
+                                y: { maximum: 3, minimum: -3, step: 1 },
+                              },
+                              height: 4,
+                              width: 6,
+                            },
+                          }
+                        : {}),
           ...(type === "DataPlot"
             ? {
                 dataSeries: {
@@ -57,6 +59,19 @@ function creationProgram(type: string): SceneEdit {
                     { x: 0, y: 2 },
                     { x: 2, y: 0 },
                   ],
+                },
+              }
+            : {}),
+          ...(type === "CubicBezier"
+            ? {
+                cubicBezier: {
+                  arrowEnd: true,
+                  control1: { x: -1, y: 1 },
+                  control2: { x: 1, y: -1 },
+                  end: { x: 2, y: 0 },
+                  start: { x: -2, y: 0 },
+                  strokeCap: "round" as const,
+                  strokeWidth: 0.04,
                 },
               }
             : {}),
@@ -154,6 +169,30 @@ describe("Studio creation wire", () => {
         return operation.entity.kind;
       }),
     ).toEqual(["ellipse", "arc", "sector"]);
+  });
+
+  it("passes one four-point cubic primitive to the Rust creation kind", () => {
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 2,
+      programs: [creationProgram("CubicBezier")],
+    });
+
+    expect(command.programs[0]?.operations[0]).toEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({
+          cubicBezier: expect.objectContaining({
+            arrowEnd: true,
+            control1: { x: -1, y: 1 },
+            control2: { x: 1, y: -1 },
+            end: { x: 2, y: 0 },
+            start: { x: -2, y: 0 },
+          }),
+          dimensions: { height: 2, width: 4 },
+          kind: "cubic-bezier",
+        }),
+        kind: "create",
+      }),
+    );
   });
 
   it("maps coordinate objects to their Rust creation kinds", () => {

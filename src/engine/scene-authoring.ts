@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { studioCubicBezierSpecSchema, type StudioCubicBezierSpec } from "./cubic-bezier-authoring";
 import { easingV1Schema, type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
+import { type StudioCubicBezierSpec, studioCubicBezierSpecSchema } from "./cubic-bezier-authoring";
 import { loadPoietraWasmModule } from "./poietra-wasm-module";
 
 const encoder = new TextEncoder();
