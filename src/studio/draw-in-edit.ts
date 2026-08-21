@@ -21,6 +21,7 @@ const DRAWABLE_STUDIO_TYPES = new Set([
   "Arc",
   "Axes",
   "Circle",
+  "CubicBezier",
   "DataPlot",
   "Ellipse",
   "Line",

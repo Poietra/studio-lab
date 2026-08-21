@@ -316,6 +316,7 @@ function creationEntityKind(type: string): StudioCreationProjectionV1["entities"
   if (type === "Arrow") return "arrow";
   if (type === "Axes") return "axes";
   if (type === "Circle") return "circle";
+  if (type === "CubicBezier") return "cubic-bezier";
   if (type === "DataPlot") return "data-plot";
   if (type === "Ellipse") return "ellipse";
   if (type === "Triangle" || type === "RegularPolygon") return "regular-polygon";
@@ -1430,6 +1431,7 @@ function projectCreationWorkingState(
       entity.kind === "arc" ||
       entity.kind === "axes" ||
       entity.kind === "circle" ||
+      entity.kind === "cubic-bezier" ||
       entity.kind === "data-plot" ||
       entity.kind === "ellipse" ||
       entity.kind === "number-line" ||

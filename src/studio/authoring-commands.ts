@@ -4,6 +4,7 @@ import {
   STUDIO_TEXT_DEFAULT_LAYOUT,
   studioCreationTextContent,
 } from "./editable-content";
+import type { StudioCubicBezierSpec } from "../engine/cubic-bezier-authoring";
 import {
   importedLifetimeEditEvidence,
   MIN_OBJECT_LIFETIME_SECONDS,
@@ -32,6 +33,7 @@ export const INSERT_ENTITY_TYPES = [
   "MathTex",
   "Rectangle",
   "Circle",
+  "CubicBezier",
   "Ellipse",
   "Arc",
   "Sector",
@@ -48,6 +50,7 @@ export type InsertEntityType = (typeof INSERT_ENTITY_TYPES)[number];
 
 export type StudioEntityInput = Readonly<{
   content?: EntityContent;
+  cubicBezier?: StudioCubicBezierSpec;
   dataSeries?: DataSeries;
   dimensions?: EntityDimensions;
   image?: Readonly<{
@@ -243,6 +246,7 @@ export function createStudioEntitiesProgram(
         dependsOn: [],
         entity: {
           ...(content ? { content } : {}),
+          ...(entity.cubicBezier ? { cubicBezier: entity.cubicBezier } : {}),
           ...(entity.dataSeries ? { dataSeries: entity.dataSeries } : {}),
           ...(dimensions ? { dimensions } : {}),
           id: entityId,
@@ -466,6 +470,47 @@ export function replaceStudioCreatedDataSeriesProgram(
   });
   if (replacementCount !== 1) {
     throw new Error("The Studio-created data plot has no unique creation owner.");
+  }
+  return validateAndScheduleProgram({ ...input.owner.program, operations }, input.scene);
+}
+
+/** Replaces the one canonical cubic primitive and its placement in the owning
+ * creation Program. Rust has already normalized the supplied four points. */
+export function replaceStudioCreatedCubicBezierProgram(
+  input: Readonly<{
+    cubicBezier: StudioCubicBezierSpec;
+    dimensions: EntityDimensions;
+    entityId: string;
+    owner: ProgramRecord;
+    position: Point;
+    scene: RuntimeSceneState;
+  }>,
+): SceneEditValidationResult {
+  let createCount = 0;
+  let positionCount = 0;
+  const operations = input.owner.program.operations.map((operation) => {
+    if (operation.kind === "CreateEntity" && operation.entity.id === input.entityId) {
+      if (operation.entity.type !== "CubicBezier") {
+        throw new Error("Only a Studio-created cubic Bézier can replace its four control points.");
+      }
+      createCount += 1;
+      return {
+        ...operation,
+        entity: {
+          ...operation.entity,
+          cubicBezier: input.cubicBezier,
+          dimensions: input.dimensions,
+        },
+      } satisfies SceneEditOperation;
+    }
+    if (operation.kind === "SetProperty" && operation.key === "position" && operation.entityId === input.entityId) {
+      positionCount += 1;
+      return { ...operation, value: input.position } satisfies SceneEditOperation;
+    }
+    return operation;
+  });
+  if (createCount !== 1 || positionCount !== 1) {
+    throw new Error("The Studio-created cubic Bézier has no unique creation owner.");
   }
   return validateAndScheduleProgram({ ...input.owner.program, operations }, input.scene);
 }
@@ -957,6 +1002,7 @@ export function duplicateEntityInput(
   offset: number = STUDIO_STYLE_PROFILE.spacingUnitPx,
 ): StudioEntityInput | null {
   if (!INSERT_ENTITY_TYPES.some((type) => type === entity.type)) return null;
+  if (entity.type === "CubicBezier") return null;
   const knownDimensions = entity.geometry.dimensions.kind === "known" ? entity.geometry.dimensions.value : null;
   const dimensions = duplicatedEntityDimensions(entity.type, knownDimensions);
   return {

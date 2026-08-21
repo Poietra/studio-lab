@@ -11,6 +11,7 @@ export type StudioCommandId =
   | "insert-arc"
   | "insert-axes"
   | "insert-circle"
+  | "insert-cubic-bezier"
   | "insert-ellipse"
   | "insert-line"
   | "insert-mathtex"
@@ -41,6 +42,7 @@ export const STUDIO_COMMANDS: readonly StudioCommandDefinition[] = [
   { id: "insert-mathtex", label: "Insert equation", shortcut: "M" },
   { id: "insert-rectangle", label: "Insert rectangle", shortcut: "R" },
   { id: "insert-circle", label: "Insert circle", shortcut: "O" },
+  { id: "insert-cubic-bezier", label: "Pen tool", shortcut: "K" },
   { id: "insert-ellipse", label: "Insert ellipse", shortcut: "E" },
   { id: "insert-arc", label: "Insert arc", shortcut: "U" },
   { id: "insert-sector", label: "Insert sector", shortcut: "S" },
@@ -136,6 +138,7 @@ export function commandForShortcut(event: ShortcutEvent): StudioCommandId | null
       a: "insert-arrow",
       b: "insert-number-plane",
       e: "insert-ellipse",
+      k: "insert-cubic-bezier",
       l: "insert-line",
       m: "insert-mathtex",
       n: "insert-number-line",

@@ -9,14 +9,14 @@ use poietra_eval::{
     ProjectStudioMotionEditCommand, ProjectStudioMotionEditError, StaticRootTransformEditInput,
     StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
     StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
-    StudioBoundEntityEditInput, StudioCreationEditInput, StudioCreationMathTexOutline,
-    StudioCreationSegmentedMathTexOutline, StudioCreationTextOutline,
-    StudioFragmentMaterialAssignment, StudioMathTexTransformEditInput,
+    StudioBoundEntityEditInput, StudioCreationCubicBezierSpec, StudioCreationEditInput,
+    StudioCreationMathTexOutline, StudioCreationSegmentedMathTexOutline, StudioCreationTextOutline,
+    StudioCubicBezierError, StudioFragmentMaterialAssignment, StudioMathTexTransformEditInput,
     StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
     StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
     StudioMotionEditInput, StudioMotionEntityIdentity, StudioMotionProjectionBatch,
     StudioMotionSourceBinding, StudioSvgPathError, StudioTimelineEditInput,
-    inspect_studio_svg_path_asset, project_studio_creation_edits,
+    inspect_studio_cubic_bezier, inspect_studio_svg_path_asset, project_studio_creation_edits,
     project_studio_math_tex_transform_edits, project_studio_motion_edit,
     project_studio_timeline_edits,
 };
@@ -374,6 +374,8 @@ enum SceneAuthoringAdapterError {
     #[error(transparent)]
     StudioTimelineEdit(#[from] ApplyStudioTimelineEditError),
     #[error(transparent)]
+    StudioCubicBezier(#[from] StudioCubicBezierError),
+    #[error(transparent)]
     StudioSvgPath(#[from] StudioSvgPathError),
     #[error("the Scene authoring response could not be serialized: {0}")]
     ResponseJson(serde_json::Error),
@@ -446,6 +448,15 @@ fn studio_authoring_edit_response(
 
 fn inspect_studio_svg_path_asset_json(source: &str) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
     let inspection = inspect_studio_svg_path_asset(source)?;
+    studio_projection_response(&inspection)
+}
+
+fn inspect_studio_cubic_bezier_json(
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let spec: StudioCreationCubicBezierSpec =
+        parse_scene_authoring_command_with_limit("Studio cubic Bézier", command_json, 4_096)?;
+    let inspection = inspect_studio_cubic_bezier(&spec)?;
     studio_projection_response(&inspection)
 }
 
@@ -640,6 +651,17 @@ pub fn project_studio_creation_edit_v1(command_json: &[u8]) -> Result<Vec<u8>, J
 #[wasm_bindgen(js_name = inspectStudioSvgPathAssetV1)]
 pub fn inspect_studio_svg_path_asset_v1(source: &str) -> Result<Vec<u8>, JsValue> {
     inspect_studio_svg_path_asset_json(source)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Normalizes one four-point cubic Bézier through the canonical Rust authority.
+///
+/// # Errors
+///
+/// Returns a reasoned JavaScript error for malformed, degenerate, or unbounded input.
+#[wasm_bindgen(js_name = inspectStudioCubicBezierV1)]
+pub fn inspect_studio_cubic_bezier_v1(command_json: &[u8]) -> Result<Vec<u8>, JsValue> {
+    inspect_studio_cubic_bezier_json(command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 

@@ -22,6 +22,7 @@ const TOOL_COMMANDS: readonly Readonly<{
   { commandId: "insert-mathtex", label: "Math", tool: "MathTex" },
   { commandId: "insert-rectangle", label: "Rectangle", tool: "Rectangle" },
   { commandId: "insert-circle", label: "Circle", tool: "Circle" },
+  { commandId: "insert-cubic-bezier", label: "Pen", tool: "CubicBezier" },
   { commandId: "insert-ellipse", label: "Ellipse", tool: "Ellipse" },
   { commandId: "insert-arc", label: "Arc", tool: "Arc" },
   { commandId: "insert-sector", label: "Sector", tool: "Sector" },
@@ -154,7 +155,11 @@ export function StudioToolbar({
           );
         })}
         <span className="ml-2 hidden text-pretty text-[10px] text-zinc-600 md:inline">
-          {tool === "select" ? "Select and move objects" : "Click the canvas to place the object"}
+          {tool === "select"
+            ? "Select and move objects"
+            : tool === "CubicBezier"
+              ? "Click start, end, first control, then second control"
+              : "Click the canvas to place the object"}
         </span>
         {selectionCount > 1 ? (
           <div aria-label="Selection layout" className="ml-2 flex flex-wrap items-center gap-1" role="group">

@@ -264,6 +264,7 @@ fn static_transform_geometry_matches(
         }
         StaticRootTransformEntityKind::Arc
         | StaticRootTransformEntityKind::Axes
+        | StaticRootTransformEntityKind::CubicBezier
         | StaticRootTransformEntityKind::DataPlot
         | StaticRootTransformEntityKind::Ellipse
         | StaticRootTransformEntityKind::NumberLine

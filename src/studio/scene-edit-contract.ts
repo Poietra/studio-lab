@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { assetReferenceV1Schema, fragmentMaterialV1Schema } from "../engine/primitives";
+import { studioCubicBezierSpecSchema } from "../engine/cubic-bezier-authoring";
 import { studioPropertyKeyframeEasingSchema } from "../engine/scene-authoring";
 import { styleProfileRefSchema } from "./style-profile";
 
@@ -108,6 +109,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   operationBaseSchema.extend({
     entity: z.object({
       content: contentSchema.optional(),
+      cubicBezier: studioCubicBezierSpecSchema.optional(),
       dataSeries: dataSeriesSchema.optional(),
       dimensions: dimensionsSchema.optional(),
       id: z.string(),

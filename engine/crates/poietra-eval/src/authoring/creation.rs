@@ -14,6 +14,11 @@ use unicode_normalization::is_nfc;
 
 use crate::{EngineSessionV1, EvaluationError};
 
+use super::cubic_bezier::{
+    NormalizedStudioCubicBezier, StudioCreationCubicBezierSpec, StudioCubicBezierStrokeCap,
+    normalize_studio_cubic_bezier, studio_cubic_bezier_dimensions_are_canonical,
+    studio_cubic_bezier_is_canonical,
+};
 use super::motion::{
     ApplyStudioMotionEditError, PlannedSceneMotion, PlannedStudioMotion, StudioMotionEasing,
     StudioMotionPlan, StudioMotionProjection, StudioMotionProjectionInsertion,
@@ -48,6 +53,10 @@ enum CreateSceneEntityGeometry {
     Arrow,
     Circle {
         radius: f64,
+    },
+    CubicBezier {
+        appearance: SceneAppearanceV1,
+        path: CubicPathV1,
     },
     Image {
         asset: AssetReferenceV1,
@@ -168,6 +177,8 @@ struct CreateSceneEntitiesCommand {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioProjectedCreationEntity {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cubic_bezier: Option<StudioCreationCubicBezierSpec>,
     pub created_lifetime: IntervalV1,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_series: Option<StudioDataSeries>,
@@ -341,6 +352,8 @@ pub struct StudioCreationProjection {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCreationEntitySpec {
+    #[serde(default)]
+    pub cubic_bezier: Option<StudioCreationCubicBezierSpec>,
     #[serde(default)]
     pub data_series: Option<StudioDataSeries>,
     pub dimensions: StudioAuthoringDimensions,
@@ -589,6 +602,8 @@ pub enum CreateSceneEntitiesError {
 pub enum ProjectStudioCreationEditError {
     #[error("the normalized Studio Programs do not authorize one creation batch")]
     Unsupported,
+    #[error("the Studio cubic Bézier is unsupported: {0}")]
+    CubicBezier(#[from] super::StudioCubicBezierError),
     #[error("the Studio SVG path asset is unsupported: {0}")]
     SvgPath(#[from] super::StudioSvgPathError),
 }
@@ -761,6 +776,7 @@ struct PlannedStudioCreationEntity {
     create_operation_id: String,
     creation_transaction_id: String,
     creation_program_rank: usize,
+    cubic_bezier: Option<NormalizedStudioCubicBezier>,
     current_dimensions: StudioAuthoringDimensions,
     current_shape: Option<StudioCreationShapeState>,
     current_text_content: Option<StudioTextContent>,
@@ -1004,6 +1020,7 @@ impl StudioCreationPlan {
             .map(|state| {
                 let initial_text = studio_creation_spec_text_content(&state.spec);
                 StudioProjectedCreationEntity {
+                    cubic_bezier: state.cubic_bezier.as_ref().map(|curve| curve.spec.clone()),
                     created_lifetime: state.lifetime.clone(),
                     data_series: state.spec.data_series.clone(),
                     entity_id: state.spec.id.clone(),
@@ -2337,6 +2354,7 @@ fn plan_studio_creation_edits(
                         | StudioAuthoringEntityKind::Arrow
                         | StudioAuthoringEntityKind::Axes
                         | StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::CubicBezier
                         | StudioAuthoringEntityKind::DataPlot
                         | StudioAuthoringEntityKind::Ellipse
                         | StudioAuthoringEntityKind::Image
@@ -2494,6 +2512,24 @@ fn plan_studio_creation_edits(
             }
         }
         let initial_text_content = studio_creation_spec_text_content(spec);
+        let cubic_bezier = if spec.kind == StudioAuthoringEntityKind::CubicBezier {
+            let source = spec
+                .cubic_bezier
+                .as_ref()
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let normalized = normalize_studio_cubic_bezier(source)?;
+            if !studio_cubic_bezier_is_canonical(source, &normalized)
+                || !studio_cubic_bezier_dimensions_are_canonical(
+                    spec.dimensions,
+                    normalized.dimensions,
+                )
+            {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            Some(normalized)
+        } else {
+            None
+        };
         let svg_path = if spec.kind == StudioAuthoringEntityKind::SvgPath {
             let svg = spec
                 .svg
@@ -2505,11 +2541,13 @@ fn plan_studio_creation_edits(
         };
         let native_payload_presence_is_valid = (spec.kind == StudioAuthoringEntityKind::DataPlot)
             == spec.data_series.is_some()
+            && (spec.kind == StudioAuthoringEntityKind::CubicBezier) == spec.cubic_bezier.is_some()
             && (spec.kind == StudioAuthoringEntityKind::SvgPath) == spec.svg.is_some();
         let creation_payload_is_valid = native_payload_presence_is_valid
             && match spec.kind {
                 StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
-                    spec.image.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.image.is_none()
                         && spec.svg.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
@@ -2517,7 +2555,8 @@ fn plan_studio_creation_edits(
                         && studio_authoring_shape_size(spec.kind, spec.dimensions).is_some()
                 }
                 StudioAuthoringEntityKind::RegularPolygon => {
-                    spec.image.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.image.is_none()
                         && spec.svg.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
@@ -2525,14 +2564,16 @@ fn plan_studio_creation_edits(
                         && studio_regular_polygon_parameters(spec.dimensions).is_some()
                 }
                 StudioAuthoringEntityKind::Ellipse => {
-                    spec.image.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.image.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
                         && studio_ellipse_parameters(spec.dimensions).is_some()
                 }
                 StudioAuthoringEntityKind::Arc | StudioAuthoringEntityKind::Sector => {
-                    spec.image.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.image.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
@@ -2541,7 +2582,8 @@ fn plan_studio_creation_edits(
                 StudioAuthoringEntityKind::Axes
                 | StudioAuthoringEntityKind::NumberLine
                 | StudioAuthoringEntityKind::NumberPlane => {
-                    spec.image.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.image.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
@@ -2558,7 +2600,8 @@ fn plan_studio_creation_edits(
                         })
                 }
                 StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
-                    spec.image.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.image.is_none()
                         && spec.svg.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
@@ -2566,7 +2609,8 @@ fn plan_studio_creation_edits(
                         && spec.dimensions == StudioAuthoringDimensions::default()
                 }
                 StudioAuthoringEntityKind::MathTex => {
-                    spec.image.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.image.is_none()
                         && spec.svg.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
@@ -2578,7 +2622,8 @@ fn plan_studio_creation_edits(
                         })
                 }
                 StudioAuthoringEntityKind::Text => {
-                    spec.image.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.image.is_none()
                         && spec.svg.is_none()
                         && spec.tex_parts.is_none()
                         && initial_text_content
@@ -2587,7 +2632,8 @@ fn plan_studio_creation_edits(
                         && spec.dimensions == StudioAuthoringDimensions::default()
                 }
                 StudioAuthoringEntityKind::Image => {
-                    spec.svg.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.svg.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
@@ -2607,13 +2653,22 @@ fn plan_studio_creation_edits(
                         })
                 }
                 StudioAuthoringEntityKind::SvgPath => {
-                    spec.image.is_none()
+                    spec.cubic_bezier.is_none()
+                        && spec.image.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
                         && svg_path
                             .as_ref()
                             .is_some_and(|asset| spec.dimensions == asset.dimensions)
+                }
+                StudioAuthoringEntityKind::CubicBezier => {
+                    spec.image.is_none()
+                        && spec.svg.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && cubic_bezier.is_some()
                 }
                 StudioAuthoringEntityKind::Other => false,
             };
@@ -2744,6 +2799,7 @@ fn plan_studio_creation_edits(
                 StudioAuthoringEntityKind::Arc
                     | StudioAuthoringEntityKind::Axes
                     | StudioAuthoringEntityKind::Circle
+                    | StudioAuthoringEntityKind::CubicBezier
                     | StudioAuthoringEntityKind::DataPlot
                     | StudioAuthoringEntityKind::Ellipse
                     | StudioAuthoringEntityKind::Line
@@ -2843,6 +2899,7 @@ fn plan_studio_creation_edits(
             appearance_at: None,
             create_operation_id: create_operation.id.clone(),
             creation_program_rank: program_rank,
+            cubic_bezier,
             creation_transaction_id: program.transaction_id.clone(),
             current_dimensions: spec.dimensions,
             current_shape: matches!(
@@ -3982,6 +4039,7 @@ fn plan_studio_creation_edits(
                             StudioAuthoringEntityKind::Arc
                                 | StudioAuthoringEntityKind::Axes
                                 | StudioAuthoringEntityKind::Circle
+                                | StudioAuthoringEntityKind::CubicBezier
                                 | StudioAuthoringEntityKind::DataPlot
                                 | StudioAuthoringEntityKind::Ellipse
                                 | StudioAuthoringEntityKind::NumberLine
@@ -5102,6 +5160,30 @@ fn studio_arrow_path() -> CubicPathV1 {
     }
 }
 
+fn studio_cubic_bezier_appearance(spec: &StudioCreationCubicBezierSpec) -> SceneAppearanceV1 {
+    let cap = match spec.stroke_cap {
+        StudioCubicBezierStrokeCap::Butt => poietra_scene_ir::StrokeCapV1::Butt,
+        StudioCubicBezierStrokeCap::Round => poietra_scene_ir::StrokeCapV1::Round,
+        StudioCubicBezierStrokeCap::Square => poietra_scene_ir::StrokeCapV1::Square,
+    };
+    SceneAppearanceV1::Vector {
+        fill: None,
+        opacity: 1.0,
+        stroke: Some(poietra_scene_ir::StrokeStyleV1 {
+            cap,
+            color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 1.0,
+                green: 1.0,
+                red: 1.0,
+            },
+            join: poietra_scene_ir::StrokeJoinV1::Round,
+            miter_limit: 10.0,
+            width_world: spec.stroke_width,
+        }),
+    }
+}
+
 fn created_geometry_and_appearance(
     geometry: CreateSceneEntityGeometry,
 ) -> (SceneGeometryV1, SceneAppearanceV1, SceneCapabilityV1) {
@@ -5120,6 +5202,12 @@ fn created_geometry_and_appearance(
             },
             studio_shape_appearance(),
             SceneCapabilityV1::ShapePrimitives,
+        ),
+        CreateSceneEntityGeometry::CubicBezier { appearance, path }
+        | CreateSceneEntityGeometry::SvgPath { appearance, path } => (
+            SceneGeometryV1::CubicPath { path },
+            appearance,
+            SceneCapabilityV1::CubicPathGeometry,
         ),
         CreateSceneEntityGeometry::Image {
             asset,
@@ -5162,11 +5250,6 @@ fn created_geometry_and_appearance(
             studio_shape_appearance(),
             SceneCapabilityV1::CubicPathGeometry,
         ),
-        CreateSceneEntityGeometry::SvgPath { appearance, path } => (
-            SceneGeometryV1::CubicPath { path },
-            appearance,
-            SceneCapabilityV1::CubicPathGeometry,
-        ),
         CreateSceneEntityGeometry::LogicalGroup => (
             SceneGeometryV1::Group {},
             SceneAppearanceV1::Group { opacity: 1.0 },
@@ -5196,6 +5279,7 @@ fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
             && matches!(
                 entity.geometry,
                 CreateSceneEntityGeometry::Circle { .. }
+                    | CreateSceneEntityGeometry::CubicBezier { .. }
                     | CreateSceneEntityGeometry::Line
                     | CreateSceneEntityGeometry::Rectangle { .. }
                     | CreateSceneEntityGeometry::ShapeOutline { .. }
@@ -5515,6 +5599,7 @@ fn validate_create_scene_entities_command(
                 && !matches!(
                     &entity.geometry,
                     CreateSceneEntityGeometry::Circle { .. }
+                        | CreateSceneEntityGeometry::CubicBezier { .. }
                         | CreateSceneEntityGeometry::Rectangle { .. }
                         | CreateSceneEntityGeometry::ShapeOutline { .. }
                         | CreateSceneEntityGeometry::SvgPath { .. }
@@ -5801,6 +5886,7 @@ fn studio_creation_shape_path(
         StudioAuthoringEntityKind::Arc
         | StudioAuthoringEntityKind::Arrow
         | StudioAuthoringEntityKind::Axes
+        | StudioAuthoringEntityKind::CubicBezier
         | StudioAuthoringEntityKind::DataPlot
         | StudioAuthoringEntityKind::Ellipse
         | StudioAuthoringEntityKind::Image
@@ -6708,6 +6794,7 @@ impl EngineSessionV1 {
                 | StudioAuthoringEntityKind::Arrow
                 | StudioAuthoringEntityKind::Axes
                 | StudioAuthoringEntityKind::Circle
+                | StudioAuthoringEntityKind::CubicBezier
                 | StudioAuthoringEntityKind::DataPlot
                 | StudioAuthoringEntityKind::Ellipse
                 | StudioAuthoringEntityKind::Image
@@ -6769,6 +6856,16 @@ impl EngineSessionV1 {
                         CreateSceneEntityGeometry::Circle {
                             radius: size.width / 2.0,
                         }
+                    }
+                }
+                StudioAuthoringEntityKind::CubicBezier => {
+                    let curve = state
+                        .cubic_bezier
+                        .as_ref()
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    CreateSceneEntityGeometry::CubicBezier {
+                        appearance: studio_cubic_bezier_appearance(&curve.spec),
+                        path: curve.path.clone(),
                     }
                 }
                 StudioAuthoringEntityKind::Ellipse => {
@@ -6906,6 +7003,7 @@ impl EngineSessionV1 {
                     StudioAuthoringEntityKind::Arc
                     | StudioAuthoringEntityKind::Arrow
                     | StudioAuthoringEntityKind::Axes
+                    | StudioAuthoringEntityKind::CubicBezier
                     | StudioAuthoringEntityKind::DataPlot
                     | StudioAuthoringEntityKind::Ellipse
                     | StudioAuthoringEntityKind::Image
@@ -7470,6 +7568,7 @@ mod tests {
                             interval: create_interval.clone(),
                             kind: StudioCreationOperationKind::Create {
                                 entity: StudioCreationEntitySpec {
+                                    cubic_bezier: None,
                                     data_series: None,
                                     dimensions: StudioAuthoringDimensions {
                                         angles: None,
@@ -10965,14 +11064,38 @@ mod tests {
                 points: vec![PointV1 { x: -1.0, y: 0.0 }, PointV1 { x: 1.0, y: 1.0 }],
             },
         );
-        let StudioCreationOperationKind::Create { entity } =
-            &mut cross_payload.programs[0].operations[0].kind
-        else {
-            unreachable!();
-        };
-        entity.svg = Some(StudioCreationSvgPathSpec {
-            source: r#"<svg viewBox="0 0 1 1"><path d="M0 0 L1 1"/></svg>"#.to_owned(),
-        });
+        {
+            let StudioCreationOperationKind::Create { entity } =
+                &mut cross_payload.programs[0].operations[0].kind
+            else {
+                unreachable!();
+            };
+            entity.svg = Some(StudioCreationSvgPathSpec {
+                source: r#"<svg viewBox="0 0 1 1"><path d="M0 0 L1 1"/></svg>"#.to_owned(),
+            });
+        }
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &cross_payload.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        {
+            let StudioCreationOperationKind::Create { entity } =
+                &mut cross_payload.programs[0].operations[0].kind
+            else {
+                unreachable!();
+            };
+            entity.svg = None;
+            entity.cubic_bezier = Some(StudioCreationCubicBezierSpec {
+                arrow_end: false,
+                control1: PointV1 { x: -0.5, y: 1.0 },
+                control2: PointV1 { x: 0.5, y: -1.0 },
+                end: PointV1 { x: 1.0, y: 0.0 },
+                start: PointV1 { x: -1.0, y: 0.0 },
+                stroke_cap: StudioCubicBezierStrokeCap::Round,
+                stroke_width: 0.04,
+            });
+        }
         assert!(matches!(
             project_studio_creation_edits(bundle.scene.duration, &cross_payload.programs),
             Err(ProjectStudioCreationEditError::Unsupported)
@@ -11254,6 +11377,90 @@ mod tests {
                     AnimationChannelV1::PathTrim { entity_id, .. }
                         if entity_id == "tx:create/entity:circle"
                 ))
+        );
+    }
+
+    #[test]
+    fn normalized_cubic_bezier_creation_keeps_one_editable_segment_arrow_and_draw() {
+        let bundle = static_imported_bundle();
+        let inspection =
+            crate::authoring::inspect_studio_cubic_bezier(&StudioCreationCubicBezierSpec {
+                arrow_end: true,
+                control1: PointV1 { x: -1.0, y: 1.5 },
+                control2: PointV1 { x: 1.0, y: -1.5 },
+                end: PointV1 { x: 2.0, y: 0.5 },
+                start: PointV1 { x: -2.0, y: -0.5 },
+                stroke_cap: StudioCubicBezierStrokeCap::Square,
+                stroke_width: 0.06,
+            })
+            .unwrap();
+        let mut command = studio_draw_creation_command(&bundle);
+        let program = &mut command.programs[0];
+        let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
+            unreachable!();
+        };
+        entity.kind = StudioAuthoringEntityKind::CubicBezier;
+        entity.dimensions = inspection.dimensions;
+        entity.cubic_bezier = Some(inspection.cubic_bezier.clone());
+        let renormalized = normalize_studio_cubic_bezier(&inspection.cubic_bezier).unwrap();
+        assert!(studio_cubic_bezier_is_canonical(
+            &inspection.cubic_bezier,
+            &renormalized
+        ));
+        assert_eq!(inspection.dimensions, renormalized.dimensions);
+
+        let mut without_draw = command.clone();
+        let plain = without_draw.programs[0]
+            .operations
+            .iter_mut()
+            .find(|operation| matches!(operation.kind, StudioCreationOperationKind::DrawIn { .. }))
+            .unwrap();
+        plain.kind = StudioCreationOperationKind::FadeIn { persistent: true };
+        project_studio_creation_edits(bundle.scene.duration, &without_draw.programs).unwrap();
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(
+            projection.entities[0].cubic_bezier,
+            Some(inspection.cubic_bezier)
+        );
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "tx:create/entity:circle")
+            .unwrap();
+        assert!(matches!(
+            &created.geometry,
+            SceneGeometryV1::CubicPath { path }
+                if path.subpaths[0].segments.len() == 1 && path.subpaths.len() == 2
+        ));
+        assert!(matches!(
+            &created.appearance,
+            SceneAppearanceV1::Vector {
+                fill: None,
+                stroke: Some(poietra_scene_ir::StrokeStyleV1 {
+                    cap: poietra_scene_ir::StrokeCapV1::Square,
+                    width_world,
+                    ..
+                }),
+                ..
+            } if (*width_world - 0.06).abs() < 1.0e-12
+        ));
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                channel,
+                AnimationChannelV1::PathTrim { entity_id, .. }
+                    if entity_id == "tx:create/entity:circle"
+                    ))
         );
     }
 
@@ -13276,6 +13483,7 @@ mod tests {
                     },
                     kind: StudioCreationOperationKind::Create {
                         entity: StudioCreationEntitySpec {
+                            cubic_bezier: None,
                             data_series: None,
                             dimensions: StudioAuthoringDimensions {
                                 angles: None,

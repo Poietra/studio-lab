@@ -7175,6 +7175,7 @@ export function App({
             "Arc",
             "Axes",
             "Circle",
+            "CubicBezier",
             "DataPlot",
             "Ellipse",
             "NumberLine",
