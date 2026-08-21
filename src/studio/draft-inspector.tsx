@@ -333,7 +333,7 @@ function StepEditor({
               step="15"
               type="number"
               value={
-                step.rotationDeltaRadians === undefined
+                step.rotationDeltaRadians == null
                   ? ""
                   : Number(((step.rotationDeltaRadians * 180) / Math.PI).toFixed(3))
               }
@@ -341,10 +341,10 @@ function StepEditor({
           </label>
           <button
             className="mt-2 text-[10px] text-amber-400 underline underline-offset-2 hover:text-amber-200"
-            onClick={() => onChange(setMotionSpinDegrees(step, step.rotationDeltaRadians === undefined ? 360 : null))}
+            onClick={() => onChange(setMotionSpinDegrees(step, step.rotationDeltaRadians == null ? 360 : null))}
             type="button"
           >
-            {step.rotationDeltaRadians === undefined ? "Add 360° spin" : "Remove spin"}
+            {step.rotationDeltaRadians == null ? "Add 360° spin" : "Remove spin"}
           </button>
           <button
             className="ml-3 mt-2 text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"

@@ -25,20 +25,29 @@ const MOTION: CreateMotionSuggestion = {
   easing: "smooth",
   end: 7,
   kind: "create-motion",
+  rotationDeltaRadians: null,
   start: 5,
   targetObjectIds: ["equation_1"],
 };
 
+const STUDIO_CREATED_ENTITY_ID = "tx:spin-created/entity:circle";
+const STUDIO_MOTION: CreateMotionSuggestion = {
+  ...MOTION,
+  targetObjectIds: [STUDIO_CREATED_ENTITY_ID],
+};
 const STUDIO_CREATED_SCENE = {
   ...STUDIO_FIXTURE_SCENE,
   objectGraph: {
     ...STUDIO_FIXTURE_SCENE.objectGraph,
     entities: {
       ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
-      equation_1: {
-        ...STUDIO_FIXTURE_SCENE.objectGraph.entities.equation_1,
+      [STUDIO_CREATED_ENTITY_ID]: {
+        id: STUDIO_CREATED_ENTITY_ID,
+        lifetime: [{ end: STUDIO_FIXTURE_SCENE.duration, start: 0 }],
+        provisional: false,
         sourceIdentity: { kind: "unknown" as const, reason: "Created in Studio." },
         transactionId: "spin-created",
+        type: "Circle",
       },
     },
   },
@@ -46,7 +55,7 @@ const STUDIO_CREATED_SCENE = {
 
 describe("DraftInspector execution capabilities", () => {
   it("edits motion spin in degrees while keeping client Apply available", () => {
-    const spinningMotion = { ...MOTION, rotationDeltaRadians: 2 * Math.PI };
+    const spinningMotion = { ...STUDIO_MOTION, rotationDeltaRadians: 2 * Math.PI };
     const validation = canonicalizeSuggestionProgram(spinningMotion, {
       capturedPlayhead: 5,
       origin: "direct-manipulation",

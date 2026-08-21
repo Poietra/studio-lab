@@ -11,11 +11,11 @@ import {
 import { samplePropertyValue } from "./property-sampling";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
-function canonical(operation: EditSuggestionOperation) {
+function canonical(operation: EditSuggestionOperation, scene = STUDIO_FIXTURE_SCENE) {
   const result = canonicalizeSuggestionProgram(operation, {
     capturedPlayhead: 5,
     origin: "fixture",
-    scene: STUDIO_FIXTURE_SCENE,
+    scene,
     transactionId: "motion-clip-edit",
   });
   expect(result.kind).toBe("valid");
@@ -33,6 +33,26 @@ const motion = {
   start: 5,
   targetObjectIds: ["equation_1"],
 } satisfies EditSuggestionOperation;
+
+const STUDIO_CREATED_ENTITY_ID = "tx:motion-clip/entity:circle";
+const studioMotion = { ...motion, targetObjectIds: [STUDIO_CREATED_ENTITY_ID] } satisfies EditSuggestionOperation;
+const studioScene = {
+  ...STUDIO_FIXTURE_SCENE,
+  objectGraph: {
+    ...STUDIO_FIXTURE_SCENE.objectGraph,
+    entities: {
+      ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+      [STUDIO_CREATED_ENTITY_ID]: {
+        id: STUDIO_CREATED_ENTITY_ID,
+        lifetime: [{ end: STUDIO_FIXTURE_SCENE.duration, start: 0 }],
+        provisional: false,
+        sourceIdentity: { kind: "unknown" as const, reason: "Created in Studio." },
+        transactionId: "motion-clip",
+        type: "Circle",
+      },
+    },
+  },
+};
 
 describe("applied motion clip editing", () => {
   it("retimes the authoring operation matched to a canonical motion identity", () => {
@@ -57,14 +77,17 @@ describe("applied motion clip editing", () => {
   });
 
   it("adds, updates, removes, and preserves one relative spin", () => {
-    const addedStep = setMotionSpinDegrees(motion, 360);
+    const addedStep = setMotionSpinDegrees(studioMotion, 360);
     expect(addedStep.rotationDeltaRadians).toBeCloseTo(2 * Math.PI);
     const updated = setMotionSpinDegrees(addedStep, -180);
     expect(updated.rotationDeltaRadians).toBeCloseTo(-Math.PI);
     expect(setMotionSpinDegrees(updated, 0)).not.toHaveProperty("rotationDeltaRadians");
 
-    const added = { ...motion, rotationDeltaRadians: addedStep.rotationDeltaRadians } satisfies EditSuggestionOperation;
-    const program = canonical(added);
+    const added = {
+      ...studioMotion,
+      rotationDeltaRadians: addedStep.rotationDeltaRadians,
+    } satisfies EditSuggestionOperation;
+    const program = canonical(added, studioScene);
     const canonicalMotion = program.operations.find((operation) => operation.kind === "CreateMotion");
     if (!canonicalMotion) throw new Error("Expected a canonical motion.");
     expect(canonicalMotion.rotationDeltaRadians).toBeCloseTo(2 * Math.PI);

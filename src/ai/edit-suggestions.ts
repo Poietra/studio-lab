@@ -80,7 +80,7 @@ export type CreateMotionSuggestion = Readonly<{
   easing: "linear" | "smooth";
   end: number;
   kind: "create-motion";
-  rotationDeltaRadians?: number;
+  rotationDeltaRadians?: number | null;
   start: number;
   targetObjectIds: readonly string[];
 }>;

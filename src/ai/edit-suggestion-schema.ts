@@ -74,7 +74,7 @@ const createMotionFields = {
     .number()
     .finite()
     .refine((value) => value !== 0)
-    .optional(),
+    .nullish(),
   start: z.number(),
   targetObjectIds: targetObjectIdsSchema,
 } as const;
