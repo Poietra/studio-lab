@@ -48,6 +48,20 @@ async function scrubMotionClip(page: Page, clip: Locator, progress: number) {
     .toBeCloseTo(time, 1);
 }
 
+async function scrubDrawInClip(page: Page, clip: Locator, progress: number) {
+  const slider = page.getByRole("slider", { name: "Scene playhead" });
+  const sceneDuration = Number(await slider.getAttribute("max"));
+  const placement = await clip.evaluate((element) => ({
+    left: Number.parseFloat((element as HTMLElement).style.left),
+    width: Number.parseFloat((element as HTMLElement).style.width),
+  }));
+  const time = Number(((sceneDuration * (placement.left + placement.width * progress)) / 100).toFixed(2));
+  await slider.fill(String(time));
+  await expect
+    .poll(async () => Number(await page.locator("[data-studio-canvas]").getAttribute("data-preview-sample-time")))
+    .toBeCloseTo(time, 1);
+}
+
 async function preparedDimensions(wrapper: Locator) {
   return wrapper.evaluate((element) => ({
     height: Number((element as HTMLElement).dataset.studioEntityHeight),
@@ -74,7 +88,79 @@ async function exportLocalMp4(page: Page) {
   expect(download!.suggestedFilename()).toMatch(/\.mp4$/u);
   const path = await download!.path();
   if (!path) throw new Error("The native MP4 download was not persisted by Playwright.");
-  expect((await readFile(path)).byteLength).toBeGreaterThan(0);
+  const bytes = await readFile(path);
+  expect(bytes.byteLength).toBeGreaterThan(0);
+  return bytes.toString("base64");
+}
+
+async function decodedBrightPixelCounts(page: Page, mp4Base64: string, sampleTimes: readonly number[]) {
+  return page.evaluate(
+    async ({ mp4Base64, sampleTimes }) => {
+      const encoded = atob(mp4Base64);
+      const bytes = Uint8Array.from(encoded, (character) => character.charCodeAt(0));
+      const url = URL.createObjectURL(new Blob([bytes], { type: "video/mp4" }));
+      const video = document.createElement("video");
+      video.muted = true;
+      video.preload = "auto";
+      video.src = url;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(
+            () => reject(new Error("The exported Draw MP4 did not become decodable.")),
+            15_000,
+          );
+          video.addEventListener(
+            "loadeddata",
+            () => {
+              clearTimeout(timeout);
+              resolve();
+            },
+            { once: true },
+          );
+          video.addEventListener(
+            "error",
+            () => {
+              clearTimeout(timeout);
+              reject(new Error(video.error?.message || "Chromium rejected the exported Draw MP4."));
+            },
+            { once: true },
+          );
+          video.load();
+        });
+        const canvas = document.createElement("canvas");
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
+        if (!context) throw new Error("The decoded Draw frame canvas is unavailable.");
+        const counts: number[] = [];
+        for (const sampleTime of sampleTimes) {
+          await new Promise<void>((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error(`MP4 seek to ${sampleTime}s timed out.`)), 15_000);
+            video.addEventListener(
+              "seeked",
+              () => {
+                clearTimeout(timeout);
+                resolve();
+              },
+              { once: true },
+            );
+            video.currentTime = sampleTime;
+          });
+          context.drawImage(video, 0, 0);
+          const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+          let bright = 0;
+          for (let offset = 0; offset < pixels.length; offset += 4) {
+            if ((pixels[offset] ?? 0) + (pixels[offset + 1] ?? 0) + (pixels[offset + 2] ?? 0) > 90) bright += 1;
+          }
+          counts.push(bright);
+        }
+        return counts;
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    },
+    { mp4Base64, sampleTimes },
+  );
 }
 
 async function createBlankWorkspace(page: Page, name: string) {
@@ -235,6 +321,110 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
       ),
     ).toBe(false);
     projectId = null;
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
+test("draws a Studio Line through scrub, retime, history, reload, and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Draw entrance fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert line/ }).click();
+    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const line = page.getByRole("button", { name: "Move Line", exact: true });
+    await expect(line).toBeVisible();
+    const lineId = await line.getAttribute("data-studio-entity");
+    if (!lineId) throw new Error("The Studio Line did not expose its entity id.");
+    const lineWrapper = page.locator(`[data-studio-entity-wrapper="${lineId}"]`);
+
+    await page.getByRole("button", { name: "Add Draw entrance for Line" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    let drawClip = page.getByRole("button", { name: "Edit Line Draw entrance" });
+    await expect(drawClip).toBeVisible();
+    await scrubDrawInClip(page, drawClip, 0);
+    await expect(lineWrapper).toHaveCount(0);
+    await scrubDrawInClip(page, drawClip, 0.5);
+    await expect(lineWrapper).toHaveCount(1);
+    const middleWidth = (await preparedDimensions(lineWrapper)).width;
+    expect(middleWidth).toBeGreaterThan(0);
+    await scrubDrawInClip(page, drawClip, 1);
+    const endWidth = (await preparedDimensions(lineWrapper)).width;
+    expect(endWidth).toBeGreaterThan(middleWidth * 1.5);
+
+    const initialDrawTitle = await drawClip.getAttribute("title");
+    if (!initialDrawTitle) throw new Error("The Draw clip did not expose its interval and easing.");
+    await drawClip.click();
+    const drawDuration = page.getByRole("spinbutton", { name: "Draw duration for Line" });
+    const drawEasing = page.getByRole("combobox", { name: "Draw easing for Line" });
+    await expect(drawDuration).toBeEnabled();
+    let drawRevision = await canvas.getAttribute("data-preview-revision");
+    await drawDuration.press("Control+A");
+    await drawDuration.pressSequentially("1.5");
+    await drawDuration.press("Enter");
+    await expect.poll(() => canvas.getAttribute("data-preview-revision")).not.toBe(drawRevision);
+    await expect(drawEasing).toBeEnabled();
+    drawRevision = await canvas.getAttribute("data-preview-revision");
+    await drawEasing.selectOption("linear");
+    await expect.poll(() => canvas.getAttribute("data-preview-revision")).not.toBe(drawRevision);
+    await expect(drawDuration).toBeEnabled();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    drawClip = page.getByRole("button", { name: "Edit Line Draw entrance" });
+    await drawClip.click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await expect(page.getByRole("spinbutton", { name: "Draw duration for Line" })).toHaveValue("1.5");
+    await expect(page.getByRole("combobox", { name: "Draw easing for Line" })).toHaveValue("linear");
+    await page.getByRole("button", { name: "Discard" }).click();
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(drawClip).toHaveAttribute("title", initialDrawTitle);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(drawClip).toHaveAttribute("title", "Draw 0.00–1.50s · linear");
+    await drawClip.click();
+    await expect(page.getByRole("spinbutton", { name: "Draw duration for Line" })).toHaveValue("1.5");
+    await expect(page.getByRole("combobox", { name: "Draw easing for Line" })).toHaveValue("linear");
+    await page.getByRole("button", { name: "Discard" }).click();
+
+    await drawClip.click();
+    await page.getByRole("button", { name: "Remove Draw" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await expect(drawClip).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(drawClip).toHaveCount(1);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(drawClip).toHaveCount(0);
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(drawClip).toHaveCount(1);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Draw entrance fixture workspace" }).click();
+    drawClip = page.getByRole("button", { name: "Edit Line Draw entrance" });
+    await expect(drawClip).toBeVisible();
+    await drawClip.click();
+    await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-renderer", "presented");
+    await expect(page.getByRole("spinbutton", { name: "Draw duration for Line" })).toHaveValue("1.5");
+    await expect(page.getByRole("combobox", { name: "Draw easing for Line" })).toHaveValue("linear");
+    await page.getByRole("button", { name: "Discard" }).click();
+
+    const mp4 = await exportLocalMp4(page);
+    const exportedStrokePixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6]);
+    expect(exportedStrokePixels[1] ?? 0).toBeGreaterThan((exportedStrokePixels[0] ?? 0) + 20);
+    expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan((exportedStrokePixels[1] ?? 0) * 1.25);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
