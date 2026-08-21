@@ -1015,6 +1015,7 @@ type StudioCreationOperationV1 = Readonly<{
         delta: Readonly<{ x: number; y: number }>;
         easing: "linear" | "smooth";
         kind: "create-motion";
+        rotationDeltaRadians?: number;
         targetEntityIds: readonly string[];
       }>
     | Readonly<{ childEntityIds: readonly string[]; groupId: string; kind: "group" }>

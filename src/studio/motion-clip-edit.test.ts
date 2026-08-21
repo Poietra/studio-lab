@@ -6,6 +6,7 @@ import {
   adjustAppliedMotionClipControl,
   appliedMotionClipReadOnlyReason,
   retimeAppliedMotionClip,
+  setMotionSpinDegrees,
 } from "./motion-clip-edit";
 import { samplePropertyValue } from "./property-sampling";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
@@ -53,6 +54,30 @@ describe("applied motion clip editing", () => {
       operation: { anchor: { kind: "absolute", seconds: 7 }, end: 8.75, start: 7 },
       stepIndex: 0,
     });
+  });
+
+  it("adds, updates, removes, and preserves one relative spin", () => {
+    const addedStep = setMotionSpinDegrees(motion, 360);
+    expect(addedStep.rotationDeltaRadians).toBeCloseTo(2 * Math.PI);
+    const updated = setMotionSpinDegrees(addedStep, -180);
+    expect(updated.rotationDeltaRadians).toBeCloseTo(-Math.PI);
+    expect(setMotionSpinDegrees(updated, 0)).not.toHaveProperty("rotationDeltaRadians");
+
+    const added = { ...motion, rotationDeltaRadians: addedStep.rotationDeltaRadians } satisfies EditSuggestionOperation;
+    const program = canonical(added);
+    const canonicalMotion = program.operations.find((operation) => operation.kind === "CreateMotion");
+    if (!canonicalMotion) throw new Error("Expected a canonical motion.");
+    expect(canonicalMotion.rotationDeltaRadians).toBeCloseTo(2 * Math.PI);
+    const retimed = retimeAppliedMotionClip({
+      duration: 2,
+      operation: added,
+      operationId: canonicalMotion.id,
+      program,
+      start: 7,
+    });
+    expect(retimed.kind).toBe("valid");
+    if (retimed.kind !== "valid" || retimed.operation.kind !== "create-motion") return;
+    expect(retimed.operation.rotationDeltaRadians).toBeCloseTo(2 * Math.PI);
   });
 
   it("retimes every parallel step as one composed interval", () => {

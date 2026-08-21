@@ -70,6 +70,11 @@ const createMotionFields = {
   easing: z.enum(["linear", "smooth"]),
   end: z.number(),
   kind: z.literal("create-motion"),
+  rotationDeltaRadians: z
+    .number()
+    .finite()
+    .refine((value) => value !== 0)
+    .optional(),
   start: z.number(),
   targetObjectIds: targetObjectIdsSchema,
 } as const;

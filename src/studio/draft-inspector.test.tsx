@@ -30,6 +30,34 @@ const MOTION: CreateMotionSuggestion = {
 };
 
 describe("DraftInspector execution capabilities", () => {
+  it("edits motion spin in degrees while keeping client Apply available", () => {
+    const spinningMotion = { ...MOTION, rotationDeltaRadians: 2 * Math.PI };
+    const validation = canonicalizeSuggestionProgram(spinningMotion, {
+      capturedPlayhead: 5,
+      origin: "direct-manipulation",
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "spinning-motion-inspector",
+    });
+    expect(validation.kind).toBe("valid");
+    const markup = renderToStaticMarkup(
+      <DraftInspector
+        error={null}
+        isApplying={false}
+        onApply={() => undefined}
+        onDiscard={() => undefined}
+        onOperationChange={() => undefined}
+        operation={spinningMotion}
+        record={programRecord(validation.program, validation)}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Motion spin degrees"');
+    expect(markup).toContain('value="360"');
+    expect(markup).toContain("Remove spin");
+    expect(markup).toMatch(/<dd class="mt-0.5 text-zinc-300">unsupported<\/dd>/);
+    expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
+  });
+
   it("shows StyleProfile warnings without blocking Apply", () => {
     const validation = canonicalizeSuggestionProgram(MOTION, {
       capturedPlayhead: 5,
@@ -75,6 +103,7 @@ describe("DraftInspector execution capabilities", () => {
     expect(markup).toContain("Style profile deviation");
     expect(markup).toContain("poietra-balanced");
     expect(markup).toContain("poietra-balanced recommends 1.5s");
+    expect(markup).toContain("Add 360° spin");
     expect(markup).toMatch(/<button[^>]*>Apply program<\/button>/);
     expect(markup).not.toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
   });

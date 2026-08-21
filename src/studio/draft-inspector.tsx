@@ -7,6 +7,7 @@ import {
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { cn } from "../lib/cn";
 import type { ProgramRecord } from "./model";
+import { setMotionSpinDegrees } from "./motion-clip-edit";
 import { programExecutionCapabilities } from "./operation-registry";
 import { EquationContent } from "./prototype-rendering";
 
@@ -314,8 +315,39 @@ function StepEditor({
               <option value="linear">Linear</option>
             </select>
           </label>
+          <label className="mt-2 block text-[10px] text-zinc-500">
+            Relative spin (degrees)
+            <input
+              aria-label="Motion spin degrees"
+              className={inputClass}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                if (value === "") {
+                  onChange(setMotionSpinDegrees(step, null));
+                  return;
+                }
+                const degrees = Number(value);
+                if (Number.isFinite(degrees)) onChange(setMotionSpinDegrees(step, degrees));
+              }}
+              placeholder="No spin"
+              step="15"
+              type="number"
+              value={
+                step.rotationDeltaRadians === undefined
+                  ? ""
+                  : Number(((step.rotationDeltaRadians * 180) / Math.PI).toFixed(3))
+              }
+            />
+          </label>
           <button
-            className="mt-2 text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"
+            className="mt-2 text-[10px] text-amber-400 underline underline-offset-2 hover:text-amber-200"
+            onClick={() => onChange(setMotionSpinDegrees(step, step.rotationDeltaRadians === undefined ? 360 : null))}
+            type="button"
+          >
+            {step.rotationDeltaRadians === undefined ? "Add 360° spin" : "Remove spin"}
+          </button>
+          <button
+            className="ml-3 mt-2 text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"
             disabled={step.controlOffset.x === 0 && step.controlOffset.y === 0}
             onClick={() => onChange({ ...step, controlOffset: { x: 0, y: 0 } })}
             type="button"

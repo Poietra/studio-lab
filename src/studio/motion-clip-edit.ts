@@ -7,6 +7,15 @@ const MINIMUM_MOTION_DURATION = 0.1;
 
 type MotionStep = Extract<EditableSuggestionStep, { kind: "create-motion" }>;
 
+export function setMotionSpinDegrees(step: MotionStep, degrees: number | null): MotionStep {
+  if (degrees === null || degrees === 0) {
+    const { rotationDeltaRadians: _rotationDeltaRadians, ...withoutSpin } = step;
+    return withoutSpin;
+  }
+  if (!Number.isFinite(degrees)) throw new TypeError("Motion spin must use a finite number of degrees.");
+  return { ...step, rotationDeltaRadians: (degrees * Math.PI) / 180 };
+}
+
 export type MotionClipEditResult =
   | Readonly<{
       kind: "invalid";

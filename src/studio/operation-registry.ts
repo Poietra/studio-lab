@@ -190,7 +190,9 @@ function createMotionExecution(
     );
   }
   const curved = Math.abs(operation.controlOffset.x) > 0.001 || Math.abs(operation.controlOffset.y) > 0.001;
-  if (curved || operation.delta.x !== 0 || operation.delta.y !== 0) return SUPPORTED_EXECUTION;
+  if (curved || operation.delta.x !== 0 || operation.delta.y !== 0) {
+    return operation.rotationDeltaRadians === undefined ? SUPPORTED_EXECUTION : CLIENT_ONLY_EXECUTION;
+  }
   return previewOnlyExecution(
     "A straight CreateMotion with no displacement can be previewed, but it cannot be lowered to Manim source.",
   );
@@ -868,11 +870,30 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"ResizeEntity">,
   CreateMotion: {
     access: (operation) => ({
-      reads: operation.targetEntityIds.map((entityId) => ({ channel: "position" as const, entityId })),
-      writes: operation.targetEntityIds.map((entityId) => ({ channel: "position" as const, entityId })),
+      reads: operation.targetEntityIds.flatMap((entityId) => [
+        { channel: "position" as const, entityId },
+        ...(operation.rotationDeltaRadians === undefined ? [] : [{ channel: "rotation" as const, entityId }]),
+      ]),
+      writes: operation.targetEntityIds.flatMap((entityId) => [
+        { channel: "position" as const, entityId },
+        ...(operation.rotationDeltaRadians === undefined ? [] : [{ channel: "rotation" as const, entityId }]),
+      ]),
     }),
     execution: createMotionExecution,
-    validate: (operation, scene) => entityIssues(operation.targetEntityIds, operation, scene),
+    validate: (operation, scene) => [
+      ...entityIssues(operation.targetEntityIds, operation, scene),
+      ...(operation.rotationDeltaRadians !== undefined && operation.targetEntityIds.length !== 1
+        ? [
+            {
+              code: "schema-invalid" as const,
+              field: "targetEntityIds",
+              message: "Motion spin requires exactly one Studio-created target.",
+              operationId: operation.id,
+              severity: "error" as const,
+            },
+          ]
+        : []),
+    ],
   } satisfies Capability<"CreateMotion">,
   TransformContent: {
     access: (operation) => ({

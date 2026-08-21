@@ -130,6 +130,11 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     delta: pointSchema,
     easing: z.enum(["linear", "smooth"]),
     kind: z.literal("CreateMotion"),
+    rotationDeltaRadians: z
+      .number()
+      .finite()
+      .refine((value) => value !== 0)
+      .optional(),
     targetEntityIds: z.array(z.string()).min(1),
   }),
   operationBaseSchema.extend({
