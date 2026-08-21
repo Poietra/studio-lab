@@ -14,6 +14,7 @@ mod math_tex_transform;
 mod motion;
 mod presence;
 mod static_root;
+mod svg_path;
 mod timeline;
 mod transform;
 
@@ -30,7 +31,8 @@ pub use creation::{
     ProjectStudioCreationEditError, StudioCreationEditInput, StudioCreationEntitySpec,
     StudioCreationImageSpec, StudioCreationOperation, StudioCreationOperationKind,
     StudioCreationProjectedMutation, StudioCreationProjectedMutationKind, StudioCreationProjection,
-    StudioProjectedCreationEntity, StudioPropertyEasing, project_studio_creation_edits,
+    StudioCreationSvgPathSpec, StudioProjectedCreationEntity, StudioPropertyEasing,
+    project_studio_creation_edits,
 };
 pub use fragment_material::{
     ApplyStudioFragmentMaterialsCommand, ApplyStudioFragmentMaterialsError,
@@ -73,6 +75,10 @@ pub use static_root::{
     reason = "preserve the existing authoring API while its projection leaves are test-only here"
 )]
 pub use static_root::{StudioStaticRootMutation, StudioStaticRootProjectedMutation};
+pub use svg_path::{
+    MAX_STUDIO_SVG_SOURCE_BYTES, StudioSvgPathAssetInspection, StudioSvgPathError,
+    inspect_studio_svg_path_asset,
+};
 pub use timeline::{
     ApplyStudioTimelineEditCommand, ApplyStudioTimelineEditError, StudioTimelineEditInput,
     StudioTimelineEditProjection, StudioTimelineEditTransform, StudioTimelineEventKind,
@@ -206,6 +212,7 @@ pub enum StudioAuthoringEntityKind {
     Rectangle,
     RegularPolygon,
     Sector,
+    SvgPath,
     Text,
 }
 

@@ -214,6 +214,7 @@ function normalizedStudioCreationOperation(
         dimensions: operation.entity.dimensions ?? {},
         id: operation.entity.id,
         ...(type === "ImageMobject" ? { image: operation.entity.image ?? null } : {}),
+        ...(type === "SvgPath" ? { svg: operation.entity.svg ?? null } : {}),
         kind:
           type === "Arc"
             ? "arc"
@@ -241,9 +242,11 @@ function normalizedStudioCreationOperation(
                                   ? "rectangle"
                                   : type === "Sector"
                                     ? "sector"
-                                    : type === "Text"
-                                      ? "text"
-                                      : "other",
+                                    : type === "SvgPath"
+                                      ? "svg-path"
+                                      : type === "Text"
+                                        ? "text"
+                                        : "other",
         layout: textContent?.layout ?? null,
         lifetimeEnd: operation.entity.lifetime.end,
         lifetimeStart: operation.entity.lifetime.start,
@@ -620,7 +623,9 @@ export function studioMathTexTransformStudioEntities(
             ? "math-tex"
             : entity.type === "Rectangle"
               ? "rectangle"
-              : "other",
+              : entity.type === "SvgPath"
+                ? "svg-path"
+                : "other",
   }));
 }
 
@@ -812,7 +817,9 @@ export function staticRootTransformStudioEntities(
                           ? "rectangle"
                           : entity.type === "Sector"
                             ? "sector"
-                            : "other",
+                            : entity.type === "SvgPath"
+                              ? "svg-path"
+                              : "other",
     objectGraphKey,
     position: entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null,
     provisional: entity.provisional,

@@ -8,8 +8,10 @@ rust-version.workspace = true
 [dependencies]
 poietra-geometry.workspace = true
 poietra-scene-ir.workspace = true
+roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+svgtypes.workspace = true
 thiserror.workspace = true
 unicode-normalization.workspace = true
 

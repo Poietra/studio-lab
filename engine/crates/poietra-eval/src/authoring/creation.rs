@@ -21,6 +21,7 @@ use super::motion::{
     authored_motion_easing, motion_easing, project_studio_motion_plan,
 };
 use super::presence::{PersistentSceneRemoval, apply_persistent_scene_removals};
+use super::svg_path::{NormalizedStudioSvgPathAsset, normalize_studio_svg_path_asset};
 use super::timeline::{SceneTimelineInsertion, insert_scene_time, shift_interval_for_insertion};
 use super::transform::{apply_world_rotation, rotation_is_noop, set_vector_paint_alpha};
 use super::{
@@ -62,6 +63,10 @@ enum CreateSceneEntityGeometry {
         path: CubicPathV1,
     },
     ShapeOutline {
+        path: CubicPathV1,
+    },
+    SvgPath {
+        appearance: SceneAppearanceV1,
         path: CubicPathV1,
     },
     LogicalGroup,
@@ -188,6 +193,13 @@ pub struct StudioCreationImageSpec {
     pub asset: AssetReferenceV1,
     pub local_rect: ImageLocalRectV1,
     pub sampler: ImageSamplerV1,
+}
+
+/// One bounded SVG source admitted and normalized exclusively by the Rust core.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioCreationSvgPathSpec {
+    pub source: String,
 }
 
 /// One exact property mutation resolved by the shared creation planner.
@@ -324,6 +336,8 @@ pub struct StudioCreationEntitySpec {
     pub lifetime_start: f64,
     pub text: Option<String>,
     pub tex_parts: Option<Vec<String>>,
+    #[serde(default)]
+    pub svg: Option<StudioCreationSvgPathSpec>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -557,6 +571,8 @@ pub enum CreateSceneEntitiesError {
 pub enum ProjectStudioCreationEditError {
     #[error("the normalized Studio Programs do not authorize one creation batch")]
     Unsupported,
+    #[error("the Studio SVG path asset is unsupported: {0}")]
+    SvgPath(#[from] super::StudioSvgPathError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -756,6 +772,7 @@ struct PlannedStudioCreationEntity {
     uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
     spec: StudioCreationEntitySpec,
+    svg_path: Option<NormalizedStudioSvgPathAsset>,
     visible: bool,
     write_easing: Option<EasingV1>,
     write_interval: Option<IntervalV1>,
@@ -2310,6 +2327,7 @@ fn plan_studio_creation_edits(
                         | StudioAuthoringEntityKind::Rectangle
                         | StudioAuthoringEntityKind::RegularPolygon
                         | StudioAuthoringEntityKind::Sector
+                        | StudioAuthoringEntityKind::SvgPath
                         | StudioAuthoringEntityKind::Text
                 )
             {
@@ -2456,10 +2474,20 @@ fn plan_studio_creation_edits(
             }
         }
         let initial_text_content = studio_creation_spec_text_content(spec);
+        let svg_path = if spec.kind == StudioAuthoringEntityKind::SvgPath {
+            let svg = spec
+                .svg
+                .as_ref()
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            Some(normalize_studio_svg_path_asset(&svg.source)?)
+        } else {
+            None
+        };
         let creation_payload_is_valid =
             match spec.kind {
                 StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
                     spec.image.is_none()
+                        && spec.svg.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
@@ -2467,6 +2495,7 @@ fn plan_studio_creation_edits(
                 }
                 StudioAuthoringEntityKind::RegularPolygon => {
                     spec.image.is_none()
+                        && spec.svg.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
@@ -2497,6 +2526,7 @@ fn plan_studio_creation_edits(
                 }
                 StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
                     spec.image.is_none()
+                        && spec.svg.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
@@ -2504,6 +2534,7 @@ fn plan_studio_creation_edits(
                 }
                 StudioAuthoringEntityKind::MathTex => {
                     spec.image.is_none()
+                        && spec.svg.is_none()
                         && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.dimensions.angles.is_none()
@@ -2515,6 +2546,7 @@ fn plan_studio_creation_edits(
                 }
                 StudioAuthoringEntityKind::Text => {
                     spec.image.is_none()
+                        && spec.svg.is_none()
                         && spec.tex_parts.is_none()
                         && initial_text_content
                             .as_ref()
@@ -2522,7 +2554,8 @@ fn plan_studio_creation_edits(
                         && spec.dimensions == StudioAuthoringDimensions::default()
                 }
                 StudioAuthoringEntityKind::Image => {
-                    spec.text.is_none()
+                    spec.svg.is_none()
+                        && spec.text.is_none()
                         && spec.layout.is_none()
                         && spec.tex_parts.is_none()
                         && spec.dimensions == StudioAuthoringDimensions::default()
@@ -2539,6 +2572,15 @@ fn plan_studio_creation_edits(
                                 && image.local_rect.right > image.local_rect.left
                                 && image.local_rect.top > image.local_rect.bottom
                         })
+                }
+                StudioAuthoringEntityKind::SvgPath => {
+                    spec.image.is_none()
+                        && spec.text.is_none()
+                        && spec.layout.is_none()
+                        && spec.tex_parts.is_none()
+                        && svg_path
+                            .as_ref()
+                            .is_some_and(|asset| spec.dimensions == asset.dimensions)
                 }
                 StudioAuthoringEntityKind::Other => false,
             };
@@ -2676,7 +2718,19 @@ fn plan_studio_creation_edits(
                     | StudioAuthoringEntityKind::Rectangle
                     | StudioAuthoringEntityKind::RegularPolygon
                     | StudioAuthoringEntityKind::Sector
-            ) || !studio_timeline_semantic_values_match(draw.start, lifetime.start)
+                    | StudioAuthoringEntityKind::SvgPath
+            ) || (spec.kind == StudioAuthoringEntityKind::SvgPath
+                && !svg_path.as_ref().is_some_and(|asset| {
+                    matches!(
+                        &asset.appearance,
+                        SceneAppearanceV1::Vector {
+                            fill: None,
+                            stroke: Some(_),
+                            ..
+                        }
+                    )
+                }))
+                || !studio_timeline_semantic_values_match(draw.start, lifetime.start)
                 || draw.end > lifetime.end
         }) {
             return Err(ProjectStudioCreationEditError::Unsupported);
@@ -2796,6 +2850,7 @@ fn plan_studio_creation_edits(
             uniform_scale_keyframes: Vec::new(),
             source_z_index: None,
             spec: spec.clone(),
+            svg_path,
             visible: true,
             write_easing,
             write_interval,
@@ -4953,6 +5008,11 @@ fn created_geometry_and_appearance(
             studio_shape_appearance(),
             SceneCapabilityV1::CubicPathGeometry,
         ),
+        CreateSceneEntityGeometry::SvgPath { appearance, path } => (
+            SceneGeometryV1::CubicPath { path },
+            appearance,
+            SceneCapabilityV1::CubicPathGeometry,
+        ),
         CreateSceneEntityGeometry::LogicalGroup => (
             SceneGeometryV1::Group {},
             SceneAppearanceV1::Group { opacity: 1.0 },
@@ -4985,6 +5045,7 @@ fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
                     | CreateSceneEntityGeometry::Line
                     | CreateSceneEntityGeometry::Rectangle { .. }
                     | CreateSceneEntityGeometry::ShapeOutline { .. }
+                    | CreateSceneEntityGeometry::SvgPath { .. }
             )
     })
 }
@@ -5218,6 +5279,10 @@ fn validate_studio_camera_animation_command(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the bounded creation admission validates one atomic command without partial side effects"
+)]
 fn validate_create_scene_entities_command(
     session: &EngineSessionV1,
     command: &CreateSceneEntitiesCommand,
@@ -5298,6 +5363,7 @@ fn validate_create_scene_entities_command(
                     CreateSceneEntityGeometry::Circle { .. }
                         | CreateSceneEntityGeometry::Rectangle { .. }
                         | CreateSceneEntityGeometry::ShapeOutline { .. }
+                        | CreateSceneEntityGeometry::SvgPath { .. }
                 ))
             || (!rotation_is_noop(entity.rotation) && entity.instant_transform.is_some())
             || (!entity.uniform_scale_keyframes.is_empty()
@@ -5590,6 +5656,7 @@ fn studio_creation_shape_path(
         | StudioAuthoringEntityKind::Other
         | StudioAuthoringEntityKind::RegularPolygon
         | StudioAuthoringEntityKind::Sector
+        | StudioAuthoringEntityKind::SvgPath
         | StudioAuthoringEntityKind::Text => {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
@@ -6494,7 +6561,8 @@ impl EngineSessionV1 {
                 | StudioAuthoringEntityKind::Other
                 | StudioAuthoringEntityKind::Rectangle
                 | StudioAuthoringEntityKind::RegularPolygon
-                | StudioAuthoringEntityKind::Sector => {}
+                | StudioAuthoringEntityKind::Sector
+                | StudioAuthoringEntityKind::SvgPath => {}
             }
         }
 
@@ -6593,6 +6661,16 @@ impl EngineSessionV1 {
                         path: studio_sector_path(radius, angles),
                     }
                 }
+                StudioAuthoringEntityKind::SvgPath => {
+                    let svg = state
+                        .svg_path
+                        .as_ref()
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    CreateSceneEntityGeometry::SvgPath {
+                        appearance: svg.appearance.clone(),
+                        path: svg.path.clone(),
+                    }
+                }
                 StudioAuthoringEntityKind::MathTex if state.write_interval.is_some() => {
                     CreateSceneEntityGeometry::LogicalGroup
                 }
@@ -6670,6 +6748,7 @@ impl EngineSessionV1 {
                     | StudioAuthoringEntityKind::NumberPlane
                     | StudioAuthoringEntityKind::RegularPolygon
                     | StudioAuthoringEntityKind::Sector
+                    | StudioAuthoringEntityKind::SvgPath
                     | StudioAuthoringEntityKind::Text => (1.0, 1.0),
                     StudioAuthoringEntityKind::Other => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
@@ -7240,6 +7319,7 @@ mod tests {
                                     lifetime_start: 0.5,
                                     text: None,
                                     tex_parts: None,
+                                    svg: None,
                                 },
                             },
                             origin: StudioAuthoringOrigin::StudioDefault,
@@ -7617,6 +7697,42 @@ mod tests {
             to: Some(1.0),
         };
         program.schedule_order[2] = "draw".to_owned();
+        command
+    }
+
+    fn studio_svg_path_creation_command(
+        bundle: &SceneIrBundleV1,
+        draw: bool,
+    ) -> ApplyStudioCreationEditCommand {
+        let mut command = if draw {
+            studio_draw_creation_command(bundle)
+        } else {
+            let mut command = studio_creation_command(bundle);
+            command.programs.truncate(1);
+            command
+        };
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.kind = StudioAuthoringEntityKind::SvgPath;
+        entity.dimensions = StudioAuthoringDimensions {
+            angles: None,
+            coordinate_system: None,
+            height: Some(2.0),
+            radius: None,
+            sides: None,
+            width: Some(3.0),
+        };
+        entity.svg = Some(StudioCreationSvgPathSpec {
+            source: if draw {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 80"><path d="M10 70 L60 10 Q90 5 110 30 C100 60 80 75 10 70 Z" fill="none" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/></svg>"##
+            } else {
+                r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 80"><path d="M10 70 L60 10 Q90 5 110 30 C100 60 80 75 10 70 Z M45 45 L60 25 L75 45 Z" fill="#38bdf8" fill-rule="evenodd" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/></svg>"##
+            }
+            .to_owned(),
+        });
         command
     }
 
@@ -10685,6 +10801,73 @@ mod tests {
     }
 
     #[test]
+    fn normalized_svg_path_creation_uses_canonical_cubic_geometry_and_draw() {
+        let bundle = static_imported_bundle();
+        let command = studio_svg_path_creation_command(&bundle, false);
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(
+            projection.entities[0].kind,
+            StudioAuthoringEntityKind::SvgPath
+        );
+        assert_eq!(projection.entities[0].initial_dimensions.width, Some(3.0));
+        assert_eq!(projection.entities[0].initial_dimensions.height, Some(2.0));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "tx:create/entity:circle")
+            .unwrap();
+        assert!(matches!(
+            &created.geometry,
+            SceneGeometryV1::CubicPath { path } if path.subpaths.len() == 2
+        ));
+        assert!(matches!(
+            &created.appearance,
+            SceneAppearanceV1::Vector {
+                fill: Some(fill),
+                stroke: Some(_),
+                ..
+            } if fill.rule == FillRuleV1::EvenOdd
+        ));
+        assert!(
+            !result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::PathTrim { entity_id, .. }
+                        if entity_id == "tx:create/entity:circle"
+                ))
+        );
+
+        let draw_bundle = static_imported_bundle();
+        let draw_command = studio_svg_path_creation_command(&draw_bundle, true);
+        let mut draw_session = EngineSessionV1::new(draw_bundle).unwrap();
+        let draw_result = draw_session
+            .apply_studio_creation_edit(draw_command)
+            .unwrap();
+        assert!(
+            draw_result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::PathTrim { entity_id, .. }
+                        if entity_id == "tx:create/entity:circle"
+                ))
+        );
+    }
+
+    #[test]
     fn normalized_creation_rejects_invalid_draw_admission() {
         let bundle = static_imported_bundle();
         let mut command = studio_draw_creation_command(&bundle);
@@ -12719,6 +12902,7 @@ mod tests {
                             lifetime_start: 0.5,
                             text: None,
                             tex_parts: None,
+                            svg: None,
                         },
                     },
                     origin: StudioAuthoringOrigin::StudioDefault,

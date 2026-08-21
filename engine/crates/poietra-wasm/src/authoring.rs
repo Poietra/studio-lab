@@ -15,7 +15,8 @@ use poietra_eval::{
     StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
     StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
     StudioMotionEditInput, StudioMotionEntityIdentity, StudioMotionProjectionBatch,
-    StudioMotionSourceBinding, StudioTimelineEditInput, project_studio_creation_edits,
+    StudioMotionSourceBinding, StudioSvgPathError, StudioTimelineEditInput,
+    inspect_studio_svg_path_asset, project_studio_creation_edits,
     project_studio_math_tex_transform_edits, project_studio_motion_edit,
     project_studio_timeline_edits,
 };
@@ -372,6 +373,8 @@ enum SceneAuthoringAdapterError {
     StudioFragmentMaterials(#[from] ApplyStudioFragmentMaterialsError),
     #[error(transparent)]
     StudioTimelineEdit(#[from] ApplyStudioTimelineEditError),
+    #[error(transparent)]
+    StudioSvgPath(#[from] StudioSvgPathError),
     #[error("the Scene authoring response could not be serialized: {0}")]
     ResponseJson(serde_json::Error),
     #[error(
@@ -439,6 +442,11 @@ fn studio_authoring_edit_response(
         });
     }
     Ok(response)
+}
+
+fn inspect_studio_svg_path_asset_json(source: &str) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let inspection = inspect_studio_svg_path_asset(source)?;
+    studio_projection_response(&inspection)
 }
 
 fn apply_static_root_transform_edit_json(
@@ -621,6 +629,17 @@ pub fn apply_studio_creation_edit_v1(
 #[wasm_bindgen(js_name = projectStudioCreationEditV1)]
 pub fn project_studio_creation_edit_v1(command_json: &[u8]) -> Result<Vec<u8>, JsValue> {
     project_studio_creation_edit_json(command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Parses and validates one bounded SVG path asset through the canonical Rust authority.
+///
+/// # Errors
+///
+/// Returns a reasoned JavaScript error for malformed or unsupported SVG input.
+#[wasm_bindgen(js_name = inspectStudioSvgPathAssetV1)]
+pub fn inspect_studio_svg_path_asset_v1(source: &str) -> Result<Vec<u8>, JsValue> {
+    inspect_studio_svg_path_asset_json(source)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
