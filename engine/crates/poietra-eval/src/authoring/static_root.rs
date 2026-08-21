@@ -44,6 +44,10 @@ use super::{
 };
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the serialized projection keeps bounded resize dimensions inline and is not retained as a collection"
+)]
 #[serde(
     tag = "kind",
     rename_all = "kebab-case",
@@ -102,6 +106,10 @@ pub struct StudioStaticRootProjection {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the wire operation keeps bounded resize dimensions inline to preserve the existing closed contract"
+)]
 #[serde(
     tag = "kind",
     rename_all = "kebab-case",
@@ -255,7 +263,10 @@ fn static_transform_geometry_matches(
                 && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
         }
         StaticRootTransformEntityKind::Arc
+        | StaticRootTransformEntityKind::Axes
         | StaticRootTransformEntityKind::Ellipse
+        | StaticRootTransformEntityKind::NumberLine
+        | StaticRootTransformEntityKind::NumberPlane
         | StaticRootTransformEntityKind::RegularPolygon
         | StaticRootTransformEntityKind::Sector => {
             matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
@@ -2094,6 +2105,7 @@ mod tests {
             .push(StaticRootTransformStudioEntity {
                 dimensions: StaticRootTransformDimensions {
                     angles: None,
+                    coordinate_system: None,
                     height: None,
                     radius: Some(1.0),
                     sides: None,
@@ -2604,6 +2616,7 @@ mod tests {
         command.studio_entities[0].kind = StaticRootTransformEntityKind::RegularPolygon;
         command.studio_entities[0].dimensions = StaticRootTransformDimensions {
             angles: None,
+            coordinate_system: None,
             height: None,
             radius: Some(0.5),
             sides: Some(5),
@@ -2972,6 +2985,7 @@ mod tests {
         command.programs[0].operations[0].kind = StaticRootTransformOperationKind::Resize {
             from_dimensions: StaticRootTransformDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(0.5),
                 sides: None,
@@ -2982,6 +2996,7 @@ mod tests {
             shape: StaticRootTransformEntityKind::Circle,
             to_dimensions: StaticRootTransformDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: Some(1.0),
                 sides: None,
@@ -3001,6 +3016,7 @@ mod tests {
                         entity_id: "source:circle".to_owned(),
                         from_dimensions: StaticRootTransformDimensions {
                             angles: None,
+                            coordinate_system: None,
                             height: None,
                             radius: Some(0.5),
                             sides: None,
@@ -3013,6 +3029,7 @@ mod tests {
                         },
                         to_dimensions: StaticRootTransformDimensions {
                             angles: None,
+                            coordinate_system: None,
                             height: None,
                             radius: Some(1.0),
                             sides: None,
@@ -3087,6 +3104,7 @@ mod tests {
         command.studio_entities = vec![StaticRootTransformStudioEntity {
             dimensions: StaticRootTransformDimensions {
                 angles: None,
+                coordinate_system: None,
                 height: None,
                 radius: None,
                 sides: None,
