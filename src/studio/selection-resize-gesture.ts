@@ -1,3 +1,4 @@
+import type { StudioPersistentRemoveProjectionV1, StudioStaticRootProjectionV1 } from "../engine/scene-authoring";
 import { type AlignmentGuide, type FrameSnapBasis, snapUniformResizeToFrame } from "./frame-alignment-snap";
 import type { Point } from "./model";
 import { oppositeResizeCorner, type ResizeHandleDirection, uniformCornerResizeFactor } from "./shape-resize";
@@ -48,6 +49,39 @@ function validSelectionBounds(bounds: PreparedSelectionResizeBasis["bounds"]) {
     bounds.bottom >= bounds.top &&
     bounds.right >= bounds.left
   );
+}
+
+export function importedGroupResizeHistoryIsSupported(
+  staticRootProjection: StudioStaticRootProjectionV1 | null | undefined,
+  persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null | undefined,
+) {
+  if (staticRootProjection === undefined || persistentRemoveProjection !== null) {
+    return false;
+  }
+  if (staticRootProjection === null) return true;
+  if (staticRootProjection.insertions.length > 0) return false;
+
+  const transactions = new Map<string, { positions: string[]; scales: string[] }>();
+  for (const mutation of staticRootProjection.mutations) {
+    if (mutation.kind !== "position" && mutation.kind !== "uniform-scale") return false;
+    const transaction = transactions.get(mutation.transactionId) ?? { positions: [], scales: [] };
+    (mutation.kind === "position" ? transaction.positions : transaction.scales).push(mutation.entityId);
+    transactions.set(mutation.transactionId, transaction);
+  }
+
+  return [...transactions.values()].every(({ positions, scales }) => {
+    if (scales.length === 0) return true;
+    const positionIds = new Set(positions);
+    const scaleIds = new Set(scales);
+    return (
+      positionIds.size >= 2 &&
+      positionIds.size <= 8 &&
+      positions.length === positionIds.size &&
+      scales.length === scaleIds.size &&
+      positionIds.size === scaleIds.size &&
+      [...positionIds].every((entityId) => scaleIds.has(entityId))
+    );
+  });
 }
 
 export function groupResizeEligibleCreationEntityIds(

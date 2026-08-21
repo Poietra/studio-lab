@@ -210,6 +210,7 @@ import {
 import {
   createSelectionResizeGesture,
   groupResizeEligibleCreationEntityIds,
+  importedGroupResizeHistoryIsSupported,
   type PreparedSelectionResizeBasis,
   resizeSelectionAtPoint,
   type SelectionResizeGesture,
@@ -406,7 +407,7 @@ function programsHaveSceneBoundary(programs: readonly ProgramRecord["program"][]
   return programs.some((program) => program.operations.some((operation) => operation.kind === "InsertSceneBoundary"));
 }
 
-function gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(
+function gestureContextProgramsContainUnsupportedImportedGroupRotationHistory(
   programs: readonly ProgramRecord["program"][],
 ) {
   return programs.some((program) =>
@@ -4918,7 +4919,6 @@ export function App({
       selectedEntities.length !== selectedObjectIds.length ||
       selectedTargets.length !== selectedEntities.length ||
       authorities.size !== 1 ||
-      (importedSelection && gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits)) ||
       selectedEntities.some(
         (entity) =>
           !groupResizeEligibleIds.has(entity.id) ||
@@ -4928,7 +4928,7 @@ export function App({
       )
     ) {
       setDraftError(
-        "Group resize requires 2–8 objects from one supported authority; imported objects must be independent static roots with position-only history.",
+        "Group resize requires 2–8 objects from one supported authority; imported objects must be independent static roots with position/resize history.",
       );
       return null;
     }
@@ -5124,7 +5124,7 @@ export function App({
       selectedEntities.length !== selectedObjectIds.length ||
       selectedTargets.length !== selectedEntities.length ||
       authorities.size !== 1 ||
-      (importedSelection && gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits)) ||
+      (importedSelection && gestureContextProgramsContainUnsupportedImportedGroupRotationHistory(appliedSceneEdits)) ||
       selectedEntities.some(
         (entity) =>
           !groupRotationEligibleIds.has(entity.id) ||
@@ -6570,7 +6570,7 @@ export function App({
     !isStudioNativeWorkspaceScene(activeEditorScene) &&
     importedStaticSnapshotTransformSupported &&
     workspaceStaticRootProjection !== undefined &&
-    !gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits) &&
+    !gestureContextProgramsContainUnsupportedImportedGroupRotationHistory(appliedSceneEdits) &&
     !workspaceStaticRootProjection?.mutations.some(({ kind }) => kind === "rotation");
   const importedGroupRotationEligibleIds = new Set(
     importedGroupRotationHistorySupported
@@ -6588,9 +6588,7 @@ export function App({
     activeEditorScene !== null &&
     !isStudioNativeWorkspaceScene(activeEditorScene) &&
     importedStaticSnapshotTransformSupported &&
-    workspaceStaticRootProjection !== undefined &&
-    !gestureContextProgramsContainUnsupportedImportedGroupTransformHistory(appliedSceneEdits) &&
-    !workspaceStaticRootProjection?.mutations.some(({ kind }) => kind === "rotation" || kind === "uniform-scale");
+    importedGroupResizeHistoryIsSupported(workspaceStaticRootProjection, workspacePersistentRemoveProjection);
   const importedGroupResizeEligibleIds = new Set(
     importedGroupResizeHistorySupported && selectedObjectIds.length <= 8
       ? editableEntities.flatMap((entity) =>

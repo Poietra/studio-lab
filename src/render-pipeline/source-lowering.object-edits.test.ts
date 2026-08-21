@@ -775,6 +775,58 @@ class GroupedEquation(Scene):
       });
     }
 
+    const resizeAgainPosition = (position: Readonly<{ x: number; y: number }>) => ({
+      x: center.x + (resizePosition(position).x - center.x) * (4 / 3),
+      y: center.y + (resizePosition(position).y - center.y) * (4 / 3),
+    });
+    const secondResizeValidation = createDirectManipulationGroupResizeProgram({
+      capturedPlayhead: 0,
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: leftId, fromScale: 1.5, toPosition: resizeAgainPosition(leftPosition), toScale: 2 },
+        { entityId: rightId, fromScale: 1.5, toPosition: resizeAgainPosition(rightPosition), toScale: 2 },
+      ],
+      transactionId: "resize-imported-selection-again",
+    });
+    if (secondResizeValidation.kind !== "valid") throw new Error(JSON.stringify(secondResizeValidation.issues));
+    const resizedTwice = lowerCanonicalProgramBatchSource(
+      groupSource,
+      request(validation.program, [
+        { entityId: leftId, sourceVariable: "left" },
+        { entityId: rightId, sourceVariable: "right" },
+      ]),
+      [
+        { program: validation.program, sourceAnchor: 0 },
+        { program: secondValidation.program, sourceAnchor: 0 },
+        { program: resizeValidation.program, sourceAnchor: 0 },
+        { program: secondResizeValidation.program, sourceAnchor: 0 },
+      ],
+      frame,
+      null,
+    );
+    const resizedTwiceReimported = importManimScene(
+      resizedTwice.source,
+      "examples/relativity.py",
+      "GroupedEquation",
+      frame,
+    );
+    expect(resizedTwice.insertedCode.match(/\.scale\(/g)).toHaveLength(4);
+    expect(resizedTwice.insertedCode).toContain('# poietra:transaction "resize-imported-selection-again"');
+    for (const [entityId, expectedPosition] of [
+      [leftId, resizeAgainPosition(leftPosition)],
+      [rightId, resizeAgainPosition(rightPosition)],
+    ] as const) {
+      expect(resizedTwiceReimported?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position).toEqual({
+        kind: "known",
+        value: expectedPosition,
+      });
+      const scaleSample =
+        resizedTwiceReimported?.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples.at(-1);
+      expect(scaleSample).toMatchObject({ kind: "exact" });
+      expect(scaleSample?.value).toBeCloseTo(2, 3);
+    }
+
     const rotatePosition = (position: Readonly<{ x: number; y: number }>) => ({
       x: center.x + (position.y - center.y),
       y: center.y - (position.x - center.x),
