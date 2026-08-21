@@ -1094,3 +1094,65 @@ test("authors coordinate systems as editable roots through reload and MP4 export
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
 });
+
+test("authors and edits a smooth data plot through reload and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Data plot fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert axes/ }).click();
+    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    const axes = page.getByRole("button", { name: "Move Axes", exact: true });
+    await expect(axes).toBeVisible();
+    await axes.click();
+    const samples = page.getByRole("textbox", { name: "Data plot sample points" });
+    await samples.fill("-4,-1\n-2,1\n0,0\n2,2\n4,-1");
+    await page.getByRole("combobox", { name: "Data plot interpolation" }).selectOption("smooth");
+    await page.getByRole("button", { name: "Add data plot" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    const plot = page.getByRole("button", { name: "Move insert-0", exact: true });
+    await expect(plot).toBeVisible();
+    await plot.click();
+    const stroke = page.getByLabel("Stroke color insert-0");
+    await expect(stroke).toBeEnabled();
+    await stroke.fill("#f59e0b");
+    await stroke.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    await page.getByRole("button", { name: "Add Draw entrance for insert-0" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    let drawClip = page.getByRole("button", { name: "Edit insert-0 Draw entrance" });
+    await expect(drawClip).toBeVisible();
+
+    await samples.fill("-4,-1\n-2,1\n0,1.5\n2,2\n4,-1");
+    await page.getByRole("button", { name: "Update data plot" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(samples).toHaveValue("-4,-1\n-2,1\n0,1.5\n2,2\n4,-1");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Data plot fixture workspace" }).click();
+    await expect(page.getByRole("button", { name: "Move Axes", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move insert-0", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Move insert-0", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Data plot sample points" })).toHaveValue(
+      "-4,-1\n-2,1\n0,1.5\n2,2\n4,-1",
+    );
+    await expect(page.getByRole("combobox", { name: "Data plot interpolation" })).toHaveValue("smooth");
+    drawClip = page.getByRole("button", { name: "Edit insert-0 Draw entrance" });
+    await expect(drawClip).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const mp4 = await exportLocalMp4(page);
+    const [brightPixels = 0] = await decodedBrightPixelCounts(page, mp4, [1]);
+    expect(brightPixels).toBeGreaterThan(100);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
