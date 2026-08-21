@@ -61,25 +61,33 @@ export function importedGroupResizeHistoryIsSupported(
   if (staticRootProjection === null) return true;
   if (staticRootProjection.insertions.length > 0) return false;
 
-  const transactions = new Map<string, { positions: string[]; scales: string[] }>();
+  const transactions = new Map<string, { positions: string[]; rotations: string[]; scales: string[] }>();
   for (const mutation of staticRootProjection.mutations) {
-    if (mutation.kind !== "position" && mutation.kind !== "uniform-scale") return false;
-    const transaction = transactions.get(mutation.transactionId) ?? { positions: [], scales: [] };
-    (mutation.kind === "position" ? transaction.positions : transaction.scales).push(mutation.entityId);
+    if (mutation.kind !== "position" && mutation.kind !== "rotation" && mutation.kind !== "uniform-scale") return false;
+    const transaction = transactions.get(mutation.transactionId) ?? { positions: [], rotations: [], scales: [] };
+    const targets =
+      mutation.kind === "position"
+        ? transaction.positions
+        : mutation.kind === "rotation"
+          ? transaction.rotations
+          : transaction.scales;
+    targets.push(mutation.entityId);
     transactions.set(mutation.transactionId, transaction);
   }
 
-  return [...transactions.values()].every(({ positions, scales }) => {
-    if (scales.length === 0) return true;
+  return [...transactions.values()].every(({ positions, rotations, scales }) => {
+    if (rotations.length > 0 && scales.length > 0) return false;
+    const transforms = rotations.length > 0 ? rotations : scales;
+    if (transforms.length === 0) return true;
     const positionIds = new Set(positions);
-    const scaleIds = new Set(scales);
+    const transformIds = new Set(transforms);
     return (
       positionIds.size >= 2 &&
       positionIds.size <= 8 &&
       positions.length === positionIds.size &&
-      scales.length === scaleIds.size &&
-      positionIds.size === scaleIds.size &&
-      [...positionIds].every((entityId) => scaleIds.has(entityId))
+      transforms.length === transformIds.size &&
+      positionIds.size === transformIds.size &&
+      [...positionIds].every((entityId) => transformIds.has(entityId))
     );
   });
 }

@@ -74,7 +74,25 @@ describe("selection rotation gesture", () => {
     ).toBe(true);
   });
 
-  it("rejects incomplete rotation and rotation/resize composition histories", () => {
+  it("admits a complete Rust-projected resize before group rotation", () => {
+    expect(
+      importedGroupRotationHistoryIsSupported(
+        {
+          insertions: [],
+          mutations: [
+            positionMutation("resize", "left"),
+            positionMutation("resize", "right"),
+            scaleMutation("resize", "left"),
+            scaleMutation("resize", "right"),
+          ],
+          projectedDuration: 0,
+        },
+        null,
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects incomplete or mixed-family single transactions", () => {
     expect(
       importedGroupRotationHistoryIsSupported(
         {
@@ -94,10 +112,12 @@ describe("selection rotation gesture", () => {
         {
           insertions: [],
           mutations: [
-            positionMutation("resize", "left"),
-            positionMutation("resize", "right"),
-            scaleMutation("resize", "left"),
-            scaleMutation("resize", "right"),
+            positionMutation("ambiguous", "left"),
+            positionMutation("ambiguous", "right"),
+            scaleMutation("ambiguous", "left"),
+            scaleMutation("ambiguous", "right"),
+            rotationMutation("ambiguous", "left"),
+            rotationMutation("ambiguous", "right"),
           ],
           projectedDuration: 0,
         },

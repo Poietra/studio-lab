@@ -935,6 +935,118 @@ class GroupedEquation(Scene):
       expect(rotation?.from).toBeCloseTo(Math.PI / 2);
       expect(rotation?.value).toBeCloseTo(Math.PI);
     }
+
+    const resizeThenRotatePosition = (position: Readonly<{ x: number; y: number }>) =>
+      rotatePosition(resizePosition(position));
+    const rotationAfterResizeValidation = createDirectManipulationGroupRotationProgram({
+      angleRadians: Math.PI / 2,
+      capturedPlayhead: 0,
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targets: [
+        { entityId: leftId, toPosition: resizeThenRotatePosition(leftPosition) },
+        { entityId: rightId, toPosition: resizeThenRotatePosition(rightPosition) },
+      ],
+      transactionId: "rotate-imported-selection-after-resize",
+    });
+    if (rotationAfterResizeValidation.kind !== "valid") {
+      throw new Error(JSON.stringify(rotationAfterResizeValidation.issues));
+    }
+    const resizeThenRotate = lowerCanonicalProgramBatchSource(
+      groupSource,
+      request(validation.program, [
+        { entityId: leftId, sourceVariable: "left" },
+        { entityId: rightId, sourceVariable: "right" },
+      ]),
+      [
+        { program: validation.program, sourceAnchor: 0 },
+        { program: secondValidation.program, sourceAnchor: 0 },
+        { program: resizeValidation.program, sourceAnchor: 0 },
+        { program: rotationAfterResizeValidation.program, sourceAnchor: 0 },
+      ],
+      frame,
+      null,
+      null,
+      { snapshotAuthorizedSourceBoundRotation: true },
+    );
+
+    const rotateThenResizePosition = (position: Readonly<{ x: number; y: number }>) =>
+      resizePosition(rotatePosition(position));
+    const resizeAfterRotationValidation = createDirectManipulationGroupResizeProgram({
+      capturedPlayhead: 0,
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targets: [
+        {
+          entityId: leftId,
+          fromScale: 1,
+          toPosition: rotateThenResizePosition(leftPosition),
+          toScale: 1.5,
+        },
+        {
+          entityId: rightId,
+          fromScale: 1,
+          toPosition: rotateThenResizePosition(rightPosition),
+          toScale: 1.5,
+        },
+      ],
+      transactionId: "resize-imported-selection-after-rotation",
+    });
+    if (resizeAfterRotationValidation.kind !== "valid") {
+      throw new Error(JSON.stringify(resizeAfterRotationValidation.issues));
+    }
+    const rotateThenResize = lowerCanonicalProgramBatchSource(
+      groupSource,
+      request(validation.program, [
+        { entityId: leftId, sourceVariable: "left" },
+        { entityId: rightId, sourceVariable: "right" },
+      ]),
+      [
+        { program: validation.program, sourceAnchor: 0 },
+        { program: secondValidation.program, sourceAnchor: 0 },
+        { program: rotationValidation.program, sourceAnchor: 0 },
+        { program: resizeAfterRotationValidation.program, sourceAnchor: 0 },
+      ],
+      frame,
+      null,
+      null,
+      { snapshotAuthorizedSourceBoundRotation: true },
+    );
+
+    expect(resizeThenRotate.insertedCode.indexOf('poietra:transaction "resize-imported-selection"')).toBeLessThan(
+      resizeThenRotate.insertedCode.indexOf('poietra:transaction "rotate-imported-selection-after-resize"'),
+    );
+    expect(rotateThenResize.insertedCode.indexOf('poietra:transaction "rotate-imported-selection"')).toBeLessThan(
+      rotateThenResize.insertedCode.indexOf('poietra:transaction "resize-imported-selection-after-rotation"'),
+    );
+    for (const [lowered, finalPosition] of [
+      [resizeThenRotate, resizeThenRotatePosition],
+      [rotateThenResize, rotateThenResizePosition],
+    ] as const) {
+      expect(lowered.insertedCode.match(/\.scale\(/g)).toHaveLength(2);
+      expect(lowered.insertedCode.match(/\.rotate\(/g)).toHaveLength(2);
+      const reimportedComposition = importManimScene(
+        lowered.source,
+        "examples/relativity.py",
+        "GroupedEquation",
+        frame,
+      );
+      for (const [entityId, position] of [
+        [leftId, leftPosition],
+        [rightId, rightPosition],
+      ] as const) {
+        expect(reimportedComposition?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position).toEqual({
+          kind: "known",
+          value: finalPosition(position),
+        });
+        expect(
+          reimportedComposition?.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples.at(-1)?.value,
+        ).toBeCloseTo(1.5);
+        expect(
+          reimportedComposition?.runtimeSceneState.propertyChannels[`${entityId}/rotation`]?.samples.at(-1)?.value,
+        ).toBeCloseTo(Math.PI / 2);
+      }
+    }
   });
 
   it("round-trips viewport positions as world-space move_to calls through a non-origin camera", () => {
