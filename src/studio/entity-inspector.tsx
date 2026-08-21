@@ -1,4 +1,4 @@
-import { type FormEvent, type KeyboardEvent, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useEffect, useState } from "react";
 
 import { cn } from "../lib/cn";
 import {
@@ -10,6 +10,7 @@ import {
 } from "./inspector-edit";
 import { MATH_TEX_TRANSFORM_EASINGS, type MathTexTransformEasing } from "./mathtex-transform-clip-edit";
 import type { ProjectedEntity } from "./model";
+import { SHAPE_TRANSFORM_EASINGS, type ShapeTransformEasing } from "./shape-transform-clip-edit";
 import { entityLabel } from "./studio-viewport";
 
 export type MathTexTransformInspectorInput = Readonly<{
@@ -24,12 +25,28 @@ export type MathTexTransformInspectorAuthoring = Readonly<{
   unavailableReason: string | null;
 }>;
 
+export type ShapeTransformInspectorTarget = "Circle" | "Rectangle";
+
+export type ShapeTransformInspectorInput = Readonly<{
+  duration: number;
+  easing: ShapeTransformEasing;
+  target: ShapeTransformInspectorTarget;
+}>;
+
+export type ShapeTransformInspectorAuthoring = Readonly<{
+  currentShape: ShapeTransformInspectorTarget;
+  defaultDuration: number;
+  onCreate: (entityId: string, input: ShapeTransformInspectorInput) => boolean;
+  unavailableReason: string | null;
+}>;
+
 type EntityInspectorEditorProps = Readonly<{
   entity: ProjectedEntity;
   mathTexTransform?: MathTexTransformInspectorAuthoring;
   onCreateDraft: (entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) => boolean;
   onFocusRestored: () => void;
   restoreFocus: InspectorEditField | null;
+  shapeTransform?: ShapeTransformInspectorAuthoring;
 }>;
 
 const inputClass =
@@ -103,6 +120,7 @@ export function EntityInspectorEditor({
   onCreateDraft,
   onFocusRestored,
   restoreFocus,
+  shapeTransform,
 }: EntityInspectorEditorProps) {
   const initialValues = initialInspectorEditValues(entity);
   const [values, setValues] = useState<InspectorEditValues>(initialValues);
@@ -112,6 +130,12 @@ export function EntityInspectorEditor({
   const [transformEasing, setTransformEasing] = useState<MathTexTransformEasing>("smooth");
   const [transformMessage, setTransformMessage] = useState<string | null>(null);
   const [transformTarget, setTransformTarget] = useState(initialValues.content ?? "");
+  const [shapeTransformDuration, setShapeTransformDuration] = useState(String(shapeTransform?.defaultDuration ?? 1));
+  const [shapeTransformEasing, setShapeTransformEasing] = useState<ShapeTransformEasing>("smooth");
+  const [shapeTransformMessage, setShapeTransformMessage] = useState<string | null>(null);
+  const [shapeTransformTarget, setShapeTransformTarget] = useState<ShapeTransformInspectorTarget>(
+    shapeTransform?.currentShape === "Circle" ? "Rectangle" : "Circle",
+  );
   const positionAvailable = entity.geometry.position.kind === "known";
   const contentAvailable =
     (entity.type === "Text" || entity.type === "MathTex") &&
@@ -123,6 +147,12 @@ export function EntityInspectorEditor({
     entity.geometry.position.kind === "known" &&
     entity.geometry.scale.kind === "known" &&
     (entity.type === "Circle" || entity.type === "Rectangle");
+
+  useEffect(() => {
+    if (!shapeTransform) return;
+    setShapeTransformTarget(shapeTransform.currentShape === "Circle" ? "Rectangle" : "Circle");
+    setShapeTransformMessage(null);
+  }, [shapeTransform?.currentShape]);
 
   function update(field: InspectorEditField, value: string) {
     setValues((current) => ({ ...current, [field]: value }));
@@ -223,6 +253,32 @@ export function EntityInspectorEditor({
       })
     ) {
       setTransformMessage(null);
+    }
+  }
+
+  function createShapeTransform() {
+    if (!shapeTransform || (entity.type !== "Circle" && entity.type !== "Rectangle")) return;
+    if (shapeTransform.unavailableReason) {
+      setShapeTransformMessage(shapeTransform.unavailableReason);
+      return;
+    }
+    const duration = Number(shapeTransformDuration);
+    if (!Number.isFinite(duration) || duration < 0.1) {
+      setShapeTransformMessage("Shape Transform duration must be at least 0.1 seconds.");
+      return;
+    }
+    if (shapeTransformTarget === shapeTransform.currentShape) {
+      setShapeTransformMessage("Choose the other shape as the Transform target.");
+      return;
+    }
+    if (
+      shapeTransform.onCreate(entity.id, {
+        duration,
+        easing: shapeTransformEasing,
+        target: shapeTransformTarget,
+      })
+    ) {
+      setShapeTransformMessage(null);
     }
   }
 
@@ -493,6 +549,82 @@ export function EntityInspectorEditor({
               Geometry editing requires known dimensions, position, and scale.
             </p>
           )}
+        </fieldset>
+      ) : null}
+
+      {(entity.type === "Circle" || entity.type === "Rectangle") && shapeTransform ? (
+        <fieldset className="border-t border-zinc-800 pt-4">
+          <legend className="text-balance text-xs font-medium text-zinc-300">Animate Shape Transform</legend>
+          <div className="mt-2 space-y-3">
+            <label className="block text-[10px] text-zinc-500">
+              Target shape
+              <select
+                aria-label={`Shape transform target of ${entityLabel(entity)}`}
+                className={inputClass}
+                disabled={shapeTransform.unavailableReason !== null}
+                onChange={(event) => {
+                  setShapeTransformTarget(event.currentTarget.value as ShapeTransformInspectorTarget);
+                  setShapeTransformMessage(null);
+                }}
+                value={shapeTransformTarget}
+              >
+                <option disabled={shapeTransform.currentShape === "Rectangle"} value="Rectangle">
+                  Rectangle
+                </option>
+                <option disabled={shapeTransform.currentShape === "Circle"} value="Circle">
+                  Circle
+                </option>
+              </select>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-[10px] text-zinc-500">
+                Duration (seconds)
+                <input
+                  aria-label={`Shape transform duration of ${entityLabel(entity)}`}
+                  className={inputClass}
+                  disabled={shapeTransform.unavailableReason !== null}
+                  min="0.1"
+                  onChange={(event) => {
+                    setShapeTransformDuration(event.currentTarget.value);
+                    setShapeTransformMessage(null);
+                  }}
+                  step="0.1"
+                  type="number"
+                  value={shapeTransformDuration}
+                />
+              </label>
+              <label className="text-[10px] text-zinc-500">
+                Easing
+                <select
+                  aria-label={`Shape transform easing of ${entityLabel(entity)}`}
+                  className={inputClass}
+                  disabled={shapeTransform.unavailableReason !== null}
+                  onChange={(event) => setShapeTransformEasing(event.currentTarget.value as ShapeTransformEasing)}
+                  value={shapeTransformEasing}
+                >
+                  {SHAPE_TRANSFORM_EASINGS.map((easing) => (
+                    <option key={easing} value={easing}>
+                      {easing === "linear" ? "Linear" : "Smooth"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <button
+              className="h-9 w-full border border-cyan-700 bg-cyan-950 px-3 text-xs font-medium text-cyan-200 hover:bg-cyan-900 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-600"
+              disabled={shapeTransform.unavailableReason !== null}
+              onClick={createShapeTransform}
+              title={shapeTransform.unavailableReason ?? "Create a shape Transform at the playhead"}
+              type="button"
+            >
+              Create Shape Transform clip
+            </button>
+            {(shapeTransformMessage ?? shapeTransform.unavailableReason) ? (
+              <p className="text-pretty text-[10px] leading-4 text-amber-400" role="status">
+                {shapeTransformMessage ?? shapeTransform.unavailableReason}
+              </p>
+            ) : null}
+          </div>
         </fieldset>
       ) : null}
 

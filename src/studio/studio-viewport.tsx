@@ -107,6 +107,7 @@ export function StudioViewport({
   rotationTracks,
   scaleTrackEligibleIds,
   scaleTracks,
+  shapeTransformClips,
   writeInClips,
   writeInAvailability,
   uniformScaleResizeOnlyIds,
@@ -164,6 +165,9 @@ export function StudioViewport({
   onScaleKeyframeChange,
   onScaleKeyframeDelete,
   onScaleKeyframeDuplicate,
+  onShapeTransformClipChange,
+  onShapeTransformClipDelete,
+  onShapeTransformClipSelect,
   onPresenceCursorChange,
   onSelectionResizeCancel,
   onSelectionResizeKeyDown,
@@ -297,6 +301,7 @@ export function StudioViewport({
           rotationTracks={rotationTracks}
           scaleTrackEligibleIds={scaleTrackEligibleIds}
           scaleTracks={scaleTracks}
+          shapeTransformClips={shapeTransformClips}
           writeInClips={writeInClips}
           writeInAvailability={writeInAvailability}
           onAppliedMotionClipChange={onAppliedMotionClipChange}
@@ -327,6 +332,9 @@ export function StudioViewport({
           onScaleKeyframeChange={onScaleKeyframeChange}
           onScaleKeyframeDelete={onScaleKeyframeDelete}
           onScaleKeyframeDuplicate={onScaleKeyframeDuplicate}
+          onShapeTransformClipChange={onShapeTransformClipChange}
+          onShapeTransformClipDelete={onShapeTransformClipDelete}
+          onShapeTransformClipSelect={onShapeTransformClipSelect}
           onSelectEntity={onSelectEntity}
           onTimeChange={onTimeChange}
           onTogglePlayback={onTogglePlayback}

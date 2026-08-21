@@ -12,6 +12,7 @@ import {
 import type { MathTexTransformEasing } from "./mathtex-transform-clip-edit";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
+import type { ShapeTransformEasing, ShapeTransformKind } from "./shape-transform-clip-edit";
 import { markStudioRenderBoundary } from "./studio-render-profiler";
 import {
   formatTimelineTime,
@@ -49,6 +50,7 @@ export type StudioTimelineProps = Readonly<{
   rotationTracks: readonly StudioRotationTimelineTrack[];
   scaleTrackEligibleIds: ReadonlySet<string>;
   scaleTracks: readonly StudioScaleTimelineTrack[];
+  shapeTransformClips?: readonly StudioShapeTransformTimelineClip[];
   writeInClips: readonly StudioWriteInTimelineClip[];
   writeInAvailability: ReadonlyMap<string, string | null>;
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
@@ -98,6 +100,9 @@ export type StudioTimelineProps = Readonly<{
   ) => void;
   onScaleKeyframeDelete: (track: StudioScaleTimelineTrack, index: number) => void;
   onScaleKeyframeDuplicate: (track: StudioScaleTimelineTrack, index: number) => number | null;
+  onShapeTransformClipChange?: (clip: StudioShapeTransformTimelineClip, change: StudioShapeTransformClipChange) => void;
+  onShapeTransformClipDelete?: (clip: StudioShapeTransformTimelineClip) => void;
+  onShapeTransformClipSelect?: (clip: StudioShapeTransformTimelineClip) => void;
   onSelectEntity: (entityId: string) => void;
   onTimeChange: (time: number) => void;
   onTogglePlayback: () => void;
@@ -158,13 +163,34 @@ export type StudioMathTexTransformClipChange = Readonly<{
   easing?: MathTexTransformEasing;
 }>;
 
+export type StudioShapeTransformTimelineClip = Readonly<{
+  easing: ShapeTransformEasing;
+  entityId: string;
+  interval: Interval;
+  label: string;
+  maximumDuration: number;
+  operationId: string;
+  readOnlyReason: string | null;
+  targetShape: ShapeTransformKind;
+  transactionId: string;
+}>;
+
+export type StudioShapeTransformClipChange = Readonly<{
+  duration?: number;
+  easing?: ShapeTransformEasing;
+}>;
+
 function EntranceDurationInput({
   clip,
   kind,
   onCommit,
 }: Readonly<{
-  clip: StudioDrawInTimelineClip | StudioMathTexTransformTimelineClip | StudioWriteInTimelineClip;
-  kind: "Draw" | "Transform" | "Write";
+  clip:
+    | StudioDrawInTimelineClip
+    | StudioMathTexTransformTimelineClip
+    | StudioShapeTransformTimelineClip
+    | StudioWriteInTimelineClip;
+  kind: "Draw" | "Shape Transform" | "Transform" | "Write";
   onCommit: (duration: number) => void;
 }>) {
   const duration = Math.max(0.1, clip.interval.end - clip.interval.start);
@@ -708,6 +734,7 @@ export function StudioTimeline({
   rotationTracks,
   scaleTrackEligibleIds,
   scaleTracks,
+  shapeTransformClips = [],
   writeInClips,
   writeInAvailability,
   onAppliedMotionClipChange,
@@ -738,6 +765,9 @@ export function StudioTimeline({
   onScaleKeyframeChange,
   onScaleKeyframeDelete,
   onScaleKeyframeDuplicate,
+  onShapeTransformClipChange,
+  onShapeTransformClipDelete,
+  onShapeTransformClipSelect,
   onSelectEntity,
   onTimeChange,
   onTogglePlayback,
@@ -809,6 +839,20 @@ export function StudioTimeline({
             ? LOCKED_ENTITY_MUTATION_MESSAGE
             : (selectedMathTexTransformClip.readOnlyReason ??
               (!onMathTexTransformClipChange ? "MathTex Transform clip editing is unavailable." : null)),
+      }
+    : null;
+  const selectedShapeTransformClip = editingAppliedTransactionId
+    ? (shapeTransformClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
+    : null;
+  const editingShapeTransformClip = selectedShapeTransformClip
+    ? {
+        ...selectedShapeTransformClip,
+        readOnlyReason: readOnly
+          ? "The timeline is read-only."
+          : lockedEntityIds.has(selectedShapeTransformClip.entityId)
+            ? LOCKED_ENTITY_MUTATION_MESSAGE
+            : (selectedShapeTransformClip.readOnlyReason ??
+              (!onShapeTransformClipChange ? "Shape Transform clip editing is unavailable." : null)),
       }
     : null;
   const displayedTimelineAnchors = editingMotionClip?.anchors ?? anchors;
@@ -1023,6 +1067,54 @@ export function StudioTimeline({
           </button>
           {editingMathTexTransformClip.readOnlyReason ? (
             <span className="text-amber-500">{editingMathTexTransformClip.readOnlyReason}</span>
+          ) : (
+            <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
+          )}
+        </div>
+      ) : null}
+      {editingShapeTransformClip ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="max-w-64 truncate text-cyan-300" title={editingShapeTransformClip.label}>
+            Shape Transform · {editingShapeTransformClip.label} →{" "}
+            {editingShapeTransformClip.targetShape === "circle" ? "Circle" : "Rectangle"}
+          </span>
+          <div className="flex items-center gap-1 text-zinc-500">
+            Duration
+            <EntranceDurationInput
+              clip={editingShapeTransformClip}
+              key={`${editingShapeTransformClip.transactionId}/${editingShapeTransformClip.interval.start}/${editingShapeTransformClip.interval.end}/${editingShapeTransformClip.maximumDuration}`}
+              kind="Shape Transform"
+              onCommit={(duration) => onShapeTransformClipChange?.(editingShapeTransformClip, { duration })}
+            />
+            s
+          </div>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label={`Shape Transform easing for ${editingShapeTransformClip.label}`}
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-cyan-500"
+              disabled={editingShapeTransformClip.readOnlyReason !== null}
+              onChange={(event) =>
+                onShapeTransformClipChange?.(editingShapeTransformClip, {
+                  easing: event.currentTarget.value as ShapeTransformEasing,
+                })
+              }
+              value={editingShapeTransformClip.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={editingShapeTransformClip.readOnlyReason !== null || !onShapeTransformClipDelete}
+            onClick={() => onShapeTransformClipDelete?.(editingShapeTransformClip)}
+            type="button"
+          >
+            Remove Shape Transform
+          </button>
+          {editingShapeTransformClip.readOnlyReason ? (
+            <span className="text-amber-500">{editingShapeTransformClip.readOnlyReason}</span>
           ) : (
             <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
           )}
@@ -1570,6 +1662,7 @@ export function StudioTimeline({
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackDrawInClips = drawInClips.filter((clip) => clip.entityId === track.entityId);
             const trackMathTexTransformClips = mathTexTransformClips.filter((clip) => clip.entityId === track.entityId);
+            const trackShapeTransformClips = shapeTransformClips.filter((clip) => clip.entityId === track.entityId);
             const trackWriteInClips = writeInClips.filter((clip) => clip.entityId === track.entityId);
             const drawInUnavailableReason = drawInAvailability.has(track.entityId)
               ? (drawInAvailability.get(track.entityId) ?? null)
@@ -1581,6 +1674,7 @@ export function StudioTimeline({
               ...trackMotionClips.map((clip) => clip.operationId),
               ...trackDrawInClips.map((clip) => clip.operationId),
               ...trackMathTexTransformClips.map((clip) => clip.operationId),
+              ...trackShapeTransformClips.map((clip) => clip.operationId),
               ...trackWriteInClips.map((clip) => clip.operationId),
             ]);
             const selectionLocked =
@@ -1982,6 +2076,38 @@ export function StudioTimeline({
                         type="button"
                       >
                         <span className="block truncate">Transform</span>
+                      </button>
+                    );
+                  })}
+                  {trackShapeTransformClips.map((clip) => {
+                    const readOnlyReason = selectionLocked
+                      ? "The timeline is read-only."
+                      : authoringLocked
+                        ? LOCKED_ENTITY_MUTATION_MESSAGE
+                        : (clip.readOnlyReason ??
+                          (!onShapeTransformClipSelect ? "Shape Transform clip editing is unavailable." : null));
+                    const displayedClip = { ...clip, readOnlyReason };
+                    const targetLabel = clip.targetShape === "circle" ? "Circle" : "Rectangle";
+                    return (
+                      <button
+                        aria-label={`Edit ${clip.label} Shape Transform`}
+                        className={cn(
+                          "absolute top-1 z-10 h-5 min-w-2 border border-cyan-500 bg-cyan-950/90 px-1 text-left text-[9px] leading-4 text-cyan-200 hover:bg-cyan-900",
+                          editingAppliedTransactionId === clip.transactionId && "ring-1 ring-cyan-300",
+                          readOnlyReason && "cursor-not-allowed border-zinc-700 bg-zinc-900 text-zinc-600",
+                        )}
+                        disabled={readOnlyReason !== null}
+                        data-shape-transform-clip={clip.operationId}
+                        key={clip.operationId}
+                        onClick={() => onShapeTransformClipSelect?.(displayedClip)}
+                        style={timelineIntervalStyle(clip.interval, duration)}
+                        title={
+                          readOnlyReason ??
+                          `Transform to ${targetLabel} · ${clip.interval.start.toFixed(2)}–${clip.interval.end.toFixed(2)}s · ${clip.easing}`
+                        }
+                        type="button"
+                      >
+                        <span className="block truncate">Shape</span>
                       </button>
                     );
                   })}

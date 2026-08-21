@@ -11,7 +11,12 @@ import { RenderPipelinePanel } from "../render-pipeline/render-pipeline-panel";
 import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../render-pipeline/render-pipeline-policy";
 import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { DraftInspector } from "./draft-inspector";
-import { EntityInspectorEditor, entityInspectorKey, type MathTexTransformInspectorAuthoring } from "./entity-inspector";
+import {
+  EntityInspectorEditor,
+  entityInspectorKey,
+  type MathTexTransformInspectorAuthoring,
+  type ShapeTransformInspectorAuthoring,
+} from "./entity-inspector";
 import type {
   StudioFragmentMaterialParameterSchemaV1,
   StudioFragmentMaterialParameterValueV1,
@@ -1060,6 +1065,7 @@ export function StudioInspector({
   rotationAvailable,
   selectedEntity,
   selectedEntityLocked = false,
+  shapeTransform,
   inspectorReturnFocus,
   sourceExport,
   sourceExportBlocker = null,
@@ -1128,6 +1134,7 @@ export function StudioInspector({
   rotationAvailable: boolean;
   selectedEntity: ProjectedEntity | null;
   selectedEntityLocked?: boolean;
+  shapeTransform?: ShapeTransformInspectorAuthoring;
   inspectorReturnFocus: InspectorEditField | null;
   sourceExport: OriginalManimSourceExportRequest | null;
   sourceExportBlocker?: string | null;
@@ -1353,6 +1360,7 @@ export function StudioInspector({
                 onCreateDraft={onEntityEdit}
                 onFocusRestored={onInspectorFocusRestored}
                 restoreFocus={inspectorReturnFocus}
+                shapeTransform={shapeTransform}
               />
             </fieldset>
           ) : (

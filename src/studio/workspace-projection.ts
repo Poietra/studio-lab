@@ -139,6 +139,19 @@ function sameProjectionNumber(left: number, right: number) {
   );
 }
 
+function sameProjectionDimensions(
+  left: Readonly<{ height?: number; radius?: number; width?: number }>,
+  right: Readonly<{ height?: number; radius?: number; width?: number }>,
+) {
+  return (["height", "radius", "width"] as const).every((key) => {
+    const leftValue = left[key];
+    const rightValue = right[key];
+    return leftValue === undefined || rightValue === undefined
+      ? leftValue === rightValue
+      : sameProjectionNumber(leftValue, rightValue);
+  });
+}
+
 function isFiniteProjectionPoint(point: Readonly<{ x: number; y: number }>) {
   return Number.isFinite(point.x) && Number.isFinite(point.y);
 }
@@ -305,6 +318,7 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "DrawIn") return "draw-in";
   if (operation.kind === "WriteIn") return "write-in";
   if (operation.kind === "TransformContent") return "math-tex-transform";
+  if (operation.kind === "TransformShape") return "shape-transform";
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") return "rotation";
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
   if (operation.kind === "ResizeEntity") return "resize";
@@ -513,8 +527,26 @@ function correlateCreationProjection(
         operation.interval.end - operation.interval.start,
       ) &&
       sameProjectionNumber(mathTexTransformInsertion.duration, operation.interval.end - operation.interval.start);
+    const shapeTransformInsertion = expected ? insertionsByTransaction.get(expected.program.transactionId) : undefined;
+    const isCorrelatedShapeTransform =
+      operation?.kind === "TransformShape" &&
+      shapeTransformInsertion !== undefined &&
+      mutation.kind === "shape-transform" &&
+      mutation.entityId === operation.entityId &&
+      mutation.easing.kind === (operation.easing === "smooth" ? "manim-smooth" : "linear") &&
+      mutation.fromShape === operation.from.shape &&
+      mutation.toShape === operation.to.shape &&
+      sameProjectionDimensions(mutation.fromDimensions, operation.from.dimensions) &&
+      sameProjectionDimensions(mutation.toDimensions, operation.to.dimensions) &&
+      sameProjectionNumber(mutation.interval.start, shapeTransformInsertion.at) &&
+      sameProjectionNumber(
+        mutation.interval.end - mutation.interval.start,
+        operation.interval.end - operation.interval.start,
+      ) &&
+      sameProjectionNumber(shapeTransformInsertion.duration, operation.interval.end - operation.interval.start);
     const isCorrelatedMutation =
       operation?.kind !== "TransformContent" &&
+      operation?.kind !== "TransformShape" &&
       operation?.kind !== "DrawIn" &&
       operation?.kind !== "WriteIn" &&
       expectedMutationKind !== null &&
@@ -526,6 +558,7 @@ function correlateCreationProjection(
       mutation.transactionId !== expected.program.transactionId ||
       (!isCorrelatedMutation &&
         !isCorrelatedMathTexTransform &&
+        !isCorrelatedShapeTransform &&
         !isCorrelatedSpin &&
         !isCorrelatedDraw &&
         !isCorrelatedWrite)
@@ -1057,6 +1090,21 @@ function appendProjectedMutation(
         value,
       });
     }
+  } else if (mutation.kind === "shape-transform") {
+    appendProjectedSample(draft.propertyChannels, entityId, "dimensions", {
+      ...metadata,
+      easing: mutation.easing,
+      from: mutation.fromDimensions,
+      interval: mutation.interval,
+      kind: "animated",
+      value: mutation.toDimensions,
+    });
+    appendProjectedSample(draft.propertyChannels, entityId, "shape", {
+      ...metadata,
+      interval: { end: mutation.interval.end, start: mutation.interval.end },
+      kind: "exact",
+      value: mutation.toShape,
+    });
   } else if (mutation.kind === "math-tex-transform") {
     appendProjectedSample(draft.propertyChannels, entityId, "content", {
       ...metadata,

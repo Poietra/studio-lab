@@ -262,6 +262,14 @@ import {
   sameShapeGeometry,
 } from "./studio/shape-resize";
 import {
+  createShapeTransformProgram,
+  replaceShapeTransformProgram,
+  type ShapeTransformEasing,
+  type ShapeTransformKind,
+  type ShapeTransformState,
+  shapeTransformClipFromProgram,
+} from "./studio/shape-transform-clip-edit";
+import {
   createSingleScaleResizeGesture,
   resolveSingleScaleResize,
   type SingleScaleResizeGesture,
@@ -296,6 +304,8 @@ import type {
   StudioOpacityTimelineTrack,
   StudioRotationTimelineTrack,
   StudioScaleTimelineTrack,
+  StudioShapeTransformClipChange,
+  StudioShapeTransformTimelineClip,
   StudioWriteInClipChange,
   StudioWriteInTimelineClip,
 } from "./studio/studio-timeline";
@@ -1670,6 +1680,55 @@ export function App({
                 ? LOCKED_ENTITY_MUTATION_MESSAGE
                 : null,
         targetLabel: sourceClip.content.displayLines.join(" "),
+        transactionId: sourceClip.transactionId,
+      },
+    ];
+  });
+  const shapeTransformClips: readonly StudioShapeTransformTimelineClip[] = previewAppliedEdits.flatMap((record) => {
+    if (!workspaceCreationProjection) return [];
+    const sourceClip = shapeTransformClipFromProgram(record.program);
+    if (!sourceClip) return [];
+    const mutation = workspaceCreationProjection.mutations.find(
+      (candidate) => candidate.kind === "shape-transform" && candidate.operationId === sourceClip.operationId,
+    );
+    if (!mutation || mutation.kind !== "shape-transform") return [];
+    const createOperation = previewAppliedEdits
+      .flatMap(({ program }) => program.operations)
+      .find((candidate) => candidate.kind === "CreateEntity" && candidate.entity.id === mutation.entityId);
+    const sourceLifetimeEnd =
+      createOperation?.kind === "CreateEntity"
+        ? (createOperation.entity.lifetime.end ?? projectedEditorScene?.runtimeSceneState.duration)
+        : projectedEditorScene?.runtimeSceneState.duration;
+    const nextTransformStart = previewAppliedEdits
+      .flatMap(({ program }) => {
+        const candidate = shapeTransformClipFromProgram(program);
+        return candidate?.entityId === mutation.entityId &&
+          candidate.interval.start > sourceClip.interval.start + 0.0005
+          ? [candidate.interval.start]
+          : [];
+      })
+      .reduce((earliest, start) => Math.min(earliest, start), Number.POSITIVE_INFINITY);
+    const maximumEnd = Math.min(sourceLifetimeEnd ?? sourceClip.interval.end, nextTransformStart);
+    const activeDraftIsThisClip = editingAppliedProgram?.original.program.transactionId === sourceClip.transactionId;
+    return [
+      {
+        easing: sourceClip.easing,
+        entityId: mutation.entityId,
+        interval: mutation.interval,
+        label:
+          workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === mutation.entityId)
+            ?.label ?? mutation.entityId,
+        maximumDuration: Math.max(0.1, maximumEnd - sourceClip.interval.start),
+        operationId: sourceClip.operationId,
+        readOnlyReason:
+          previewRenderer?.state.phase !== "presented"
+            ? "Wait for the canonical WebGPU preview before editing Shape Transform."
+            : draftEdit && !activeDraftIsThisClip
+              ? "Apply or discard the current draft before editing Shape Transform."
+              : lockedEntityIdSet.has(mutation.entityId)
+                ? LOCKED_ENTITY_MUTATION_MESSAGE
+                : null,
+        targetShape: sourceClip.to.shape,
         transactionId: sourceClip.transactionId,
       },
     ];
@@ -3578,6 +3637,218 @@ export function App({
     if (draftEdit) {
       if (editingAppliedProgram?.original.program.transactionId !== clip.transactionId) {
         setDraftError("Apply or discard the current draft before deleting Transform.");
+        return false;
+      }
+      const planned = undoEditorProgramTransition(discardEditorDraftTransition(editorState));
+      if (!editorDocumentAuthority.enabled) {
+        installAcceptedState(planned);
+        return true;
+      }
+      const lifecycleBlocker = readDurationBlocker();
+      if (lifecycleBlocker || !editorDocumentAuthority.canAuthor()) {
+        setDraftError(lifecycleBlocker ?? editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
+        return false;
+      }
+      void commitEditorProgramMutation(collaborationMutationForUndoV1(mutation), planned);
+      return true;
+    }
+    return undoProgramCommitFirst();
+  }
+
+  function shapeTransformMutationsForRoot(entityId: string) {
+    return (workspaceCreationProjection?.mutations ?? [])
+      .filter(
+        (mutation): mutation is Extract<StudioCreationProjectionMutationV1, { kind: "shape-transform" }> =>
+          mutation.kind === "shape-transform" && mutation.entityId === entityId,
+      )
+      .sort((left, right) => left.interval.end - right.interval.end);
+  }
+
+  function currentShapeTransformState(entityId: string): ShapeTransformState | null {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!entity || entity.geometry.dimensions.kind !== "known") return null;
+    if (entity.type === "Circle") {
+      const radius = entity.geometry.dimensions.value.radius;
+      return typeof radius === "number" && Number.isFinite(radius) && radius > 0
+        ? { dimensions: { radius }, shape: "circle" }
+        : null;
+    }
+    if (entity.type === "Rectangle") {
+      const { height, width } = entity.geometry.dimensions.value;
+      return typeof width === "number" &&
+        Number.isFinite(width) &&
+        width > 0 &&
+        typeof height === "number" &&
+        Number.isFinite(height) &&
+        height > 0
+        ? { dimensions: { height, width }, shape: "rectangle" }
+        : null;
+    }
+    return null;
+  }
+
+  function priorShapeTransformState(entityId: string, shape: ShapeTransformKind): ShapeTransformState {
+    const states = previewAppliedEdits.flatMap(({ program }) =>
+      program.operations.flatMap((operation) =>
+        operation.kind === "TransformShape" && operation.entityId === entityId
+          ? [operation.from, operation.to]
+          : operation.kind === "CreateEntity" && operation.entity.id === entityId
+            ? operation.entity.type === "Circle" && typeof operation.entity.dimensions?.radius === "number"
+              ? [{ dimensions: { radius: operation.entity.dimensions.radius }, shape: "circle" as const }]
+              : operation.entity.type === "Rectangle" &&
+                  typeof operation.entity.dimensions?.width === "number" &&
+                  typeof operation.entity.dimensions?.height === "number"
+                ? [
+                    {
+                      dimensions: {
+                        height: operation.entity.dimensions.height,
+                        width: operation.entity.dimensions.width,
+                      },
+                      shape: "rectangle" as const,
+                    },
+                  ]
+                : []
+            : [],
+      ),
+    );
+    const prior = states.findLast((state) => state.shape === shape);
+    return (
+      prior ??
+      (shape === "circle" ? { dimensions: { radius: 1 }, shape } : { dimensions: { height: 2, width: 4 }, shape })
+    );
+  }
+
+  function shapeTransformUnavailableReason(entityId: string) {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (
+      !entity ||
+      (entity.type !== "Circle" && entity.type !== "Rectangle") ||
+      entity.sourceIdentity.kind !== "unknown" ||
+      !entity.transactionId
+    ) {
+      return "Shape Transform supports only Studio-created Rectangle and Circle objects.";
+    }
+    if (previewRenderer?.state.phase !== "presented" || !workspaceCreationProjection || !workspaceProjection) {
+      return "Wait for the canonical WebGPU preview before creating Shape Transform.";
+    }
+    if (lockedEntityIdSet.has(entityId)) return LOCKED_ENTITY_MUTATION_MESSAGE;
+    if (canonicalGroupedChildIds.has(entityId))
+      return "Shape Transform currently supports only ungrouped root objects.";
+    if (draftEdit) return "Apply or discard the current draft before creating Shape Transform.";
+    if (
+      previewAppliedEdits.some(({ program }) =>
+        program.operations.some((operation) => operation.kind === "ResizeEntity" && operation.entityId === entityId),
+      )
+    ) {
+      return "Create all Shape Transform clips before resizing this object.";
+    }
+    if (!currentShapeTransformState(entityId)) return "Shape Transform requires known positive shape dimensions.";
+    const latest = shapeTransformMutationsForRoot(entityId).at(-1);
+    if (latest && currentTime < latest.interval.end - 0.0005) {
+      return "Move the playhead to the end of the latest Shape Transform before appending another one.";
+    }
+    return null;
+  }
+
+  function addShapeTransform(
+    entityId: string,
+    input: Readonly<{ duration: number; easing: ShapeTransformEasing; target: "Circle" | "Rectangle" }>,
+  ) {
+    const unavailable = shapeTransformUnavailableReason(entityId);
+    if (unavailable) {
+      setDraftError(unavailable);
+      return false;
+    }
+    const from = currentShapeTransformState(entityId);
+    const targetShape = input.target === "Circle" ? "circle" : "rectangle";
+    if (!from || from.shape === targetShape) {
+      setDraftError("Shape Transform must change between Rectangle and Circle.");
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "creating a Shape Transform",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor) return false;
+    try {
+      const validation = createShapeTransformProgram({
+        capturedPlayhead: anchor.sourceTime,
+        easing: input.easing,
+        end: anchor.sourceTime + input.duration,
+        entityId,
+        from,
+        scene: sourceScene,
+        start: anchor.sourceTime,
+        to: priorShapeTransformState(entityId, targetShape),
+        transactionId: `studio-shape-transform-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record, [entityId], gestureContext.sourcePrograms);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Shape Transform could not be created.");
+      return false;
+    }
+  }
+
+  function stageShapeTransform(clip: StudioShapeTransformTimelineClip, change: StudioShapeTransformClipChange = {}) {
+    if (clip.readOnlyReason) {
+      setDraftError(clip.readOnlyReason);
+      return false;
+    }
+    const programIndex = appliedEdits.findIndex(({ program }) => program.transactionId === clip.transactionId);
+    const original = appliedEdits[programIndex];
+    const base = previewAppliedEdits[programIndex];
+    if (!original || !base || base.program.transactionId !== clip.transactionId) {
+      setDraftError("The Shape Transform no longer matches the applied Program history.");
+      return false;
+    }
+    try {
+      const preceding = sourceSceneBeforeAppliedProgram(programIndex);
+      const validation = replaceShapeTransformProgram({
+        baseProgram: base.program,
+        duration: change.duration,
+        easing: change.easing,
+        scene: preceding.scene,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record, [clip.entityId], preceding.canonical, null, {
+        index: programIndex,
+        original,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Shape Transform could not be edited.");
+      return false;
+    }
+  }
+
+  function deleteShapeTransform(clip: StudioShapeTransformTimelineClip) {
+    const latest = appliedEdits.at(-1);
+    const mutation = programUndoEntries.at(-1);
+    if (
+      !latest ||
+      latest.program.transactionId !== clip.transactionId ||
+      !mutation ||
+      mutation.kind !== "append" ||
+      mutation.value.program.transactionId !== clip.transactionId
+    ) {
+      setDraftError("Undo later edits and Shape Transform changes before deleting this clip.");
+      return false;
+    }
+    if (draftEdit) {
+      if (editingAppliedProgram?.original.program.transactionId !== clip.transactionId) {
+        setDraftError("Apply or discard the current draft before deleting Shape Transform.");
         return false;
       }
       const planned = undoEditorProgramTransition(discardEditorDraftTransition(editorState));
@@ -7860,6 +8131,7 @@ export function App({
               resizeUnavailableIds={studioResizeUnavailableIds}
               scaleTrackEligibleIds={scaleTrackEligibleIds}
               scaleTracks={scaleTracks}
+              shapeTransformClips={shapeTransformClips}
               writeInClips={writeInClips}
               writeInAvailability={writeInAvailability}
               uniformScaleResizeOnlyIds={studioUniformScaleResizeOnlyIds}
@@ -7949,6 +8221,9 @@ export function App({
               onScaleKeyframeChange={changeScaleKeyframe}
               onScaleKeyframeDelete={deleteScaleKeyframe}
               onScaleKeyframeDuplicate={duplicateScaleKeyframe}
+              onShapeTransformClipChange={stageShapeTransform}
+              onShapeTransformClipDelete={deleteShapeTransform}
+              onShapeTransformClipSelect={(clip) => void stageShapeTransform(clip)}
               onPresenceCursorChange={(cursor) => editorDocumentAuthority.updatePresence({ cursor })}
               onSelectionResizeCancel={cancelSelectionResize}
               onSelectionResizeKeyDown={nudgeSelectionResize}
@@ -8003,6 +8278,16 @@ export function App({
                       defaultDuration: motionDuration,
                       onCreate: addMathTexTransform,
                       unavailableReason: mathTexTransformUnavailableReason(selectedEntity.id),
+                    }
+                  : undefined
+              }
+              shapeTransform={
+                selectedEntity?.type === "Circle" || selectedEntity?.type === "Rectangle"
+                  ? {
+                      currentShape: selectedEntity.type,
+                      defaultDuration: motionDuration,
+                      onCreate: addShapeTransform,
+                      unavailableReason: shapeTransformUnavailableReason(selectedEntity.id),
                     }
                   : undefined
               }

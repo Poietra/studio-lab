@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use poietra_geometry::align_cubic_path_morph_chain;
+use poietra_geometry::{align_cubic_path_morph_chain, scene_geometry_as_cubic_path_v1};
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetReferenceV1, ContractVersionV1, CubicPathV1,
     CubicSegmentV1, CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1,
@@ -60,6 +60,9 @@ enum CreateSceneEntityGeometry {
     CubicOutline {
         path: CubicPathV1,
     },
+    ShapeOutline {
+        path: CubicPathV1,
+    },
     LogicalGroup,
 }
 
@@ -88,6 +91,12 @@ struct CreateSceneEntityMathTexMorph {
     initial_path: CubicPathV1,
     keyframes: Vec<KeyframeV1<CubicPathV1>>,
     start: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CreateSceneEntityShapeMorph {
+    initial_path: CubicPathV1,
+    keyframes: Vec<KeyframeV1<CubicPathV1>>,
 }
 
 const SEGMENTED_MATH_TEX_MAX_FRAGMENTS: usize = 128;
@@ -129,6 +138,7 @@ struct CreateSceneEntity {
     scale: f64,
     uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
+    shape_morph: Option<CreateSceneEntityShapeMorph>,
     stroke_color: Option<RgbaColorV1>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
     visible: bool,
@@ -208,6 +218,13 @@ pub enum StudioCreationProjectedMutationKind {
         easing: EasingV1,
         source_entity_id: String,
         target_entity_id: String,
+    },
+    ShapeTransform {
+        easing: EasingV1,
+        from_dimensions: StudioAuthoringDimensions,
+        from_shape: StudioAuthoringEntityKind,
+        to_dimensions: StudioAuthoringDimensions,
+        to_shape: StudioAuthoringEntityKind,
     },
     UniformScale {
         from: f64,
@@ -301,6 +318,12 @@ pub struct StudioCreationEntitySpec {
     pub tex_parts: Option<Vec<String>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct StudioCreationShapeState {
+    dimensions: StudioAuthoringDimensions,
+    kind: StudioAuthoringEntityKind,
+}
+
 /// Easing presets admitted for scalar Studio property tracks.
 ///
 /// Motion-path authoring deliberately keeps its smaller [`StudioMotionEasing`]
@@ -346,6 +369,14 @@ pub enum StudioCreationOperationKind {
         strategy: StudioMathTexTransformStrategy,
         target_entity_id: String,
         target_type: Option<String>,
+    },
+    #[serde(rename = "shape-transform")]
+    TransformShape {
+        easing: StudioPropertyEasing,
+        from_dimensions: StudioAuthoringDimensions,
+        from_shape: StudioAuthoringEntityKind,
+        to_dimensions: StudioAuthoringDimensions,
+        to_shape: StudioAuthoringEntityKind,
     },
     UniformScale {
         control_present: bool,
@@ -542,6 +573,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::DrawIn { .. }
             | StudioCreationOperationKind::WriteIn { .. }
             | StudioCreationOperationKind::TransformContent { .. }
+            | StudioCreationOperationKind::TransformShape { .. }
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Rotation { .. }
             | StudioCreationOperationKind::Opacity { .. }
@@ -680,6 +712,7 @@ struct PlannedStudioCreationEntity {
     creation_transaction_id: String,
     creation_program_rank: usize,
     current_dimensions: StudioAuthoringDimensions,
+    current_shape: Option<StudioCreationShapeState>,
     current_text_content: Option<StudioTextContent>,
     fill_color_override: Option<String>,
     current_opacity: f64,
@@ -702,6 +735,8 @@ struct PlannedStudioCreationEntity {
     position: PointV1,
     rotation_keyframes: Vec<KeyframeV1<f64>>,
     scale: f64,
+    shape_path_dimensions: Option<StudioAuthoringDimensions>,
+    shape_transforms: Vec<PlannedStudioShapeTransform>,
     uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
     spec: StudioCreationEntitySpec,
@@ -718,6 +753,16 @@ struct PlannedStudioMathTexTransform {
     operation_id: String,
     source_entity_id: String,
     target_entity_id: String,
+    transaction_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedStudioShapeTransform {
+    easing: EasingV1,
+    from: StudioCreationShapeState,
+    interval: IntervalV1,
+    operation_id: String,
+    to: StudioCreationShapeState,
     transaction_id: String,
 }
 
@@ -751,6 +796,7 @@ fn studio_creation_insertion_duration(program: &StudioCreationEditInput) -> f64 
                     operation.kind,
                     StudioCreationOperationKind::CreateMotion { .. }
                         | StudioCreationOperationKind::TransformContent { .. }
+                        | StudioCreationOperationKind::TransformShape { .. }
                 )
             }
         })
@@ -2046,6 +2092,7 @@ fn plan_studio_creation_edits(
                     .is_none_or(|entity_id| !program_created_ids.contains(entity_id)),
                 StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
+                | StudioCreationOperationKind::TransformShape { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -2091,6 +2138,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
+                | StudioCreationOperationKind::TransformShape { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
@@ -2449,6 +2497,14 @@ fn plan_studio_creation_edits(
             creation_program_rank: program_rank,
             creation_transaction_id: program.transaction_id.clone(),
             current_dimensions: spec.dimensions,
+            current_shape: matches!(
+                spec.kind,
+                StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
+            )
+            .then_some(StudioCreationShapeState {
+                dimensions: spec.dimensions,
+                kind: spec.kind,
+            }),
             current_text_content: initial_text_content,
             fill_color_override: None,
             current_opacity: 1.0,
@@ -2471,6 +2527,12 @@ fn plan_studio_creation_edits(
             position: initial_position.clone(),
             rotation_keyframes: Vec::new(),
             scale: 1.0,
+            shape_path_dimensions: matches!(
+                spec.kind,
+                StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
+            )
+            .then_some(spec.dimensions),
+            shape_transforms: Vec::new(),
             uniform_scale_keyframes: Vec::new(),
             source_z_index: None,
             spec: spec.clone(),
@@ -3193,6 +3255,23 @@ fn plan_studio_creation_edits(
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
+        let contains_shape_transform = program.operations.iter().any(|operation| {
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::TransformShape { .. }
+            )
+        });
+        if contains_shape_transform
+            && (program.origin != StudioAuthoringOrigin::DirectManipulation
+                || program.requested_execution != SceneEditExecution::Sequence
+                || program.schedule_mode != SceneEditScheduleMode::Sequence
+                || program.schedule_edge_count != 0
+                || program.intent_count != 1
+                || program.operations.len() != 1
+                || program.schedule_order != [program.operations[0].id.clone()])
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
         for (schedule_index, operation_id) in program.schedule_order.iter().enumerate() {
             let operation = program
                 .operations
@@ -3579,6 +3658,92 @@ fn plan_studio_creation_edits(
                         },
                     ));
                 }
+                StudioCreationOperationKind::TransformShape {
+                    easing,
+                    from_dimensions,
+                    from_shape,
+                    to_dimensions,
+                    to_shape,
+                } if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                    && entity_id == state.spec.id
+                    && matches!(
+                        (from_shape, to_shape),
+                        (
+                            StudioAuthoringEntityKind::Circle,
+                            StudioAuthoringEntityKind::Rectangle
+                        ) | (
+                            StudioAuthoringEntityKind::Rectangle,
+                            StudioAuthoringEntityKind::Circle
+                        )
+                    )
+                    && state.current_shape
+                        == Some(StudioCreationShapeState {
+                            dimensions: *from_dimensions,
+                            kind: *from_shape,
+                        })
+                    && state.shape_path_dimensions == Some(*from_dimensions)
+                    && studio_authoring_shape_size(*from_shape, *from_dimensions).is_some()
+                    && studio_authoring_shape_size(*to_shape, *to_dimensions).is_some()
+                    && matches!(
+                        easing,
+                        StudioPropertyEasing::Linear | StudioPropertyEasing::Smooth
+                    )
+                    && operation.interval.end.is_finite()
+                    && operation.interval.end > operation.interval.start
+                    && state.persistent_removal.is_none() =>
+                {
+                    let interval = IntervalV1 {
+                        end: operation.interval.end + timeline.offsets[program_index],
+                        start: operation.interval.start + timeline.offsets[program_index],
+                    };
+                    if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                        || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+                        || studio_creation_initial_appearance_end(state)
+                            .is_some_and(|end| interval.start < end - TIMELINE_ANCHOR_EPSILON)
+                        || state.shape_transforms.last().is_some_and(|prior| {
+                            interval.start < prior.interval.end - TIMELINE_ANCHOR_EPSILON
+                        })
+                    {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                    let from = StudioCreationShapeState {
+                        dimensions: *from_dimensions,
+                        kind: *from_shape,
+                    };
+                    let to = StudioCreationShapeState {
+                        dimensions: *to_dimensions,
+                        kind: *to_shape,
+                    };
+                    let easing = property_easing(*easing);
+                    state.shape_transforms.push(PlannedStudioShapeTransform {
+                        easing: easing.clone(),
+                        from,
+                        interval: interval.clone(),
+                        operation_id: operation.id.clone(),
+                        to,
+                        transaction_id: program.transaction_id.clone(),
+                    });
+                    state.current_dimensions = *to_dimensions;
+                    state.current_shape = Some(to);
+                    state.shape_path_dimensions = Some(*to_dimensions);
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval,
+                            kind: StudioCreationProjectedMutationKind::ShapeTransform {
+                                easing,
+                                from_dimensions: *from_dimensions,
+                                from_shape: *from_shape,
+                                to_dimensions: *to_dimensions,
+                                to_shape: *to_shape,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
                 StudioCreationOperationKind::Resize {
                     from_dimensions,
                     from_position,
@@ -3586,7 +3751,9 @@ fn plan_studio_creation_edits(
                     shape,
                     to_dimensions,
                     to_position,
-                } if *shape == state.kind
+                } if state
+                    .current_shape
+                    .is_some_and(|current| current.kind == *shape)
                     && matches!(
                         shape,
                         StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
@@ -3610,6 +3777,10 @@ fn plan_studio_creation_edits(
                     record_planned_studio_creation_instant(state, instant_at)?;
                     state.has_position_or_resize_instant = true;
                     state.current_dimensions = *to_dimensions;
+                    state.current_shape = Some(StudioCreationShapeState {
+                        dimensions: *to_dimensions,
+                        kind: *shape,
+                    });
                     state.position = to_position.clone();
                     ranked_mutations.push((
                         timeline.ranks[program_index],
@@ -3662,6 +3833,7 @@ fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
+                | StudioCreationOperationKind::TransformShape { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
                 | StudioCreationOperationKind::Opacity { .. }
@@ -3739,6 +3911,9 @@ fn plan_studio_creation_edits(
                     .instant_at
                     .is_some_and(|at| removal.interval.start < at)
                 || state.math_tex_transforms.last().is_some_and(|transform| {
+                    removal.interval.start < transform.interval.end - TIMELINE_ANCHOR_EPSILON
+                })
+                || state.shape_transforms.last().is_some_and(|transform| {
                     removal.interval.start < transform.interval.end - TIMELINE_ANCHOR_EPSILON
                 }))
         {
@@ -4119,6 +4294,11 @@ fn created_geometry_and_appearance(
             studio_math_tex_appearance(),
             SceneCapabilityV1::CubicPathGeometry,
         ),
+        CreateSceneEntityGeometry::ShapeOutline { path } => (
+            SceneGeometryV1::CubicPath { path },
+            studio_shape_appearance(),
+            SceneCapabilityV1::CubicPathGeometry,
+        ),
         CreateSceneEntityGeometry::LogicalGroup => (
             SceneGeometryV1::Group {},
             SceneAppearanceV1::Group { opacity: 1.0 },
@@ -4150,6 +4330,7 @@ fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
                 CreateSceneEntityGeometry::Circle { .. }
                     | CreateSceneEntityGeometry::Line
                     | CreateSceneEntityGeometry::Rectangle { .. }
+                    | CreateSceneEntityGeometry::ShapeOutline { .. }
             )
     })
 }
@@ -4417,6 +4598,7 @@ fn validate_create_scene_entities_command(
                     &entity.geometry,
                     CreateSceneEntityGeometry::Circle { .. }
                         | CreateSceneEntityGeometry::Rectangle { .. }
+                        | CreateSceneEntityGeometry::ShapeOutline { .. }
                 ))
             || (!rotation_is_noop(entity.rotation) && entity.instant_transform.is_some())
             || (!entity.uniform_scale_keyframes.is_empty()
@@ -4681,6 +4863,83 @@ fn planned_math_tex_morph(
     }))
 }
 
+fn studio_creation_shape_path(
+    shape: StudioCreationShapeState,
+) -> Result<CubicPathV1, ApplyStudioCreationEditError> {
+    let size = studio_authoring_shape_size(shape.kind, shape.dimensions)
+        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+    let geometry = match shape.kind {
+        StudioAuthoringEntityKind::Circle => SceneGeometryV1::Circle {
+            center: PointV1 { x: 0.0, y: 0.0 },
+            radius: size.width / 2.0,
+        },
+        StudioAuthoringEntityKind::Rectangle => SceneGeometryV1::Rectangle {
+            center: PointV1 { x: 0.0, y: 0.0 },
+            corner_radius: 0.0,
+            height: size.height,
+            width: size.width,
+        },
+        StudioAuthoringEntityKind::Arrow
+        | StudioAuthoringEntityKind::Image
+        | StudioAuthoringEntityKind::Line
+        | StudioAuthoringEntityKind::MathTex
+        | StudioAuthoringEntityKind::Other
+        | StudioAuthoringEntityKind::Text => {
+            return Err(ApplyStudioCreationEditError::Unsupported);
+        }
+    };
+    scene_geometry_as_cubic_path_v1(&geometry)
+        .map_err(|_| ApplyStudioCreationEditError::Unsupported)
+}
+
+fn planned_shape_morph(
+    state: &PlannedStudioCreationEntity,
+) -> Result<Option<CreateSceneEntityShapeMorph>, ApplyStudioCreationEditError> {
+    let Some(first) = state.shape_transforms.first() else {
+        return Ok(None);
+    };
+    let mut paths = Vec::with_capacity(state.shape_transforms.len() + 1);
+    paths.push(studio_creation_shape_path(first.from)?);
+    for transform in &state.shape_transforms {
+        paths.push(studio_creation_shape_path(transform.to)?);
+    }
+    let aligned = align_cubic_path_morph_chain(&paths)
+        .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
+    let mut keyframes = Vec::with_capacity(state.shape_transforms.len() * 2 + 1);
+    for (index, transform) in state.shape_transforms.iter().enumerate() {
+        if index == 0 {
+            keyframes.push(KeyframeV1 {
+                at: transform.interval.start,
+                easing_to_next: Some(transform.easing.clone()),
+                value: aligned[0].clone(),
+            });
+        } else {
+            let previous = keyframes
+                .last_mut()
+                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+            if transform.interval.start > previous.at + TIMELINE_ANCHOR_EPSILON {
+                previous.easing_to_next = Some(EasingV1::Linear {});
+                keyframes.push(KeyframeV1 {
+                    at: transform.interval.start,
+                    easing_to_next: Some(transform.easing.clone()),
+                    value: aligned[index].clone(),
+                });
+            } else {
+                previous.easing_to_next = Some(transform.easing.clone());
+            }
+        }
+        keyframes.push(KeyframeV1 {
+            at: transform.interval.end,
+            easing_to_next: None,
+            value: aligned[index + 1].clone(),
+        });
+    }
+    Ok(Some(CreateSceneEntityShapeMorph {
+        initial_path: aligned[0].clone(),
+        keyframes,
+    }))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one append path keeps base entity and its three optional canonical channels together"
@@ -4695,6 +4954,7 @@ fn append_created_entity(
 ) -> Result<u32, CreateSceneEntitiesError> {
     let write_in = entity.write_in.clone();
     let math_tex_morph = entity.math_tex_morph.clone();
+    let shape_morph = entity.shape_morph.clone();
     let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
     let is_logical_group = matches!(&geometry, SceneGeometryV1::Group {});
     let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
@@ -5081,6 +5341,18 @@ fn append_created_entity(
     } else {
         0
     };
+    if let Some(morph) = shape_morph {
+        capabilities.insert(SceneCapabilityV1::PathMorphAnimation);
+        let channel_id = unused_channel_id(scene, &format!("studio-shape-morph-{scene_order}"));
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::PathMorph {
+                entity_id: created_id,
+                id: channel_id,
+                keyframes: morph.keyframes,
+                provenance_id: provenance_id.to_owned(),
+            });
+    }
     1_u32
         .checked_add(write_leaf_count)
         .and_then(|count| count.checked_add(morph_leaf_count))
@@ -5479,13 +5751,21 @@ impl EngineSessionV1 {
         let mut persistent_removals = Vec::new();
         for state in &plan.entities {
             let math_tex_morph = planned_math_tex_morph(state, &math_tex_outlines)?;
+            let shape_morph = planned_shape_morph(state)?;
             let geometry = match state.kind {
                 StudioAuthoringEntityKind::Arrow => CreateSceneEntityGeometry::Arrow,
                 StudioAuthoringEntityKind::Circle => {
-                    let size = studio_authoring_shape_size(state.kind, state.initial_dimensions)
-                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    CreateSceneEntityGeometry::Circle {
-                        radius: size.width / 2.0,
+                    if let Some(morph) = &shape_morph {
+                        CreateSceneEntityGeometry::ShapeOutline {
+                            path: morph.initial_path.clone(),
+                        }
+                    } else {
+                        let size =
+                            studio_authoring_shape_size(state.kind, state.initial_dimensions)
+                                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        CreateSceneEntityGeometry::Circle {
+                            radius: size.width / 2.0,
+                        }
                     }
                 }
                 StudioAuthoringEntityKind::Image => {
@@ -5508,11 +5788,18 @@ impl EngineSessionV1 {
                 }
                 StudioAuthoringEntityKind::Line => CreateSceneEntityGeometry::Line,
                 StudioAuthoringEntityKind::Rectangle => {
-                    let size = studio_authoring_shape_size(state.kind, state.initial_dimensions)
-                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    CreateSceneEntityGeometry::Rectangle {
-                        height: size.height,
-                        width: size.width,
+                    if let Some(morph) = &shape_morph {
+                        CreateSceneEntityGeometry::ShapeOutline {
+                            path: morph.initial_path.clone(),
+                        }
+                    } else {
+                        let size =
+                            studio_authoring_shape_size(state.kind, state.initial_dimensions)
+                                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        CreateSceneEntityGeometry::Rectangle {
+                            height: size.height,
+                            width: size.width,
+                        }
                     }
                 }
                 StudioAuthoringEntityKind::MathTex if state.write_interval.is_some() => {
@@ -5562,12 +5849,20 @@ impl EngineSessionV1 {
             let instant_transform = if let Some(at) = state.instant_at {
                 let (x_ratio, y_ratio) = match state.kind {
                     StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
+                        let current_shape = state
+                            .current_shape
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        let path_dimensions = state
+                            .shape_path_dimensions
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                         let initial =
-                            studio_authoring_shape_size(state.kind, state.initial_dimensions)
+                            studio_authoring_shape_size(current_shape.kind, path_dimensions)
                                 .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                        let current =
-                            studio_authoring_shape_size(state.kind, state.current_dimensions)
-                                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        let current = studio_authoring_shape_size(
+                            current_shape.kind,
+                            state.current_dimensions,
+                        )
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                         (
                             current.width / initial.width,
                             current.height / initial.height,
@@ -5677,6 +5972,7 @@ impl EngineSessionV1 {
                 scale: 1.0,
                 uniform_scale_keyframes: state.uniform_scale_keyframes.clone(),
                 source_z_index: state.source_z_index,
+                shape_morph,
                 stroke_color,
                 visible: state.visible,
                 write_in,
@@ -5783,6 +6079,55 @@ mod tests {
                 serde_json::from_str(&format!("\"{name}\"")).unwrap();
             assert_eq!(property_easing(easing), expected);
         }
+    }
+
+    #[test]
+    fn shape_transform_wire_uses_the_bounded_flat_contract() {
+        let operation: StudioCreationOperationKind = serde_json::from_value(serde_json::json!({
+            "kind": "shape-transform",
+            "easing": "smooth",
+            "fromShape": "rectangle",
+            "fromDimensions": { "width": 4.0, "height": 2.0 },
+            "toShape": "circle",
+            "toDimensions": { "radius": 1.0 }
+        }))
+        .unwrap();
+        assert!(matches!(
+            operation,
+            StudioCreationOperationKind::TransformShape {
+                easing: StudioPropertyEasing::Smooth,
+                from_shape: StudioAuthoringEntityKind::Rectangle,
+                to_shape: StudioAuthoringEntityKind::Circle,
+                ..
+            }
+        ));
+
+        let projection = StudioCreationProjectedMutationKind::ShapeTransform {
+            easing: EasingV1::ManimSmooth {},
+            from_dimensions: StudioAuthoringDimensions {
+                height: Some(2.0),
+                radius: None,
+                width: Some(4.0),
+            },
+            from_shape: StudioAuthoringEntityKind::Rectangle,
+            to_dimensions: StudioAuthoringDimensions {
+                height: None,
+                radius: Some(1.0),
+                width: None,
+            },
+            to_shape: StudioAuthoringEntityKind::Circle,
+        };
+        assert_eq!(
+            serde_json::to_value(projection).unwrap(),
+            serde_json::json!({
+                "kind": "shape-transform",
+                "easing": { "kind": "manim-smooth" },
+                "fromShape": "rectangle",
+                "fromDimensions": { "width": 4.0, "height": 2.0 },
+                "toShape": "circle",
+                "toDimensions": { "radius": 1.0 }
+            })
+        );
     }
 
     fn studio_persistent_remove_edit_input(
@@ -5893,6 +6238,7 @@ mod tests {
                     scale: 1.25,
                     uniform_scale_keyframes: vec![],
                     source_z_index: None,
+                    shape_morph: None,
                     stroke_color: None,
                     instant_transform: None,
                     visible: true,
@@ -5922,6 +6268,7 @@ mod tests {
                     scale: 0.5,
                     uniform_scale_keyframes: vec![],
                     source_z_index: None,
+                    shape_morph: None,
                     stroke_color: None,
                     instant_transform: Some(CreateSceneEntityInstantTransform {
                         at: 1.25,
@@ -5956,6 +6303,7 @@ mod tests {
                     scale: 2.0,
                     uniform_scale_keyframes: vec![],
                     source_z_index: None,
+                    shape_morph: None,
                     stroke_color: None,
                     instant_transform: None,
                     visible: true,
@@ -6365,6 +6713,100 @@ mod tests {
             middle_id,
             restored_id,
             restored_content,
+        ));
+        command
+    }
+
+    fn studio_shape_transform_program(
+        transaction_id: &str,
+        operation_id: &str,
+        root_entity_id: &str,
+        from_shape: StudioAuthoringEntityKind,
+        from_dimensions: StudioAuthoringDimensions,
+        to_shape: StudioAuthoringEntityKind,
+        to_dimensions: StudioAuthoringDimensions,
+    ) -> StudioCreationEditInput {
+        StudioCreationEditInput {
+            anchor_captured_playhead: 0.9,
+            anchor_resolved_seconds: 0.9,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(0.9),
+            },
+            intent_count: 1,
+            lowering_supported: false,
+            operations: vec![StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some(root_entity_id.to_owned()),
+                id: operation_id.to_owned(),
+                interval: IntervalV1 {
+                    end: 1.4,
+                    start: 0.9,
+                },
+                kind: StudioCreationOperationKind::TransformShape {
+                    easing: StudioPropertyEasing::Smooth,
+                    from_dimensions,
+                    from_shape,
+                    to_dimensions,
+                    to_shape,
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            }],
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Sequence,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Sequence,
+            schedule_order: vec![operation_id.to_owned()],
+            transaction_id: transaction_id.to_owned(),
+        }
+    }
+
+    fn studio_shape_transform_chain_command(
+        bundle: &SceneIrBundleV1,
+    ) -> ApplyStudioCreationEditCommand {
+        let mut command = studio_creation_command(bundle);
+        command.programs.truncate(1);
+        let root_id = "tx:create/entity:shape";
+        for operation in &mut command.programs[0].operations {
+            if let Some(entity_id) = &mut operation.entity_id {
+                *entity_id = root_id.to_owned();
+            }
+            if let StudioCreationOperationKind::Create { entity } = &mut operation.kind {
+                entity.id = root_id.to_owned();
+                entity.kind = StudioAuthoringEntityKind::Rectangle;
+                entity.dimensions = StudioAuthoringDimensions {
+                    height: Some(2.0),
+                    radius: None,
+                    width: Some(4.0),
+                };
+            }
+        }
+        let rectangle = StudioAuthoringDimensions {
+            height: Some(2.0),
+            radius: None,
+            width: Some(4.0),
+        };
+        let circle = StudioAuthoringDimensions {
+            height: None,
+            radius: Some(1.0),
+            width: None,
+        };
+        command.programs.push(studio_shape_transform_program(
+            "shape-to-circle",
+            "shape-to-circle",
+            root_id,
+            StudioAuthoringEntityKind::Rectangle,
+            rectangle,
+            StudioAuthoringEntityKind::Circle,
+            circle,
+        ));
+        command.programs.push(studio_shape_transform_program(
+            "shape-to-rectangle",
+            "shape-to-rectangle",
+            root_id,
+            StudioAuthoringEntityKind::Circle,
+            circle,
+            StudioAuthoringEntityKind::Rectangle,
+            rectangle,
         ));
         command
     }
@@ -8696,6 +9138,262 @@ mod tests {
         assert_ne!(first_midpoint, middle);
         assert_ne!(second_midpoint, middle);
         assert_ne!(second_midpoint, restored);
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one vertical slice pins root identity, shape-state admission, topology, and samples"
+    )]
+    fn normalized_rectangle_circle_chain_uses_one_root_owned_path_morph() {
+        let bundle = static_imported_bundle();
+        let base_duration = bundle.scene.duration;
+        let command = studio_shape_transform_chain_command(&bundle);
+        let root_id = "tx:create/entity:shape";
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(projection.entities.len(), 1);
+        assert_eq!(projection.entities[0].entity_id, root_id);
+        assert!((projection.projected_duration - (base_duration + 1.4)).abs() < 1e-12);
+        let transforms = projection
+            .mutations
+            .iter()
+            .filter(|mutation| {
+                matches!(
+                    mutation.kind,
+                    StudioCreationProjectedMutationKind::ShapeTransform { .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(transforms.len(), 2);
+        assert!(
+            transforms
+                .iter()
+                .all(|mutation| mutation.entity_id == root_id)
+        );
+        assert!(matches!(
+            &transforms[0].kind,
+            StudioCreationProjectedMutationKind::ShapeTransform {
+                easing: EasingV1::ManimSmooth {},
+                from_shape: StudioAuthoringEntityKind::Rectangle,
+                to_shape: StudioAuthoringEntityKind::Circle,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &transforms[1].kind,
+            StudioCreationProjectedMutationKind::ShapeTransform {
+                from_shape: StudioAuthoringEntityKind::Circle,
+                to_shape: StudioAuthoringEntityKind::Rectangle,
+                ..
+            }
+        ));
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        let scene = &result.bundle.scene;
+        assert_eq!(
+            scene
+                .entities
+                .iter()
+                .filter(|entity| entity.id == root_id)
+                .count(),
+            1
+        );
+        let root = scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == root_id)
+            .unwrap();
+        assert!(root.parent_id.is_none());
+        assert!(matches!(root.geometry, SceneGeometryV1::CubicPath { .. }));
+        assert!(
+            scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::PathMorphAnimation)
+        );
+        let keyframes = scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::PathMorph {
+                    entity_id,
+                    keyframes,
+                    ..
+                } if entity_id == root_id => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(keyframes.len(), 3);
+        assert!(
+            keyframes
+                .iter()
+                .zip([1.3, 1.8, 2.3])
+                .all(|(keyframe, expected)| (keyframe.at - expected).abs() < 1e-12)
+        );
+        assert_eq!(keyframes[0].value, keyframes[2].value);
+        assert_ne!(keyframes[0].value, keyframes[1].value);
+        assert!(keyframes.iter().all(|keyframe| {
+            keyframe.value.subpaths.len() == 1
+                && keyframe.value.subpaths[0].closed
+                && keyframe.value.subpaths[0].segments.len() == 4
+        }));
+
+        let sample_path = |sample_time| {
+            session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "studio-shape-transform",
+                    sample_time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap()
+                .draws
+                .into_iter()
+                .find_map(|draw| match draw {
+                    poietra_scene_ir::RenderDrawV1::Path {
+                        entity_id, path, ..
+                    } if entity_id == root_id => Some(path),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let start = sample_path(keyframes[0].at);
+        let first_midpoint = sample_path((keyframes[0].at + keyframes[1].at) / 2.0);
+        let circle = sample_path(keyframes[1].at);
+        let second_midpoint = sample_path((keyframes[1].at + keyframes[2].at) / 2.0);
+        let restored = sample_path(keyframes[2].at);
+        assert_eq!(start, keyframes[0].value);
+        assert_eq!(circle, keyframes[1].value);
+        assert_eq!(restored, start);
+        assert_ne!(first_midpoint, start);
+        assert_ne!(first_midpoint, circle);
+        assert_ne!(second_midpoint, circle);
+        assert_ne!(second_midpoint, restored);
+    }
+
+    #[test]
+    fn normalized_shape_transform_rejects_broken_state_or_unsupported_kind() {
+        let bundle = static_imported_bundle();
+        let command = studio_shape_transform_chain_command(&bundle);
+
+        let mut broken_state = command.clone();
+        let StudioCreationOperationKind::TransformShape {
+            from_dimensions, ..
+        } = &mut broken_state.programs[2].operations[0].kind
+        else {
+            unreachable!();
+        };
+        *from_dimensions = StudioAuthoringDimensions {
+            height: None,
+            radius: Some(2.0),
+            width: None,
+        };
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &broken_state.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+
+        let mut unsupported_kind = command;
+        let StudioCreationOperationKind::TransformShape { to_shape, .. } =
+            &mut unsupported_kind.programs[1].operations[0].kind
+        else {
+            unreachable!();
+        };
+        *to_shape = StudioAuthoringEntityKind::Text;
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &unsupported_kind.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+    }
+
+    #[test]
+    fn normalized_shape_transform_allows_a_later_resize_on_the_logical_root() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_shape_transform_chain_command(&bundle);
+        let root_id = "tx:create/entity:shape";
+        command.programs.push(StudioCreationEditInput {
+            anchor_captured_playhead: 1.4,
+            anchor_resolved_seconds: 1.4,
+            anchor_source: SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(1.4),
+            },
+            intent_count: 1,
+            lowering_supported: false,
+            operations: vec![StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some(root_id.to_owned()),
+                id: "resize-after-shape-transform".to_owned(),
+                interval: IntervalV1 {
+                    end: 1.4,
+                    start: 1.4,
+                },
+                kind: StudioCreationOperationKind::Resize {
+                    from_dimensions: StudioAuthoringDimensions {
+                        height: Some(2.0),
+                        radius: None,
+                        width: Some(4.0),
+                    },
+                    from_position: PointV1 { x: 320.0, y: 180.0 },
+                    from_scale: 1.0,
+                    shape: StudioAuthoringEntityKind::Rectangle,
+                    to_dimensions: StudioAuthoringDimensions {
+                        height: Some(3.0),
+                        radius: None,
+                        width: Some(6.0),
+                    },
+                    to_position: PointV1 { x: 360.0, y: 180.0 },
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            }],
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: SceneEditExecution::Sequence,
+            schedule_edge_count: 0,
+            schedule_mode: SceneEditScheduleMode::Sequence,
+            schedule_order: vec!["resize-after-shape-transform".to_owned()],
+            transaction_id: "resize-after-shape-transform".to_owned(),
+        });
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        assert!(projection.mutations.iter().any(|mutation| {
+            mutation.entity_id == root_id
+                && matches!(
+                    mutation.kind,
+                    StudioCreationProjectedMutationKind::Resize { .. }
+                )
+        }));
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let scene = session
+            .apply_studio_creation_edit(command)
+            .unwrap()
+            .bundle
+            .scene;
+        assert!(scene.animation_channels.iter().any(|channel| {
+            matches!(
+                channel,
+                AnimationChannelV1::PathMorph { entity_id, .. } if entity_id == root_id
+            )
+        }));
+        let transform = scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::AffineTransform {
+                    entity_id,
+                    keyframes,
+                    ..
+                } if entity_id == root_id => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        assert!((transform[0].value.m11 - 1.5).abs() < 1e-12);
+        assert!((transform[0].value.m22 - 1.5).abs() < 1e-12);
     }
 
     #[test]

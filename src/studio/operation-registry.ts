@@ -975,6 +975,45 @@ export const OPERATION_REGISTRY = {
       return issues;
     },
   } satisfies Capability<"CreateMotion">,
+  TransformShape: {
+    access: (operation) => ({
+      reads: [
+        { channel: "dimensions", entityId: operation.entityId },
+        { channel: "shape", entityId: operation.entityId },
+      ],
+      writes: [
+        { channel: "dimensions", entityId: operation.entityId },
+        { channel: "shape", entityId: operation.entityId },
+      ],
+    }),
+    execution: () => CLIENT_ONLY_EXECUTION,
+    validate: (operation, scene) => {
+      const issues = entityIssues([operation.entityId], operation, scene);
+      const dimensionsAreValid = (endpoint: typeof operation.from) =>
+        endpoint.shape === "circle"
+          ? endpoint.dimensions.radius !== undefined &&
+            endpoint.dimensions.height === undefined &&
+            endpoint.dimensions.width === undefined
+          : endpoint.dimensions.height !== undefined &&
+            endpoint.dimensions.width !== undefined &&
+            endpoint.dimensions.radius === undefined;
+      if (
+        operation.from.shape === operation.to.shape ||
+        !dimensionsAreValid(operation.from) ||
+        !dimensionsAreValid(operation.to) ||
+        operation.interval.end <= operation.interval.start
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "shape",
+          message: "Shape Transform requires one positive-duration Circle/Rectangle transition with exact dimensions.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"TransformShape">,
   TransformContent: {
     access: (operation) => ({
       reads: [
