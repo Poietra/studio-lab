@@ -356,6 +356,7 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
   ArrowRight: { x: 2, y: 0 },
   ArrowUp: { x: 0, y: -2 },
 };
+const DRAW_IN_GROUPING_BLOCKER = "Remove Draw from every selected object before grouping.";
 
 type CanvasDragState = Readonly<{
   cameraScale: number;
@@ -1497,6 +1498,13 @@ export function App({
             ?.label ?? sourceClip.entityId,
         maximumDuration: (() => {
           const created = workspaceCreationProjection.entities.find(({ entityId }) => entityId === sourceClip.entityId);
+          const sourceCreated = record.program.operations.find(
+            (operation) => operation.kind === "CreateEntity" && operation.entity.id === sourceClip.entityId,
+          );
+          const sourceLifetimeEnd =
+            sourceCreated?.kind === "CreateEntity"
+              ? (sourceCreated.entity.lifetime.end ?? projectedEditorScene?.runtimeSceneState.duration)
+              : projectedEditorScene?.runtimeSceneState.duration;
           const maximumEnds = [
             ...workspaceCreationProjection.mutations.flatMap((candidate) =>
               candidate.entityId === sourceClip.entityId &&
@@ -1520,6 +1528,9 @@ export function App({
           return Math.max(
             0.1,
             Math.min(
+              sourceLifetimeEnd !== undefined
+                ? sourceLifetimeEnd - sourceClip.interval.start
+                : Number.POSITIVE_INFINITY,
               (workspaceProjection?.proposedState.evaluatedScene.duration ??
                 projectedEditorScene?.runtimeSceneState.duration ??
                 mutation.interval.start + 0.1) - mutation.interval.start,
@@ -2317,15 +2328,20 @@ export function App({
                   scene: draftSourceScene,
                 });
   const layerGroupPlan = planStudioLayerGroup(studioLayers, selectedSet);
+  const selectedDrawInGroupingBlocked = selectedObjectIds.some((entityId) =>
+    sceneProgramsHaveDrawIn(previewAppliedSceneEdits, entityId),
+  );
   const layerGroupUnavailableReason = studioAuthoringLocked
     ? (readDurationBlocker() ?? EDITOR_SESSION_LOADING_BLOCKER)
     : draftEdit || editingAppliedProgram
       ? "Apply or discard the current draft before grouping."
       : selectedObjectIds.some((entityId) => lockedEntityIdSet.has(entityId))
         ? "Unlock every selected object before grouping."
-        : layerGroupPlan.kind === "unavailable"
-          ? layerGroupPlan.reason
-          : null;
+        : selectedDrawInGroupingBlocked
+          ? DRAW_IN_GROUPING_BLOCKER
+          : layerGroupPlan.kind === "unavailable"
+            ? layerGroupPlan.reason
+            : null;
   const selectedEntityLocked = selectedObjectIds.some((entityId) => lockedEntityIdSet.has(entityId));
   const selectedLayoutIds = [...selectedSet];
   let selectionLayoutUnavailableReason: string | null = null;
@@ -4450,6 +4466,13 @@ export function App({
   }
 
   function groupLayerSelection() {
+    if (
+      layerGroupPlan.kind === "planned" &&
+      layerGroupPlan.childEntityIds.some((entityId) => sceneProgramsHaveDrawIn(appliedSceneEdits, entityId))
+    ) {
+      setDraftError(DRAW_IN_GROUPING_BLOCKER);
+      return false;
+    }
     if (layerGroupUnavailableReason || layerGroupPlan.kind !== "planned" || !draftSourceScene) {
       if (layerGroupUnavailableReason) setDraftError(layerGroupUnavailableReason);
       return false;

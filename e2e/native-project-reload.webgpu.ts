@@ -349,6 +349,16 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
+    await page.getByRole("button", { name: /Insert circle/ }).click();
+    await canvas.click({ position: { x: 560, y: 300 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).click();
+    const group = page.getByRole("button", { name: "Group", exact: true });
+    await expect(group).toBeDisabled();
+    await expect(group).toHaveAttribute("title", "Remove Draw from every selected object before grouping.");
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByRole("button", { name: "Move Circle", exact: true })).toHaveCount(0);
+
     let drawClip = page.getByRole("button", { name: "Edit Line Draw entrance" });
     await expect(drawClip).toBeVisible();
     await scrubDrawInClip(page, drawClip, 0);
@@ -367,6 +377,7 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     const drawDuration = page.getByRole("spinbutton", { name: "Draw duration for Line" });
     const drawEasing = page.getByRole("combobox", { name: "Draw easing for Line" });
     await expect(drawDuration).toBeEnabled();
+    await expect(drawDuration).toHaveAttribute("max", "5");
     let drawRevision = await canvas.getAttribute("data-preview-revision");
     await drawDuration.press("Control+A");
     await drawDuration.pressSequentially("1.5");

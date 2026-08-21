@@ -815,7 +815,7 @@ export function StudioTimeline({
           <span className="max-w-48 truncate text-violet-300" title={editingDrawInClip.label}>
             Draw · {editingDrawInClip.label}
           </span>
-          <label className="flex items-center gap-1 text-zinc-500">
+          <div className="flex items-center gap-1 text-zinc-500">
             Duration
             <DrawInDurationInput
               clip={editingDrawInClip}
@@ -823,7 +823,7 @@ export function StudioTimeline({
               onCommit={(duration) => onDrawInChange(editingDrawInClip, { duration })}
             />
             s
-          </label>
+          </div>
           <label className="flex items-center gap-1 text-zinc-500">
             Easing
             <select
