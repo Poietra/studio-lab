@@ -629,6 +629,19 @@ const studioCreationProjectionV1Schema = z
           .strict(),
         z
           .object({
+            content: studioMathTexContentV1Schema,
+            easing: easingV1Schema,
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("math-tex-transform"),
+            operationId: z.string().min(1),
+            sourceEntityId: z.string().min(1),
+            targetEntityId: z.string().min(1),
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
             easing: easingV1Schema,
             entityId: z.string().min(1),
             from: z.literal(0),
@@ -1037,6 +1050,16 @@ type StudioCreationOperationV1 = Readonly<{
         shape: StudioCreationEntityKindV1;
         toDimensions: StudioCreationDimensionsV1;
         toPosition: Readonly<{ x: number; y: number }>;
+      }>
+    | Readonly<{
+        easing: "linear" | "smooth";
+        entityId: string;
+        kind: "transform-content";
+        replacement: StudioMathTexContentV1 | null;
+        sourceEntityId: string;
+        strategy: "replacement-transform" | "transform-matching-tex";
+        targetEntityId: string;
+        targetType: string | null;
       }>
     | Readonly<{
         controlOffset: Readonly<{ x: number; y: number }>;

@@ -197,6 +197,7 @@ export function studioCreationTextContent(value: unknown) {
 
 function normalizedStudioCreationOperation(
   operation: SceneEditOperation,
+  mathTexTransformRootEntityId?: string,
 ): ApplyStudioCreationEditWireCommandV1["programs"][number]["operations"][number] {
   const common = {
     dependsOn: operation.dependsOn,
@@ -382,6 +383,20 @@ function normalizedStudioCreationOperation(
       toPosition: operation.to.position,
     };
   }
+  if (operation.kind === "TransformContent") {
+    const replacement = canonicalEditableContent(operation.replacement, "MathTex");
+    return {
+      ...common,
+      easing: operation.easing ?? "smooth",
+      entityId: mathTexTransformRootEntityId ?? operation.sourceEntityId,
+      kind: "transform-content",
+      replacement: replacement?.texParts ? (replacement as StudioMathTexContentV1) : null,
+      sourceEntityId: operation.sourceEntityId,
+      strategy: operation.strategy,
+      targetEntityId: operation.targetEntityId,
+      targetType: operation.targetType ?? null,
+    };
+  }
   if (operation.kind === "CreateMotion") {
     return {
       ...common,
@@ -408,16 +423,43 @@ function normalizedStudioCreationOperation(
   return { ...common, kind: "unsupported" };
 }
 
+export function studioCreationMathTexTransformRoots(programs: readonly SceneEdit[]) {
+  const rootByIdentity = new Map<string, string>();
+  for (const program of programs) {
+    for (const operation of program.operations) {
+      if (operation.kind === "CreateEntity") rootByIdentity.set(operation.entity.id, operation.entity.id);
+    }
+  }
+  const rootByOperationId = new Map<string, string>();
+  for (const program of programs) {
+    for (const operation of program.operations) {
+      if (operation.kind !== "TransformContent") continue;
+      const root = rootByIdentity.get(operation.sourceEntityId);
+      if (!root) continue;
+      rootByOperationId.set(operation.id, root);
+      rootByIdentity.set(operation.targetEntityId, root);
+    }
+  }
+  return rootByOperationId;
+}
+
+function normalizedStudioCreationPrograms(programs: readonly SceneEdit[]) {
+  const transformRoots = studioCreationMathTexTransformRoots(programs);
+  return programs.map((program) => ({
+    ...studioProgramEnvelope(program),
+    operations: program.operations.map((operation) =>
+      normalizedStudioCreationOperation(operation, transformRoots.get(operation.id)),
+    ),
+  }));
+}
+
 /** Normalizes one complete Canonical Program batch for the Studio-creation Rust authority. */
 export function buildStudioCreationEditCommand(
   input: StudioCreationCommandInput,
 ): ApplyStudioCreationEditWireCommandV1 {
   return {
     ...input,
-    programs: input.programs.map((program) => ({
-      ...studioProgramEnvelope(program),
-      operations: program.operations.map(normalizedStudioCreationOperation),
-    })),
+    programs: normalizedStudioCreationPrograms(input.programs),
     schema: "poietra.apply-studio-creation-edit",
     segmentedMathTexOutlines: input.segmentedMathTexOutlines ?? [],
     textOutlines: input.textOutlines ?? [],
@@ -431,10 +473,7 @@ export function buildStudioCreationProjectionCommand(
 ): ProjectStudioCreationEditWireCommandV1 {
   return {
     ...input,
-    programs: input.programs.map((program) => ({
-      ...studioProgramEnvelope(program),
-      operations: program.operations.map(normalizedStudioCreationOperation),
-    })),
+    programs: normalizedStudioCreationPrograms(input.programs),
     schema: "poietra.project-studio-creation-edit",
     version: 1,
   };

@@ -232,6 +232,64 @@ describe("authoritative Editor Program materialization", () => {
     );
   });
 
+  it("routes a Studio-created MathTex transform through the creation projector", async () => {
+    const targetScene = scene();
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [
+        {
+          content: { displayLines: ["A"], label: "A", texParts: ["A"] },
+          position: { x: 320, y: 180 },
+          type: "MathTex",
+        },
+      ],
+      scene: targetScene.runtimeSceneState,
+      transactionId: "studio-mathtex-create",
+    });
+    if (creation.validation.kind !== "valid") throw new Error("Studio MathTex creation fixture is invalid.");
+    const rootEntityId = creation.entityIds[0]!;
+    const transform: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 1, evidence: [], resolvedSeconds: 1, source: { kind: "absolute", seconds: 1 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          id: "studio-mathtex-transform/operation:replace",
+          interval: { end: 2, start: 1 },
+          kind: "TransformContent",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          replacement: { displayLines: ["B"], label: "B", texParts: ["B"] },
+          sourceEntityId: rootEntityId,
+          strategy: "replacement-transform",
+          targetEntityId: "tx:studio-mathtex-transform/entity:math-tex-transform-target",
+          targetType: "MathTex",
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: ["studio-mathtex-transform/operation:replace"] },
+      transactionId: "studio-mathtex-transform",
+      version: 1,
+    };
+    const compiler = vi.fn<ProjectStudioCreationCompiler>(async () => {
+      throw new Error("creation transform reached Rust");
+    });
+
+    await expect(
+      materializeAuthoritativeEditorProgramsV1(
+        targetScene,
+        [],
+        [creation.validation.program, transform],
+        undefined,
+        undefined,
+        undefined,
+        compiler,
+      ),
+    ).rejects.toThrow(/creation transform reached Rust/i);
+    expect(compiler).toHaveBeenCalledOnce();
+  });
+
   it("admits standalone motion only through the snapshot-free Rust projector", async () => {
     const remote = standaloneMotionProgram();
     const projection: StudioMotionProjectionV1 = {

@@ -889,6 +889,7 @@ function animationOperation(operation: SceneEditOperation): operation is Lowered
 
 function animationEasing(operation: LoweredAnimationOperation): MotionEasing {
   if (operation.kind === "CreateMotion") return operation.easing;
+  if (operation.kind === "TransformContent") return operation.easing ?? "smooth";
   if (operation.kind !== "AnimateProperty") return "smooth";
   if (isMotionEasing(operation.easing)) return operation.easing;
   throw new ProgramLoweringError(

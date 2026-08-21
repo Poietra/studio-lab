@@ -125,7 +125,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
   const hasPersistentRemove = operations.some(isPersistentRemoveOperation);
   const hasClosedValidationPath = isClosedValidationProgramBatch(programs);
   const isExactMathTexTransform = isExactStudioMathTexTransformProgramBatch(programs);
-  if (hasMathTexTransform && !isExactMathTexTransform) {
+  if (hasMathTexTransform && !hasCreation && !isExactMathTexTransform) {
     throw new TypeError(
       "The authoritative Editor projection may contain TransformContent only as an exact Rust MathTex transform batch.",
     );

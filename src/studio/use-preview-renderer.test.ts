@@ -3170,6 +3170,88 @@ describe("compileStudioPreviewSceneV1", () => {
     ).toEqual([creation.entityIds[0]]);
   });
 
+  it("compiles Studio-created MathTex transform targets in the creation batch", async () => {
+    const { proposedState, snapshot } = await compilablePreviewInput();
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0.5,
+      entities: [
+        {
+          content: { displayLines: ["A"], label: "A", texParts: ["A"] },
+          position: { x: 400, y: 180 },
+          type: "MathTex",
+        },
+      ],
+      scene: proposedState.base.runtimeSceneState,
+      transactionId: "studio-mathtex-root",
+    });
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const rootEntityId = creation.entityIds[0]!;
+    const transform: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 1, evidence: [], resolvedSeconds: 1, source: { kind: "absolute", seconds: 1 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          easing: "smooth",
+          id: "studio-mathtex-transform/operation:replace",
+          interval: { end: 2, start: 1 },
+          kind: "TransformContent",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          replacement: { displayLines: ["B"], label: "B", texParts: ["B"] },
+          sourceEntityId: rootEntityId,
+          strategy: "replacement-transform",
+          targetEntityId: "tx:studio-mathtex-transform/entity:math-tex-transform-target",
+          targetType: "MathTex",
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: ["studio-mathtex-transform/operation:replace"] },
+      transactionId: "studio-mathtex-transform",
+      version: 1,
+    };
+    const compilerInputs: string[][] = [];
+    const commands: ApplyStudioCreationEditWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioCreationEditCompiler: async (_bundle, command) => {
+        commands.push(command);
+        throw new Error("captured Studio MathTex transform command");
+      },
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async (input) => {
+        compilerInputs.push([...input]);
+        return compiledMathTexResponse();
+      },
+      snapshot,
+      workingState: {
+        ...proposedState.base,
+        appliedEdits: [
+          programRecord(creation.validation.program, creation.validation),
+          programRecord(transform, { issues: [], kind: "valid" }),
+        ],
+      },
+      workingRevision: "studio-working-v1:mathtex-transform",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+
+    expect(compilerInputs).toEqual([["A"], ["B"]]);
+    expect(commands[0]?.programs.at(-1)?.operations).toEqual([
+      expect.objectContaining({
+        easing: "smooth",
+        entityId: rootEntityId,
+        kind: "transform-content",
+        sourceEntityId: rootEntityId,
+        targetEntityId: "tx:studio-mathtex-transform/entity:math-tex-transform-target",
+      }),
+    ]);
+    expect(result).toEqual({
+      error: "Rust core rejected Studio entity creation: captured Studio MathTex transform command",
+      kind: "unsupported",
+    });
+  });
+
   it("attaches a compiled Text outline to the normalized Rust command", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const sourceText = "Mono text\r\n012345";

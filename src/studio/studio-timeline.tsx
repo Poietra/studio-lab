@@ -9,6 +9,7 @@ import {
   type LifetimeEditControls as StudioLifetimeControls,
   type LifetimeEditTarget as StudioLifetimeTarget,
 } from "./lifetime-editing";
+import type { MathTexTransformEasing } from "./mathtex-transform-clip-edit";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
 import { markStudioRenderBoundary } from "./studio-render-profiler";
@@ -40,6 +41,7 @@ export type StudioTimelineProps = Readonly<{
   motionDuration: number;
   materialParameterOptions: readonly StudioMaterialParameterTimelineOption[];
   materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[];
+  mathTexTransformClips?: readonly StudioMathTexTransformTimelineClip[];
   objectTracks: readonly TimelineObjectTrack[];
   opacityTrackEligibleIds: ReadonlySet<string>;
   opacityTracks: readonly StudioOpacityTimelineTrack[];
@@ -66,6 +68,12 @@ export type StudioTimelineProps = Readonly<{
   ) => void;
   onMaterialParameterKeyframeDelete: (track: StudioMaterialParameterTimelineTrack, index: number) => void;
   onMaterialParameterKeyframeDuplicate: (track: StudioMaterialParameterTimelineTrack, index: number) => number | null;
+  onMathTexTransformClipChange?: (
+    clip: StudioMathTexTransformTimelineClip,
+    change: StudioMathTexTransformClipChange,
+  ) => void;
+  onMathTexTransformClipDelete?: (clip: StudioMathTexTransformTimelineClip) => void;
+  onMathTexTransformClipSelect?: (clip: StudioMathTexTransformTimelineClip) => void;
   onOpacityKeyframeAdd: (entityId: string) => void;
   onOpacityKeyframeChange: (
     track: StudioOpacityTimelineTrack,
@@ -133,13 +141,30 @@ export type StudioWriteInClipChange = Readonly<{
   easing?: WriteInEasing;
 }>;
 
+export type StudioMathTexTransformTimelineClip = Readonly<{
+  easing: MathTexTransformEasing;
+  entityId: string;
+  interval: Interval;
+  label: string;
+  maximumDuration: number;
+  operationId: string;
+  readOnlyReason: string | null;
+  targetLabel: string;
+  transactionId: string;
+}>;
+
+export type StudioMathTexTransformClipChange = Readonly<{
+  duration?: number;
+  easing?: MathTexTransformEasing;
+}>;
+
 function EntranceDurationInput({
   clip,
   kind,
   onCommit,
 }: Readonly<{
-  clip: StudioDrawInTimelineClip | StudioWriteInTimelineClip;
-  kind: "Draw" | "Write";
+  clip: StudioDrawInTimelineClip | StudioMathTexTransformTimelineClip | StudioWriteInTimelineClip;
+  kind: "Draw" | "Transform" | "Write";
   onCommit: (duration: number) => void;
 }>) {
   const duration = Math.max(0.1, clip.interval.end - clip.interval.start);
@@ -674,6 +699,7 @@ export function StudioTimeline({
   lockedEntityIds = new Set(),
   materialParameterOptions,
   materialParameterTracks,
+  mathTexTransformClips = [],
   motionDuration,
   objectTracks,
   opacityTrackEligibleIds,
@@ -696,6 +722,9 @@ export function StudioTimeline({
   onMaterialParameterKeyframeChange,
   onMaterialParameterKeyframeDelete,
   onMaterialParameterKeyframeDuplicate,
+  onMathTexTransformClipChange,
+  onMathTexTransformClipDelete,
+  onMathTexTransformClipSelect,
   onMotionDurationChange,
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
@@ -766,6 +795,20 @@ export function StudioTimeline({
           : lockedEntityIds.has(selectedWriteInClip.entityId)
             ? LOCKED_ENTITY_MUTATION_MESSAGE
             : selectedWriteInClip.readOnlyReason,
+      }
+    : null;
+  const selectedMathTexTransformClip = editingAppliedTransactionId
+    ? (mathTexTransformClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
+    : null;
+  const editingMathTexTransformClip = selectedMathTexTransformClip
+    ? {
+        ...selectedMathTexTransformClip,
+        readOnlyReason: readOnly
+          ? "The timeline is read-only."
+          : lockedEntityIds.has(selectedMathTexTransformClip.entityId)
+            ? LOCKED_ENTITY_MUTATION_MESSAGE
+            : (selectedMathTexTransformClip.readOnlyReason ??
+              (!onMathTexTransformClipChange ? "MathTex Transform clip editing is unavailable." : null)),
       }
     : null;
   const displayedTimelineAnchors = editingMotionClip?.anchors ?? anchors;
@@ -930,6 +973,56 @@ export function StudioTimeline({
           </button>
           {editingWriteInClip.readOnlyReason ? (
             <span className="text-amber-500">{editingWriteInClip.readOnlyReason}</span>
+          ) : (
+            <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
+          )}
+        </div>
+      ) : null}
+      {editingMathTexTransformClip ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span
+            className="max-w-64 truncate text-teal-300"
+            title={`${editingMathTexTransformClip.label} → ${editingMathTexTransformClip.targetLabel}`}
+          >
+            Transform · {editingMathTexTransformClip.label} → {editingMathTexTransformClip.targetLabel}
+          </span>
+          <div className="flex items-center gap-1 text-zinc-500">
+            Duration
+            <EntranceDurationInput
+              clip={editingMathTexTransformClip}
+              key={`${editingMathTexTransformClip.transactionId}/${editingMathTexTransformClip.interval.start}/${editingMathTexTransformClip.interval.end}/${editingMathTexTransformClip.maximumDuration}`}
+              kind="Transform"
+              onCommit={(duration) => onMathTexTransformClipChange?.(editingMathTexTransformClip, { duration })}
+            />
+            s
+          </div>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label={`Transform easing for ${editingMathTexTransformClip.label}`}
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-teal-500"
+              disabled={editingMathTexTransformClip.readOnlyReason !== null}
+              onChange={(event) =>
+                onMathTexTransformClipChange?.(editingMathTexTransformClip, {
+                  easing: event.currentTarget.value as MathTexTransformEasing,
+                })
+              }
+              value={editingMathTexTransformClip.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={editingMathTexTransformClip.readOnlyReason !== null || !onMathTexTransformClipDelete}
+            onClick={() => onMathTexTransformClipDelete?.(editingMathTexTransformClip)}
+            type="button"
+          >
+            Remove Transform
+          </button>
+          {editingMathTexTransformClip.readOnlyReason ? (
+            <span className="text-amber-500">{editingMathTexTransformClip.readOnlyReason}</span>
           ) : (
             <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
           )}
@@ -1476,6 +1569,7 @@ export function StudioTimeline({
             const scaleTrack = scaleTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackDrawInClips = drawInClips.filter((clip) => clip.entityId === track.entityId);
+            const trackMathTexTransformClips = mathTexTransformClips.filter((clip) => clip.entityId === track.entityId);
             const trackWriteInClips = writeInClips.filter((clip) => clip.entityId === track.entityId);
             const drawInUnavailableReason = drawInAvailability.has(track.entityId)
               ? (drawInAvailability.get(track.entityId) ?? null)
@@ -1486,6 +1580,7 @@ export function StudioTimeline({
             const authoredClipOperationIds = new Set([
               ...trackMotionClips.map((clip) => clip.operationId),
               ...trackDrawInClips.map((clip) => clip.operationId),
+              ...trackMathTexTransformClips.map((clip) => clip.operationId),
               ...trackWriteInClips.map((clip) => clip.operationId),
             ]);
             const selectionLocked =
@@ -1856,6 +1951,37 @@ export function StudioTimeline({
                         type="button"
                       >
                         <span className="block truncate">Write</span>
+                      </button>
+                    );
+                  })}
+                  {trackMathTexTransformClips.map((clip) => {
+                    const readOnlyReason = selectionLocked
+                      ? "The timeline is read-only."
+                      : authoringLocked
+                        ? LOCKED_ENTITY_MUTATION_MESSAGE
+                        : (clip.readOnlyReason ??
+                          (!onMathTexTransformClipSelect ? "MathTex Transform clip editing is unavailable." : null));
+                    const displayedClip = { ...clip, readOnlyReason };
+                    return (
+                      <button
+                        aria-label={`Edit ${clip.label} MathTex Transform`}
+                        className={cn(
+                          "absolute top-1 z-10 h-5 min-w-2 border border-teal-500 bg-teal-950/90 px-1 text-left text-[9px] leading-4 text-teal-200 hover:bg-teal-900",
+                          editingAppliedTransactionId === clip.transactionId && "ring-1 ring-teal-300",
+                          readOnlyReason && "cursor-not-allowed border-zinc-700 bg-zinc-900 text-zinc-600",
+                        )}
+                        disabled={readOnlyReason !== null}
+                        data-mathtex-transform-clip={clip.operationId}
+                        key={clip.operationId}
+                        onClick={() => onMathTexTransformClipSelect?.(displayedClip)}
+                        style={timelineIntervalStyle(clip.interval, duration)}
+                        title={
+                          readOnlyReason ??
+                          `Transform to ${clip.targetLabel} · ${clip.interval.start.toFixed(2)}–${clip.interval.end.toFixed(2)}s · ${clip.easing}`
+                        }
+                        type="button"
+                      >
+                        <span className="block truncate">Transform</span>
                       </button>
                     );
                   })}

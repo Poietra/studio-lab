@@ -152,6 +152,71 @@ describe("Studio creation wire", () => {
     });
   });
 
+  it("normalizes Studio-created A-to-B-to-A MathTex transforms with smooth as the compatible default", () => {
+    const rootEntityId = "entity:MathTex";
+    const first = followupProgram("transform:MathTex:b", {
+      dependsOn: [],
+      id: "transform:MathTex:b/operation",
+      interval: { end: 2, start: 1 },
+      kind: "TransformContent",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      replacement: { displayLines: ["B"], texParts: ["B"] },
+      sourceEntityId: rootEntityId,
+      strategy: "replacement-transform",
+      targetEntityId: "transform:MathTex:b/target",
+      targetType: "MathTex",
+    });
+    const second = followupProgram("transform:MathTex:a", {
+      dependsOn: [],
+      easing: "linear",
+      id: "transform:MathTex:a/operation",
+      interval: { end: 3, start: 2 },
+      kind: "TransformContent",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      replacement: { displayLines: ["A"], texParts: ["A"] },
+      sourceEntityId: "transform:MathTex:b/target",
+      strategy: "replacement-transform",
+      targetEntityId: "transform:MathTex:a/target",
+      targetType: "MathTex",
+    });
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 4,
+      programs: [creationProgram("MathTex"), first, second],
+    });
+
+    expect(command.programs.slice(1).map((program) => program.operations[0])).toEqual([
+      {
+        dependsOn: [],
+        easing: "smooth",
+        entityId: rootEntityId,
+        id: "transform:MathTex:b/operation",
+        interval: { end: 2, start: 1 },
+        kind: "transform-content",
+        origin: "direct-manipulation",
+        replacement: { displayLines: ["B"], texParts: ["B"] },
+        sourceEntityId: rootEntityId,
+        strategy: "replacement-transform",
+        targetEntityId: "transform:MathTex:b/target",
+        targetType: "MathTex",
+      },
+      {
+        dependsOn: [],
+        easing: "linear",
+        entityId: rootEntityId,
+        id: "transform:MathTex:a/operation",
+        interval: { end: 3, start: 2 },
+        kind: "transform-content",
+        origin: "direct-manipulation",
+        replacement: { displayLines: ["A"], texParts: ["A"] },
+        sourceEntityId: "transform:MathTex:b/target",
+        strategy: "replacement-transform",
+        targetEntityId: "transform:MathTex:a/target",
+        targetType: "MathTex",
+      },
+    ]);
+  });
+
   it("forwards motion spin only through the Studio creation authority", () => {
     const entityId = "entity:Rectangle";
     const motion = followupProgram("spin:Rectangle", {
