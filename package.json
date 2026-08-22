@@ -64,7 +64,7 @@
     "evaluate:shell:native": "node scripts/shell-evaluation.mjs native",
     "evaluate:shell:serve": "node scripts/shell-evaluation.mjs prepare && vite --host 127.0.0.1 --port 4174 --strictPort",
     "benchmark:engine:webgpu": "node scripts/run-engine-webgpu-benchmark.mjs",
-    "benchmark:studio:gesture": "POIETRA_STUDIO_GESTURE_BENCHMARK=1 playwright test e2e/studio-gesture-performance.e2e.ts --project=chromium --workers=1",
+    "benchmark:studio:gesture": "POIETRA_STUDIO_GESTURE_BENCHMARK=1 playwright test --config playwright.preview.config.ts e2e/studio-gesture-performance.e2e.ts --project=preview-webgpu --workers=1",
     "benchmark:engine:webgpu:promote": "node scripts/promote-engine-webgpu-benchmark-evidence.mjs",
     "benchmark:engine:webgpu:verify": "node scripts/promote-engine-webgpu-benchmark-evidence.mjs --verify",
     "billing:entitlement:rollout": "node scripts/rollout-billing-entitlement.mjs",

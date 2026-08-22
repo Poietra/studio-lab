@@ -9,6 +9,7 @@ import { defineConfig } from "@playwright/test";
 // crosses a workspace/project switch.
 const previewHarnessDataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}-preview-harness`);
 const previewHarnessPort = Number(process.env.POIETRA_E2E_PREVIEW_PORT ?? 4183);
+const gestureBenchmarkEnabled = process.env.POIETRA_STUDIO_GESTURE_BENCHMARK === "1";
 
 export default defineConfig({
   forbidOnly: true,
@@ -21,7 +22,11 @@ export default defineConfig({
     },
     {
       name: "preview-webgpu",
-      testMatch: ["**/preview-renderer.e2e.ts", "**/preview-renderer.webgpu.ts"],
+      testMatch: [
+        "**/preview-renderer.e2e.ts",
+        "**/preview-renderer.webgpu.ts",
+        ...(gestureBenchmarkEnabled ? ["**/studio-gesture-performance.e2e.ts"] : []),
+      ],
       use: {
         browserName: "chromium",
         channel: "chromium",

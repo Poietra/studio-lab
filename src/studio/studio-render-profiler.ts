@@ -1,6 +1,6 @@
 import type { ProfilerOnRenderCallback } from "react";
 
-export type StudioRenderBoundary = "canvas" | "timeline" | "toolbar";
+export type StudioRenderBoundary = "app" | "canvas" | "timeline" | "toolbar";
 
 export type StudioRenderProfileEvent =
   | Readonly<{

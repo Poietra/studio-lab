@@ -311,6 +311,7 @@ import {
 } from "./studio/studio-native-workspace";
 import { createStudioPlaybackClock } from "./studio/studio-playback-clock";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
+import { markStudioRenderBoundary } from "./studio/studio-render-profiler";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { importStudioSvgPathAsset, type StudioSvgPathAsset } from "./studio/studio-svg-assets";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
@@ -572,6 +573,7 @@ export function App({
   accountActions?: AccountSessionActionsV1 | null;
   accountSession?: AccountSessionViewV1 | null;
 }>) {
+  markStudioRenderBoundary("app");
   const shell = detectShell();
   const aiEndpointConfigured = Boolean(import.meta.env.VITE_POIETRA_AI_ENDPOINT);
   const {
