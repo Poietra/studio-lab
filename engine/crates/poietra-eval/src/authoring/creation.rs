@@ -5175,8 +5175,8 @@ fn studio_regular_polygon_path(sides: u32, radius: f64) -> CubicPathV1 {
             )
         },
     );
-    let center_x = (min_x + max_x) / 2.0;
-    let center_y = (min_y + max_y) / 2.0;
+    let center_x = f64::midpoint(min_x, max_x);
+    let center_y = f64::midpoint(min_y, max_y);
     for point in &mut points {
         point.x -= center_x;
         point.y -= center_y;
