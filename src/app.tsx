@@ -9340,7 +9340,8 @@ export function App({
             </h2>
             <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400" id="enable-preview-description">
               Studio will execute the selected Scene, and any Scene you switch to, through the configured fast-manim
-              producer. Start this only for workspace source you trust. Permission ends when this tab reloads or closes.
+              producer. Start this only for workspace source you trust. Permission survives reloads in this tab and ends
+              when the tab closes.
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <button

@@ -5,6 +5,7 @@ import {
   createStudioPreviewAuthorityState,
   reduceStudioPreviewAuthority,
   selectStudioPreviewProvider,
+  studioPreviewExecutionConsentScope,
   studioPreviewLocationSearchSnapshot,
   subscribeStudioPreviewLocationSearchChanges,
 } from "./use-preview-authority-controller";
@@ -32,6 +33,21 @@ describe("selectStudioPreviewProvider", () => {
     expect(selectStudioPreviewProvider(MATHTEX_FIXTURE_SEARCH, false)).toBe("server");
     expect(selectStudioPreviewProvider(FIXTURE_SEARCH, true)).toBe("fixture");
     expect(selectStudioPreviewProvider(MATHTEX_FIXTURE_SEARCH, true)).toBe("mathtex-fixture");
+  });
+});
+
+describe("studioPreviewExecutionConsentScope", () => {
+  it("is tab-storage ready and scoped to the exact project and provider", () => {
+    expect(studioPreviewExecutionConsentScope("server", null)).toBeNull();
+    expect(studioPreviewExecutionConsentScope("server", "project-a")).toBe(
+      JSON.stringify({ projectId: "project-a", providerKind: "server" }),
+    );
+    expect(studioPreviewExecutionConsentScope("fixture", "project-a")).not.toBe(
+      studioPreviewExecutionConsentScope("server", "project-a"),
+    );
+    expect(studioPreviewExecutionConsentScope("server", "project-b")).not.toBe(
+      studioPreviewExecutionConsentScope("server", "project-a"),
+    );
   });
 });
 
