@@ -142,7 +142,8 @@ describe("StudioExportControl", () => {
     expect(markup).toContain("Export MP4");
     expect(markup).toContain('disabled=""');
     expect(markup).not.toContain(">Cancel<");
-    expect(markup).toContain("Publish MP4 unavailable: Wait for the Editor Document lineage before publishing.");
+    expect(markup).toContain("Wait for the canonical WebGPU preview before exporting.");
+    expect(markup).toContain("Wait for the Editor Document lineage before publishing.");
   });
 
   it("offers an enabled export without a Cancel affordance while idle", () => {
@@ -153,14 +154,19 @@ describe("StudioExportControl", () => {
     expect(markup).toMatch(/<button(?![^>]*disabled="")[^>]*>Export MP4<\/button>/u);
     expect(markup).not.toContain(">Cancel<");
     expect(markup).not.toContain('role="alert"');
-    expect(markup).toContain(">Publish</button>");
-    expect(markup).toContain(">+ WAV</button>");
+    expect(markup).not.toContain('role="status"');
+    expect(markup).toContain(">Publish MP4</button>");
+    expect(markup).toContain(">Choose WAV</button>");
     expect(markup).toContain('accept=".wav,audio/wav,audio/x-wav"');
-    expect(markup).toContain('aria-label="Video resolution"');
+    expect(markup).toContain('for="studio-export-resolution"');
+    expect(markup).toContain('id="studio-export-resolution"');
+    expect(markup).toContain(">Resolution<select");
     expect(markup).toContain('<option value="854x480" selected="">480p</option>');
     expect(markup).toContain('<option value="1280x720">720p</option>');
     expect(markup).toContain('<option value="1920x1080">1080p</option>');
-    expect(markup).toContain('aria-label="Video frame rate"');
+    expect(markup).toContain('for="studio-export-frame-rate"');
+    expect(markup).toContain('id="studio-export-frame-rate"');
+    expect(markup).toContain(">Frame rate<select");
     expect(markup).toContain('<option value="30" selected="">30 fps</option>');
     expect(markup).toContain('<option value="60">60 fps</option>');
     expect(markup).toContain('data-studio-export-profile="854x480@30"');
@@ -172,5 +178,6 @@ describe("StudioExportControl", () => {
     );
     expect(markup).toContain('data-studio-export-mp4-state="idle"');
     expect(markup).toContain('disabled=""');
+    expect(markup).toContain("Export is unavailable while the Editor session changes.");
   });
 });

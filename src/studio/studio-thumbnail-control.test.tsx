@@ -97,4 +97,17 @@ describe("StudioThumbnailControl", () => {
     expect(markup).toContain('disabled=""');
     expect(markup).toContain("Wait for the canonical preview before publishing.");
   });
+
+  it("honors an external session lock and explains it next to the action", () => {
+    const publication: StudioExportPublicationAvailabilityV1 = {
+      context: capture.context,
+      kind: "available",
+    };
+    const markup = renderToStaticMarkup(
+      <StudioThumbnailControl disabled generate={async () => new Uint8Array()} publication={publication} />,
+    );
+
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain("Thumbnail updates are unavailable while the Editor session changes.");
+  });
 });

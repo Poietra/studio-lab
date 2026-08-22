@@ -299,8 +299,8 @@ import {
   type StudioEmptyWorkspaceEntityType,
   studioNativeWorkspaceOnboardingAvailable,
 } from "./studio/studio-empty-workspace";
-import { StudioExportControl } from "./studio/studio-export-control";
 import { resolveStudioExportPublicationAvailabilityV1 } from "./studio/studio-export-publication";
+import { StudioExportSettingsControl } from "./studio/studio-export-settings-control";
 import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
 import { resolveStudioImageAssetDrag, studioNativeImageAssetsV1 } from "./studio/studio-image-assets";
 import type { StudioInlineTextEditorSession } from "./studio/studio-inline-text-editor";
@@ -314,7 +314,6 @@ import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { markStudioRenderBoundary } from "./studio/studio-render-profiler";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { importStudioSvgPathAsset, type StudioSvgPathAsset } from "./studio/studio-svg-assets";
-import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
 import type {
   StudioCameraClipChange,
   StudioCameraTimelineClip,
@@ -8608,9 +8607,10 @@ export function App({
                 renderer={previewRenderer}
               />
             ) : null}
-            <StudioExportControl exportSource={studioExportSource} publication={studioExportPublication} />
-            <StudioThumbnailControl
-              generate={studioExportSource && previewRenderer ? previewRenderer.generateThumbnail : null}
+            <StudioExportSettingsControl
+              disabled={sessionTransitionPending}
+              exportSource={studioExportSource}
+              generateThumbnail={studioExportSource && previewRenderer ? previewRenderer.generateThumbnail : null}
               publication={studioExportPublication}
             />
             {activeScene ? (
