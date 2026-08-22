@@ -5,7 +5,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { MathTexOutlineResponseV1 } from "../src/engine/mathtex-outline";
 import { createInspectorEntityEditProgram, createStudioEntitiesProgram } from "../src/studio/authoring-commands";
+import { fastManimRuntimeTraceSceneIdV1 } from "./fast-manim-runtime-trace-contract";
 import {
+  createCircleProgram,
   mathTexTransformProgram,
   motionProgram,
   request as renderRequestFixture,
@@ -13,7 +15,10 @@ import {
   verifiedSnapshotView,
 } from "./manim-render-pipeline-test-fixtures";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
-import { authorizeSnapshotProgramWithSnapshot } from "./manim-snapshot-program-authorizer";
+import {
+  authorizeSnapshotProgramWithSnapshot,
+  authorizeStudioCreationProgramWithRuntimeTrace,
+} from "./manim-snapshot-program-authorizer";
 import { importSourceSnapshot, sceneView } from "./manim-workspace";
 
 const compilers = vi.hoisted(() => ({
@@ -232,6 +237,116 @@ describe("snapshot MathTex authorization", () => {
         },
       ],
     });
+  });
+
+  it("authorizes Studio creation from a fresh verified Runtime Trace when no static snapshot exists", async () => {
+    const imported = importSourceSnapshot(sceneSource, "scene.py", frame);
+    const runtimeSceneState = sceneView(imported.view, "GroupedEquation")?.runtimeSceneState;
+    if (!runtimeSceneState) throw new Error("The Runtime Trace creation fixture did not import.");
+    const program = createCircleProgram("runtime-trace-creation");
+    const request = { ...renderRequestFixture(), program };
+    const published = await verifiedSnapshotView(request);
+    if (published.status !== "verified") throw new Error("The Runtime Trace base fixture is not verified.");
+    const publishedBundle = published.snapshot.bundle as SceneIrBundleV1;
+    const traceDigest = "f".repeat(64);
+    const runtimeConfigHash = "d".repeat(64);
+    const sceneId = fastManimRuntimeTraceSceneIdV1(request.sourcePath, request.sceneName);
+    const bundle: SceneIrBundleV1 = {
+      assets: publishedBundle.assets,
+      scene: {
+        ...publishedBundle.scene,
+        sceneId,
+        source: {
+          kind: "imported-manim-runtime-trace",
+          runtimeConfigHash,
+          sourceHash: request.sourceHash,
+          traceDigest,
+          traceVersion: 3,
+        },
+      },
+    };
+    compilers.creation.mockResolvedValue({});
+    const lookup = vi.fn(async (runtimeRequest) => ({
+      bundle,
+      producerEvidence: { correlationSha256: "a".repeat(64), semanticsSha256: "b".repeat(64) },
+      projectId: runtimeRequest.projectId,
+      requestId: runtimeRequest.requestId,
+      roots: [],
+      runtimeConfigHash,
+      sceneId,
+      sceneName: runtimeRequest.sceneName,
+      schema: "poietra.fast-manim-runtime-trace-run" as const,
+      sourceHash: runtimeRequest.sourceHash,
+      sourcePath: runtimeRequest.sourcePath,
+      status: "verified" as const,
+      traceDigest,
+      version: 2 as const,
+    }));
+
+    await authorizeStudioCreationProgramWithRuntimeTrace(
+      {
+        authorizationKind: "studio-creation",
+        frame,
+        programs: [program],
+        projectId: request.projectId,
+        request,
+        runtimeSceneState,
+      },
+      lookup,
+    );
+
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(compilers.creation).toHaveBeenCalledOnce();
+    expect(compilers.creation.mock.calls[0]?.[1]).toMatchObject({
+      expectedBaseRevision: traceDigest,
+      programs: [
+        {
+          operations: [{ kind: "create" }, { kind: "position" }, { kind: "fade-in" }],
+          transactionId: program.transactionId,
+        },
+      ],
+    });
+  });
+
+  it("rejects a stale Runtime Trace before invoking the Rust creation compiler", async () => {
+    const imported = importSourceSnapshot(sceneSource, "scene.py", frame);
+    const runtimeSceneState = sceneView(imported.view, "GroupedEquation")?.runtimeSceneState;
+    if (!runtimeSceneState) throw new Error("The stale Runtime Trace fixture did not import.");
+    const program = createCircleProgram("stale-runtime-trace-creation");
+    const request = { ...renderRequestFixture(), program };
+
+    await expect(
+      authorizeStudioCreationProgramWithRuntimeTrace(
+        {
+          authorizationKind: "studio-creation",
+          frame,
+          programs: [program],
+          projectId: request.projectId,
+          request,
+          runtimeSceneState,
+        },
+        async (runtimeRequest) => ({
+          bundle: {},
+          producerEvidence: { correlationSha256: "a".repeat(64), semanticsSha256: "b".repeat(64) },
+          projectId: runtimeRequest.projectId,
+          requestId: "stale-request",
+          roots: [],
+          runtimeConfigHash: "d".repeat(64),
+          sceneId: fastManimRuntimeTraceSceneIdV1(runtimeRequest.sourcePath, runtimeRequest.sceneName),
+          sceneName: runtimeRequest.sceneName,
+          schema: "poietra.fast-manim-runtime-trace-run",
+          sourceHash: runtimeRequest.sourceHash,
+          sourcePath: runtimeRequest.sourcePath,
+          status: "verified",
+          traceDigest: "f".repeat(64),
+          version: 2,
+        }),
+      ),
+    ).rejects.toMatchObject({
+      message: "The verified Runtime Trace does not match this render request.",
+      status: 409,
+    });
+    expect(compilers.creation).not.toHaveBeenCalled();
   });
 
   it("compiles the replacement outline once before applying the existing static-root command", async () => {

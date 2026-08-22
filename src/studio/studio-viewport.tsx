@@ -65,6 +65,7 @@ export type StudioViewportProps = Readonly<
       coordinateInsertSettings: CoordinateInsertSettings;
       cubicBezierStyle?: CubicBezierStyleSettings | null;
       curveInsertSettings: CurveInsertSettings;
+      insertionAvailable: boolean;
       previewPaintAvailable: boolean;
       gesturePreviewStore: StudioGesturePreviewStore;
       insertValue: string;
@@ -109,6 +110,7 @@ export function StudioViewport({
   groupTransformOrigins,
   incomingSceneName,
   inlineTextEditor,
+  insertionAvailable,
   insertTool,
   insertValue,
   interactionMode,
@@ -237,6 +239,7 @@ export function StudioViewport({
           cubicBezierStyle={cubicBezierStyle}
           curveInsertSettings={curveInsertSettings}
           insertValue={insertValue}
+          insertionAvailable={insertionAvailable}
           onCoordinateInsertSettingsChange={onCoordinateInsertSettingsChange}
           onCubicBezierStyleChange={onCubicBezierStyleChange}
           onCurveInsertSettingsChange={onCurveInsertSettingsChange}

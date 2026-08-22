@@ -714,14 +714,13 @@ test("presents exactly correlated WebGPU frames with a paint-free interaction ov
   await expect(earlier).toHaveAttribute("aria-pressed", "true");
   await expect(canvasRoot).toHaveAttribute("data-preview-interaction", "selection-only");
   await expect(page.locator("[data-studio-resize-handle]")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: /Insert circle/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Insert circle/ })).toBeEnabled();
   await expect(page.getByRole("slider", { name: "Timeline playhead" })).toBeVisible();
   await expectPresented(page);
   await expectPaintFreeInteractionOverlay(page);
 
-  // This sealed snapshot predates generic Runtime Trace authoring. Its
-  // imported entities are truthful selectors only; editable imported slices
-  // are covered by the real Runtime Trace suites.
+  // The imported entities remain selectors, while creation stays available
+  // for an exactly correlated base Scene.
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
 });
 

@@ -66,7 +66,10 @@ import {
 } from "./manim-render-session-policy";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
-import { authorizeSnapshotProgramWithSnapshot } from "./manim-snapshot-program-authorizer";
+import {
+  authorizeSnapshotProgramWithSnapshot,
+  authorizeStudioCreationProgramWithRuntimeTrace,
+} from "./manim-snapshot-program-authorizer";
 import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim-source-store";
 import { normalizeManimStorageRoots } from "./manim-tenant-storage";
 import { createLocalManimThumbnailCache, type LocalManimThumbnailCache } from "./manim-thumbnail-cache";
@@ -800,8 +803,31 @@ export class ManimRenderManager {
     const { lowered, renderRequest } = await lowerManimRenderRequest({
       frame: this.frame,
       originalSource,
-      snapshotProgramAuthorizer: (input) =>
-        authorizeSnapshotProgramWithSnapshot(input, (_projectId, query) => this.snapshotRunner.snapshot(query), signal),
+      snapshotProgramAuthorizer: async (input) => {
+        const runtimeTraceRunner = this.runtimeTraceRunner;
+        try {
+          await authorizeSnapshotProgramWithSnapshot(
+            input,
+            (_projectId, query) => this.snapshotRunner.snapshot(query),
+            signal,
+          );
+          return;
+        } catch (error) {
+          if (
+            input.authorizationKind !== "studio-creation" ||
+            !runtimeTraceRunner ||
+            !(error instanceof HttpError) ||
+            error.status !== 404
+          ) {
+            throw error;
+          }
+        }
+        await authorizeStudioCreationProgramWithRuntimeTrace(
+          input,
+          (runtimeTraceRequest, lookupSignal) => runtimeTraceRunner.runRuntimeTrace(runtimeTraceRequest, lookupSignal),
+          signal,
+        );
+      },
       projectId: this.projectId,
       request,
     });

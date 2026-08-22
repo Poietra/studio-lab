@@ -52,6 +52,7 @@ export type StudioToolbarProps = Readonly<{
   cubicBezierStyle?: CubicBezierStyleSettings | null;
   curveInsertSettings: CurveInsertSettings;
   insertValue: string;
+  insertionAvailable: boolean;
   onCoordinateInsertSettingsChange: (settings: CoordinateInsertSettings) => void;
   onCubicBezierStyleChange?: (change: CubicBezierStyleChange) => void;
   onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
@@ -102,6 +103,7 @@ export function StudioToolbar({
   cubicBezierStyle = null,
   curveInsertSettings,
   insertValue,
+  insertionAvailable,
   onCoordinateInsertSettingsChange,
   onCubicBezierStyleChange,
   onCurveInsertSettingsChange,
@@ -160,7 +162,7 @@ export function StudioToolbar({
                   : "border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
               )}
               key={item.tool}
-              disabled={!authoringAvailable && item.tool !== "select"}
+              disabled={!insertionAvailable && item.tool !== "select"}
               onClick={() => onToolChange(item.tool)}
               title={`${command.label} · ${shortcut}`}
               type="button"
@@ -276,7 +278,7 @@ export function StudioToolbar({
                 placeholder={tool === "Text" ? "Type text" : String.raw`e.g. E = mc^2`}
                 title={tool === "Text" ? STUDIO_CREATION_TEXT_CONTRACT : undefined}
                 value={insertValue}
-                disabled={!authoringAvailable}
+                disabled={!insertionAvailable}
               />
             </label>
           ) : requiresPolygonSides ? (
@@ -285,7 +287,7 @@ export function StudioToolbar({
               <input
                 aria-label="Polygon sides"
                 className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs tabular-nums text-zinc-100 outline-none focus:border-sky-500"
-                disabled={!authoringAvailable}
+                disabled={!insertionAvailable}
                 max={32}
                 min={3}
                 onChange={(event) => {
@@ -315,7 +317,7 @@ export function StudioToolbar({
                   <input
                     aria-label={label}
                     className="mt-1 block h-8 w-full accent-sky-500"
-                    disabled={!authoringAvailable}
+                    disabled={!insertionAvailable}
                     max={6}
                     min={0.25}
                     onChange={(event) =>
@@ -346,7 +348,7 @@ export function StudioToolbar({
                   <input
                     aria-label={label}
                     className="mt-1 block h-8 w-full accent-sky-500"
-                    disabled={!authoringAvailable}
+                    disabled={!insertionAvailable}
                     max={max}
                     min={min}
                     onChange={(event) =>
@@ -370,7 +372,7 @@ export function StudioToolbar({
                   <input
                     aria-label={label}
                     className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs tabular-nums text-zinc-100 outline-none focus:border-sky-500"
-                    disabled={!authoringAvailable}
+                    disabled={!insertionAvailable}
                     max={max}
                     min={min}
                     onChange={(event) => {
@@ -389,7 +391,7 @@ export function StudioToolbar({
           ) : null}
           <button
             className="h-8 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
-            disabled={!authoringAvailable || (requiresPolygonSides && !polygonSidesDraftIsValid)}
+            disabled={!insertionAvailable || (requiresPolygonSides && !polygonSidesDraftIsValid)}
             type="submit"
           >
             Insert at center

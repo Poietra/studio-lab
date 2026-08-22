@@ -780,15 +780,6 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
   }
   const sourceProgramBatch = sourceEdits.map(({ program }) => program);
   const importedSource = input.snapshot.snapshot.scene.source;
-  if (
-    input.snapshot.snapshot.scene.animationChannels.length > 0 &&
-    importedSource.kind !== "imported-manim-runtime-trace"
-  ) {
-    return {
-      error: "Editing an imported animation requires generic Runtime Trace authoring support.",
-      kind: "unsupported",
-    };
-  }
   const hasStudioCreation = sourceEdits.some(({ program }) =>
     program.operations.some(({ kind }) => kind === "CreateEntity"),
   );
@@ -1053,6 +1044,15 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
         kind: "unsupported",
       };
     }
+  }
+  if (
+    input.snapshot.snapshot.scene.animationChannels.length > 0 &&
+    importedSource.kind !== "imported-manim-runtime-trace"
+  ) {
+    return {
+      error: "Editing an imported animation requires generic Runtime Trace authoring support.",
+      kind: "unsupported",
+    };
   }
   const exactStaticRootBatch = isExactStaticRootTransformProgramBatch(sourceProgramBatch);
   if (
@@ -1955,9 +1955,11 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     runtimeTraceSource?.kind !== "imported-manim-runtime-trace" ||
     (workingState === null ? 0 : sourceEditRecords(workingState).length) === 0
       ? "not-applicable"
-      : currentCompiledScene?.editAuthority === "source-bound-endpoint"
-        ? "authorized"
-        : "rejected";
+      : currentCompiledScene?.creationProjection
+        ? "not-applicable"
+        : currentCompiledScene?.editAuthority === "source-bound-endpoint"
+          ? "authorized"
+          : "rejected";
   const interactionEntityIds = currentCompiledScene?.interactionEntityIds ?? [];
 
   useEffect(() => {
