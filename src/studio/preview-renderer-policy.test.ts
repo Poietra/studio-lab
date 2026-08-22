@@ -44,6 +44,14 @@ describe("evaluateStudioPreviewEligibility", () => {
     expect(result.detail).toContain(detailFragment);
   });
 
+  it("explains how to recover when WebGPU is unavailable", () => {
+    const result = evaluateStudioPreviewEligibility({ ...CAPABLE, webgpuAvailable: false });
+    if (result.eligible) throw new Error("Expected an ineligible result.");
+    expect(result.detail).toMatch(/HTTPS or localhost/i);
+    expect(result.detail).toMatch(/hardware acceleration/i);
+    expect(result.detail).toMatch(/fully restart/i);
+  });
+
   it("never claims render, source, export, or final-render success in its labels", () => {
     for (const reason of [
       "capability-unsupported",

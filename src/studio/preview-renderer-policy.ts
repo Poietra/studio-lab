@@ -1,8 +1,9 @@
 import type { CanvasInteractionResultV1 } from "../engine/canvas-worker-protocol";
-import type {
-  PreviewFallbackReasonV1,
-  PreviewRendererHostStateV1,
-  PreviewViewportV1,
+import {
+  type PreviewFallbackReasonV1,
+  type PreviewRendererHostStateV1,
+  type PreviewViewportV1,
+  WEBGPU_ADAPTER_UNAVAILABLE_DETAIL,
 } from "../engine/preview-renderer";
 import type { EntityDimensions, Point } from "./model";
 import {
@@ -61,7 +62,7 @@ export function evaluateStudioPreviewEligibility(input: StudioPreviewCapabilitie
     };
   }
   if (!input.webgpuAvailable) {
-    return { detail: "WebGPU is unavailable in this browser.", eligible: false, reason: "capability-unsupported" };
+    return { detail: WEBGPU_ADAPTER_UNAVAILABLE_DETAIL, eligible: false, reason: "capability-unsupported" };
   }
   return { eligible: true };
 }

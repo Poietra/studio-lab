@@ -479,6 +479,21 @@ describe("StudioPreviewRendererHost", () => {
     expect(fixture.disposeCount).toBe(1);
   });
 
+  it("reports an unavailable WebGPU adapter as an actionable unsupported capability", async () => {
+    const fixture = createFixture();
+    const pending = fixture.host.install(installInput());
+    fixture.install.reject(new CanvasWorkerClientError("renderer-unavailable", "No available adapters."));
+    await pending;
+    expect(fixture.host.state).toMatchObject({
+      phase: "fallback",
+      reason: "capability-unsupported",
+    });
+    expect(fixture.host.state).toMatchObject({
+      detail: expect.stringMatching(/hardware acceleration.*fully restart.*does not use a fallback renderer/i),
+    });
+    expect(fixture.disposeCount).toBe(1);
+  });
+
   it("rejects a second snapshot install to keep the install-once contract", async () => {
     const fixture = createFixture();
     const pending = fixture.host.install(installInput());
