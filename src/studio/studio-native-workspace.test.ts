@@ -5,6 +5,7 @@ import type { ManimWorkspaceView } from "../render-pipeline/contracts";
 import { importManimScene } from "../render-pipeline/source-import";
 import { programRecord } from "./evaluator";
 import { workspaceScenes } from "./imported-workspace";
+import { buildLifetimeEditControls, lifetimeControlKey } from "./lifetime-editing";
 import type { CanonicalEditProgram } from "./operations";
 import {
   createStudioNativeBlankSceneIrBundle,
@@ -72,6 +73,9 @@ describe("Studio-native workspace projection", () => {
     expect(scene.identity).toEqual({ documentKey: DOCUMENT_KEY, origin: "studio-native" });
     expect(scene.sceneId).toBe(`native:${DOCUMENT_KEY}`);
     expect(scene.runtimeSceneState).toMatchObject({ duration: 5, sceneId: scene.sceneId });
+    expect(scene.anchors).toHaveLength(51);
+    expect(scene.anchors.slice(0, 3)).toEqual([0, 0.1, 0.2]);
+    expect(scene.anchors.at(-1)).toBe(5);
     expect(scene.runtimeSceneState.objectGraph.entities).toEqual({});
     expect(scene).not.toHaveProperty("sourceHash");
     expect(scene).not.toHaveProperty("sourcePath");
@@ -204,5 +208,14 @@ describe("Studio-native workspace projection", () => {
       id: "native-circle",
       type: "Circle",
     });
+    const controls = buildLifetimeEditControls({
+      anchors: scene.anchors,
+      baseScene: scene.runtimeSceneState,
+      programs: [programRecord(program, { issues: [], kind: "valid" })],
+      sourceDuration: scene.runtimeSceneState.duration,
+      tracks: result.projection.timeline.objectTracks,
+    })[lifetimeControlKey("native-circle", 0)]!;
+    expect(controls.startTargets.length).toBeGreaterThan(0);
+    expect(controls.endTargets.length).toBeGreaterThan(0);
   });
 });

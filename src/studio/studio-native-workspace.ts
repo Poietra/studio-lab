@@ -16,6 +16,7 @@ import {
 
 export const STUDIO_NATIVE_DEFAULT_SCENE_DURATION = 5;
 export const STUDIO_NATIVE_DEFAULT_SCENE_NAME = "Scene";
+const STUDIO_NATIVE_AUTHORING_STEP_SECONDS = 0.1;
 
 export type ImportedWorkspaceSceneIdentity = Readonly<{
   origin: "imported-manim";
@@ -69,11 +70,21 @@ function nativeSceneId(documentKey: string) {
   return `native:${documentKey}`;
 }
 
+function nativeAuthoringAnchors(duration: number) {
+  const stepCount = Math.round(duration / STUDIO_NATIVE_AUTHORING_STEP_SECONDS);
+  return Array.from({ length: stepCount + 1 }, (_, index) =>
+    Number((index * STUDIO_NATIVE_AUTHORING_STEP_SECONDS).toFixed(6)),
+  );
+}
+
 export function createStudioNativeBlankScene(documentKey: string): StudioNativeWorkspaceScene {
   assertDocumentKey(documentKey);
   const sceneId = nativeSceneId(documentKey);
   return {
-    anchors: [],
+    // Native documents have no Python insertion constraints. A small editing
+    // grid gives their existing lifetime handles deterministic pointer and
+    // keyboard targets without pretending that a .py source anchor exists.
+    anchors: nativeAuthoringAnchors(STUDIO_NATIVE_DEFAULT_SCENE_DURATION),
     identity: { documentKey, origin: "studio-native" },
     importOutcomes: [],
     name: STUDIO_NATIVE_DEFAULT_SCENE_NAME,
