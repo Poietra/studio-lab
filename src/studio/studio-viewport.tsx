@@ -216,6 +216,7 @@ export function StudioViewport({
   onWriteInChange,
   onWriteInDelete,
   onWriteInSelect,
+  playbackClock,
   preview = null,
   presenceParticipants,
   previewPaintAvailable,
@@ -231,7 +232,7 @@ export function StudioViewport({
     <section className={cn("flex min-h-0 min-w-0 flex-col bg-zinc-900", className)}>
       <Profiler id="toolbar" onRender={recordStudioCommitProfile}>
         <StudioToolbar
-          authoringAvailable={previewPaintAvailable}
+          authoringAvailable={previewPaintAvailable && !readOnly}
           coordinateInsertSettings={coordinateInsertSettings}
           cubicBezierStyle={cubicBezierStyle}
           curveInsertSettings={curveInsertSettings}
@@ -321,6 +322,7 @@ export function StudioViewport({
           appliedTransactionIds={appliedTransactionIds}
           cameraClips={cameraClips}
           currentTime={currentTime}
+          playbackClock={playbackClock}
           duration={duration}
           drawInClips={drawInClips}
           drawInAvailability={drawInAvailability}

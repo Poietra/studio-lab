@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
@@ -121,6 +121,34 @@ function runner(
 }
 
 describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trace runner", () => {
+  it("waits for one active Runtime Trace instead of exposing capacity as a transient failure", async () => {
+    let releaseFirst = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let starts = 0;
+    const backend = new ArtifactBackend(await genericArtifact(), async () => {
+      starts += 1;
+      if (starts === 1) await firstGate;
+    });
+    const instance = runner(await genericProjectRoot(), backend);
+
+    const first = instance.runRuntimeTrace(genericRequest);
+    await vi.waitFor(() => expect(backend.requests).toHaveLength(1));
+    const waitingAbort = new AbortController();
+    const abandoned = instance.runRuntimeTrace(genericRequest, waitingAbort.signal);
+    await expect(instance.runRuntimeTrace(genericRequest)).rejects.toMatchObject({ status: 429 });
+    expect(backend.requests).toHaveLength(1);
+    waitingAbort.abort();
+    await expect(abandoned).rejects.toMatchObject({ name: "AbortError" });
+    const waiting = instance.runRuntimeTrace(genericRequest);
+
+    releaseFirst();
+    await expect(first).resolves.toMatchObject({ status: "verified" });
+    await expect(waiting).resolves.toMatchObject({ status: "verified" });
+    expect(backend.requests).toHaveLength(2);
+  });
+
   it("dispatches a non-profile Scene through generic preview-only V3", async () => {
     const backend = new ArtifactBackend(await genericArtifact());
     const view = await runner(await genericProjectRoot(), backend).runRuntimeTrace(genericRequest);

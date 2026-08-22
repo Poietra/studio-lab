@@ -330,6 +330,7 @@ export class FastManimSnapshotRunner {
   private readonly maxCachedBytes: number;
   private readonly maxCachedSnapshots: number;
   private ownerId: number | null = null;
+  private runtimeTraceCapacityWaiter = false;
   private readonly projectId: string;
   private readonly pngProvider: FastManimSnapshotPngProviderV1 | undefined;
   private readonly previewCache: FastManimSnapshotPreviewCache;
@@ -788,6 +789,60 @@ export class FastManimSnapshotRunner {
     this.activeRunWeight -= weight;
   }
 
+  private waitForActiveRun(pending: Promise<unknown>, signal?: AbortSignal) {
+    if (signal?.aborted || this.closing) return Promise.reject(abortError());
+    return new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (complete: () => void) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        this.shutdownController.signal.removeEventListener("abort", onAbort);
+        complete();
+      };
+      const onAbort = () => finish(() => reject(abortError()));
+      const onSettled = () => finish(resolve);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.shutdownController.signal.addEventListener("abort", onAbort, { once: true });
+      pending.then(onSettled, onSettled);
+      if (signal?.aborted || this.closing) onAbort();
+    });
+  }
+
+  private async reserveRuntimeTraceRun(key: string, signal?: AbortSignal) {
+    const weight = this.maxConcurrentRuns;
+    const duplicateMessage = "A Runtime Trace run is already in progress for this source and Scene.";
+    const capacityMessage = "Too many concurrent Runtime Trace runs.";
+    if (!this.activeKeys.has(key) && this.activeRunWeight + weight <= this.maxConcurrentRuns) {
+      this.reserveRun(key, weight, duplicateMessage, capacityMessage);
+      return weight;
+    }
+    if (![...this.activeKeys].some((activeKey) => activeKey.startsWith("runtime-trace\u0000"))) {
+      throw new HttpError(capacityMessage, 429);
+    }
+    if (this.runtimeTraceCapacityWaiter) throw new HttpError(capacityMessage, 429);
+
+    this.runtimeTraceCapacityWaiter = true;
+    try {
+      while (true) {
+        signal?.throwIfAborted();
+        if (this.closing) throw abortError();
+        if (!this.activeKeys.has(key) && this.activeRunWeight + weight <= this.maxConcurrentRuns) {
+          this.reserveRun(key, weight, duplicateMessage, capacityMessage);
+          return weight;
+        }
+        if (![...this.activeKeys].some((activeKey) => activeKey.startsWith("runtime-trace\u0000"))) {
+          throw new HttpError(capacityMessage, 429);
+        }
+        const active = this.activeRuns.values().next().value;
+        if (active === undefined) throw new HttpError(capacityMessage, 429);
+        await this.waitForActiveRun(active, signal);
+      }
+    } finally {
+      this.runtimeTraceCapacityWaiter = false;
+    }
+  }
+
   async run(requestValue: FastManimSnapshotRunRequestV1, signal?: AbortSignal): Promise<FastManimSnapshotRunViewV1> {
     return parseServerOwnedFastManimRunView(await this.runRequest(requestValue, true, signal));
   }
@@ -810,13 +865,7 @@ export class FastManimSnapshotRunner {
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     if (request.projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
     const key = `runtime-trace\u0000${sceneKey(request.sourcePath, request.sceneName)}`;
-    const weight = this.maxConcurrentRuns;
-    this.reserveRun(
-      key,
-      weight,
-      "A Runtime Trace run is already in progress for this source and Scene.",
-      "Too many concurrent Runtime Trace runs.",
-    );
+    const weight = await this.reserveRuntimeTraceRun(key, signal);
     const pending = this.runRuntimeTraceLocked(request, signal);
     this.activeRuns.add(pending);
     pending.catch(() => undefined);

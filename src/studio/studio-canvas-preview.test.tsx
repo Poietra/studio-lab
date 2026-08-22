@@ -1000,6 +1000,20 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).not.toContain('data-studio-entity="entity:circle_1"');
   });
 
+  it("retains the last complete WebGPU surface while a newer frame is pending", () => {
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        preview={previewView({ detail: null, phase: "fallback", reason: "frame-stale" })}
+      />,
+    );
+
+    expect(markup).toContain('data-preview-fallback-reason="frame-stale"');
+    expect(markup).not.toMatch(/<canvas[^>]*invisible/);
+    expect(markup).not.toContain('data-studio-entity="entity:circle_1"');
+    expect(markup).not.toContain("data-studio-semantic-paint");
+  });
+
   it("labels a presented frame as an editing preview without claiming render authority", () => {
     const markup = renderToStaticMarkup(
       <StudioCanvas

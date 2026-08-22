@@ -2,6 +2,32 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createStudioGesturePreviewStore } from "./studio-gesture-preview-store";
 
+const SYNCHRONOUS_FRAME_SCHEDULER = {
+  cancelFrame() {},
+  requestFrame(callback: FrameRequestCallback) {
+    callback(0);
+    return 0;
+  },
+};
+
+function createFrameScheduler() {
+  let callback: FrameRequestCallback | null = null;
+  return {
+    cancelFrame: vi.fn(() => {
+      callback = null;
+    }),
+    flush() {
+      const scheduled = callback;
+      callback = null;
+      scheduled?.(0);
+    },
+    requestFrame: vi.fn((scheduled: FrameRequestCallback) => {
+      callback = scheduled;
+      return 1;
+    }),
+  };
+}
+
 describe("Studio gesture preview store", () => {
   it("keeps one stable idle snapshot until the preview changes", () => {
     const store = createStudioGesturePreviewStore();
@@ -23,7 +49,7 @@ describe("Studio gesture preview store", () => {
   });
 
   it("publishes drag changes while preserving identity for value-equal updates", () => {
-    const store = createStudioGesturePreviewStore();
+    const store = createStudioGesturePreviewStore(SYNCHRONOUS_FRAME_SCHEDULER);
     const listener = vi.fn();
     store.subscribe(listener);
 
@@ -81,7 +107,7 @@ describe("Studio gesture preview store", () => {
   });
 
   it("compares geometry and scale previews by their observable values", () => {
-    const store = createStudioGesturePreviewStore();
+    const store = createStudioGesturePreviewStore(SYNCHRONOUS_FRAME_SCHEDULER);
     const listener = vi.fn();
     store.subscribe(listener);
 
@@ -202,7 +228,7 @@ describe("Studio gesture preview store", () => {
   });
 
   it("clears an active preview once and stops notifying unsubscribed listeners", () => {
-    const store = createStudioGesturePreviewStore();
+    const store = createStudioGesturePreviewStore(SYNCHRONOUS_FRAME_SCHEDULER);
     const listener = vi.fn();
     const unsubscribe = store.subscribe(listener);
 
@@ -222,5 +248,59 @@ describe("Studio gesture preview store", () => {
     unsubscribe();
     store.setDragPreview({ delta: { x: 1, y: 1 }, entityIds: ["entity:circle"], guides: [] });
     expect(listener).toHaveBeenCalledTimes(2);
+  });
+
+  it("exposes the latest pointer update immediately and notifies once on the next frame", () => {
+    const scheduler = createFrameScheduler();
+    const store = createStudioGesturePreviewStore(scheduler);
+    const observed = vi.fn(() => store.getSnapshot());
+    store.subscribe(observed);
+
+    store.setDragPreview({ delta: { x: 1, y: 2 }, entityIds: ["entity:circle"], guides: [] });
+    store.setDragPreview({ delta: { x: 3, y: 4 }, entityIds: ["entity:circle"], guides: [] });
+    store.setDragPreview({ delta: { x: 5, y: 6 }, entityIds: ["entity:circle"], guides: [] });
+
+    expect(store.getSnapshot().dragPreview?.delta).toEqual({ x: 5, y: 6 });
+    expect(observed).not.toHaveBeenCalled();
+    expect(scheduler.requestFrame).toHaveBeenCalledTimes(1);
+
+    scheduler.flush();
+
+    expect(observed).toHaveBeenCalledTimes(1);
+    expect(observed).toHaveLastReturnedWith(store.getSnapshot());
+
+    store.setDragPreview({ delta: { x: 7, y: 8 }, entityIds: ["entity:circle"], guides: [] });
+    expect(scheduler.requestFrame).toHaveBeenCalledTimes(2);
+  });
+
+  it("publishes the final state when a gesture changes kind or clears before the frame", () => {
+    const scheduler = createFrameScheduler();
+    const store = createStudioGesturePreviewStore(scheduler);
+    const observedKinds: string[] = [];
+    const unsubscribe = store.subscribe(() => observedKinds.push(store.getSnapshot().kind));
+
+    store.setDragPreview({ delta: { x: 1, y: 2 }, entityIds: ["entity:circle"], guides: [] });
+    store.setScalePreview({ entityId: "entity:circle", guides: [], scale: 2 });
+    store.clear();
+
+    expect(store.getSnapshot().kind).toBe("idle");
+    expect(scheduler.requestFrame).toHaveBeenCalledTimes(1);
+    scheduler.flush();
+    expect(observedKinds).toEqual(["idle"]);
+
+    store.setScalePreview({ entityId: "entity:circle", guides: [], scale: 3 });
+    scheduler.flush();
+    expect(observedKinds).toEqual(["idle", "scale"]);
+
+    store.clear();
+    expect(store.getSnapshot().kind).toBe("idle");
+    scheduler.flush();
+    expect(observedKinds).toEqual(["idle", "scale", "idle"]);
+
+    store.setDragPreview({ delta: { x: 4, y: 5 }, entityIds: ["entity:circle"], guides: [] });
+    unsubscribe();
+    expect(scheduler.cancelFrame).toHaveBeenCalledTimes(1);
+    scheduler.flush();
+    expect(observedKinds).toEqual(["idle", "scale", "idle"]);
   });
 });

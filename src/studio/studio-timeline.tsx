@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type PointerEvent, useRef, useState } from "react";
+import { type KeyboardEvent, type PointerEvent, useRef, useState, useSyncExternalStore } from "react";
 
 import { STUDIO_PROPERTY_KEYFRAME_EASINGS, type StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import { cn } from "../lib/cn";
@@ -14,6 +14,7 @@ import type { MathTexTransformEasing } from "./mathtex-transform-clip-edit";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
 import type { ShapeTransformEasing, ShapeTransformKind } from "./shape-transform-clip-edit";
+import type { StudioPlaybackClock } from "./studio-playback-clock";
 import { markStudioRenderBoundary } from "./studio-render-profiler";
 import {
   formatTimelineTime,
@@ -29,6 +30,7 @@ export type StudioTimelineProps = Readonly<{
   appliedMotionClips: readonly AppliedMotionClip[];
   appliedTransactionIds: ReadonlySet<string>;
   currentTime: number;
+  playbackClock?: StudioPlaybackClock;
   cameraClips?: readonly StudioCameraTimelineClip[];
   duration: number;
   drawInClips: readonly StudioDrawInTimelineClip[];
@@ -352,22 +354,111 @@ export type StudioMaterialParameterTimelineOption = Readonly<{
   name: string;
 }>;
 
+const STATIC_PLAYBACK_CLOCK_SNAPSHOT = { currentTime: 0, playing: false };
+
+function subscribeToStaticPlaybackClock(_listener: () => void) {
+  return () => undefined;
+}
+
+function getStaticPlaybackClockSnapshot() {
+  return STATIC_PLAYBACK_CLOCK_SNAPSHOT;
+}
+
+function useDisplayedTimelineTime(currentTime: number, playbackClock?: StudioPlaybackClock) {
+  const snapshot = useSyncExternalStore(
+    playbackClock?.subscribe ?? subscribeToStaticPlaybackClock,
+    playbackClock?.getSnapshot ?? getStaticPlaybackClockSnapshot,
+    playbackClock?.getSnapshot ?? getStaticPlaybackClockSnapshot,
+  );
+  return snapshot.playing ? snapshot.currentTime : currentTime;
+}
+
 function TimelinePlayhead({
   currentTime,
   duration,
+  playbackClock,
   showHandle = false,
-}: Readonly<{ currentTime: number; duration: number; showHandle?: boolean }>) {
+}: Readonly<{ currentTime: number; duration: number; playbackClock?: StudioPlaybackClock; showHandle?: boolean }>) {
+  const displayedTime = useDisplayedTimelineTime(currentTime, playbackClock);
   return (
     <div
       aria-hidden="true"
       className="pointer-events-none absolute bottom-0 top-0 z-20 w-px bg-sky-400"
       data-timeline-playhead
-      style={{ left: `${timelinePositionPercent(currentTime, duration)}%` }}
+      style={{ left: `${timelinePositionPercent(displayedTime, duration)}%` }}
     >
       {showHandle ? (
         <span className="absolute left-1/2 top-1 size-2 -translate-x-1/2 border border-sky-200 bg-sky-500" />
       ) : null}
     </div>
+  );
+}
+
+function ScenePlaybackControl({
+  currentTime,
+  duration,
+  isPlaying,
+  onTimeChange,
+  onTogglePlayback,
+  playbackClock,
+}: Readonly<{
+  currentTime: number;
+  duration: number;
+  isPlaying: boolean;
+  onTimeChange: (time: number) => void;
+  onTogglePlayback: () => void;
+  playbackClock?: StudioPlaybackClock;
+}>) {
+  const displayedTime = useDisplayedTimelineTime(currentTime, playbackClock);
+  return (
+    <div className="flex items-center gap-3">
+      <button
+        className="w-14 border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
+        onClick={onTogglePlayback}
+        type="button"
+      >
+        {isPlaying ? "Pause" : "Play"}
+      </button>
+      <span className="w-24 tabular-nums text-xs text-zinc-400">{formatTimelineTime(displayedTime)}</span>
+      <input
+        aria-label="Scene playhead"
+        className="min-w-0 flex-1 accent-sky-500"
+        max={duration}
+        min="0"
+        onChange={(event) => onTimeChange(Number(event.currentTarget.value))}
+        step="0.01"
+        type="range"
+        value={displayedTime}
+      />
+      <span className="w-16 text-right tabular-nums text-xs text-zinc-600">{formatTimelineTime(duration)}</span>
+    </div>
+  );
+}
+
+function TimelineRulerScrubber({
+  currentTime,
+  duration,
+  onTimeChange,
+  playbackClock,
+}: Readonly<{
+  currentTime: number;
+  duration: number;
+  onTimeChange: (time: number) => void;
+  playbackClock?: StudioPlaybackClock;
+}>) {
+  const displayedTime = useDisplayedTimelineTime(currentTime, playbackClock);
+  return (
+    <input
+      aria-label="Timeline playhead"
+      aria-valuetext={`${displayedTime.toFixed(2)} seconds of ${duration.toFixed(2)} seconds`}
+      className="timeline-scrubber relative z-10 m-0 h-full w-full min-w-0"
+      max={duration}
+      min="0"
+      onChange={(event) => onTimeChange(Number(event.currentTarget.value))}
+      step="0.01"
+      type="range"
+      value={displayedTime}
+    />
   );
 }
 
@@ -767,6 +858,7 @@ export function StudioTimeline({
   appliedTransactionIds,
   cameraClips = [],
   currentTime,
+  playbackClock,
   duration,
   drawInClips,
   drawInAvailability,
@@ -951,27 +1043,14 @@ export function StudioTimeline({
   const selectedRotationLocked = Boolean(selectedRotationTrack && lockedEntityIds.has(selectedRotationTrack.entityId));
   return (
     <section className="shrink-0 border-t border-zinc-800 bg-zinc-950 p-3">
-      <div className="flex items-center gap-3">
-        <button
-          className="w-14 border border-zinc-700 px-2 py-1 text-xs text-zinc-300 hover:bg-zinc-800"
-          onClick={onTogglePlayback}
-          type="button"
-        >
-          {isPlaying ? "Pause" : "Play"}
-        </button>
-        <span className="w-24 tabular-nums text-xs text-zinc-400">{formatTimelineTime(currentTime)}</span>
-        <input
-          aria-label="Scene playhead"
-          className="min-w-0 flex-1 accent-sky-500"
-          max={duration}
-          min="0"
-          onChange={(event) => onTimeChange(Number(event.currentTarget.value))}
-          step="0.01"
-          type="range"
-          value={currentTime}
-        />
-        <span className="w-16 text-right tabular-nums text-xs text-zinc-600">{formatTimelineTime(duration)}</span>
-      </div>
+      <ScenePlaybackControl
+        currentTime={currentTime}
+        duration={duration}
+        isPlaying={isPlaying}
+        onTimeChange={onTimeChange}
+        onTogglePlayback={onTogglePlayback}
+        playbackClock={playbackClock}
+      />
       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2 border-t border-zinc-800 pt-2 text-xs">
         <span className="text-zinc-400">When dragging an object</span>
         <div aria-label="Object drag behavior" className="flex border border-zinc-700" role="group">
@@ -1711,18 +1790,18 @@ export function StudioTimeline({
           <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
             <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-zinc-400">Time</div>
             <div className="relative h-6 min-w-0 overflow-hidden" data-timeline-ruler>
-              <input
-                aria-label="Timeline playhead"
-                aria-valuetext={`${currentTime.toFixed(2)} seconds of ${duration.toFixed(2)} seconds`}
-                className="timeline-scrubber relative z-10 m-0 h-full w-full min-w-0"
-                max={duration}
-                min="0"
-                onChange={(event) => onTimeChange(Number(event.currentTarget.value))}
-                step="0.01"
-                type="range"
-                value={currentTime}
+              <TimelineRulerScrubber
+                currentTime={currentTime}
+                duration={duration}
+                onTimeChange={onTimeChange}
+                playbackClock={playbackClock}
               />
-              <TimelinePlayhead currentTime={currentTime} duration={duration} showHandle />
+              <TimelinePlayhead
+                currentTime={currentTime}
+                duration={duration}
+                playbackClock={playbackClock}
+                showHandle
+              />
             </div>
           </div>
           <div className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]">
@@ -1754,7 +1833,7 @@ export function StudioTimeline({
                   type="button"
                 />
               ))}
-              <TimelinePlayhead currentTime={currentTime} duration={duration} />
+              <TimelinePlayhead currentTime={currentTime} duration={duration} playbackClock={playbackClock} />
             </div>
           </div>
           <div
@@ -1791,7 +1870,7 @@ export function StudioTimeline({
                   </button>
                 );
               })}
-              <TimelinePlayhead currentTime={currentTime} duration={duration} />
+              <TimelinePlayhead currentTime={currentTime} duration={duration} playbackClock={playbackClock} />
             </div>
           </div>
           {objectTracks.map((track, trackIndex) => {
@@ -2266,7 +2345,7 @@ export function StudioTimeline({
                       Not present
                     </span>
                   ) : null}
-                  <TimelinePlayhead currentTime={currentTime} duration={duration} />
+                  <TimelinePlayhead currentTime={currentTime} duration={duration} playbackClock={playbackClock} />
                 </div>
               </div>
             );

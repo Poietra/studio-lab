@@ -9,6 +9,7 @@ import {
   type StudioPreviewProviderKind,
   type StudioPreviewSnapshotProviderV1,
 } from "./preview-snapshot-provider";
+import type { StudioPlaybackClock } from "./studio-playback-clock";
 import { type StudioPreviewRendererView, useStudioPreviewRenderer } from "./use-preview-renderer";
 
 export type StudioPreviewAuthorityState =
@@ -42,6 +43,7 @@ type UseStudioPreviewAuthorityControllerInput = Readonly<{
   frame: Readonly<{ height: number; width: number }>;
   /** Canonical local authority for a source-free Studio document. */
   nativeProvider?: StudioPreviewSnapshotProviderV1 | null;
+  playbackClock?: StudioPlaybackClock | null;
   sceneFragmentMaterials?: SceneFragmentMaterialStateV1;
   retainedSourceDuration: number | null;
   sampleTime: number;
@@ -193,6 +195,7 @@ export function useStudioPreviewAuthorityController({
   context,
   frame,
   nativeProvider = null,
+  playbackClock = null,
   sceneFragmentMaterials,
   retainedSourceDuration,
   sampleTime,
@@ -248,6 +251,7 @@ export function useStudioPreviewAuthorityController({
   const renderer = useStudioPreviewRenderer({
     context,
     frame,
+    playbackClock,
     sceneFragmentMaterials,
     provider,
     retainedSourceDuration,

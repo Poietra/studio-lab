@@ -742,7 +742,12 @@ export function StudioCanvas({
   // overlays. A renderer failure or unsupported Scene is explicit and never
   // resurrects a second DOM renderer.
   const presentingCanvasPixels = preview?.state.phase === "presented";
+  // A superseded frame is no longer interaction authority, but it remains a
+  // complete WebGPU surface. Keep it visible until the worker presents the
+  // replacement instead of flashing the fallback background between frames.
+  const retainingStaleCanvasPixels = preview?.state.phase === "fallback" && preview.state.reason === "frame-stale";
   const showingCanvasPixels = presentingCanvasPixels;
+  const canvasSurfaceVisible = presentingCanvasPixels || retainingStaleCanvasPixels;
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
   const emptyInteractiveCanvas =
@@ -998,7 +1003,7 @@ export function StudioCanvas({
       >
         {preview ? (
           <canvas
-            className={cn("pointer-events-none absolute inset-0 z-0 size-full", !showingCanvasPixels && "invisible")}
+            className={cn("pointer-events-none absolute inset-0 z-0 size-full", !canvasSurfaceVisible && "invisible")}
             data-studio-preview-canvas=""
             key={`preview-${preview.epoch}`}
             ref={preview.attachCanvas}
@@ -1027,7 +1032,7 @@ export function StudioCanvas({
         <div className="absolute inset-0 origin-center" data-studio-transform-layer style={{ scale: cameraScale }}>
           <svg
             aria-hidden="true"
-            className={cn("absolute inset-0 size-full", showingCanvasPixels ? "opacity-0" : "opacity-10")}
+            className={cn("absolute inset-0 size-full", canvasSurfaceVisible ? "opacity-0" : "opacity-10")}
             viewBox="0 0 640 360"
           >
             <g stroke="#a1a1aa" strokeWidth="1">

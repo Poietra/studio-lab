@@ -309,7 +309,9 @@ import {
   isStudioNativeWorkspaceScene,
   studioWorkspaceWorkingState,
 } from "./studio/studio-native-workspace";
+import { createStudioPlaybackClock } from "./studio/studio-playback-clock";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
+import { markStudioRenderBoundary } from "./studio/studio-render-profiler";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import { importStudioSvgPathAsset, type StudioSvgPathAsset } from "./studio/studio-svg-assets";
 import { StudioThumbnailControl } from "./studio/studio-thumbnail-control";
@@ -571,6 +573,7 @@ export function App({
   accountActions?: AccountSessionActionsV1 | null;
   accountSession?: AccountSessionViewV1 | null;
 }>) {
+  markStudioRenderBoundary("app");
   const shell = detectShell();
   const aiEndpointConfigured = Boolean(import.meta.env.VITE_POIETRA_AI_ENDPOINT);
   const {
@@ -672,6 +675,10 @@ export function App({
     suggestionStatus,
     verifiedSourceDurationBasis,
   } = editorState;
+  const currentTimeRef = useRef(currentTime);
+  currentTimeRef.current = currentTime;
+  const playbackClock = useMemo(() => createStudioPlaybackClock(), []);
+  const playbackSeekPendingRef = useRef(false);
   const lockedEntityIdSet = useMemo(() => new Set(lockedEntityIds), [lockedEntityIds]);
   const lockedEntityIdsRef = useRef<ReadonlySet<string>>(lockedEntityIdSet);
   lockedEntityIdsRef.current = lockedEntityIdSet;
@@ -1305,6 +1312,7 @@ export function App({
     context: editorDocumentPresentationReady ? (nativePreviewContext ?? editorRevision.previewContext) : null,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
     nativeProvider: nativePreviewProvider,
+    playbackClock,
     sceneFragmentMaterials: activeSceneFragmentMaterials,
     retainedSourceDuration: nativePreviewContext?.sourceDuration ?? editorRevision.retainedSourceDuration,
     sampleTime: currentTime,
@@ -2321,7 +2329,7 @@ export function App({
     (editorSelectionAligned && !editorSessionReady);
   const previewPaintAvailable = previewRenderer?.state.phase === "presented";
   const previewMutationAvailable = previewPaintAvailable && !previewSelectionOnly;
-  const canvasInteractionLocked = studioAuthoringLocked || !previewPaintAvailable;
+  const canvasInteractionLocked = studioAuthoringLocked || isPlaying || !previewPaintAvailable;
   const sourceDurationSessionKey = editorRevision.sessionKey;
   function startPreviewRenderer(action: () => boolean) {
     if (!action()) return;
@@ -2874,26 +2882,65 @@ export function App({
     if (sourceDurationBasisBlocked && isPlaying) setIsPlaying(false);
   }, [isPlaying, sourceDurationBasisBlocked, setIsPlaying]);
 
+  const playbackSceneKey = targetEditorSessionIdentity ? editorSessionIdentityKey(targetEditorSessionIdentity) : null;
+  const playbackSceneKeyRef = useRef(playbackSceneKey);
+  playbackSceneKeyRef.current = playbackSceneKey;
   useEffect(() => {
-    if (!isPlaying || !activeEditorScene || sourceDurationBasisBlocked) return;
-    let animationFrame = 0;
-    let previous = performance.now();
-    const tick = (now: number) => {
-      const delta = (now - previous) / 1000;
-      previous = now;
-      setCurrentTime((time) => {
-        const next = time + delta;
-        if (next >= activeDuration) {
+    if (isPlaying && playbackSceneKey === null) {
+      playbackClock.pause();
+      setIsPlaying(false);
+      return;
+    }
+    if (isPlaying && playbackSceneKey !== null && !sourceDurationBasisBlocked) {
+      const clockSnapshot = playbackClock.getSnapshot();
+      if (clockSnapshot.playing && clockSnapshot.sceneKey !== playbackSceneKey) {
+        playbackClock.pause();
+        playbackClock.reset({
+          currentTime: currentTimeRef.current,
+          duration: activeDuration,
+          sceneKey: playbackSceneKey,
+        });
+        setIsPlaying(false);
+        return;
+      }
+      const startTime = clockSnapshot.playing ? clockSnapshot.currentTime : currentTimeRef.current;
+      playbackClock.play({
+        currentTime: startTime,
+        duration: activeDuration,
+        onEnded: () => {
+          const ended = playbackClock.getSnapshot();
+          if (playbackSceneKeyRef.current !== ended.sceneKey) return;
+          currentTimeRef.current = ended.currentTime;
+          setCurrentTime(ended.currentTime);
           setIsPlaying(false);
-          return activeDuration;
-        }
-        return next;
+        },
+        sceneKey: playbackSceneKey,
       });
-      animationFrame = requestAnimationFrame(tick);
-    };
-    animationFrame = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(animationFrame);
-  }, [activeDuration, activeEditorScene, isPlaying, sourceDurationBasisBlocked]);
+      return;
+    }
+
+    const paused = playbackClock.pause();
+    let resetTime = currentTimeRef.current;
+    const preserveExplicitSeek = playbackSeekPendingRef.current;
+    playbackSeekPendingRef.current = false;
+    if (!preserveExplicitSeek && paused.wasPlaying && paused.snapshot.sceneKey === playbackSceneKey) {
+      resetTime = Math.min(activeDuration, paused.snapshot.currentTime);
+      if (Math.abs(resetTime - currentTimeRef.current) >= 0.0005) {
+        currentTimeRef.current = resetTime;
+        setCurrentTime(resetTime);
+      }
+    }
+    if (playbackSceneKey !== null) {
+      playbackClock.reset({ currentTime: resetTime, duration: activeDuration, sceneKey: playbackSceneKey });
+    }
+  }, [activeDuration, isPlaying, playbackClock, playbackSceneKey, sourceDurationBasisBlocked, setIsPlaying]);
+
+  useEffect(
+    () => () => {
+      playbackClock.pause();
+    },
+    [playbackClock],
+  );
   const contextFingerprint = draftBaseState
     ? createClarificationContextFingerprint({
         entities: Object.values(draftBaseState.evaluatedScene.objectGraph.entities),
@@ -6104,6 +6151,7 @@ export function App({
       return null;
     }
     if (input.requireAlignedPlayhead && Math.abs(currentTime - anchor.workingTime) >= 0.0005) {
+      playbackSeekPendingRef.current = playbackClock.getSnapshot().playing;
       setCurrentTime(anchor.workingTime);
       setIsPlaying(false);
       setDraftError(
@@ -7724,6 +7772,10 @@ export function App({
   }
 
   function handleStudioCommand(command: StudioCommandId) {
+    if (isPlaying && command !== "play-pause") {
+      setDraftError("Pause playback before editing the Scene.");
+      return false;
+    }
     if (studioAuthoringLocked) {
       setDraftError(readDurationBlocker() ?? EDITOR_SESSION_LOADING_BLOCKER);
       return false;
@@ -8527,7 +8579,7 @@ export function App({
               <select
                 aria-label="Active imported Scene"
                 className="h-8 min-w-0 w-full max-w-sm border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
-                disabled={studioAuthoringLocked}
+                disabled={studioAuthoringLocked || isPlaying}
                 onChange={(event) => {
                   const sceneId = event.currentTarget.value;
                   cubicBezierAuthoringGeneration.current += 1;
@@ -8571,6 +8623,7 @@ export function App({
                 <button
                   className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
                   disabled={
+                    isPlaying ||
                     sessionTransitionPending ||
                     workspaceIsRefreshing ||
                     sourceMutationPendingProjectId === activeProjectId
@@ -8589,7 +8642,7 @@ export function App({
                       ? "border-sky-800 bg-sky-950 text-sky-300 hover:bg-sky-900"
                       : "border-zinc-700 text-zinc-300 hover:bg-zinc-800",
                   )}
-                  disabled={studioAuthoringLocked || !previewMutationAvailable}
+                  disabled={studioAuthoringLocked || isPlaying || !previewMutationAvailable}
                   onClick={() => setIsMagicEditVisible((visible) => !visible)}
                   type="button"
                 >
@@ -8843,7 +8896,7 @@ export function App({
               appliedProgramReadOnlyReasons={appliedProgramReadOnlyReasons}
               appliedEdits={appliedEdits}
               appliedTransactionIds={appliedTransactionIds}
-              authoringAvailable={!studioAuthoringLocked && previewMutationAvailable}
+              authoringAvailable={!studioAuthoringLocked && !isPlaying && previewMutationAvailable}
               className="order-2 min-h-64 md:order-1 md:col-start-1 md:row-start-1 md:min-h-0"
               draftActive={draftEdit !== null}
               duration={activeDuration}
@@ -8947,6 +9000,7 @@ export function App({
               insertValue={insertValue}
               interactionMode={interactionMode}
               isPlaying={isPlaying}
+              playbackClock={playbackClock}
               lifetimeControls={lifetimeControls}
               lifetimeEditMessage={lifetimeEditMessage}
               lifetimeTrimDisabled={draftEdit !== null}
@@ -9087,6 +9141,7 @@ export function App({
                 )
               }
               onTimeChange={(time) => {
+                playbackSeekPendingRef.current = playbackClock.getSnapshot().playing;
                 setIsPlaying(false);
                 setCurrentTime(time);
               }}
@@ -9112,7 +9167,7 @@ export function App({
 
             <StudioInspector
               appliedProgramCount={appliedEdits.length}
-              authoringAvailable={previewMutationAvailable}
+              authoringAvailable={!isPlaying && previewMutationAvailable}
               cameraAuthoring={{
                 defaultDuration: motionDuration,
                 focusUnavailableReason: cameraFocusUnavailableReason(),
@@ -9332,7 +9387,7 @@ export function App({
         {isMagicEditVisible && activeScene ? (
           <MagicEditPanel
             aiEndpointConfigured={aiEndpointConfigured}
-            authoringAvailable={previewMutationAvailable}
+            authoringAvailable={!isPlaying && previewMutationAvailable}
             clarificationIsStale={clarificationIsStale}
             currentTime={currentTime}
             instruction={instruction}
