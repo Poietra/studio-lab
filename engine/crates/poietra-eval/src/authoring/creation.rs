@@ -135,7 +135,15 @@ struct CreateSceneEntityInstantTransform {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct CreateSceneEntityAnimatedResize {
+    interval: IntervalV1,
+    from: AffineTransformV1,
+    to: AffineTransformV1,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct CreateSceneEntity {
+    animated_resize: Option<CreateSceneEntityAnimatedResize>,
     appearance_at: Option<f64>,
     draw_in: Option<CreateSceneEntityDrawIn>,
     fade_in: Option<CreateSceneEntityFadeIn>,
@@ -772,6 +780,7 @@ fn closed_studio_creation_motion_operations(
 }
 
 struct PlannedStudioCreationEntity {
+    animated_resize: Option<PlannedStudioAnimatedResize>,
     appearance_at: Option<f64>,
     create_operation_id: String,
     creation_transaction_id: String,
@@ -810,6 +819,16 @@ struct PlannedStudioCreationEntity {
     visible: bool,
     write_easing: Option<EasingV1>,
     write_interval: Option<IntervalV1>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedStudioAnimatedResize {
+    from_dimensions: StudioAuthoringDimensions,
+    from_position: PointV1,
+    interval: IntervalV1,
+    shape: StudioAuthoringEntityKind,
+    to_dimensions: StudioAuthoringDimensions,
+    to_position: PointV1,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1089,6 +1108,7 @@ fn studio_creation_motion_is_compatible(
     motion_interval.start >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
         && motion_interval.end <= state.lifetime.end + TIMELINE_ANCHOR_EPSILON
         && appearance_end.is_none_or(|end| motion_interval.start >= end - TIMELINE_ANCHOR_EPSILON)
+        && state.animated_resize.is_none()
         && instant_is_compatible
         && state.persistent_removal.as_ref().is_none_or(|removal| {
             removal.interval.start >= motion_interval.end - TIMELINE_ANCHOR_EPSILON
@@ -2896,6 +2916,7 @@ fn plan_studio_creation_edits(
             ));
         }
         entities.push(PlannedStudioCreationEntity {
+            animated_resize: None,
             appearance_at: None,
             create_operation_id: create_operation.id.clone(),
             creation_program_rank: program_rank,
@@ -4172,6 +4193,7 @@ fn plan_studio_creation_edits(
                 } if state
                     .current_shape
                     .is_some_and(|current| current.kind == *shape)
+                    && operation.origin == StudioAuthoringOrigin::DirectManipulation
                     && matches!(
                         shape,
                         StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
@@ -4186,14 +4208,59 @@ fn plan_studio_creation_edits(
                     && *from_scale > 0.0
                     && close_transform_baseline_value(*from_scale, state.scale)
                     && studio_authoring_shape_size(*shape, *to_dimensions).is_some()
-                    && studio_authoring_point_is_finite(to_position)
-                    && studio_timeline_semantic_values_match(
-                        operation.interval.end,
-                        program.anchor_resolved_seconds,
-                    ) =>
+                    && studio_authoring_point_is_finite(to_position) =>
                 {
-                    record_planned_studio_creation_instant(state, instant_at)?;
-                    state.has_position_or_resize_instant = true;
+                    let animated =
+                        operation.interval.end > operation.interval.start + TIMELINE_ANCHOR_EPSILON;
+                    let interval = if animated {
+                        IntervalV1 {
+                            end: operation.interval.end + timeline.offsets[program_index],
+                            start: operation.interval.start + timeline.offsets[program_index],
+                        }
+                    } else {
+                        if !studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        ) {
+                            return Err(ProjectStudioCreationEditError::Unsupported);
+                        }
+                        instant_interval
+                    };
+                    if animated {
+                        if program.origin != StudioAuthoringOrigin::DirectManipulation
+                            || program.requested_execution != SceneEditExecution::Sequence
+                            || program.schedule_mode != SceneEditScheduleMode::Sequence
+                            || program.schedule_edge_count != 0
+                            || program.intent_count != 1
+                            || program.operations.len() != 1
+                            || program.schedule_order != [operation.id.clone()]
+                            || interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                            || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+                            || studio_creation_initial_appearance_end(state)
+                                .is_some_and(|end| interval.start < end - TIMELINE_ANCHOR_EPSILON)
+                            || state.instant_at.is_some()
+                            || state.animated_resize.is_some()
+                            || !state.shape_transforms.is_empty()
+                            || !state.uniform_scale_keyframes.is_empty()
+                            || !state.rotation_keyframes.is_empty()
+                            || !rotation_is_noop(state.current_rotation)
+                            || !rotation_is_noop(state.instant_rotation)
+                            || state.persistent_removal.is_some()
+                        {
+                            return Err(ProjectStudioCreationEditError::Unsupported);
+                        }
+                        state.animated_resize = Some(PlannedStudioAnimatedResize {
+                            from_dimensions: *from_dimensions,
+                            from_position: from_position.clone(),
+                            interval: interval.clone(),
+                            shape: *shape,
+                            to_dimensions: *to_dimensions,
+                            to_position: to_position.clone(),
+                        });
+                    } else {
+                        record_planned_studio_creation_instant(state, instant_at)?;
+                        state.has_position_or_resize_instant = true;
+                    }
                     state.current_dimensions = *to_dimensions;
                     state.current_shape = Some(StudioCreationShapeState {
                         dimensions: *to_dimensions,
@@ -4205,7 +4272,7 @@ fn plan_studio_creation_edits(
                         schedule_index,
                         StudioCreationProjectedMutation {
                             entity_id: entity_id.to_owned(),
-                            interval: instant_interval,
+                            interval,
                             kind: StudioCreationProjectedMutationKind::Resize {
                                 from_dimensions: *from_dimensions,
                                 from_position: from_position.clone(),
@@ -4291,11 +4358,18 @@ fn plan_studio_creation_edits(
     }
 
     for state in &entities {
-        if (!state.rotation_keyframes.is_empty()
-            && (!state.uniform_scale_keyframes.is_empty()
-                || state.instant_at.is_some()
+        if (state.animated_resize.is_some()
+            && (state.instant_at.is_some()
+                || !state.shape_transforms.is_empty()
+                || !state.uniform_scale_keyframes.is_empty()
+                || !state.rotation_keyframes.is_empty()
                 || !rotation_is_noop(state.current_rotation)
                 || !rotation_is_noop(state.instant_rotation)))
+            || (!state.rotation_keyframes.is_empty()
+                && (!state.uniform_scale_keyframes.is_empty()
+                    || state.instant_at.is_some()
+                    || !rotation_is_noop(state.current_rotation)
+                    || !rotation_is_noop(state.instant_rotation)))
             || (!state.uniform_scale_keyframes.is_empty()
                 && (state.instant_at.is_some()
                     || !rotation_is_noop(state.current_rotation)
@@ -4334,6 +4408,9 @@ fn plan_studio_creation_edits(
                 })
                 || state.shape_transforms.last().is_some_and(|transform| {
                     removal.interval.start < transform.interval.end - TIMELINE_ANCHOR_EPSILON
+                })
+                || state.animated_resize.as_ref().is_some_and(|resize| {
+                    removal.interval.start < resize.interval.end - TIMELINE_ANCHOR_EPSILON
                 }))
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
@@ -5573,6 +5650,28 @@ fn validate_create_scene_entities_command(
         {
             return Err(CreateSceneEntitiesError::InvalidInstantTransform);
         }
+        if let Some(resize) = &entity.animated_resize {
+            let transform_is_valid = |transform: &AffineTransformV1| {
+                transform.m11.is_finite()
+                    && transform.m11 > 0.0
+                    && transform.m12 == 0.0
+                    && transform.m21 == 0.0
+                    && transform.m22.is_finite()
+                    && transform.m22 > 0.0
+                    && transform.tx.is_finite()
+                    && transform.ty.is_finite()
+            };
+            if !resize.interval.start.is_finite()
+                || !resize.interval.end.is_finite()
+                || resize.interval.start < entity.lifetime.start
+                || resize.interval.end > entity.lifetime.end
+                || resize.interval.end <= resize.interval.start
+                || !transform_is_valid(&resize.from)
+                || !transform_is_valid(&resize.to)
+            {
+                return Err(CreateSceneEntitiesError::InvalidInstantTransform);
+            }
+        }
         let colors_are_valid = [&entity.fill_color, &entity.stroke_color]
             .into_iter()
             .flatten()
@@ -5604,6 +5703,11 @@ fn validate_create_scene_entities_command(
                         | CreateSceneEntityGeometry::ShapeOutline { .. }
                         | CreateSceneEntityGeometry::SvgPath { .. }
                 ))
+            || (entity.animated_resize.is_some()
+                && (entity.instant_transform.is_some()
+                    || !rotation_is_noop(entity.rotation)
+                    || !entity.uniform_scale_keyframes.is_empty()
+                    || !entity.rotation_keyframes.is_empty()))
             || (!rotation_is_noop(entity.rotation) && entity.instant_transform.is_some())
             || (!entity.uniform_scale_keyframes.is_empty()
                 && (!rotation_is_noop(entity.rotation) || entity.instant_transform.is_some()))
@@ -6288,6 +6392,29 @@ fn append_created_entity(
                 entity_id: created_id.clone(),
                 id: channel_id,
                 keyframes,
+                provenance_id: provenance_id.to_owned(),
+            });
+    }
+    if let Some(resize) = entity.animated_resize {
+        capabilities.insert(SceneCapabilityV1::AffineTransformAnimation);
+        let channel_id = unused_channel_id(scene, &format!("studio-resize-{scene_order}"));
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::AffineTransform {
+                entity_id: created_id.clone(),
+                id: channel_id,
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: resize.interval.start,
+                        easing_to_next: Some(EasingV1::ManimSmooth {}),
+                        value: resize.from,
+                    },
+                    KeyframeV1 {
+                        at: resize.interval.end,
+                        easing_to_next: None,
+                        value: resize.to,
+                    },
+                ],
                 provenance_id: provenance_id.to_owned(),
             });
     }
@@ -6978,6 +7105,40 @@ impl EngineSessionV1 {
                     return Err(ApplyStudioCreationEditError::Unsupported);
                 }
             };
+            let animated_resize = state
+                .animated_resize
+                .as_ref()
+                .map(|resize| {
+                    let path_dimensions = state
+                        .shape_path_dimensions
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    let base_size = studio_authoring_shape_size(resize.shape, path_dimensions)
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    let transform = |dimensions: StudioAuthoringDimensions, position: &PointV1| {
+                        let size = studio_authoring_shape_size(resize.shape, dimensions)
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        let position = studio_point_to_scene_point(
+                            position,
+                            frame,
+                            viewport,
+                            &self.scene().camera.view.center,
+                        );
+                        Ok::<_, ApplyStudioCreationEditError>(AffineTransformV1 {
+                            m11: state.scale * size.width / base_size.width,
+                            m12: 0.0,
+                            m21: 0.0,
+                            m22: state.scale * size.height / base_size.height,
+                            tx: position.x,
+                            ty: position.y,
+                        })
+                    };
+                    Ok::<_, ApplyStudioCreationEditError>(CreateSceneEntityAnimatedResize {
+                        interval: resize.interval.clone(),
+                        from: transform(resize.from_dimensions, &resize.from_position)?,
+                        to: transform(resize.to_dimensions, &resize.to_position)?,
+                    })
+                })
+                .transpose()?;
             let instant_transform = if let Some(at) = state.instant_at {
                 let (x_ratio, y_ratio) = match state.kind {
                     StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
@@ -7081,6 +7242,7 @@ impl EngineSessionV1 {
                 }
             };
             entities.push(CreateSceneEntity {
+                animated_resize,
                 appearance_at: state.appearance_at,
                 draw_in: state
                     .draw_interval
@@ -7414,6 +7576,7 @@ mod tests {
             camera_animation: None,
             entities: vec![
                 CreateSceneEntity {
+                    animated_resize: None,
                     appearance_at: None,
                     draw_in: None,
                     fade_in: None,
@@ -7441,6 +7604,7 @@ mod tests {
                     write_in: None,
                 },
                 CreateSceneEntity {
+                    animated_resize: None,
                     appearance_at: None,
                     draw_in: None,
                     fade_in: Some(CreateSceneEntityFadeIn { end: 0.9 }),
@@ -7477,6 +7641,7 @@ mod tests {
                     write_in: None,
                 },
                 CreateSceneEntity {
+                    animated_resize: None,
                     appearance_at: None,
                     draw_in: None,
                     fade_in: None,
@@ -12677,6 +12842,160 @@ mod tests {
         assert_eq!(session.scene(), &result.scene);
     }
 
+    fn assert_normalized_shape_resize(
+        shape: StudioAuthoringEntityKind,
+        from_dimensions: StudioAuthoringDimensions,
+        to_dimensions: StudioAuthoringDimensions,
+        expected_scale: (f64, f64),
+    ) {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        {
+            let create = &mut command.programs[0];
+            create.anchor_captured_playhead = 0.0;
+            create.anchor_resolved_seconds = 0.0;
+            create.anchor_source = SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(0.0),
+            };
+            for operation in &mut create.operations {
+                operation.interval = match operation.kind {
+                    StudioCreationOperationKind::FadeIn { .. } => IntervalV1 {
+                        end: 0.4,
+                        start: 0.0,
+                    },
+                    _ => IntervalV1 {
+                        end: 0.0,
+                        start: 0.0,
+                    },
+                };
+            }
+            let StudioCreationOperationKind::Create { entity } = &mut create.operations[0].kind
+            else {
+                unreachable!();
+            };
+            entity.kind = shape;
+            entity.dimensions = from_dimensions;
+            entity.lifetime_start = 0.0;
+        }
+        {
+            let resize_program = &mut command.programs[1];
+            resize_program.anchor_captured_playhead = 0.0;
+            resize_program.anchor_resolved_seconds = 0.0;
+            resize_program.anchor_source = SceneEditAnchorSource::Playhead {
+                reference_seconds: Some(0.0),
+            };
+            let resize_operation = &mut resize_program.operations[0];
+            resize_operation.interval = IntervalV1 {
+                end: 1.5,
+                start: 0.0,
+            };
+            let StudioCreationOperationKind::Resize {
+                from_dimensions: operation_from,
+                from_position,
+                shape: operation_shape,
+                to_dimensions: operation_to,
+                to_position,
+                ..
+            } = &mut resize_operation.kind
+            else {
+                unreachable!();
+            };
+            *operation_shape = shape;
+            *operation_from = from_dimensions;
+            *operation_to = to_dimensions;
+            *from_position = PointV1 { x: 320.0, y: 180.0 };
+            *to_position = PointV1 { x: 360.0, y: 160.0 };
+        }
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        let resize = projection
+            .mutations
+            .iter()
+            .find(|mutation| mutation.operation_id == "resize")
+            .unwrap();
+        assert!((resize.interval.start - 0.4).abs() < 1e-12);
+        assert!((resize.interval.end - 1.9).abs() < 1e-12);
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let scene = session
+            .apply_studio_creation_edit(command)
+            .unwrap()
+            .bundle
+            .scene;
+        let keyframes = scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::AffineTransform {
+                    entity_id: candidate,
+                    keyframes,
+                    ..
+                } if candidate == entity_id => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(keyframes[0].easing_to_next, Some(EasingV1::ManimSmooth {}));
+        let (to_scale_x, to_scale_y) = expected_scale;
+        let close = |actual: f64, expected: f64| assert!((actual - expected).abs() < 1e-12);
+        close(keyframes[0].value.m11, 1.0);
+        close(keyframes[0].value.m22, 1.0);
+        close(keyframes[1].value.m11, to_scale_x);
+        close(keyframes[1].value.m22, to_scale_y);
+        close(keyframes[1].value.tx, 1.0);
+        close(keyframes[1].value.ty, 0.5);
+
+        let midpoint = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "animated-shape-resize-midpoint",
+                sample_time: 1.15,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap()
+            .draws
+            .into_iter()
+            .find_map(|draw| match draw {
+                poietra_scene_ir::RenderDrawV1::Path {
+                    entity_id: candidate,
+                    transform,
+                    ..
+                } if candidate == entity_id => Some(transform),
+                _ => None,
+            })
+            .unwrap();
+        close(midpoint.m11, f64::midpoint(1.0, to_scale_x));
+        close(midpoint.m22, f64::midpoint(1.0, to_scale_y));
+        close(midpoint.tx, 0.5);
+        close(midpoint.ty, 0.25);
+    }
+
+    #[test]
+    fn normalized_creation_animates_circle_and_rectangle_resize() {
+        let dimensions = |radius, width, height| StudioAuthoringDimensions {
+            height,
+            radius,
+            width,
+            ..StudioAuthoringDimensions::default()
+        };
+        assert_normalized_shape_resize(
+            StudioAuthoringEntityKind::Circle,
+            dimensions(Some(1.0), None, None),
+            dimensions(Some(2.0), None, None),
+            (2.0, 2.0),
+        );
+        assert_normalized_shape_resize(
+            StudioAuthoringEntityKind::Rectangle,
+            dimensions(None, Some(2.0), Some(1.0)),
+            dimensions(None, Some(4.0), Some(3.0)),
+            (2.0, 3.0),
+        );
+    }
+
     #[test]
     fn source_lowering_metadata_does_not_gate_canonical_creation() {
         let bundle = static_imported_bundle();
@@ -14569,7 +14888,7 @@ mod tests {
         let mut malformed_anchor = studio_creation_command(&bundle);
         malformed_anchor.programs[0].anchor_resolved_seconds = -0.5;
         let mut malformed_interval = studio_creation_command(&bundle);
-        malformed_interval.programs[1].operations[0].interval.end += 0.1;
+        malformed_interval.programs[1].operations[0].interval.start -= 0.1;
         let mut missing_dependency = studio_creation_command(&bundle);
         missing_dependency.programs[0].operations[1].depends_on = vec!["missing".to_owned()];
         let mut duplicate_transaction = studio_creation_command(&bundle);
