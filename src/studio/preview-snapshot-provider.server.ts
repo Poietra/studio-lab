@@ -347,7 +347,7 @@ async function validateVerifiedRuntimeTraceRun(
   const run = parsed.data;
   if (run.status !== "verified") {
     throw providerError(
-      `The Runtime Trace endpoint did not verify this Scene (${run.status}).`,
+      `The Runtime Trace endpoint did not verify this Scene (${run.failure.code}): ${run.failure.message}`,
       undefined,
       run.failure.code === "unsupported-profile" ? "unsupported" : "failed",
     );

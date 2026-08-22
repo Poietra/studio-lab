@@ -267,6 +267,45 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     });
   });
 
+  it("reports Runtime Trace capacity without retrying in the browser", async () => {
+    const fetcher = vi.fn(async () => jsonResponse({ error: "busy" }, 429));
+    const provider = createServerPreviewSnapshotProviderV1({
+      fetcher,
+      requestIdFactory: () => REQUEST_ID,
+    });
+
+    await expect(provider.loadVerifiedSnapshot({ identity })).rejects.toThrow(
+      "The Runtime Trace endpoint failed with HTTP 429.",
+    );
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a structured Runtime Trace failure code and message", async () => {
+    const fetcher = vi.fn(async () =>
+      jsonResponse({
+        ...unsupportedRuntimeTraceRun(),
+        failure: {
+          code: "producer-exit",
+          message: "The fast-manim producer exited before returning a usable result.",
+        },
+      }),
+    );
+    const provider = createServerPreviewSnapshotProviderV1({
+      fetcher,
+      requestIdFactory: () => REQUEST_ID,
+    });
+
+    const request = provider.loadVerifiedSnapshot({ identity });
+    await expect(request).rejects.toThrow(
+      "The Runtime Trace endpoint did not verify this Scene (producer-exit): The fast-manim producer exited before returning a usable result.",
+    );
+    await expect(request).rejects.toMatchObject({
+      failureKind: "failed",
+      name: StudioPreviewSnapshotLoadErrorV1.name,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects generic V3 V2 downgrade, substitution, duplicate, lifetime, and digest tampering", async () => {
     const run = await verifiedGenericRuntimeTraceRunV2();
     const [root] = run.roots;
