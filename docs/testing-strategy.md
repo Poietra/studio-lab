@@ -9,8 +9,11 @@ Test count is not a coverage target.
 | --- | --- | --- |
 | Unit | `pnpm test:unit` | Pure state rules, closed schemas, canonicalization, scheduling, and component rendering. |
 | Boundary and integration | `pnpm test:integration` | Source parsing/lowering, HTTP, filesystem/process safety, and the render manager with a fake process adapter. |
-| Browser E2E | `pnpm test:e2e` | Cross-component journeys whose failures depend on React state, pointer events, layout, and the browser. |
-| WebKit minimum smoke | `pnpm test:e2e:webkit-smoke` | Workspace open, object creation, and export in WebKit at the supported 960×640 viewport. |
+| Main browser E2E | `pnpm test:e2e:ci` | Tagged representative journeys whose failures depend on React state, pointer events, layout, WebGPU, or browser compatibility. |
+| Full browser corpus | `pnpm test:e2e` | Manual diagnosis and render-change validation; real-render profiles and performance measurements are excluded. |
+| Account E2E | `pnpm test:e2e:account:ci` | Four production-shaped PostgreSQL/browser journeys selected when account-owned paths change. |
+| WebKit minimum smoke | `pnpm test:e2e:webkit-smoke` | Workspace open and export in WebKit at the supported 960×640 viewport. |
+| Studio gesture benchmark | `pnpm benchmark:studio:gesture` | Explicit browser performance evidence; not a deterministic correctness gate. |
 | Real Manim smoke | Manual, before a render-pipeline release | One Docker-backed preview and discard or commit/undo. This checks the external renderer rather than duplicating deterministic lowering cases. |
 
 ## CI lanes
@@ -22,13 +25,28 @@ run only when their owned paths change. Unit and integration tests both load the
 consume its artifact and then run in parallel. The final `CI gate` reports one
 stable result even when unrelated lanes are intentionally skipped.
 
-Pushes to `main` and manual workflow runs add full validation: native Lavapipe
-reference rendering, the complete Chromium/WebGPU/WebKit browser suite, retained
-WebGPU previews, visual parity, and the selected Electron package. Tauri remains
-source-controlled as an experiment and is checked only when that experiment
-changes; it is not a production gate. Real Manim is manual because it is an
-external integration with a release-specific cost and owner, not a weekly health
-signal.
+Pushes to `main` run a bounded compatibility set: `@ci-smoke` plus `@ci-main`,
+the four retained-preview smoke contracts, and the minimum WebKit journey. These
+expensive jobs wait for style, Engine, unit/integration, and web-build gates and
+stop after the first failure. Production-account tests run only for account-owned
+changes. Native Lavapipe, the full WebGPU corpus, retained-preview corpus, and
+visual parity run only for render-owned changes. A manual workflow dispatch still
+selects every lane. Tauri remains source-controlled as an experiment; it is
+checked for owned pull-request changes and every code push to `main`, but is not
+a production shell gate. Real
+Manim profiles are manual because they are external integrations with a
+release-specific cost and owner, not a weekly health signal.
+
+The generic WebGPU project explicitly ignores every `real-*-preview.webgpu.ts`
+profile. Those files have dedicated real-preview commands and must not be picked
+up accidentally by a broad `*.webgpu.ts` match. Browser performance probes are
+likewise explicit benchmark commands rather than correctness E2E.
+
+The lane selector also checks that every tracked deterministic Vitest file is
+owned by either the unit or integration command. Only the selector's own
+dependency-free tests and the explicitly external real-Manim census tests may
+sit outside those commands. This keeps the path lists auditable instead of
+silently dropping a newly added test file.
 
 ## Large binary fixture assertions
 
@@ -43,16 +61,19 @@ likewise reuse one fully validated read of a reference set instead of decoding t
 same set once per corpus entry. The native WebGPU/Cairo lane remains responsible
 for pixel metrics and diagnostic diffs.
 
-The browser suite stays deliberately small. It covers the original journey where
-moving two different objects must retain both positions through Apply, plus the
-cross-owner editor foundations: manual geometry creation and export, live Bézier
-path editing and export, registered-project switching, and Scene-duration extension
-through an exported wait.
-These regressions cannot be detected by evaluating already-constructed Programs in
-a unit test because the defects sit in React orchestration, pointer geometry, or
-the browser download boundary.
-The WebKit journey lives in its own `*.smoke.ts` project so browser-specific
-coverage stays one test instead of multiplying the full Chromium suite.
+The tagged main browser set samples each real browser boundary without replaying
+every domain-rule branch already covered by unit tests. It covers workspace
+launch/import/export/CRUD, timeline scrubbing, encoder negotiation, WebGPU
+worker/readback/device recovery, PNG transfer, MP4 preview, and one
+minimum-viewport WebKit download journey. Domain variants stay at the unit or
+integration layer; the broader Playwright corpus is retained for focused
+diagnosis and render-owned changes.
+
+The group-visibility and Magic Edit imported-Scene journeys still rely on the
+selection-only V2 fake snapshot and carry `@manual-authority`. Automated render
+parity excludes them until they have endpoint-capable Runtime Trace V3 evidence;
+running them as ordinary CI would only spend 30-second timeouts proving that the
+current authority model correctly disabled editing.
 
 ## Placement rule
 

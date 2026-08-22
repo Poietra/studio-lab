@@ -336,7 +336,9 @@ async function renderPreviewAndDecodedMp4Pixels(
   }, input);
 }
 
-test("proves the async offscreen export readback sequence in the browser WebGPU runtime", async ({ page }) => {
+test("proves the async offscreen export readback sequence in the browser WebGPU runtime", { tag: "@ci-main" }, async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Pick<
     SceneIrBundleV1,

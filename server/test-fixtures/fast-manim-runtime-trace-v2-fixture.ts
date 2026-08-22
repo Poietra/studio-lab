@@ -298,8 +298,16 @@ function buildFastManimRuntimeTraceV2Fixture() {
 
 export type FastManimRuntimeTraceV2Fixture = ReturnType<typeof buildFastManimRuntimeTraceV2Fixture>;
 
+// Building this 900-frame fixture also seals its complete visual semantics.
+// Lazily keep one immutable-by-convention template per Vitest worker and clone
+// it for each test so mutation-focused contract cases do not repeatedly
+// regenerate and hash the same 87,300 draws. Laziness matters because smaller
+// request-contract tests import this module without using the result fixture.
+let fastManimRuntimeTraceV2FixtureTemplate: FastManimRuntimeTraceV2Fixture | undefined;
+
 export function fastManimRuntimeTraceV2Fixture() {
-  return buildFastManimRuntimeTraceV2Fixture();
+  fastManimRuntimeTraceV2FixtureTemplate ??= buildFastManimRuntimeTraceV2Fixture();
+  return structuredClone(fastManimRuntimeTraceV2FixtureTemplate);
 }
 
 export function sealFastManimRuntimeTraceV2Fixture(trace: FastManimRuntimeTraceV2Fixture) {

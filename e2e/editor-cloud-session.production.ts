@@ -278,10 +278,9 @@ async function createCircleDraft(page: Page, position: Readonly<{ x: number; y: 
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
 }
 
-test("restores a private editor session after reload and in a fresh context for the same account", async ({
-  browser,
-  page,
-}) => {
+test("restores a private editor session after reload and in a fresh context for the same account", {
+  tag: "@ci-account",
+}, async ({ browser, page }) => {
   await signInAndOpenStudio(page);
   await setPlayheadAndAwaitCloudSave(page, 3.25);
 

@@ -1,7 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 import { Pool } from "pg";
 
-import { ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1, ACCOUNT_E2E_STUDIO_ORGANIZATION_ID } from "./account-production-fixture";
+import { ACCOUNT_E2E_STUDIO_ORGANIZATION_ID, ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1 } from "./account-production-fixture";
 import {
   cleanupAccountEditorDocumentFixtureV1,
   prepareAccountEditorDocumentFixtureV1,
@@ -64,7 +64,7 @@ async function signInOwner(page: Page) {
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
 }
 
-test("creates an organization and manages member roles from the browser", async ({ page }) => {
+test("creates an organization and manages member roles from the browser", { tag: "@ci-account" }, async ({ page }) => {
   await signInOwner(page);
 
   await page.getByRole("button", { name: "New organization" }).click();

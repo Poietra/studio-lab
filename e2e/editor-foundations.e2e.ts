@@ -151,7 +151,7 @@ test("retains editor sessions while leaving and reopening workspaces", async ({ 
   await expect(page.getByRole("checkbox", { name: "Select Circle" })).toHaveCount(1);
 });
 
-test("waits at the launcher and only imports explicitly selected workspaces", async ({ page }) => {
+test("waits at the launcher and only imports explicitly selected workspaces", { tag: "@ci-main" }, async ({ page }) => {
   let projectCatalogRequests = 0;
   let thumbnailGenerationRequests = 0;
   let thumbnailRequests = 0;

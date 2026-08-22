@@ -205,6 +205,7 @@ function runtimeApi(): ManimApi {
             scenes: [
               {
                 anchors: IMPORTED_SCENE.anchors,
+                importOutcomes: IMPORTED_SCENE.importOutcomes,
                 name: IMPORTED_SCENE.name,
                 nextSceneId: null,
                 runtimeSceneState: IMPORTED_SCENE.runtimeSceneState,

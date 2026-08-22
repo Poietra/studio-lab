@@ -63,10 +63,9 @@ async function signedOutPage(browser: Browser) {
   return { context, page } as const;
 }
 
-test("owner issues once and a separate verified identity joins through native POST and real PostgreSQL", async ({
-  browser,
-  page,
-}) => {
+test("owner issues once and a separate verified identity joins through native POST and real PostgreSQL", {
+  tag: "@ci-account",
+}, async ({ browser, page }) => {
   const observedUrls: string[] = [];
   const consoleMessages: string[] = [];
   page.on("request", (request) => observedUrls.push(request.url()));
