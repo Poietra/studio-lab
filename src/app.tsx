@@ -2443,11 +2443,6 @@ export function App({
           ? [entry.mutation.value.program]
           : [entry.mutation.previous.program, entry.mutation.value.program];
     if (lockedRedoPrograms.some(rejectLockedProgramMutation)) return false;
-    if (!previewPaintAvailable) {
-      setDraftError("Wait for the canonical WebGPU preview before editing the Scene.");
-      return false;
-    }
-    if (rejectSelectionOnlyPreviewMutation()) return false;
     const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker) return redoEditorProgram(lifecycleBlocker);
     const planned = redoEditorProgramTransition(editorState);
@@ -7783,6 +7778,7 @@ export function App({
     if (command === "undo") {
       return undoProgramCommitFirst();
     }
+    if (command === "redo") return redoProgram();
     if (command === "escape") {
       cubicBezierAuthoringGeneration.current += 1;
       if (cubicBezierPenPoints.length > 0) {
@@ -7838,7 +7834,6 @@ export function App({
       activateStudioTool(tool);
       return true;
     }
-    if (command === "redo") return redoProgram();
     if (command === "group") return groupLayerSelection();
     if (command === "ungroup") {
       return selectedLayerGroup?.groupId ? ungroupLayer(selectedLayerGroup.groupId) : false;
