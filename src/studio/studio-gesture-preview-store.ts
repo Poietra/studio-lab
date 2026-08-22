@@ -30,6 +30,11 @@ export type StudioGesturePreviewStore = Readonly<{
   subscribe: (listener: () => void) => () => void;
 }>;
 
+type StudioGesturePreviewStoreOptions = Readonly<{
+  cancelFrame?: (handle: number) => void;
+  requestFrame?: (callback: FrameRequestCallback) => number;
+}>;
+
 const IDLE_SNAPSHOT: StudioGesturePreviewSnapshot = {
   dragPreview: null,
   geometryPreview: null,
@@ -134,13 +139,29 @@ function sameGroupRotationPreview(left: EntityGroupRotationPreview | null, right
   );
 }
 
-export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
+export function createStudioGesturePreviewStore({
+  cancelFrame = (handle) => globalThis.cancelAnimationFrame(handle),
+  requestFrame = (callback) => globalThis.requestAnimationFrame(callback),
+}: StudioGesturePreviewStoreOptions = {}): StudioGesturePreviewStore {
   let snapshot = IDLE_SNAPSHOT;
   const listeners = new Set<() => void>();
+  let notificationFrame: number | null = null;
+  let notificationPending = false;
+
+  function notifyOnNextFrame() {
+    if (notificationPending || listeners.size === 0) return;
+    notificationPending = true;
+    const frame = requestFrame(() => {
+      notificationPending = false;
+      notificationFrame = null;
+      for (const listener of listeners) listener();
+    });
+    if (notificationPending) notificationFrame = frame;
+  }
 
   function install(next: StudioGesturePreviewSnapshot) {
     snapshot = next;
-    for (const listener of listeners) listener();
+    notifyOnNextFrame();
   }
 
   return {
@@ -226,7 +247,13 @@ export function createStudioGesturePreviewStore(): StudioGesturePreviewStore {
     },
     subscribe(listener) {
       listeners.add(listener);
-      return () => listeners.delete(listener);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size > 0 || !notificationPending) return;
+        if (notificationFrame !== null) cancelFrame(notificationFrame);
+        notificationPending = false;
+        notificationFrame = null;
+      };
     },
   };
 }
