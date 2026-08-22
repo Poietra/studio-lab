@@ -12,7 +12,7 @@ Test count is not a coverage target.
 | Main browser E2E | `pnpm test:e2e:ci` | Tagged representative journeys whose failures depend on React state, pointer events, layout, WebGPU, or browser compatibility. |
 | Full browser corpus | `pnpm test:e2e` | Manual diagnosis and render-change validation; real-render profiles and performance measurements are excluded. |
 | Account E2E | `pnpm test:e2e:account:ci` | Four production-shaped PostgreSQL/browser journeys selected when account-owned paths change. |
-| WebKit minimum smoke | `pnpm test:e2e:webkit-smoke` | Workspace open, object creation, and export in WebKit at the supported 960×640 viewport. |
+| WebKit minimum smoke | `pnpm test:e2e:webkit-smoke` | Workspace open and export in WebKit at the supported 960×640 viewport. |
 | Studio gesture benchmark | `pnpm benchmark:studio:gesture` | Explicit browser performance evidence; not a deterministic correctness gate. |
 | Real Manim smoke | Manual, before a render-pipeline release | One Docker-backed preview and discard or commit/undo. This checks the external renderer rather than duplicating deterministic lowering cases. |
 
@@ -31,8 +31,9 @@ expensive jobs wait for style, Engine, unit/integration, and web-build gates and
 stop after the first failure. Production-account tests run only for account-owned
 changes. Native Lavapipe, the full WebGPU corpus, retained-preview corpus, and
 visual parity run only for render-owned changes. A manual workflow dispatch still
-selects every lane. Tauri remains source-controlled as an experiment and is
-checked only when that experiment changes; it is not a production gate. Real
+selects every lane. Tauri remains source-controlled as an experiment; it is
+checked for owned pull-request changes and every code push to `main`, but is not
+a production shell gate. Real
 Manim profiles are manual because they are external integrations with a
 release-specific cost and owner, not a weekly health signal.
 
