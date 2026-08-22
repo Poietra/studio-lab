@@ -79,6 +79,7 @@ import {
 import {
   claimStudioPreviewCanvasV1,
   compileStudioPreviewSceneV1,
+  connectStudioPreviewPlaybackClock,
   correlateStudioPreviewFragmentMaterialInputV1,
   digestStudioPreviewSceneRevisionV1,
   projectStudioPreviewRuntimeTraceOpaqueSelectionEntities,
@@ -87,6 +88,7 @@ import {
   studioPreviewInteractionAuthority,
   studioPreviewInteractionEntityIdsV1,
   studioPreviewSnapshotMetadataForWorkspaceV1,
+  suppressStudioPreviewHostStateDuringPlayback,
 } from "./use-preview-renderer";
 
 const HASH_A = "a".repeat(64);
@@ -4013,6 +4015,98 @@ describe("compileStudioPreviewSceneV1", () => {
       workspaceKey: "project-a/scene.py/CircleScene",
     });
     expect(result).toMatchObject({ kind: "unsupported" });
+  });
+});
+
+describe("preview playback clock bridge", () => {
+  const viewport = { heightPx: 360, widthPx: 640 } as const;
+
+  it("requests live clock samples without subscribing React to playback ticks", () => {
+    let snapshot = { currentTime: 1, duration: 5, playing: false, sceneKey: "scene-a" };
+    const listeners = new Set<() => void>();
+    const requests: Array<
+      Readonly<{ sampleTime: number; viewport: Readonly<{ heightPx: number; widthPx: number }> | null }>
+    > = [];
+    const disconnect = connectStudioPreviewPlaybackClock(
+      {
+        getSnapshot: () => snapshot,
+        subscribe: (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      },
+      { requestFrame: (request) => requests.push(request) },
+      0.75,
+      viewport,
+    );
+
+    expect(requests).toEqual([{ sampleTime: 0.75, viewport }]);
+    snapshot = { ...snapshot, currentTime: 1.5, playing: true };
+    for (const listener of listeners) listener();
+    snapshot = { ...snapshot, currentTime: 2, playing: false };
+    for (const listener of listeners) listener();
+    expect(requests).toEqual([
+      { sampleTime: 0.75, viewport },
+      { sampleTime: 1.5, viewport },
+      { sampleTime: 2, viewport },
+    ]);
+
+    disconnect();
+    snapshot = { ...snapshot, currentTime: 2.5 };
+    for (const listener of listeners) listener();
+    expect(requests).toHaveLength(3);
+  });
+
+  it.each([
+    { frame: { packetId: "frame", revision: HASH_A, sampleTime: 1, viewport }, phase: "presented" } as const,
+    { detail: null, phase: "fallback", reason: "frame-pending" } as const,
+    { detail: null, phase: "fallback", reason: "frame-stale" } as const,
+  ])("suppresses only an initialized host's routine playback state $phase", (state) => {
+    expect(
+      suppressStudioPreviewHostStateDuringPlayback(state, {
+        hostPresentedOnce: true,
+        playing: true,
+        sceneUpdateInFlight: false,
+      }),
+    ).toBe(true);
+    expect(
+      suppressStudioPreviewHostStateDuringPlayback(state, {
+        hostPresentedOnce: false,
+        playing: true,
+        sceneUpdateInFlight: false,
+      }),
+    ).toBe(false);
+    expect(
+      suppressStudioPreviewHostStateDuringPlayback(state, {
+        hostPresentedOnce: true,
+        playing: false,
+        sceneUpdateInFlight: false,
+      }),
+    ).toBe(false);
+    expect(
+      suppressStudioPreviewHostStateDuringPlayback(state, {
+        hostPresentedOnce: true,
+        playing: true,
+        sceneUpdateInFlight: true,
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    "capability-unsupported",
+    "install-failed",
+    "installing",
+    "render-error",
+    "renderer-failed",
+    "sample-out-of-range",
+    "viewport-unavailable",
+  ] as const)("always publishes %s while playback is active", (reason) => {
+    expect(
+      suppressStudioPreviewHostStateDuringPlayback(
+        { detail: "diagnostic", phase: "fallback", reason },
+        { hostPresentedOnce: true, playing: true, sceneUpdateInFlight: false },
+      ),
+    ).toBe(false);
   });
 });
 

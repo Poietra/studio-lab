@@ -125,6 +125,7 @@ import {
   studioMotionProjectionBatchKind,
   studioMotionStudioEntities,
 } from "./scene-authoring-wire";
+import type { StudioPlaybackClock } from "./studio-playback-clock";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import { normalizeTimelineProjectionCommand } from "./timeline-projection";
 import {
@@ -234,6 +235,7 @@ export type StudioPreviewInteractionAuthority =
 export type UseStudioPreviewRendererInput = Readonly<{
   context: StudioPreviewEditingContextV1 | null;
   frame: Readonly<{ height: number; width: number }>;
+  playbackClock?: StudioPlaybackClock | null;
   provider: StudioPreviewSnapshotProviderV1 | null;
   sceneFragmentMaterials?: SceneFragmentMaterialStateV1;
   retainedSourceDuration: number | null;
@@ -1798,10 +1800,35 @@ export function studioPreviewSnapshotMetadataForWorkspaceV1(
 
 const INSTALLING_STATE: PreviewRendererHostStateV1 = { detail: null, phase: "fallback", reason: "installing" };
 
+export function suppressStudioPreviewHostStateDuringPlayback(
+  state: PreviewRendererHostStateV1,
+  input: Readonly<{ hostPresentedOnce: boolean; playing: boolean; sceneUpdateInFlight: boolean }>,
+) {
+  if (!input.playing || !input.hostPresentedOnce || input.sceneUpdateInFlight) return false;
+  return (
+    state.phase === "presented" ||
+    (state.phase === "fallback" && (state.reason === "frame-pending" || state.reason === "frame-stale"))
+  );
+}
+
+export function connectStudioPreviewPlaybackClock(
+  clock: Pick<StudioPlaybackClock, "getSnapshot" | "subscribe">,
+  host: Pick<StudioPreviewRendererHost, "requestFrame">,
+  committedSampleTime: number,
+  viewport: PreviewViewportV1 | null,
+) {
+  const initial = clock.getSnapshot();
+  host.requestFrame({ sampleTime: initial.playing ? initial.currentTime : committedSampleTime, viewport });
+  return clock.subscribe(() => {
+    host.requestFrame({ sampleTime: clock.getSnapshot().currentTime, viewport });
+  });
+}
+
 export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): StudioPreviewRendererView | null {
   const {
     context,
     frame,
+    playbackClock = null,
     provider,
     sceneFragmentMaterials = EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
     retainedSourceDuration,
@@ -1817,6 +1844,11 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const [compilation, setCompilation] = useState<StudioPreviewCompilationStateV1>(INACTIVE_COMPILATION);
   const [installation, setInstallation] = useState<StudioPreviewHostInstallationV1 | null>(null);
   const [viewport, setViewport] = useState<PreviewViewportV1 | null>(null);
+  const playbackClockRef = useRef(playbackClock);
+  playbackClockRef.current = playbackClock;
+  const playbackPresentedHosts = useRef(new WeakSet<StudioPreviewRendererHost>());
+  const sceneUpdateGeneration = useRef(0);
+  const sceneUpdateHost = useRef<StudioPreviewRendererHost | null>(null);
   const latestWorkingState = useRef(workingState);
   latestWorkingState.current = workingState;
   const queuedScene = useRef<Readonly<{
@@ -2006,6 +2038,18 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     const nextHost = new StudioPreviewRendererHost({
       createRenderer: () => createCanvasPreviewRendererV1(evidenceAdapter ? { evidence: evidenceAdapter } : {}),
       onStateChange: (state) => {
+        const hostPresentedOnce = playbackPresentedHosts.current.has(nextHost);
+        const playing = playbackClockRef.current?.getSnapshot().playing === true;
+        if (
+          suppressStudioPreviewHostStateDuringPlayback(state, {
+            hostPresentedOnce,
+            playing,
+            sceneUpdateInFlight: sceneUpdateHost.current === nextHost,
+          })
+        ) {
+          return;
+        }
+        if (state.phase === "presented") playbackPresentedHosts.current.add(nextHost);
         setBound((current) => (current?.binding === binding ? { binding, host: nextHost, state } : current));
       },
     });
@@ -2042,6 +2086,10 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     )
       return;
     queuedScene.current = { binding: updateBinding, scene: currentCompiledScene };
+    const generation = sceneUpdateGeneration.current + 1;
+    sceneUpdateGeneration.current = generation;
+    sceneUpdateHost.current = updateHost;
+    playbackPresentedHosts.current.delete(updateHost);
     void updateHost
       .update({
         assetPayloads: currentCompiledScene.snapshot.assetPayloads,
@@ -2050,13 +2098,21 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
         revision: currentCompiledScene.engineRevisionHash,
         snapshot: currentCompiledScene.bundle,
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (sceneUpdateGeneration.current === generation) sceneUpdateHost.current = null;
+      });
   }, [currentCompiledScene, hostReadyForSceneUpdate, updateBinding, updateHost]);
 
   const host = bound?.host ?? null;
   useEffect(() => {
-    host?.requestFrame({ sampleTime, viewport });
-  }, [host, sampleTime, viewport]);
+    if (!host) return;
+    if (!playbackClock) {
+      host.requestFrame({ sampleTime, viewport });
+      return;
+    }
+    return connectStudioPreviewPlaybackClock(playbackClock, host, sampleTime, viewport);
+  }, [host, playbackClock, sampleTime, viewport]);
 
   // Dev/test-only: expose the host-bound frame evidence channel so E2E can
   // prove the retained worker's own pixels. Requires the provider capability;
@@ -2167,6 +2223,11 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   return {
     attachCanvas,
     generateThumbnail: (signal) => {
+      if (playbackClockRef.current?.getSnapshot().playing) {
+        return Promise.reject(
+          new CanvasWorkerClientError("invalid-state", "Pause playback before generating a thumbnail."),
+        );
+      }
       if (!host || !presentedCompiledScene) {
         return Promise.reject(
           new CanvasWorkerClientError("invalid-state", "No current Scene can produce a thumbnail."),
