@@ -4213,10 +4213,16 @@ fn plan_studio_creation_edits(
                     let animated =
                         operation.interval.end > operation.interval.start + TIMELINE_ANCHOR_EPSILON;
                     let interval = if animated {
-                        IntervalV1 {
+                        let mut interval = IntervalV1 {
                             end: operation.interval.end + timeline.offsets[program_index],
                             start: operation.interval.start + timeline.offsets[program_index],
+                        };
+                        for (rank, insertion) in &timeline.ranked_insertions {
+                            if *rank > timeline.ranks[program_index] {
+                                shift_interval_for_insertion(&mut interval, insertion);
+                            }
                         }
+                        interval
                     } else {
                         if !studio_timeline_semantic_values_match(
                             operation.interval.end,
@@ -13000,6 +13006,63 @@ mod tests {
             dimensions(None, Some(4.0), Some(3.0)),
             (2.0, 3.0),
         );
+    }
+
+    #[test]
+    fn animated_shape_resize_spans_a_later_timeline_insertion() {
+        let bundle = static_imported_bundle();
+        let dimensions = StudioAuthoringDimensions {
+            radius: Some(1.0),
+            ..StudioAuthoringDimensions::default()
+        };
+        let mut command = animated_shape_resize_command(
+            &bundle,
+            StudioAuthoringEntityKind::Circle,
+            dimensions,
+            StudioAuthoringDimensions {
+                radius: Some(2.0),
+                ..StudioAuthoringDimensions::default()
+            },
+        );
+        command.programs.push(studio_camera_program(
+            "camera-after-resize",
+            "camera-after-resize",
+            0.75,
+            1.0,
+            bundle.scene.camera.view.clone(),
+            camera_view(4.0, 8.0),
+        ));
+
+        let projection =
+            project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+        let resize = projection
+            .mutations
+            .iter()
+            .find(|mutation| mutation.operation_id == "resize")
+            .unwrap();
+        assert!((resize.interval.start - 0.4).abs() < 1e-12);
+        assert!((resize.interval.end - 2.15).abs() < 1e-12);
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let scene = session
+            .apply_studio_creation_edit(command)
+            .unwrap()
+            .bundle
+            .scene;
+        let keyframes = scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::AffineTransform {
+                    entity_id,
+                    keyframes,
+                    ..
+                } if entity_id == "tx:create/entity:circle" => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        assert!((keyframes[0].at - 0.4).abs() < 1e-12);
+        assert!((keyframes[1].at - 2.15).abs() < 1e-12);
     }
 
     #[test]
