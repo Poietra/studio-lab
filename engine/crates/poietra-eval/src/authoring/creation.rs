@@ -12842,6 +12842,68 @@ mod tests {
         assert_eq!(session.scene(), &result.scene);
     }
 
+    fn animated_shape_resize_command(
+        bundle: &SceneIrBundleV1,
+        shape: StudioAuthoringEntityKind,
+        from_dimensions: StudioAuthoringDimensions,
+        to_dimensions: StudioAuthoringDimensions,
+    ) -> ApplyStudioCreationEditCommand {
+        let mut command = studio_creation_command(bundle);
+        let create = &mut command.programs[0];
+        create.anchor_captured_playhead = 0.0;
+        create.anchor_resolved_seconds = 0.0;
+        create.anchor_source = SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(0.0),
+        };
+        for operation in &mut create.operations {
+            operation.interval = match operation.kind {
+                StudioCreationOperationKind::FadeIn { .. } => IntervalV1 {
+                    end: 0.4,
+                    start: 0.0,
+                },
+                _ => IntervalV1 {
+                    end: 0.0,
+                    start: 0.0,
+                },
+            };
+        }
+        let StudioCreationOperationKind::Create { entity } = &mut create.operations[0].kind else {
+            unreachable!();
+        };
+        entity.kind = shape;
+        entity.dimensions = from_dimensions;
+        entity.lifetime_start = 0.0;
+
+        let resize_program = &mut command.programs[1];
+        resize_program.anchor_captured_playhead = 0.0;
+        resize_program.anchor_resolved_seconds = 0.0;
+        resize_program.anchor_source = SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(0.0),
+        };
+        let resize_operation = &mut resize_program.operations[0];
+        resize_operation.interval = IntervalV1 {
+            end: 1.5,
+            start: 0.0,
+        };
+        let StudioCreationOperationKind::Resize {
+            from_dimensions: operation_from,
+            from_position,
+            shape: operation_shape,
+            to_dimensions: operation_to,
+            to_position,
+            ..
+        } = &mut resize_operation.kind
+        else {
+            unreachable!();
+        };
+        *operation_shape = shape;
+        *operation_from = from_dimensions;
+        *operation_to = to_dimensions;
+        *from_position = PointV1 { x: 320.0, y: 180.0 };
+        *to_position = PointV1 { x: 360.0, y: 160.0 };
+        command
+    }
+
     fn assert_normalized_shape_resize(
         shape: StudioAuthoringEntityKind,
         from_dimensions: StudioAuthoringDimensions,
@@ -12850,63 +12912,7 @@ mod tests {
     ) {
         let bundle = static_imported_bundle();
         let entity_id = "tx:create/entity:circle";
-        let mut command = studio_creation_command(&bundle);
-        {
-            let create = &mut command.programs[0];
-            create.anchor_captured_playhead = 0.0;
-            create.anchor_resolved_seconds = 0.0;
-            create.anchor_source = SceneEditAnchorSource::Playhead {
-                reference_seconds: Some(0.0),
-            };
-            for operation in &mut create.operations {
-                operation.interval = match operation.kind {
-                    StudioCreationOperationKind::FadeIn { .. } => IntervalV1 {
-                        end: 0.4,
-                        start: 0.0,
-                    },
-                    _ => IntervalV1 {
-                        end: 0.0,
-                        start: 0.0,
-                    },
-                };
-            }
-            let StudioCreationOperationKind::Create { entity } = &mut create.operations[0].kind
-            else {
-                unreachable!();
-            };
-            entity.kind = shape;
-            entity.dimensions = from_dimensions;
-            entity.lifetime_start = 0.0;
-        }
-        {
-            let resize_program = &mut command.programs[1];
-            resize_program.anchor_captured_playhead = 0.0;
-            resize_program.anchor_resolved_seconds = 0.0;
-            resize_program.anchor_source = SceneEditAnchorSource::Playhead {
-                reference_seconds: Some(0.0),
-            };
-            let resize_operation = &mut resize_program.operations[0];
-            resize_operation.interval = IntervalV1 {
-                end: 1.5,
-                start: 0.0,
-            };
-            let StudioCreationOperationKind::Resize {
-                from_dimensions: operation_from,
-                from_position,
-                shape: operation_shape,
-                to_dimensions: operation_to,
-                to_position,
-                ..
-            } = &mut resize_operation.kind
-            else {
-                unreachable!();
-            };
-            *operation_shape = shape;
-            *operation_from = from_dimensions;
-            *operation_to = to_dimensions;
-            *from_position = PointV1 { x: 320.0, y: 180.0 };
-            *to_position = PointV1 { x: 360.0, y: 160.0 };
-        }
+        let command = animated_shape_resize_command(&bundle, shape, from_dimensions, to_dimensions);
 
         let projection =
             project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
