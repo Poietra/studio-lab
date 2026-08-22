@@ -53,6 +53,7 @@ function isGlobalConfiguration(path) {
 
 function isAccountBrowserPath(path) {
   return (
+    path === "src/app.tsx" ||
     path.startsWith("src/accounts/") ||
     path.startsWith("src/billing/") ||
     path.startsWith("src/collaboration/") ||
@@ -62,10 +63,14 @@ function isAccountBrowserPath(path) {
     path.startsWith("server/accounts/") ||
     path.startsWith("server/billing/") ||
     path.startsWith("server/collaboration/") ||
+    path.startsWith("server/storage/postgres/") ||
+    path === "server/manim-api.ts" ||
+    path === "server/manim-production-server.ts" ||
+    path === "server/manim-render-http.ts" ||
     /^server\/(?:account-|billing-|cloudflare-account-|cloudflare-billing-|cloudflare-editor-collaboration-|editor-collaboration-|editor-document-|editor-project-room-)/u.test(
       path,
     ) ||
-    /^e2e\/(?:account-|editor-cloud-session)/u.test(path)
+    /^e2e\/(?:account-|editor-cloud-session|editor-document-postgres-fixture)/u.test(path)
   );
 }
 
@@ -73,11 +78,10 @@ function isRenderParityPath(path) {
   return (
     path.startsWith("engine/") ||
     path.startsWith("fixtures/engine-v1/") ||
+    path === "src/app.tsx" ||
     path.startsWith("src/engine/") ||
     path.startsWith("src/render-pipeline/") ||
-    /^src\/studio\/(?:preview-|prototype-rendering|studio-canvas|studio-gesture-preview|studio-preview|studio-render-profiler|use-preview-)/u.test(
-      path,
-    ) ||
+    path.startsWith("src/studio/") ||
     /^server\/(?:durable-fast-manim-|durable-manim-render-|fast-manim-|manim-render-|production-durable-manim-)/u.test(
       path,
     ) ||
@@ -115,7 +119,7 @@ export function classifyChangedPaths(paths) {
       path.startsWith("scripts/electron-") ||
       path === "scripts/package-electron.mjs"
     ) {
-      enable(scopes, "engine_wasm", "web", "browser", "electron");
+      enable(scopes, "engine_wasm", "web", "tests", "browser", "electron");
       continue;
     }
 
@@ -172,11 +176,9 @@ export function selectScopes(paths, { forceAll = false, fullForCode = false } = 
   return classifyChangedPaths(paths);
 }
 
-function changedPaths(baseSha, headSha) {
+export function changedPaths(baseSha, headSha, cwd) {
   if (!baseSha || !headSha || /^0+$/.test(baseSha)) return null;
-  const result = spawnSync("git", ["diff", "--name-only", "--diff-filter=ACMRTUXB", "-z", baseSha, headSha], {
-    encoding: "utf8",
-  });
+  const result = spawnSync("git", ["diff", "--name-only", "-z", baseSha, headSha], { cwd, encoding: "utf8" });
   if (result.status !== 0) throw new Error(result.stderr.trim() || "git diff failed");
   return result.stdout.split("\0").filter(Boolean);
 }

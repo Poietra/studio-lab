@@ -35,7 +35,13 @@ export default defineConfig({
     },
     {
       name: "chromium-webgpu",
-      testIgnore: ["**/preview-renderer.webgpu.ts", "**/real-*-preview.webgpu.ts", "**/visual-parity.webgpu.ts"],
+      testIgnore: [
+        "**/engine-stage-telemetry.webgpu.ts",
+        "**/engine-stress.webgpu.ts",
+        "**/preview-renderer.webgpu.ts",
+        "**/real-*-preview.webgpu.ts",
+        "**/visual-parity.webgpu.ts",
+      ],
       testMatch: ["**/*.webgpu.ts", "**/magic-edit.e2e.ts"],
       use: {
         browserName: "chromium",

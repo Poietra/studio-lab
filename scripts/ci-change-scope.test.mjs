@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
-import { classifyChangedPaths, selectScopes } from "./ci-change-scope.mjs";
+import { changedPaths, classifyChangedPaths, selectScopes } from "./ci-change-scope.mjs";
 
 const none = {
   account_browser: false,
@@ -60,6 +64,17 @@ test("account changes select the production-account browser lane", () => {
     web: true,
   });
   assert.equal(classifyChangedPaths(["server/account-control-plane.ts"]).account_browser, true);
+  assert.equal(
+    classifyChangedPaths(["server/storage/postgres/postgres-account-session-repository.ts"]).account_browser,
+    true,
+  );
+  assert.equal(
+    classifyChangedPaths(["server/storage/postgres/migrations/0034_account_organization_lifecycle.sql"])
+      .account_browser,
+    true,
+  );
+  assert.equal(classifyChangedPaths(["server/manim-production-server.ts"]).account_browser, true);
+  assert.equal(classifyChangedPaths(["e2e/editor-document-postgres-fixture.ts"]).account_browser, true);
   assert.equal(classifyChangedPaths(["src/studio/editor-session-store.ts"]).account_browser, true);
 });
 
@@ -74,6 +89,9 @@ test("render-pipeline changes select native and browser parity", () => {
     web: true,
   });
   assert.equal(classifyChangedPaths(["server/fast-manim-snapshot-runner.ts"]).render_parity, true);
+  assert.equal(classifyChangedPaths(["src/app.tsx"]).render_parity, true);
+  assert.equal(classifyChangedPaths(["src/studio/operation-registry.ts"]).render_parity, true);
+  assert.equal(classifyChangedPaths(["src/studio/workspace-projection.ts"]).render_parity, true);
   assert.equal(classifyChangedPaths(["src/studio/use-preview-renderer.ts"]).render_parity, true);
 });
 
@@ -84,8 +102,39 @@ test("Electron adapter changes validate the selected desktop shell", () => {
     code: true,
     electron: true,
     engine_wasm: true,
+    tests: true,
     web: true,
   });
+});
+
+test("deleted code remains visible to the lane selector", () => {
+  const repository = mkdtempSync(join(tmpdir(), "poietra-ci-scope-"));
+  try {
+    execFileSync("git", ["init", "--quiet"], { cwd: repository });
+    mkdirSync(join(repository, "src"));
+    writeFileSync(join(repository, "src", "deleted.ts"), "export const deleted = true;\n");
+    execFileSync("git", ["add", "--all"], { cwd: repository });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Poietra CI", "-c", "user.email=ci@poietra.local", "commit", "--quiet", "-m", "base"],
+      { cwd: repository },
+    );
+    const baseSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
+    rmSync(join(repository, "src", "deleted.ts"));
+    execFileSync("git", ["add", "--all"], { cwd: repository });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Poietra CI", "-c", "user.email=ci@poietra.local", "commit", "--quiet", "-m", "delete"],
+      { cwd: repository },
+    );
+    const headSha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repository, encoding: "utf8" }).trim();
+
+    const paths = changedPaths(baseSha, headSha, repository);
+    assert.deepEqual(paths, ["src/deleted.ts"]);
+    assert.equal(classifyChangedPaths(paths).tests, true);
+  } finally {
+    rmSync(repository, { force: true, recursive: true });
+  }
 });
 
 test("the retained Tauri experiment is checked only when it changes", () => {
@@ -106,7 +155,7 @@ test("main pushes retain regular lanes but keep expensive specialized suites cha
   const expected = Object.fromEntries(Object.keys(none).map((name) => [name, true]));
   expected.account_browser = false;
   expected.render_parity = false;
-  assert.deepEqual(selectScopes(["README.md", "src/app.tsx"], { fullForCode: true }), expected);
+  assert.deepEqual(selectScopes(["README.md", "src/shell/desktop-bridge.ts"], { fullForCode: true }), expected);
 });
 
 test("manual dispatch selects every lane", () => {
