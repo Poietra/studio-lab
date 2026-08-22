@@ -64,6 +64,11 @@ test("hides and restores a logical group from before its authoring playhead", { 
   await expect(page.getByRole("button", { name: "Show group of 2 objects" })).toBeEnabled();
 
   await page.keyboard.press("Control+z");
+  await page.keyboard.press("Control+Shift+z");
+  await expect(page.getByRole("alert").filter({ hasText: "Wait for the canonical WebGPU preview" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Move Circle", exact: true })).toHaveCount(0);
+
+  await page.keyboard.press("Control+z");
   await expect(page.getByRole("button", { name: "Move Circle", exact: true })).toHaveCount(2);
   await page.keyboard.press("Control+Shift+z");
   await expect(page.getByRole("button", { name: "Move Circle", exact: true })).toHaveCount(0);

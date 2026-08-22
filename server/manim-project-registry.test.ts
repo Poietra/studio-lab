@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { manimWorkspaceViewSchema } from "../src/render-pipeline/contracts";
+import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { ManimProjectRegistry } from "./manim-project-registry";
@@ -191,6 +192,53 @@ describe("Manim project registry", () => {
     await expect(readFile(join(dataRoot!, ".trash", trashedRoot, ".poietra-native-document"), "utf8")).resolves.toBe(
       `${documentKey}\n`,
     );
+  });
+
+  it("keeps a committed native workspace deletion successful when runtime cleanup rejects", async () => {
+    const dataRoot = await mkdtemp(join(tmpdir(), "poietra-native-delete-cleanup-"));
+    temporaryRoots.push(dataRoot);
+    const records: StructuredLogRecord[] = [];
+    const catalog = new PersistentManimProjectCatalog({ dataRoot, seedProjects: [] });
+    const registry = new ManimProjectRegistry({
+      catalog,
+      catalogStorageRoot: dataRoot,
+      command: ["poietra-command-that-does-not-exist"],
+      frame: { height: 8, width: 14.222 },
+      logger: createStructuredLogger({ sinks: [{ write: (record) => records.push(record) }] }),
+      projects: [],
+      snapshotSandboxBackendFactory: () => ({
+        async close() {
+          throw new Error("backend cleanup failed");
+        },
+        start() {
+          throw new Error("not used");
+        },
+        async status() {
+          return {};
+        },
+      }),
+      tenantId: "test-tenant",
+    });
+    try {
+      const projectId = registry.createNativeStudioProject("Cleanup failure").project?.id;
+      if (!projectId) throw new Error("The Studio-native project ID is missing.");
+
+      await expect(registry.unregisterProject(projectId)).resolves.toEqual({
+        catalog: { defaultProjectId: null, projects: [] },
+        project: null,
+      });
+      expect(catalog.projects()).toEqual([]);
+      expect((await readdir(join(dataRoot, ".trash"))).some((entry) => entry.startsWith(`${projectId}-`))).toBe(true);
+      expect(records).toContainEqual(
+        expect.objectContaining({
+          data: { cleanupFailures: 1, projectId },
+          event: "project.unregister_cleanup_failed",
+          level: "error",
+        }),
+      );
+    } finally {
+      await registry.close();
+    }
   });
 
   it("quarantines invalid local native markers instead of reopening them as imported workspaces", async () => {
