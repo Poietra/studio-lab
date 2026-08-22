@@ -283,8 +283,24 @@ export class ManimProjectRegistry {
     for (const [sessionId, sessionProjectId] of this.sessionProjects) {
       if (sessionProjectId === projectId) this.sessionProjects.delete(sessionId);
     }
-    await manager.close();
-    await manager.removeThumbnailCache();
+    let cleanupFailures = 0;
+    try {
+      await manager.close();
+    } catch {
+      cleanupFailures += 1;
+    }
+    try {
+      await manager.removeThumbnailCache();
+    } catch {
+      cleanupFailures += 1;
+    }
+    if (cleanupFailures > 0) {
+      // Catalog removal is the local adapter's commit point: the managed
+      // workspace is already retained in Studio Trash and can no longer be
+      // addressed through this registry. A late runtime/cache cleanup failure
+      // must not turn that committed deletion into a misleading 500 response.
+      this.logger.error("project.unregister_cleanup_failed", { cleanupFailures, projectId });
+    }
     return this.mutationView(null);
   }
 
