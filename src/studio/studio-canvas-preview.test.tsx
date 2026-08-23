@@ -66,6 +66,20 @@ const CUBIC_BEZIER_ENTITY: ProjectedEntity = {
   type: "CubicBezier",
 };
 
+const LINE_ENTITY: ProjectedEntity = {
+  ...CUBIC_BEZIER_ENTITY,
+  id: "entity:line",
+  transactionId: "create-line",
+  type: "Line",
+};
+
+const ARROW_ENTITY: ProjectedEntity = {
+  ...CUBIC_BEZIER_ENTITY,
+  id: "entity:arrow",
+  transactionId: "create-arrow",
+  type: "Arrow",
+};
+
 function lineJointsTriangle(sourceName: "t1" | "t2" | "t3", x: number): ProjectedEntity {
   const runtimeOwned = (field: string) => ({ kind: "unknown" as const, reason: `VGroup owns runtime ${field}.` });
   return {
@@ -1914,23 +1928,16 @@ describe("StudioCanvas retained preview layer", () => {
     expect(polygon).toContain("6 sides");
   });
 
-  it("exposes stroke but not fill color for a Studio-created cubic Bezier", () => {
-    const markup = renderSelectedInspector(
-      CUBIC_BEZIER_ENTITY,
-      null,
-      null,
-      false,
-      false,
-      null,
-      true,
-      "#123456",
-      "#abcdef",
-    );
-    const stroke = /<input aria-label="Stroke color cubic-bezier"[^>]*>/u;
+  it("exposes stroke but not fill color for Studio-created open paths", () => {
+    for (const entity of [CUBIC_BEZIER_ENTITY, LINE_ENTITY, ARROW_ENTITY]) {
+      const markup = renderSelectedInspector(entity, null, null, false, false, null, true, "#123456", "#abcdef");
+      const name = entity.id.slice("entity:".length);
+      const stroke = new RegExp(`<input aria-label="Stroke color ${name}"[^>]*>`);
 
-    expect(markup).not.toContain('aria-label="Fill color cubic-bezier"');
-    expect(markup.match(stroke)?.[0]).not.toContain('disabled=""');
-    expect(markup.match(stroke)?.[0]).toContain('value="#abcdef"');
+      expect(markup).not.toContain(`aria-label="Fill color ${name}"`);
+      expect(markup.match(stroke)?.[0]).not.toContain('disabled=""');
+      expect(markup.match(stroke)?.[0]).toContain('value="#abcdef"');
+    }
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

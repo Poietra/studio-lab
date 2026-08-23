@@ -757,6 +757,38 @@ describe("Studio draft validation boundary", () => {
         operations: [{ entityId, key: "fillColor", kind: "SetProperty", value: "#12abef" }],
       },
     });
+    for (const type of ["Line", "Arrow"] as const) {
+      const strokeEntityId = `tx:shape/entity:${type.toLowerCase()}`;
+      const strokeScene = {
+        ...scene,
+        objectGraph: {
+          ...scene.objectGraph,
+          entities: {
+            ...scene.objectGraph.entities,
+            [strokeEntityId]: {
+              ...scene.objectGraph.entities[entityId],
+              id: strokeEntityId,
+              type,
+            },
+          },
+        },
+      };
+      expect(
+        createDirectManipulationColorProgram({
+          capturedPlayhead: 0,
+          color: "#12abef",
+          entityId: strokeEntityId,
+          property: "strokeColor",
+          scene: strokeScene,
+          start: 0,
+          transactionId: `stroke-${type.toLowerCase()}`,
+        }),
+      ).toMatchObject({
+        issues: [],
+        kind: "valid",
+        program: { operations: [{ entityId: strokeEntityId, key: "strokeColor", value: "#12abef" }] },
+      });
+    }
     expect(() =>
       createDirectManipulationColorProgram({
         capturedPlayhead: 0,

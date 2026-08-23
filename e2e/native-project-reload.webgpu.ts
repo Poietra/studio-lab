@@ -581,6 +581,42 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     if (!lineId) throw new Error("The Studio Line did not expose its entity id.");
     const lineWrapper = page.locator(`[data-studio-entity-wrapper="${lineId}"]`);
 
+    const lineStroke = page.getByLabel("Stroke color Line");
+    await expect(page.getByLabel("Fill color Line")).toHaveCount(0);
+    await lineStroke.fill("#22c55e");
+    await lineStroke.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(lineStroke).toHaveValue("#22c55e");
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(lineStroke).toHaveValue("#ffffff");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(lineStroke).toHaveValue("#22c55e");
+
+    await page.getByRole("button", { name: "Export settings" }).click();
+    const sourceExport = page.locator("[data-studio-manim-source-export-state]");
+    await expect(sourceExport).toHaveAttribute("data-studio-manim-source-export-state", "ready");
+    const sourceDownloadPromise = page.waitForEvent("download");
+    await sourceExport.getByRole("button", { name: "Download .py" }).click();
+    const sourceDownload = await sourceDownloadPromise;
+    const sourcePath = await sourceDownload.path();
+    if (!sourcePath) throw new Error("The Line Python download was not persisted by Playwright.");
+    expect(await readFile(sourcePath, "utf8")).toContain('.set_stroke("#22c55e")');
+    await page.getByRole("button", { name: "Close" }).click();
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Draw entrance fixture workspace" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(lineStroke).toHaveValue("#22c55e");
+    await exportLocalMp4(page);
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(lineStroke).toHaveValue("#ffffff");
+
     await page.getByRole("button", { name: "Add Draw entrance for Line" }).click();
     await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
     await page.getByRole("button", { name: "Replace program" }).click();
@@ -923,6 +959,24 @@ test("orients an Arrow along a curved motion path through reload and MP4 export"
     const arrow = page.getByRole("button", { name: "Move Arrow", exact: true });
     await expect(arrow).toBeVisible();
 
+    const arrowStroke = page.getByLabel("Stroke color Arrow");
+    await expect(page.getByLabel("Fill color Arrow")).toHaveCount(0);
+    await arrowStroke.fill("#f97316");
+    await arrowStroke.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(arrowStroke).toHaveValue("#f97316");
+
+    await page.getByRole("button", { name: "Export settings" }).click();
+    const sourceExport = page.locator("[data-studio-manim-source-export-state]");
+    await expect(sourceExport).toHaveAttribute("data-studio-manim-source-export-state", "ready");
+    const sourceDownloadPromise = page.waitForEvent("download");
+    await sourceExport.getByRole("button", { name: "Download .py" }).click();
+    const sourceDownload = await sourceDownloadPromise;
+    const sourcePath = await sourceDownload.path();
+    if (!sourcePath) throw new Error("The Arrow Python download was not persisted by Playwright.");
+    expect(await readFile(sourcePath, "utf8")).toContain('.set_stroke("#f97316")');
+    await page.getByRole("button", { name: "Close" }).click();
+
     await page.getByRole("button", { name: "Create animation" }).click();
     await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
     await dragBy(page, arrow, { x: 120, y: 0 }, true);
@@ -978,6 +1032,7 @@ test("orients an Arrow along a curved motion path through reload and MP4 export"
     const restoredArrowId = await restoredArrow.getAttribute("data-studio-entity");
     if (!restoredArrowId) throw new Error("The restored Arrow did not expose its Studio entity id.");
     const restoredArrowWrapper = page.locator(`[data-studio-entity-wrapper="${restoredArrowId}"]`);
+    await expect(page.getByLabel("Stroke color Arrow")).toHaveValue("#f97316");
     await scrubMotionClip(page, page.getByRole("button", { name: "Edit Arrow motion clip" }), 0);
     const restoredOrientedStart = await preparedDimensions(restoredArrowWrapper);
     expect(restoredOrientedStart.height).toBeGreaterThan(restoredOrientedStart.width);

@@ -661,18 +661,19 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
         ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"]
         : [
             "Arc",
+            "Arrow",
             "Axes",
             "Circle",
             "CubicBezier",
             "DataPlot",
             "Ellipse",
+            "Line",
             "NumberLine",
             "NumberPlane",
             "Rectangle",
             "RegularPolygon",
             "Sector",
             "Triangle",
-            "CubicBezier",
           ];
     if (!entity?.transactionId || !colorableTypes.includes(entity.type)) {
       issues.push({
