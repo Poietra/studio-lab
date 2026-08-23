@@ -52,6 +52,9 @@ export type PreviewFallbackReasonV1 =
   | "snapshot-uncorrelated"
   | "viewport-unavailable";
 
+export const WEBGPU_ADAPTER_UNAVAILABLE_DETAIL =
+  "No compatible WebGPU adapter is available. Open Studio over HTTPS or localhost, enable hardware acceleration in your browser, then fully restart the browser. This preview requires WebGPU and does not use a fallback renderer.";
+
 export type PreviewViewportV1 = Readonly<{ heightPx: number; widthPx: number }>;
 
 export type PreviewFrameRequestV1 = Readonly<{
@@ -192,9 +195,14 @@ export class StudioPreviewRendererHost {
     } catch (error) {
       if (!this.isDisposed()) {
         this.phase = "failed";
+        const adapterUnavailable = error instanceof CanvasWorkerClientError && error.code === "renderer-unavailable";
         this.failure = {
-          detail: error instanceof CanvasWorkerClientError ? errorDetail(error) : String(error),
-          reason: "install-failed",
+          detail: adapterUnavailable
+            ? WEBGPU_ADAPTER_UNAVAILABLE_DETAIL
+            : error instanceof CanvasWorkerClientError
+              ? errorDetail(error)
+              : String(error),
+          reason: adapterUnavailable ? "capability-unsupported" : "install-failed",
         };
         this.renderer?.dispose();
         this.renderer = null;
