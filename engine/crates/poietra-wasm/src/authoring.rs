@@ -1758,6 +1758,94 @@ mod tests {
     }
 
     #[test]
+    fn studio_creation_adapter_forwards_mixed_duration_wait_and_trim() {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
+        let programs = command["programs"].as_array_mut().unwrap();
+        programs.insert(
+            1,
+            json!({
+                "anchorCapturedPlayhead": 0.5,
+                "anchorResolvedSeconds": 0.5,
+                "anchorSource": { "kind": "absolute", "seconds": 0.5 },
+                "intentCount": 1,
+                "loweringSupported": true,
+                "operations": [{
+                    "dependsOn": [],
+                    "eventKind": "wait",
+                    "id": "duration-wait-operation",
+                    "interval": { "end": 1.5, "start": 0.5 },
+                    "kind": "insert-wait",
+                    "origin": "studio-default",
+                    "purpose": "scene-duration"
+                }],
+                "origin": "studio-default",
+                "requestedExecution": "sequence",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "sequence",
+                "scheduleOrder": ["duration-wait-operation"],
+                "transactionId": "duration-wait"
+            }),
+        );
+        programs.insert(
+            2,
+            json!({
+                "anchorCapturedPlayhead": 1.9,
+                "anchorResolvedSeconds": 0.5,
+                "anchorSource": { "kind": "absolute", "seconds": 0.5 },
+                "intentCount": 1,
+                "loweringSupported": true,
+                "operations": [{
+                    "dependsOn": [],
+                    "id": "duration-trim-operation",
+                    "interval": { "end": 0.5, "start": 0.5 },
+                    "kind": "trim-scene-duration",
+                    "origin": "studio-default",
+                    "removedDuration": 0.5,
+                    "targetDuration": 2.9,
+                    "waitOperationIds": ["duration-wait-operation"]
+                }],
+                "origin": "studio-default",
+                "requestedExecution": "sequence",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "sequence",
+                "scheduleOrder": ["duration-trim-operation"],
+                "transactionId": "duration-trim"
+            }),
+        );
+
+        let response = apply_studio_creation_edit_json(
+            &fixture_json(),
+            &serde_json::to_vec(&command).unwrap(),
+        )
+        .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let projection = &response["creationProjection"];
+        assert!((response["bundle"]["scene"]["duration"].as_f64().unwrap() - 2.9).abs() < 1e-12);
+        assert_eq!(projection["insertions"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            projection["insertions"][1]["transactionId"],
+            "duration-wait"
+        );
+        assert!((projection["insertions"][1]["duration"].as_f64().unwrap() - 0.5).abs() < 1e-12);
+        assert_eq!(
+            projection["timelineProjection"]["programProjections"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            projection["timelineProjection"]["transforms"][1]["waitReductions"][0]["operationId"],
+            "duration-wait-operation"
+        );
+        assert_eq!(
+            projection["timelineProjection"]["transforms"][1]["waitReductions"][0]["removedDuration"],
+            0.5
+        );
+    }
+
+    #[test]
     fn studio_creation_adapter_forwards_optional_path_orientation() {
         let mut command: serde_json::Value =
             serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();

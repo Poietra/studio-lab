@@ -185,10 +185,10 @@ pub struct StudioTimelineProjection {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct StudioTimelinePlan {
+pub(super) struct StudioTimelinePlan {
     edits: Vec<SceneTimelineEdit>,
     operation_ids: Vec<String>,
-    projection: StudioTimelineProjection,
+    pub(super) projection: StudioTimelineProjection,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -272,7 +272,7 @@ pub(super) fn insert_scene_time(
     scene.duration += insertion.duration;
 }
 
-fn time_after_removal(time: f64, start: f64, end: f64) -> f64 {
+pub(super) fn time_after_removal(time: f64, start: f64, end: f64) -> f64 {
     if time <= start + TIMELINE_ANCHOR_EPSILON {
         time.min(start)
     } else if time >= end - TIMELINE_ANCHOR_EPSILON {
@@ -400,7 +400,7 @@ fn plan_wait_suffix_removal(
     Ok(removals)
 }
 
-fn validate_studio_timeline_edits(
+pub(super) fn validate_studio_timeline_edits(
     base_duration: f64,
     programs: &[StudioTimelineEditInput],
 ) -> Result<(), ApplyStudioTimelineEditError> {
@@ -456,7 +456,7 @@ fn ordered_studio_timeline_edits(programs: &[StudioTimelineEditInput]) -> Vec<(f
     ordered
 }
 
-struct StudioTimelinePlanningState {
+pub(super) struct StudioTimelinePlanningState {
     edits: Vec<SceneTimelineEdit>,
     inserted_waits: Vec<IntervalV1>,
     operation_ids: Vec<String>,
@@ -472,7 +472,7 @@ struct StudioTimelineWaitBalance {
 }
 
 impl StudioTimelinePlanningState {
-    fn new(base_duration: f64, program_count: usize) -> Self {
+    pub(super) fn new(base_duration: f64, program_count: usize) -> Self {
         Self {
             edits: Vec::with_capacity(program_count),
             inserted_waits: Vec::new(),
@@ -482,6 +482,42 @@ impl StudioTimelinePlanningState {
             transforms: Vec::with_capacity(program_count),
             wait_balances: Vec::with_capacity(program_count),
         }
+    }
+
+    /// Adds a non-duration authoring insertion to the same time-axis state.
+    ///
+    /// Creation and motion Programs own their own projection records, so this
+    /// insertion deliberately does not appear in the duration transform list.
+    /// It still advances the shared offset and forms a barrier that a later
+    /// duration trim cannot cross.
+    pub(super) fn project_authoring_insertion(
+        &mut self,
+        at: f64,
+        duration: f64,
+    ) -> Result<SceneTimelineInsertion, ApplyStudioTimelineEditError> {
+        let projected_duration = self.projected_duration + duration;
+        let resolved_offset = self.resolved_offset + duration;
+        if !at.is_finite()
+            || at < 0.0
+            || at > self.projected_duration + TIMELINE_ANCHOR_EPSILON
+            || !duration.is_finite()
+            || duration <= 0.0
+            || !projected_duration.is_finite()
+            || !resolved_offset.is_finite()
+        {
+            return Err(ApplyStudioTimelineEditError::InvalidInsertion);
+        }
+        self.projected_duration = projected_duration;
+        self.resolved_offset = resolved_offset;
+        Ok(SceneTimelineInsertion { at, duration })
+    }
+
+    pub(super) fn resolved_offset(&self) -> f64 {
+        self.resolved_offset
+    }
+
+    pub(super) fn last_transform(&self) -> Option<&StudioTimelineEditTransform> {
+        self.transforms.last()
     }
 
     fn project_insert_wait(
@@ -621,7 +657,7 @@ impl StudioTimelinePlanningState {
         })
     }
 
-    fn project_edit(
+    pub(super) fn project_edit(
         &mut self,
         program: &StudioTimelineEditInput,
         source_seconds: f64,
@@ -673,7 +709,10 @@ impl StudioTimelinePlanningState {
         })
     }
 
-    fn finish(self, program_projections: Vec<StudioTimelineEditProjection>) -> StudioTimelinePlan {
+    pub(super) fn finish(
+        self,
+        program_projections: Vec<StudioTimelineEditProjection>,
+    ) -> StudioTimelinePlan {
         StudioTimelinePlan {
             edits: self.edits,
             operation_ids: self.operation_ids,
