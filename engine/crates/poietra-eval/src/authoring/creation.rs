@@ -361,6 +361,8 @@ pub struct StudioCreationProjection {
     pub mutations: Vec<StudioCreationProjectedMutation>,
     pub projected_duration: f64,
     pub removals: Vec<StudioPersistentRemoveProjectionEntry>,
+    /// Duration Programs on their duration-only working axis. Its projected
+    /// duration remains the final duration of the complete creation batch.
     pub timeline_projection: StudioTimelineProjection,
 }
 
@@ -1096,21 +1098,50 @@ fn plan_studio_creation_timeline(
     let mut ranks = vec![0; programs.len()];
     let mut net_insertions = Vec::<RankedStudioCreationInsertion>::new();
     let mut duration_program_projections = vec![None; programs.len()];
+    let mut duration_transforms = Vec::with_capacity(duration_inputs.len());
     let mut timeline_state = StudioTimelinePlanningState::new(base_duration, programs.len());
+    let mut authoring_offset = 0.0;
     for (rank, program_index) in ordered_programs.iter().copied().enumerate() {
         let program = &programs[program_index];
         ranks[program_index] = rank;
         if let Some(timeline_input) = &timeline_inputs[program_index] {
-            duration_program_projections[program_index] = Some(
-                timeline_state
-                    .project_edit(timeline_input, program.anchor_resolved_seconds)
-                    .map_err(|_| ProjectStudioCreationEditError::Unsupported)?,
-            );
-            match timeline_state
+            let mut projection = timeline_state
+                .project_edit(timeline_input, program.anchor_resolved_seconds)
+                .map_err(|_| ProjectStudioCreationEditError::Unsupported)?;
+            projection.working_anchor -= authoring_offset;
+            projection.working_interval.start -= authoring_offset;
+            projection.working_interval.end -= authoring_offset;
+            duration_program_projections[program_index] = Some(projection);
+            let shared_transform = timeline_state
                 .last_transform()
                 .cloned()
-                .ok_or(ProjectStudioCreationEditError::Unsupported)?
-            {
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let duration_transform = match &shared_transform {
+                StudioTimelineEditTransform::Insert {
+                    interval,
+                    operation_id,
+                } => StudioTimelineEditTransform::Insert {
+                    interval: IntervalV1 {
+                        end: interval.end - authoring_offset,
+                        start: interval.start - authoring_offset,
+                    },
+                    operation_id: operation_id.clone(),
+                },
+                StudioTimelineEditTransform::Remove {
+                    interval,
+                    operation_id,
+                    wait_reductions,
+                } => StudioTimelineEditTransform::Remove {
+                    interval: IntervalV1 {
+                        end: interval.end - authoring_offset,
+                        start: interval.start - authoring_offset,
+                    },
+                    operation_id: operation_id.clone(),
+                    wait_reductions: wait_reductions.clone(),
+                },
+            };
+            duration_transforms.push(duration_transform);
+            match shared_transform {
                 StudioTimelineEditTransform::Insert { interval, .. } => {
                     net_insertions.push(RankedStudioCreationInsertion {
                         projection: StudioMotionProjectionInsertion {
@@ -1149,6 +1180,7 @@ fn plan_studio_creation_timeline(
                 },
                 rank,
             });
+            authoring_offset += insertion_duration;
         }
     }
     for (program_index, offset) in offsets.iter_mut().enumerate() {
@@ -1175,12 +1207,13 @@ fn plan_studio_creation_timeline(
             )
         })
         .collect::<Vec<_>>();
-    let timeline_plan = timeline_state.finish(
+    let mut timeline_plan = timeline_state.finish(
         duration_program_projections
             .into_iter()
             .flatten()
             .collect::<Vec<StudioTimelineEditProjection>>(),
     );
+    timeline_plan.projection.transforms = duration_transforms;
     let projected_duration = timeline_plan.projection.projected_duration;
     Ok(StudioCreationTimelinePlan {
         duration_program_indices,
@@ -8133,18 +8166,16 @@ mod tests {
 
     #[test]
     fn normalized_creation_preserves_same_anchor_duration_and_creation_order() {
-        for (wait_index, expected_insertions, expected_creation_start, expected_wait_anchor) in [
+        for (wait_index, expected_insertions, expected_creation_start) in [
             (
                 0,
                 vec![("duration-wait", 0.5, 1.0), ("create", 1.5, 0.4)],
                 1.5,
-                0.5,
             ),
             (
                 1,
                 vec![("create", 0.5, 0.4), ("duration-wait", 0.9, 1.0)],
                 0.5,
-                0.9,
             ),
         ] {
             let bundle = static_imported_bundle();
@@ -8174,9 +8205,7 @@ mod tests {
             assert_eq!(projection.timeline_projection.program_projections.len(), 1);
             assert_eq!(projection.timeline_projection.transforms.len(), 1);
             assert!(
-                (projection.timeline_projection.program_projections[0].working_anchor
-                    - expected_wait_anchor)
-                    .abs()
+                (projection.timeline_projection.program_projections[0].working_anchor - 0.5).abs()
                     < 1e-12
             );
             assert!(
@@ -8251,22 +8280,30 @@ mod tests {
         assert!((projection.insertions[1].duration - 0.5).abs() < 1e-12);
         assert!((projection.projected_duration - (base_duration + 0.9)).abs() < 1e-12);
         assert_eq!(projection.timeline_projection.program_projections.len(), 2);
-        assert!(matches!(
-            &projection.timeline_projection.transforms[..],
-            [
-                StudioTimelineEditTransform::Insert { interval: inserted, .. },
-                StudioTimelineEditTransform::Remove {
-                    interval: removed,
-                    wait_reductions,
-                    ..
-                },
-            ] if inserted == &IntervalV1 { start: 0.9, end: 1.9 }
-                && removed == &IntervalV1 { start: 1.4, end: 1.9 }
-                && wait_reductions == &[super::super::timeline::StudioTimelineWaitReduction {
-                    operation_id: "duration-wait-operation".to_owned(),
-                    removed_duration: 0.5,
-                }]
-        ));
+        let [
+            StudioTimelineEditTransform::Insert {
+                interval: inserted, ..
+            },
+            StudioTimelineEditTransform::Remove {
+                interval: removed,
+                wait_reductions,
+                ..
+            },
+        ] = &projection.timeline_projection.transforms[..]
+        else {
+            panic!("duration projection must retain one wait and its trim")
+        };
+        assert!((inserted.start - 0.5).abs() < 1e-12);
+        assert!((inserted.end - 1.5).abs() < 1e-12);
+        assert!((removed.start - 1.0).abs() < 1e-12);
+        assert!((removed.end - 1.5).abs() < 1e-12);
+        assert_eq!(
+            wait_reductions,
+            &[super::super::timeline::StudioTimelineWaitReduction {
+                operation_id: "duration-wait-operation".to_owned(),
+                removed_duration: 0.5,
+            }]
+        );
         let resize = projection
             .mutations
             .iter()
