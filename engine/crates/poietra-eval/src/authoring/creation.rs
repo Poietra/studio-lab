@@ -355,6 +355,9 @@ pub struct StudioCreationProjectedMutation {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioCreationProjection {
+    /// Wait operation IDs beyond which a duration trim cannot cross because a
+    /// positive-duration authoring insertion follows at the same source anchor.
+    pub duration_trim_barrier_operation_ids: Vec<String>,
     pub entities: Vec<StudioProjectedCreationEntity>,
     pub insertions: Vec<StudioMotionProjectionInsertion>,
     pub motions: Vec<StudioProjectedMotion>,
@@ -887,6 +890,7 @@ struct PlannedStudioCameraAnimation {
 }
 
 struct StudioCreationTimelinePlan {
+    duration_trim_barrier_operation_ids: Vec<String>,
     duration_program_indices: BTreeSet<usize>,
     insertions: Vec<StudioMotionProjectionInsertion>,
     offsets: Vec<f64>,
@@ -1101,8 +1105,17 @@ fn plan_studio_creation_timeline(
     let mut duration_transforms = Vec::with_capacity(duration_inputs.len());
     let mut timeline_state = StudioTimelinePlanningState::new(base_duration, programs.len());
     let mut authoring_offset = 0.0;
+    let mut duration_trim_barrier_operation_ids = BTreeSet::new();
+    let mut current_source_anchor = None;
+    let mut last_wait_operation_id = None::<String>;
     for (rank, program_index) in ordered_programs.iter().copied().enumerate() {
         let program = &programs[program_index];
+        if current_source_anchor.is_none_or(|anchor| {
+            !studio_timeline_semantic_values_match(anchor, program.anchor_resolved_seconds)
+        }) {
+            current_source_anchor = Some(program.anchor_resolved_seconds);
+            last_wait_operation_id = None;
+        }
         ranks[program_index] = rank;
         if let Some(timeline_input) = &timeline_inputs[program_index] {
             let mut projection = timeline_state
@@ -1143,6 +1156,7 @@ fn plan_studio_creation_timeline(
             duration_transforms.push(duration_transform);
             match shared_transform {
                 StudioTimelineEditTransform::Insert { interval, .. } => {
+                    last_wait_operation_id = Some(program.operations[0].id.clone());
                     net_insertions.push(RankedStudioCreationInsertion {
                         projection: StudioMotionProjectionInsertion {
                             at: interval.start,
@@ -1169,6 +1183,9 @@ fn plan_studio_creation_timeline(
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
         if insertion_duration > 0.0 {
+            if let Some(operation_id) = &last_wait_operation_id {
+                duration_trim_barrier_operation_ids.insert(operation_id.clone());
+            }
             let insertion = timeline_state
                 .project_authoring_insertion(at, insertion_duration)
                 .map_err(|_| ProjectStudioCreationEditError::Unsupported)?;
@@ -1216,6 +1233,9 @@ fn plan_studio_creation_timeline(
     timeline_plan.projection.transforms = duration_transforms;
     let projected_duration = timeline_plan.projection.projected_duration;
     Ok(StudioCreationTimelinePlan {
+        duration_trim_barrier_operation_ids: duration_trim_barrier_operation_ids
+            .into_iter()
+            .collect(),
         duration_program_indices,
         insertions,
         offsets,
@@ -1245,6 +1265,7 @@ fn shift_studio_creation_time(
 
 struct StudioCreationPlan {
     camera_animation: Option<PlannedStudioCameraAnimation>,
+    duration_trim_barrier_operation_ids: Vec<String>,
     entities: Vec<PlannedStudioCreationEntity>,
     groups: Vec<PlannedStudioLogicalGroup>,
     motion_projection: StudioMotionProjection,
@@ -1304,6 +1325,7 @@ impl StudioCreationPlan {
             })
             .collect();
         StudioCreationProjection {
+            duration_trim_barrier_operation_ids: self.duration_trim_barrier_operation_ids.clone(),
             entities,
             insertions: self.motion_projection.insertions.clone(),
             motions: self.motion_projection.motions.clone(),
@@ -4843,6 +4865,7 @@ fn plan_studio_creation_edits(
     ranked_mutations.sort_by_key(|(rank, schedule_index, _)| (*rank, *schedule_index));
     Ok(StudioCreationPlan {
         camera_animation,
+        duration_trim_barrier_operation_ids: timeline.duration_trim_barrier_operation_ids,
         entities,
         groups,
         motion_projection,
@@ -8166,16 +8189,18 @@ mod tests {
 
     #[test]
     fn normalized_creation_preserves_same_anchor_duration_and_creation_order() {
-        for (wait_index, expected_insertions, expected_creation_start) in [
+        for (wait_index, expected_insertions, expected_creation_start, expected_barriers) in [
             (
                 0,
                 vec![("duration-wait", 0.5, 1.0), ("create", 1.5, 0.4)],
                 1.5,
+                vec!["duration-wait-operation"],
             ),
             (
                 1,
                 vec![("create", 0.5, 0.4), ("duration-wait", 0.9, 1.0)],
                 0.5,
+                vec![],
             ),
         ] {
             let bundle = static_imported_bundle();
@@ -8202,6 +8227,10 @@ mod tests {
                 assert!((actual.duration - duration).abs() < 1e-12);
             }
             assert!((projection.projected_duration - (base_duration + 1.4)).abs() < 1e-12);
+            assert_eq!(
+                projection.duration_trim_barrier_operation_ids,
+                expected_barriers
+            );
             assert_eq!(projection.timeline_projection.program_projections.len(), 1);
             assert_eq!(projection.timeline_projection.transforms.len(), 1);
             assert!(
