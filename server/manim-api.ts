@@ -11,6 +11,7 @@ import type {
   RenderSessionView,
   RenderSourceActionCancellationRequest,
   RenderSourceActionCancellationView,
+  StudioNativeManimSourceExportRequest,
 } from "../src/render-pipeline/contracts";
 import type {
   FastManimRuntimeTraceRunRequestV1,
@@ -89,6 +90,10 @@ export interface ManimApiOperations {
     signal?: AbortSignal,
   ): ManimApiResult<ManimSourceExport>;
   exportSource(request: ProgramRenderRequest, signal?: AbortSignal): ManimApiResult<ManimSourceExport>;
+  exportStudioNativeSource?(
+    request: StudioNativeManimSourceExportRequest,
+    signal?: AbortSignal,
+  ): ManimApiResult<ManimSourceExport>;
   generateThumbnail(projectId: string): ManimApiResult<ManimThumbnailStatus>;
   projects(signal?: AbortSignal): ManimApiResult<ManimProjectListView>;
   runSceneSnapshot(

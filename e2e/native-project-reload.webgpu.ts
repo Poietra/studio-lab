@@ -201,6 +201,43 @@ async function createBlankWorkspace(page: Page, name: string) {
   return ((await createResponse.json()) as { project: { id: string } }).project.id;
 }
 
+test("downloads a bounded Manim Scene from Studio-native authoring", async ({ page }) => {
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Native source export fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    await expect(page.getByRole("button", { exact: true, name: "Export .py" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: /Insert circle/ }).click();
+    await canvas.click({ position: { x: 300, y: 260 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("1");
+    await page.getByRole("button", { name: /Insert text/ }).click();
+    await page.getByRole("textbox", { name: "Text content" }).fill("Poietra");
+    await canvas.click({ position: { x: 520, y: 180 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.getByRole("button", { name: "Export settings" }).click();
+    const sourceExport = page.locator("[data-studio-manim-source-export-state]");
+    await expect(sourceExport).toHaveAttribute("data-studio-manim-source-export-state", "ready");
+    const downloadPromise = page.waitForEvent("download");
+    await sourceExport.getByRole("button", { name: "Download .py" }).click();
+    const download = await downloadPromise;
+    expect(download.suggestedFilename()).toBe("PoietraScene.poietra.py");
+    const path = await download.path();
+    if (!path) throw new Error("The Studio-native Python download was not persisted by Playwright.");
+    const source = await readFile(path, "utf8");
+    expect(source).toContain("class PoietraScene(Scene):");
+    expect(source).toContain("Circle(");
+    expect(source).toContain('Text("Poietra"');
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("authors Text, shape, spinning motion, and Images in a blank workspace and restores MP4 export", async ({
   page,
 }) => {

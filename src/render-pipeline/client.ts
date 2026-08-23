@@ -11,6 +11,7 @@ import type {
   RenderCommitRequest,
   RenderSourceActionCancellationView,
   RenderSourceActionRequest,
+  StudioNativeManimSourceExportRequest,
 } from "./contracts";
 import {
   browserManimProjectImportRequestV1Schema,
@@ -37,6 +38,7 @@ import {
   renderSourceActionCancellationRequestSchema,
   renderSourceActionCancellationViewSchema,
   renderSourceActionRequestSchema,
+  studioNativeManimSourceExportRequestSchema,
 } from "./contracts";
 
 export type BrowserManimProjectImportFileV1 = Readonly<{
@@ -422,6 +424,26 @@ export async function exportOriginalManimSource(
   const parsedRequest = originalManimSourceExportRequestSchema.safeParse(request);
   if (!parsedRequest.success) {
     throw new Error("The original source export request does not match the API contract.");
+  }
+  const response = await fetchOrganizationScopedManimApiV1(
+    `/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/export`,
+    {
+      body: JSON.stringify(parsedRequest.data),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal,
+    },
+  );
+  return readPythonExport(response, parsedRequest.data.projectId);
+}
+
+export async function exportStudioNativeManimSource(
+  request: StudioNativeManimSourceExportRequest,
+  signal?: AbortSignal,
+): Promise<ManimSourceExport> {
+  const parsedRequest = studioNativeManimSourceExportRequestSchema.safeParse(request);
+  if (!parsedRequest.success) {
+    throw new Error("The Studio-native source export request does not match the API contract.");
   }
   const response = await fetchOrganizationScopedManimApiV1(
     `/api/manim/projects/${encodeURIComponent(parsedRequest.data.projectId)}/export`,

@@ -1,7 +1,8 @@
 import { useRef } from "react";
-
+import type { StudioNativeManimSourceExportRequest } from "../render-pipeline/contracts";
 import { StudioExportControl, type StudioMp4ExportSourceV1 } from "./studio-export-control";
 import type { StudioExportPublicationAvailabilityV1 } from "./studio-export-publication";
+import { StudioManimSourceExportControl } from "./studio-manim-source-export-control";
 import { StudioThumbnailControl } from "./studio-thumbnail-control";
 
 const DIALOG_ID = "studio-export-settings-dialog";
@@ -12,11 +13,16 @@ export function StudioExportSettingsControl({
   disabled = false,
   exportSource,
   generateThumbnail,
+  manimSourceExport = null,
   publication,
 }: Readonly<{
   disabled?: boolean;
   exportSource: StudioMp4ExportSourceV1 | null;
   generateThumbnail: ((signal?: AbortSignal) => Promise<Uint8Array<ArrayBuffer>>) | null;
+  manimSourceExport?: Readonly<{
+    blocker: string | null;
+    request: StudioNativeManimSourceExportRequest | null;
+  }> | null;
   publication: StudioExportPublicationAvailabilityV1;
 }>) {
   const dialog = useRef<HTMLDialogElement | null>(null);
@@ -65,6 +71,24 @@ export function StudioExportSettingsControl({
               <StudioThumbnailControl disabled={disabled} generate={generateThumbnail} publication={publication} />
             </div>
           </section>
+
+          {manimSourceExport ? (
+            <section aria-labelledby="studio-manim-source-export-title" className="mt-5 border-t border-zinc-800 pt-4">
+              <h3 className="text-balance text-sm font-medium text-zinc-200" id="studio-manim-source-export-title">
+                Manim source
+              </h3>
+              <p className="mt-1 text-pretty text-xs leading-5 text-zinc-500">
+                Generate a complete Python Scene from the supported parts of this Studio-native document.
+              </p>
+              <div className="mt-3">
+                <StudioManimSourceExportControl
+                  blocker={manimSourceExport.blocker}
+                  disabled={disabled}
+                  request={manimSourceExport.request}
+                />
+              </div>
+            </section>
+          ) : null}
 
           <div className="mt-5 flex justify-end">
             <button

@@ -657,15 +657,17 @@ export function RenderPipelinePanel({
             Download MP4
           </a>
         ) : null}
-        <button
-          className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
-          disabled={exportBlocker !== null || pendingAction !== null}
-          onClick={() => void exportSource()}
-          title={exportBlocker ?? undefined}
-          type="button"
-        >
-          {pendingAction === "export" ? "Exporting…" : "Export .py"}
-        </button>
+        {workspace?.nativeDocument ? null : (
+          <button
+            className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={exportBlocker !== null || pendingAction !== null}
+            onClick={() => void exportSource()}
+            title={exportBlocker ?? undefined}
+            type="button"
+          >
+            {pendingAction === "export" ? "Exporting…" : "Export .py"}
+          </button>
+        )}
         {session?.canCancel ? (
           <button
             className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:text-zinc-600"

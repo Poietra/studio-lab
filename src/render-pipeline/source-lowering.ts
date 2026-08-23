@@ -171,7 +171,7 @@ const CURSOR_PATTERN = /^\s*#\s*poietra:cursor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const SCENE_BOUNDARY_PATTERN = /^\s*#\s*poietra:scene-boundary\s+(.+)\s*$/;
 const EPSILON = 0.0005;
 
-function loweredProgramDuration(program: SceneEdit) {
+export function loweredProgramDuration(program: SceneEdit) {
   const waitEnd = Math.max(
     program.anchor.resolvedSeconds,
     ...program.operations.flatMap((operation) =>

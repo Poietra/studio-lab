@@ -21,6 +21,7 @@ import {
   renderCommitRequestSchema,
   renderSourceActionCancellationRequestSchema,
   renderSourceActionRequestSchema,
+  studioNativeManimSourceExportRequestSchema,
 } from "../src/render-pipeline/contracts";
 import {
   FAST_MANIM_RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V2,
@@ -821,17 +822,29 @@ async function routeManimRequest(
     }
     if (endpoint === "export") {
       const body = await readBoundedJsonBody(request, policy, 512 * 1024);
+      const studioNativeRequest = studioNativeManimSourceExportRequestSchema.safeParse(body);
       const programRequest = programRenderRequestSchema.safeParse(body);
       const originalRequest = originalManimSourceExportRequestSchema.safeParse(body);
       let exported: ManimSourceExport;
-      if (programRequest.success) {
+      if (studioNativeRequest.success) {
+        if (studioNativeRequest.data.projectId !== projectId) {
+          throw new HttpError("The request project does not match the project endpoint.", 409);
+        }
+        if (!manager.exportStudioNativeSource) {
+          throw new HttpError("Studio-native Manim source export is unavailable on this deployment.", 501);
+        }
+        exported = await manager.exportStudioNativeSource(studioNativeRequest.data, signal);
+      } else if (programRequest.success) {
         if (programRequest.data.projectId !== projectId) {
           throw new HttpError("The request project does not match the project endpoint.", 409);
         }
         exported = await manager.exportSource(programRequest.data, signal);
       } else {
         if (!originalRequest.success) {
-          throw new HttpError(originalRequest.error.issues[0]?.message ?? "Invalid Python export request.", 400);
+          const studioNativeIntent =
+            typeof body === "object" && body !== null && "kind" in body && body.kind === "studio-native";
+          const issue = studioNativeIntent ? studioNativeRequest.error?.issues[0] : originalRequest.error.issues[0];
+          throw new HttpError(issue?.message ?? "Invalid Python export request.", 400);
         }
         if (originalRequest.data.projectId !== projectId) {
           throw new HttpError("The request project does not match the project endpoint.", 409);

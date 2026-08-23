@@ -18,8 +18,10 @@ import {
   renderProgramBatchId,
   renderRequestId,
   renderRequestPrograms,
+  type StudioNativeManimSourceExportRequest,
 } from "../src/render-pipeline/contracts";
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
+import { ProgramLoweringError } from "../src/render-pipeline/source-lowering";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import { fastManimRuntimeTraceProducerEnvironment } from "./fast-manim-runtime-trace-producer-identity";
 import type {
@@ -74,6 +76,7 @@ import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim
 import { normalizeManimStorageRoots } from "./manim-tenant-storage";
 import { createLocalManimThumbnailCache, type LocalManimThumbnailCache } from "./manim-thumbnail-cache";
 import { discoverPythonSources } from "./manim-workspace";
+import { exportStudioNativeManimSource } from "./studio-native-source-export";
 
 type RenderSession = {
   batchId: string;
@@ -754,6 +757,50 @@ export class ManimRenderManager {
         projectId: this.projectId,
         source: prepared.lowered.source,
       };
+    } finally {
+      finishExport();
+    }
+  }
+
+  async exportStudioNativeSource(request: StudioNativeManimSourceExportRequest, signal?: AbortSignal) {
+    const finishExport = this.beginStart();
+    try {
+      this.assertRequestProject(request);
+      throwIfAborted(signal);
+      if (!this.nativeDocumentKey) {
+        throw new HttpError("This project is backed by imported Manim source, not a Studio-native document.", 409);
+      }
+      if (request.documentKey !== this.nativeDocumentKey) {
+        throw new HttpError(
+          "The Studio-native document changed before source export. Reopen the workspace and try again.",
+          409,
+        );
+      }
+      if (request.fragmentMaterialEntityIds.length > 0) {
+        throw new HttpError(
+          `Manim .py export does not support the WGSL fragment material assigned to ${request.fragmentMaterialEntityIds[0]}. Remove it and try again.`,
+          400,
+        );
+      }
+      try {
+        const exported = exportStudioNativeManimSource({
+          duration: request.duration,
+          frame: this.frame,
+          programs: request.programs,
+          viewport: request.viewport,
+        });
+        throwIfAborted(signal);
+        return {
+          fileName: `${exported.sceneName}.poietra.py`,
+          projectId: this.projectId,
+          source: exported.source,
+        };
+      } catch (error) {
+        if (error instanceof ProgramLoweringError || error instanceof TypeError) {
+          throw new HttpError(error.message, 400);
+        }
+        throw error;
+      }
     } finally {
       finishExport();
     }
