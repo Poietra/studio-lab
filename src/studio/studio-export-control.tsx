@@ -82,6 +82,13 @@ const EXPORT_RESOLUTION_OPTIONS = [
 
 const EXPORT_FRAME_RATE_OPTIONS = [30, 60] as const satisfies readonly ExportProfileV1["frameRate"][];
 
+const fieldClassName =
+  "mt-1 min-h-9 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs tabular-nums text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600";
+const secondaryButtonClassName =
+  "min-h-9 border border-zinc-700 px-3 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600";
+const primaryButtonClassName =
+  "min-h-9 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-400 disabled:cursor-wait disabled:bg-zinc-700 disabled:text-zinc-500";
+
 export type StudioExportControlStateKindV1 = ExportRunStateV1["kind"] | "unavailable";
 
 /** Bounded whole percentage of encoded frames, honest about the empty grid. */
@@ -187,6 +194,11 @@ export function StudioExportControl({
           ? publication.reason
           : "Export the current Scene in this browser before publishing it."
         : null;
+  const exportUnavailableReason = disabled
+    ? "Export is unavailable while the Editor session changes."
+    : exportSource === null
+      ? "Wait for the canonical WebGPU preview before exporting."
+      : null;
 
   async function startExport() {
     if (startBlocked || activeExport.current || !exportSource) return;
@@ -314,148 +326,195 @@ export function StudioExportControl({
   }
 
   return (
-    <div
-      className="flex items-center gap-1"
+    <section
+      aria-labelledby="studio-video-export-title"
       data-studio-export-mp4-reason={run.kind === "refused" ? run.reason : undefined}
       data-studio-export-mp4-state={stateKind}
       data-studio-export-profile={`${exportResolution}@${exportFrameRate}`}
       data-studio-export-publication-state={publicationRun.kind}
-      role="status"
     >
-      <select
-        aria-label="Video resolution"
-        className="h-7 border border-zinc-700 bg-zinc-950 px-1 tabular-nums text-zinc-300 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
-        disabled={disabled || running || saving || publishing}
-        onChange={(event) => {
-          const resolution = exportResolutionV1Schema.safeParse(event.currentTarget.value);
-          if (resolution.success && resolution.data !== exportResolution) {
-            discardPendingPublicationForProfileChange();
-            setExportResolution(resolution.data);
-          }
-        }}
-        value={exportResolution}
-      >
-        {EXPORT_RESOLUTION_OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-      <select
-        aria-label="Video frame rate"
-        className="h-7 border border-zinc-700 bg-zinc-950 px-1 tabular-nums text-zinc-300 outline-none focus:border-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
-        disabled={disabled || running || saving || publishing}
-        onChange={(event) => {
-          const frameRate = exportFrameRateV1Schema.safeParse(Number(event.currentTarget.value));
-          if (frameRate.success && frameRate.data !== exportFrameRate) {
-            discardPendingPublicationForProfileChange();
-            setExportFrameRate(frameRate.data);
-          }
-        }}
-        value={exportFrameRate}
-      >
-        {EXPORT_FRAME_RATE_OPTIONS.map((frameRate) => (
-          <option key={frameRate} value={frameRate}>
-            {frameRate} fps
-          </option>
-        ))}
-      </select>
-      <button
-        className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-wait disabled:text-zinc-600"
-        disabled={startBlocked}
-        onClick={() => void startExport()}
-        title="Export the exact Scene shown by the canonical WebGPU preview"
-        type="button"
-      >
-        {running
-          ? `Exporting MP4… ${studioExportProgressPercentV1(run.progress)}%`
-          : saving
-            ? "Saving MP4…"
-            : "Export MP4"}
-      </button>
-      <input
-        accept=".wav,audio/wav,audio/x-wav"
-        aria-label="WAV audio file"
-        className="sr-only"
-        disabled={disabled || running || saving || publishing}
-        onChange={(event) => selectAudio(event.currentTarget.files?.[0])}
-        ref={audioInput}
-        type="file"
-      />
-      {audioFile ? (
-        <span className="flex max-w-48 items-center gap-1 text-zinc-400" title={audioFile.name}>
-          <span className="truncate">{audioFile.name}</span>
-          <button
-            aria-label={`Remove WAV ${audioFile.name}`}
-            className="px-1 text-zinc-500 hover:text-zinc-200"
-            disabled={running || saving}
-            onClick={removeAudio}
-            type="button"
+      <h3 className="text-balance text-sm font-medium text-zinc-200" id="studio-video-export-title">
+        Video export
+      </h3>
+      <p className="mt-1 text-pretty text-xs leading-5 text-zinc-500">
+        Export the exact Scene shown by the canonical WebGPU preview as a local MP4.
+      </p>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <label className="text-xs font-medium text-zinc-400" htmlFor="studio-export-resolution">
+          Resolution
+          <select
+            className={fieldClassName}
+            disabled={disabled || running || saving || publishing}
+            id="studio-export-resolution"
+            onChange={(event) => {
+              const resolution = exportResolutionV1Schema.safeParse(event.currentTarget.value);
+              if (resolution.success && resolution.data !== exportResolution) {
+                discardPendingPublicationForProfileChange();
+                setExportResolution(resolution.data);
+              }
+            }}
+            value={exportResolution}
           >
-            ×
-          </button>
-        </span>
-      ) : (
-        <button
-          className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-600"
+            {EXPORT_RESOLUTION_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-xs font-medium text-zinc-400" htmlFor="studio-export-frame-rate">
+          Frame rate
+          <select
+            className={fieldClassName}
+            disabled={disabled || running || saving || publishing}
+            id="studio-export-frame-rate"
+            onChange={(event) => {
+              const frameRate = exportFrameRateV1Schema.safeParse(Number(event.currentTarget.value));
+              if (frameRate.success && frameRate.data !== exportFrameRate) {
+                discardPendingPublicationForProfileChange();
+                setExportFrameRate(frameRate.data);
+              }
+            }}
+            value={exportFrameRate}
+          >
+            {EXPORT_FRAME_RATE_OPTIONS.map((frameRate) => (
+              <option key={frameRate} value={frameRate}>
+                {frameRate} fps
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
+      <div className="mt-4 border-y border-zinc-800 py-4">
+        <h4 className="text-balance text-xs font-medium text-zinc-300">Audio</h4>
+        <p className="mt-1 text-pretty text-xs leading-5 text-zinc-500" id="studio-export-audio-description">
+          Optionally attach one 48 kHz PCM WAV to this local export.
+        </p>
+        <input
+          accept=".wav,audio/wav,audio/x-wav"
+          aria-describedby="studio-export-audio-description"
+          aria-label="WAV audio file"
+          className="sr-only"
           disabled={disabled || running || saving || publishing}
-          onClick={() => audioInput.current?.click()}
-          title="Attach one 48 kHz PCM WAV to this local export"
-          type="button"
-        >
-          + WAV
-        </button>
-      )}
-      <button
-        aria-label={publishUnavailableReason ? `Publish MP4 unavailable: ${publishUnavailableReason}` : "Publish MP4"}
-        className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
-        disabled={publishBlocked}
-        onClick={() => void publishExport()}
-        title={publishUnavailableReason ?? "Publish this exact browser export"}
-        type="button"
-      >
-        {publishing
-          ? "Publishing…"
-          : publicationRun.kind === "published"
-            ? "Published"
-            : publicationRun.kind === "failed"
-              ? "Retry publish"
-              : "Publish"}
-      </button>
-      {running ? (
+          id="studio-export-audio"
+          onChange={(event) => selectAudio(event.currentTarget.files?.[0])}
+          ref={audioInput}
+          type="file"
+        />
+        <div className="mt-3">
+          {audioFile ? (
+            <div className="flex min-w-0 items-center gap-2 text-xs text-zinc-400">
+              <span className="min-w-0 flex-1 truncate" title={audioFile.name}>
+                {audioFile.name}
+              </span>
+              <button
+                aria-label={`Remove WAV ${audioFile.name}`}
+                className={secondaryButtonClassName}
+                disabled={running || saving}
+                onClick={removeAudio}
+                type="button"
+              >
+                Remove
+              </button>
+            </div>
+          ) : (
+            <button
+              className={secondaryButtonClassName}
+              disabled={disabled || running || saving || publishing}
+              onClick={() => audioInput.current?.click()}
+              type="button"
+            >
+              Choose WAV
+            </button>
+          )}
+        </div>
+        {audioError ? (
+          <p className="mt-2 text-pretty text-xs leading-5 text-amber-300" role="alert">
+            {audioError}
+          </p>
+        ) : null}
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <button
-          className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-          onClick={() => activeExport.current?.abort()}
+          className={primaryButtonClassName}
+          disabled={startBlocked}
+          onClick={() => void startExport()}
+          title="Export the exact Scene shown by the canonical WebGPU preview"
           type="button"
         >
-          Cancel
+          {running
+            ? `Exporting MP4… ${studioExportProgressPercentV1(run.progress)}%`
+            : saving
+              ? "Saving MP4…"
+              : "Export MP4"}
         </button>
+        {running ? (
+          <button className={secondaryButtonClassName} onClick={() => activeExport.current?.abort()} type="button">
+            Cancel
+          </button>
+        ) : null}
+      </div>
+      {exportUnavailableReason ? (
+        <p className="mt-2 text-pretty text-xs leading-5 text-amber-300">{exportUnavailableReason}</p>
+      ) : null}
+      {running || saving || run.kind === "cancelled" || run.kind === "done" ? (
+        <p aria-live="polite" className="mt-2 text-pretty text-xs leading-5 text-zinc-400" role="status">
+          {running
+            ? `Encoded ${studioExportProgressPercentV1(run.progress)}% of frames.`
+            : saving
+              ? "Saving the completed MP4."
+              : run.kind === "cancelled"
+                ? "Export cancelled."
+                : run.kind === "done"
+                  ? `Saved ${run.fileName}.`
+                  : null}
+        </p>
       ) : null}
       {run.kind === "refused" || run.kind === "failed" ? (
-        <span
-          className={cn("max-w-64 truncate", run.kind === "refused" ? "text-amber-300" : "text-red-300")}
+        <p
+          className={cn(
+            "mt-2 text-pretty text-xs leading-5",
+            run.kind === "refused" ? "text-amber-300" : "text-red-300",
+          )}
           role="alert"
-          title={run.message}
         >
-          {run.kind === "refused" ? `Export refused · ${run.reason}` : `Export failed: ${run.message}`}
-        </span>
+          {run.kind === "refused" ? `Export refused · ${run.reason}: ${run.message}` : `Export failed: ${run.message}`}
+        </p>
       ) : null}
-      {run.kind === "cancelled" ? <span className="text-zinc-500">Export cancelled</span> : null}
-      {audioError ? (
-        <span className="max-w-64 truncate text-amber-300" role="alert" title={audioError}>
-          {audioError}
-        </span>
-      ) : null}
-      {run.kind === "done" ? (
-        <span className="text-emerald-300" title={`Saved ${run.fileName}`}>
-          Saved
-        </span>
-      ) : null}
-      {publicationRun.kind === "failed" ? (
-        <span className="max-w-64 truncate text-red-300" role="alert" title={publicationRun.message}>
-          Publish failed: {publicationRun.message}
-        </span>
-      ) : null}
-    </div>
+
+      <section aria-labelledby="studio-mp4-publishing-title" className="mt-5 border-t border-zinc-800 pt-4">
+        <h4 className="text-balance text-xs font-medium text-zinc-300" id="studio-mp4-publishing-title">
+          MP4 publishing
+        </h4>
+        <p className="mt-1 text-pretty text-xs leading-5 text-zinc-500">
+          Publish the most recent browser export after its local download succeeds.
+        </p>
+        <button
+          className={cn(secondaryButtonClassName, "mt-3")}
+          disabled={publishBlocked}
+          onClick={() => void publishExport()}
+          type="button"
+        >
+          {publishing
+            ? "Publishing…"
+            : publicationRun.kind === "published"
+              ? "Published"
+              : publicationRun.kind === "failed"
+                ? "Retry publish"
+                : "Publish MP4"}
+        </button>
+        {publishUnavailableReason ? (
+          <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">{publishUnavailableReason}</p>
+        ) : null}
+        {publicationRun.kind === "failed" ? (
+          <p className="mt-2 text-pretty text-xs leading-5 text-red-300" role="alert">
+            Publish failed: {publicationRun.message}
+          </p>
+        ) : null}
+      </section>
+    </section>
   );
 }

@@ -138,6 +138,7 @@ async function downloadedSource(page: Page) {
 }
 
 async function decodedLocalMp4(page: Page) {
+  await page.getByRole("button", { name: "Export settings" }).click();
   const control = page.locator("[data-studio-export-mp4-state]");
   const downloadPromise = page.waitForEvent("download", { timeout: 90_000 }).catch(() => null);
   await page.getByRole("button", { name: "Export MP4" }).click();

@@ -52,6 +52,14 @@ async function expectPresented(page: Page) {
   await expect(page.locator("[data-studio-preview-status]")).toBeVisible();
 }
 
+async function openExportSettings(page: Page) {
+  const dialog = page.getByRole("dialog", { name: "Export settings" });
+  if (!(await dialog.isVisible())) {
+    await page.getByRole("button", { name: "Export settings" }).click();
+  }
+  return dialog;
+}
+
 async function expectPaintFreeInteractionOverlay(page: Page) {
   await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
 }
@@ -724,8 +732,11 @@ test("offers only the closed export settings and keeps a non-default selection",
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
 
-  const resolution = page.getByRole("combobox", { name: "Video resolution" });
-  const frameRate = page.getByRole("combobox", { name: "Video frame rate" });
+  await expect(page.getByRole("button", { name: "Export MP4" })).toHaveCount(0);
+  const exportSettings = await openExportSettings(page);
+  await expect(exportSettings).toBeVisible();
+  const resolution = exportSettings.getByRole("combobox", { name: "Resolution" });
+  const frameRate = exportSettings.getByRole("combobox", { name: "Frame rate" });
   await expect(resolution.locator("option")).toHaveText(["480p", "720p", "1080p"]);
   await expect(frameRate.locator("option")).toHaveText(["30 fps", "60 fps"]);
   await resolution.selectOption("1280x720");
@@ -734,6 +745,9 @@ test("offers only the closed export settings and keeps a non-default selection",
     "data-studio-export-profile",
     "1280x720@60",
   );
+  await exportSettings.getByRole("button", { name: "Close" }).click();
+  await expect(exportSettings).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "Export MP4" })).toHaveCount(0);
 });
 
 test("downloads a playable 30 fps MP4 from the exact presented Rust Scene", {
@@ -750,6 +764,7 @@ test("downloads a playable 30 fps MP4 from the exact presented Rust Scene", {
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   await expectPresented(page);
 
+  await openExportSettings(page);
   const exportButton = page.getByRole("button", { name: "Export MP4" });
   await expect(exportButton).toBeEnabled();
   const downloadPromise = new Promise<Download>((resolve) => page.once("download", resolve));
@@ -826,6 +841,7 @@ test("exports an attached WAV as a verified Opus track", { tag: "@ci-smoke" }, a
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   await expectPresented(page);
 
+  await openExportSettings(page);
   await page.getByLabel("WAV audio file").setInputFiles({
     buffer: monoPcmWav48k(0.2),
     mimeType: "audio/wav",
@@ -888,6 +904,7 @@ test("cancels a running MP4 export without delivering any file", { tag: "@ci-smo
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   await expectPresented(page);
 
+  await openExportSettings(page);
   const downloads: Download[] = [];
   page.on("download", (download) => downloads.push(download));
   const exportControl = page.locator("[data-studio-export-mp4-state]");

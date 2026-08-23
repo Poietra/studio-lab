@@ -40,6 +40,7 @@ async function scrubClip(page: Page, clip: Locator, progress: number) {
 }
 
 async function exportDecodedBrightPixelCounts(page: Page, sampleTimes: readonly number[]) {
+  await page.getByRole("button", { name: "Export settings" }).click();
   const control = page.locator("[data-studio-export-mp4-state]");
   const downloadPromise = page.waitForEvent("download", { timeout: 90_000 }).catch(() => null);
   await page.getByRole("button", { name: "Export MP4" }).click();

@@ -51,17 +51,19 @@ export async function publishStudioThumbnailV1(
 
 export function StudioThumbnailControl({
   client = defaultClient,
+  disabled: externallyDisabled = false,
   generate,
   publication,
 }: Readonly<{
   client?: ClientThumbnailPublicationClientV1;
+  disabled?: boolean;
   generate: ((signal?: AbortSignal) => Promise<Uint8Array<ArrayBuffer>>) | null;
   publication: StudioExportPublicationAvailabilityV1;
 }>) {
   const active = useRef<AbortController | null>(null);
   const [state, setState] = useState<"failed" | "idle" | "published" | "publishing">("idle");
   const [message, setMessage] = useState<string | null>(null);
-  const disabled = !generate || publication.kind !== "available" || state === "publishing";
+  const disabled = externallyDisabled || !generate || publication.kind !== "available" || state === "publishing";
   useEffect(
     () => () => {
       active.current?.abort();
@@ -91,11 +93,17 @@ export function StudioThumbnailControl({
     }
   }
 
-  const unavailable = publication.kind === "unavailable" ? publication.reason : null;
+  const unavailable = externallyDisabled
+    ? "Thumbnail updates are unavailable while the Editor session changes."
+    : publication.kind === "unavailable"
+      ? publication.reason
+      : !generate
+        ? "Wait for the canonical preview before updating the thumbnail."
+        : null;
   return (
-    <span className="inline-flex items-center gap-2" data-studio-thumbnail-state={state}>
+    <div data-studio-thumbnail-state={state}>
       <button
-        className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-600"
+        className="min-h-9 border border-zinc-700 px-3 text-xs font-medium text-zinc-300 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-not-allowed disabled:text-zinc-600"
         disabled={disabled}
         onClick={() => void publish()}
         title={unavailable ?? undefined}
@@ -107,7 +115,12 @@ export function StudioThumbnailControl({
             ? "Thumbnail updated"
             : "Update thumbnail"}
       </button>
-      {message ? <span className="max-w-48 truncate text-[10px] text-red-300">{message}</span> : null}
-    </span>
+      {unavailable ? <p className="mt-2 text-pretty text-xs leading-5 text-zinc-500">{unavailable}</p> : null}
+      {message ? (
+        <p className="mt-2 text-pretty text-xs leading-5 text-red-300" role="alert">
+          Thumbnail update failed: {message}
+        </p>
+      ) : null}
+    </div>
   );
 }

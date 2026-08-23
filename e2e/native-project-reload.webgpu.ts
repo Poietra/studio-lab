@@ -91,6 +91,7 @@ async function preparedDimensions(wrapper: Locator) {
 }
 
 async function exportLocalMp4(page: Page) {
+  await page.getByRole("button", { name: "Export settings" }).click();
   const exportControl = page.locator("[data-studio-export-mp4-state]");
   const exportButton = page.getByRole("button", { name: "Export MP4" });
   await expect(exportButton).toBeEnabled();
@@ -111,6 +112,7 @@ async function exportLocalMp4(page: Page) {
   if (!path) throw new Error("The native MP4 download was not persisted by Playwright.");
   const bytes = await readFile(path);
   expect(bytes.byteLength).toBeGreaterThan(0);
+  await page.getByRole("button", { name: "Close" }).click();
   return bytes.toString("base64");
 }
 
