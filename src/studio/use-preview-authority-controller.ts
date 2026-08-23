@@ -62,6 +62,30 @@ export type StudioPreviewAuthorityControllerView = Readonly<{
 }>;
 
 const STUDIO_PREVIEW_RENDERER_QUERY_PARAM = "previewRenderer";
+const STUDIO_PREVIEW_EXECUTION_CONSENT_KEY = "poietra.preview-execution-consent";
+
+export function studioPreviewExecutionConsentScope(providerKind: StudioPreviewProviderKind, projectId: string | null) {
+  return projectId === null ? null : JSON.stringify({ projectId, providerKind });
+}
+
+function rememberedStudioPreviewExecutionConsent() {
+  if (typeof sessionStorage === "undefined") return null;
+  try {
+    return sessionStorage.getItem(STUDIO_PREVIEW_EXECUTION_CONSENT_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberStudioPreviewExecutionConsent(scope: string) {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    sessionStorage.setItem(STUDIO_PREVIEW_EXECUTION_CONSENT_KEY, scope);
+  } catch {
+    // Storage can be unavailable in restricted browser contexts. Consent still
+    // applies to the current page through the in-memory authority state.
+  }
+}
 
 function authorityStateForProvider(
   state: StudioPreviewAuthorityState,
@@ -215,9 +239,32 @@ export function useStudioPreviewAuthorityController({
   const projectId = context?.projectId ?? null;
   const currentAuthority = authorityStateForProvider(authority, providerKind, projectId);
   const nativeContextActive = context !== null && isStudioNativePreviewSceneIdentityV1(context);
+  const executionConsentScope = studioPreviewExecutionConsentScope(providerKind, projectId);
   useLayoutEffect(() => {
     dispatch({ projectId, providerKind, type: "configure" });
   }, [projectId, providerKind]);
+
+  useEffect(() => {
+    if (
+      nativeContextActive ||
+      !activationIsAllowed() ||
+      authority.phase !== "awaiting-consent" ||
+      authority.projectId !== projectId ||
+      authority.providerKind !== providerKind ||
+      executionConsentScope === null ||
+      rememberedStudioPreviewExecutionConsent() !== executionConsentScope
+    )
+      return;
+    dispatch({ allowed: true, type: "activate" });
+  }, [
+    authority.phase,
+    authority.projectId,
+    authority.providerKind,
+    executionConsentScope,
+    nativeContextActive,
+    projectId,
+    providerKind,
+  ]);
 
   useEffect(() => {
     if (nativeContextActive || currentAuthority.phase !== "resolving") return;
@@ -263,9 +310,10 @@ export function useStudioPreviewAuthorityController({
   const allowed = activationIsAllowed();
   const activate = useCallback(() => {
     if (nativeContextActive || !allowed || currentAuthority.phase !== "awaiting-consent") return false;
+    if (executionConsentScope !== null) rememberStudioPreviewExecutionConsent(executionConsentScope);
     dispatch({ allowed, type: "activate" });
     return true;
-  }, [allowed, currentAuthority.phase, nativeContextActive]);
+  }, [allowed, currentAuthority.phase, executionConsentScope, nativeContextActive]);
   const retry = useCallback(() => {
     if (nativeContextActive || !allowed || currentAuthority.phase !== "active") return false;
     dispatch({ allowed, type: "retry" });

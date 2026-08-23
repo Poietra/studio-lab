@@ -108,7 +108,9 @@ test("the canonical preview is selected by default but waits for execution conse
   await expect(page.getByRole("textbox", { name: "Describe an edit" })).toBeDisabled();
 });
 
-test("a legacy server query cannot bypass explicit Scene execution consent", async ({ page }, testInfo) => {
+test("a legacy server query requires initial consent and remembers it only for the same tab scope", async ({
+  page,
+}, testInfo) => {
   requireChromiumAuthorityLane(testInfo);
   let executionPosts = 0;
   page.on("request", (request) => {
@@ -140,10 +142,23 @@ test("a legacy server query cannot bypass explicit Scene execution consent", asy
 
   await page.reload();
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  const rememberedExecutionRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && /\/(runtime-traces|scene-snapshots)$/u.test(new URL(request.url()).pathname),
+  );
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  await expect(page.locator("[data-studio-canvas]")).toBeVisible();
+  await rememberedExecutionRequest;
+  await expect(page.getByRole("button", { name: "Start preview…" })).toHaveCount(0);
+  await expect.poll(() => executionPosts).toBeGreaterThan(confirmedExecutionPosts);
+
+  const afterRememberedExecution = executionPosts;
+  await page.goto("/?previewRenderer=fixture");
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
   await expect(page.locator("[data-studio-canvas]")).toBeVisible();
   await expect(page.getByRole("button", { name: "Start preview…" })).toBeVisible();
-  expect(executionPosts).toBe(confirmedExecutionPosts);
+  expect(executionPosts).toBe(afterRememberedExecution);
 });
 
 test("an embedded Studio cannot grant Scene execution", async ({ baseURL, page }, testInfo) => {
