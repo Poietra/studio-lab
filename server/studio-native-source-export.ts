@@ -130,6 +130,53 @@ function admittedPrograms(programs: readonly SceneEdit[], sceneDuration: number)
   });
 }
 
+function programsOnSourceTimeline(
+  programs: readonly ScheduledProgram[],
+  sceneDuration: number,
+): readonly ScheduledProgram[] {
+  return programs.map((entry) => ({
+    ...entry,
+    program: {
+      ...entry.program,
+      operations: entry.program.operations.map((operation) => {
+        if (operation.kind !== "CreateEntity" || operation.entity.lifetime.end === null) return operation;
+        const finalEnd = operation.entity.lifetime.end;
+        if (finalEnd <= operation.entity.lifetime.start + TIME_EPSILON || finalEnd > sceneDuration + TIME_EPSILON) {
+          throw new ProgramLoweringError(
+            "operation-unsupported",
+            `Created lifetime for ${operation.entity.id} must end inside the ${sceneDuration.toFixed(3)}s Studio Scene.`,
+          );
+        }
+        const concurrent = programs.find(({ duration, program }) => {
+          const start = program.anchor.resolvedSeconds;
+          return (
+            duration > TIME_EPSILON && finalEnd > start + TIME_EPSILON && finalEnd < start + duration - TIME_EPSILON
+          );
+        });
+        if (concurrent) {
+          throw new ProgramLoweringError(
+            "operation-unsupported",
+            `Created lifetime for ${operation.entity.id} ends inside Program ${concurrent.program.transactionId}; Studio-native Manim export cannot serialize that concurrent interval.`,
+          );
+        }
+        const insertedBeforeEnd = programs.reduce((total, candidate) => {
+          const candidateEnd = candidate.program.anchor.resolvedSeconds + candidate.duration;
+          return candidateEnd <= finalEnd + TIME_EPSILON ? total + candidate.duration : total;
+        }, 0);
+        const sourceEnd = finalEnd - insertedBeforeEnd;
+        const rebaseOffset = entry.program.anchor.resolvedSeconds - entry.sourceAnchor;
+        return {
+          ...operation,
+          entity: {
+            ...operation.entity,
+            lifetime: { ...operation.entity.lifetime, end: sourceEnd + rebaseOffset },
+          },
+        };
+      }),
+    },
+  }));
+}
+
 function formatSeconds(value: number) {
   const normalized = Math.abs(value) < 0.00005 ? 0 : value;
   return Number(normalized.toFixed(4)).toString();
@@ -145,7 +192,19 @@ function sourceScaffold(sceneName: string, duration: number, programs: readonly 
     );
   }
 
-  const anchors = [...new Set(programs.map(({ sourceAnchor }) => formatSeconds(sourceAnchor)))].map(Number);
+  const finiteLifetimeAnchors = programs.flatMap(({ program, sourceAnchor }) => {
+    const rebaseOffset = program.anchor.resolvedSeconds - sourceAnchor;
+    return program.operations.flatMap((operation) =>
+      operation.kind === "CreateEntity" && operation.entity.lifetime.end !== null
+        ? [operation.entity.lifetime.end - rebaseOffset]
+        : [],
+    );
+  });
+  const anchors = [
+    ...new Set([...programs.map(({ sourceAnchor }) => sourceAnchor), ...finiteLifetimeAnchors].map(formatSeconds)),
+  ]
+    .map(Number)
+    .sort((left, right) => left - right);
   const lines = ["from manim import *", "", `class ${sceneName}(Scene):`, "    def construct(self):"];
   let cursor = 0;
   for (const anchor of anchors) {
@@ -182,13 +241,23 @@ function verifyRoundTrip(
     );
   }
   const expectedEntities = programs.flatMap(({ program }) =>
-    program.operations.flatMap((operation): readonly Readonly<{ id: string; type: string }>[] => {
-      if (operation.kind === "CreateEntity") return [{ id: operation.entity.id, type: operation.entity.type }];
-      if (operation.kind === "TransformContent") {
-        return [{ id: operation.targetEntityId, type: operation.targetType ?? "MathTex" }];
-      }
-      return [];
-    }),
+    program.operations.flatMap(
+      (operation): readonly Readonly<{ id: string; lifetimeEnd: number | null; type: string }>[] => {
+        if (operation.kind === "CreateEntity") {
+          return [
+            {
+              id: operation.entity.id,
+              lifetimeEnd: operation.entity.lifetime.end,
+              type: operation.entity.type,
+            },
+          ];
+        }
+        if (operation.kind === "TransformContent") {
+          return [{ id: operation.targetEntityId, lifetimeEnd: null, type: operation.targetType ?? "MathTex" }];
+        }
+        return [];
+      },
+    ),
   );
   for (const expected of expectedEntities) {
     const entity = imported.runtimeSceneState.objectGraph.entities[expected.id];
@@ -196,6 +265,15 @@ function verifyRoundTrip(
       throw new ProgramLoweringError(
         "operation-unsupported",
         `Studio-native Manim source did not reimport ${expected.id} as ${expected.type}.`,
+      );
+    }
+    if (
+      expected.lifetimeEnd !== null &&
+      Math.abs((entity.lifetime.at(-1)?.end ?? Number.NaN) - expected.lifetimeEnd) >= TIME_EPSILON
+    ) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Studio-native Manim source did not preserve the ${expected.lifetimeEnd.toFixed(4)}s lifetime end for ${expected.id}.`,
       );
     }
   }
@@ -215,10 +293,11 @@ export function exportStudioNativeManimSource(input: StudioNativeSourceExportInp
   assertPositiveSize(input.frame, "The Manim frame");
   assertPositiveSize(input.viewport, "The Studio viewport");
   const sceneName = manimSceneNameSchema.parse(input.sceneName ?? "PoietraScene");
-  const programs = admittedPrograms(input.programs, input.duration);
+  const admitted = admittedPrograms(input.programs, input.duration);
+  const programs = programsOnSourceTimeline(admitted, input.duration);
   const source = sourceScaffold(sceneName, input.duration, programs);
   if (programs.length === 0) {
-    verifyRoundTrip(source, sceneName, input.duration, input.frame, programs);
+    verifyRoundTrip(source, sceneName, input.duration, input.frame, admitted);
     return { sceneName, source };
   }
 
@@ -240,6 +319,6 @@ export function exportStudioNativeManimSource(input: StudioNativeSourceExportInp
     input.frame,
     null,
   );
-  verifyRoundTrip(lowered.source, sceneName, input.duration, input.frame, programs);
+  verifyRoundTrip(lowered.source, sceneName, input.duration, input.frame, admitted);
   return { sceneName, source: lowered.source };
 }

@@ -46,6 +46,7 @@ function creationProgram(
   type: "Circle" | "Rectangle",
   anchor: number,
   duration = 0.4,
+  lifetimeEnd: number | null = null,
 ) {
   const createId = `${transactionId}/create`;
   const positionId = `${transactionId}/position`;
@@ -56,7 +57,7 @@ function creationProgram(
       entity: {
         dimensions: type === "Circle" ? { radius: 1 } : { height: 2, width: 3 },
         id: entityId,
-        lifetime: { end: null, start: anchor },
+        lifetime: { end: lifetimeEnd, start: anchor },
         type,
       },
       kind: "CreateEntity",
@@ -124,6 +125,15 @@ describe("Studio-native Manim source export", () => {
     expect(() =>
       exportStudioNativeManimSource({ duration: 3, frame, programs: [circle, rectangle], viewport }),
     ).toThrow(/overlaps another positive-duration Program/i);
+  });
+
+  it("preserves a finite Studio-created lifetime on the synthetic source timeline", () => {
+    const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.4, 2);
+    const exported = exportStudioNativeManimSource({ duration: 3, frame, programs: [circle], viewport });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
+
+    expect(exported.source).toContain("self.remove(");
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:circle"]?.lifetime[0]?.end).toBe(2);
   });
 
   it("reports the unsupported operation family", () => {
