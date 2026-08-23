@@ -442,6 +442,7 @@ describe("Scene authoring WASM adapter", () => {
     const response = {
       bundle,
       creationProjection: {
+        durationTrimBarrierOperationIds: [],
         entities: [
           {
             createdLifetime: { end: bundle.scene.duration, start: 0.5 },
@@ -459,6 +460,11 @@ describe("Scene authoring WASM adapter", () => {
         mutations: [],
         projectedDuration: bundle.scene.duration,
         removals: [],
+        timelineProjection: {
+          programProjections: [],
+          projectedDuration: bundle.scene.duration,
+          transforms: [],
+        },
       },
       persistentRemoveProjection: { removals: [] },
     } as const;
@@ -479,6 +485,7 @@ describe("Scene authoring WASM adapter", () => {
 
   it("accepts Arrow in a Studio creation projection", async () => {
     const response = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: 2, start: 0 },
@@ -514,6 +521,7 @@ describe("Scene authoring WASM adapter", () => {
       ],
       projectedDuration: 2,
       removals: [],
+      timelineProjection: { programProjections: [], projectedDuration: 2, transforms: [] },
     } as const;
     const compile = createProjectStudioCreationCompiler(async () => ({
       projectStudioCreationEditV1: () => new TextEncoder().encode(JSON.stringify(response)),
@@ -531,6 +539,7 @@ describe("Scene authoring WASM adapter", () => {
 
   it("accepts a strict root-owned MathTex transform creation projection", async () => {
     const response = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: 4, start: 0 },
@@ -561,6 +570,7 @@ describe("Scene authoring WASM adapter", () => {
       ],
       projectedDuration: 5,
       removals: [],
+      timelineProjection: { programProjections: [], projectedDuration: 5, transforms: [] },
     } as const;
     const compile = createProjectStudioCreationCompiler(async () => ({
       projectStudioCreationEditV1: () => new TextEncoder().encode(JSON.stringify(response)),
