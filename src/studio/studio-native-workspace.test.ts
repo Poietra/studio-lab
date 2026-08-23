@@ -174,6 +174,7 @@ describe("Studio-native workspace projection", () => {
     const scene = workspaceProjection.scenes[0];
     const program = createCircleProgram();
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: scene.runtimeSceneState.duration, start: 0 },
@@ -191,6 +192,11 @@ describe("Studio-native workspace projection", () => {
       mutations: [],
       projectedDuration: scene.runtimeSceneState.duration,
       removals: [],
+      timelineProjection: {
+        programProjections: [],
+        projectedDuration: scene.runtimeSceneState.duration,
+        transforms: [],
+      },
     };
 
     const result = projectStudioWorkspace({
@@ -234,6 +240,7 @@ describe("Studio-native workspace projection", () => {
     });
     if (duration.kind !== "valid") throw new Error("Native duration fixture is invalid.");
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: 6, start: 0 },
@@ -251,6 +258,24 @@ describe("Studio-native workspace projection", () => {
       mutations: [],
       projectedDuration: 6,
       removals: [],
+      timelineProjection: {
+        programProjections: [
+          {
+            operationId: duration.program.operations[0].id,
+            transactionId: duration.program.transactionId,
+            workingAnchor: 5,
+            workingInterval: { end: 6, start: 5 },
+          },
+        ],
+        projectedDuration: 6,
+        transforms: [
+          {
+            interval: { end: 6, start: 5 },
+            kind: "insert",
+            operationId: duration.program.operations[0].id,
+          },
+        ],
+      },
     };
 
     const result = projectStudioWorkspace({

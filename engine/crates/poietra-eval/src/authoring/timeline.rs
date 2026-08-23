@@ -194,7 +194,7 @@ pub(super) struct StudioTimelinePlan {
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyStudioTimelineEditError {
     #[error(
-        "the normalized Studio Programs do not authorize one static imported Scene timeline edit"
+        "the normalized Studio Programs do not authorize one static authorable Scene timeline edit"
     )]
     Unsupported,
     #[error("the installed Scene revision does not match expectedBaseRevision")]
@@ -797,7 +797,7 @@ impl EngineSessionV1 {
     /// # Errors
     ///
     /// Returns `Unsupported` when the normalized edits do not describe the closed static
-    /// imported-Scene duration subset, or the timeline primitive error when mutation fails.
+    /// authorable-Scene duration subset, or the timeline primitive error when mutation fails.
     pub fn apply_studio_timeline_edit(
         &mut self,
         command: ApplyStudioTimelineEditCommand,
@@ -811,6 +811,7 @@ impl EngineSessionV1 {
         if !matches!(
             scene.source,
             SceneSourceV1::ImportedManimServerSnapshot { .. }
+                | SceneSourceV1::StudioEditProgram { .. }
         ) || !scene.animation_channels.is_empty()
         {
             return Err(ApplyStudioTimelineEditError::Unsupported);
@@ -1161,6 +1162,26 @@ mod tests {
         );
         assert_eq!(result.scene.source.revision_hash(), NEXT_REVISION);
         assert_eq!(session.scene(), &result.scene);
+    }
+
+    #[test]
+    fn studio_timeline_authority_accepts_a_static_studio_edit_program_scene() {
+        let mut bundle = static_imported_bundle();
+        bundle.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: BASE_REVISION.to_owned(),
+        };
+        let expected_duration = bundle.scene.duration + 1.5;
+        let command = studio_timeline_command(&bundle);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_timeline_edit(command).unwrap();
+
+        assert!((result.scene.duration - expected_duration).abs() < f64::EPSILON);
+        assert!(matches!(
+            result.scene.source,
+            SceneSourceV1::StudioEditProgram { ref revision_hash, .. } if revision_hash == NEXT_REVISION
+        ));
     }
 
     #[test]

@@ -391,7 +391,8 @@ import {
   isTransitionOverlay,
   projectStudioWorkspace,
   selectBoundEntityProjection,
-  selectCreationProjectionProgramPrefix,
+  selectCreationProjection,
+  selectHistoricalCreationProjectionPrefix,
   selectMathTexTransformProjection,
   selectMotionProjection,
   selectPersistentRemoveProjection,
@@ -1227,13 +1228,20 @@ export function App({
   const previewAppliedEdits = previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedEdits;
   const draftPrecedingEdits = editingAppliedProgram ? appliedEdits.slice(0, editingAppliedProgram.index) : appliedEdits;
   const draftPrecedingSceneEdits = draftPrecedingEdits.map((record) => record.program);
+  const previewProjectionAppliedEdits = editingAppliedProgram && draftEdit ? draftPrecedingEdits : previewAppliedEdits;
+  const previewProjectionStagedEdits =
+    editingAppliedProgram && draftEdit
+      ? previewAppliedEdits.slice(editingAppliedProgram.index)
+      : editingAppliedProgram || !draftEdit
+        ? []
+        : [draftEdit];
   const previewWorkingState =
     editorDocumentPresentationReady && projectedEditorScene
       ? studioWorkspaceWorkingState(projectedEditorScene, {
-          appliedEdits: previewAppliedEdits,
+          appliedEdits: previewProjectionAppliedEdits,
           playhead: currentTime,
           selection: selectedObjectIds,
-          stagedEdits: editingAppliedProgram || !draftEdit ? [] : [draftEdit],
+          stagedEdits: previewProjectionStagedEdits,
         })
       : null;
   const activeProjectFragmentMaterials = nativeSceneActive
@@ -1426,22 +1434,35 @@ export function App({
     }
   }
 
+  function programBatchIsExact(left: readonly SceneEdit[], right: readonly SceneEdit[]) {
+    return left.length === right.length && left.every((program, index) => program === right[index]);
+  }
+  function exactTimelineProjectionForPrograms(programs: readonly SceneEdit[]) {
+    const fullPrograms = previewEditRecords.map((record) => record.program);
+    if (programBatchIsExact(programs, fullPrograms)) return previewRenderer?.timelineProjection;
+    const appliedPrograms = previewProjectionAppliedEdits.map((record) => record.program);
+    if (programBatchIsExact(programs, appliedPrograms)) return previewRenderer?.appliedTimelineProjection;
+    // Historical Program editing still starts synchronously before an exact
+    // applied-prefix preview can be requested. Use the correlated full Rust
+    // projection only for that bootstrap path.
+    return previewRenderer?.timelineProjection;
+  }
   function timelineProjectionForPrograms(programs: readonly SceneEdit[]) {
     const durationPrograms = programs.filter((program) => program.operations.some(isSceneDurationOperation));
     if (durationPrograms.length === 0) return null;
-    if (!projectedEditorScene || !previewRenderer?.timelineProjection) {
-      return undefined;
-    }
+    if (!projectedEditorScene) return undefined;
     try {
       if (programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) {
         const creationProjection = creationProjectionForPrograms(programs);
         return creationProjection === undefined ? undefined : creationProjection?.timelineProjection;
       }
       if (!isSceneDurationProgramBatch(programs)) return undefined;
+      const exactProjection = exactTimelineProjectionForPrograms(programs);
+      if (!exactProjection) return undefined;
       return selectTimelineProgramBatchProjection(
         projectedEditorScene.runtimeSceneState.duration,
         programs,
-        previewRenderer.timelineProjection,
+        exactProjection,
       ).projection;
     } catch {
       // A previous asynchronous preview result must never authorize the
@@ -1451,12 +1472,28 @@ export function App({
   }
   function creationProjectionForPrograms(programs: readonly SceneEdit[]) {
     if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
-    if (!projectedEditorScene || !previewRenderer?.creationProjection) return undefined;
+    if (!projectedEditorScene || !previewRenderer) return undefined;
     try {
-      return selectCreationProjectionProgramPrefix(
+      const fullPrograms = previewEditRecords.map((record) => record.program);
+      const appliedPrograms = previewProjectionAppliedEdits.map((record) => record.program);
+      if (programBatchIsExact(programs, fullPrograms)) {
+        return selectCreationProjection(
+          projectedEditorScene.runtimeSceneState.duration,
+          programs,
+          previewRenderer.creationProjection,
+        );
+      }
+      if (programBatchIsExact(programs, appliedPrograms)) {
+        return selectCreationProjection(
+          projectedEditorScene.runtimeSceneState.duration,
+          programs,
+          previewRenderer.appliedCreationProjection,
+        );
+      }
+      return selectHistoricalCreationProjectionPrefix(
         projectedEditorScene.runtimeSceneState.duration,
         programs,
-        previewEditRecords.map((record) => record.program),
+        fullPrograms,
         previewRenderer.creationProjection,
       );
     } catch {
@@ -1566,9 +1603,7 @@ export function App({
     return projectRuntimeSceneToSourceTimelineWithProjection(
       scene,
       programs,
-      transforms
-        ? { programProjections: [], projectedDuration: scene.duration, transforms }
-        : null,
+      transforms ? { programProjections: [], projectedDuration: scene.duration, transforms } : null,
     );
   }
   const previewEditRecords = [...previewAppliedEdits, ...(editingAppliedProgram || !draftEdit ? [] : [draftEdit])];
@@ -1651,6 +1686,8 @@ export function App({
         })
       : null;
   const previewAppliedSceneEdits = previewAppliedEdits.map((record) => record.program);
+  const appliedCreationProjection = creationProjectionForPrograms(previewAppliedSceneEdits);
+  const appliedTimelineProjection = timelineProjectionForPrograms(previewAppliedSceneEdits);
   const appliedTimelineTransforms = timelineTransformsForPrograms(previewAppliedSceneEdits);
   const sourceCurrentTime =
     appliedTimelineTransforms === undefined
@@ -2818,7 +2855,10 @@ export function App({
   const activeDuration =
     workspaceProjection?.proposedState.evaluatedScene.duration ?? projectedEditorScene?.runtimeSceneState.duration ?? 1;
   const durationTrimAvailability = appliedTimelineProjection
-    ? sceneDurationTrimAvailabilityFromProjection(appliedTimelineProjection)
+    ? sceneDurationTrimAvailabilityFromProjection(
+        appliedTimelineProjection,
+        appliedCreationProjection?.durationTrimBarrierOperationIds,
+      )
     : {
         anchor: null,
         blocker:
@@ -6144,9 +6184,7 @@ export function App({
     if (!activeEditorScene) return null;
     const timelineProjection = timelineProjectionForPrograms(input.sourcePrograms);
     if (timelineProjection === undefined) {
-      setDraftError(
-        "Wait for the Rust timeline projection before authoring another edit.",
-      );
+      setDraftError("Wait for the Rust timeline projection before authoring another edit.");
       setIsPlaying(false);
       return null;
     }
@@ -9003,6 +9041,7 @@ export function App({
               className="order-2 min-h-64 md:order-1 md:col-start-1 md:row-start-1 md:min-h-0"
               draftActive={draftEdit !== null}
               duration={activeDuration}
+              durationBlocker={durationTrimAvailability.blocker}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
               durationError={durationError}
               durationMinimum={durationTrimAvailability.minimumDuration}

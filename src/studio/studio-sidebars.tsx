@@ -210,6 +210,7 @@ export function WorkspaceSidebar({
   className,
   draftActive,
   duration,
+  durationBlocker = null,
   editingAppliedTransactionId,
   durationError,
   durationMinimum,
@@ -262,6 +263,7 @@ export function WorkspaceSidebar({
   className?: string;
   draftActive: boolean;
   duration: number;
+  durationBlocker?: string | null;
   editingAppliedTransactionId: string | null;
   durationError: string | null;
   durationMinimum: number;
@@ -988,9 +990,15 @@ export function WorkspaceSidebar({
                 className="h-7 min-w-0 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-[10px] text-zinc-300 outline-none focus:border-sky-500"
                 defaultValue={duration.toFixed(2)}
                 key={`${activeScene.sceneId}/${duration.toFixed(3)}`}
-                aria-describedby={durationError ? "scene-duration-error" : "scene-duration-hint"}
+                aria-describedby={[
+                  "scene-duration-hint",
+                  durationBlocker ? "scene-duration-blocker" : null,
+                  durationError ? "scene-duration-error" : null,
+                ]
+                  .filter(Boolean)
+                  .join(" ")}
                 disabled={!authoringAvailable}
-                min="0.1"
+                min={durationMinimum}
                 name="duration"
                 step="0.1"
                 type="number"
@@ -1006,6 +1014,11 @@ export function WorkspaceSidebar({
             <p className="mt-1 text-pretty text-[10px] leading-4 text-zinc-600" id="scene-duration-hint">
               Shortest safe: <span className="tabular-nums">{durationMinimum.toFixed(2)}s</span>
             </p>
+            {durationBlocker ? (
+              <p className="mt-1 text-pretty text-[10px] leading-4 text-amber-600" id="scene-duration-blocker">
+                {durationBlocker}
+              </p>
+            ) : null}
             {durationError ? (
               <p className="mt-1 text-pretty text-[10px] leading-4 text-red-300" id="scene-duration-error" role="alert">
                 {durationError}

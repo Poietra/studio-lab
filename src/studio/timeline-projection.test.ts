@@ -202,6 +202,20 @@ describe("Studio timeline projection adapter", () => {
     });
   });
 
+  it("stops at a Rust creation barrier while retaining a later safe wait", () => {
+    expect(sceneDurationTrimAvailabilityFromProjection(projection, ["wait-one"])).toEqual({
+      anchor: 5,
+      blocker: null,
+      minimumDuration: 11,
+      removableDuration: 1,
+      waitOperationIds: ["wait-two", "wait-one"],
+    });
+    expect(sceneDurationTrimAvailabilityFromProjection(projection, ["wait-two"])).toMatchObject({
+      blocker: "Later authored content follows the Studio-added wait, so shortening it would cut content.",
+      removableDuration: 0,
+    });
+  });
+
   it("keeps consumed wait IDs for admission but excludes them from trim availability", () => {
     expect(
       sceneDurationTrimAvailabilityFromProjection({

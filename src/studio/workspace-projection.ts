@@ -705,8 +705,11 @@ function intervalBeforeInsertions(
   );
 }
 
-/** Selects an exact Program prefix from one already correlated Rust creation projection. */
-export function selectCreationProjectionProgramPrefix(
+/**
+ * Reconstructs an older applied-history prefix only while bootstrapping an edit of that history.
+ * Current workspace and draft-base projections must use an exact Rust projection instead.
+ */
+export function selectHistoricalCreationProjectionPrefix(
   baseDuration: number,
   programs: readonly SceneEdit[],
   fullPrograms: readonly SceneEdit[],
@@ -729,6 +732,26 @@ export function selectCreationProjectionProgramPrefix(
   const durationProgramByOperationId = new Map(
     durationPrograms.map((program) => [program.operations[0].id, program] as const),
   );
+  const selectedAuthoringInsertions = fullProjection.insertions.filter(
+    ({ transactionId }) => transactionIds.has(transactionId) && !durationTransactionIds.has(transactionId),
+  );
+  const mixedAuthoringOffsetBefore = (program: SceneEdit) => {
+    const programIndex = fullPrograms.indexOf(program);
+    return selectedAuthoringInsertions.reduce((offset, insertion) => {
+      const insertionProgramIndex = fullPrograms.findIndex(
+        ({ transactionId }) => transactionId === insertion.transactionId,
+      );
+      if (insertionProgramIndex < 0) {
+        throw new TypeError("The Rust creation insertion is not correlated with the selected prefix.");
+      }
+      const insertionProgram = fullPrograms[insertionProgramIndex]!;
+      const precedes =
+        insertionProgram.anchor.resolvedSeconds < program.anchor.resolvedSeconds ||
+        (insertionProgram.anchor.resolvedSeconds === program.anchor.resolvedSeconds &&
+          insertionProgramIndex < programIndex);
+      return precedes ? offset + insertion.duration : offset;
+    }, 0);
+  };
   const selectedTimelineProjection =
     durationPrograms.length > 0
       ? selectTimelineProgramBatchProjection(baseDuration, durationPrograms, fullProjection.timelineProjection)
@@ -743,7 +766,7 @@ export function selectCreationProjectionProgramPrefix(
       const program = durationProgramByOperationId.get(transform.operationId);
       if (!program) throw new TypeError("The Rust duration insertion is not correlated with the selected prefix.");
       selectedDurationInsertions.set(transform.operationId, {
-        at: transform.interval.start,
+        at: transform.interval.start + mixedAuthoringOffsetBefore(program),
         duration: transform.interval.end - transform.interval.start,
         operationId: transform.operationId,
         transactionId: program.transactionId,
@@ -764,12 +787,7 @@ export function selectCreationProjectionProgramPrefix(
   const suffixInsertions = fullProjection.insertions.filter(({ transactionId }) => !transactionIds.has(transactionId));
   const rewindTime = (time: number) =>
     suffixInsertions.reduceRight((current, insertion) => timeBeforeInsertion(current, insertion), time);
-  const selectedInsertions = [
-    ...fullProjection.insertions.filter(
-      ({ transactionId }) => transactionIds.has(transactionId) && !durationTransactionIds.has(transactionId),
-    ),
-    ...selectedDurationInsertions.values(),
-  ]
+  const selectedInsertions = [...selectedAuthoringInsertions, ...selectedDurationInsertions.values()]
     .filter(({ duration }) => duration > MATH_TEX_TRANSFORM_PROJECTION_EPSILON)
     .map(({ at, duration, transactionId }) => ({ at: rewindTime(at), duration, transactionId }))
     .sort((left, right) => {
@@ -799,8 +817,11 @@ export function selectCreationProjectionProgramPrefix(
     end: restoreTime(interval.end, true),
     start: restoreTime(interval.start, false),
   });
-  const projectedDuration = baseDuration + selectedInsertions.reduce((duration, insertion) => duration + insertion.duration, 0);
+  const projectedDuration =
+    baseDuration + selectedInsertions.reduce((duration, insertion) => duration + insertion.duration, 0);
   const selectedProjection: StudioCreationProjectionV1 = {
+    // This historical bootstrap view is never current trim authority.
+    durationTrimBarrierOperationIds: [],
     entities: fullProjection.entities
       .filter(({ operationId }) => operationIds.has(operationId))
       .map((entity) => ({

@@ -28,9 +28,10 @@ class MixedScene(Scene):
         appliedEdits={[]}
         appliedTransactionIds={new Set()}
         draftActive={false}
-        duration={0.1}
+        duration={5}
+        durationBlocker="Later authored content follows the Studio-added wait."
         durationError={null}
-        durationMinimum={0.1}
+        durationMinimum={4.2}
         editingAppliedTransactionId={null}
         entities={[]}
         nextScene={null}
@@ -49,6 +50,8 @@ class MixedScene(Scene):
     expect(markup).toContain("Source-only bindings");
     expect(markup).toContain("custom");
     expect(markup).toContain("Read-only");
+    expect(markup).toContain('min="4.2"');
+    expect(markup).toContain("Later authored content follows the Studio-added wait.");
     expect(markup).not.toContain('type="checkbox"');
   });
 });

@@ -10,6 +10,8 @@ import type { StudioPreviewRendererView } from "./use-preview-renderer";
 
 function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRendererView {
   return {
+    appliedCreationProjection: null,
+    appliedTimelineProjection: null,
     attachCanvas: vi.fn(),
     generateThumbnail: vi.fn(),
     boundEntityProjection: null,

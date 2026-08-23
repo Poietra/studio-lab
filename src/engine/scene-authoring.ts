@@ -657,6 +657,7 @@ const studioTimelineProjectionV1Schema = z
   .strict();
 const studioCreationProjectionV1Schema = z
   .object({
+    durationTrimBarrierOperationIds: z.array(z.string().min(1)),
     entities: z.array(
       z
         .object({
