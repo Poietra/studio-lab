@@ -334,10 +334,11 @@ describe("Canonical EditProgram source lowering", () => {
 
   it("lowers Studio-created Text with the preview font and canonical size", () => {
     const entityId = "tx:created-text/entity:label";
+    const createOperationId = "create-text";
     const create = canonicalProgram(
       [
         {
-          ...operationBase("create-text", 7),
+          ...operationBase(createOperationId, 7),
           entity: {
             content: {
               displayLines: ["Hello, Poietra!"],
@@ -356,23 +357,77 @@ describe("Canonical EditProgram source lowering", () => {
           },
           kind: "CreateEntity",
         },
+        {
+          ...operationBase("fade-text", 7, 7.4),
+          dependsOn: [createOperationId],
+          effect: "fade-in",
+          entityId,
+          kind: "ChangePresence",
+          persistent: true,
+        },
       ],
       "created-text",
     );
+    const fill = (transactionId: string, value: string) =>
+      canonicalProgram(
+        [
+          {
+            ...operationBase(`${transactionId}/operation`, 7),
+            entityId,
+            key: "fillColor",
+            kind: "SetProperty",
+            value,
+          },
+        ],
+        transactionId,
+      );
+    const red = fill("created-text-red", "#ef4444");
+    const green = fill("created-text-green", "#22c55e");
 
-    const lowered = lowerCanonicalProgramSource(source, request(create, []), { height: 8, width: 14.222 }, null);
+    const lowered = lowerCanonicalProgramBatchSource(
+      source,
+      request(create, []),
+      [create, red, green].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
 
     expect(lowered.insertedCode).toContain(
       'Text("Hello, Poietra!", font="DejaVu Sans Mono", weight=BOLD, disable_ligatures=True).scale_to_fit_height(1.5)',
     );
+    expect(lowered.insertedCode).toContain('.set_fill("#22c55e", opacity=1)');
+    expect(lowered.insertedCode).not.toContain("#ef4444");
+    expect(lowered.insertedCode.indexOf('.set_fill("#22c55e", opacity=1)')).toBeLessThan(
+      lowered.insertedCode.indexOf("FadeIn("),
+    );
+    const transactionMarkers = ["created-text", "created-text-red", "created-text-green"].map(
+      (transactionId) => `# poietra:transaction ${JSON.stringify(transactionId)}`,
+    );
+    expect(lowered.insertedCode.indexOf(transactionMarkers[0]!)).toBeLessThan(
+      lowered.insertedCode.indexOf(transactionMarkers[1]!),
+    );
+    expect(lowered.insertedCode.indexOf(transactionMarkers[1]!)).toBeLessThan(
+      lowered.insertedCode.indexOf(transactionMarkers[2]!),
+    );
+    for (const marker of transactionMarkers) expect(lowered.insertedCode.split(marker)).toHaveLength(2);
+    expect(lowered.insertedCode.match(/\.set_fill\(/gu)).toHaveLength(1);
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
     expect(imported?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
       content: {
         text: "Hello, Poietra!",
         textLayout: { fontFamily: "mono", fontSize: 1.5, fontWeight: "bold" },
       },
+      geometry: { style: { kind: "known", value: { fillColor: "#22c55e" } } },
       type: "Text",
     });
+    const withoutFill = lowerCanonicalProgramBatchSource(
+      source,
+      request(create, []),
+      [{ program: create, sourceAnchor: 7 }],
+      { height: 8, width: 14.222 },
+      null,
+    );
+    expect(withoutFill.insertedCode).not.toContain(".set_fill(");
   });
 
   it.each(["こんにちは", "two\nlines"])(
@@ -521,7 +576,7 @@ describe("Canonical EditProgram source lowering", () => {
 
     expect(() =>
       lowerCanonicalProgramSource(source, request(importedFill), { height: 8, width: 14.222 }, null),
-    ).toThrow(/only Studio-created Circle and Rectangle/i);
+    ).toThrow(/only authorized Studio-created entities/i);
   });
 
   it("lowers a Scene duration extension to an explicit wait", () => {

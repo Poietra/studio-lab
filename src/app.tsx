@@ -7522,7 +7522,7 @@ export function App({
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     const colorableTypes =
       property === "fillColor"
-        ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"]
+        ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Text", "Triangle"]
         : [
             "Arc",
             "Arrow",
@@ -9382,6 +9382,7 @@ export function App({
                   "Rectangle",
                   "RegularPolygon",
                   "Sector",
+                  "Text",
                   "Triangle",
                 ].includes(selectedEntity.type)
               }

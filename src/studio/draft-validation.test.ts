@@ -720,7 +720,7 @@ describe("Studio draft validation boundary", () => {
     ).toThrow(/unique/i);
   });
 
-  it("creates a canonical color edit only for a Studio-created shape", () => {
+  it("creates only the canonical colors supported by a Studio-created object", () => {
     const entityId = "tx:shape/entity:circle";
     const scene = {
       ...STUDIO_FIXTURE_SCENE,
@@ -789,6 +789,48 @@ describe("Studio draft validation boundary", () => {
         program: { operations: [{ entityId: strokeEntityId, key: "strokeColor", value: "#12abef" }] },
       });
     }
+    const textEntityId = "tx:text/entity:label";
+    const textScene = {
+      ...scene,
+      objectGraph: {
+        ...scene.objectGraph,
+        entities: {
+          ...scene.objectGraph.entities,
+          [textEntityId]: {
+            ...scene.objectGraph.entities[entityId],
+            id: textEntityId,
+            transactionId: "text",
+            type: "Text" as const,
+          },
+        },
+      },
+    };
+    expect(
+      createDirectManipulationColorProgram({
+        capturedPlayhead: 0,
+        color: "#22c55e",
+        entityId: textEntityId,
+        property: "fillColor",
+        scene: textScene,
+        start: 0,
+        transactionId: "fill-text",
+      }),
+    ).toMatchObject({
+      issues: [],
+      kind: "valid",
+      program: { operations: [{ entityId: textEntityId, key: "fillColor", value: "#22c55e" }] },
+    });
+    expect(
+      createDirectManipulationColorProgram({
+        capturedPlayhead: 0,
+        color: "#22c55e",
+        entityId: textEntityId,
+        property: "strokeColor",
+        scene: textScene,
+        start: 0,
+        transactionId: "stroke-text",
+      }),
+    ).toMatchObject({ kind: "invalid" });
     expect(() =>
       createDirectManipulationColorProgram({
         capturedPlayhead: 0,
