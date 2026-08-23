@@ -464,6 +464,23 @@ function normalizedStudioCreationOperation(
   if (operation.kind === "UngroupEntity") {
     return { ...common, groupId: operation.groupId, kind: "ungroup" };
   }
+  if (operation.kind === "InsertTimelineEvent") {
+    return {
+      ...common,
+      eventKind: operation.eventKind,
+      kind: "insert-wait",
+      purpose: operation.purpose ?? null,
+    };
+  }
+  if (operation.kind === "TrimSceneDuration") {
+    return {
+      ...common,
+      kind: "trim-scene-duration",
+      removedDuration: operation.removedDuration,
+      targetDuration: operation.targetDuration,
+      waitOperationIds: operation.waitOperationIds,
+    };
+  }
   return { ...common, kind: "unsupported" };
 }
 

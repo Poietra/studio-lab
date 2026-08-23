@@ -614,6 +614,47 @@ const studioMotionProjectionV1Schema = z
     projectedDuration: finiteNumberSchema,
   })
   .strict();
+const studioTimelineProjectionV1Schema = z
+  .object({
+    programProjections: z.array(
+      z
+        .object({
+          operationId: z.string().min(1),
+          transactionId: z.string().min(1),
+          workingAnchor: finiteNumberSchema,
+          workingInterval: studioTimelineProjectionIntervalV1Schema,
+        })
+        .strict(),
+    ),
+    projectedDuration: finiteNumberSchema,
+    transforms: z.array(
+      z.discriminatedUnion("kind", [
+        z
+          .object({
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("insert"),
+            operationId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("remove"),
+            operationId: z.string().min(1),
+            waitReductions: z.array(
+              z
+                .object({
+                  operationId: z.string().min(1),
+                  removedDuration: finiteNumberSchema.positive(),
+                })
+                .strict(),
+            ),
+          })
+          .strict(),
+      ]),
+    ),
+  })
+  .strict();
 const studioCreationProjectionV1Schema = z
   .object({
     entities: z.array(
@@ -880,6 +921,7 @@ const studioCreationProjectionV1Schema = z
     ),
     projectedDuration: finiteNumberSchema,
     removals: studioPersistentRemoveProjectionV1Schema.shape.removals,
+    timelineProjection: studioTimelineProjectionV1Schema,
   })
   .strict();
 const studioStaticRootProjectionV1Schema = z
@@ -987,48 +1029,6 @@ const studioAuthoringEditResultV1Schema = z
     staticRootProjection: studioStaticRootProjectionV1Schema.optional(),
   })
   .strict();
-const studioTimelineProjectionV1Schema = z
-  .object({
-    programProjections: z.array(
-      z
-        .object({
-          operationId: z.string().min(1),
-          transactionId: z.string().min(1),
-          workingAnchor: finiteNumberSchema,
-          workingInterval: studioTimelineProjectionIntervalV1Schema,
-        })
-        .strict(),
-    ),
-    projectedDuration: finiteNumberSchema,
-    transforms: z.array(
-      z.discriminatedUnion("kind", [
-        z
-          .object({
-            interval: studioTimelineProjectionIntervalV1Schema,
-            kind: z.literal("insert"),
-            operationId: z.string().min(1),
-          })
-          .strict(),
-        z
-          .object({
-            interval: studioTimelineProjectionIntervalV1Schema,
-            kind: z.literal("remove"),
-            operationId: z.string().min(1),
-            waitReductions: z.array(
-              z
-                .object({
-                  operationId: z.string().min(1),
-                  removedDuration: finiteNumberSchema.positive(),
-                })
-                .strict(),
-            ),
-          })
-          .strict(),
-      ]),
-    ),
-  })
-  .strict();
-
 type StudioCreationDimensionsV1 = StaticRootTransformDimensions;
 type StudioCreationEntityKindV1 =
   | "arc"
@@ -1217,6 +1217,17 @@ type StudioCreationOperationV1 = Readonly<{
       }>
     | Readonly<{ childEntityIds: readonly string[]; groupId: string; kind: "group" }>
     | Readonly<{ groupId: string; kind: "ungroup" }>
+    | Readonly<{
+        eventKind: "play" | "wait";
+        kind: "insert-wait";
+        purpose: "scene-duration" | null;
+      }>
+    | Readonly<{
+        kind: "trim-scene-duration";
+        removedDuration: number;
+        targetDuration: number;
+        waitOperationIds: readonly string[];
+      }>
     | Readonly<{ kind: "unsupported" }>
   );
 

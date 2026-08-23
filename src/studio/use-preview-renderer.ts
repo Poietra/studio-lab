@@ -1034,6 +1034,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
           interactionEntityIds,
           editAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
+          timelineProjection: creationProjection.timelineProjection,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
         },

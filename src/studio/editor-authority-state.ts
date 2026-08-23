@@ -141,12 +141,12 @@ export async function materializeAuthoritativeEditorProgramsV1(
     throw new TypeError("The authoritative Editor projection contains persistent remove outside a closed Rust batch.");
   }
   const sceneDurationOperationCount = operations.filter(isSceneDurationOperation).length;
-  if (sceneDurationOperationCount > 0 && sceneDurationOperationCount < operations.length) {
+  if (!hasCreation && sceneDurationOperationCount > 0 && sceneDurationOperationCount < operations.length) {
     throw new EditorTimelineAdmissionError(
       "The authoritative Editor projection must not mix Scene duration and other Programs.",
     );
   }
-  if (sceneDurationOperationCount > 0 && !isSceneDurationProgramBatch(programs)) {
+  if (!hasCreation && sceneDurationOperationCount > 0 && !isSceneDurationProgramBatch(programs)) {
     throw new EditorTimelineAdmissionError(
       "The authoritative Editor projection requires one Scene duration operation per Program.",
     );

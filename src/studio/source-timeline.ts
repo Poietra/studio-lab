@@ -3,10 +3,7 @@ import type { Interval, RuntimeSceneState } from "./model";
 import { isSceneDurationOperation } from "./operations";
 import { workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline } from "./program-composition";
 import type { SceneEdit } from "./scene-edit-contract";
-import {
-  isSceneDurationProgramBatch,
-  workingTimeToSourceTime as workingTimeToSourceTimeFromProjection,
-} from "./timeline-projection";
+import { workingTimeToSourceTime as workingTimeToSourceTimeFromProjection } from "./timeline-projection";
 
 function sourceInterval(interval: Interval, workingTimeToSourceTime: (time: number) => number): Interval {
   const start = workingTimeToSourceTime(interval.start);
@@ -29,9 +26,6 @@ export function projectRuntimeSceneToSourceTimeline(
 ): RuntimeSceneState {
   if (programs.length === 0) return scene;
   const containsSceneDurationOperation = programs.some((program) => program.operations.some(isSceneDurationOperation));
-  if (containsSceneDurationOperation && !isSceneDurationProgramBatch(programs)) {
-    throw new TypeError("A source timeline projection must not mix Scene duration and other Programs.");
-  }
   if (containsSceneDurationOperation && !timelineProjection) {
     throw new TypeError("A Rust timeline projection is required to map a Scene duration edit back to source time.");
   }
