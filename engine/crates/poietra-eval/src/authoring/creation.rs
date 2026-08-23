@@ -4385,14 +4385,24 @@ fn plan_studio_creation_edits(
                         )
                         && state.persistent_removal.is_none() =>
                 {
-                    record_planned_studio_creation_appearance(state, instant_at)?;
+                    let initial_draw_stroke = state.draw_interval.is_some();
+                    if !initial_draw_stroke {
+                        record_planned_studio_creation_appearance(state, instant_at)?;
+                    }
                     state.stroke_color_override = Some(color.clone());
                     ranked_mutations.push((
                         timeline.ranks[program_index],
                         schedule_index,
                         StudioCreationProjectedMutation {
                             entity_id: entity_id.to_owned(),
-                            interval: instant_interval,
+                            interval: if initial_draw_stroke {
+                                IntervalV1 {
+                                    end: state.lifetime.start,
+                                    start: state.lifetime.start,
+                                }
+                            } else {
+                                instant_interval
+                            },
                             kind: StudioCreationProjectedMutationKind::StrokeColor {
                                 value: color.clone(),
                             },
@@ -5996,6 +6006,11 @@ fn validate_create_scene_entities_command(
                     && close_transform_baseline_value(color.alpha, entity.paint_opacity)
             });
         let has_color_override = entity.fill_color.is_some() || entity.stroke_color.is_some();
+        let has_initial_draw_stroke = entity.draw_in.is_some()
+            && entity.fill_color.is_none()
+            && entity.stroke_color.is_some()
+            && close_transform_baseline_value(entity.paint_opacity, 1.0)
+            && rotation_is_noop(entity.rotation);
         let appearance_changed = !close_transform_baseline_value(entity.paint_opacity, 1.0)
             || !rotation_is_noop(entity.rotation)
             || has_color_override;
@@ -6035,7 +6050,7 @@ fn validate_create_scene_entities_command(
             || !create_entity_write_is_valid(entity)
             || !create_entity_property_keyframes_are_valid(entity)
             || (!entity.material_parameter_keyframes.is_empty() && has_color_override)
-            || (appearance_changed && entity.appearance_at.is_none())
+            || (appearance_changed && entity.appearance_at.is_none() && !has_initial_draw_stroke)
             || entity.appearance_at.is_some_and(|at| {
                 !at.is_finite()
                     || at < entity.lifetime.start
@@ -6403,6 +6418,18 @@ fn append_created_entity(
             fragment_material: None,
             rule: FillRuleV1::NonZero,
         });
+    }
+    if entity.draw_in.is_some()
+        && let Some(color) = &entity.stroke_color
+    {
+        let SceneAppearanceV1::Vector {
+            stroke: Some(stroke),
+            ..
+        } = &mut appearance
+        else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        };
+        stroke.color = color.clone();
     }
     if let Some(first) = entity.material_parameter_keyframes.first() {
         let SceneAppearanceV1::Vector {
@@ -12063,7 +12090,15 @@ mod tests {
     #[test]
     fn normalized_creation_draw_emits_one_path_trim_channel() {
         let bundle = static_imported_bundle();
-        let command = studio_draw_creation_command(&bundle);
+        let mut command = studio_draw_creation_command(&bundle);
+        command.programs.push(studio_created_appearance_edit_input(
+            0.5,
+            "tx:create/entity:circle",
+            "initial-draw-stroke",
+            StudioCreationOperationKind::StrokeColor {
+                color: Some("#22c55e".to_owned()),
+            },
+        ));
         let projection =
             project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
         assert!((projection.projected_duration - (bundle.scene.duration + 0.75)).abs() < 1e-12);
@@ -12074,6 +12109,16 @@ mod tests {
                 from,
                 to,
             } if from.abs() < 1e-12 && (*to - 1.0).abs() < 1e-12
+        ));
+        assert!(matches!(
+            &projection.mutations[2],
+            StudioCreationProjectedMutation {
+                interval: IntervalV1 { start, end },
+                kind: StudioCreationProjectedMutationKind::StrokeColor { value },
+                ..
+            } if (*start - 0.5).abs() < 1e-12
+                && (*end - 0.5).abs() < 1e-12
+                && value == "#22c55e"
         ));
         let mut session = EngineSessionV1::new(bundle).unwrap();
         let result = session.apply_studio_creation_edit(command).unwrap();
@@ -12103,6 +12148,33 @@ mod tests {
                         value: 1.0,
                     },
                 ])
+        )));
+        assert!(!scene.animation_channels.iter().any(|channel| matches!(
+            channel,
+            AnimationChannelV1::VectorAppearance { entity_id, .. }
+                if entity_id == "tx:create/entity:circle"
+        )));
+        let packet = session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "initial-draw-stroke",
+                sample_time: 0.75,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert!(packet.draws.iter().any(|draw| matches!(
+            draw,
+            poietra_scene_ir::RenderDrawV1::Path {
+                entity_id,
+                stroke: Some(stroke),
+                ..
+            } if entity_id == "tx:create/entity:circle"
+                && (stroke.color.red - 34.0 / 255.0).abs() < 1e-12
+                && (stroke.color.green - 197.0 / 255.0).abs() < 1e-12
+                && (stroke.color.blue - 94.0 / 255.0).abs() < 1e-12
         )));
         assert!(!scene.animation_channels.iter().any(|channel| matches!(
             channel,
