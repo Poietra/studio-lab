@@ -1326,6 +1326,86 @@ mod tests {
         serde_json::to_vec(&command).unwrap()
     }
 
+    fn studio_native_duration_projection_command() -> serde_json::Value {
+        json!({
+            "baseDuration": 5.0,
+            "programs": [{
+                "anchorCapturedPlayhead": 0.0,
+                "anchorResolvedSeconds": 0.0,
+                "anchorSource": { "kind": "playhead", "referenceSeconds": 0.0 },
+                "intentCount": 1,
+                "loweringSupported": true,
+                "origin": "studio-default",
+                "requestedExecution": "parallel",
+                "scheduleEdgeCount": 4,
+                "scheduleMode": "dependency-dag",
+                "scheduleOrder": [
+                    "tx:duration-prefix-create/operation:create-0",
+                    "tx:duration-prefix-create/operation:position-0",
+                    "tx:duration-prefix-create/operation:appear-0"
+                ],
+                "transactionId": "duration-prefix-create",
+                "operations": [{
+                    "dependsOn": [],
+                    "id": "tx:duration-prefix-create/operation:create-0",
+                    "interval": { "end": 0.0, "start": 0.0 },
+                    "origin": "studio-default",
+                    "entity": {
+                        "dataSeries": null,
+                        "dimensions": { "radius": 1.0 },
+                        "id": "tx:duration-prefix-create/entity:insert-0",
+                        "kind": "circle",
+                        "layout": null,
+                        "lifetimeEnd": null,
+                        "lifetimeStart": 0.0,
+                        "text": null,
+                        "texParts": null
+                    },
+                    "kind": "create"
+                }, {
+                    "dependsOn": ["tx:duration-prefix-create/operation:create-0"],
+                    "id": "tx:duration-prefix-create/operation:position-0",
+                    "interval": { "end": 0.0, "start": 0.0 },
+                    "origin": "studio-default",
+                    "entityId": "tx:duration-prefix-create/entity:insert-0",
+                    "kind": "position",
+                    "position": { "x": 320.0, "y": 180.0 }
+                }, {
+                    "dependsOn": ["tx:duration-prefix-create/operation:position-0"],
+                    "id": "tx:duration-prefix-create/operation:appear-0",
+                    "interval": { "end": 0.4, "start": 0.0 },
+                    "origin": "studio-default",
+                    "entityId": "tx:duration-prefix-create/entity:insert-0",
+                    "kind": "fade-in",
+                    "persistent": true
+                }]
+            }, {
+                "anchorCapturedPlayhead": 4.0,
+                "anchorResolvedSeconds": 4.0,
+                "anchorSource": { "kind": "absolute", "seconds": 4.0 },
+                "intentCount": 1,
+                "loweringSupported": true,
+                "origin": "studio-default",
+                "requestedExecution": "sequence",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "sequence",
+                "scheduleOrder": ["tx:duration-prefix-wait/operation:extend-scene-duration"],
+                "transactionId": "duration-prefix-wait",
+                "operations": [{
+                    "dependsOn": [],
+                    "id": "tx:duration-prefix-wait/operation:extend-scene-duration",
+                    "interval": { "end": 5.0, "start": 4.0 },
+                    "origin": "studio-default",
+                    "eventKind": "wait",
+                    "kind": "insert-wait",
+                    "purpose": "scene-duration"
+                }]
+            }],
+            "schema": "poietra.project-studio-creation-edit",
+            "version": 1
+        })
+    }
+
     fn studio_timeline_edit_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
             "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -1842,6 +1922,52 @@ mod tests {
         assert_eq!(
             projection["timelineProjection"]["transforms"][1]["waitReductions"][0]["removedDuration"],
             0.5
+        );
+    }
+
+    #[test]
+    fn studio_creation_adapter_accepts_the_native_factory_create_wait_and_trim() {
+        let mut command = studio_native_duration_projection_command();
+        let response = project_studio_creation_edit_json(&serde_json::to_vec(&command).unwrap())
+            .expect("the exact TypeScript factory command must project");
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(response["insertions"].as_array().unwrap().len(), 2);
+        assert_eq!(response["projectedDuration"], 6.4);
+        assert_eq!(
+            response["timelineProjection"]["transforms"][0]["interval"],
+            json!({ "end": 5.0, "start": 4.0 })
+        );
+
+        command["programs"].as_array_mut().unwrap().push(json!({
+            "anchorCapturedPlayhead": 5.0,
+            "anchorResolvedSeconds": 4.0,
+            "anchorSource": { "kind": "absolute", "seconds": 4.0 },
+            "intentCount": 1,
+            "loweringSupported": true,
+            "origin": "studio-default",
+            "requestedExecution": "sequence",
+            "scheduleEdgeCount": 0,
+            "scheduleMode": "sequence",
+            "scheduleOrder": ["tx:duration-prefix-trim/operation:trim-scene-duration"],
+            "transactionId": "duration-prefix-trim",
+            "operations": [{
+                "dependsOn": [],
+                "id": "tx:duration-prefix-trim/operation:trim-scene-duration",
+                "interval": { "end": 4.0, "start": 4.0 },
+                "origin": "studio-default",
+                "kind": "trim-scene-duration",
+                "removedDuration": 0.5,
+                "targetDuration": 5.9,
+                "waitOperationIds": ["tx:duration-prefix-wait/operation:extend-scene-duration"]
+            }]
+        }));
+        let response = project_studio_creation_edit_json(&serde_json::to_vec(&command).unwrap())
+            .expect("the exact TypeScript factory trim must project");
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(response["projectedDuration"], 5.9);
+        assert_eq!(
+            response["timelineProjection"]["transforms"][1]["interval"],
+            json!({ "end": 5.0, "start": 4.5 })
         );
     }
 
