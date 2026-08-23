@@ -436,6 +436,53 @@ export const originalManimSourceExportRequestSchema: z.ZodType<OriginalManimSour
   })
   .strict();
 
+export type StudioNativeManimSourceExportRequest = Readonly<{
+  documentKey: string;
+  duration: number;
+  fragmentMaterialEntityIds: readonly string[];
+  kind: "studio-native";
+  programs: readonly SceneEdit[];
+  projectId: string;
+  sceneName?: string;
+  viewport: Readonly<{ height: number; width: number }>;
+}>;
+
+export const studioNativeManimSourceExportRequestSchema: z.ZodType<StudioNativeManimSourceExportRequest> = z
+  .object({
+    documentKey: z.string().regex(/^[0-9a-f]{64}$/u),
+    duration: finiteNumber.positive().max(900),
+    fragmentMaterialEntityIds: z.array(z.string().min(1).max(240)).max(128),
+    kind: z.literal("studio-native"),
+    programs: z.array(sceneEditSchema).max(32),
+    projectId: manimProjectIdSchema,
+    sceneName: manimSceneNameSchema.optional(),
+    viewport: z
+      .object({
+        height: finiteNumber.positive(),
+        width: finiteNumber.positive(),
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    const operationCount = request.programs.reduce((count, program) => count + program.operations.length, 0);
+    if (operationCount > 256) {
+      context.addIssue({
+        code: "custom",
+        message: "A Studio-native source export accepts at most 256 Canonical operations.",
+        path: ["programs"],
+      });
+    }
+    const intentCount = request.programs.reduce((count, program) => count + program.intentCount, 0);
+    if (intentCount > 64) {
+      context.addIssue({
+        code: "custom",
+        message: "A Studio-native source export accepts at most 64 composed intents.",
+        path: ["programs"],
+      });
+    }
+  });
+
 export const renderSessionStatusSchema: z.ZodType<RenderSessionStatus> = z.enum([
   "cancelled",
   "committed",

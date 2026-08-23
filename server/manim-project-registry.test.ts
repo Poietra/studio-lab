@@ -904,6 +904,41 @@ class InlineImageScene(Scene):
         nativeDocument: { documentKey: expect.stringMatching(/^[0-9a-f]{64}$/u) },
         sources: [],
       });
+      const nativeExportRequest = {
+        documentKey: nativeWorkspace.nativeDocument!.documentKey,
+        duration: 5,
+        fragmentMaterialEntityIds: [],
+        kind: "studio-native",
+        programs: [],
+        projectId: native.project.id,
+        viewport: { height: 360, width: 640 },
+      };
+      const nativeExportResponse = await fetch(`${origin}/api/manim/projects/${native.project.id}/export`, {
+        body: JSON.stringify(nativeExportRequest),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(nativeExportResponse.status).toBe(200);
+      expect(nativeExportResponse.headers.get("content-disposition")).toBe(
+        'attachment; filename="PoietraScene.poietra.py"',
+      );
+      expect(await nativeExportResponse.text()).toContain("class PoietraScene(Scene):");
+
+      const wgslNativeExportResponse = await fetch(`${origin}/api/manim/projects/${native.project.id}/export`, {
+        body: JSON.stringify({ ...nativeExportRequest, fragmentMaterialEntityIds: ["native:circle"] }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(wgslNativeExportResponse.status).toBe(400);
+      expect(await wgslNativeExportResponse.text()).toContain("WGSL fragment material assigned to native:circle");
+
+      const staleNativeExportResponse = await fetch(`${origin}/api/manim/projects/${native.project.id}/export`, {
+        body: JSON.stringify({ ...nativeExportRequest, documentKey: "f".repeat(64) }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(staleNativeExportResponse.status).toBe(409);
+      expect(await staleNativeExportResponse.text()).toContain("document changed before source export");
       const managedWithRootResponse = await fetch(`${origin}/api/manim/projects`, {
         body: JSON.stringify({ kind: "managed", name: "Invalid managed", root: addedRoot }),
         headers: { "content-type": "application/json" },

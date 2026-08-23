@@ -6,6 +6,7 @@ import type {
   ProgramRenderRequest,
   RenderCommitRequest,
   RenderSourceActionCancellationRequest,
+  StudioNativeManimSourceExportRequest,
 } from "../src/render-pipeline/contracts";
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import type {
@@ -349,6 +350,10 @@ export class ManimProjectRegistry {
 
   exportOriginalSource(request: OriginalManimSourceExportRequest, signal?: AbortSignal) {
     return this.project(request.projectId).exportOriginalSource(request, signal);
+  }
+
+  exportStudioNativeSource(request: StudioNativeManimSourceExportRequest, signal?: AbortSignal) {
+    return this.project(request.projectId).exportStudioNativeSource(request, signal);
   }
 
   view(id: string) {

@@ -5,6 +5,7 @@ import {
   createManimProject,
   exportManimSource,
   exportOriginalManimSource,
+  exportStudioNativeManimSource,
   generateManimThumbnail,
   isMissingManimSession,
   isNativeWorkspacePickerCancelled,
@@ -931,6 +932,38 @@ describe("Manim API client contracts", () => {
       fileName: "scene.py",
       projectId: "project-a",
       source,
+    });
+  });
+
+  it("downloads a generated Python source for a Studio-native Scene", async () => {
+    const request = {
+      documentKey: "b".repeat(64),
+      duration: 5,
+      fragmentMaterialEntityIds: [],
+      kind: "studio-native" as const,
+      programs: [renderRequest().program],
+      projectId: "project-a",
+      viewport: { height: 360, width: 640 },
+    };
+    const fetch = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe("/api/manim/projects/project-a/export");
+      expect(init.method).toBe("POST");
+      expect(JSON.parse(String(init.body))).toEqual(request);
+      return new Response("from manim import *\n", {
+        headers: {
+          "content-disposition": 'attachment; filename="scene.poietra.py"',
+          "content-type": "text/x-python; charset=utf-8",
+          "x-poietra-project-id": "project-a",
+        },
+        status: 200,
+      });
+    });
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(exportStudioNativeManimSource(request)).resolves.toEqual({
+      fileName: "scene.poietra.py",
+      projectId: "project-a",
+      source: "from manim import *\n",
     });
   });
 
