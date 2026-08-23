@@ -450,7 +450,7 @@ export type StudioNativeManimSourceExportRequest = Readonly<{
 export const studioNativeManimSourceExportRequestSchema: z.ZodType<StudioNativeManimSourceExportRequest> = z
   .object({
     documentKey: z.string().regex(/^[0-9a-f]{64}$/u),
-    duration: finiteNumber.positive().max(900),
+    duration: finiteNumber.positive(),
     fragmentMaterialEntityIds: z.array(z.string().min(1).max(240)).max(128),
     kind: z.literal("studio-native"),
     programs: z.array(sceneEditSchema).max(32),

@@ -93,6 +93,12 @@ describe("Studio-native Manim source export", () => {
     expect(imported?.runtimeSceneState.objectGraph.entities).toEqual({});
   });
 
+  it("does not inherit the MP4 duration limit when exporting source", () => {
+    const exported = exportStudioNativeManimSource({ duration: 1_200, frame, programs: [], viewport });
+
+    expect(exported.source).toContain("self.wait(1200)");
+  });
+
   it("reuses canonical source lowering for non-overlapping Studio-created objects", () => {
     const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.4);
     const rectangle = creationProgram("create-rectangle", "native:rectangle", "Rectangle", 1, 0.5);

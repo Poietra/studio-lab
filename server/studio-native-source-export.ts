@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 
-import { MAX_EXPORT_DURATION_SECONDS } from "../src/engine/export-profile";
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import { manimSceneNameSchema } from "../src/render-pipeline/manim-identity-contract";
 import { importManimScene } from "../src/render-pipeline/source-import";
@@ -285,10 +284,8 @@ function verifyRoundTrip(
  * idle source timeline that its insertion semantics require.
  */
 export function exportStudioNativeManimSource(input: StudioNativeSourceExportInput): StudioNativeSourceExport {
-  if (!Number.isFinite(input.duration) || input.duration < 0.1 || input.duration > MAX_EXPORT_DURATION_SECONDS) {
-    throw new TypeError(
-      `Studio-native source export requires a Scene duration from 0.1 to ${MAX_EXPORT_DURATION_SECONDS}s.`,
-    );
+  if (!Number.isFinite(input.duration) || input.duration < 0.1) {
+    throw new TypeError("Studio-native source export requires a finite Scene duration of at least 0.1s.");
   }
   assertPositiveSize(input.frame, "The Manim frame");
   assertPositiveSize(input.viewport, "The Studio viewport");
