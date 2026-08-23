@@ -1928,9 +1928,28 @@ mod tests {
     #[test]
     fn studio_creation_adapter_accepts_the_native_factory_create_wait_and_trim() {
         let mut command = studio_native_duration_projection_command();
+        let mut blocked_command = command.clone();
+        let blocked_programs = blocked_command["programs"].as_array_mut().unwrap();
+        let mut wait = blocked_programs.remove(1);
+        wait["anchorCapturedPlayhead"] = json!(0.0);
+        wait["anchorResolvedSeconds"] = json!(0.0);
+        wait["anchorSource"] = json!({ "kind": "absolute", "seconds": 0.0 });
+        wait["operations"][0]["interval"] = json!({ "end": 1.0, "start": 0.0 });
+        blocked_programs.insert(0, wait);
+        let blocked_response =
+            project_studio_creation_edit_json(&serde_json::to_vec(&blocked_command).unwrap())
+                .expect("a wait followed by creation must still project its trim barrier");
+        let blocked_response: serde_json::Value =
+            serde_json::from_slice(&blocked_response).unwrap();
+        assert_eq!(
+            blocked_response["durationTrimBarrierOperationIds"],
+            json!(["tx:duration-prefix-wait/operation:extend-scene-duration"])
+        );
+
         let response = project_studio_creation_edit_json(&serde_json::to_vec(&command).unwrap())
             .expect("the exact TypeScript factory command must project");
         let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        assert_eq!(response["durationTrimBarrierOperationIds"], json!([]));
         assert_eq!(response["insertions"].as_array().unwrap().len(), 2);
         assert_eq!(response["projectedDuration"], 6.4);
         assert_eq!(
