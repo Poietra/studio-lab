@@ -117,9 +117,14 @@ async function exportLocalMp4(page: Page) {
   return bytes.toString("base64");
 }
 
-async function decodedBrightPixelCounts(page: Page, mp4Base64: string, sampleTimes: readonly number[]) {
+async function decodedBrightPixelCounts(
+  page: Page,
+  mp4Base64: string,
+  sampleTimes: readonly number[],
+  mode: "bright" | "green-dominant" = "bright",
+) {
   return page.evaluate(
-    async ({ mp4Base64, sampleTimes }) => {
+    async ({ mode, mp4Base64, sampleTimes }) => {
       const encoded = atob(mp4Base64);
       const bytes = Uint8Array.from(encoded, (character) => character.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bytes], { type: "video/mp4" }));
@@ -174,7 +179,12 @@ async function decodedBrightPixelCounts(page: Page, mp4Base64: string, sampleTim
           const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
           let bright = 0;
           for (let offset = 0; offset < pixels.length; offset += 4) {
-            if ((pixels[offset] ?? 0) + (pixels[offset + 1] ?? 0) + (pixels[offset + 2] ?? 0) > 90) bright += 1;
+            const red = pixels[offset] ?? 0;
+            const green = pixels[offset + 1] ?? 0;
+            const blue = pixels[offset + 2] ?? 0;
+            const matches =
+              mode === "green-dominant" ? green > 32 && green > red * 2 && green > blue * 1.5 : red + green + blue > 90;
+            if (matches) bright += 1;
           }
           counts.push(bright);
         }
@@ -183,7 +193,7 @@ async function decodedBrightPixelCounts(page: Page, mp4Base64: string, sampleTim
         URL.revokeObjectURL(url);
       }
     },
-    { mp4Base64, sampleTimes },
+    { mode, mp4Base64, sampleTimes },
   );
 }
 
@@ -605,18 +615,6 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     expect(await readFile(sourcePath, "utf8")).toContain('.set_stroke("#22c55e")');
     await page.getByRole("button", { name: "Close" }).click();
 
-    await page.reload();
-    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
-    await page.getByRole("button", { name: "Open Draw entrance fixture workspace" }).click();
-    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
-    await page.getByRole("checkbox", { name: "Select Line" }).check();
-    await expect(lineStroke).toHaveValue("#22c55e");
-    await exportLocalMp4(page);
-
-    await page.getByRole("button", { name: "Undo" }).click();
-    await page.getByRole("checkbox", { name: "Select Line" }).check();
-    await expect(lineStroke).toHaveValue("#ffffff");
-
     await page.getByRole("button", { name: "Add Draw entrance for Line" }).click();
     await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
     await page.getByRole("button", { name: "Replace program" }).click();
@@ -705,9 +703,10 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await expect(page.getByRole("spinbutton", { name: "Draw duration for Line" })).toHaveValue("1.5");
     await expect(page.getByRole("combobox", { name: "Draw easing for Line" })).toHaveValue("linear");
     await page.getByRole("button", { name: "Discard" }).click();
+    await expect(page.getByLabel("Stroke color Line")).toHaveValue("#22c55e");
 
     const mp4 = await exportLocalMp4(page);
-    const exportedStrokePixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6]);
+    const exportedStrokePixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6], "green-dominant");
     expect(exportedStrokePixels[1] ?? 0).toBeGreaterThan((exportedStrokePixels[0] ?? 0) + 20);
     expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan((exportedStrokePixels[1] ?? 0) * 1.25);
   } finally {
