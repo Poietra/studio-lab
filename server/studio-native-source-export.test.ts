@@ -388,7 +388,7 @@ describe("Studio-native Manim source export", () => {
           ...operationBase(trimOperationId, 5),
           kind: "TrimSceneDuration" as const,
           removedDuration: 1,
-          targetDuration: 6,
+          targetDuration: 6.4,
           waitOperationIds: [waitOperationId],
         },
       ]),

@@ -7,6 +7,9 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { manimWorkspaceViewSchema } from "../src/render-pipeline/contracts";
+import { importManimScene } from "../src/render-pipeline/source-import";
+import { createSceneDurationProgram, createStudioEntitiesProgram } from "../src/studio/authoring-commands";
+import { createStudioNativeBlankScene } from "../src/studio/studio-native-workspace";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
@@ -924,6 +927,41 @@ class InlineImageScene(Scene):
         'attachment; filename="PoietraScene.poietra.py"',
       );
       expect(await nativeExportResponse.text()).toContain("class PoietraScene(Scene):");
+
+      const nativeScene = createStudioNativeBlankScene(nativeWorkspace.nativeDocument!.documentKey);
+      const durationProgram = createSceneDurationProgram({
+        capturedPlayhead: 5,
+        scene: nativeScene.runtimeSceneState,
+        sourceAnchor: 5,
+        targetDuration: 7,
+        transactionId: "native-duration-export",
+      });
+      const creation = createStudioEntitiesProgram({
+        capturedPlayhead: 0,
+        entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
+        scene: nativeScene.runtimeSceneState,
+        transactionId: "native-circle-export",
+      });
+      if (durationProgram.kind !== "valid" || creation.validation.kind !== "valid") {
+        throw new Error("The native duration export fixture is invalid.");
+      }
+      const composedNativeExportResponse = await fetch(`${origin}/api/manim/projects/${native.project.id}/export`, {
+        body: JSON.stringify({
+          ...nativeExportRequest,
+          duration: 7.4,
+          programs: [durationProgram.program, creation.validation.program],
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(composedNativeExportResponse.status).toBe(200);
+      const composedNativeSource = await composedNativeExportResponse.text();
+      const reimportedNative = importManimScene(composedNativeSource, "PoietraScene.poietra.py", "PoietraScene", {
+        height: 8,
+        width: 14.222,
+      });
+      expect(reimportedNative?.runtimeSceneState.duration).toBeCloseTo(7.4, 6);
+      expect(composedNativeSource).toContain("Circle(radius=1)");
 
       const wgslNativeExportResponse = await fetch(`${origin}/api/manim/projects/${native.project.id}/export`, {
         body: JSON.stringify({ ...nativeExportRequest, fragmentMaterialEntityIds: ["native:circle"] }),
