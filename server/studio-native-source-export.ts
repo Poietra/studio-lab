@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
-import { manimSceneNameSchema } from "../src/render-pipeline/manim-identity-contract";
 import { importManimScene } from "../src/render-pipeline/source-import";
 import {
   lowerCanonicalProgramBatchSource,
@@ -14,12 +13,12 @@ import { sceneEditSchema } from "../src/studio/scene-edit-contract";
 
 const TIME_EPSILON = 0.0005;
 const SOURCE_PATH = "poietra_scene.py";
+const SCENE_NAME = "PoietraScene";
 
 export type StudioNativeSourceExportInput = Readonly<{
   duration: number;
   frame: Readonly<{ height: number; width: number }>;
   programs: readonly SceneEdit[];
-  sceneName?: string;
   viewport: Readonly<{ height: number; width: number }>;
 }>;
 
@@ -213,8 +212,6 @@ function sourceScaffold(sceneName: string, duration: number, programs: readonly 
   }
   if (baseDuration > cursor + TIME_EPSILON) {
     lines.push(`        self.wait(${formatSeconds(baseDuration - cursor)})`);
-  } else if (programs.length === 0) {
-    lines.push(`        self.wait(${formatSeconds(duration)})`);
   }
   return `${lines.join("\n")}\n`;
 }
@@ -289,7 +286,7 @@ export function exportStudioNativeManimSource(input: StudioNativeSourceExportInp
   }
   assertPositiveSize(input.frame, "The Manim frame");
   assertPositiveSize(input.viewport, "The Studio viewport");
-  const sceneName = manimSceneNameSchema.parse(input.sceneName ?? "PoietraScene");
+  const sceneName = SCENE_NAME;
   const admitted = admittedPrograms(input.programs, input.duration);
   const programs = programsOnSourceTimeline(admitted, input.duration);
   const source = sourceScaffold(sceneName, input.duration, programs);

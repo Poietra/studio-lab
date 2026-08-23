@@ -443,7 +443,6 @@ export type StudioNativeManimSourceExportRequest = Readonly<{
   kind: "studio-native";
   programs: readonly SceneEdit[];
   projectId: string;
-  sceneName?: string;
   viewport: Readonly<{ height: number; width: number }>;
 }>;
 
@@ -455,7 +454,6 @@ export const studioNativeManimSourceExportRequestSchema: z.ZodType<StudioNativeM
     kind: z.literal("studio-native"),
     programs: z.array(sceneEditSchema).max(32),
     projectId: manimProjectIdSchema,
-    sceneName: manimSceneNameSchema.optional(),
     viewport: z
       .object({
         height: finiteNumber.positive(),

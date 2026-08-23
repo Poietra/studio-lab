@@ -787,7 +787,6 @@ export class ManimRenderManager {
           duration: request.duration,
           frame: this.frame,
           programs: request.programs,
-          sceneName: request.sceneName,
           viewport: request.viewport,
         });
         throwIfAborted(signal);

@@ -106,7 +106,6 @@ describe("Studio-native Manim source export", () => {
       duration: 3,
       frame,
       programs: [circle, rectangle],
-      sceneName: "NativeDemo",
       viewport,
     });
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
