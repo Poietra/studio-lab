@@ -207,6 +207,7 @@ test("downloads a bounded Manim Scene from Studio-native authoring", async ({ pa
   try {
     projectId = await createBlankWorkspace(page, "Native source export fixture");
     const canvas = page.locator("[data-studio-canvas]");
+    await expect(page.getByRole("button", { exact: true, name: "Export .py" })).toHaveCount(0);
 
     await page.getByRole("button", { name: /Insert circle/ }).click();
     await canvas.click({ position: { x: 300, y: 260 } });
