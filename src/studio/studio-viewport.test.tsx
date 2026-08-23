@@ -19,6 +19,7 @@ describe("StudioViewport", () => {
       <StudioViewport
         {...({
           gesturePreviewStore: createStudioGesturePreviewStore(),
+          insertionAvailable: true,
           insertTool: "select",
           insertValue: "",
           onImageAssetDrop: vi.fn(),

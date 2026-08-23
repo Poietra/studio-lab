@@ -51,8 +51,8 @@ project-local import.
   `legacy/Math-To-Manim/examples/physics/quantum/Hunyuan-T1QED.py`, SHA-256
   `50588cf26a63b955f59c0411886f1781276c59c8cd5ad65963dc9c56759a5e9f`.
 - Producer repository: https://github.com/Poietra/fast-manim.git at
-  `d24026e11fbf30fa820593e1f0c59dd02ea82c25`, tree
-  `93a1467e7d6ba23e9fac5baf827523ae893b6267`.
+  `f37b32200eb111678411ca347486779cb73c5e0a`, tree
+  `f6c7c196a5e3ff33ff2f5b4f56a2286aa88282f6`.
 - Python environment: CPython `3.13.11` with fast-manim's committed `uv.lock`,
   SHA-256
   `3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753`,
@@ -76,11 +76,11 @@ POIETRA_SECOND_SCENE_EVIDENCE_ROOT="$(mktemp -d /tmp/poietra-second-scene-eviden
 git clone --filter=blob:none https://github.com/Poietra/fast-manim.git \
   "$POIETRA_SECOND_SCENE_EVIDENCE_ROOT/fast-manim"
 git -C "$POIETRA_SECOND_SCENE_EVIDENCE_ROOT/fast-manim" checkout --detach \
-  d24026e11fbf30fa820593e1f0c59dd02ea82c25
+  f37b32200eb111678411ca347486779cb73c5e0a
 test "$(git -C "$POIETRA_SECOND_SCENE_EVIDENCE_ROOT/fast-manim" rev-parse HEAD)" = \
-  d24026e11fbf30fa820593e1f0c59dd02ea82c25
+  f37b32200eb111678411ca347486779cb73c5e0a
 test "$(git -C "$POIETRA_SECOND_SCENE_EVIDENCE_ROOT/fast-manim" rev-parse 'HEAD^{tree}')" = \
-  93a1467e7d6ba23e9fac5baf827523ae893b6267
+  f6c7c196a5e3ff33ff2f5b4f56a2286aa88282f6
 test "$(sha256sum "$POIETRA_SECOND_SCENE_EVIDENCE_ROOT/fast-manim/uv.lock" | cut -d ' ' -f 1)" = \
   3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753
 
@@ -153,10 +153,10 @@ esac
 
 ## Recorded result
 
-Two consecutive frozen runs on 2026-08-09 produced identical evidence:
+Two consecutive frozen runs on 2026-08-22 produced identical evidence:
 
 - baseline SHA-256:
-  `41f8b45b470e52b035fbac9d231b09133342961d86036588f9c500c2707ff5ea`;
+  `f636c4b402438cc5386bde8f1e3ca3cecacdfd4f017809155d7c4e93ae53ed14`;
 - Runtime Trace digest:
   `a52227459039b7d60c451b58fa1e449b6fd1a4b3806f457d4e7f86e21b7f6292`;
 - visual-semantics digest:

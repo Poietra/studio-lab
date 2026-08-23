@@ -36,7 +36,11 @@ export function loadStudioNonSecretEnvironment(
   root: string,
   processEnvironment: Readonly<NodeJS.ProcessEnv> = process.env,
 ) {
-  const env: Record<string, string> = { ...loadEnv(mode, root, "VITE_") };
+  const allowedKeys = new Set<string>(NON_SECRET_POIETRA_ENV_KEYS);
+  const loaded = loadEnv(mode, root, ["VITE_", ...NON_SECRET_POIETRA_ENV_KEYS]);
+  const env: Record<string, string> = Object.fromEntries(
+    Object.entries(loaded).filter(([key]) => key.startsWith("VITE_") || allowedKeys.has(key)),
+  );
   for (const key of NON_SECRET_POIETRA_ENV_KEYS) {
     const value = processEnvironment[key];
     if (value !== undefined) env[key] = value;

@@ -87,6 +87,9 @@ describe("Vite privacy boundary", () => {
       [
         "OPENAI_API_KEY=SECRET_DOTENV_OPENAI_KEY",
         "POIETRA_OPENAI_MODEL=SECRET_DOTENV_MODEL",
+        'POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND=["python","-m","manim.renderer.runtime_trace"]',
+        "POIETRA_FAST_MANIM_RUNTIME_TRACE_DEV_OPT_IN=1",
+        "POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND_SECRET=SECRET_PREFIX_COLLISION",
         "VITE_PUBLIC_SENTINEL=public-value",
       ].join("\n"),
       { mode: 0o600 },
@@ -101,10 +104,13 @@ describe("Vite privacy boundary", () => {
 
     expect(env).toMatchObject({
       POIETRA_AI_LOCAL_KEY_FILE_OPT_IN: "1",
+      POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND: '["python","-m","manim.renderer.runtime_trace"]',
+      POIETRA_FAST_MANIM_RUNTIME_TRACE_DEV_OPT_IN: "1",
       POIETRA_OPENAI_MODEL: "gpt-process-model",
       VITE_PUBLIC_SENTINEL: "public-value",
     });
     expect(env).not.toHaveProperty("OPENAI_API_KEY");
+    expect(env).not.toHaveProperty("POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND_SECRET");
     expect(JSON.stringify(env)).not.toContain("SECRET_DOTENV_OPENAI_KEY");
     expect(JSON.stringify(env)).not.toContain("SECRET_PROCESS_OPENAI_KEY");
     expect(JSON.stringify(stderr.mock.calls)).not.toContain("SECRET_DOTENV_OPENAI_KEY");

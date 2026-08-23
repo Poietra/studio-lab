@@ -33,6 +33,7 @@ export type ManimRenderRequestLoweringInput = Readonly<{
 
 export type SnapshotProgramAuthorizer = (
   input: Readonly<{
+    authorizationKind: "snapshot" | "studio-creation";
     frame: Readonly<{ height: number; width: number }>;
     programs: readonly SceneEdit[];
     projectId: string;
@@ -219,6 +220,7 @@ export async function lowerManimRenderRequest({
     }
     try {
       await snapshotProgramAuthorizer({
+        authorizationKind: isStudioCreationBatch ? "studio-creation" : "snapshot",
         frame,
         programs: sourceOrderedPrograms,
         projectId,

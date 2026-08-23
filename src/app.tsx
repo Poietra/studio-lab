@@ -214,6 +214,7 @@ import {
   studioPreviewRuntimeTraceEditTargetIsPresent,
 } from "./studio/preview-temporal-rebase";
 import {
+  insertedProgramDuration,
   latestSafeSourceAnchor,
   sourceTimeToWorkingTime as sourceTimeToWorkingTimeWithoutTimeline,
   workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline,
@@ -2328,6 +2329,8 @@ export function App({
     (editorSelectionAligned && !editorSessionReady);
   const previewPaintAvailable = previewRenderer?.state.phase === "presented";
   const previewMutationAvailable = previewPaintAvailable && !previewSelectionOnly;
+  const previewDraftMutationAvailable =
+    previewMutationAvailable || (previewPaintAvailable && draftEdit !== null && isStudioEntityInsertion(draftEdit));
   const canvasInteractionLocked = studioAuthoringLocked || isPlaying || !previewPaintAvailable;
   const sourceDurationSessionKey = editorRevision.sessionKey;
   function startPreviewRenderer(action: () => boolean) {
@@ -2387,14 +2390,19 @@ export function App({
 
   function stageDraft(input: Parameters<typeof stageEditorDraft>[0]) {
     // This is the common authoring boundary for pointer, Inspector, timeline,
-    // keyboard, Magic Edit, and insertion drafts. Selection-only mappings are
-    // presentation evidence and can never authorize a Program.
+    // keyboard, Magic Edit, and insertion drafts. Selection-only mappings do
+    // not authorize edits to imported entities. A closed Studio insertion is
+    // independent of those mappings and is lowered through a safe source
+    // anchor, so it remains available.
     if (!previewPaintAvailable) {
       setDraftError("Wait for the canonical WebGPU preview before editing the Scene.");
       setIsPlaying(false);
       return false;
     }
-    if (rejectSelectionOnlyPreviewMutation()) return false;
+    const selectionOnlyInsertion =
+      isStudioEntityInsertion(input.record) &&
+      (!input.preserveAppliedProgram || isStudioEntityInsertion(input.preserveAppliedProgram));
+    if (!selectionOnlyInsertion && rejectSelectionOnlyPreviewMutation()) return false;
     if (editorDocumentAuthority.enabled && !editorDocumentAuthority.canAuthor()) {
       setDraftError(editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
       setIsPlaying(false);
@@ -3358,7 +3366,7 @@ export function App({
     }
     // A draft may predate preview activation; the correlated Rust compilation
     // below remains the final source-export boundary.
-    if (previewSelectionOnly && rejectSelectionOnlyPreviewMutation()) return;
+    if (!isStudioEntityInsertion(draftEdit) && rejectSelectionOnlyPreviewMutation()) return;
     const draftExecution = programExecutionCapabilities(draftEdit.program);
     if (draftExecution.apply !== "supported") {
       setDraftError(draftExecution.applyBlocker ?? "The draft cannot be applied safely.");
@@ -3458,13 +3466,15 @@ export function App({
     precedingPrograms: readonly ProgramRecord["program"][] = appliedSceneEdits,
     preserveAppliedProgram: ProgramRecord | null = null,
     appliedEdit: AppliedProgramEdit | null = null,
+    currentTimeOverride?: number,
   ) {
     cancelSuggestionRequest();
     const staged = stageDraft({
       appliedEdit,
       clearAppliedEdit: appliedEdit === null,
       clearSuggestion: true,
-      currentTime: sourceTimeToWorkingTime(precedingPrograms, record.program.anchor.resolvedSeconds),
+      currentTime:
+        currentTimeOverride ?? sourceTimeToWorkingTime(precedingPrograms, record.program.anchor.resolvedSeconds),
       operation: null,
       preserveAppliedProgram,
       record,
@@ -5362,7 +5372,19 @@ export function App({
       });
       const validated = validatedProgramRecord(result.validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      if (!installCanonicalDraft(validated.record, result.entityIds, precedingPrograms, previousInsertion))
+      const creationPreviewTime =
+        sourceTimeToWorkingTime(precedingPrograms, validated.record.program.anchor.resolvedSeconds) +
+        insertedProgramDuration(validated.record.program);
+      if (
+        !installCanonicalDraft(
+          validated.record,
+          result.entityIds,
+          precedingPrograms,
+          previousInsertion,
+          null,
+          creationPreviewTime,
+        )
+      )
         return false;
       setInsertTool("select");
       setInsertValue("");
@@ -9149,6 +9171,7 @@ export function App({
                 if (currentTime >= activeDuration) setCurrentTime(0);
                 setIsPlaying((playing) => !playing);
               }}
+              insertionAvailable={!studioAuthoringLocked && !isPlaying && previewPaintAvailable}
               preview={previewRenderer}
               previewPaintAvailable={previewMutationAvailable}
               presenceParticipants={editorDocumentAuthority.presenceParticipants}
@@ -9162,7 +9185,7 @@ export function App({
 
             <StudioInspector
               appliedProgramCount={appliedEdits.length}
-              authoringAvailable={!isPlaying && previewMutationAvailable}
+              authoringAvailable={!isPlaying && previewDraftMutationAvailable}
               cameraAuthoring={{
                 defaultDuration: motionDuration,
                 focusUnavailableReason: cameraFocusUnavailableReason(),

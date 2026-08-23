@@ -24,6 +24,7 @@ function props(overrides: Partial<StudioToolbarProps> = {}): StudioToolbarProps 
       sweepDegrees: 90,
     },
     insertValue: "",
+    insertionAvailable: true,
     onCoordinateInsertSettingsChange: vi.fn(),
     onCurveInsertSettingsChange: vi.fn(),
     onInsertAtCenter: vi.fn(),
@@ -100,5 +101,15 @@ describe("StudioToolbar selection layout", () => {
     expect(markup.match(/disabled=""/g)).toHaveLength(8);
     expect(layoutButton(markup, "align-left")).toContain(reason);
     expect(layoutButton(markup, "distribute-vertical")).toContain(reason);
+  });
+
+  it("keeps insertion available when imported entities are selection-only", () => {
+    const text = renderToStaticMarkup(
+      <StudioToolbar {...props({ authoringAvailable: false, insertionAvailable: true, tool: "Text" })} />,
+    );
+
+    expect(text.match(/<button[^>]*aria-label="Insert text \(T\)"[^>]*>/u)?.[0]).not.toContain("disabled");
+    expect(text.match(/<input[^>]*placeholder="Type text"[^>]*>/u)?.[0]).not.toContain("disabled");
+    expect(text).toMatch(/<button[^>]*type="submit"[^>]*>Insert at center<\/button>/u);
   });
 });

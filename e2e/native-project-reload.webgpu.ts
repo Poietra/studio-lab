@@ -222,6 +222,7 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     await page.getByRole("button", { name: /Insert text/ }).click();
     await page.getByRole("textbox", { name: "Text content" }).fill("Poietra");
     await canvas.click({ position: { x: 280, y: 160 } });
+    await expect(page.getByRole("button", { name: "Move Poietra", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(page.getByRole("button", { name: "Move Poietra", exact: true })).toBeVisible();
 
@@ -579,6 +580,7 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await page.getByRole("button", { name: /Insert equation/ }).click();
     await page.getByRole("textbox", { name: "MathTex" }).fill("E = mc^2");
     await canvas.click({ position: { x: 400, y: 220 } });
+    await expect(page.getByRole("button", { name: "Move E = mc^2", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Apply program" }).click();
     const equation = page.getByRole("button", { name: "Move E = mc^2", exact: true });
     await expect(equation).toBeVisible();

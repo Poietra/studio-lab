@@ -216,6 +216,8 @@ pnpm dev:web
 The Runtime Trace command supplies the canonical interactive preview for linked
 Manim projects. Keep the explicit development opt-in: without a configured
 producer, Studio lists the project but intentionally refuses preview-backed edits.
+These two Runtime Trace variables may also be placed in the ignored `.env.local`;
+Studio reads only its exact allowlisted non-secret configuration keys.
 
 For Docker-backed rendering, the included adapter mounts the project read-only,
 mounts only the preview directory as writable, and disables container networking:

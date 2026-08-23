@@ -15,8 +15,8 @@ bounded evidence only — never the raw multi-megabyte trace.
   `3071f55153631e1b74df945fb0ebf57a56372bc0cb58498c58a01fcdf31fbd72`,
   the same pin as `fixtures/fourier-v3-cairo-reference-v1`).
 - Producer: https://github.com/Poietra/fast-manim.git at commit
-  `d24026e11fbf30fa820593e1f0c59dd02ea82c25`, tree
-  `93a1467e7d6ba23e9fac5baf827523ae893b6267` — the literal trusted identity
+  `f37b32200eb111678411ca347486779cb73c5e0a`, tree
+  `f6c7c196a5e3ff33ff2f5b4f56a2286aa88282f6` — the literal trusted identity
   in `server/fast-manim-runtime-trace-producer-identity.ts`.
 - Python environment: CPython `3.13.11`, resolved with fast-manim's committed
   `uv.lock` (SHA-256
@@ -43,11 +43,11 @@ POIETRA_FOURIER_EVIDENCE_ROOT="$(mktemp -d /tmp/poietra-fourier-evidence.XXXXXX)
 git clone --filter=blob:none https://github.com/Poietra/fast-manim.git \
   "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim"
 git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim" checkout --detach \
-  d24026e11fbf30fa820593e1f0c59dd02ea82c25
+  f37b32200eb111678411ca347486779cb73c5e0a
 test "$(git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim" rev-parse HEAD)" = \
-  d24026e11fbf30fa820593e1f0c59dd02ea82c25
+  f37b32200eb111678411ca347486779cb73c5e0a
 test "$(git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim" rev-parse 'HEAD^{tree}')" = \
-  93a1467e7d6ba23e9fac5baf827523ae893b6267
+  f6c7c196a5e3ff33ff2f5b4f56a2286aa88282f6
 test "$(sha256sum "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim/uv.lock" | cut -d ' ' -f 1)" = \
   3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753
 uv python install 3.13.11
@@ -107,9 +107,9 @@ esac
 
 Add `POIETRA_FOURIER_RUNTIME_TRACE_UPDATE=1` to regenerate `baseline.json`
 after an intentional producer or source repin. A failed or non-V2 producer
-can never replace the baseline. On 2026-08-09, two consecutive frozen runs
+can never replace the baseline. On 2026-08-22, two consecutive frozen runs
 produced byte-identical `baseline.json` files with SHA-256
-`883479f629f313ea9d742462a6d24410e7971704ef14548de0ceedc9cb033850`,
+`07558ca2cadd7cb7d6b0500394ed8147b67599a1c359f1a4612d53dfe82e5893`,
 visual semantics digest
 `c817fdb502a46e6ec2cf47602684e7acc64a9e31ec42599e35ee97752d8f5ef5`,
 and trace digest

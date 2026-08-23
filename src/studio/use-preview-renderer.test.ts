@@ -1433,6 +1433,54 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(commands).toHaveLength(0);
   });
 
+  it("composes a Studio-created entity over an exact animated imported snapshot", async () => {
+    const base = await compilablePreviewInput();
+    const sourceEntity = base.snapshot.snapshot.scene.entities[0];
+    if (!sourceEntity) throw new Error("Expected an imported Scene entity.");
+    const animatedBundle = await parseVerifiedSceneIrBundleV1({
+      ...base.snapshot.snapshot,
+      scene: {
+        ...base.snapshot.snapshot.scene,
+        animationChannels: [
+          {
+            entityId: sourceEntity.id,
+            id: "opacity:imported",
+            keyframes: [
+              { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+              { at: 2, easingToNext: null, value: 1 },
+            ],
+            kind: "opacity",
+            provenanceId: "fixture",
+          },
+        ],
+        requiredCapabilities: ["opacity-animation", "shape-primitives"],
+      },
+    });
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0.5,
+      entities: [{ position: { x: 320, y: 180 }, type: "Circle" }],
+      scene: base.proposedState.base.runtimeSceneState,
+      transactionId: "create-over-animated-import",
+    });
+    if (creation.validation.kind !== "valid") throw new Error(JSON.stringify(creation.validation.issues));
+
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      snapshot: { ...base.snapshot, snapshot: animatedBundle },
+      workingState: {
+        ...base.proposedState.base,
+        appliedEdits: [programRecord(creation.validation.program, creation.validation)],
+      },
+      workingRevision: "studio-working-v1:create-over-animated-import",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.editAuthority).toBe("rust-authorized-batch");
+    expect(result.scene.creationProjection?.entities.map(({ entityId }) => entityId)).toEqual(creation.entityIds);
+    expect(result.scene.bundle.scene.entities.some(({ id }) => id === creation.entityIds[0])).toBe(true);
+  });
+
   it("passes raw Studio motion facts and every operation to Rust", async () => {
     const base = await compilablePreviewInput();
     const workingBase = exactImportedTimelineWorkingBase(base);
