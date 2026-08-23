@@ -10,7 +10,11 @@ import type {
   StudioMotionProjectionV1,
 } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
-import { createRemoveEntitiesProgram, createStudioEntitiesProgram } from "./authoring-commands";
+import {
+  createRemoveEntitiesProgram,
+  createSceneDurationProgram,
+  createStudioEntitiesProgram,
+} from "./authoring-commands";
 import {
   EditorCreationAdmissionError,
   EditorMathTexTransformAdmissionError,
@@ -20,6 +24,7 @@ import {
 } from "./editor-authority-state";
 import type { EditorProgramRecord } from "./editor-session-store";
 import type { CanonicalEditProgram } from "./operations";
+import { createStudioNativeBlankScene } from "./studio-native-workspace";
 import {
   canonicalizeSuggestionProgram,
   createDirectManipulationOpacityProgram,
@@ -230,6 +235,36 @@ describe("authoritative Editor Program materialization", () => {
     expect(compiler).toHaveBeenCalledWith(
       expect.objectContaining({ baseDuration: 5, schema: "poietra.project-studio-creation-edit" }),
     );
+  });
+
+  it("routes the complete native duration-and-creation history through one Rust creation authority", async () => {
+    const targetScene = createStudioNativeBlankScene("ab".repeat(32));
+    const duration = createSceneDurationProgram({
+      capturedPlayhead: 5,
+      scene: targetScene.runtimeSceneState,
+      sourceAnchor: 5,
+      targetDuration: 6,
+      transactionId: "native-duration",
+    });
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
+      scene: targetScene.runtimeSceneState,
+      transactionId: "native-circle",
+    });
+    if (duration.kind !== "valid" || creation.validation.kind !== "valid") {
+      throw new Error("Native mixed-authoring fixture is invalid.");
+    }
+    const programs = [creation.validation.program, duration.program];
+    const compiler = vi.fn<ProjectStudioCreationCompiler>(async (command) => {
+      expect(command.programs.map(({ transactionId }) => transactionId)).toEqual(["native-circle", "native-duration"]);
+      throw new Error("complete native batch reached Rust");
+    });
+
+    await expect(
+      materializeAuthoritativeEditorProgramsV1(targetScene, [], programs, undefined, undefined, undefined, compiler),
+    ).rejects.toThrow(/complete native batch reached Rust/i);
+    expect(compiler).toHaveBeenCalledOnce();
   });
 
   it("routes a Studio-created MathTex transform through the creation projector", async () => {
