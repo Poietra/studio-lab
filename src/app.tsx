@@ -7525,11 +7525,13 @@ export function App({
         ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"]
         : [
             "Arc",
+            "Arrow",
             "Axes",
             "Circle",
             "CubicBezier",
             "DataPlot",
             "Ellipse",
+            "Line",
             "NumberLine",
             "NumberPlane",
             "Rectangle",
@@ -9368,11 +9370,13 @@ export function App({
                 selectedEntity !== null &&
                 [
                   "Arc",
+                  "Arrow",
                   "Axes",
                   "Circle",
                   "CubicBezier",
                   "DataPlot",
                   "Ellipse",
+                  "Line",
                   "NumberLine",
                   "NumberPlane",
                   "Rectangle",

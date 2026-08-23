@@ -4360,11 +4360,13 @@ fn plan_studio_creation_edits(
                         && matches!(
                             state.kind,
                             StudioAuthoringEntityKind::Arc
+                                | StudioAuthoringEntityKind::Arrow
                                 | StudioAuthoringEntityKind::Axes
                                 | StudioAuthoringEntityKind::Circle
                                 | StudioAuthoringEntityKind::CubicBezier
                                 | StudioAuthoringEntityKind::DataPlot
                                 | StudioAuthoringEntityKind::Ellipse
+                                | StudioAuthoringEntityKind::Line
                                 | StudioAuthoringEntityKind::NumberLine
                                 | StudioAuthoringEntityKind::NumberPlane
                                 | StudioAuthoringEntityKind::Rectangle
@@ -6009,8 +6011,10 @@ fn validate_create_scene_entities_command(
             || (has_color_override
                 && !matches!(
                     &entity.geometry,
-                    CreateSceneEntityGeometry::Circle { .. }
+                    CreateSceneEntityGeometry::Arrow
+                        | CreateSceneEntityGeometry::Circle { .. }
                         | CreateSceneEntityGeometry::CubicBezier { .. }
+                        | CreateSceneEntityGeometry::Line
                         | CreateSceneEntityGeometry::Rectangle { .. }
                         | CreateSceneEntityGeometry::ShapeOutline { .. }
                         | CreateSceneEntityGeometry::SvgPath { .. }
@@ -10484,31 +10488,7 @@ mod tests {
                 },
             ));
 
-        let mut line = studio_creation_command(&bundle);
-        line.programs.truncate(1);
-        for operation in &mut line.programs[0].operations {
-            if operation.entity_id.as_deref() == Some(entity_id) {
-                operation.entity_id = Some("tx:create/entity:line".to_owned());
-            }
-        }
-        let StudioCreationOperationKind::Create { entity } =
-            &mut line.programs[0].operations[0].kind
-        else {
-            panic!("creation fixture must start with CreateEntity");
-        };
-        entity.id = "tx:create/entity:line".to_owned();
-        entity.kind = StudioAuthoringEntityKind::Line;
-        entity.dimensions = StudioAuthoringDimensions::default();
-        line.programs.push(studio_created_appearance_edit_input(
-            0.5,
-            "tx:create/entity:line",
-            "line-color",
-            StudioCreationOperationKind::StrokeColor {
-                color: Some("#81b29a".to_owned()),
-            },
-        ));
-
-        for command in [uppercase, missing_color, wrong_anchor, line] {
+        for command in [uppercase, missing_color, wrong_anchor] {
             assert!(matches!(
                 project_studio_creation_edits(bundle.scene.duration, &command.programs),
                 Err(ProjectStudioCreationEditError::Unsupported)
@@ -11957,7 +11937,7 @@ mod tests {
     }
 
     #[test]
-    fn normalized_creation_limits_curve_colors_to_closed_fill_and_vector_stroke() {
+    fn normalized_creation_limits_shape_colors_to_closed_fill_and_vector_stroke() {
         let bundle = static_imported_bundle();
         let dimensions = |kind| match kind {
             StudioAuthoringEntityKind::Ellipse => StudioAuthoringDimensions {
@@ -11975,11 +11955,22 @@ mod tests {
                     ..StudioAuthoringDimensions::default()
                 }
             }
+            StudioAuthoringEntityKind::RegularPolygon => StudioAuthoringDimensions {
+                radius: Some(1.0),
+                sides: Some(3),
+                ..StudioAuthoringDimensions::default()
+            },
+            StudioAuthoringEntityKind::Arrow | StudioAuthoringEntityKind::Line => {
+                StudioAuthoringDimensions::default()
+            }
             _ => unreachable!(),
         };
         let cases = [
             (StudioAuthoringEntityKind::Arc, false, true),
+            (StudioAuthoringEntityKind::Arrow, false, true),
             (StudioAuthoringEntityKind::Ellipse, true, true),
+            (StudioAuthoringEntityKind::Line, false, true),
+            (StudioAuthoringEntityKind::RegularPolygon, true, true),
             (StudioAuthoringEntityKind::Sector, true, true),
         ];
 
@@ -12001,17 +11992,22 @@ mod tests {
                 ),
             ] {
                 let mut command =
-                    studio_path_creation_command(&bundle, "curve", kind, dimensions(kind));
+                    studio_path_creation_command(&bundle, "shape", kind, dimensions(kind));
                 command.programs.push(studio_created_appearance_edit_input(
                     0.5,
-                    "tx:create/entity:curve",
+                    "tx:create/entity:shape",
                     operation_id,
                     operation,
                 ));
-                assert_eq!(
-                    project_studio_creation_edits(bundle.scene.duration, &command.programs).is_ok(),
-                    accepted
-                );
+                let projected =
+                    project_studio_creation_edits(bundle.scene.duration, &command.programs);
+                assert_eq!(projected.is_ok(), accepted);
+                if accepted {
+                    EngineSessionV1::new(bundle.clone())
+                        .unwrap()
+                        .apply_studio_creation_edit(command)
+                        .unwrap();
+                }
             }
         }
     }
