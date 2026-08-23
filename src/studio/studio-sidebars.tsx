@@ -1305,16 +1305,19 @@ export function StudioInspector({
       "Rectangle",
       "RegularPolygon",
       "Sector",
+      "Text",
       "Triangle",
     ].includes(selectedEntity.type)
-      ? ["Arc", "Arrow", "Axes", "CubicBezier", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(
-          selectedEntity.type,
-        )
-        ? [["Stroke", "strokeColor", strokeColorValue]]
-        : [
-            ["Fill", "fillColor", fillColorValue],
-            ["Stroke", "strokeColor", strokeColorValue],
-          ]
+      ? selectedEntity.type === "Text"
+        ? [["Fill", "fillColor", fillColorValue]]
+        : ["Arc", "Arrow", "Axes", "CubicBezier", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(
+              selectedEntity.type,
+            )
+          ? [["Stroke", "strokeColor", strokeColorValue]]
+          : [
+              ["Fill", "fillColor", fillColorValue],
+              ["Stroke", "strokeColor", strokeColorValue],
+            ]
       : [];
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
@@ -1399,9 +1402,9 @@ export function StudioInspector({
                           title={
                             colorAvailable
                               ? property === "fillColor"
-                                ? "Set a solid fill color and enable the shape fill"
-                                : "Set the shape stroke color"
-                              : "Color editing currently requires a supported Studio-created shape at its creation time"
+                                ? "Set a solid fill color and enable the object fill"
+                                : "Set the object stroke color"
+                              : "Color editing currently requires a supported Studio-created object at its creation time"
                           }
                           type="color"
                         />

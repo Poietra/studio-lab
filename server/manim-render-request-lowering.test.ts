@@ -735,17 +735,64 @@ describe("Manim render request lowering", () => {
           : operation,
       ),
     };
+    const fillOperation: CanonicalEditOperation = {
+      dependsOn: [],
+      entityId: "tx:text-creation/entity:circle",
+      id: "text-creation-fill/operation",
+      interval: { end: 5, start: 5 },
+      key: "fillColor",
+      kind: "SetProperty",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      value: "#22c55e",
+    };
+    const fill: CanonicalEditProgram = {
+      ...creation,
+      intentCount: 1,
+      operations: [fillOperation],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [fillOperation.id] },
+      transactionId: "text-creation-fill",
+    };
     const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
 
-    const result = await lower(request(creation), sceneSource, async (input) => {
+    const result = await lower({ ...request(creation), programs: [creation, fill] }, sceneSource, async (input) => {
       authorizations.push(input);
     });
 
     expect(authorizations).toHaveLength(1);
-    expect(authorizations[0]?.programs).toEqual([creation]);
+    expect(authorizations[0]?.programs).toEqual([creation, fill]);
     expect(result.lowered.source).toContain(
       'Text("Hello", font="DejaVu Sans", disable_ligatures=True).scale_to_fit_height(1)',
     );
+    expect(result.lowered.source).toContain('.set_fill("#22c55e", opacity=1)');
+    expect(result.lowered.source.indexOf('.set_fill("#22c55e", opacity=1)')).toBeLessThan(
+      result.lowered.source.indexOf("FadeIn(", result.lowered.source.indexOf('.set_fill("#22c55e", opacity=1)')),
+    );
+
+    const secondFillOperation: CanonicalEditOperation = {
+      ...fillOperation,
+      id: "text-creation-second-fill/operation",
+      value: "#ef4444",
+    };
+    const combinedFill: CanonicalEditProgram = {
+      ...fill,
+      intentCount: 2,
+      operations: [fillOperation, secondFillOperation],
+      schedule: {
+        edges: [],
+        mode: "parallel",
+        order: [fillOperation.id, secondFillOperation.id],
+      },
+      transactionId: "text-creation-combined-fill",
+    };
+    let rejectedAuthorizerCalls = 0;
+    await expect(
+      lower({ ...request(creation), programs: [creation, combinedFill] }, sceneSource, async () => {
+        rejectedAuthorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
+    expect(rejectedAuthorizerCalls).toBe(0);
   });
 
   it("rejects non-canonical Text creation before snapshot authorization", async () => {

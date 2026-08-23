@@ -80,6 +80,14 @@ const ARROW_ENTITY: ProjectedEntity = {
   type: "Arrow",
 };
 
+const TEXT_ENTITY: ProjectedEntity = {
+  ...CIRCLE_ENTITY,
+  id: "entity:text",
+  sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
+  transactionId: "create-text",
+  type: "Text",
+};
+
 function lineJointsTriangle(sourceName: "t1" | "t2" | "t3", x: number): ProjectedEntity {
   const runtimeOwned = (field: string) => ({ kind: "unknown" as const, reason: `VGroup owns runtime ${field}.` });
   return {
@@ -1900,7 +1908,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup.match(control)?.[0]).toContain('title="Use Timeline opacity keyframes for Images."');
   });
 
-  it("enables solid fill and stroke colors only for an authorized Studio-created shape", () => {
+  it("enables only the solid colors supported by each authorized Studio-created object", () => {
     const disabled = renderSelectedInspector(CIRCLE_ENTITY, null);
     const enabled = renderSelectedInspector(CIRCLE_ENTITY, null, null, false, false, null, true, "#123456", "#abcdef");
     const polygon = renderSelectedInspector(
@@ -1914,6 +1922,7 @@ describe("StudioCanvas retained preview layer", () => {
       "#123456",
       "#abcdef",
     );
+    const text = renderSelectedInspector(TEXT_ENTITY, null, null, false, false, null, true, "#22c55e", null);
     const fill = /<input aria-label="Fill color circle_1"[^>]*>/u;
     const stroke = /<input aria-label="Stroke color circle_1"[^>]*>/u;
     const polygonFill = /<input aria-label="Fill color regular-polygon"[^>]*>/u;
@@ -1926,6 +1935,8 @@ describe("StudioCanvas retained preview layer", () => {
     expect(enabled.match(stroke)?.[0]).toContain('value="#abcdef"');
     expect(polygon.match(polygonFill)?.[0]).not.toContain('disabled=""');
     expect(polygon).toContain("6 sides");
+    expect(text).toMatch(/<input aria-label="Fill color text"[^>]*value="#22c55e"[^>]*>/u);
+    expect(text).not.toContain('aria-label="Stroke color text"');
   });
 
   it("exposes stroke but not fill color for Studio-created open paths", () => {

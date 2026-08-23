@@ -651,14 +651,14 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
       issues.push({
         code: "schema-invalid" as const,
         field: "value",
-        message: "Shape colors require a lowercase canonical #rrggbb value.",
+        message: "Object colors require a lowercase canonical #rrggbb value.",
         operationId: operation.id,
         severity: "error" as const,
       });
     }
     const colorableTypes =
       operation.key === "fillColor"
-        ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Triangle"]
+        ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Text", "Triangle"]
         : [
             "Arc",
             "Arrow",
@@ -679,7 +679,7 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
       issues.push({
         code: "schema-invalid" as const,
         field: "entityId",
-        message: `Shape ${operation.key === "fillColor" ? "fill" : "stroke"} is unavailable for this entity.`,
+        message: `Object ${operation.key === "fillColor" ? "fill" : "stroke"} is unavailable for this entity.`,
         operationId: operation.id,
         severity: "error" as const,
       });

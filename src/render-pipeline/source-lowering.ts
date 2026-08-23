@@ -136,6 +136,8 @@ type ProgramSourceLoweringOptions = Readonly<{
   entityScaleStates?: Map<string, SourceScaleState>;
   finiteCreatedLifetimesHandled?: boolean;
   generatedEntityIds?: ReadonlySet<string>;
+  hoistedInitialTextFillOperationIds?: ReadonlySet<string>;
+  initialGeneratedTextFillColors?: ReadonlyMap<string, string>;
   reservedSourceVariables?: ReadonlySet<string>;
   sourceAnchor?: number;
   snapshotAuthorizedSourceBoundRotation?: boolean;
@@ -1039,13 +1041,13 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
     if (!isCanonicalRgbHex(operation.value)) {
       throw new ProgramLoweringError(
         "operation-unsupported",
-        "Shape colors require a lowercase canonical #rrggbb value.",
+        "Object colors require a lowercase canonical #rrggbb value.",
       );
     }
     if (options.generatedEntityIds?.has(operation.entityId)) return;
     throw new ProgramLoweringError(
       "operation-unsupported",
-      "Shape colors currently support only Studio-created Circle and Rectangle entities.",
+      "Object colors currently support only authorized Studio-created entities.",
     );
   }
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
@@ -1586,6 +1588,10 @@ export function lowerCanonicalProgramSource(
           output.push(`# poietra:entity ${JSON.stringify({ id: operation.entity.id, variable })}`);
         }
         output.push(`${variable} = ${entityConstructor(operation)}`);
+        const initialTextFill = options.initialGeneratedTextFillColors?.get(operation.entity.id);
+        if (initialTextFill) {
+          output.push(`${variable}.set_fill(${JSON.stringify(initialTextFill)}, opacity=1)`);
+        }
         options.entityOpacityStates?.set(operation.entity.id, 1);
       } else if (operation.kind === "TransformContent") {
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
@@ -1710,7 +1716,8 @@ export function lowerCanonicalProgramSource(
         variable &&
         operation.kind === "SetProperty" &&
         operation.key === "fillColor" &&
-        isCanonicalRgbHex(operation.value)
+        isCanonicalRgbHex(operation.value) &&
+        !options.hoistedInitialTextFillOperationIds?.has(operation.id)
       ) {
         const opacity = options.entityOpacityStates?.get(operation.entityId) ?? 1;
         output.push(`${variable}.set_fill(${JSON.stringify(operation.value)}, opacity=${formatAmount(opacity)})`);
@@ -3145,6 +3152,55 @@ export function lowerCanonicalProgramBatchSource(
     .sort((left, right) => left.sourceAnchor - right.sourceAnchor || left.inputIndex - right.inputIndex);
   const normalizedEntries = applySceneDurationProjection(orderedEntries, timelineTransforms);
 
+  const initialGeneratedTextFillColors = new Map<string, string>();
+  const hoistedInitialTextFillOperationIds = new Set<string>();
+  for (let start = 0; start < normalizedEntries.length; ) {
+    let end = start + 1;
+    while (
+      end < normalizedEntries.length &&
+      Math.abs(normalizedEntries[end]!.sourceAnchor - normalizedEntries[start]!.sourceAnchor) < EPSILON
+    ) {
+      end += 1;
+    }
+    const group = normalizedEntries.slice(start, end);
+    const initialTextLifetimeStarts = new Map<string, number>();
+    for (const { program, sourceAnchor } of group) {
+      for (const operation of program.operations) {
+        if (operation.kind !== "CreateEntity" || operation.entity.type !== "Text") continue;
+        const lifetimeStart = operation.entity.lifetime.start;
+        const fade = program.operations.find(
+          (candidate) =>
+            candidate.kind === "ChangePresence" &&
+            candidate.entityId === operation.entity.id &&
+            candidate.effect === "fade-in" &&
+            candidate.persistent &&
+            candidate.interval.end > candidate.interval.start &&
+            Math.abs(candidate.interval.start - lifetimeStart) < EPSILON,
+        );
+        if (fade && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
+          initialTextLifetimeStarts.set(operation.entity.id, lifetimeStart);
+        }
+      }
+    }
+    for (const { program } of group) {
+      if (program.operations.length !== 1) continue;
+      const operation = program.operations[0]!;
+      if (operation.kind !== "SetProperty" || operation.key !== "fillColor" || !isCanonicalRgbHex(operation.value)) {
+        continue;
+      }
+      const lifetimeStart = initialTextLifetimeStarts.get(operation.entityId);
+      if (
+        lifetimeStart !== undefined &&
+        Math.abs(operation.interval.start - lifetimeStart) < EPSILON &&
+        Math.abs(operation.interval.end - lifetimeStart) < EPSILON
+      ) {
+        initialGeneratedTextFillColors.set(operation.entityId, operation.value);
+        hoistedInitialTextFillOperationIds.add(operation.id);
+      }
+    }
+    start = end;
+  }
+
   if (normalizedEntries.length === 0) {
     const anchor = findSceneMotionAnchors(source, request.sceneName).find(
       (candidate) => Math.abs(candidate.seconds - orderedEntries[0]!.sourceAnchor) < EPSILON,
@@ -3177,6 +3233,8 @@ export function lowerCanonicalProgramBatchSource(
         entityScaleStates,
         finiteCreatedLifetimesHandled: true,
         generatedEntityIds,
+        hoistedInitialTextFillOperationIds,
+        initialGeneratedTextFillColors,
         reservedSourceVariables: generatedSourceVariables,
         sourceAnchor: entry.sourceAnchor,
         snapshotAuthorizedSourceBoundRotation: authorization.snapshotAuthorizedSourceBoundRotation,

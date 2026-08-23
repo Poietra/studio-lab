@@ -55,6 +55,16 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
     ),
   );
   if (createdEntities.size === 0) return false;
+  const textFillProgramsAreClosed = programs.every((program) => {
+    const textFillCount = program.operations.filter(
+      (operation) =>
+        operation.kind === "SetProperty" &&
+        operation.key === "fillColor" &&
+        createdEntities.get(operation.entityId) === "Text",
+    ).length;
+    return textFillCount === 0 || (textFillCount === 1 && program.operations.length === 1);
+  });
+  if (!textFillProgramsAreClosed) return false;
   return operations.every((operation) => {
     if (operation.kind === "CreateEntity") {
       const { dimensions, type } = operation.entity;
@@ -95,7 +105,9 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
     if (!("entityId" in operation) || !createdEntities.has(operation.entityId)) return false;
     if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
       const type = createdEntities.get(operation.entityId);
-      return (type === "Circle" || type === "Rectangle") && isCanonicalRgbHex(operation.value);
+      const colorIsSupported =
+        type === "Circle" || type === "Rectangle" || (operation.key === "fillColor" && type === "Text");
+      return colorIsSupported && isCanonicalRgbHex(operation.value);
     }
     return (
       operation.kind === "ResizeEntity" ||

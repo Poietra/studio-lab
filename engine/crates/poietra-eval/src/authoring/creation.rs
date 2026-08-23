@@ -77,6 +77,9 @@ enum CreateSceneEntityGeometry {
     CubicOutline {
         path: CubicPathV1,
     },
+    TextOutline {
+        path: CubicPathV1,
+    },
     ShapeOutline {
         path: CubicPathV1,
     },
@@ -4326,6 +4329,7 @@ fn plan_studio_creation_edits(
                                 | StudioAuthoringEntityKind::Rectangle
                                 | StudioAuthoringEntityKind::RegularPolygon
                                 | StudioAuthoringEntityKind::Sector
+                                | StudioAuthoringEntityKind::Text
                         )
                         && canonical_studio_hex_color(color).is_some()
                         && state.fill_color_override.as_deref() != Some(color.as_str())
@@ -4339,14 +4343,25 @@ fn plan_studio_creation_edits(
                         )
                         && state.persistent_removal.is_none() =>
                 {
-                    record_planned_studio_creation_appearance(state, instant_at)?;
+                    let initial_text_fade_fill = state.kind == StudioAuthoringEntityKind::Text
+                        && state.fade_interval.is_some();
+                    if !initial_text_fade_fill {
+                        record_planned_studio_creation_appearance(state, instant_at)?;
+                    }
                     state.fill_color_override = Some(color.clone());
                     ranked_mutations.push((
                         timeline.ranks[program_index],
                         schedule_index,
                         StudioCreationProjectedMutation {
                             entity_id: entity_id.to_owned(),
-                            interval: instant_interval,
+                            interval: if initial_text_fade_fill {
+                                IntervalV1 {
+                                    end: state.lifetime.start,
+                                    start: state.lifetime.start,
+                                }
+                            } else {
+                                instant_interval
+                            },
                             kind: StudioCreationProjectedMutationKind::FillColor {
                                 value: color.clone(),
                             },
@@ -5641,7 +5656,8 @@ fn created_geometry_and_appearance(
             studio_shape_appearance(),
             SceneCapabilityV1::ShapePrimitives,
         ),
-        CreateSceneEntityGeometry::CubicOutline { path } => (
+        CreateSceneEntityGeometry::CubicOutline { path }
+        | CreateSceneEntityGeometry::TextOutline { path } => (
             SceneGeometryV1::CubicPath { path },
             studio_math_tex_appearance(),
             SceneCapabilityV1::CubicPathGeometry,
@@ -6011,9 +6027,29 @@ fn validate_create_scene_entities_command(
             && entity.stroke_color.is_some()
             && close_transform_baseline_value(entity.paint_opacity, 1.0)
             && rotation_is_noop(entity.rotation);
+        let has_initial_text_fade_fill = entity.fade_in.is_some()
+            && entity.fill_color.is_some()
+            && entity.stroke_color.is_none()
+            && matches!(
+                entity.geometry,
+                CreateSceneEntityGeometry::TextOutline { .. }
+            )
+            && close_transform_baseline_value(entity.paint_opacity, 1.0)
+            && rotation_is_noop(entity.rotation);
         let appearance_changed = !close_transform_baseline_value(entity.paint_opacity, 1.0)
             || !rotation_is_noop(entity.rotation)
             || has_color_override;
+        let unsupported_color_override = match &entity.geometry {
+            CreateSceneEntityGeometry::TextOutline { .. } => entity.stroke_color.is_some(),
+            CreateSceneEntityGeometry::Arrow
+            | CreateSceneEntityGeometry::Circle { .. }
+            | CreateSceneEntityGeometry::CubicBezier { .. }
+            | CreateSceneEntityGeometry::Line
+            | CreateSceneEntityGeometry::Rectangle { .. }
+            | CreateSceneEntityGeometry::ShapeOutline { .. }
+            | CreateSceneEntityGeometry::SvgPath { .. } => false,
+            _ => has_color_override,
+        };
         let unsupported_image_paint =
             matches!(entity.geometry, CreateSceneEntityGeometry::Image { .. })
                 && (!close_transform_baseline_value(entity.paint_opacity, 1.0)
@@ -6023,17 +6059,7 @@ fn validate_create_scene_entities_command(
             || !entity.rotation.is_finite()
             || !colors_are_valid
             || unsupported_image_paint
-            || (has_color_override
-                && !matches!(
-                    &entity.geometry,
-                    CreateSceneEntityGeometry::Arrow
-                        | CreateSceneEntityGeometry::Circle { .. }
-                        | CreateSceneEntityGeometry::CubicBezier { .. }
-                        | CreateSceneEntityGeometry::Line
-                        | CreateSceneEntityGeometry::Rectangle { .. }
-                        | CreateSceneEntityGeometry::ShapeOutline { .. }
-                        | CreateSceneEntityGeometry::SvgPath { .. }
-                ))
+            || unsupported_color_override
             || (entity.animated_resize.is_some()
                 && (entity.instant_transform.is_some()
                     || !rotation_is_noop(entity.rotation)
@@ -6050,7 +6076,10 @@ fn validate_create_scene_entities_command(
             || !create_entity_write_is_valid(entity)
             || !create_entity_property_keyframes_are_valid(entity)
             || (!entity.material_parameter_keyframes.is_empty() && has_color_override)
-            || (appearance_changed && entity.appearance_at.is_none() && !has_initial_draw_stroke)
+            || (appearance_changed
+                && entity.appearance_at.is_none()
+                && !has_initial_draw_stroke
+                && !has_initial_text_fade_fill)
             || entity.appearance_at.is_some_and(|at| {
                 !at.is_finite()
                     || at < entity.lifetime.start
@@ -6404,6 +6433,12 @@ fn append_created_entity(
     let write_in = entity.write_in.clone();
     let math_tex_morph = entity.math_tex_morph.clone();
     let shape_morph = entity.shape_morph.clone();
+    let has_initial_text_fade_fill = entity.fade_in.is_some()
+        && entity.fill_color.is_some()
+        && matches!(
+            entity.geometry,
+            CreateSceneEntityGeometry::TextOutline { .. }
+        );
     let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
     let is_logical_group = matches!(&geometry, SceneGeometryV1::Group {});
     let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
@@ -6411,10 +6446,12 @@ fn append_created_entity(
         let SceneAppearanceV1::Vector { fill, .. } = &mut appearance else {
             unreachable!("Studio shape color admission requires vector appearance");
         };
-        let mut transparent = color.clone();
-        transparent.alpha = 0.0;
+        let mut base_color = color.clone();
+        if !has_initial_text_fade_fill {
+            base_color.alpha = 0.0;
+        }
         *fill = Some(FillStyleV1 {
-            color: transparent,
+            color: base_color,
             fragment_material: None,
             rule: FillRuleV1::NonZero,
         });
@@ -7011,6 +7048,7 @@ fn creates_browser_outline(entities: &[CreateSceneEntity]) -> bool {
         matches!(
             &entity.geometry,
             CreateSceneEntityGeometry::CubicOutline { .. }
+                | CreateSceneEntityGeometry::TextOutline { .. }
         ) || entity.write_in.is_some()
     })
 }
@@ -7440,7 +7478,7 @@ impl EngineSessionV1 {
                         .as_ref()
                         .map(|content| content.layout.font_size)
                         .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    CreateSceneEntityGeometry::CubicOutline {
+                    CreateSceneEntityGeometry::TextOutline {
                         path: scale_cubic_path(&outline.path, font_size),
                     }
                 }
@@ -15429,6 +15467,97 @@ mod tests {
                 })
         );
 
+        let mut color_command = studio_text_creation_command(&bundle, "Color me");
+        color_command.programs.truncate(1);
+        color_command.programs.extend([
+            studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "text-fill-red",
+                StudioCreationOperationKind::FillColor {
+                    color: Some("#ef4444".to_owned()),
+                },
+            ),
+            studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "text-fill-green",
+                StudioCreationOperationKind::FillColor {
+                    color: Some("#22c55e".to_owned()),
+                },
+            ),
+        ]);
+        let color_projection =
+            project_studio_creation_edits(bundle.scene.duration, &color_command.programs).unwrap();
+        assert!(color_projection.mutations[3..].iter().all(|mutation| {
+            (mutation.interval.start - 0.5).abs() < 1e-12
+                && (mutation.interval.end - 0.5).abs() < 1e-12
+        }));
+        assert!(matches!(
+            color_projection.mutations.last().map(|mutation| &mutation.kind),
+            Some(StudioCreationProjectedMutationKind::FillColor { value })
+                if value == "#22c55e"
+        ));
+        let mut color_session = EngineSessionV1::new(bundle.clone()).unwrap();
+        let color_result = color_session
+            .apply_studio_creation_edit(color_command)
+            .unwrap();
+        let colored = color_result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+        assert!(matches!(
+            &colored.appearance,
+            SceneAppearanceV1::Vector { fill: Some(fill), stroke: None, .. }
+                if (fill.color.red - 34.0 / 255.0).abs() < 1e-12
+                    && (fill.color.green - 197.0 / 255.0).abs() < 1e-12
+                    && (fill.color.blue - 94.0 / 255.0).abs() < 1e-12
+                    && (fill.color.alpha - 1.0).abs() < 1e-12
+        ));
+        assert!(
+            color_result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::Opacity { entity_id: target, .. } if target == entity_id
+                ))
+        );
+        assert!(!color_result.bundle.scene.animation_channels.iter().any(|channel| matches!(
+            channel,
+            AnimationChannelV1::VectorAppearance { entity_id: target, .. } if target == entity_id
+        )));
+        let packet = color_session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "initial-text-fill",
+                sample_time: 0.7,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert!(packet.draws.iter().any(|draw| matches!(
+            draw,
+            poietra_scene_ir::RenderDrawV1::Path {
+                entity_id: target,
+                fill: Some(fill),
+                opacity,
+                ..
+            } if target == entity_id
+                && (fill.color.red - 34.0 / 255.0).abs() < 1e-12
+                && (fill.color.green - 197.0 / 255.0).abs() < 1e-12
+                && (fill.color.blue - 94.0 / 255.0).abs() < 1e-12
+                && *opacity > 0.0
+                && *opacity < 1.0
+        )));
+
         let mut rotation_command = studio_text_creation_command(&bundle, "Hello, Poietra");
         rotation_command.programs.truncate(1);
         rotation_command
@@ -15444,7 +15573,7 @@ mod tests {
                     to: Some(std::f64::consts::FRAC_PI_4),
                 },
             ));
-        let mut rotation_session = EngineSessionV1::new(bundle).unwrap();
+        let mut rotation_session = EngineSessionV1::new(bundle.clone()).unwrap();
         let rotation_result = rotation_session
             .apply_studio_creation_edit(rotation_command)
             .unwrap();
@@ -15462,6 +15591,38 @@ mod tests {
                     )
                 })
         );
+
+        let mut math_tex_command = studio_text_creation_command(&bundle, "E = mc^2");
+        math_tex_command.programs.truncate(1);
+        let StudioCreationOperationKind::Create { entity } =
+            &mut math_tex_command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.kind = StudioAuthoringEntityKind::MathTex;
+        entity.text = None;
+        entity.tex_parts = Some(vec!["E = mc^2".to_owned()]);
+        math_tex_command.text_outlines.clear();
+        math_tex_command.math_tex_outlines = vec![StudioCreationMathTexOutline {
+            entity_id: entity_id.to_owned(),
+            path: mathtex_fixture_path(),
+            tex_parts: vec!["E = mc^2".to_owned()],
+        }];
+        math_tex_command
+            .programs
+            .push(studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "math-tex-fill",
+                StudioCreationOperationKind::FillColor {
+                    color: Some("#22c55e".to_owned()),
+                },
+            ));
+        let mut math_tex_session = EngineSessionV1::new(bundle).unwrap();
+        assert!(matches!(
+            math_tex_session.apply_studio_creation_edit(math_tex_command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
     }
 
     #[test]

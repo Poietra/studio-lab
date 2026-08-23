@@ -230,6 +230,11 @@ test("downloads a bounded Manim Scene from Studio-native authoring", async ({ pa
     await canvas.click({ position: { x: 520, y: 180 } });
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const textFill = page.getByLabel("Fill color Poietra");
+    await textFill.fill("#22c55e");
+    await textFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(textFill).toHaveValue("#22c55e");
 
     await page.getByRole("button", { name: "Export settings" }).click();
     const sourceExport = page.locator("[data-studio-manim-source-export-state]");
@@ -244,6 +249,12 @@ test("downloads a bounded Manim Scene from Studio-native authoring", async ({ pa
     expect(source).toContain("class PoietraScene(Scene):");
     expect(source).toContain("Circle(");
     expect(source).toContain('Text("Poietra"');
+    const textConstructorIndex = source.indexOf('Text("Poietra"');
+    const textFillIndex = source.indexOf('.set_fill("#22c55e", opacity=1)', textConstructorIndex);
+    const textFadeIndex = source.indexOf("FadeIn(", textFillIndex);
+    expect(textConstructorIndex).toBeGreaterThanOrEqual(0);
+    expect(textFillIndex).toBeGreaterThan(textConstructorIndex);
+    expect(textFadeIndex).toBeGreaterThan(textFillIndex);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
@@ -345,6 +356,20 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     await expect(page.getByRole("button", { name: "Move Poietra", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(page.getByRole("button", { name: "Move Poietra", exact: true })).toBeVisible();
+    const textFill = page.getByLabel("Fill color Poietra");
+    await textFill.fill("#ef4444");
+    await textFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await textFill.fill("#22c55e");
+    await textFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(textFill).toHaveValue("#22c55e");
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Poietra" }).check();
+    await expect(textFill).toHaveValue("#ef4444");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select Poietra" }).check();
+    await expect(textFill).toHaveValue("#22c55e");
 
     await page.getByRole("button", { name: "Create animation" }).click();
     await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
@@ -375,6 +400,8 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     expect(endDimensions.width).toBeGreaterThan(endDimensions.height);
     await page.getByRole("slider", { name: "Scene playhead" }).fill("0");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(0, 1);
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("2");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
 
     const assets = page.getByRole("region", { name: "Assets" });
     await expect(assets.getByRole("button", { name: "+ Import PNG" })).toBeEnabled();
@@ -410,6 +437,8 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     await expect(page.getByRole("button", { name: "Move insert-0" })).toHaveCount(2);
     await expect(page.getByRole("button", { name: "Move Poietra", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Move Rectangle", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Move Poietra", exact: true }).click();
+    await expect(page.getByLabel("Fill color Poietra")).toHaveValue("#22c55e");
     const restoredSpinningRectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
     const restoredSpinClip = page.getByRole("button", { name: "Edit Rectangle motion clip" });
     const restoredSpinningRectangleId = await restoredSpinningRectangle.getAttribute("data-studio-entity");
@@ -422,7 +451,10 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     expect(restoredTurningDimensions.height).toBeGreaterThan(restoredTurningDimensions.width);
     await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
 
-    await exportLocalMp4(page);
+    const mp4 = await exportLocalMp4(page);
+    // Text fades in from 0.4–0.8s; imported images do not exist until 2s.
+    const [greenPixels] = await decodedBrightPixelCounts(page, mp4, [0.6], "green-dominant");
+    expect(greenPixels).toBeGreaterThan(0);
 
     const deletedProjectId = projectId;
     await page.getByRole("button", { name: "Back to workspaces" }).click();
