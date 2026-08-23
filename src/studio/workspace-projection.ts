@@ -41,8 +41,10 @@ import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 import { type AuthorableWorkspaceScene, studioWorkspaceWorkingState } from "./studio-native-workspace";
 import {
   correlateTimelineProgramBatch,
+  isSceneDurationProgram,
   isSceneDurationProgramBatch,
   projectLegacyTimelineProposedState,
+  selectTimelineProgramBatchProjection,
 } from "./timeline-projection";
 
 export function isTransitionOverlay(entity: Pick<ProjectedEntity, "type">) {
@@ -418,6 +420,8 @@ function correlateCreationProjection(
   const expectedRemovalCount = operations.filter(
     ({ operation }) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
   ).length;
+  const durationPrograms = programs.filter(isSceneDurationProgram);
+  const durationOperationCount = operations.filter(({ operation }) => isSceneDurationOperation(operation)).length;
   if (
     operations.some(
       ({ operation }) =>
@@ -425,9 +429,11 @@ function correlateCreationProjection(
         operation.kind !== "CreateMotion" &&
         operation.kind !== "GroupEntities" &&
         operation.kind !== "UngroupEntity" &&
+        !isSceneDurationOperation(operation) &&
         creationMutationKind(operation) === null &&
         !(operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent),
     ) ||
+    durationPrograms.length !== durationOperationCount ||
     projection.entities.length !== createCount ||
     projection.mutations.length !== expectedMutationOperations.length ||
     projection.motions.length !== expectedMotionCount ||
@@ -439,6 +445,18 @@ function correlateCreationProjection(
     )
   ) {
     throw new TypeError("The Rust creation projection does not cover the complete Program batch.");
+  }
+  if (durationPrograms.length > 0) {
+    correlateTimelineProgramBatch(durationPrograms, projection.timelineProjection);
+    if (!sameProjectionNumber(projection.timelineProjection.projectedDuration, projection.projectedDuration)) {
+      throw new TypeError("The Rust creation timeline projection does not match the projected Studio duration.");
+    }
+  } else if (
+    projection.timelineProjection.programProjections.length > 0 ||
+    projection.timelineProjection.transforms.length > 0 ||
+    !sameProjectionNumber(projection.timelineProjection.projectedDuration, projection.projectedDuration)
+  ) {
+    throw new TypeError("The Rust creation projection contains an unexpected Scene duration projection.");
   }
   const insertionsByTransaction = new Map(
     projection.insertions.map((insertion) => [insertion.transactionId, insertion] as const),
@@ -687,8 +705,11 @@ function intervalBeforeInsertions(
   );
 }
 
-/** Selects an exact Program prefix from one already correlated Rust creation projection. */
-export function selectCreationProjectionProgramPrefix(
+/**
+ * Reconstructs an older applied-history prefix only while bootstrapping an edit of that history.
+ * Current workspace and draft-base projections must use an exact Rust projection instead.
+ */
+export function selectHistoricalCreationProjectionPrefix(
   baseDuration: number,
   programs: readonly SceneEdit[],
   fullPrograms: readonly SceneEdit[],
@@ -706,36 +727,132 @@ export function selectCreationProjectionProgramPrefix(
 
   const transactionIds = new Set(programs.map(({ transactionId }) => transactionId));
   const operationIds = new Set(programs.flatMap(({ operations }) => operations.map(({ id }) => id)));
+  const durationPrograms = programs.filter(isSceneDurationProgram);
+  const durationTransactionIds = new Set(durationPrograms.map(({ transactionId }) => transactionId));
+  const durationProgramByOperationId = new Map(
+    durationPrograms.map((program) => [program.operations[0].id, program] as const),
+  );
+  const selectedAuthoringInsertions = fullProjection.insertions.filter(
+    ({ transactionId }) => transactionIds.has(transactionId) && !durationTransactionIds.has(transactionId),
+  );
+  const mixedAuthoringOffsetBefore = (program: SceneEdit) => {
+    const programIndex = fullPrograms.indexOf(program);
+    return selectedAuthoringInsertions.reduce((offset, insertion) => {
+      const insertionProgramIndex = fullPrograms.findIndex(
+        ({ transactionId }) => transactionId === insertion.transactionId,
+      );
+      if (insertionProgramIndex < 0) {
+        throw new TypeError("The Rust creation insertion is not correlated with the selected prefix.");
+      }
+      const insertionProgram = fullPrograms[insertionProgramIndex]!;
+      const precedes =
+        insertionProgram.anchor.resolvedSeconds < program.anchor.resolvedSeconds ||
+        (insertionProgram.anchor.resolvedSeconds === program.anchor.resolvedSeconds &&
+          insertionProgramIndex < programIndex);
+      return precedes ? offset + insertion.duration : offset;
+    }, 0);
+  };
+  const selectedTimelineProjection =
+    durationPrograms.length > 0
+      ? selectTimelineProgramBatchProjection(baseDuration, durationPrograms, fullProjection.timelineProjection)
+          .projection
+      : { programProjections: [], projectedDuration: baseDuration, transforms: [] };
+  const selectedDurationInsertions = new Map<
+    string,
+    StudioCreationProjectionV1["insertions"][number] & Readonly<{ operationId: string }>
+  >();
+  for (const transform of selectedTimelineProjection.transforms) {
+    if (transform.kind === "insert") {
+      const program = durationProgramByOperationId.get(transform.operationId);
+      if (!program) throw new TypeError("The Rust duration insertion is not correlated with the selected prefix.");
+      selectedDurationInsertions.set(transform.operationId, {
+        at: transform.interval.start + mixedAuthoringOffsetBefore(program),
+        duration: transform.interval.end - transform.interval.start,
+        operationId: transform.operationId,
+        transactionId: program.transactionId,
+      });
+      continue;
+    }
+    for (const reduction of transform.waitReductions) {
+      const insertion = selectedDurationInsertions.get(reduction.operationId);
+      if (!insertion || reduction.removedDuration > insertion.duration + MATH_TEX_TRANSFORM_PROJECTION_EPSILON) {
+        throw new TypeError("The Rust duration trim is not correlated with the selected prefix.");
+      }
+      selectedDurationInsertions.set(reduction.operationId, {
+        ...insertion,
+        duration: Math.max(0, insertion.duration - reduction.removedDuration),
+      });
+    }
+  }
   const suffixInsertions = fullProjection.insertions.filter(({ transactionId }) => !transactionIds.has(transactionId));
   const rewindTime = (time: number) =>
     suffixInsertions.reduceRight((current, insertion) => timeBeforeInsertion(current, insertion), time);
-  const selectedInsertions = fullProjection.insertions
-    .filter(({ transactionId }) => transactionIds.has(transactionId))
-    .map((insertion) => ({ ...insertion, at: rewindTime(insertion.at) }));
+  const selectedInsertions = [...selectedAuthoringInsertions, ...selectedDurationInsertions.values()]
+    .filter(({ duration }) => duration > MATH_TEX_TRANSFORM_PROJECTION_EPSILON)
+    .map(({ at, duration, transactionId }) => ({ at: rewindTime(at), duration, transactionId }))
+    .sort((left, right) => {
+      const leftIndex = fullPrograms.findIndex(({ transactionId }) => transactionId === left.transactionId);
+      const rightIndex = fullPrograms.findIndex(({ transactionId }) => transactionId === right.transactionId);
+      return left.at - right.at || leftIndex - rightIndex;
+    });
+  const suffixDurationOperationIds = new Set(
+    fullPrograms.slice(programs.length).flatMap(({ operations }) => operations.map(({ id }) => id)),
+  );
+  const selectedWaitOperationIds = new Set(selectedDurationInsertions.keys());
+  const suffixRemovals = fullProjection.timelineProjection.transforms.filter(
+    (transform) =>
+      transform.kind === "remove" &&
+      suffixDurationOperationIds.has(transform.operationId) &&
+      transform.waitReductions.every(({ operationId }) => selectedWaitOperationIds.has(operationId)),
+  );
+  const restoreTime = (time: number, includeBoundary: boolean) =>
+    [...suffixRemovals].reverse().reduce((current, removal) => {
+      const duration = removal.interval.end - removal.interval.start;
+      return current > removal.interval.start + MATH_TEX_TRANSFORM_PROJECTION_EPSILON ||
+        (includeBoundary && current >= removal.interval.start - MATH_TEX_TRANSFORM_PROJECTION_EPSILON)
+        ? current + duration
+        : current;
+    }, time);
+  const restoreInterval = (interval: Readonly<{ end: number; start: number }>) => ({
+    end: restoreTime(interval.end, true),
+    start: restoreTime(interval.start, false),
+  });
+  const projectedDuration =
+    baseDuration + selectedInsertions.reduce((duration, insertion) => duration + insertion.duration, 0);
   const selectedProjection: StudioCreationProjectionV1 = {
+    // This historical bootstrap view is never current trim authority.
+    durationTrimBarrierOperationIds: [],
     entities: fullProjection.entities
       .filter(({ operationId }) => operationIds.has(operationId))
       .map((entity) => ({
         ...entity,
-        createdLifetime: intervalBeforeInsertions(entity.createdLifetime, suffixInsertions),
+        createdLifetime: restoreInterval(intervalBeforeInsertions(entity.createdLifetime, suffixInsertions)),
       })),
     insertions: selectedInsertions,
     motions: fullProjection.motions
       .filter(({ operationId }) => operationIds.has(operationId))
-      .map((motion) => ({ ...motion, interval: intervalBeforeInsertions(motion.interval, suffixInsertions) })),
+      .map((motion) => ({
+        ...motion,
+        interval: restoreInterval(intervalBeforeInsertions(motion.interval, suffixInsertions)),
+      })),
     mutations: fullProjection.mutations
       .filter(({ operationId }) => operationIds.has(operationId))
-      .map((mutation) => ({ ...mutation, interval: intervalBeforeInsertions(mutation.interval, suffixInsertions) })),
-    projectedDuration:
-      baseDuration + selectedInsertions.reduce((duration, insertion) => duration + insertion.duration, 0),
+      .map((mutation) => ({
+        ...mutation,
+        interval: restoreInterval(intervalBeforeInsertions(mutation.interval, suffixInsertions)),
+      })),
+    projectedDuration,
     removals: fullProjection.removals
       .filter(({ operationId }) => operationIds.has(operationId))
       .map((removal) => ({
         ...removal,
-        fadeInterval: removal.fadeInterval ? intervalBeforeInsertions(removal.fadeInterval, suffixInsertions) : null,
-        removedAt: rewindTime(removal.removedAt),
-        resultingLifetimeEnd: rewindTime(removal.resultingLifetimeEnd),
+        fadeInterval: removal.fadeInterval
+          ? restoreInterval(intervalBeforeInsertions(removal.fadeInterval, suffixInsertions))
+          : null,
+        removedAt: restoreTime(rewindTime(removal.removedAt), false),
+        resultingLifetimeEnd: restoreTime(rewindTime(removal.resultingLifetimeEnd), true),
       })),
+    timelineProjection: { ...selectedTimelineProjection, projectedDuration },
   };
   return selectCreationProjection(baseDuration, programs, selectedProjection);
 }
@@ -1727,7 +1844,7 @@ export function projectStudioWorkspace(
     ? null
     : selectPersistentRemoveProjection(programs, input.persistentRemoveProjection ?? null);
   let proposedState: ProposedState;
-  if (containsSceneDurationOperation) {
+  if (containsSceneDurationOperation && !hasCreation) {
     if (persistentRemoveProjection) {
       throw new TypeError("Scene duration and persistent remove Programs cannot share one workspace projection.");
     }

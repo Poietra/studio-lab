@@ -255,6 +255,7 @@ export function workingTimeToSourceTime(transforms: StudioTimelineProjectionV1["
 /** Derives the safe trim suffix exclusively from a Rust timeline projection. */
 export function sceneDurationTrimAvailabilityFromProjection(
   projection: StudioTimelineProjectionV1,
+  durationTrimBarrierOperationIds: readonly string[] = [],
 ): SceneDurationTrimAvailability {
   const priorTransforms: StudioTimelineProjectionV1["transforms"][number][] = [];
   const waits: Array<{ anchor: number; operationId: string; remainingDuration: number }> = [];
@@ -303,12 +304,23 @@ export function sceneDurationTrimAvailabilityFromProjection(
   }
 
   const waitOperationIds = waits.map((wait) => wait.operationId).reverse();
-  const activeWaits = waits.filter((wait) => wait.remainingDuration > TIMELINE_EPSILON);
+  const trimBarrierOperationIds = new Set(durationTrimBarrierOperationIds);
+  if (durationTrimBarrierOperationIds.some((operationId) => !waitOperationIds.includes(operationId))) {
+    throw new Error("Rust creation projection contains an uncorrelated duration trim barrier.");
+  }
+  const activeWaits = [] as typeof waits;
+  for (const wait of waits.toReversed()) {
+    if (trimBarrierOperationIds.has(wait.operationId)) break;
+    if (wait.remainingDuration > TIMELINE_EPSILON) activeWaits.unshift(wait);
+  }
   const removableDuration = activeWaits.reduce((duration, wait) => duration + wait.remainingDuration, 0);
   if (activeWaits.length === 0) {
     return {
       anchor: null,
-      blocker: "The Studio-added trailing wait is already fully removed.",
+      blocker:
+        trimBarrierOperationIds.size > 0
+          ? "Later authored content follows the Studio-added wait, so shortening it would cut content."
+          : "The Studio-added trailing wait is already fully removed.",
       minimumDuration: projection.projectedDuration,
       removableDuration: 0,
       waitOperationIds,

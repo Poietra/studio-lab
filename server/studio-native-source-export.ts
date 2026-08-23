@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 
+import type { StudioTimelineEditTransformV1 } from "../src/engine/scene-authoring";
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import { importManimScene } from "../src/render-pipeline/source-import";
 import {
@@ -8,7 +9,7 @@ import {
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../src/studio/operation-registry";
-import type { SceneEdit } from "../src/studio/scene-edit-contract";
+import type { SceneEdit, SceneEditOperation } from "../src/studio/scene-edit-contract";
 import { sceneEditSchema } from "../src/studio/scene-edit-contract";
 
 const TIME_EPSILON = 0.0005;
@@ -16,9 +17,11 @@ const SOURCE_PATH = "poietra_scene.py";
 const SCENE_NAME = "PoietraScene";
 
 export type StudioNativeSourceExportInput = Readonly<{
+  baseDuration: number;
   duration: number;
   frame: Readonly<{ height: number; width: number }>;
   programs: readonly SceneEdit[];
+  timelineTransforms: readonly StudioTimelineEditTransformV1[];
   viewport: Readonly<{ height: number; width: number }>;
 }>;
 
@@ -40,7 +43,16 @@ function assertPositiveSize(value: Readonly<{ height: number; width: number }>, 
   }
 }
 
-function admittedPrograms(programs: readonly SceneEdit[], sceneDuration: number): readonly ScheduledProgram[] {
+function isStudioNativeDurationOperation(operation: SceneEditOperation) {
+  return (
+    operation.kind === "TrimSceneDuration" ||
+    (operation.kind === "InsertTimelineEvent" &&
+      operation.eventKind === "wait" &&
+      operation.purpose === "scene-duration")
+  );
+}
+
+function admittedPrograms(programs: readonly SceneEdit[], baseDuration: number): readonly ScheduledProgram[] {
   if (programs.length > 32) throw new TypeError("A Studio-native source export accepts at most 32 Programs.");
 
   const parsed = programs.map((program, index) => {
@@ -59,19 +71,23 @@ function admittedPrograms(programs: readonly SceneEdit[], sceneDuration: number)
           `Studio-native ${unsupportedOperation?.kind ?? "Program"} in ${result.data.transactionId} has no truthful Manim source lowering.`,
       );
     }
+    const containsTimelineOperation = result.data.operations.some(
+      (operation) =>
+        operation.kind === "InsertSceneBoundary" ||
+        operation.kind === "InsertTimelineEvent" ||
+        operation.kind === "TrimSceneDuration",
+    );
     if (
+      (containsTimelineOperation && !result.data.operations.every(isStudioNativeDurationOperation)) ||
       result.data.operations.some(
         (operation) =>
-          operation.kind === "InsertSceneBoundary" ||
-          operation.kind === "InsertTimelineEvent" ||
-          operation.kind === "TrimSceneDuration" ||
           (operation.kind === "CreateEntity" && operation.entity.type.startsWith("TransitionOverlay:")) ||
           (operation.kind === "ChangePresence" && (operation.effect === "cover" || operation.effect === "reveal")),
       )
     ) {
       throw new ProgramLoweringError(
         "operation-unsupported",
-        "Studio-native source export derives duration from the canonical Scene and does not admit source timeline or Scene-boundary operations yet.",
+        "Studio-native source export admits only Rust-authorized Scene duration waits and trims from the timeline operation family.",
       );
     }
     const duration = loweredProgramDuration(result.data);
@@ -87,21 +103,18 @@ function admittedPrograms(programs: readonly SceneEdit[], sceneDuration: number)
     throw new TypeError("A Studio-native source export requires unique Program transaction IDs.");
   }
 
-  const baseDuration = sceneDuration - parsed.reduce((total, entry) => total + entry.duration, 0);
-  if (baseDuration < -TIME_EPSILON) {
-    throw new ProgramLoweringError(
-      "operation-unsupported",
-      "Studio-native Program durations exceed the canonical Scene duration.",
-    );
-  }
-
   const ordered = parsed.sort(
     (left, right) =>
       left.program.anchor.resolvedSeconds - right.program.anchor.resolvedSeconds || left.inputIndex - right.inputIndex,
   );
   return ordered.map((entry) => {
     const sourceAnchor = entry.program.anchor.resolvedSeconds;
-    if (sourceAnchor < -TIME_EPSILON || sourceAnchor + entry.duration > baseDuration + TIME_EPSILON) {
+    const durationProgram = entry.program.operations.every(isStudioNativeDurationOperation);
+    if (
+      sourceAnchor < -TIME_EPSILON ||
+      sourceAnchor > baseDuration + TIME_EPSILON ||
+      (!durationProgram && sourceAnchor + entry.duration > baseDuration + TIME_EPSILON)
+    ) {
       throw new ProgramLoweringError(
         "operation-unsupported",
         `Program ${entry.program.transactionId} extends outside the ${baseDuration.toFixed(3)}s Studio source timeline.`,
@@ -116,16 +129,7 @@ function formatSeconds(value: number) {
   return Number(normalized.toFixed(4)).toString();
 }
 
-function sourceScaffold(sceneName: string, duration: number, programs: readonly ScheduledProgram[]) {
-  const totalInsertedDuration = programs.reduce((total, program) => total + program.duration, 0);
-  const baseDuration = duration - totalInsertedDuration;
-  if (baseDuration < -TIME_EPSILON) {
-    throw new ProgramLoweringError(
-      "operation-unsupported",
-      "Studio-native Program durations exceed the canonical Scene duration.",
-    );
-  }
-
+function sourceScaffold(sceneName: string, baseDuration: number, programs: readonly ScheduledProgram[]) {
   const finiteLifetimeAnchors = programs.flatMap(({ program }) => {
     return program.operations.flatMap((operation) =>
       operation.kind === "CreateEntity" && operation.entity.lifetime.end !== null
@@ -202,12 +206,15 @@ export function exportStudioNativeManimSource(input: StudioNativeSourceExportInp
   if (!Number.isFinite(input.duration) || input.duration < 0.1) {
     throw new TypeError("Studio-native source export requires a finite Scene duration of at least 0.1s.");
   }
+  if (!Number.isFinite(input.baseDuration) || input.baseDuration < 0.1) {
+    throw new TypeError("Studio-native source export requires a finite base Scene duration of at least 0.1s.");
+  }
   assertPositiveSize(input.frame, "The Manim frame");
   assertPositiveSize(input.viewport, "The Studio viewport");
   const sceneName = SCENE_NAME;
-  const admitted = admittedPrograms(input.programs, input.duration);
+  const admitted = admittedPrograms(input.programs, input.baseDuration);
   const programs = admitted;
-  const source = sourceScaffold(sceneName, input.duration, programs);
+  const source = sourceScaffold(sceneName, input.baseDuration, programs);
   if (programs.length === 0) {
     verifyRoundTrip(source, sceneName, input.duration, input.frame, admitted);
     return { sceneName, source };
@@ -230,6 +237,7 @@ export function exportStudioNativeManimSource(input: StudioNativeSourceExportInp
     programs.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
     input.frame,
     null,
+    input.timelineTransforms,
   );
   verifyRoundTrip(lowered.source, sceneName, input.duration, input.frame, admitted);
   return { sceneName, source: lowered.source };

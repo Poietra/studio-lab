@@ -246,6 +246,8 @@ function previewView(
   runtimeTraceEditAnchor: StudioPreviewRendererView["runtimeTraceEditAnchor"] = null,
 ): StudioPreviewRendererView {
   return {
+    appliedCreationProjection: null,
+    appliedTimelineProjection: null,
     attachCanvas: vi.fn(),
     generateThumbnail: vi.fn(),
     boundEntityProjection: null,

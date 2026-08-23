@@ -391,7 +391,8 @@ import {
   isTransitionOverlay,
   projectStudioWorkspace,
   selectBoundEntityProjection,
-  selectCreationProjectionProgramPrefix,
+  selectCreationProjection,
+  selectHistoricalCreationProjectionPrefix,
   selectMathTexTransformProjection,
   selectMotionProjection,
   selectPersistentRemoveProjection,
@@ -1227,13 +1228,20 @@ export function App({
   const previewAppliedEdits = previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedEdits;
   const draftPrecedingEdits = editingAppliedProgram ? appliedEdits.slice(0, editingAppliedProgram.index) : appliedEdits;
   const draftPrecedingSceneEdits = draftPrecedingEdits.map((record) => record.program);
+  const previewProjectionAppliedEdits = editingAppliedProgram && draftEdit ? draftPrecedingEdits : previewAppliedEdits;
+  const previewProjectionStagedEdits =
+    editingAppliedProgram && draftEdit
+      ? previewAppliedEdits.slice(editingAppliedProgram.index)
+      : editingAppliedProgram || !draftEdit
+        ? []
+        : [draftEdit];
   const previewWorkingState =
     editorDocumentPresentationReady && projectedEditorScene
       ? studioWorkspaceWorkingState(projectedEditorScene, {
-          appliedEdits: previewAppliedEdits,
+          appliedEdits: previewProjectionAppliedEdits,
           playhead: currentTime,
           selection: selectedObjectIds,
-          stagedEdits: editingAppliedProgram || !draftEdit ? [] : [draftEdit],
+          stagedEdits: previewProjectionStagedEdits,
         })
       : null;
   const activeProjectFragmentMaterials = nativeSceneActive
@@ -1426,22 +1434,84 @@ export function App({
     }
   }
 
+  function programBatchIsExact(left: readonly SceneEdit[], right: readonly SceneEdit[]) {
+    return left.length === right.length && left.every((program, index) => program === right[index]);
+  }
+  function exactTimelineProjectionForPrograms(programs: readonly SceneEdit[]) {
+    const fullPrograms = previewEditRecords.map((record) => record.program);
+    if (programBatchIsExact(programs, fullPrograms)) return previewRenderer?.timelineProjection;
+    const appliedPrograms = previewProjectionAppliedEdits.map((record) => record.program);
+    if (programBatchIsExact(programs, appliedPrograms)) return previewRenderer?.appliedTimelineProjection;
+    // Historical Program editing still starts synchronously before an exact
+    // applied-prefix preview can be requested. Use the correlated full Rust
+    // projection only for that bootstrap path.
+    return previewRenderer?.timelineProjection;
+  }
   function timelineProjectionForPrograms(programs: readonly SceneEdit[]) {
-    if (!programs.some((program) => program.operations.some(isSceneDurationOperation))) return null;
-    if (!projectedEditorScene || !previewRenderer?.timelineProjection || !isSceneDurationProgramBatch(programs)) {
-      return undefined;
-    }
+    const durationPrograms = programs.filter((program) => program.operations.some(isSceneDurationOperation));
+    if (durationPrograms.length === 0) return null;
+    if (!projectedEditorScene) return undefined;
     try {
+      if (programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) {
+        const creationProjection = creationProjectionForPrograms(programs);
+        return creationProjection === undefined ? undefined : creationProjection?.timelineProjection;
+      }
+      if (!isSceneDurationProgramBatch(programs)) return undefined;
+      const exactProjection = exactTimelineProjectionForPrograms(programs);
+      if (!exactProjection) return undefined;
       return selectTimelineProgramBatchProjection(
         projectedEditorScene.runtimeSceneState.duration,
         programs,
-        previewRenderer.timelineProjection,
+        exactProjection,
       ).projection;
     } catch {
       // A previous asynchronous preview result must never authorize the
       // current Program batch. The renderer will replace it for this revision.
       return undefined;
     }
+  }
+  function creationProjectionForPrograms(programs: readonly SceneEdit[]) {
+    if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
+    if (!projectedEditorScene || !previewRenderer) return undefined;
+    try {
+      const fullPrograms = previewEditRecords.map((record) => record.program);
+      const appliedPrograms = previewProjectionAppliedEdits.map((record) => record.program);
+      if (programBatchIsExact(programs, fullPrograms)) {
+        return selectCreationProjection(
+          projectedEditorScene.runtimeSceneState.duration,
+          programs,
+          previewRenderer.creationProjection,
+        );
+      }
+      if (programBatchIsExact(programs, appliedPrograms)) {
+        return selectCreationProjection(
+          projectedEditorScene.runtimeSceneState.duration,
+          programs,
+          previewRenderer.appliedCreationProjection,
+        );
+      }
+      return selectHistoricalCreationProjectionPrefix(
+        projectedEditorScene.runtimeSceneState.duration,
+        programs,
+        fullPrograms,
+        previewRenderer.creationProjection,
+      );
+    } catch {
+      return undefined;
+    }
+  }
+  function timelineTransformsForPrograms(programs: readonly SceneEdit[]) {
+    const creationProjection = creationProjectionForPrograms(programs);
+    if (creationProjection === undefined) return undefined;
+    if (creationProjection) {
+      return creationProjection.insertions.map((insertion, index) => ({
+        interval: { end: insertion.at + insertion.duration, start: insertion.at },
+        kind: "insert" as const,
+        operationId: `creation-insertion-${index}`,
+      }));
+    }
+    const timelineProjection = timelineProjectionForPrograms(programs);
+    return timelineProjection === undefined ? undefined : (timelineProjection?.transforms ?? null);
   }
   function timelineProjectionForRecords(records: readonly ProgramRecord[]) {
     return timelineProjectionForPrograms(records.map((record) => record.program));
@@ -1487,17 +1557,7 @@ export function App({
     const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "rust-authorized-batch") return null;
-    if (!projectedEditorScene || !previewRenderer?.creationProjection) return undefined;
-    try {
-      return selectCreationProjectionProgramPrefix(
-        projectedEditorScene.runtimeSceneState.duration,
-        programs,
-        previewEditRecords.map((record) => record.program),
-        previewRenderer.creationProjection,
-      );
-    } catch {
-      return undefined;
-    }
+    return creationProjectionForPrograms(programs);
   }
   function motionProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
@@ -1518,29 +1578,33 @@ export function App({
     }
   }
   function sourceTimeToWorkingTime(programs: readonly SceneEdit[], sourceTime: number) {
-    const timelineProjection = timelineProjectionForPrograms(programs);
-    if (timelineProjection === undefined) {
+    const transforms = timelineTransformsForPrograms(programs);
+    if (transforms === undefined) {
       throw new Error("Wait for the Rust timeline projection before resolving this source timestamp.");
     }
-    return timelineProjection
-      ? sourceTimeToWorkingTimeFromProjection(timelineProjection.transforms, sourceTime)
+    return transforms
+      ? sourceTimeToWorkingTimeFromProjection(transforms, sourceTime)
       : sourceTimeToWorkingTimeWithoutTimeline(programs, sourceTime);
   }
   function workingTimeToSourceTime(programs: readonly SceneEdit[], workingTime: number) {
-    const timelineProjection = timelineProjectionForPrograms(programs);
-    if (timelineProjection === undefined) {
+    const transforms = timelineTransformsForPrograms(programs);
+    if (transforms === undefined) {
       throw new Error("Wait for the Rust timeline projection before resolving this working timestamp.");
     }
-    return timelineProjection
-      ? workingTimeToSourceTimeFromProjection(timelineProjection.transforms, workingTime)
+    return transforms
+      ? workingTimeToSourceTimeFromProjection(transforms, workingTime)
       : workingTimeToSourceTimeWithoutTimeline(programs, workingTime);
   }
   function projectRuntimeSceneToSourceTimeline(scene: RuntimeSceneState, programs: readonly SceneEdit[]) {
-    const timelineProjection = timelineProjectionForPrograms(programs);
-    if (timelineProjection === undefined) {
+    const transforms = timelineTransformsForPrograms(programs);
+    if (transforms === undefined) {
       throw new Error("Wait for the Rust timeline projection before mapping this Scene to source time.");
     }
-    return projectRuntimeSceneToSourceTimelineWithProjection(scene, programs, timelineProjection);
+    return projectRuntimeSceneToSourceTimelineWithProjection(
+      scene,
+      programs,
+      transforms ? { programProjections: [], projectedDuration: scene.duration, transforms } : null,
+    );
   }
   const previewEditRecords = [...previewAppliedEdits, ...(editingAppliedProgram || !draftEdit ? [] : [draftEdit])];
   const latestPreviewEditPrograms = useRef<readonly SceneEdit[]>([]);
@@ -1622,21 +1686,23 @@ export function App({
         })
       : null;
   const previewAppliedSceneEdits = previewAppliedEdits.map((record) => record.program);
+  const appliedCreationProjection = creationProjectionForPrograms(previewAppliedSceneEdits);
   const appliedTimelineProjection = timelineProjectionForPrograms(previewAppliedSceneEdits);
+  const appliedTimelineTransforms = timelineTransformsForPrograms(previewAppliedSceneEdits);
   const sourceCurrentTime =
-    appliedTimelineProjection === undefined
+    appliedTimelineTransforms === undefined
       ? currentTime
-      : appliedTimelineProjection
-        ? workingTimeToSourceTimeFromProjection(appliedTimelineProjection.transforms, currentTime)
+      : appliedTimelineTransforms
+        ? workingTimeToSourceTimeFromProjection(appliedTimelineTransforms, currentTime)
         : workingTimeToSourceTimeWithoutTimeline(previewAppliedSceneEdits, currentTime);
   const timelineAnchors =
     activeEditorScene?.anchors.map((sourceTime) => ({
       sourceTime,
       workingTime:
-        appliedTimelineProjection === undefined
+        appliedTimelineTransforms === undefined
           ? sourceTime
-          : appliedTimelineProjection
-            ? sourceTimeToWorkingTimeFromProjection(appliedTimelineProjection.transforms, sourceTime)
+          : appliedTimelineTransforms
+            ? sourceTimeToWorkingTimeFromProjection(appliedTimelineTransforms, sourceTime)
             : sourceTimeToWorkingTimeWithoutTimeline(previewAppliedSceneEdits, sourceTime),
     })) ?? [];
   const canonicalGroupedChildIds = new Set(
@@ -2789,7 +2855,10 @@ export function App({
   const activeDuration =
     workspaceProjection?.proposedState.evaluatedScene.duration ?? projectedEditorScene?.runtimeSceneState.duration ?? 1;
   const durationTrimAvailability = appliedTimelineProjection
-    ? sceneDurationTrimAvailabilityFromProjection(appliedTimelineProjection)
+    ? sceneDurationTrimAvailabilityFromProjection(
+        appliedTimelineProjection,
+        appliedCreationProjection?.durationTrimBarrierOperationIds,
+      )
     : {
         anchor: null,
         blocker:
@@ -6114,23 +6183,40 @@ export function App({
   ) {
     if (!activeEditorScene) return null;
     const timelineProjection = timelineProjectionForPrograms(input.sourcePrograms);
-    if (timelineProjection !== null) {
-      setDraftError(
-        timelineProjection === undefined
-          ? "Wait for the Rust timeline projection before authoring another edit."
-          : "Apply timeline-only duration edits separately before authoring another operation family.",
-      );
+    if (timelineProjection === undefined) {
+      setDraftError("Wait for the Rust timeline projection before authoring another edit.");
+      setIsPlaying(false);
+      return null;
+    }
+    if (timelineProjection !== null && !isStudioNativeWorkspaceScene(activeEditorScene)) {
+      setDraftError("Apply timeline-only duration edits separately before authoring another operation family.");
+      setIsPlaying(false);
+      return null;
+    }
+    const nativeTimelineTransforms = isStudioNativeWorkspaceScene(activeEditorScene)
+      ? timelineTransformsForPrograms(input.sourcePrograms)
+      : null;
+    if (nativeTimelineTransforms === undefined) {
+      setDraftError("Wait for the Rust authoring projection before creating another edit.");
       setIsPlaying(false);
       return null;
     }
     const nativeSourceTime = isStudioNativeWorkspaceScene(activeEditorScene)
-      ? clamp(workingTimeToSourceTimeWithoutTimeline(input.sourcePrograms, currentTime), 0, input.scene.duration)
+      ? clamp(
+          nativeTimelineTransforms
+            ? workingTimeToSourceTimeFromProjection(nativeTimelineTransforms, currentTime)
+            : workingTimeToSourceTimeWithoutTimeline(input.sourcePrograms, currentTime),
+          0,
+          input.scene.duration,
+        )
       : null;
     const sourceAnchor =
       nativeSourceTime !== null
         ? {
             sourceTime: nativeSourceTime,
-            workingTime: sourceTimeToWorkingTimeWithoutTimeline(input.sourcePrograms, nativeSourceTime),
+            workingTime: nativeTimelineTransforms
+              ? sourceTimeToWorkingTimeFromProjection(nativeTimelineTransforms, nativeSourceTime)
+              : sourceTimeToWorkingTimeWithoutTimeline(input.sourcePrograms, nativeSourceTime),
           }
         : latestSafeSourceAnchor(input.sourcePrograms, activeEditorScene.anchors, currentTime);
     const runtimePresenceAuthority = input.allowSyntheticPreviewAnchor
@@ -8045,8 +8131,9 @@ export function App({
               ? "Wait for the canonical preview to present this exact Studio revision before exporting source."
               : sourceFragmentMaterialExportBlocker,
           request:
-            studioNativeExportPreviewAligned && studioExportSource
+            studioNativeExportPreviewAligned && studioExportSource && nativePreviewBundle
               ? {
+                  baseDuration: nativePreviewBundle.scene.duration,
                   documentKey: activeEditorScene.identity.documentKey,
                   duration: studioExportSource.bundle.scene.duration,
                   fragmentMaterialEntityIds: Object.keys(activeSceneFragmentMaterials.assignments),
@@ -8954,6 +9041,7 @@ export function App({
               className="order-2 min-h-64 md:order-1 md:col-start-1 md:row-start-1 md:min-h-0"
               draftActive={draftEdit !== null}
               duration={activeDuration}
+              durationBlocker={durationTrimAvailability.blocker}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
               durationError={durationError}
               durationMinimum={durationTrimAvailability.minimumDuration}

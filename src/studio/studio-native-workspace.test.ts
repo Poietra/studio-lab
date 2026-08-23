@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { StudioCreationProjectionV1 } from "../engine/scene-authoring";
 import type { ManimWorkspaceView } from "../render-pipeline/contracts";
 import { importManimScene } from "../render-pipeline/source-import";
+import { createSceneDurationProgram } from "./authoring-commands";
 import { programRecord } from "./evaluator";
 import { workspaceScenes } from "./imported-workspace";
 import { buildLifetimeEditControls, lifetimeControlKey } from "./lifetime-editing";
@@ -173,6 +174,7 @@ describe("Studio-native workspace projection", () => {
     const scene = workspaceProjection.scenes[0];
     const program = createCircleProgram();
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: scene.runtimeSceneState.duration, start: 0 },
@@ -190,6 +192,11 @@ describe("Studio-native workspace projection", () => {
       mutations: [],
       projectedDuration: scene.runtimeSceneState.duration,
       removals: [],
+      timelineProjection: {
+        programProjections: [],
+        projectedDuration: scene.runtimeSceneState.duration,
+        transforms: [],
+      },
     };
 
     const result = projectStudioWorkspace({
@@ -217,5 +224,76 @@ describe("Studio-native workspace projection", () => {
     })[lifetimeControlKey("native-circle", 0)]!;
     expect(controls.startTargets.length).toBeGreaterThan(0);
     expect(controls.endTargets.length).toBeGreaterThan(0);
+  });
+
+  it("projects a mixed native duration-and-creation batch from one Rust creation projection", () => {
+    const workspaceProjection = projectStudioWorkspaceScenes(workspace());
+    if (workspaceProjection.kind !== "studio-native") throw new Error("Expected a native workspace projection.");
+    const scene = workspaceProjection.scenes[0];
+    const creation = createCircleProgram();
+    const duration = createSceneDurationProgram({
+      capturedPlayhead: 5,
+      scene: scene.runtimeSceneState,
+      sourceAnchor: 5,
+      targetDuration: 6,
+      transactionId: "extend-native-scene",
+    });
+    if (duration.kind !== "valid") throw new Error("Native duration fixture is invalid.");
+    const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
+      entities: [
+        {
+          createdLifetime: { end: 6, start: 0 },
+          entityId: "native-circle",
+          initialDimensions: { radius: 1 },
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "circle",
+          operationId: "create-native-circle",
+          transactionId: "create-native-circle",
+        },
+      ],
+      insertions: [{ at: 5, duration: 1, transactionId: duration.program.transactionId }],
+      motions: [],
+      mutations: [],
+      projectedDuration: 6,
+      removals: [],
+      timelineProjection: {
+        programProjections: [
+          {
+            operationId: duration.program.operations[0].id,
+            transactionId: duration.program.transactionId,
+            workingAnchor: 5,
+            workingInterval: { end: 6, start: 5 },
+          },
+        ],
+        projectedDuration: 6,
+        transforms: [
+          {
+            interval: { end: 6, start: 5 },
+            kind: "insert",
+            operationId: duration.program.operations[0].id,
+          },
+        ],
+      },
+    };
+
+    const result = projectStudioWorkspace({
+      activeScene: scene,
+      appliedEdits: [programRecord(creation, { issues: [], kind: "valid" }), programRecord(duration.program, duration)],
+      creationProjection: projection,
+      currentTime: 5.5,
+      draftEdit: null,
+      editAuthority: "rust-authorized-batch",
+      nextScene: null,
+      selectedObjectIds: [],
+    });
+
+    expect(result.proposedState.evaluatedScene.duration).toBe(6);
+    expect(result.proposedState.evaluatedScene.objectGraph.entities["native-circle"]).toMatchObject({
+      id: "native-circle",
+      lifetime: [{ end: 6, start: 0 }],
+      type: "Circle",
+    });
   });
 });

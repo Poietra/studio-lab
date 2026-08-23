@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
+import { importManimScene } from "../src/render-pipeline/source-import";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import { cleanupFixtureWorkspace } from "./workspace";
 
@@ -233,6 +234,78 @@ test("downloads a bounded Manim Scene from Studio-native authoring", async ({ pa
     expect(source).toContain("class PoietraScene(Scene):");
     expect(source).toContain("Circle(");
     expect(source).toContain('Text("Poietra"');
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
+test("keeps Studio-native duration authoring through creation, reload, and Manim source export", async ({ page }) => {
+  test.setTimeout(60_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Native duration authoring fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const playhead = page.getByRole("slider", { name: "Scene playhead" });
+    const duration = page.getByRole("spinbutton", { name: "Scene duration in seconds" });
+    await expect(duration).toHaveValue("5.00");
+
+    await page.getByRole("button", { name: /Insert circle/ }).click();
+    await canvas.click({ position: { x: 300, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(duration).toHaveValue("5.40");
+
+    await playhead.fill("4");
+    await duration.fill("7.4");
+    await page.getByRole("button", { name: "Update" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(duration).toHaveValue("7.40");
+
+    await playhead.fill("4");
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await canvas.click({ position: { x: 500, y: 280 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(duration).toHaveValue("7.80");
+    await expect(
+      page.getByText("Later authored content follows the Studio-added wait, so shortening it would cut content."),
+    ).toBeVisible();
+    await playhead.fill("6.4");
+    const rectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
+    await page.getByRole("button", { name: "Set position" }).click();
+    await dragBy(page, rectangle, { x: 40, y: -20 });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Native duration authoring fixture workspace" }).click();
+    await expect(page.getByLabel("Current workspace")).toHaveText("Native duration authoring fixture");
+    await expect(duration).toHaveValue("7.80");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await playhead.fill("6.4");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(6.4, 1);
+    await expect(page.getByRole("button", { name: "Move Circle", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Move Rectangle", exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Export settings" }).click();
+    const sourceExport = page.locator("[data-studio-manim-source-export-state]");
+    await expect(sourceExport).toHaveAttribute("data-studio-manim-source-export-state", "ready");
+    const downloadPromise = page.waitForEvent("download");
+    await sourceExport.getByRole("button", { name: "Download .py" }).click();
+    const download = await downloadPromise;
+    const path = await download.path();
+    if (!path) throw new Error("The Studio-native Python download was not persisted by Playwright.");
+    const source = await readFile(path, "utf8");
+    const imported = importManimScene(source, "PoietraScene.poietra.py", "PoietraScene", {
+      height: 8,
+      width: 14.222,
+    });
+    expect(imported?.runtimeSceneState.duration).toBeCloseTo(7.8, 6);
+    expect(source).toContain("Circle(radius=1)");
+    expect(source).toContain("Rectangle(width=4, height=2)");
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

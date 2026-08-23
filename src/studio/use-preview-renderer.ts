@@ -48,8 +48,10 @@ import {
   compileApplyStudioMathTexTransformEdit,
   compileApplyStudioMotionEdit,
   compileApplyStudioTimelineEdit,
+  type ProjectStudioCreationCompiler,
   type ProjectStudioMotionCompiler,
   type ProjectStudioTimelineCompiler,
+  projectStudioCreation,
   projectStudioMotion,
   projectStudioTimeline,
   type StudioBoundEntityProjectionV1,
@@ -113,6 +115,7 @@ import {
 import {
   buildStaticRootTransformEditCommand,
   buildStudioCreationEditCommand,
+  buildStudioCreationProjectionCommand,
   buildStudioMathTexTransformEditCommand,
   buildStudioMotionEditCommand,
   buildStudioMotionProjectionCommand,
@@ -127,7 +130,11 @@ import {
 } from "./scene-authoring-wire";
 import type { StudioPlaybackClock } from "./studio-playback-clock";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
-import { normalizeTimelineProjectionCommand } from "./timeline-projection";
+import {
+  isSceneDurationProgramBatch,
+  normalizeTimelineProjectionCommand,
+  projectTimelineProgramBatch,
+} from "./timeline-projection";
 import {
   selectBoundEntityProjection,
   selectCreationProjection,
@@ -173,6 +180,10 @@ export type StudioPreviewRendererView = Readonly<{
   interactionAuthority: StudioPreviewInteractionAuthority;
   /** Rust-authorized complete view facts for a Studio-created entity history. */
   creationProjection: StudioCreationProjectionV1 | null;
+  /** Exact Rust projection for the applied prefix beneath the current staged preview. */
+  appliedCreationProjection: StudioCreationProjectionV1 | null;
+  /** Exact Rust timeline projection for the applied prefix beneath the current staged preview. */
+  appliedTimelineProjection: StudioTimelineProjectionV1 | null;
   /** Rust-authorized read-model facts for one source-bound endpoint edit. */
   boundEntityProjection: StudioBoundEntityProjectionV1 | null;
   /** Verified Runtime Trace candidates editable at this exact endpoint. */
@@ -274,6 +285,8 @@ type BoundHostStateV1 = Readonly<{
 }>;
 
 type CompiledStudioPreviewSceneV1 = Readonly<{
+  appliedCreationProjection?: StudioCreationProjectionV1;
+  appliedTimelineProjection?: StudioTimelineProjectionV1;
   boundEntityProjection?: StudioBoundEntityProjectionV1;
   bundle: StudioVerifiedPreviewSnapshotV1["snapshot"];
   creationProjection?: StudioCreationProjectionV1;
@@ -612,6 +625,45 @@ function sourceEditRecords(workingState: WorkingState): readonly ProgramRecord[]
   return [...workingState.appliedEdits, ...workingState.stagedEdits];
 }
 
+type ExactAppliedAuthoringProjections = Readonly<{
+  creation: StudioCreationProjectionV1 | null;
+  timeline: StudioTimelineProjectionV1 | null;
+}>;
+
+async function projectExactAppliedAuthoringPrefix(
+  input: Readonly<{
+    baseDuration: number;
+    full: ExactAppliedAuthoringProjections;
+    projectStudioCreationCompiler?: ProjectStudioCreationCompiler;
+    projectStudioTimelineCompiler?: ProjectStudioTimelineCompiler;
+    workingState: WorkingState;
+  }>,
+): Promise<ExactAppliedAuthoringProjections> {
+  if (input.workingState.stagedEdits.length === 0) return input.full;
+  const programs = input.workingState.appliedEdits.map(({ program }) => program);
+  if (programs.length === 0) return { creation: null, timeline: null };
+
+  const hasCreation = programs.some((program) =>
+    program.operations.some((operation) => operation.kind === "CreateEntity"),
+  );
+  if (hasCreation) {
+    const projected = await (input.projectStudioCreationCompiler ?? projectStudioCreation)(
+      buildStudioCreationProjectionCommand({ baseDuration: input.baseDuration, programs }),
+    );
+    const creation = selectCreationProjection(input.baseDuration, programs, projected);
+    if (!creation) throw new TypeError("Rust core did not return the exact applied Studio creation projection.");
+    return { creation, timeline: creation.timelineProjection };
+  }
+
+  const hasDuration = programs.some((program) => program.operations.some(isSceneDurationOperation));
+  if (!hasDuration) return { creation: null, timeline: null };
+  if (!isSceneDurationProgramBatch(programs)) return { creation: null, timeline: null };
+  const timeline = (
+    await projectTimelineProgramBatch(input.baseDuration, programs, input.projectStudioTimelineCompiler)
+  ).projection;
+  return { creation: null, timeline };
+}
+
 function staticRootTransformEditCommand(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
@@ -736,6 +788,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
     segmentedMathTexOutlineCompiler?: SegmentedTexOutlineCompilerV1;
     projectStudioMotionCompiler?: ProjectStudioMotionCompiler;
+    projectStudioCreationCompiler?: ProjectStudioCreationCompiler;
     projectStudioTimelineCompiler?: ProjectStudioTimelineCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     textOutlineCompiler?: TextOutlineCompilerV1;
@@ -1007,6 +1060,13 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
       if (!creationProjection) {
         return { error: "Rust core did not return the Studio creation projection.", kind: "unsupported" };
       }
+      const appliedProjection = await projectExactAppliedAuthoringPrefix({
+        baseDuration: input.snapshot.snapshot.scene.duration,
+        full: { creation: creationProjection, timeline: creationProjection.timelineProjection },
+        projectStudioCreationCompiler: input.projectStudioCreationCompiler,
+        projectStudioTimelineCompiler: input.projectStudioTimelineCompiler,
+        workingState: input.workingState,
+      });
       const bundle = result.bundle;
       // Only Studio-authored roots are interaction targets. Rust may lower one root
       // into renderer-owned fragment children (for example segmented MathTex Write).
@@ -1027,6 +1087,8 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
       return {
         kind: "compiled",
         scene: {
+          ...(appliedProjection.creation ? { appliedCreationProjection: appliedProjection.creation } : {}),
+          ...(appliedProjection.timeline ? { appliedTimelineProjection: appliedProjection.timeline } : {}),
           bundle,
           creationProjection,
           engineRevisionHash,
@@ -1034,6 +1096,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
           interactionEntityIds,
           editAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
+          timelineProjection: creationProjection.timelineProjection,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
         },
@@ -1385,9 +1448,10 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
     program.operations.some(isSceneDurationOperation),
   );
   if (hasStudioSceneDurationEdit) {
-    if (!staticImportedSourceIsExact(input)) {
+    const nativeBase = isStudioNativePreviewSceneIdentityV1(input.snapshot.correlation.context);
+    if (nativeBase ? !studioNativeWorkingSourceIsExact(input) : !staticImportedSourceIsExact(input)) {
       return {
-        error: "The verified source snapshot is not one exact imported Scene.",
+        error: "The verified source snapshot is not one exact authorable Scene.",
         kind: "unsupported",
       };
     }
@@ -1406,9 +1470,17 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
       const timelineProjection = await (input.projectStudioTimelineCompiler ?? projectStudioTimeline)(
         timelineCommands.projection,
       );
+      const appliedProjection = await projectExactAppliedAuthoringPrefix({
+        baseDuration: input.snapshot.snapshot.scene.duration,
+        full: { creation: null, timeline: timelineProjection },
+        projectStudioCreationCompiler: input.projectStudioCreationCompiler,
+        projectStudioTimelineCompiler: input.projectStudioTimelineCompiler,
+        workingState: input.workingState,
+      });
       return {
         kind: "compiled",
         scene: {
+          ...(appliedProjection.timeline ? { appliedTimelineProjection: appliedProjection.timeline } : {}),
           bundle,
           engineRevisionHash,
           frame: { ...input.frame },
@@ -2269,6 +2341,8 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     // The workspace needs the exact compiled projection to keep the canvas
     // mounted while WebGPU presents this revision. Mutation remains gated by
     // `state.phase === "presented"` in App; these values are not commit authority.
+    appliedCreationProjection: currentCompiledScene?.appliedCreationProjection ?? null,
+    appliedTimelineProjection: currentCompiledScene?.appliedTimelineProjection ?? null,
     creationProjection: currentCompiledScene?.creationProjection ?? null,
     epoch,
     interactionGeometry,

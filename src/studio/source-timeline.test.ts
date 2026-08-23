@@ -101,13 +101,56 @@ describe("projectRuntimeSceneToSourceTimeline", () => {
     expect(projected.objectGraph.entities.createdLater?.lifetime).toEqual([{ end: 12, start: 5 }]);
   });
 
-  it("requires a Rust projection for Scene duration Programs and rejects mixed batches", () => {
+  it("requires a Rust projection for Scene duration Programs", () => {
     expect(() => projectRuntimeSceneToSourceTimeline(scene(), [timelineProgram()])).toThrow(
       /Rust timeline projection/i,
     );
-    expect(() =>
-      projectRuntimeSceneToSourceTimeline(scene(), [timelineProgram(), insertionProgram()], timelineProjection),
-    ).toThrow(/must not mix Scene duration and other Programs/i);
+  });
+
+  it("maps a mixed authoring batch back to source time only from complete Rust transforms", () => {
+    const mixedProjection: StudioTimelineProjectionV1 = {
+      programProjections: [
+        {
+          operationId: "op",
+          transactionId: "insert",
+          workingAnchor: 5,
+          workingInterval: { end: 5.4, start: 5 },
+        },
+        {
+          operationId: "wait",
+          transactionId: "wait",
+          workingAnchor: 5.4,
+          workingInterval: { end: 6.4, start: 5.4 },
+        },
+      ],
+      projectedDuration: 13.4,
+      transforms: [
+        { interval: { end: 5.4, start: 5 }, kind: "insert", operationId: "op" },
+        { interval: { end: 6.4, start: 5.4 }, kind: "insert", operationId: "wait" },
+      ],
+    };
+    const workingScene = {
+      ...scene(),
+      duration: 13.4,
+      objectGraph: {
+        entities: {
+          createdLater: {
+            ...scene().objectGraph.entities.createdLater!,
+            lifetime: [{ end: 13.4, start: 6.4 }],
+          },
+        },
+        lineage: [],
+      },
+    };
+
+    const projected = projectRuntimeSceneToSourceTimeline(
+      workingScene,
+      [insertionProgram(), timelineProgram()],
+      mixedProjection,
+    );
+
+    expect(projected.duration).toBe(12);
+    expect(projected.objectGraph.entities.createdLater?.lifetime).toEqual([{ end: 12, start: 5 }]);
   });
 
   it("maps timeline Scenes only from Rust-authorized transforms", () => {

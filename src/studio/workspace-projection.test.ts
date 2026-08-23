@@ -9,6 +9,7 @@ import type {
   StudioPersistentRemoveProjectionV1,
   StudioStaticRootProjectionV1,
 } from "../engine/scene-authoring";
+import { projectStudioCreation } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
 import {
   createInspectorEntityEditProgram,
@@ -28,20 +29,26 @@ import { type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./impor
 import type { Interval } from "./model";
 import type { CanonicalEditProgram } from "./operations";
 import { buildStudioCreationProjectionCommand } from "./scene-authoring-wire";
+import { createStudioNativeBlankScene } from "./studio-native-workspace";
 import {
   canonicalizeSuggestionProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationScaleProgram,
 } from "./suggestion-program";
+import { sceneDurationTrimAvailabilityFromProjection } from "./timeline-projection";
 import {
   projectStudioWorkspace,
   selectCreationProjection,
-  selectCreationProjectionProgramPrefix,
+  selectHistoricalCreationProjectionPrefix,
   selectMathTexTransformProjection,
   selectMotionProjection,
   selectStaticRootProjection,
   selectStudioWorkspaceEditAuthority,
 } from "./workspace-projection";
+
+function emptyCreationTimeline(projectedDuration: number) {
+  return { programProjections: [], projectedDuration, transforms: [] } as const;
+}
 
 const source = `from manim import *
 
@@ -294,6 +301,7 @@ describe("Studio workspace projection", () => {
       schedule: { edges: [], mode: "parallel", order: [create.id] },
     };
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
@@ -311,6 +319,7 @@ describe("Studio workspace projection", () => {
       mutations: [],
       projectedDuration: imported.runtimeSceneState.duration,
       removals: [],
+      timelineProjection: emptyCreationTimeline(imported.runtimeSceneState.duration),
     };
 
     expect(selectCreationProjection(imported.runtimeSceneState.duration, [program], projection)).toBe(projection);
@@ -363,6 +372,7 @@ describe("Studio workspace projection", () => {
       schedule: { edges: [], mode: "parallel", order: [create.id] },
     };
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
@@ -380,6 +390,7 @@ describe("Studio workspace projection", () => {
       mutations: [],
       projectedDuration: imported.runtimeSceneState.duration,
       removals: [],
+      timelineProjection: emptyCreationTimeline(imported.runtimeSceneState.duration),
     };
     const projected = projectStudioWorkspace({
       activeScene: imported,
@@ -430,6 +441,7 @@ describe("Studio workspace projection", () => {
       schedule: { edges: [], mode: "parallel", order: [create.id] },
     };
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
@@ -448,6 +460,7 @@ describe("Studio workspace projection", () => {
       mutations: [],
       projectedDuration: imported.runtimeSceneState.duration,
       removals: [],
+      timelineProjection: emptyCreationTimeline(imported.runtimeSceneState.duration),
     };
 
     expect(selectCreationProjection(imported.runtimeSceneState.duration, [program], projection)).toBe(projection);
@@ -503,6 +516,7 @@ describe("Studio workspace projection", () => {
     }
     const projectedDuration = imported.runtimeSceneState.duration + 1;
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: projectedDuration, start: 0 },
@@ -539,6 +553,7 @@ describe("Studio workspace projection", () => {
       ],
       projectedDuration,
       removals: [],
+      timelineProjection: emptyCreationTimeline(projectedDuration),
     };
 
     expect(selectCreationProjection(imported.runtimeSceneState.duration, [drawn], projection)).toBe(projection);
@@ -607,6 +622,7 @@ describe("Studio workspace projection", () => {
     }
     const projectedDuration = imported.runtimeSceneState.duration + 1;
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: projectedDuration, start: 0 },
@@ -642,6 +658,7 @@ describe("Studio workspace projection", () => {
       ],
       projectedDuration,
       removals: [],
+      timelineProjection: emptyCreationTimeline(projectedDuration),
     };
 
     expect(
@@ -699,6 +716,7 @@ describe("Studio workspace projection", () => {
       version: 1,
     };
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
@@ -721,6 +739,7 @@ describe("Studio workspace projection", () => {
       mutations: [],
       projectedDuration: imported.runtimeSceneState.duration,
       removals: [],
+      timelineProjection: emptyCreationTimeline(imported.runtimeSceneState.duration),
     };
 
     expect(selectCreationProjection(imported.runtimeSceneState.duration, [program], projection)).toBe(projection);
@@ -826,6 +845,7 @@ describe("Studio workspace projection", () => {
     const secondWorkingStart = 3 + creationDuration;
     const projectedDuration = imported.runtimeSceneState.duration + creationDuration + 2;
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: projectedDuration, start: 0 },
@@ -888,6 +908,7 @@ describe("Studio workspace projection", () => {
       ],
       projectedDuration,
       removals: [],
+      timelineProjection: emptyCreationTimeline(projectedDuration),
     };
 
     expect(
@@ -1336,6 +1357,7 @@ describe("Studio workspace projection", () => {
       version: 1,
     };
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: imported.runtimeSceneState.duration + 1.4, start: 0 },
@@ -1408,6 +1430,7 @@ describe("Studio workspace projection", () => {
           transactionId: "remove-created",
         },
       ],
+      timelineProjection: emptyCreationTimeline(imported.runtimeSceneState.duration + 1.4),
     };
     const removeProgram: CanonicalEditProgram = {
       anchor: {
@@ -1442,7 +1465,7 @@ describe("Studio workspace projection", () => {
         programs: [creationProgram, staticPositionProgram, motionProgram, removeProgram],
       }).programs[0]?.operations[0],
     ).toMatchObject({ entity: { dimensions: {}, kind: "arrow" }, kind: "create" });
-    const prefixProjection = selectCreationProjectionProgramPrefix(
+    const prefixProjection = selectHistoricalCreationProjectionPrefix(
       imported.runtimeSceneState.duration,
       [creationProgram, staticPositionProgram],
       [creationProgram, staticPositionProgram, motionProgram, removeProgram],
@@ -1461,7 +1484,7 @@ describe("Studio workspace projection", () => {
       removals: [],
     });
     expect(() =>
-      selectCreationProjectionProgramPrefix(
+      selectHistoricalCreationProjectionPrefix(
         imported.runtimeSceneState.duration,
         [creationProgram, staticPositionProgram],
         [
@@ -1481,7 +1504,7 @@ describe("Studio workspace projection", () => {
       ),
     ).toThrow(/execution prefix/u);
     expect(() =>
-      selectCreationProjectionProgramPrefix(
+      selectHistoricalCreationProjectionPrefix(
         imported.runtimeSceneState.duration,
         [creationProgram, staticPositionProgram],
         [
@@ -1538,6 +1561,61 @@ describe("Studio workspace projection", () => {
     expect(projected.proposedState.evaluatedScene.objectGraph.entities[entityId]?.lifetime).toEqual([
       { end: 3.8, start: 0 },
     ]);
+  });
+
+  it("restores the applied duration prefix while a trim is still a draft", async () => {
+    const imported = createStudioNativeBlankScene("ab".repeat(32));
+    const baseDuration = imported.runtimeSceneState.duration;
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
+      scene: imported.runtimeSceneState,
+      transactionId: "duration-prefix-create",
+    });
+    if (creation.validation.kind !== "valid") throw new Error("Creation fixture is invalid.");
+    const durationAnchor = baseDuration - 1;
+    const wait = createSceneDurationProgram({
+      capturedPlayhead: durationAnchor,
+      scene: imported.runtimeSceneState,
+      sourceAnchor: durationAnchor,
+      targetDuration: baseDuration + 1,
+      transactionId: "duration-prefix-wait",
+    });
+    if (wait.kind !== "valid") throw new Error("Duration wait fixture is invalid.");
+    try {
+      await projectStudioCreation(
+        buildStudioCreationProjectionCommand({ baseDuration, programs: [creation.validation.program] }),
+      );
+    } catch (error) {
+      throw new Error(`Creation-only projection failed: ${String(error)}`);
+    }
+    const appliedPrograms = [creation.validation.program, wait.program];
+    const appliedProjection = await projectStudioCreation(
+      buildStudioCreationProjectionCommand({ baseDuration, programs: appliedPrograms }),
+    );
+    const availability = sceneDurationTrimAvailabilityFromProjection(appliedProjection.timelineProjection);
+    const trim = createSceneDurationProgram({
+      capturedPlayhead: baseDuration,
+      scene: { ...imported.runtimeSceneState, duration: appliedProjection.projectedDuration },
+      sourceAnchor: baseDuration,
+      targetDuration: appliedProjection.projectedDuration - 0.5,
+      transactionId: "duration-prefix-trim",
+      trimAvailability: availability,
+    });
+    if (trim.kind !== "valid") throw new Error("Duration trim fixture is invalid.");
+    const fullPrograms = [...appliedPrograms, trim.program];
+    const fullProjection = await projectStudioCreation(
+      buildStudioCreationProjectionCommand({ baseDuration, programs: fullPrograms }),
+    );
+
+    const selected = selectHistoricalCreationProjectionPrefix(
+      baseDuration,
+      appliedPrograms,
+      fullPrograms,
+      fullProjection,
+    );
+
+    expect(selected).toEqual(appliedProjection);
   });
 
   it("correlates a Studio-created motion spin as one atomic operation record", () => {
@@ -1600,6 +1678,7 @@ describe("Studio workspace projection", () => {
     };
     const projectedDuration = imported.runtimeSceneState.duration + creationDuration + 1;
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: projectedDuration, start: 0 },
@@ -1667,6 +1746,7 @@ describe("Studio workspace projection", () => {
       ],
       projectedDuration,
       removals: [],
+      timelineProjection: emptyCreationTimeline(projectedDuration),
     };
 
     const projected = projectStudioWorkspace({
@@ -1779,6 +1859,7 @@ describe("Studio workspace projection", () => {
       transactionId: "ordering",
     };
     const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
@@ -1813,6 +1894,7 @@ describe("Studio workspace projection", () => {
       ],
       projectedDuration: imported.runtimeSceneState.duration,
       removals: [],
+      timelineProjection: emptyCreationTimeline(imported.runtimeSceneState.duration),
     };
 
     const projected = projectStudioWorkspace({

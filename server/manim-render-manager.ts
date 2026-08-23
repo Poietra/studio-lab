@@ -4,6 +4,7 @@ import { createReadStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import { projectStudioCreation, type StudioTimelineProjectionV1 } from "../src/engine/scene-authoring";
 import {
   MANIM_PROJECT_ID_PATTERN,
   type ManimProjectListView,
@@ -22,6 +23,9 @@ import {
 } from "../src/render-pipeline/contracts";
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import { ProgramLoweringError } from "../src/render-pipeline/source-lowering";
+import { isSceneDurationOperation } from "../src/studio/operations";
+import { buildStudioCreationProjectionCommand } from "../src/studio/scene-authoring-wire";
+import { projectTimelineProgramBatch } from "../src/studio/timeline-projection";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import { fastManimRuntimeTraceProducerEnvironment } from "./fast-manim-runtime-trace-producer-identity";
 import type {
@@ -783,10 +787,37 @@ export class ManimRenderManager {
         );
       }
       try {
+        const hasDurationProgram = request.programs.some((program) =>
+          program.operations.some(isSceneDurationOperation),
+        );
+        const hasCreationProgram = request.programs.some((program) =>
+          program.operations.some(({ kind }) => kind === "CreateEntity"),
+        );
+        let projectedDuration: number | null = null;
+        let timelineTransforms: StudioTimelineProjectionV1["transforms"] = [];
+        if (hasDurationProgram && hasCreationProgram) {
+          const creation = await projectStudioCreation(
+            buildStudioCreationProjectionCommand({
+              baseDuration: request.baseDuration,
+              programs: request.programs,
+            }),
+          );
+          projectedDuration = creation.projectedDuration;
+          timelineTransforms = creation.timelineProjection.transforms;
+        } else if (hasDurationProgram) {
+          const timeline = (await projectTimelineProgramBatch(request.baseDuration, request.programs)).projection;
+          projectedDuration = timeline.projectedDuration;
+          timelineTransforms = timeline.transforms;
+        }
+        if (projectedDuration !== null && Math.abs(projectedDuration - request.duration) > 0.0005) {
+          throw new TypeError("The Rust authoring projection does not match the requested Studio Scene duration.");
+        }
         const exported = exportStudioNativeManimSource({
+          baseDuration: request.baseDuration,
           duration: request.duration,
           frame: this.frame,
           programs: request.programs,
+          timelineTransforms,
           viewport: request.viewport,
         });
         throwIfAborted(signal);

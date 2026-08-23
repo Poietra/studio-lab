@@ -270,6 +270,24 @@ function exactImportedTimelineWorkingBase(base: Awaited<ReturnType<typeof compil
   };
 }
 
+async function nativePreviewInput(documentKey: string, projectId: string) {
+  const nativeScene = createStudioNativeBlankScene(documentKey);
+  const frame = { height: 9, width: 16 } as const;
+  const bundle = await createStudioNativeBlankSceneIrBundle(nativeScene, frame);
+  const identity = {
+    documentKey,
+    origin: "studio-native" as const,
+    projectId,
+    sceneId: nativeScene.sceneId,
+  };
+  const snapshot = await createStudioNativePreviewSnapshotProviderV1({
+    assetPayloads: [],
+    bundle,
+    identity,
+  }).loadVerifiedSnapshot({ identity });
+  return { frame, identity, nativeScene, snapshot };
+}
+
 function recordingStudioTimelineCompiler(
   calls: ApplyStudioTimelineEditWireCommandV1[],
 ): ApplyStudioTimelineEditCompiler {
@@ -1235,6 +1253,126 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.creationProjection?.entities[0]?.entityId).toBe(creation.entityIds[0]);
   });
 
+  it("compiles a duration-only draft on one exact Studio-native base", async () => {
+    const { frame, identity, nativeScene, snapshot } = await nativePreviewInput(
+      "e".repeat(64),
+      "native-duration-project",
+    );
+    const extension = createSceneDurationProgram({
+      capturedPlayhead: nativeScene.runtimeSceneState.duration,
+      scene: nativeScene.runtimeSceneState,
+      sourceAnchor: nativeScene.runtimeSceneState.duration,
+      targetDuration: nativeScene.runtimeSceneState.duration + 2,
+      transactionId: "native-duration-draft",
+    });
+    if (extension.kind !== "valid") throw new Error("Native duration fixture must be valid.");
+    const record = programRecord(extension.program, extension);
+    const workingState = studioNativeWorkingState(nativeScene, {
+      playhead: nativeScene.runtimeSceneState.duration,
+      selection: [],
+      stagedEdits: [record],
+    });
+    const workingRevision = canonicalEditorWorkingRevision({
+      appliedEdits: [],
+      draftEdit: record,
+      editingAppliedProgram: null,
+      redoPrograms: [],
+    });
+
+    const result = await compileStudioPreviewSceneV1({
+      frame,
+      snapshot,
+      workingState,
+      workingRevision,
+      workspaceKey: studioPreviewWorkspaceKeyV1({
+        ...identity,
+        sourceDuration: snapshot.duration,
+        workingRevision,
+      }),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.bundle.scene.duration).toBeCloseTo(nativeScene.runtimeSceneState.duration + 2);
+    expect(result.scene.timelineProjection?.projectedDuration).toBeCloseTo(nativeScene.runtimeSceneState.duration + 2);
+    expect(result.scene.appliedTimelineProjection).toBeUndefined();
+  });
+
+  it("keeps an earlier staged creation separate from its exact applied duration prefix", async () => {
+    const { frame, identity, nativeScene, snapshot } = await nativePreviewInput(
+      "f".repeat(64),
+      "native-duration-creation-project",
+    );
+    const extension = createSceneDurationProgram({
+      capturedPlayhead: nativeScene.runtimeSceneState.duration,
+      scene: nativeScene.runtimeSceneState,
+      sourceAnchor: nativeScene.runtimeSceneState.duration,
+      targetDuration: nativeScene.runtimeSceneState.duration + 2,
+      transactionId: "native-duration-applied",
+    });
+    if (extension.kind !== "valid") throw new Error("Native duration fixture must be valid.");
+    const extensionRecord = {
+      ...programRecord(extension.program, extension),
+      validation: { issues: extension.issues, status: "valid" as const },
+    };
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
+      scene: nativeScene.runtimeSceneState,
+      transactionId: "native-earlier-circle-draft",
+    });
+    if (creation.validation.kind !== "valid") throw new Error("Native Circle fixture must be valid.");
+    const creationRecord = programRecord(creation.validation.program, creation.validation);
+    const workingState = studioNativeWorkingState(nativeScene, {
+      appliedEdits: [extensionRecord],
+      playhead: 1,
+      selection: creation.entityIds,
+      stagedEdits: [creationRecord],
+    });
+    const workingRevision = canonicalEditorWorkingRevision({
+      appliedEdits: [extensionRecord],
+      draftEdit: creationRecord,
+      editingAppliedProgram: null,
+      redoPrograms: [],
+    });
+
+    const result = await compileStudioPreviewSceneV1({
+      frame,
+      snapshot,
+      workingState,
+      workingRevision,
+      workspaceKey: studioPreviewWorkspaceKeyV1({
+        ...identity,
+        sourceDuration: snapshot.duration,
+        workingRevision,
+      }),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.creationProjection?.projectedDuration).toBeCloseTo(
+      nativeScene.runtimeSceneState.duration + 2.4,
+    );
+    expect(result.scene.creationProjection?.durationTrimBarrierOperationIds).toEqual([]);
+    const [creationInsertion, durationInsertion] = result.scene.creationProjection?.insertions ?? [];
+    expect(creationInsertion).toMatchObject({ at: 1, transactionId: creation.validation.program.transactionId });
+    expect(creationInsertion?.duration).toBeCloseTo(0.4);
+    expect(durationInsertion).toMatchObject({ duration: 2, transactionId: extension.program.transactionId });
+    expect(durationInsertion?.at).toBeCloseTo(nativeScene.runtimeSceneState.duration + 0.4);
+    expect(result.scene.appliedCreationProjection).toBeUndefined();
+    expect(result.scene.appliedTimelineProjection?.projectedDuration).toBeCloseTo(
+      nativeScene.runtimeSceneState.duration + 2,
+    );
+    expect(result.scene.appliedTimelineProjection?.transforms).toEqual([
+      {
+        interval: {
+          end: nativeScene.runtimeSceneState.duration + 2,
+          start: nativeScene.runtimeSceneState.duration,
+        },
+        kind: "insert",
+        operationId: extension.program.operations[0]?.id,
+      },
+    ]);
+  });
+
   it("drops stale presentation authority synchronously while a new material input compiles", () => {
     const previous = { fragmentMaterialInput: EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1 };
     const material = createStudioFragmentMaterialV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1, { name: "Wave" });
@@ -1802,7 +1940,7 @@ describe("compileStudioPreviewSceneV1", () => {
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
     expect(rejected).toEqual({
-      error: "The verified source snapshot is not one exact imported Scene.",
+      error: "The verified source snapshot is not one exact authorable Scene.",
       kind: "unsupported",
     });
     expect(compilerCalls).toBe(0);
@@ -3094,6 +3232,7 @@ describe("compileStudioPreviewSceneV1", () => {
       throw new Error("MathTex creation fixture is malformed.");
     }
     const creationProjection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: {
@@ -3133,6 +3272,11 @@ describe("compileStudioPreviewSceneV1", () => {
       ],
       projectedDuration: proposedState.base.runtimeSceneState.duration + 0.4,
       removals: [],
+      timelineProjection: {
+        programProjections: [],
+        projectedDuration: proposedState.base.runtimeSceneState.duration + 0.4,
+        transforms: [],
+      },
     };
     const compilerInputs: string[][] = [];
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
@@ -3355,6 +3499,7 @@ describe("compileStudioPreviewSceneV1", () => {
       throw new Error("Text creation fixture is malformed.");
     }
     const creationProjection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
       entities: [
         {
           createdLifetime: {
@@ -3395,6 +3540,11 @@ describe("compileStudioPreviewSceneV1", () => {
       ],
       projectedDuration: proposedState.base.runtimeSceneState.duration + 0.4,
       removals: [],
+      timelineProjection: {
+        programProjections: [],
+        projectedDuration: proposedState.base.runtimeSceneState.duration + 0.4,
+        transforms: [],
+      },
     };
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
     const compilerInputs: TextOutlineInputV1[] = [];
