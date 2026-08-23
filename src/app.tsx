@@ -8706,10 +8706,10 @@ export function App({
           >
             <div className="min-w-0">
               <h2 className="text-balance text-xs font-medium text-sky-200" id="preview-activation-title">
-                WebGPU Scene preview is ready to start
+                WebGPU Scene preview requires approval
               </h2>
               <p className="mt-0.5 text-pretty text-[10px] leading-4 text-sky-200/70">
-                Starting the canonical preview executes the selected workspace Scene through the configured producer.
+                Starting requests the selected workspace Scene from the configured producer.
               </p>
             </div>
             {previewActivationAllowed ? (

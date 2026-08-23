@@ -57,7 +57,7 @@
     "format": "node scripts/biome-changed.mjs --write",
     "format:check": "node scripts/biome-changed.mjs",
     "check:style": "pnpm lint && pnpm format:check",
-    "dev:web": "vite --host 127.0.0.1",
+    "dev:web": "node scripts/ensure-dev-engine-wasm.mjs && vite --host 127.0.0.1",
     "electron:install": "install-electron",
     "dev:electron": "pnpm electron:install && pnpm build:electron:main && concurrently --kill-others --success first \"pnpm dev:web\" \"wait-on tcp:127.0.0.1:5173 && electron dist-electron/app-main.mjs\"",
     "dev:tauri": "tauri dev",

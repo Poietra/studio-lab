@@ -542,6 +542,20 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     });
   });
 
+  it("preserves a structured snapshot failure code and message", async () => {
+    const { provider } = providerReturning({
+      failure: {
+        code: "sandbox-unavailable",
+        message: "No verified sandbox backend is available for Scene snapshot execution.",
+      },
+      status: "failed",
+    });
+
+    await expect(provider.loadVerifiedSnapshot({ identity })).rejects.toThrow(
+      "did not verify this Scene (sandbox-unavailable): No verified sandbox backend is available",
+    );
+  });
+
   it("rejects malformed envelopes and every cross-boundary correlation mismatch", async () => {
     const base = await verifiedRun();
     const variants: unknown[] = [

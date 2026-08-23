@@ -171,7 +171,7 @@ and [MathTex source profile](docs/mathtex-source-profile.md) for the measured bo
 
 - Node.js 24 or newer
 - pnpm 10
-- Rust and `wasm-pack 0.15.0` when rebuilding the engine or packaging Electron
+- Rust and `wasm-pack 0.15.0` for the first local launch, rebuilding the engine, or packaging Electron
 - Chromium with WebGPU and WebCodecs for the complete browser path
 
 ### Run Studio in the browser
@@ -182,7 +182,8 @@ pnpm dev:web
 ```
 
 Open the loopback URL printed by Vite. A new Studio-native project can be created
-from the workspace chooser without configuring Manim.
+from the workspace chooser without configuring Manim. The first launch builds any
+missing canvas and MathTex WebAssembly artifacts before Vite starts.
 
 ### Run the desktop shell
 
@@ -207,8 +208,14 @@ Set the project root and command when they differ from this checkout and the
 ```sh
 POIETRA_MANIM_PROJECT_ROOT=/path/to/project \
 POIETRA_MANIM_COMMAND='["uv", "run", "manim"]' \
+POIETRA_FAST_MANIM_RUNTIME_TRACE_DEV_OPT_IN=1 \
+POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND='["/path/to/fast-manim/.venv/bin/python", "-m", "manim.renderer.runtime_trace"]' \
 pnpm dev:web
 ```
+
+The Runtime Trace command supplies the canonical interactive preview for linked
+Manim projects. Keep the explicit development opt-in: without a configured
+producer, Studio lists the project but intentionally refuses preview-backed edits.
 
 For Docker-backed rendering, the included adapter mounts the project read-only,
 mounts only the preview directory as writable, and disables container networking:

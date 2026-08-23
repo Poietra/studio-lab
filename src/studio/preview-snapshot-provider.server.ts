@@ -84,7 +84,18 @@ const verifiedRunViewSchema = z
   })
   .strict();
 
-const runStatusSchema = z.object({ status: z.enum(["failed", "stale", "unsupported", "verified"]) }).passthrough();
+const runStatusSchema = z
+  .object({
+    failure: z
+      .object({
+        code: z.string().min(1).max(100),
+        message: z.string().min(1).max(500),
+      })
+      .passthrough()
+      .optional(),
+    status: z.enum(["failed", "stale", "unsupported", "verified"]),
+  })
+  .passthrough();
 
 export type ServerPreviewSnapshotProviderOptionsV1 = Readonly<{
   fetcher?: typeof globalThis.fetch;
@@ -245,8 +256,11 @@ async function validateVerifiedRun(value: unknown, identity: ImportedStudioPrevi
   const status = runStatusSchema.safeParse(value);
   if (!status.success) throw providerError("The Scene snapshot endpoint returned a malformed run state.", status.error);
   if (status.data.status !== "verified") {
+    const failureDetail = status.data.failure
+      ? ` (${status.data.failure.code}): ${status.data.failure.message}`
+      : ` (${status.data.status}).`;
     throw providerError(
-      `The Scene snapshot endpoint did not verify this Scene (${status.data.status}).`,
+      `The Scene snapshot endpoint did not verify this Scene${failureDetail}`,
       undefined,
       status.data.status === "unsupported" ? "unsupported" : "failed",
     );
