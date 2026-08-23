@@ -1091,6 +1091,42 @@ fn plan_studio_creation_timeline(
             .map_err(|_| ProjectStudioCreationEditError::Unsupported)?;
     }
 
+    // A trim's targetDuration is captured when the Program is authored, so it
+    // includes every earlier Program in document history even when source-time
+    // ordering later executes one of those authoring insertions after the trim.
+    let mut historical_duration = base_duration;
+    for (program, timeline_input) in programs.iter().zip(&timeline_inputs) {
+        if let Some(timeline_input) = timeline_input {
+            match &timeline_input.operations[0] {
+                StudioTimelineOperation::InsertWait { interval, .. } => {
+                    historical_duration += interval.end - interval.start;
+                }
+                StudioTimelineOperation::TrimSceneDuration {
+                    removed_duration,
+                    target_duration,
+                    ..
+                } => {
+                    let expected = historical_duration - removed_duration;
+                    if !expected.is_finite()
+                        || *target_duration < 0.1
+                        || !studio_timeline_semantic_values_match(expected, *target_duration)
+                    {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                    historical_duration = *target_duration;
+                }
+                StudioTimelineOperation::Unsupported { .. } => {
+                    return Err(ProjectStudioCreationEditError::Unsupported);
+                }
+            }
+        } else {
+            historical_duration += studio_creation_insertion_duration(program);
+        }
+        if !historical_duration.is_finite() {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+    }
+
     let mut ordered_programs = (0..programs.len()).collect::<Vec<_>>();
     ordered_programs.sort_by(|left, right| {
         programs[*left]
@@ -1118,8 +1154,17 @@ fn plan_studio_creation_timeline(
         }
         ranks[program_index] = rank;
         if let Some(timeline_input) = &timeline_inputs[program_index] {
+            let mut timeline_input = timeline_input.clone();
+            if let StudioTimelineOperation::TrimSceneDuration {
+                removed_duration,
+                target_duration,
+                ..
+            } = &mut timeline_input.operations[0]
+            {
+                *target_duration = timeline_state.projected_duration() - *removed_duration;
+            }
             let mut projection = timeline_state
-                .project_edit(timeline_input, program.anchor_resolved_seconds)
+                .project_edit(&timeline_input, program.anchor_resolved_seconds)
                 .map_err(|_| ProjectStudioCreationEditError::Unsupported)?;
             projection.working_anchor -= authoring_offset;
             projection.working_interval.start -= authoring_offset;
@@ -8344,6 +8389,50 @@ mod tests {
             })
             .unwrap();
         assert!((resize.interval.start - 1.75).abs() < 1e-12);
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        assert!((result.bundle.scene.duration - (base_duration + 0.9)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn normalized_creation_accepts_a_safe_trim_authored_after_later_source_content() {
+        let bundle = static_imported_bundle();
+        let base_duration = bundle.scene.duration;
+        let mut command = studio_creation_command(&bundle);
+        command.programs.insert(
+            1,
+            studio_creation_duration_wait_input(
+                "duration-wait",
+                "duration-wait-operation",
+                0.25,
+                1.0,
+            ),
+        );
+        command.programs.insert(
+            2,
+            studio_creation_duration_trim_input(
+                "duration-trim",
+                "duration-trim-operation",
+                0.25,
+                0.5,
+                base_duration + 0.9,
+                vec!["duration-wait-operation".to_owned()],
+            ),
+        );
+
+        let projection = project_studio_creation_edits(base_duration, &command.programs).unwrap();
+        assert_eq!(projection.insertions.len(), 2);
+        assert_eq!(projection.insertions[0].transaction_id, "duration-wait");
+        assert!((projection.insertions[0].at - 0.25).abs() < 1e-12);
+        assert!((projection.insertions[0].duration - 0.5).abs() < 1e-12);
+        assert_eq!(projection.insertions[1].transaction_id, "create");
+        assert!((projection.insertions[1].at - 1.0).abs() < 1e-12);
+        assert!((projection.insertions[1].duration - 0.4).abs() < 1e-12);
+        assert!((projection.projected_duration - (base_duration + 0.9)).abs() < 1e-12);
+        assert!(projection.duration_trim_barrier_operation_ids.is_empty());
+        assert!((projection.entities[0].created_lifetime.start - 1.0).abs() < 1e-12);
 
         let mut session = EngineSessionV1::new(bundle).unwrap();
         let result = session.apply_studio_creation_edit(command).unwrap();

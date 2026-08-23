@@ -516,6 +516,10 @@ impl StudioTimelinePlanningState {
         self.resolved_offset
     }
 
+    pub(super) fn projected_duration(&self) -> f64 {
+        self.projected_duration
+    }
+
     pub(super) fn last_transform(&self) -> Option<&StudioTimelineEditTransform> {
         self.transforms.last()
     }
