@@ -43,4 +43,21 @@ describe("StudioExportSettingsControl", () => {
     expect(markup).toContain("Export is unavailable while the Editor session changes.");
     expect(markup).toContain("Thumbnail updates are unavailable while the Editor session changes.");
   });
+
+  it("shows truthful Manim source availability for Studio-native documents", () => {
+    const markup = renderToStaticMarkup(
+      <StudioExportSettingsControl
+        exportSource={null}
+        generateThumbnail={null}
+        manimSourceExport={{ blocker: "Overlapping motion is not supported.", request: null }}
+        publication={unavailablePublication}
+      />,
+    );
+
+    expect(markup).toContain('id="studio-manim-source-export-title"');
+    expect(markup).toContain("Manim source");
+    expect(markup).toContain("Download .py");
+    expect(markup).toContain("Overlapping motion is not supported.");
+    expect(markup).toContain('data-studio-manim-source-export-state="unavailable"');
+  });
 });

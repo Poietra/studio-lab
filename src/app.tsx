@@ -8022,6 +8022,42 @@ export function App({
   const sourceFragmentMaterialExportBlocker = activeSceneHasFragmentMaterialAssignments
     ? "Manim .py export does not support project-local WGSL fragment materials. Remove them before exporting source."
     : null;
+  const studioNativeExportLineage =
+    studioExportSource?.sourceLineage && "origin" in studioExportSource.sourceLineage
+      ? studioExportSource.sourceLineage
+      : null;
+  const studioNativeExportPreviewAligned =
+    nativeSceneActive &&
+    activeProjectId !== null &&
+    activeEditorScene !== null &&
+    isStudioNativeWorkspaceScene(activeEditorScene) &&
+    studioNativeExportLineage?.origin === "studio-native" &&
+    studioNativeExportLineage.projectId === activeProjectId &&
+    studioNativeExportLineage.documentKey === activeEditorScene.identity.documentKey &&
+    studioNativeExportLineage.sceneId === activeEditorScene.sceneId &&
+    studioNativeExportLineage.workingRevision === editorRevision.workingRevision;
+  const studioNativeManimSourceExport =
+    nativeSceneActive && activeProjectId && activeEditorScene && isStudioNativeWorkspaceScene(activeEditorScene)
+      ? {
+          blocker: !editorDocumentPresentationReady
+            ? "Wait for the Studio document to finish loading before exporting source."
+            : !studioNativeExportPreviewAligned
+              ? "Wait for the canonical preview to present this exact Studio revision before exporting source."
+              : sourceFragmentMaterialExportBlocker,
+          request:
+            studioNativeExportPreviewAligned && studioExportSource
+              ? {
+                  documentKey: activeEditorScene.identity.documentKey,
+                  duration: studioExportSource.bundle.scene.duration,
+                  fragmentMaterialEntityIds: Object.keys(activeSceneFragmentMaterials.assignments),
+                  kind: "studio-native" as const,
+                  programs: renderPrograms,
+                  projectId: activeProjectId,
+                  viewport: STUDIO_VIEWPORT,
+                }
+              : null,
+        }
+      : null;
 
   function commitProjectFragmentMaterials(projectId: string, next: ProjectFragmentMaterialStateV1) {
     if (!saveProjectFragmentMaterials(projectId, next)) {
@@ -8633,6 +8669,7 @@ export function App({
               disabled={sessionTransitionPending}
               exportSource={studioExportSource}
               generateThumbnail={studioExportSource && previewRenderer ? previewRenderer.generateThumbnail : null}
+              manimSourceExport={studioNativeManimSourceExport}
               publication={studioExportPublication}
             />
             {activeScene ? (
