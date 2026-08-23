@@ -119,7 +119,14 @@ function contentCreationProgram(
 
 describe("Studio-native Manim source export", () => {
   it("exports an empty canonical Scene without fabricating imported source identity", () => {
-    const exported = exportStudioNativeManimSource({ duration: 5, frame, programs: [], viewport });
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 5,
+      duration: 5,
+      frame,
+      programs: [],
+      timelineTransforms: [],
+      viewport,
+    });
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
 
     expect(exported.sceneName).toBe("PoietraScene");
@@ -130,7 +137,14 @@ describe("Studio-native Manim source export", () => {
   });
 
   it("does not inherit the MP4 duration limit when exporting source", () => {
-    const exported = exportStudioNativeManimSource({ duration: 1_200, frame, programs: [], viewport });
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 1_200,
+      duration: 1_200,
+      frame,
+      programs: [],
+      timelineTransforms: [],
+      viewport,
+    });
 
     expect(exported.source).toContain("self.wait(1200)");
   });
@@ -141,9 +155,11 @@ describe("Studio-native Manim source export", () => {
     // insertion is already removed when Studio persists its source anchor.
     const rectangle = creationProgram("create-rectangle", "native:rectangle", "Rectangle", 0.6, 0.5);
     const exported = exportStudioNativeManimSource({
+      baseDuration: 2.1,
       duration: 3,
       frame,
       programs: [circle, rectangle],
+      timelineTransforms: [],
       viewport,
     });
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
@@ -174,7 +190,14 @@ describe("Studio-native Manim source export", () => {
   it("serializes Programs appended at the same source anchor in canonical input order", () => {
     const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.4);
     const rectangle = creationProgram("create-rectangle", "native:rectangle", "Rectangle", 0, 0.5);
-    const exported = exportStudioNativeManimSource({ duration: 3, frame, programs: [circle, rectangle], viewport });
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 2.1,
+      duration: 3,
+      frame,
+      programs: [circle, rectangle],
+      timelineTransforms: [],
+      viewport,
+    });
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
 
     expect(imported?.runtimeSceneState.objectGraph.entities["native:circle"]?.lifetime[0]?.start).toBe(0);
@@ -183,7 +206,14 @@ describe("Studio-native Manim source export", () => {
 
   it("preserves a finite Studio-created lifetime on the synthetic source timeline", () => {
     const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.4, 2);
-    const exported = exportStudioNativeManimSource({ duration: 3, frame, programs: [circle], viewport });
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 2.6,
+      duration: 3,
+      frame,
+      programs: [circle],
+      timelineTransforms: [],
+      viewport,
+    });
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
 
     expect(exported.source).toContain("self.remove(");
@@ -201,7 +231,14 @@ describe("Studio-native Manim source export", () => {
         persistent: true,
       },
     ]);
-    const exported = exportStudioNativeManimSource({ duration: 3.7, frame, programs: [circle, remove], viewport });
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 3,
+      duration: 3.7,
+      frame,
+      programs: [circle, remove],
+      timelineTransforms: [],
+      viewport,
+    });
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
 
     expect(exported.source).toContain("FadeOut(");
@@ -233,9 +270,11 @@ describe("Studio-native Manim source export", () => {
       },
     ]);
     const exported = exportStudioNativeManimSource({
+      baseDuration: 3,
       duration: 3.9,
       frame,
       programs: [circle, motion, resize],
+      timelineTransforms: [],
       viewport,
     });
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
@@ -269,7 +308,14 @@ describe("Studio-native Manim source export", () => {
         value: { displayLines: ["After"], text: "After" },
       },
     ]);
-    const exported = exportStudioNativeManimSource({ duration: 3.4, frame, programs: [text, content], viewport });
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 3,
+      duration: 3.4,
+      frame,
+      programs: [text, content],
+      timelineTransforms: [],
+      viewport,
+    });
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
 
     expect(imported?.runtimeSceneState.objectGraph.entities["native:text"]?.content?.text).toBe("After");
@@ -297,9 +343,11 @@ describe("Studio-native Manim source export", () => {
       },
     ]);
     const exported = exportStudioNativeManimSource({
+      baseDuration: 3,
       duration: 3.9,
       frame,
       programs: [equation, transform],
+      timelineTransforms: [],
       viewport,
     });
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
@@ -311,6 +359,74 @@ describe("Studio-native Manim source export", () => {
       "m",
       "a",
     ]);
+  });
+
+  it("round-trips a Rust-authorized duration wait, trim, and Circle from the explicit base duration", () => {
+    const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.4);
+    const waitOperationId = "extend-duration/wait";
+    const wait = {
+      ...program("extend-duration", 5, [
+        {
+          ...operationBase(waitOperationId, 5, 7),
+          eventKind: "wait" as const,
+          kind: "InsertTimelineEvent" as const,
+          label: "Extend Scene to 7 seconds",
+          purpose: "scene-duration" as const,
+        },
+      ]),
+      anchor: {
+        capturedPlayhead: 5,
+        evidence: ["source-anchor:5.000"],
+        resolvedSeconds: 5,
+        source: { kind: "absolute" as const, seconds: 5 },
+      },
+    };
+    const trimOperationId = "trim-duration/trim";
+    const trim = {
+      ...program("trim-duration", 5, [
+        {
+          ...operationBase(trimOperationId, 5),
+          kind: "TrimSceneDuration" as const,
+          removedDuration: 1,
+          targetDuration: 6,
+          waitOperationIds: [waitOperationId],
+        },
+      ]),
+      anchor: {
+        capturedPlayhead: 7,
+        evidence: ["source-anchor:5.000", "Studio duration wait suffix"],
+        resolvedSeconds: 5,
+        source: { kind: "absolute" as const, seconds: 5 },
+      },
+    };
+
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 5,
+      duration: 6.4,
+      frame,
+      programs: [circle, wait, trim],
+      timelineTransforms: [
+        { interval: { end: 7, start: 5 }, kind: "insert", operationId: waitOperationId },
+        {
+          interval: { end: 7, start: 6 },
+          kind: "remove",
+          operationId: trimOperationId,
+          waitReductions: [{ operationId: waitOperationId, removedDuration: 1 }],
+        },
+      ],
+      viewport,
+    });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
+    const importedCircle = imported?.runtimeSceneState.objectGraph.entities["native:circle"];
+
+    expect(imported?.runtimeSceneState.duration).toBeCloseTo(6.4);
+    expect(importedCircle).toMatchObject({
+      geometry: {
+        dimensions: { kind: "known", value: { radius: 1 } },
+        position: { kind: "known", value: { x: 160, y: 180 } },
+      },
+      type: "Circle",
+    });
   });
 
   it("reports the unsupported operation family", () => {
@@ -329,8 +445,15 @@ describe("Studio-native Manim source export", () => {
       "unsupported",
     );
 
-    expect(() => exportStudioNativeManimSource({ duration: 3, frame, programs: [visibility], viewport })).toThrow(
-      /SetProperty.*has no truthful Manim source lowering/i,
-    );
+    expect(() =>
+      exportStudioNativeManimSource({
+        baseDuration: 3,
+        duration: 3,
+        frame,
+        programs: [visibility],
+        timelineTransforms: [],
+        viewport,
+      }),
+    ).toThrow(/SetProperty.*has no truthful Manim source lowering/i);
   });
 });

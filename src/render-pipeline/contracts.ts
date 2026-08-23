@@ -437,6 +437,7 @@ export const originalManimSourceExportRequestSchema: z.ZodType<OriginalManimSour
   .strict();
 
 export type StudioNativeManimSourceExportRequest = Readonly<{
+  baseDuration: number;
   documentKey: string;
   duration: number;
   fragmentMaterialEntityIds: readonly string[];
@@ -448,6 +449,7 @@ export type StudioNativeManimSourceExportRequest = Readonly<{
 
 export const studioNativeManimSourceExportRequestSchema: z.ZodType<StudioNativeManimSourceExportRequest> = z
   .object({
+    baseDuration: finiteNumber.positive(),
     documentKey: z.string().regex(/^[0-9a-f]{64}$/u),
     duration: finiteNumber.positive(),
     fragmentMaterialEntityIds: z.array(z.string().min(1).max(240)).max(128),

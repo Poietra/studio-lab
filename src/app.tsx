@@ -8093,8 +8093,9 @@ export function App({
               ? "Wait for the canonical preview to present this exact Studio revision before exporting source."
               : sourceFragmentMaterialExportBlocker,
           request:
-            studioNativeExportPreviewAligned && studioExportSource
+            studioNativeExportPreviewAligned && studioExportSource && nativePreviewBundle
               ? {
+                  baseDuration: nativePreviewBundle.scene.duration,
                   documentKey: activeEditorScene.identity.documentKey,
                   duration: studioExportSource.bundle.scene.duration,
                   fragmentMaterialEntityIds: Object.keys(activeSceneFragmentMaterials.assignments),

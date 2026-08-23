@@ -905,6 +905,7 @@ class InlineImageScene(Scene):
         sources: [],
       });
       const nativeExportRequest = {
+        baseDuration: 5,
         documentKey: nativeWorkspace.nativeDocument!.documentKey,
         duration: 5,
         fragmentMaterialEntityIds: [],

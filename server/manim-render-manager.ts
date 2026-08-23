@@ -784,9 +784,11 @@ export class ManimRenderManager {
       }
       try {
         const exported = exportStudioNativeManimSource({
+          baseDuration: request.baseDuration,
           duration: request.duration,
           frame: this.frame,
           programs: request.programs,
+          timelineTransforms: [],
           viewport: request.viewport,
         });
         throwIfAborted(signal);

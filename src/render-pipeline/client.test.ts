@@ -937,6 +937,7 @@ describe("Manim API client contracts", () => {
 
   it("downloads a generated Python source for a Studio-native Scene", async () => {
     const request = {
+      baseDuration: 5,
       documentKey: "b".repeat(64),
       duration: 5,
       fragmentMaterialEntityIds: [],
