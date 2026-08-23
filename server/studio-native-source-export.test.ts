@@ -101,7 +101,9 @@ describe("Studio-native Manim source export", () => {
 
   it("reuses canonical source lowering for non-overlapping Studio-created objects", () => {
     const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.4);
-    const rectangle = creationProgram("create-rectangle", "native:rectangle", "Rectangle", 1, 0.5);
+    // The user created this object at working time 1.0. The preceding 0.4s
+    // insertion is already removed when Studio persists its source anchor.
+    const rectangle = creationProgram("create-rectangle", "native:rectangle", "Rectangle", 0.6, 0.5);
     const exported = exportStudioNativeManimSource({
       duration: 3,
       frame,
@@ -115,21 +117,32 @@ describe("Studio-native Manim source export", () => {
     expect(exported.source).toContain("run_time=0.4");
     expect(exported.source).toContain("run_time=0.5");
     expect(imported?.runtimeSceneState.duration).toBe(3);
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:circle"]?.lifetime[0]?.start).toBe(0);
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:rectangle"]?.lifetime[0]?.start).toBe(1);
     expect(Object.values(imported?.runtimeSceneState.objectGraph.entities ?? {})).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "native:circle", type: "Circle" }),
-        expect.objectContaining({ id: "native:rectangle", type: "Rectangle" }),
+        expect.objectContaining({
+          geometry: expect.objectContaining({ position: { kind: "known", value: { x: 160, y: 180 } } }),
+          id: "native:circle",
+          type: "Circle",
+        }),
+        expect.objectContaining({
+          geometry: expect.objectContaining({ position: { kind: "known", value: { x: 480, y: 180 } } }),
+          id: "native:rectangle",
+          type: "Rectangle",
+        }),
       ]),
     );
   });
 
-  it("fails closed instead of serializing overlapping Program intervals", () => {
-    const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.8);
-    const rectangle = creationProgram("create-rectangle", "native:rectangle", "Rectangle", 0.5, 0.5);
+  it("serializes Programs appended at the same source anchor in canonical input order", () => {
+    const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.4);
+    const rectangle = creationProgram("create-rectangle", "native:rectangle", "Rectangle", 0, 0.5);
+    const exported = exportStudioNativeManimSource({ duration: 3, frame, programs: [circle, rectangle], viewport });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
 
-    expect(() =>
-      exportStudioNativeManimSource({ duration: 3, frame, programs: [circle, rectangle], viewport }),
-    ).toThrow(/overlaps another positive-duration Program/i);
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:circle"]?.lifetime[0]?.start).toBe(0);
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:rectangle"]?.lifetime[0]?.start).toBe(0.4);
   });
 
   it("preserves a finite Studio-created lifetime on the synthetic source timeline", () => {
@@ -138,7 +151,25 @@ describe("Studio-native Manim source export", () => {
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
 
     expect(exported.source).toContain("self.remove(");
-    expect(imported?.runtimeSceneState.objectGraph.entities["native:circle"]?.lifetime[0]?.end).toBe(2);
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:circle"]?.lifetime[0]?.end).toBe(2.4);
+  });
+
+  it("preserves a later persistent Delete Program on the working timeline", () => {
+    const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.4);
+    const remove = program("remove-circle", 1.1, [
+      {
+        ...operationBase("remove-circle/remove", 1.1, 1.4),
+        effect: "remove",
+        entityId: "native:circle",
+        kind: "ChangePresence",
+        persistent: true,
+      },
+    ]);
+    const exported = exportStudioNativeManimSource({ duration: 3.7, frame, programs: [circle, remove], viewport });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
+
+    expect(exported.source).toContain("FadeOut(");
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:circle"]?.lifetime[0]?.end).toBe(1.8);
   });
 
   it("reports the unsupported operation family", () => {

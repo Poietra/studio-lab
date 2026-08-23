@@ -7,7 +7,9 @@ import {
   loweredProgramDuration,
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
+import type { EntityContent, EntityDimensions } from "../src/studio/model";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../src/studio/operation-registry";
+import { sourceTimeToWorkingTime } from "../src/studio/program-composition";
 import type { SceneEdit } from "../src/studio/scene-edit-contract";
 import { sceneEditSchema } from "../src/studio/scene-edit-contract";
 
@@ -32,6 +34,16 @@ type ScheduledProgram = Readonly<{
   inputIndex: number;
   program: SceneEdit;
   sourceAnchor: number;
+}>;
+
+type ExpectedEntity = Readonly<{
+  content: EntityContent | undefined;
+  dimensions: EntityDimensions | undefined;
+  id: string;
+  lifetimeEnd: number;
+  lifetimeStart: number;
+  position: Readonly<{ x: number; y: number }> | null;
+  type: string;
 }>;
 
 function assertPositiveSize(value: Readonly<{ height: number; width: number }>, label: string) {
@@ -75,14 +87,6 @@ function admittedPrograms(programs: readonly SceneEdit[], sceneDuration: number)
       );
     }
     const duration = loweredProgramDuration(result.data);
-    const start = result.data.anchor.resolvedSeconds;
-    const end = start + duration;
-    if (start < -TIME_EPSILON || end > sceneDuration + TIME_EPSILON) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        `Program ${result.data.transactionId} extends outside the ${sceneDuration.toFixed(3)}s Studio Scene.`,
-      );
-    }
     return { duration, inputIndex: index, program: result.data };
   });
   if (parsed.reduce((total, entry) => total + entry.program.operations.length, 0) > 256) {
@@ -95,84 +99,28 @@ function admittedPrograms(programs: readonly SceneEdit[], sceneDuration: number)
     throw new TypeError("A Studio-native source export requires unique Program transaction IDs.");
   }
 
+  const baseDuration = sceneDuration - parsed.reduce((total, entry) => total + entry.duration, 0);
+  if (baseDuration < -TIME_EPSILON) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Studio-native Program durations exceed the canonical Scene duration.",
+    );
+  }
+
   const ordered = parsed.sort(
     (left, right) =>
       left.program.anchor.resolvedSeconds - right.program.anchor.resolvedSeconds || left.inputIndex - right.inputIndex,
   );
-  let occupiedUntil = 0;
-  let insertedDuration = 0;
   return ordered.map((entry) => {
-    const start = entry.program.anchor.resolvedSeconds;
-    if (entry.duration > TIME_EPSILON && start < occupiedUntil - TIME_EPSILON) {
+    const sourceAnchor = entry.program.anchor.resolvedSeconds;
+    if (sourceAnchor < -TIME_EPSILON || sourceAnchor + entry.duration > baseDuration + TIME_EPSILON) {
       throw new ProgramLoweringError(
         "operation-unsupported",
-        `Program ${entry.program.transactionId} overlaps another positive-duration Program; Studio-native Manim export does not serialize concurrent Program intervals.`,
+        `Program ${entry.program.transactionId} extends outside the ${baseDuration.toFixed(3)}s Studio source timeline.`,
       );
     }
-    if (entry.duration <= TIME_EPSILON && start < occupiedUntil - TIME_EPSILON) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        `Program ${entry.program.transactionId} occurs inside another Program interval; Studio-native Manim export cannot preserve that concurrent edit.`,
-      );
-    }
-    const sourceAnchor = start - insertedDuration;
-    if (sourceAnchor < -TIME_EPSILON) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        `Program ${entry.program.transactionId} cannot be mapped to a non-negative Manim source time.`,
-      );
-    }
-    occupiedUntil = Math.max(occupiedUntil, start + entry.duration);
-    insertedDuration += entry.duration;
     return { ...entry, sourceAnchor: Math.max(0, sourceAnchor) };
   });
-}
-
-function programsOnSourceTimeline(
-  programs: readonly ScheduledProgram[],
-  sceneDuration: number,
-): readonly ScheduledProgram[] {
-  return programs.map((entry) => ({
-    ...entry,
-    program: {
-      ...entry.program,
-      operations: entry.program.operations.map((operation) => {
-        if (operation.kind !== "CreateEntity" || operation.entity.lifetime.end === null) return operation;
-        const finalEnd = operation.entity.lifetime.end;
-        if (finalEnd <= operation.entity.lifetime.start + TIME_EPSILON || finalEnd > sceneDuration + TIME_EPSILON) {
-          throw new ProgramLoweringError(
-            "operation-unsupported",
-            `Created lifetime for ${operation.entity.id} must end inside the ${sceneDuration.toFixed(3)}s Studio Scene.`,
-          );
-        }
-        const concurrent = programs.find(({ duration, program }) => {
-          const start = program.anchor.resolvedSeconds;
-          return (
-            duration > TIME_EPSILON && finalEnd > start + TIME_EPSILON && finalEnd < start + duration - TIME_EPSILON
-          );
-        });
-        if (concurrent) {
-          throw new ProgramLoweringError(
-            "operation-unsupported",
-            `Created lifetime for ${operation.entity.id} ends inside Program ${concurrent.program.transactionId}; Studio-native Manim export cannot serialize that concurrent interval.`,
-          );
-        }
-        const insertedBeforeEnd = programs.reduce((total, candidate) => {
-          const candidateEnd = candidate.program.anchor.resolvedSeconds + candidate.duration;
-          return candidateEnd <= finalEnd + TIME_EPSILON ? total + candidate.duration : total;
-        }, 0);
-        const sourceEnd = finalEnd - insertedBeforeEnd;
-        const rebaseOffset = entry.program.anchor.resolvedSeconds - entry.sourceAnchor;
-        return {
-          ...operation,
-          entity: {
-            ...operation.entity,
-            lifetime: { ...operation.entity.lifetime, end: sourceEnd + rebaseOffset },
-          },
-        };
-      }),
-    },
-  }));
 }
 
 function formatSeconds(value: number) {
@@ -190,11 +138,10 @@ function sourceScaffold(sceneName: string, duration: number, programs: readonly 
     );
   }
 
-  const finiteLifetimeAnchors = programs.flatMap(({ program, sourceAnchor }) => {
-    const rebaseOffset = program.anchor.resolvedSeconds - sourceAnchor;
+  const finiteLifetimeAnchors = programs.flatMap(({ program }) => {
     return program.operations.flatMap((operation) =>
       operation.kind === "CreateEntity" && operation.entity.lifetime.end !== null
-        ? [operation.entity.lifetime.end - rebaseOffset]
+        ? [operation.entity.lifetime.end]
         : [],
     );
   });
@@ -236,25 +183,76 @@ function verifyRoundTrip(
       `Studio-native Manim source reimported at ${imported.runtimeSceneState.duration.toFixed(4)}s instead of ${duration.toFixed(4)}s.`,
     );
   }
-  const expectedEntities = programs.flatMap(({ program }) =>
-    program.operations.flatMap(
-      (operation): readonly Readonly<{ id: string; lifetimeEnd: number | null; type: string }>[] => {
-        if (operation.kind === "CreateEntity") {
-          return [
-            {
-              id: operation.entity.id,
-              lifetimeEnd: operation.entity.lifetime.end,
-              type: operation.entity.type,
-            },
-          ];
-        }
-        if (operation.kind === "TransformContent") {
-          return [{ id: operation.targetEntityId, lifetimeEnd: null, type: operation.targetType ?? "MathTex" }];
-        }
-        return [];
-      },
-    ),
-  );
+  const orderedPrograms = programs.map(({ program }) => program);
+  const persistentRemovalEnds = new Map<string, number>();
+  programs.forEach(({ program }, programIndex) => {
+    const precedingPrograms = orderedPrograms.slice(0, programIndex);
+    const workingOffset =
+      sourceTimeToWorkingTime(precedingPrograms, program.anchor.resolvedSeconds) - program.anchor.resolvedSeconds;
+    for (const operation of program.operations) {
+      if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
+        persistentRemovalEnds.set(operation.entityId, operation.interval.end + workingOffset);
+      }
+    }
+  });
+  const expectedEntities = programs.flatMap(({ program }, programIndex) => {
+    const precedingPrograms = orderedPrograms.slice(0, programIndex);
+    return program.operations.flatMap((operation): readonly ExpectedEntity[] => {
+      if (operation.kind === "CreateEntity") {
+        const sourceEnd = operation.entity.lifetime.end;
+        const programsBeforeEnd =
+          sourceEnd === null
+            ? orderedPrograms
+            : orderedPrograms.filter((candidate) => candidate.anchor.resolvedSeconds < sourceEnd - TIME_EPSILON);
+        const position = program.operations.find(
+          (candidate) =>
+            candidate.kind === "SetProperty" &&
+            candidate.entityId === operation.entity.id &&
+            candidate.key === "position" &&
+            typeof candidate.value === "object" &&
+            candidate.value !== null &&
+            "x" in candidate.value &&
+            "y" in candidate.value,
+        );
+        return [
+          {
+            content: operation.entity.content,
+            dimensions: operation.entity.dimensions,
+            id: operation.entity.id,
+            lifetimeEnd:
+              persistentRemovalEnds.get(operation.entity.id) ??
+              (sourceEnd === null ? duration : sourceTimeToWorkingTime(programsBeforeEnd, sourceEnd)),
+            lifetimeStart: sourceTimeToWorkingTime(precedingPrograms, operation.entity.lifetime.start),
+            position:
+              position?.kind === "SetProperty" &&
+              typeof position.value === "object" &&
+              position.value !== null &&
+              "x" in position.value &&
+              "y" in position.value &&
+              typeof position.value.x === "number" &&
+              typeof position.value.y === "number"
+                ? { x: position.value.x, y: position.value.y }
+                : null,
+            type: operation.entity.type,
+          },
+        ];
+      }
+      if (operation.kind === "TransformContent") {
+        return [
+          {
+            content: operation.replacement,
+            dimensions: undefined,
+            id: operation.targetEntityId,
+            lifetimeEnd: persistentRemovalEnds.get(operation.targetEntityId) ?? duration,
+            lifetimeStart: sourceTimeToWorkingTime(precedingPrograms, operation.interval.start),
+            position: null,
+            type: operation.targetType ?? "MathTex",
+          },
+        ];
+      }
+      return [];
+    });
+  });
   for (const expected of expectedEntities) {
     const entity = imported.runtimeSceneState.objectGraph.entities[expected.id];
     if (!entity || entity.type !== expected.type) {
@@ -263,13 +261,67 @@ function verifyRoundTrip(
         `Studio-native Manim source did not reimport ${expected.id} as ${expected.type}.`,
       );
     }
+    const actualLifetimeStart = entity.lifetime[0]?.start;
+    const actualLifetimeEnd = entity.lifetime.at(-1)?.end;
     if (
-      expected.lifetimeEnd !== null &&
-      Math.abs((entity.lifetime.at(-1)?.end ?? Number.NaN) - expected.lifetimeEnd) >= TIME_EPSILON
+      !Number.isFinite(actualLifetimeStart) ||
+      Math.abs((actualLifetimeStart ?? Number.NaN) - expected.lifetimeStart) >= TIME_EPSILON
+    ) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Studio-native Manim source did not preserve the ${expected.lifetimeStart.toFixed(4)}s lifetime start for ${expected.id}.`,
+      );
+    }
+    if (
+      !Number.isFinite(actualLifetimeEnd) ||
+      Math.abs((actualLifetimeEnd ?? Number.NaN) - expected.lifetimeEnd) >= TIME_EPSILON
     ) {
       throw new ProgramLoweringError(
         "operation-unsupported",
         `Studio-native Manim source did not preserve the ${expected.lifetimeEnd.toFixed(4)}s lifetime end for ${expected.id}.`,
+      );
+    }
+    if (
+      expected.position &&
+      (entity.geometry?.position.kind !== "known" ||
+        Math.abs(entity.geometry.position.value.x - expected.position.x) >= TIME_EPSILON ||
+        Math.abs(entity.geometry.position.value.y - expected.position.y) >= TIME_EPSILON)
+    ) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Studio-native Manim source did not preserve the initial position for ${expected.id}.`,
+      );
+    }
+    const actualDimensions = entity.geometry?.dimensions.kind === "known" ? entity.geometry.dimensions.value : null;
+    if (
+      expected.dimensions &&
+      (!actualDimensions ||
+        Object.entries(expected.dimensions).some(([key, value]) => {
+          const actual = actualDimensions[key as keyof EntityDimensions];
+          return (
+            typeof value === "number" &&
+            (typeof actual !== "number" || !Number.isFinite(actual) || Math.abs(actual - value) >= TIME_EPSILON)
+          );
+        }))
+    ) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Studio-native Manim source did not preserve the initial dimensions for ${expected.id}.`,
+      );
+    }
+    if (expected.content?.text !== undefined && entity.content?.text !== expected.content.text) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Studio-native Manim source did not preserve the Text content for ${expected.id}.`,
+      );
+    }
+    if (
+      expected.content?.texParts !== undefined &&
+      JSON.stringify(entity.content?.texParts) !== JSON.stringify(expected.content.texParts)
+    ) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Studio-native Manim source did not preserve the MathTex content for ${expected.id}.`,
       );
     }
   }
@@ -288,7 +340,7 @@ export function exportStudioNativeManimSource(input: StudioNativeSourceExportInp
   assertPositiveSize(input.viewport, "The Studio viewport");
   const sceneName = SCENE_NAME;
   const admitted = admittedPrograms(input.programs, input.duration);
-  const programs = programsOnSourceTimeline(admitted, input.duration);
+  const programs = admitted;
   const source = sourceScaffold(sceneName, input.duration, programs);
   if (programs.length === 0) {
     verifyRoundTrip(source, sceneName, input.duration, input.frame, admitted);
