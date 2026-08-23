@@ -97,7 +97,17 @@ export function StudioPreviewControl({
       role="status"
       title={state.detail ?? undefined}
     >
-      <span>{STATE_LABELS[state.kind]}</span>
+      <span className="flex min-w-0 flex-col">
+        <span>{STATE_LABELS[state.kind]}</span>
+        {(state.kind === "failed" || state.kind === "unsupported") && state.detail ? (
+          <span
+            className="max-w-96 whitespace-normal break-words text-[10px] leading-tight text-red-200"
+            data-studio-preview-detail
+          >
+            {state.detail}
+          </span>
+        ) : null}
+      </span>
       {state.retryable ? (
         <button
           className="ml-1 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"

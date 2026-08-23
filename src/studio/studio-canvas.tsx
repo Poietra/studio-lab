@@ -1389,7 +1389,13 @@ export function StudioCanvas({
                         ? "Runtime Trace bounded editing"
                         : "editing preview only"
                 }`
-              : `WebGPU preview unavailable · ${describeStudioPreviewFallback(preview.state.reason)}`}
+              : `${
+                  preview.state.reason === "installing" ||
+                  preview.state.reason === "frame-pending" ||
+                  preview.state.reason === "frame-stale"
+                    ? "Updating WebGPU preview"
+                    : "WebGPU preview unavailable"
+                } · ${describeStudioPreviewFallback(preview.state.reason)}`}
           </div>
         ) : null}
         <StudioPresenceOverlay participants={presenceParticipants} />

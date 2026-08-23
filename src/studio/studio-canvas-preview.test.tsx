@@ -1009,6 +1009,8 @@ describe("StudioCanvas retained preview layer", () => {
     );
 
     expect(markup).toContain('data-preview-fallback-reason="frame-stale"');
+    expect(markup).toContain("Updating WebGPU preview · frame does not match the current preview target");
+    expect(markup).not.toContain("WebGPU preview unavailable");
     expect(markup).not.toMatch(/<canvas[^>]*invisible/);
     expect(markup).not.toContain('data-studio-entity="entity:circle_1"');
     expect(markup).not.toContain("data-studio-semantic-paint");

@@ -109,6 +109,8 @@ describe("StudioPreviewControl", () => {
     expect(unsupported).not.toContain("Retry");
     expect(failed).toContain('data-studio-manim-preview-state="failed"');
     expect(failed).toContain("WebGPU Preview · Failed");
+    expect(failed).toContain('data-studio-preview-detail="true"');
+    expect(failed).toContain("producer failed");
     expect(failed).toContain("Retry");
   });
 
