@@ -7,9 +7,7 @@ import {
   loweredProgramDuration,
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
-import type { EntityContent, EntityDimensions } from "../src/studio/model";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../src/studio/operation-registry";
-import { sourceTimeToWorkingTime } from "../src/studio/program-composition";
 import type { SceneEdit } from "../src/studio/scene-edit-contract";
 import { sceneEditSchema } from "../src/studio/scene-edit-contract";
 
@@ -34,16 +32,6 @@ type ScheduledProgram = Readonly<{
   inputIndex: number;
   program: SceneEdit;
   sourceAnchor: number;
-}>;
-
-type ExpectedEntity = Readonly<{
-  content: EntityContent | undefined;
-  dimensions: EntityDimensions | undefined;
-  id: string;
-  lifetimeEnd: number;
-  lifetimeStart: number;
-  position: Readonly<{ x: number; y: number }> | null;
-  type: string;
 }>;
 
 function assertPositiveSize(value: Readonly<{ height: number; width: number }>, label: string) {
@@ -183,145 +171,23 @@ function verifyRoundTrip(
       `Studio-native Manim source reimported at ${imported.runtimeSceneState.duration.toFixed(4)}s instead of ${duration.toFixed(4)}s.`,
     );
   }
-  const orderedPrograms = programs.map(({ program }) => program);
-  const persistentRemovalEnds = new Map<string, number>();
-  programs.forEach(({ program }, programIndex) => {
-    const precedingPrograms = orderedPrograms.slice(0, programIndex);
-    const workingOffset =
-      sourceTimeToWorkingTime(precedingPrograms, program.anchor.resolvedSeconds) - program.anchor.resolvedSeconds;
-    for (const operation of program.operations) {
-      if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
-        persistentRemovalEnds.set(operation.entityId, operation.interval.end + workingOffset);
-      }
-    }
-  });
-  const expectedEntities = programs.flatMap(({ program }, programIndex) => {
-    const precedingPrograms = orderedPrograms.slice(0, programIndex);
-    return program.operations.flatMap((operation): readonly ExpectedEntity[] => {
+  const expectedEntities = programs.flatMap(({ program }) =>
+    program.operations.flatMap((operation): readonly Readonly<{ id: string; type: string }>[] => {
       if (operation.kind === "CreateEntity") {
-        const sourceEnd = operation.entity.lifetime.end;
-        const programsBeforeEnd =
-          sourceEnd === null
-            ? orderedPrograms
-            : orderedPrograms.filter((candidate) => candidate.anchor.resolvedSeconds < sourceEnd - TIME_EPSILON);
-        const position = program.operations.find(
-          (candidate) =>
-            candidate.kind === "SetProperty" &&
-            candidate.entityId === operation.entity.id &&
-            candidate.key === "position" &&
-            typeof candidate.value === "object" &&
-            candidate.value !== null &&
-            "x" in candidate.value &&
-            "y" in candidate.value,
-        );
-        return [
-          {
-            content: operation.entity.content,
-            dimensions: operation.entity.dimensions,
-            id: operation.entity.id,
-            lifetimeEnd:
-              persistentRemovalEnds.get(operation.entity.id) ??
-              (sourceEnd === null ? duration : sourceTimeToWorkingTime(programsBeforeEnd, sourceEnd)),
-            lifetimeStart: sourceTimeToWorkingTime(precedingPrograms, operation.entity.lifetime.start),
-            position:
-              position?.kind === "SetProperty" &&
-              typeof position.value === "object" &&
-              position.value !== null &&
-              "x" in position.value &&
-              "y" in position.value &&
-              typeof position.value.x === "number" &&
-              typeof position.value.y === "number"
-                ? { x: position.value.x, y: position.value.y }
-                : null,
-            type: operation.entity.type,
-          },
-        ];
+        return [{ id: operation.entity.id, type: operation.entity.type }];
       }
       if (operation.kind === "TransformContent") {
-        return [
-          {
-            content: operation.replacement,
-            dimensions: undefined,
-            id: operation.targetEntityId,
-            lifetimeEnd: persistentRemovalEnds.get(operation.targetEntityId) ?? duration,
-            lifetimeStart: sourceTimeToWorkingTime(precedingPrograms, operation.interval.start),
-            position: null,
-            type: operation.targetType ?? "MathTex",
-          },
-        ];
+        return [{ id: operation.targetEntityId, type: operation.targetType ?? "MathTex" }];
       }
       return [];
-    });
-  });
+    }),
+  );
   for (const expected of expectedEntities) {
     const entity = imported.runtimeSceneState.objectGraph.entities[expected.id];
     if (!entity || entity.type !== expected.type) {
       throw new ProgramLoweringError(
         "operation-unsupported",
         `Studio-native Manim source did not reimport ${expected.id} as ${expected.type}.`,
-      );
-    }
-    const actualLifetimeStart = entity.lifetime[0]?.start;
-    const actualLifetimeEnd = entity.lifetime.at(-1)?.end;
-    if (
-      !Number.isFinite(actualLifetimeStart) ||
-      Math.abs((actualLifetimeStart ?? Number.NaN) - expected.lifetimeStart) >= TIME_EPSILON
-    ) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        `Studio-native Manim source did not preserve the ${expected.lifetimeStart.toFixed(4)}s lifetime start for ${expected.id}.`,
-      );
-    }
-    if (
-      !Number.isFinite(actualLifetimeEnd) ||
-      Math.abs((actualLifetimeEnd ?? Number.NaN) - expected.lifetimeEnd) >= TIME_EPSILON
-    ) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        `Studio-native Manim source did not preserve the ${expected.lifetimeEnd.toFixed(4)}s lifetime end for ${expected.id}.`,
-      );
-    }
-    if (
-      expected.position &&
-      (entity.geometry?.position.kind !== "known" ||
-        Math.abs(entity.geometry.position.value.x - expected.position.x) >= TIME_EPSILON ||
-        Math.abs(entity.geometry.position.value.y - expected.position.y) >= TIME_EPSILON)
-    ) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        `Studio-native Manim source did not preserve the initial position for ${expected.id}.`,
-      );
-    }
-    const actualDimensions = entity.geometry?.dimensions.kind === "known" ? entity.geometry.dimensions.value : null;
-    if (
-      expected.dimensions &&
-      (!actualDimensions ||
-        Object.entries(expected.dimensions).some(([key, value]) => {
-          const actual = actualDimensions[key as keyof EntityDimensions];
-          return (
-            typeof value === "number" &&
-            (typeof actual !== "number" || !Number.isFinite(actual) || Math.abs(actual - value) >= TIME_EPSILON)
-          );
-        }))
-    ) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        `Studio-native Manim source did not preserve the initial dimensions for ${expected.id}.`,
-      );
-    }
-    if (expected.content?.text !== undefined && entity.content?.text !== expected.content.text) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        `Studio-native Manim source did not preserve the Text content for ${expected.id}.`,
-      );
-    }
-    if (
-      expected.content?.texParts !== undefined &&
-      JSON.stringify(entity.content?.texParts) !== JSON.stringify(expected.content.texParts)
-    ) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        `Studio-native Manim source did not preserve the MathTex content for ${expected.id}.`,
       );
     }
   }

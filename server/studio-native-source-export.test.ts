@@ -81,6 +81,42 @@ function creationProgram(
   ]);
 }
 
+function contentCreationProgram(
+  transactionId: string,
+  entityId: string,
+  type: "MathTex" | "Text",
+  content: Readonly<{ displayLines: readonly string[]; texParts?: readonly string[]; text?: string }>,
+  anchor = 0,
+  duration = 0.4,
+) {
+  const createId = `${transactionId}/create`;
+  const positionId = `${transactionId}/position`;
+  const appearId = `${transactionId}/appear`;
+  return program(transactionId, anchor, [
+    {
+      ...operationBase(createId, anchor),
+      entity: { content, id: entityId, lifetime: { end: null, start: anchor }, type },
+      kind: "CreateEntity",
+    },
+    {
+      ...operationBase(positionId, anchor),
+      dependsOn: [createId],
+      entityId,
+      key: "position",
+      kind: "SetProperty",
+      value: { x: 320, y: 180 },
+    },
+    {
+      ...operationBase(appearId, anchor, anchor + duration),
+      dependsOn: [positionId],
+      effect: "fade-in",
+      entityId,
+      kind: "ChangePresence",
+      persistent: true,
+    },
+  ]);
+}
+
 describe("Studio-native Manim source export", () => {
   it("exports an empty canonical Scene without fabricating imported source identity", () => {
     const exported = exportStudioNativeManimSource({ duration: 5, frame, programs: [], viewport });
@@ -170,6 +206,111 @@ describe("Studio-native Manim source export", () => {
 
     expect(exported.source).toContain("FadeOut(");
     expect(imported?.runtimeSceneState.objectGraph.entities["native:circle"]?.lifetime[0]?.end).toBe(1.8);
+  });
+
+  it("round-trips later motion and resize through their imported property channels", () => {
+    const circle = creationProgram("create-circle", "native:circle", "Circle", 0, 0.4);
+    const motion = program("move-circle", 0.6, [
+      {
+        ...operationBase("move-circle/motion", 0.6, 1.1),
+        controlOffset: { x: 0, y: 0 },
+        delta: { x: 40, y: -20 },
+        easing: "smooth",
+        kind: "CreateMotion",
+        targetEntityIds: ["native:circle"],
+      },
+    ]);
+    const resize = program("resize-circle", 1.2, [
+      {
+        ...operationBase("resize-circle/resize", 1.2),
+        entityId: "native:circle",
+        from: { dimensions: { radius: 1 }, position: { x: 200, y: 160 } },
+        kind: "ResizeEntity",
+        provenance: { evidence: [], origin: "direct-manipulation" },
+        scale: 1,
+        shape: "circle",
+        to: { dimensions: { radius: 2 }, position: { x: 240, y: 170 } },
+      },
+    ]);
+    const exported = exportStudioNativeManimSource({
+      duration: 3.9,
+      frame,
+      programs: [circle, motion, resize],
+      viewport,
+    });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
+
+    expect(imported?.runtimeSceneState.propertyChannels["native:circle/position"]?.samples).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ interval: { end: 1.5, start: 1 }, value: { x: 200, y: 160 } }),
+        expect.objectContaining({ value: { x: 240, y: 170 } }),
+      ]),
+    );
+    expect(imported?.runtimeSceneState.propertyChannels["native:circle/dimensions"]?.samples.at(-1)?.value).toEqual({
+      radius: 2,
+    });
+  });
+
+  it("round-trips a later Text content edit without treating the initial value as final", () => {
+    const text = contentCreationProgram(
+      "create-text",
+      "native:text",
+      "Text",
+      { displayLines: ["Before"], text: "Before" },
+      0,
+      0.4,
+    );
+    const content = program("edit-text", 0.6, [
+      {
+        ...operationBase("edit-text/content", 0.6),
+        entityId: "native:text",
+        key: "content",
+        kind: "SetProperty",
+        value: { displayLines: ["After"], text: "After" },
+      },
+    ]);
+    const exported = exportStudioNativeManimSource({ duration: 3.4, frame, programs: [text, content], viewport });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
+
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:text"]?.content?.text).toBe("After");
+    expect(imported?.runtimeSceneState.propertyChannels["native:text/content"]?.samples).toHaveLength(2);
+  });
+
+  it("round-trips MathTex replacement lineage without keeping the source alive", () => {
+    const equation = contentCreationProgram(
+      "create-equation",
+      "native:equation",
+      "MathTex",
+      { displayLines: ["E = mc^2"], texParts: ["E", "=", "m", "c^2"] },
+      0,
+      0.4,
+    );
+    const transform = program("transform-equation", 0.6, [
+      {
+        ...operationBase("transform-equation/content", 0.6, 1.1),
+        kind: "TransformContent",
+        replacement: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] },
+        sourceEntityId: "native:equation",
+        strategy: "transform-matching-tex",
+        targetEntityId: "native:equation-next",
+        targetType: "MathTex",
+      },
+    ]);
+    const exported = exportStudioNativeManimSource({
+      duration: 3.9,
+      frame,
+      programs: [equation, transform],
+      viewport,
+    });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
+
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:equation"]?.lifetime.at(-1)?.end).toBe(1.5);
+    expect(imported?.runtimeSceneState.objectGraph.entities["native:equation-next"]?.content?.texParts).toEqual([
+      "F",
+      "=",
+      "m",
+      "a",
+    ]);
   });
 
   it("reports the unsupported operation family", () => {
