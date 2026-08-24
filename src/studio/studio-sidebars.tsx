@@ -30,7 +30,7 @@ import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragm
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity } from "./model";
-import { studioEntityTypeSupportsStrokeWidth } from "./scene-edit-contract";
+import { studioEntityTypeSupportsStrokeCap, studioEntityTypeSupportsStrokeWidth } from "./scene-edit-contract";
 import {
   STUDIO_IMAGE_ASSET_DRAG_TYPE,
   type StudioNativeImageAssetV1,
@@ -1471,7 +1471,7 @@ export function StudioInspector({
                     </dd>
                   </div>
                 ))}
-                {selectedEntity.type === "Line" ? (
+                {studioEntityTypeSupportsStrokeCap(selectedEntity.type) ? (
                   <div className="contents">
                     <dt className="self-center text-zinc-600">Stroke cap</dt>
                     <dd>
@@ -1494,8 +1494,8 @@ export function StudioInspector({
                           name="strokeCap"
                           title={
                             strokeCapAvailable
-                              ? "Set the Line endpoint style"
-                              : "Stroke cap editing requires a Studio-created Line at its creation time"
+                              ? "Set the path endpoint style"
+                              : "Stroke cap editing requires a supported Studio-created open path at its creation time"
                           }
                         >
                           <option value="butt">Butt</option>

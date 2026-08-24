@@ -15,6 +15,7 @@ import {
   type SceneEditOperation,
   sceneEditOperationSchema,
   shapeTransformChangesShape,
+  studioEntityTypeSupportsStrokeCap,
   studioEntityTypeSupportsStrokeWidth,
   studioPaintColorTrackProperty,
 } from "./scene-edit-contract";
@@ -756,16 +757,16 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
       issues.push({
         code: "schema-invalid" as const,
         field: "value",
-        message: "Line stroke cap must be butt, round, or square.",
+        message: "Stroke cap must be butt, round, or square.",
         operationId: operation.id,
         severity: "error" as const,
       });
     }
-    if (!entity?.transactionId || entity.type !== "Line") {
+    if (!entity?.transactionId || !studioEntityTypeSupportsStrokeCap(entity.type)) {
       issues.push({
         code: "schema-invalid" as const,
         field: "entityId",
-        message: "Stroke cap is available only for a Studio-created Line.",
+        message: "Stroke cap is available only for a supported Studio-created open path.",
         operationId: operation.id,
         severity: "error" as const,
       });

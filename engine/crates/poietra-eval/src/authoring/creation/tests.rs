@@ -162,6 +162,29 @@ fn stroke_color_tracks_are_limited_to_stroke_only_paths() {
 }
 
 #[test]
+fn static_stroke_style_support_is_limited_to_supported_paths() {
+    for kind in [
+        StudioAuthoringEntityKind::Arc,
+        StudioAuthoringEntityKind::Axes,
+        StudioAuthoringEntityKind::DataPlot,
+        StudioAuthoringEntityKind::NumberLine,
+        StudioAuthoringEntityKind::NumberPlane,
+    ] {
+        assert!(studio_creation_supports_stroke_width(kind));
+        assert!(studio_creation_supports_stroke_cap(kind));
+    }
+    for kind in [
+        StudioAuthoringEntityKind::Arrow,
+        StudioAuthoringEntityKind::CubicBezier,
+        StudioAuthoringEntityKind::Sector,
+        StudioAuthoringEntityKind::SvgPath,
+    ] {
+        assert!(!studio_creation_supports_stroke_width(kind));
+        assert!(!studio_creation_supports_stroke_cap(kind));
+    }
+}
+
+#[test]
 fn camera_animation_wire_uses_scene_level_views() {
     let operation: StudioCreationOperationKind = serde_json::from_value(serde_json::json!({
         "kind": "animate-camera",
@@ -4563,7 +4586,7 @@ fn assert_studio_shape_paint_operation(
         .unwrap()
         .apply_studio_creation_edit(command)
         .unwrap();
-    if operation_id != "stroke-width" {
+    if !matches!(operation_id, "stroke-width" | "stroke-cap") {
         return;
     }
     let created = result
@@ -4573,13 +4596,23 @@ fn assert_studio_shape_paint_operation(
         .iter()
         .find(|entity| entity.id == "tx:create/entity:shape")
         .unwrap();
-    assert!(matches!(
-        &created.appearance,
-        SceneAppearanceV1::Vector {
-            stroke: Some(stroke),
-            ..
-        } if (stroke.width_world - 0.08).abs() < 1e-12
-    ));
+    match operation_id {
+        "stroke-width" => assert!(matches!(
+            &created.appearance,
+            SceneAppearanceV1::Vector {
+                stroke: Some(stroke),
+                ..
+            } if (stroke.width_world - 0.08).abs() < 1e-12
+        )),
+        "stroke-cap" => assert!(matches!(
+            &created.appearance,
+            SceneAppearanceV1::Vector {
+                stroke: Some(stroke),
+                ..
+            } if stroke.cap == poietra_scene_ir::StrokeCapV1::Round
+        )),
+        _ => unreachable!(),
+    }
 }
 
 #[test]
@@ -4651,7 +4684,8 @@ fn normalized_creation_limits_shape_paint_to_closed_fill_and_vector_stroke() {
                 },
                 matches!(
                     kind,
-                    StudioAuthoringEntityKind::Circle
+                    StudioAuthoringEntityKind::Arc
+                        | StudioAuthoringEntityKind::Circle
                         | StudioAuthoringEntityKind::Ellipse
                         | StudioAuthoringEntityKind::Line
                         | StudioAuthoringEntityKind::Rectangle
@@ -4663,7 +4697,10 @@ fn normalized_creation_limits_shape_paint_to_closed_fill_and_vector_stroke() {
                 StudioCreationOperationKind::StrokeCap {
                     cap: Some(poietra_scene_ir::StrokeCapV1::Round),
                 },
-                kind == StudioAuthoringEntityKind::Line,
+                matches!(
+                    kind,
+                    StudioAuthoringEntityKind::Arc | StudioAuthoringEntityKind::Line
+                ),
             ),
         ] {
             assert_studio_shape_paint_operation(

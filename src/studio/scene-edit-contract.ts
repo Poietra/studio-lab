@@ -515,12 +515,21 @@ export function shapeTransformChangesShape(from: ShapeTransformEndpoint, to: Sha
 export function studioEntityTypeSupportsStrokeWidth(type: string) {
   return (
     type === "Line" ||
+    type === "Arc" ||
+    type === "Axes" ||
+    type === "DataPlot" ||
+    type === "NumberLine" ||
+    type === "NumberPlane" ||
     type === "Circle" ||
     type === "Rectangle" ||
     type === "Ellipse" ||
     type === "Triangle" ||
     type === "RegularPolygon"
   );
+}
+
+export function studioEntityTypeSupportsStrokeCap(type: string) {
+  return ["Arc", "Axes", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(type);
 }
 
 export function studioPaintColorTrackProperty(type: string): "fillColor" | "strokeColor" | null {

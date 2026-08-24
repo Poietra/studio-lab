@@ -24,11 +24,12 @@ use super::{
     studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
     studio_coordinate_system_parameters, studio_creation_initial_appearance_end,
     studio_creation_motion_is_compatible, studio_creation_spec_text_content,
-    studio_creation_supports_stroke_color_track, studio_creation_supports_stroke_width,
-    studio_cubic_bezier_dimensions_are_canonical, studio_cubic_bezier_is_canonical,
-    studio_data_series_is_valid, studio_ellipse_parameters, studio_math_tex_content_is_canonical,
-    studio_regular_polygon_parameters, studio_shape_transform_path,
-    studio_text_content_is_canonical, studio_timeline_semantic_values_match,
+    studio_creation_supports_stroke_cap, studio_creation_supports_stroke_color_track,
+    studio_creation_supports_stroke_width, studio_cubic_bezier_dimensions_are_canonical,
+    studio_cubic_bezier_is_canonical, studio_data_series_is_valid, studio_ellipse_parameters,
+    studio_math_tex_content_is_canonical, studio_regular_polygon_parameters,
+    studio_shape_transform_path, studio_text_content_is_canonical,
+    studio_timeline_semantic_values_match,
 };
 
 const MIN_STUDIO_PAINT_COLOR_KEYFRAMES: usize = 2;
@@ -2524,7 +2525,7 @@ pub(super) fn plan_studio_creation_edits(
                 }
                 StudioCreationOperationKind::StrokeCap { cap: Some(cap) }
                     if operation.origin == StudioAuthoringOrigin::DirectManipulation
-                        && state.kind == StudioAuthoringEntityKind::Line
+                        && studio_creation_supports_stroke_cap(state.kind)
                         && state.stroke_cap_override != Some(*cap)
                         && studio_timeline_semantic_values_match(
                             operation.interval.start,

@@ -907,6 +907,58 @@ describe("Studio draft validation boundary", () => {
       apply: "supported",
       lowering: "supported",
     });
+    for (const type of ["Arc", "Axes", "DataPlot", "NumberLine", "NumberPlane"] as const) {
+      const pathEntityId = `tx:shape/entity:${type.toLowerCase()}`;
+      const pathScene = {
+        ...scene,
+        objectGraph: {
+          ...scene.objectGraph,
+          entities: {
+            ...scene.objectGraph.entities,
+            [pathEntityId]: {
+              ...scene.objectGraph.entities[entityId],
+              id: pathEntityId,
+              type,
+            },
+          },
+        },
+      };
+      const width = createDirectManipulationStrokeWidthProgram({
+        capturedPlayhead: 0,
+        entityId: pathEntityId,
+        scene: pathScene,
+        start: 0,
+        strokeWidth: 0.08,
+        transactionId: `${type.toLowerCase()}-width`,
+      });
+      expect(width).toMatchObject({
+        issues: [],
+        kind: "valid",
+        program: { operations: [{ entityId: pathEntityId, key: "strokeWidth", value: 0.08 }] },
+      });
+      expect(programExecutionCapabilities(width.program)).toMatchObject({
+        apply: "supported",
+        lowering: "supported",
+      });
+
+      const cap = createDirectManipulationStrokeCapProgram({
+        capturedPlayhead: 0,
+        entityId: pathEntityId,
+        scene: pathScene,
+        start: 0,
+        strokeCap: "round",
+        transactionId: `${type.toLowerCase()}-cap`,
+      });
+      expect(cap).toMatchObject({
+        issues: [],
+        kind: "valid",
+        program: { operations: [{ entityId: pathEntityId, key: "strokeCap", value: "round" }] },
+      });
+      expect(programExecutionCapabilities(cap.program)).toMatchObject({
+        apply: "supported",
+        lowering: "supported",
+      });
+    }
     for (const type of ["Circle", "Rectangle", "Ellipse", "Triangle", "RegularPolygon"] as const) {
       const shapeEntityId = type === "Circle" ? entityId : `tx:shape/entity:${type.toLowerCase()}`;
       const shapeScene =
