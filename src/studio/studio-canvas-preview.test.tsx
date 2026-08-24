@@ -234,11 +234,13 @@ function renderSelectedInspector(
   strokeWidthValue: number | null = null,
   strokeCapAvailable = false,
   strokeCapValue: "butt" | "round" | "square" | null = null,
+  cubicBezierClosed = false,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
       appliedProgramCount={0}
       colorAvailable={colorAvailable}
+      cubicBezierClosed={cubicBezierClosed}
       draftApplyPending={false}
       draftError={draftError}
       draftOperation={null}
@@ -2017,6 +2019,36 @@ describe("StudioCanvas retained preview layer", () => {
     }
   });
 
+  it("exposes fill and stroke color for a closed Studio-created Pen path", () => {
+    const markup = renderSelectedInspector(
+      CUBIC_BEZIER_ENTITY,
+      null,
+      null,
+      false,
+      false,
+      null,
+      true,
+      "#123456",
+      "#abcdef",
+      false,
+      null,
+      false,
+      null,
+      false,
+      null,
+      true,
+    );
+    const fill = markup.match(/<input aria-label="Fill color cubic-bezier"[^>]*>/u)?.[0];
+    const stroke = markup.match(/<input aria-label="Stroke color cubic-bezier"[^>]*>/u)?.[0];
+
+    expect(fill).toBeDefined();
+    expect(fill).not.toContain('disabled=""');
+    expect(fill).toContain('value="#123456"');
+    expect(stroke).toBeDefined();
+    expect(stroke).not.toContain('disabled=""');
+    expect(stroke).toContain('value="#abcdef"');
+  });
+
   it("exposes stroke width but keeps endpoint caps off closed primitives", () => {
     for (const type of ["Circle", "Rectangle", "Ellipse", "Triangle", "RegularPolygon"] as const) {
       const name = type.toLowerCase();
@@ -2159,7 +2191,7 @@ describe("StudioCanvas retained preview layer", () => {
       clientX: number;
       clientY: number;
       currentTarget: Readonly<{ getBoundingClientRect: () => DOMRect }>;
-      target: null;
+      target: Readonly<{ closest: () => object }>;
     }) => void;
     const bounds: DOMRect = {
       bottom: 360,
@@ -2173,7 +2205,12 @@ describe("StudioCanvas retained preview layer", () => {
       toJSON: vi.fn(),
     };
 
-    onPointerDown({ clientX: 480, clientY: 180, currentTarget: { getBoundingClientRect: () => bounds }, target: null });
+    onPointerDown({
+      clientX: 480,
+      clientY: 180,
+      currentTarget: { getBoundingClientRect: () => bounds },
+      target: { closest: () => ({}) },
+    });
 
     const localPoint = cubicBezierOverlayPointFromViewport({ x: 480, y: 180 }, 2);
     expect(onCanvasPlace).toHaveBeenCalledWith(localPoint);

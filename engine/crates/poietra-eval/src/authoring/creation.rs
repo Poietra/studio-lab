@@ -511,6 +511,10 @@ pub enum StudioPropertyEasing {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the wire operation keeps the bounded creation spec inline to preserve the existing contract"
+)]
 #[serde(
     tag = "kind",
     rename_all = "kebab-case",
@@ -1460,17 +1464,24 @@ impl StudioCreationPlan {
                     created_lifetime: state.lifetime.clone(),
                     data_series: state.spec.data_series.clone(),
                     entity_id: state.spec.id.clone(),
-                    fill_color: matches!(
-                        state.kind,
-                        StudioAuthoringEntityKind::Circle
-                            | StudioAuthoringEntityKind::Ellipse
-                            | StudioAuthoringEntityKind::MathTex
-                            | StudioAuthoringEntityKind::Rectangle
-                            | StudioAuthoringEntityKind::RegularPolygon
-                            | StudioAuthoringEntityKind::Text
-                    )
-                    .then(|| state.fill_color_override.clone())
-                    .flatten(),
+                    fill_color: if state.kind == StudioAuthoringEntityKind::CubicBezier {
+                        state
+                            .cubic_bezier
+                            .as_ref()
+                            .and_then(|curve| curve.spec.fill_color.clone())
+                    } else {
+                        matches!(
+                            state.kind,
+                            StudioAuthoringEntityKind::Circle
+                                | StudioAuthoringEntityKind::Ellipse
+                                | StudioAuthoringEntityKind::MathTex
+                                | StudioAuthoringEntityKind::Rectangle
+                                | StudioAuthoringEntityKind::RegularPolygon
+                                | StudioAuthoringEntityKind::Text
+                        )
+                        .then(|| state.fill_color_override.clone())
+                        .flatten()
+                    },
                     initial_dimensions: state.initial_dimensions,
                     initial_rotation: 0.0,
                     initial_scale: 1.0,

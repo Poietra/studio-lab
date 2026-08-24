@@ -98,11 +98,13 @@ import type { ShapeTransformInspectorInput } from "./studio/entity-inspector";
 import { LOCKED_ENTITY_MUTATION_MESSAGE, lockedEntityMutationTargets, toggleEntityLock } from "./studio/entity-lock";
 import {
   assignStudioFragmentMaterialV1,
+  CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER,
   createStudioFragmentMaterialV1,
   createStudioGradientFragmentMaterialPresetV1,
   createStudioPulseFragmentMaterialPresetV1,
   createStudioTextureFragmentMaterialPresetV1,
   createStudioWaveFragmentMaterialPresetV1,
+  cubicBezierFragmentMaterialTransitionBlocker,
   duplicateStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   listStudioFragmentMaterialsV1,
@@ -2641,6 +2643,20 @@ export function App({
     return stageEditorDraft(input);
   }
 
+  function cubicBezierMaterialBlockerForEditorState(candidate: EditorControllerState) {
+    const programs = candidate.appliedPrograms.map(({ program }) => program);
+    const draft = candidate.draftProgram?.program;
+    if (draft) {
+      const editedTransactionId = candidate.editingAppliedProgram?.original.program.transactionId;
+      const editedIndex = editedTransactionId
+        ? programs.findIndex((program) => program.transactionId === editedTransactionId)
+        : -1;
+      if (editedIndex < 0) programs.push(draft);
+      else programs[editedIndex] = draft;
+    }
+    return cubicBezierFragmentMaterialTransitionBlocker(activeSceneFragmentMaterials.assignments, programs);
+  }
+
   function redoProgram() {
     const action = nextEditorRedoAction(editorState);
     if (action === "entity-lock") return redoEditorProgram();
@@ -2656,6 +2672,11 @@ export function App({
     const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker) return redoEditorProgram(lifecycleBlocker);
     const planned = redoEditorProgramTransition(editorState);
+    const materialBlocker = cubicBezierMaterialBlockerForEditorState(planned);
+    if (materialBlocker) {
+      setDraftError(materialBlocker);
+      return false;
+    }
     if (!editorDocumentAuthority.enabled || entry.kind !== "mutation") {
       return redoEditorProgram();
     }
@@ -2669,20 +2690,34 @@ export function App({
 
   function undoProgramCommitFirst() {
     const action = nextEditorUndoAction(editorState);
-    if (action === "draft" || action === "entity-lock") return undoProgram();
+    if (action === "entity-lock") return undoProgram();
+    if (action === "draft") {
+      const planned = undoEditorProgramTransition(editorState);
+      const materialBlocker = cubicBezierMaterialBlockerForEditorState(planned);
+      if (materialBlocker) {
+        setDraftError(materialBlocker);
+        return false;
+      }
+      return undoProgram();
+    }
     if (action !== "program") return false;
     const mutation = programUndoEntries.at(-1);
     if (!mutation) return false;
     const lockedUndoPrograms =
       mutation.kind === "append" ? [mutation.value.program] : [mutation.previous.program, mutation.value.program];
     if (lockedUndoPrograms.some(rejectLockedProgramMutation)) return false;
+    const planned = undoEditorProgramTransition(editorState);
+    const materialBlocker = cubicBezierMaterialBlockerForEditorState(planned);
+    if (materialBlocker) {
+      setDraftError(materialBlocker);
+      return false;
+    }
     if (!editorDocumentAuthority.enabled) return undoProgram();
     const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker || !editorDocumentAuthority.canAuthor()) {
       setDraftError(lifecycleBlocker ?? editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
       return false;
     }
-    const planned = undoEditorProgramTransition(editorState);
     void commitEditorProgramMutation(collaborationMutationForUndoV1(mutation), planned);
     return true;
   }
@@ -5531,7 +5566,8 @@ export function App({
   }
 
   function toggleCubicBezierExtension(entityId: string) {
-    if (!cubicBezierOwnedCreation(entityId)) return false;
+    const owned = cubicBezierOwnedCreation(entityId);
+    if (!owned || owned.creation.entity.cubicBezier?.closed) return false;
     setCubicBezierExtensionEntityId((current) => (current === entityId ? null : entityId));
     return true;
   }
@@ -5540,6 +5576,11 @@ export function App({
     const owned = cubicBezierOwnedCreation(entityId);
     if (!owned) return false;
     const cubicBezier = owned.creation.entity.cubicBezier!;
+    if (cubicBezier.closed) {
+      setCubicBezierExtensionEntityId(null);
+      setDraftError("Reopen the Pen path before extending it.");
+      return false;
+    }
     if ((cubicBezier.continuationSegments?.length ?? 0) >= 7) {
       setCubicBezierExtensionEntityId(null);
       setDraftError("A Studio Pen path supports at most 8 segments.");
@@ -5568,11 +5609,43 @@ export function App({
 
   function changeCubicBezierStyle(
     entityId: string,
-    change: Readonly<Partial<Pick<StudioCubicBezierSpec, "arrowEnd" | "strokeCap" | "strokeWidth">>>,
+    change: Readonly<
+      Partial<Pick<StudioCubicBezierSpec, "arrowEnd" | "closed" | "fillColor" | "strokeCap" | "strokeWidth">>
+    >,
   ) {
     const owned = cubicBezierOwnedCreation(entityId);
     if (!owned) return false;
     void normalizeAndStageCubicBezier(entityId, { ...owned.creation.entity.cubicBezier!, ...change });
+    return true;
+  }
+
+  function toggleCubicBezierClosed(entityId: string) {
+    const owned = cubicBezierOwnedCreation(entityId);
+    const cubicBezier = owned?.creation.entity.cubicBezier;
+    if (!owned || !cubicBezier) return false;
+    setCubicBezierExtensionEntityId(null);
+    if (cubicBezier.closed) {
+      if (activeSceneFragmentMaterials.assignments[entityId] !== undefined) {
+        setDraftError(CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER);
+        return false;
+      }
+      void normalizeAndStageCubicBezier(entityId, {
+        ...cubicBezier,
+        closed: false,
+        fillColor: undefined,
+      });
+      return true;
+    }
+    if (sceneProgramsHaveDrawIn(previewAppliedSceneEdits, entityId)) {
+      setDraftError("Remove Draw before closing and filling this Pen path.");
+      return false;
+    }
+    void normalizeAndStageCubicBezier(entityId, {
+      ...cubicBezier,
+      arrowEnd: false,
+      closed: true,
+      fillColor: cubicBezier.fillColor ?? "#ffffff",
+    });
     return true;
   }
 
@@ -7934,7 +8007,7 @@ export function App({
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     const colorableTypes =
       property === "fillColor"
-        ? ["Circle", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Sector", "Text", "Triangle"]
+        ? ["Circle", "CubicBezier", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Sector", "Text", "Triangle"]
         : [
             "Arc",
             "Arrow",
@@ -7972,6 +8045,14 @@ export function App({
       const style = entity.geometry.style.value;
       const currentColor = style[property] ?? (property === "strokeColor" ? (style.color ?? "#ffffff") : undefined);
       if (currentColor?.toLowerCase() === normalizedColor) return false;
+    }
+    if (property === "fillColor" && entity.type === "CubicBezier") {
+      const owned = cubicBezierOwnedCreation(entityId);
+      if (!owned?.creation.entity.cubicBezier?.closed) {
+        setDraftError("Close the Pen path before setting its fill color.");
+        return false;
+      }
+      return changeCubicBezierStyle(entityId, { fillColor: normalizedColor });
     }
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return false;
@@ -8559,6 +8640,7 @@ export function App({
   const selectedCubicBezierStyle = selectedCubicBezierCreation?.creation.entity.cubicBezier
     ? {
         arrowEnd: selectedCubicBezierCreation.creation.entity.cubicBezier.arrowEnd,
+        closed: selectedCubicBezierCreation.creation.entity.cubicBezier.closed ?? false,
         entityId: selectedCubicBezierCreation.creation.entity.id,
         extensionActive: cubicBezierExtensionEntityId === selectedCubicBezierCreation.creation.entity.id,
         segmentCount: 1 + (selectedCubicBezierCreation.creation.entity.cubicBezier.continuationSegments?.length ?? 0),
@@ -8613,6 +8695,7 @@ export function App({
     : null;
   const selectedFragmentMaterialAvailable =
     previewMutationAvailable &&
+    draftEdit === null &&
     !selectedEntityLocked &&
     selectedFragmentMaterialEntity !== null &&
     selectedFragmentMaterialPaintColorTrack === null &&
@@ -9753,6 +9836,9 @@ export function App({
               onCubicBezierExtensionToggle={() => {
                 if (selectedCubicBezierStyle) toggleCubicBezierExtension(selectedCubicBezierStyle.entityId);
               }}
+              onCubicBezierClosedToggle={() => {
+                if (selectedCubicBezierStyle) toggleCubicBezierClosed(selectedCubicBezierStyle.entityId);
+              }}
               onCubicBezierRemoveLastSegment={() => {
                 if (selectedCubicBezierStyle) removeLastCubicBezierSegment(selectedCubicBezierStyle.entityId);
               }}
@@ -9935,7 +10021,12 @@ export function App({
                   "Sector",
                   "Text",
                   "Triangle",
-                ].includes(selectedEntity.type)
+                ].includes(selectedEntity.type) &&
+                (selectedEntity.type !== "CubicBezier" || selectedCubicBezierStyle !== null)
+              }
+              cubicBezierClosed={
+                selectedEntity?.type === "CubicBezier" &&
+                studioCreationProjectionEntityFor(selectedEntity.id)?.cubicBezier?.closed === true
               }
               fillColorValue={
                 selectedEntity?.geometry.style.kind === "known"

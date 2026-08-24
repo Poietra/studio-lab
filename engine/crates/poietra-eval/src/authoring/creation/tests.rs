@@ -4496,10 +4496,12 @@ fn normalized_creation_rejects_invalid_static_data_plots_atomically() {
         entity.svg = None;
         entity.cubic_bezier = Some(StudioCreationCubicBezierSpec {
             arrow_end: false,
+            closed: false,
             control1: PointV1 { x: -0.5, y: 1.0 },
             control2: PointV1 { x: 0.5, y: -1.0 },
             continuation_segments: Vec::new(),
             end: PointV1 { x: 1.0, y: 0.0 },
+            fill_color: None,
             start: PointV1 { x: -1.0, y: 0.0 },
             stroke_cap: StudioCubicBezierStrokeCap::Round,
             stroke_width: 0.04,
@@ -5108,6 +5110,7 @@ fn normalized_cubic_bezier_creation_keeps_connected_segments_arrow_and_draw() {
     let inspection =
         crate::authoring::inspect_studio_cubic_bezier(&StudioCreationCubicBezierSpec {
             arrow_end: true,
+            closed: false,
             control1: PointV1 { x: -1.0, y: 1.5 },
             control2: PointV1 { x: 1.0, y: -1.5 },
             continuation_segments: vec![poietra_scene_ir::CubicSegmentV1 {
@@ -5116,6 +5119,7 @@ fn normalized_cubic_bezier_creation_keeps_connected_segments_arrow_and_draw() {
                 end: PointV1 { x: 4.0, y: 0.0 },
             }],
             end: PointV1 { x: 2.0, y: 0.5 },
+            fill_color: None,
             start: PointV1 { x: -2.0, y: -0.5 },
             stroke_cap: StudioCubicBezierStrokeCap::Square,
             stroke_width: 0.06,
@@ -5226,6 +5230,86 @@ fn normalized_cubic_bezier_creation_keeps_connected_segments_arrow_and_draw() {
                 )
             })
     );
+}
+
+#[test]
+fn normalized_closed_cubic_bezier_keeps_fill_and_rejects_draw() {
+    let bundle = static_imported_bundle();
+    let inspection =
+        crate::authoring::inspect_studio_cubic_bezier(&StudioCreationCubicBezierSpec {
+            arrow_end: false,
+            closed: true,
+            control1: PointV1 { x: -1.0, y: 1.5 },
+            control2: PointV1 { x: 1.0, y: 1.5 },
+            continuation_segments: Vec::new(),
+            end: PointV1 { x: 2.0, y: -0.5 },
+            fill_color: Some("#22c55e".to_owned()),
+            start: PointV1 { x: -2.0, y: -0.5 },
+            stroke_cap: StudioCubicBezierStrokeCap::Round,
+            stroke_width: 0.04,
+        })
+        .unwrap();
+    let mut command = studio_draw_creation_command(&bundle);
+    {
+        let program = &mut command.programs[0];
+        let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
+            unreachable!();
+        };
+        entity.kind = StudioAuthoringEntityKind::CubicBezier;
+        entity.dimensions = inspection.dimensions;
+        entity.cubic_bezier = Some(inspection.cubic_bezier);
+    }
+
+    let mut draw_session = EngineSessionV1::new(bundle.clone()).unwrap();
+    assert!(matches!(
+        draw_session.apply_studio_creation_edit(command.clone()),
+        Err(ApplyStudioCreationEditError::Create(
+            CreateSceneEntitiesError::InvalidAppearanceEdit
+        ))
+    ));
+
+    let draw = command.programs[0]
+        .operations
+        .iter_mut()
+        .find(|operation| matches!(operation.kind, StudioCreationOperationKind::DrawIn { .. }))
+        .unwrap();
+    draw.kind = StudioCreationOperationKind::FadeIn { persistent: true };
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    assert_eq!(
+        result.creation_projection.as_ref().unwrap().entities[0]
+            .fill_color
+            .as_deref(),
+        Some("#22c55e")
+    );
+    let created = result
+        .bundle
+        .scene
+        .entities
+        .iter()
+        .find(|entity| entity.id == "tx:create/entity:circle")
+        .unwrap();
+
+    assert!(matches!(
+        &created.geometry,
+        SceneGeometryV1::CubicPath { path }
+            if path.subpaths.len() == 1 && path.subpaths[0].closed
+    ));
+    assert!(matches!(
+        &created.appearance,
+        SceneAppearanceV1::Vector {
+            fill: Some(FillStyleV1 {
+                color: RgbaColorV1 { alpha, blue, green, red },
+                rule: FillRuleV1::NonZero,
+                ..
+            }),
+            stroke: Some(_),
+            ..
+        } if (*alpha - 1.0).abs() < 1.0e-12
+            && (*red - 34.0 / 255.0).abs() < 1.0e-12
+            && (*green - 197.0 / 255.0).abs() < 1.0e-12
+            && (*blue - 94.0 / 255.0).abs() < 1.0e-12
+    ));
 }
 
 #[test]

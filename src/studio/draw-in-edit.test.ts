@@ -173,6 +173,42 @@ describe("Draw entrance editing", () => {
     ).toThrow(/stroke-only SVG paths/);
   });
 
+  it("rejects Draw on a closed Pen path", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        {
+          cubicBezier: {
+            arrowEnd: false,
+            closed: true,
+            control1: { x: -1, y: 1 },
+            control2: { x: 1, y: -1 },
+            end: { x: 2, y: 1 },
+            fillColor: "#38bdf8",
+            start: { x: -2, y: 0 },
+            strokeCap: "round" as const,
+            strokeWidth: 0.04,
+          },
+          dimensions: { height: 2, width: 4 },
+          position: { x: 320, y: 180 },
+          type: "CubicBezier" as const,
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "draw-closed-pen",
+    });
+    const entityId = creation.entityIds[0]!;
+
+    expect(() =>
+      replaceDrawInProgram({
+        baseProgram: creation.validation.program,
+        draw: { easing: "linear", end: 2 },
+        entityId,
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/open Pen paths/);
+  });
+
   it("rejects non-stroke Studio objects", () => {
     const arrow = createStudioEntitiesProgram({
       capturedPlayhead: 1,

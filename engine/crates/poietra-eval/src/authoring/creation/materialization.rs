@@ -73,6 +73,13 @@ pub(super) fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
             && entity.fill_color.is_none()
             && entity.material_parameter_keyframes.is_empty()
             && matches!(draw.easing, EasingV1::Linear {} | EasingV1::ManimSmooth {})
+            && match &entity.geometry {
+                CreateSceneEntityGeometry::CubicBezier {
+                    appearance: SceneAppearanceV1::Vector { fill, .. },
+                    path,
+                } => fill.is_none() && path.subpaths.iter().all(|subpath| !subpath.closed),
+                _ => true,
+            }
             && matches!(
                 entity.geometry,
                 CreateSceneEntityGeometry::Circle { .. }

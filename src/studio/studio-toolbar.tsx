@@ -54,6 +54,7 @@ export type StudioToolbarProps = Readonly<{
   insertValue: string;
   insertionAvailable: boolean;
   onCoordinateInsertSettingsChange: (settings: CoordinateInsertSettings) => void;
+  onCubicBezierClosedToggle?: () => void;
   onCubicBezierExtensionToggle?: () => void;
   onCubicBezierRemoveLastSegment?: () => void;
   onCubicBezierStyleChange?: (change: CubicBezierStyleChange) => void;
@@ -71,6 +72,7 @@ export type StudioToolbarProps = Readonly<{
 
 export type CubicBezierStyleSettings = Readonly<{
   arrowEnd: boolean;
+  closed: boolean;
   entityId: string;
   extensionActive: boolean;
   segmentCount: number;
@@ -109,6 +111,7 @@ export function StudioToolbar({
   insertValue,
   insertionAvailable,
   onCoordinateInsertSettingsChange,
+  onCubicBezierClosedToggle,
   onCubicBezierExtensionToggle,
   onCubicBezierRemoveLastSegment,
   onCubicBezierStyleChange,
@@ -220,7 +223,12 @@ export function StudioToolbar({
             <button
               aria-pressed={cubicBezierStyle.extensionActive}
               className="h-8 border border-zinc-700 px-2 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
-              disabled={!authoringAvailable || cubicBezierStyle.segmentCount >= 8 || !onCubicBezierExtensionToggle}
+              disabled={
+                !authoringAvailable ||
+                cubicBezierStyle.closed ||
+                cubicBezierStyle.segmentCount >= 8 ||
+                !onCubicBezierExtensionToggle
+              }
               onClick={onCubicBezierExtensionToggle}
               title="Place the next path endpoint on the canvas"
               type="button"
@@ -235,6 +243,16 @@ export function StudioToolbar({
               type="button"
             >
               Remove last
+            </button>
+            <button
+              aria-pressed={cubicBezierStyle.closed}
+              className="h-8 border border-zinc-700 px-2 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
+              disabled={!authoringAvailable || !onCubicBezierClosedToggle}
+              onClick={onCubicBezierClosedToggle}
+              title={cubicBezierStyle.closed ? "Reopen this path" : "Close and fill this path"}
+              type="button"
+            >
+              {cubicBezierStyle.closed ? "Reopen path" : "Close path"}
             </button>
           </div>
           <label className="w-28 text-[10px] text-zinc-500">
@@ -278,8 +296,9 @@ export function StudioToolbar({
           <label className="flex h-8 items-center gap-2 border border-zinc-700 px-2 text-xs text-zinc-300">
             <input
               checked={cubicBezierStyle.arrowEnd}
-              disabled={!authoringAvailable}
+              disabled={!authoringAvailable || cubicBezierStyle.closed}
               onChange={(event) => onCubicBezierStyleChange({ arrowEnd: event.currentTarget.checked })}
+              title={cubicBezierStyle.closed ? "Reopen the path before adding an arrow end" : undefined}
               type="checkbox"
             />
             Arrow end

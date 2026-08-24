@@ -89,6 +89,7 @@ describe("StudioToolbar selection layout", () => {
         {...props({
           cubicBezierStyle: {
             arrowEnd: false,
+            closed: false,
             entityId: "curve",
             extensionActive: false,
             segmentCount: 1,
@@ -96,6 +97,7 @@ describe("StudioToolbar selection layout", () => {
             strokeWidth: 0.04,
           },
           onCubicBezierExtensionToggle: vi.fn(),
+          onCubicBezierClosedToggle: vi.fn(),
           onCubicBezierRemoveLastSegment: vi.fn(),
           onCubicBezierStyleChange: vi.fn(),
         })}
@@ -106,6 +108,7 @@ describe("StudioToolbar selection layout", () => {
         {...props({
           cubicBezierStyle: {
             arrowEnd: false,
+            closed: false,
             entityId: "curve",
             extensionActive: true,
             segmentCount: 8,
@@ -113,6 +116,7 @@ describe("StudioToolbar selection layout", () => {
             strokeWidth: 0.04,
           },
           onCubicBezierExtensionToggle: vi.fn(),
+          onCubicBezierClosedToggle: vi.fn(),
           onCubicBezierRemoveLastSegment: vi.fn(),
           onCubicBezierStyleChange: vi.fn(),
         })}
@@ -125,6 +129,33 @@ describe("StudioToolbar selection layout", () => {
     expect(maximum).toContain("8/8 segments");
     expect(maximum.match(/<button[^>]*>Cancel extend<\/button>/u)?.[0]).toContain('disabled=""');
     expect(maximum.match(/<button[^>]*>Remove last<\/button>/u)?.[0]).not.toContain('disabled=""');
+  });
+
+  it("keeps closed Pen paths editable without exposing open-path actions", () => {
+    const closed = renderToStaticMarkup(
+      <StudioToolbar
+        {...props({
+          cubicBezierStyle: {
+            arrowEnd: false,
+            closed: true,
+            entityId: "curve",
+            extensionActive: false,
+            segmentCount: 3,
+            strokeCap: "round",
+            strokeWidth: 0.04,
+          },
+          onCubicBezierClosedToggle: vi.fn(),
+          onCubicBezierExtensionToggle: vi.fn(),
+          onCubicBezierRemoveLastSegment: vi.fn(),
+          onCubicBezierStyleChange: vi.fn(),
+        })}
+      />,
+    );
+
+    expect(closed.match(/<button[^>]*>\+ Extend path<\/button>/u)?.[0]).toContain('disabled=""');
+    expect(closed.match(/<button[^>]*>Remove last<\/button>/u)?.[0]).not.toContain('disabled=""');
+    expect(closed.match(/<button[^>]*>Reopen path<\/button>/u)?.[0]).not.toContain('disabled=""');
+    expect(closed.match(/<input[^>]*type="checkbox"[^>]*>/u)?.[0]).toContain('disabled=""');
   });
 
   it("offers alignment for two selected objects and requires three for distribution", () => {
