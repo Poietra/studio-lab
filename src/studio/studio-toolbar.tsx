@@ -54,6 +54,8 @@ export type StudioToolbarProps = Readonly<{
   insertValue: string;
   insertionAvailable: boolean;
   onCoordinateInsertSettingsChange: (settings: CoordinateInsertSettings) => void;
+  onCubicBezierExtensionToggle?: () => void;
+  onCubicBezierRemoveLastSegment?: () => void;
   onCubicBezierStyleChange?: (change: CubicBezierStyleChange) => void;
   onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
   onInsertAtCenter: () => void;
@@ -70,6 +72,8 @@ export type StudioToolbarProps = Readonly<{
 export type CubicBezierStyleSettings = Readonly<{
   arrowEnd: boolean;
   entityId: string;
+  extensionActive: boolean;
+  segmentCount: number;
   strokeCap: "butt" | "round" | "square";
   strokeWidth: number;
 }>;
@@ -105,6 +109,8 @@ export function StudioToolbar({
   insertValue,
   insertionAvailable,
   onCoordinateInsertSettingsChange,
+  onCubicBezierExtensionToggle,
+  onCubicBezierRemoveLastSegment,
   onCubicBezierStyleChange,
   onCurveInsertSettingsChange,
   onInsertAtCenter,
@@ -209,6 +215,28 @@ export function StudioToolbar({
       </div>
       {cubicBezierStyle && onCubicBezierStyleChange ? (
         <div aria-label="Cubic Bézier style" className="mt-2 flex flex-wrap items-end gap-2" role="group">
+          <div className="flex h-8 items-center gap-1 text-xs text-zinc-300">
+            <span className="px-1 tabular-nums">{cubicBezierStyle.segmentCount}/8 segments</span>
+            <button
+              aria-pressed={cubicBezierStyle.extensionActive}
+              className="h-8 border border-zinc-700 px-2 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
+              disabled={!authoringAvailable || cubicBezierStyle.segmentCount >= 8 || !onCubicBezierExtensionToggle}
+              onClick={onCubicBezierExtensionToggle}
+              title="Place the next path endpoint on the canvas"
+              type="button"
+            >
+              {cubicBezierStyle.extensionActive ? "Cancel extend" : "+ Extend path"}
+            </button>
+            <button
+              className="h-8 border border-zinc-700 px-2 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
+              disabled={!authoringAvailable || cubicBezierStyle.segmentCount <= 1 || !onCubicBezierRemoveLastSegment}
+              onClick={onCubicBezierRemoveLastSegment}
+              title="Remove the last path segment"
+              type="button"
+            >
+              Remove last
+            </button>
+          </div>
           <label className="w-28 text-[10px] text-zinc-500">
             Stroke cap
             <select

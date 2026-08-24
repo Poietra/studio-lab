@@ -2094,19 +2094,26 @@ describe("StudioCanvas retained preview layer", () => {
     expect(duplicateSource).not.toContain("data-studio-runtime-entity");
   });
 
-  it("keeps Pen clicks and four direct controls in the camera-scaled layer coordinate space", () => {
+  it("keeps Pen clicks and connected path controls in the camera-scaled layer coordinate space", () => {
     const markup = renderToStaticMarkup(
       <StudioCanvas
         {...baseProps()}
         cameraScale={2}
         cubicBezierControls={{
           entityId: "curve",
-          points: {
-            control1: { x: 240, y: 100 },
-            control2: { x: 400, y: 260 },
-            end: { x: 480, y: 180 },
-            start: { x: 160, y: 180 },
-          },
+          segments: [
+            {
+              control1: { x: 240, y: 100 },
+              control2: { x: 400, y: 260 },
+              end: { x: 480, y: 180 },
+            },
+            {
+              control1: { x: 500, y: 160 },
+              control2: { x: 520, y: 220 },
+              end: { x: 560, y: 200 },
+            },
+          ],
+          start: { x: 160, y: 180 },
         }}
         cubicBezierPenPoints={[{ x: 120, y: 90 }]}
         onCubicBezierControlChange={vi.fn()}
@@ -2118,6 +2125,9 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-cubic-bezier-control="end"');
     expect(markup).toContain('data-cubic-bezier-control="control1"');
     expect(markup).toContain('data-cubic-bezier-control="control2"');
+    expect(markup).toContain('data-cubic-bezier-control="segment-2-control1"');
+    expect(markup).toContain('data-cubic-bezier-control="segment-2-control2"');
+    expect(markup).toContain('data-cubic-bezier-control="segment-2-end"');
     expect(markup).toContain("start</text>");
     expect(markup).toContain('<circle cx="120" cy="90"');
     expect(markup).toContain('<line x1="160" x2="240" y1="180" y2="100"></line>');
@@ -2125,13 +2135,14 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).not.toContain("<path");
   });
 
-  it("inverse maps a zoomed Pen placement so the committed point remains under the pointer", () => {
+  it("inverse maps a zoomed path extension so the committed endpoint remains under the pointer", () => {
     const onCanvasPlace = vi.fn();
     const surface = findCanvasSurface(
       StudioCanvas({
         ...baseProps(),
         cameraScale: 2,
-        insertTool: "CubicBezier",
+        cubicBezierExtensionActive: true,
+        insertTool: "select",
         onCanvasPlace,
         preview: previewView({
           frame: {

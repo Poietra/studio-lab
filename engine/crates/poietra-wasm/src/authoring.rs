@@ -16,12 +16,12 @@ use poietra_eval::{
     StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
     StudioMotionEditInput, StudioMotionEntityIdentity, StudioMotionProjectionBatch,
     StudioMotionSourceBinding, StudioSvgPathError, StudioTimelineEditInput,
-    inspect_studio_cubic_bezier, inspect_studio_svg_path_asset, project_studio_creation_edits,
-    project_studio_math_tex_transform_edits, project_studio_motion_edit,
-    project_studio_timeline_edits,
+    extend_studio_cubic_bezier, inspect_studio_cubic_bezier, inspect_studio_svg_path_asset,
+    project_studio_creation_edits, project_studio_math_tex_transform_edits,
+    project_studio_motion_edit, project_studio_timeline_edits,
 };
 use poietra_scene_ir::{
-    ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
+    ContractJsonError, ContractVersionV1, PointV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use wasm_bindgen::prelude::*;
@@ -90,6 +90,28 @@ enum ApplyStudioBoundEntityEditSchemaV1 {
 enum ApplyStudioFragmentMaterialsSchemaV1 {
     #[serde(rename = "poietra.apply-studio-fragment-materials")]
     ApplyStudioFragmentMaterials,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum StudioCubicBezierInspectionAction {
+    #[serde(rename = "extend")]
+    Extend,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExtendStudioCubicBezierRequest {
+    #[serde(rename = "action")]
+    _action: StudioCubicBezierInspectionAction,
+    cubic_bezier: StudioCreationCubicBezierSpec,
+    end: PointV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum StudioCubicBezierInspectionRequest {
+    Extend(ExtendStudioCubicBezierRequest),
+    Inspect(StudioCreationCubicBezierSpec),
 }
 
 #[derive(Debug, Deserialize)]
@@ -454,9 +476,14 @@ fn inspect_studio_svg_path_asset_json(source: &str) -> Result<Vec<u8>, SceneAuth
 fn inspect_studio_cubic_bezier_json(
     command_json: &[u8],
 ) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let spec: StudioCreationCubicBezierSpec =
+    let request: StudioCubicBezierInspectionRequest =
         parse_scene_authoring_command_with_limit("Studio cubic Bézier", command_json, 4_096)?;
-    let inspection = inspect_studio_cubic_bezier(&spec)?;
+    let inspection = match request {
+        StudioCubicBezierInspectionRequest::Extend(request) => {
+            extend_studio_cubic_bezier(&request.cubic_bezier, &request.end)?
+        }
+        StudioCubicBezierInspectionRequest::Inspect(spec) => inspect_studio_cubic_bezier(&spec)?,
+    };
     studio_projection_response(&inspection)
 }
 
@@ -654,7 +681,7 @@ pub fn inspect_studio_svg_path_asset_v1(source: &str) -> Result<Vec<u8>, JsValue
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Normalizes one four-point cubic Bézier through the canonical Rust authority.
+/// Normalizes or extends one bounded cubic Bézier through the canonical Rust authority.
 ///
 /// # Errors
 ///
@@ -2716,6 +2743,47 @@ mod tests {
             error,
             SceneAuthoringAdapterError::StudioMotionEdit(ApplyStudioMotionEditError::Unsupported)
         ));
+    }
+
+    #[test]
+    fn cubic_bezier_inspector_accepts_legacy_specs_and_tagged_extensions() {
+        let spec = json!({
+            "arrowEnd": false,
+            "control1": { "x": -1.0, "y": 1.0 },
+            "control2": { "x": 1.0, "y": -1.0 },
+            "end": { "x": 2.0, "y": 0.5 },
+            "start": { "x": -2.0, "y": -0.5 },
+            "strokeCap": "round",
+            "strokeWidth": 0.04
+        });
+        let legacy: serde_json::Value = serde_json::from_slice(
+            &inspect_studio_cubic_bezier_json(&serde_json::to_vec(&spec).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(legacy["cubicBezier"].get("continuationSegments").is_none());
+
+        let extend = json!({
+            "action": "extend",
+            "cubicBezier": spec,
+            "end": { "x": 4.0, "y": 1.5 }
+        });
+        let extended: serde_json::Value = serde_json::from_slice(
+            &inspect_studio_cubic_bezier_json(&serde_json::to_vec(&extend).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            extended["cubicBezier"]["continuationSegments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let mut unsupported = extend;
+        unsupported["action"] = json!("append");
+        assert!(
+            inspect_studio_cubic_bezier_json(&serde_json::to_vec(&unsupported).unwrap()).is_err()
+        );
     }
 
     #[test]

@@ -1533,7 +1533,9 @@ test("authors and edits a smooth data plot through reload and MP4 export", async
   }
 });
 
-test("authors one cubic Bezier through direct controls, Draw, reload, and MP4 export", async ({ page }) => {
+test("authors a connected cubic Bezier path through direct controls, Draw, reload, and MP4 export", async ({
+  page,
+}) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(10_000);
   let projectId: string | null = null;
@@ -1566,16 +1568,45 @@ test("authors one cubic Bezier through direct controls, Draw, reload, and MP4 ex
     await expect(curve).toBeVisible();
     await waitForPresentedPreview();
     await curve.click();
+    await page.getByRole("button", { name: /Extend path/ }).click();
+    await canvas.click({ position: { x: 520, y: 210 } });
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForPresentedPreview();
+    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
     for (const [name, delta] of [
       ["start", { x: -8, y: 5 }],
       ["end", { x: 10, y: -6 }],
       ["control1", { x: -6, y: -12 }],
       ["control2", { x: 7, y: 10 }],
+      ["segment-2-control1", { x: 5, y: -14 }],
+      ["segment-2-control2", { x: -4, y: 12 }],
+      ["segment-2-end", { x: 8, y: -5 }],
     ] as const) {
       await dragBy(page, page.locator(`[data-cubic-bezier-control="${name}"]`), delta);
       await page.getByRole("button", { name: "Replace program" }).click();
       await waitForPresentedPreview();
     }
+
+    await page.getByRole("button", { name: "Remove last" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toHaveCount(0);
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toHaveCount(0);
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Cubic Bezier fixture workspace" }).click();
+    await expect(curve).toBeVisible();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
+    await expect(page.getByText("2/8 segments", { exact: true })).toBeVisible();
 
     await page.getByRole("combobox", { name: "Cubic Bézier stroke cap" }).selectOption("square");
     await page.getByRole("button", { name: "Replace program" }).click();

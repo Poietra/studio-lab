@@ -26,8 +26,9 @@ import {
   MAX_EDITOR_LIVE_SELECTED_ENTITY_IDS_V1,
 } from "./collaboration/editor-live-contract";
 import {
+  extendStudioCubicBezier,
   inspectStudioCubicBezier,
-  type StudioCubicBezierPointName,
+  type StudioCubicBezierPointRef,
   type StudioCubicBezierSpec,
 } from "./engine/cubic-bezier-authoring";
 import { compileFragmentMaterialGlsl } from "./engine/fragment-material-glsl";
@@ -762,6 +763,7 @@ export function App({
     sweepDegrees: 90,
   });
   const [regularPolygonSides, setRegularPolygonSides] = useState(6);
+  const [cubicBezierExtensionEntityId, setCubicBezierExtensionEntityId] = useState<string | null>(null);
   const [cubicBezierPenPoints, setCubicBezierPenPoints] = useState<readonly Point[]>([]);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
   const nativeProjectLocalStore = useMemo(browserNativeProjectLocalStore, []);
@@ -821,8 +823,17 @@ export function App({
   useEffect(() => setInlineTextEditor(null), [activeProjectId, activeSceneId]);
   useEffect(() => {
     cubicBezierAuthoringGeneration.current += 1;
+    setCubicBezierExtensionEntityId(null);
     setCubicBezierPenPoints([]);
   }, [activeProjectId, activeSceneId]);
+  useEffect(() => {
+    if (
+      cubicBezierExtensionEntityId &&
+      (selectedObjectIds.length !== 1 || !selectedObjectIds.includes(cubicBezierExtensionEntityId))
+    ) {
+      setCubicBezierExtensionEntityId(null);
+    }
+  }, [cubicBezierExtensionEntityId, selectedObjectIds]);
 
   useEffect(() => {
     const generation = nativeProjectAssetGeneration.current + 1;
@@ -5433,14 +5444,18 @@ export function App({
     return { ...owned, position: { x: position.x, y: position.y } };
   }
 
-  async function normalizeAndStageCubicBezier(entityId: string, cubicBezier: StudioCubicBezierSpec) {
+  async function normalizeAndStageCubicBezier(
+    entityId: string,
+    cubicBezier: StudioCubicBezierSpec,
+    extensionEnd?: Point,
+  ) {
     if (draftEdit || editingAppliedProgram) {
       setDraftError("Apply or discard the current draft before editing the curve.");
       return false;
     }
     const owned = cubicBezierOwnedCreation(entityId);
     if (!owned) {
-      setDraftError("Only the latest untransformed Studio-created curve exposes its four control points.");
+      setDraftError("Only the latest untransformed Studio-created curve exposes editable path nodes.");
       return false;
     }
     const requestGeneration = cubicBezierAuthoringGeneration.current + 1;
@@ -5451,7 +5466,9 @@ export function App({
     const requestSelectedObjectIds = selectedObjectIds;
     try {
       const frame = workspace?.frame ?? { height: 8, width: 14.222 };
-      const inspection = await inspectStudioCubicBezier(cubicBezier);
+      const inspection = extensionEnd
+        ? await extendStudioCubicBezier({ cubicBezier, end: extensionEnd })
+        : await inspectStudioCubicBezier(cubicBezier);
       const current = cubicBezierAuthoringSnapshot.current;
       if (
         cubicBezierAuthoringGeneration.current !== requestGeneration ||
@@ -5490,14 +5507,61 @@ export function App({
     }
   }
 
-  function changeCubicBezierControl(entityId: string, name: StudioCubicBezierPointName, point: Point) {
+  function changeCubicBezierControl(entityId: string, pointRef: StudioCubicBezierPointRef, point: Point) {
     const owned = cubicBezierOwnedCreation(entityId);
     if (!owned) return false;
     const frame = workspace?.frame ?? { height: 8, width: 14.222 };
     const localPoint = sceneOffsetFromViewport(point, owned.position, frame);
+    const cubicBezier = owned.creation.entity.cubicBezier!;
+    if (pointRef.kind === "start") {
+      void normalizeAndStageCubicBezier(entityId, { ...cubicBezier, start: localPoint });
+      return true;
+    }
+    if (pointRef.segmentIndex === 0) {
+      void normalizeAndStageCubicBezier(entityId, { ...cubicBezier, [pointRef.point]: localPoint });
+      return true;
+    }
+    const continuationSegments = [...(cubicBezier.continuationSegments ?? [])];
+    const continuationIndex = pointRef.segmentIndex - 1;
+    const segment = continuationSegments[continuationIndex];
+    if (!segment) return false;
+    continuationSegments[continuationIndex] = { ...segment, [pointRef.point]: localPoint };
+    void normalizeAndStageCubicBezier(entityId, { ...cubicBezier, continuationSegments });
+    return true;
+  }
+
+  function toggleCubicBezierExtension(entityId: string) {
+    if (!cubicBezierOwnedCreation(entityId)) return false;
+    setCubicBezierExtensionEntityId((current) => (current === entityId ? null : entityId));
+    return true;
+  }
+
+  function extendCubicBezierAtPoint(entityId: string, point: Point) {
+    const owned = cubicBezierOwnedCreation(entityId);
+    if (!owned) return false;
+    const cubicBezier = owned.creation.entity.cubicBezier!;
+    if ((cubicBezier.continuationSegments?.length ?? 0) >= 7) {
+      setCubicBezierExtensionEntityId(null);
+      setDraftError("A Studio Pen path supports at most 8 segments.");
+      return false;
+    }
+    const frame = workspace?.frame ?? { height: 8, width: 14.222 };
+    const localEnd = sceneOffsetFromViewport(point, owned.position, frame);
+    setCubicBezierExtensionEntityId(null);
+    void normalizeAndStageCubicBezier(entityId, cubicBezier, localEnd);
+    return true;
+  }
+
+  function removeLastCubicBezierSegment(entityId: string) {
+    const owned = cubicBezierOwnedCreation(entityId);
+    if (!owned) return false;
+    const cubicBezier = owned.creation.entity.cubicBezier!;
+    const continuationSegments = cubicBezier.continuationSegments ?? [];
+    if (continuationSegments.length === 0) return false;
+    setCubicBezierExtensionEntityId(null);
     void normalizeAndStageCubicBezier(entityId, {
-      ...owned.creation.entity.cubicBezier!,
-      [name]: localPoint,
+      ...cubicBezier,
+      continuationSegments: continuationSegments.slice(0, -1),
     });
     return true;
   }
@@ -8311,6 +8375,7 @@ export function App({
   function activateStudioTool(tool: StudioTool) {
     cubicBezierAuthoringGeneration.current += 1;
     setInlineTextEditor(null);
+    setCubicBezierExtensionEntityId(null);
     setCubicBezierPenPoints([]);
     setInsertTool(tool);
   }
@@ -8330,6 +8395,10 @@ export function App({
     if (command === "redo") return redoProgram();
     if (command === "escape") {
       cubicBezierAuthoringGeneration.current += 1;
+      if (cubicBezierExtensionEntityId) {
+        setCubicBezierExtensionEntityId(null);
+        return true;
+      }
       if (cubicBezierPenPoints.length > 0) {
         setCubicBezierPenPoints([]);
         return true;
@@ -8476,18 +8545,23 @@ export function App({
     };
     return {
       entityId: selectedCubicBezierCreation.creation.entity.id,
-      points: {
-        control1: toViewport(cubicBezier.control1),
-        control2: toViewport(cubicBezier.control2),
-        end: toViewport(cubicBezier.end),
-        start: toViewport(cubicBezier.start),
-      },
+      segments: [
+        { control1: cubicBezier.control1, control2: cubicBezier.control2, end: cubicBezier.end },
+        ...(cubicBezier.continuationSegments ?? []),
+      ].map((segment) => ({
+        control1: toViewport(segment.control1),
+        control2: toViewport(segment.control2),
+        end: toViewport(segment.end),
+      })),
+      start: toViewport(cubicBezier.start),
     } as const;
   })();
   const selectedCubicBezierStyle = selectedCubicBezierCreation?.creation.entity.cubicBezier
     ? {
         arrowEnd: selectedCubicBezierCreation.creation.entity.cubicBezier.arrowEnd,
         entityId: selectedCubicBezierCreation.creation.entity.id,
+        extensionActive: cubicBezierExtensionEntityId === selectedCubicBezierCreation.creation.entity.id,
+        segmentCount: 1 + (selectedCubicBezierCreation.creation.entity.cubicBezier.continuationSegments?.length ?? 0),
         strokeCap: selectedCubicBezierCreation.creation.entity.cubicBezier.strokeCap,
         strokeWidth: selectedCubicBezierCreation.creation.entity.cubicBezier.strokeWidth,
       }
@@ -9636,7 +9710,9 @@ export function App({
               onWriteInDelete={deleteWriteIn}
               onWriteInSelect={editWriteIn}
               onCanvasPlace={(point) => {
-                if (insertTool === "Text") beginInlineTextCreation(point);
+                if (cubicBezierExtensionEntityId) {
+                  extendCubicBezierAtPoint(cubicBezierExtensionEntityId, point);
+                } else if (insertTool === "Text") beginInlineTextCreation(point);
                 else if (insertTool === "CubicBezier") void addCubicBezierPenPoint(point);
                 else void insertEntitiesAt(point);
               }}
@@ -9674,6 +9750,12 @@ export function App({
               onInlineTextCommit={commitInlineTextEdit}
               onInteractionModeChange={setInteractionMode}
               onCoordinateInsertSettingsChange={setCoordinateInsertSettings}
+              onCubicBezierExtensionToggle={() => {
+                if (selectedCubicBezierStyle) toggleCubicBezierExtension(selectedCubicBezierStyle.entityId);
+              }}
+              onCubicBezierRemoveLastSegment={() => {
+                if (selectedCubicBezierStyle) removeLastCubicBezierSegment(selectedCubicBezierStyle.entityId);
+              }}
               onCubicBezierStyleChange={(change) => {
                 if (selectedCubicBezierStyle) changeCubicBezierStyle(selectedCubicBezierStyle.entityId, change);
               }}

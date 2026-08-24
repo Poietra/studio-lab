@@ -8,6 +8,7 @@ const MIN_STROKE_WIDTH_WORLD: f64 = 0.005;
 const MAX_STROKE_WIDTH_WORLD: f64 = 0.5;
 const MIN_CURVE_SPAN: f64 = 1.0e-6;
 const CANONICAL_EPSILON: f64 = 1.0e-9;
+const MAX_STUDIO_CUBIC_BEZIER_SEGMENTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -17,15 +18,17 @@ pub enum StudioCubicBezierStrokeCap {
     Square,
 }
 
-/// One deliberately bounded cubic authoring primitive. The four points are
-/// local Scene coordinates and must be centered by the Rust normalizer before
-/// they enter a canonical creation Program.
+/// One deliberately bounded cubic authoring path. The first four points retain
+/// the original single-segment contract; continuations share the preceding
+/// segment's endpoint as their implicit start.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCreationCubicBezierSpec {
     pub arrow_end: bool,
     pub control1: PointV1,
     pub control2: PointV1,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub continuation_segments: Vec<CubicSegmentV1>,
     pub end: PointV1,
     pub start: PointV1,
     pub stroke_cap: StudioCubicBezierStrokeCap,
@@ -54,8 +57,10 @@ pub struct StudioCubicBezierInspection {
 pub enum StudioCubicBezierError {
     #[error("cubic Bézier points must be finite and remain inside the Scene coordinate bound")]
     InvalidPoint,
-    #[error("cubic Bézier geometry must span at least one Scene axis")]
+    #[error("each cubic Bézier segment must span at least one Scene axis")]
     Degenerate,
+    #[error("cubic Bézier paths accept at most 8 segments")]
+    TooManySegments,
     #[error("cubic Bézier stroke width must be between 0.005 and 0.5 Scene units")]
     InvalidStrokeWidth,
 }
@@ -107,26 +112,31 @@ fn straight_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
     }
 }
 
-fn arrow_subpath(spec: &StudioCreationCubicBezierSpec, span: f64) -> Option<CubicSubpathV1> {
-    if !spec.arrow_end {
+fn arrow_subpath(
+    arrow_end: bool,
+    segment_start: &PointV1,
+    segment: &CubicSegmentV1,
+    span: f64,
+) -> Option<CubicSubpathV1> {
+    if !arrow_end {
         return None;
     }
     let mut tangent = PointV1 {
-        x: spec.end.x - spec.control2.x,
-        y: spec.end.y - spec.control2.y,
+        x: segment.end.x - segment.control2.x,
+        y: segment.end.y - segment.control2.y,
     };
     let mut length = tangent.x.hypot(tangent.y);
     if length <= MIN_CURVE_SPAN {
         tangent = PointV1 {
-            x: spec.end.x - spec.control1.x,
-            y: spec.end.y - spec.control1.y,
+            x: segment.end.x - segment.control1.x,
+            y: segment.end.y - segment.control1.y,
         };
         length = tangent.x.hypot(tangent.y);
     }
     if length <= MIN_CURVE_SPAN {
         tangent = PointV1 {
-            x: spec.end.x - spec.start.x,
-            y: spec.end.y - spec.start.y,
+            x: segment.end.x - segment_start.x,
+            y: segment.end.y - segment_start.y,
         };
         length = tangent.x.hypot(tangent.y);
     }
@@ -140,8 +150,8 @@ fn arrow_subpath(spec: &StudioCreationCubicBezierSpec, span: f64) -> Option<Cubi
     let arrow_length = (span * 0.12).clamp(0.08, 0.35);
     let arrow_half_width = arrow_length * 0.48;
     let base = PointV1 {
-        x: spec.end.x - unit.x * arrow_length,
-        y: spec.end.y - unit.y * arrow_length,
+        x: segment.end.x - unit.x * arrow_length,
+        y: segment.end.y - unit.y * arrow_length,
     };
     let perpendicular = PointV1 {
         x: -unit.y,
@@ -158,8 +168,8 @@ fn arrow_subpath(spec: &StudioCreationCubicBezierSpec, span: f64) -> Option<Cubi
     Some(CubicSubpathV1 {
         closed: false,
         segments: vec![
-            straight_segment(&left, spec.end.clone()),
-            straight_segment(&spec.end, right),
+            straight_segment(&left, segment.end.clone()),
+            straight_segment(&segment.end, right),
         ],
         start: left,
     })
@@ -168,33 +178,67 @@ fn arrow_subpath(spec: &StudioCreationCubicBezierSpec, span: f64) -> Option<Cubi
 fn path_for_spec(
     spec: &StudioCreationCubicBezierSpec,
 ) -> Result<CubicPathV1, StudioCubicBezierError> {
-    let points = [&spec.start, &spec.control1, &spec.control2, &spec.end];
-    if points.iter().any(|point| !valid_point(point)) {
-        return Err(StudioCubicBezierError::InvalidPoint);
+    if spec.continuation_segments.len() + 1 > MAX_STUDIO_CUBIC_BEZIER_SEGMENTS {
+        return Err(StudioCubicBezierError::TooManySegments);
     }
     if !spec.stroke_width.is_finite()
         || !(MIN_STROKE_WIDTH_WORLD..=MAX_STROKE_WIDTH_WORLD).contains(&spec.stroke_width)
     {
         return Err(StudioCubicBezierError::InvalidStrokeWidth);
     }
+    let mut segments = Vec::with_capacity(spec.continuation_segments.len() + 1);
+    segments.push(CubicSegmentV1 {
+        control1: spec.control1.clone(),
+        control2: spec.control2.clone(),
+        end: spec.end.clone(),
+    });
+    segments.extend(spec.continuation_segments.iter().cloned());
+
     let mut bounds = Bounds::from_point(&spec.start);
-    for point in points.iter().skip(1) {
-        bounds.include(point);
+    let mut segment_start = &spec.start;
+    for segment in &segments {
+        let points = [
+            segment_start,
+            &segment.control1,
+            &segment.control2,
+            &segment.end,
+        ];
+        if points.iter().any(|point| !valid_point(point)) {
+            return Err(StudioCubicBezierError::InvalidPoint);
+        }
+        let mut segment_bounds = Bounds::from_point(segment_start);
+        for point in points.iter().skip(1) {
+            segment_bounds.include(point);
+            bounds.include(point);
+        }
+        let segment_span = (segment_bounds.right - segment_bounds.left)
+            .max(segment_bounds.top - segment_bounds.bottom);
+        if !segment_span.is_finite() || segment_span <= MIN_CURVE_SPAN {
+            return Err(StudioCubicBezierError::Degenerate);
+        }
+        segment_start = &segment.end;
     }
+
     let span = (bounds.right - bounds.left).max(bounds.top - bounds.bottom);
-    if !span.is_finite() || span <= MIN_CURVE_SPAN {
-        return Err(StudioCubicBezierError::Degenerate);
-    }
+    let final_segment_start = if segments.len() == 1 {
+        &spec.start
+    } else {
+        &segments[segments.len() - 2].end
+    };
+    let arrow = arrow_subpath(
+        spec.arrow_end,
+        final_segment_start,
+        segments
+            .last()
+            .expect("a cubic path always has one segment"),
+        span,
+    );
     let mut subpaths = vec![CubicSubpathV1 {
         closed: false,
-        segments: vec![CubicSegmentV1 {
-            control1: spec.control1.clone(),
-            control2: spec.control2.clone(),
-            end: spec.end.clone(),
-        }],
+        segments,
         start: spec.start.clone(),
     }];
-    if let Some(arrow) = arrow_subpath(spec, span) {
+    if let Some(arrow) = arrow {
         subpaths.push(arrow);
     }
     Ok(CubicPathV1 { subpaths })
@@ -216,6 +260,10 @@ fn path_bounds(path: &CubicPathV1) -> Option<Bounds> {
 fn translate_point(point: &mut PointV1, offset: &PointV1) {
     point.x -= offset.x;
     point.y -= offset.y;
+}
+
+fn points_are_canonical(left: &PointV1, right: &PointV1) -> bool {
+    (left.x - right.x).abs() <= CANONICAL_EPSILON && (left.y - right.y).abs() <= CANONICAL_EPSILON
 }
 
 fn translate_path(path: &mut CubicPathV1, offset: &PointV1) {
@@ -266,11 +314,37 @@ pub fn inspect_studio_cubic_bezier(
     ] {
         translate_point(point, &center_offset);
     }
+    for segment in &mut cubic_bezier.continuation_segments {
+        translate_point(&mut segment.control1, &center_offset);
+        translate_point(&mut segment.control2, &center_offset);
+        translate_point(&mut segment.end, &center_offset);
+    }
     Ok(StudioCubicBezierInspection {
         center_offset,
         cubic_bezier,
         dimensions: dimensions_from_bounds(bounds),
     })
+}
+
+/// Appends one straight cubic segment to the requested endpoint, then returns
+/// the same centered inspection used by initial curve authoring.
+///
+/// # Errors
+///
+/// Returns a bounded error when the source path or requested extension is invalid.
+pub fn extend_studio_cubic_bezier(
+    spec: &StudioCreationCubicBezierSpec,
+    endpoint: &PointV1,
+) -> Result<StudioCubicBezierInspection, StudioCubicBezierError> {
+    let mut extended = spec.clone();
+    let segment_start = extended
+        .continuation_segments
+        .last()
+        .map_or_else(|| extended.end.clone(), |segment| segment.end.clone());
+    extended
+        .continuation_segments
+        .push(straight_segment(&segment_start, endpoint.clone()));
+    inspect_studio_cubic_bezier(&extended)
 }
 
 pub(super) fn normalize_studio_cubic_bezier(
@@ -299,10 +373,21 @@ pub(super) fn studio_cubic_bezier_is_canonical(
             (&source.end, &normalized.spec.end),
         ]
         .iter()
-        .all(|(left, right)| {
-            (left.x - right.x).abs() <= CANONICAL_EPSILON
-                && (left.y - right.y).abs() <= CANONICAL_EPSILON
-        })
+        .all(|(left, right)| points_are_canonical(left, right))
+        && source.continuation_segments.len() == normalized.spec.continuation_segments.len()
+        && source
+            .continuation_segments
+            .iter()
+            .zip(&normalized.spec.continuation_segments)
+            .all(|(left, right)| {
+                [
+                    (&left.control1, &right.control1),
+                    (&left.control2, &right.control2),
+                    (&left.end, &right.end),
+                ]
+                .iter()
+                .all(|(left, right)| points_are_canonical(left, right))
+            })
 }
 
 pub(super) fn studio_cubic_bezier_dimensions_are_canonical(
@@ -331,6 +416,7 @@ mod tests {
             arrow_end,
             control1: PointV1 { x: -1.0, y: 1.0 },
             control2: PointV1 { x: 1.0, y: -1.0 },
+            continuation_segments: Vec::new(),
             end: PointV1 { x: 2.0, y: 0.5 },
             start: PointV1 { x: -2.0, y: -0.5 },
             stroke_cap: StudioCubicBezierStrokeCap::Round,
@@ -353,6 +439,65 @@ mod tests {
     }
 
     #[test]
+    fn legacy_json_defaults_and_omits_empty_continuations() {
+        let legacy = serde_json::json!({
+            "arrowEnd": false,
+            "control1": { "x": -1.0, "y": 1.0 },
+            "control2": { "x": 1.0, "y": -1.0 },
+            "end": { "x": 2.0, "y": 0.5 },
+            "start": { "x": -2.0, "y": -0.5 },
+            "strokeCap": "round",
+            "strokeWidth": 0.04
+        });
+        let parsed: StudioCreationCubicBezierSpec = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(parsed.continuation_segments.is_empty());
+        assert_eq!(serde_json::to_value(parsed).unwrap(), legacy);
+    }
+
+    #[test]
+    fn normalizes_ordered_continuation_segments_as_one_open_subpath() {
+        let mut candidate = curve(false);
+        candidate.continuation_segments = vec![
+            CubicSegmentV1 {
+                control1: PointV1 { x: 2.5, y: 1.0 },
+                control2: PointV1 { x: 3.5, y: 1.0 },
+                end: PointV1 { x: 4.0, y: 0.0 },
+            },
+            CubicSegmentV1 {
+                control1: PointV1 { x: 4.5, y: -1.0 },
+                control2: PointV1 { x: 5.5, y: -1.0 },
+                end: PointV1 { x: 6.0, y: 0.0 },
+            },
+        ];
+
+        let inspection = inspect_studio_cubic_bezier(&candidate).unwrap();
+        let normalized = normalize_studio_cubic_bezier(&inspection.cubic_bezier).unwrap();
+        let subpath = &normalized.path.subpaths[0];
+        assert_eq!(normalized.path.subpaths.len(), 1);
+        assert!(!subpath.closed);
+        assert_eq!(subpath.segments.len(), 3);
+        assert_eq!(
+            subpath.segments[1],
+            inspection.cubic_bezier.continuation_segments[0]
+        );
+        assert_eq!(
+            subpath.segments[2],
+            inspection.cubic_bezier.continuation_segments[1]
+        );
+        assert_eq!(inspection.center_offset, PointV1 { x: 2.0, y: 0.0 });
+        assert_eq!(inspection.dimensions.width, Some(8.0));
+        assert_eq!(inspection.dimensions.height, Some(2.0));
+        assert!(studio_cubic_bezier_is_canonical(
+            &inspection.cubic_bezier,
+            &normalized
+        ));
+
+        let mut changed = inspection.cubic_bezier.clone();
+        changed.continuation_segments[1].end.x += 0.01;
+        assert!(!studio_cubic_bezier_is_canonical(&changed, &normalized));
+    }
+
+    #[test]
     fn arrow_adds_only_one_stroked_tip_subpath() {
         let inspection = inspect_studio_cubic_bezier(&curve(true)).unwrap();
         let normalized = normalize_studio_cubic_bezier(&inspection.cubic_bezier).unwrap();
@@ -360,6 +505,90 @@ mod tests {
         assert_eq!(normalized.path.subpaths[0].segments.len(), 1);
         assert_eq!(normalized.path.subpaths[1].segments.len(), 2);
         assert!(!normalized.path.subpaths[1].closed);
+    }
+
+    #[test]
+    fn arrow_uses_the_final_segment_tangent() {
+        let mut candidate = curve(true);
+        candidate.continuation_segments.push(CubicSegmentV1 {
+            control1: PointV1 { x: 2.0, y: 1.0 },
+            control2: PointV1 { x: 2.0, y: 2.0 },
+            end: PointV1 { x: 2.0, y: 3.0 },
+        });
+        let inspection = inspect_studio_cubic_bezier(&candidate).unwrap();
+        let normalized = normalize_studio_cubic_bezier(&inspection.cubic_bezier).unwrap();
+        let arrow = &normalized.path.subpaths[1];
+        let left = &arrow.start;
+        let tip = &arrow.segments[0].end;
+        let right = &arrow.segments[1].end;
+
+        assert!((left.y - right.y).abs() <= CANONICAL_EPSILON);
+        assert!(left.y < tip.y);
+        assert!(left.x < tip.x && tip.x < right.x);
+    }
+
+    #[test]
+    fn extends_with_straight_controls_owned_by_the_core() {
+        let endpoint = PointV1 { x: 5.0, y: 2.0 };
+        let inspection = extend_studio_cubic_bezier(&curve(false), &endpoint).unwrap();
+        let spec = &inspection.cubic_bezier;
+        let segment = &spec.continuation_segments[0];
+        let expected_endpoint = PointV1 {
+            x: endpoint.x - inspection.center_offset.x,
+            y: endpoint.y - inspection.center_offset.y,
+        };
+        assert_eq!(segment.end, expected_endpoint);
+        assert!(points_are_canonical(
+            &segment.control1,
+            &PointV1 {
+                x: (2.0 * spec.end.x + segment.end.x) / 3.0,
+                y: (2.0 * spec.end.y + segment.end.y) / 3.0,
+            }
+        ));
+        assert!(points_are_canonical(
+            &segment.control2,
+            &PointV1 {
+                x: (spec.end.x + 2.0 * segment.end.x) / 3.0,
+                y: (spec.end.y + 2.0 * segment.end.y) / 3.0,
+            }
+        ));
+    }
+
+    #[test]
+    fn enforces_segment_limit_and_rejects_degenerate_continuations() {
+        let mut maximum = curve(false);
+        let mut start = maximum.end.clone();
+        for index in 0..7 {
+            let end = PointV1 {
+                x: 3.0 + f64::from(index),
+                y: f64::from(index % 2),
+            };
+            maximum
+                .continuation_segments
+                .push(straight_segment(&start, end.clone()));
+            start = end;
+        }
+        assert!(inspect_studio_cubic_bezier(&maximum).is_ok());
+
+        let too_many = extend_studio_cubic_bezier(
+            &maximum,
+            &PointV1 {
+                x: start.x + 1.0,
+                y: start.y,
+            },
+        );
+        assert_eq!(too_many, Err(StudioCubicBezierError::TooManySegments));
+
+        let mut degenerate = curve(false);
+        degenerate.continuation_segments.push(CubicSegmentV1 {
+            control1: degenerate.end.clone(),
+            control2: degenerate.end.clone(),
+            end: degenerate.end.clone(),
+        });
+        assert_eq!(
+            inspect_studio_cubic_bezier(&degenerate),
+            Err(StudioCubicBezierError::Degenerate)
+        );
     }
 
     #[test]
@@ -374,7 +603,14 @@ mod tests {
         );
 
         candidate = curve(false);
-        candidate.end.x = f64::NAN;
+        candidate.continuation_segments.push(CubicSegmentV1 {
+            control1: PointV1 { x: 2.5, y: 0.5 },
+            control2: PointV1 {
+                x: f64::NAN,
+                y: 0.5,
+            },
+            end: PointV1 { x: 3.0, y: 0.5 },
+        });
         assert_eq!(
             inspect_studio_cubic_bezier(&candidate),
             Err(StudioCubicBezierError::InvalidPoint)
@@ -415,6 +651,7 @@ mod tests {
                 x: 1.176_779_616_495_927_9,
                 y: -1.681_113_737_851_326_6,
             },
+            continuation_segments: Vec::new(),
             end: PointV1 {
                 x: 1.849_225_111_636_459_3,
                 y: 0.672_445_495_140_530_9,

@@ -37,7 +37,7 @@ pub use creation::{
 };
 pub use cubic_bezier::{
     StudioCreationCubicBezierSpec, StudioCubicBezierError, StudioCubicBezierInspection,
-    StudioCubicBezierStrokeCap, inspect_studio_cubic_bezier,
+    StudioCubicBezierStrokeCap, extend_studio_cubic_bezier, inspect_studio_cubic_bezier,
 };
 pub use fragment_material::{
     ApplyStudioFragmentMaterialsCommand, ApplyStudioFragmentMaterialsError,

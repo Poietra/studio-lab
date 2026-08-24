@@ -4498,6 +4498,7 @@ fn normalized_creation_rejects_invalid_static_data_plots_atomically() {
             arrow_end: false,
             control1: PointV1 { x: -0.5, y: 1.0 },
             control2: PointV1 { x: 0.5, y: -1.0 },
+            continuation_segments: Vec::new(),
             end: PointV1 { x: 1.0, y: 0.0 },
             start: PointV1 { x: -1.0, y: 0.0 },
             stroke_cap: StudioCubicBezierStrokeCap::Round,
@@ -5102,13 +5103,18 @@ fn normalized_svg_path_creation_uses_canonical_cubic_geometry_and_draw() {
 }
 
 #[test]
-fn normalized_cubic_bezier_creation_keeps_one_editable_segment_arrow_and_draw() {
+fn normalized_cubic_bezier_creation_keeps_connected_segments_arrow_and_draw() {
     let bundle = static_imported_bundle();
     let inspection =
         crate::authoring::inspect_studio_cubic_bezier(&StudioCreationCubicBezierSpec {
             arrow_end: true,
             control1: PointV1 { x: -1.0, y: 1.5 },
             control2: PointV1 { x: 1.0, y: -1.5 },
+            continuation_segments: vec![poietra_scene_ir::CubicSegmentV1 {
+                control1: PointV1 { x: 2.5, y: 1.0 },
+                control2: PointV1 { x: 3.5, y: 1.0 },
+                end: PointV1 { x: 4.0, y: 0.0 },
+            }],
             end: PointV1 { x: 2.0, y: 0.5 },
             start: PointV1 { x: -2.0, y: -0.5 },
             stroke_cap: StudioCubicBezierStrokeCap::Square,
@@ -5166,7 +5172,7 @@ fn normalized_cubic_bezier_creation_keeps_one_editable_segment_arrow_and_draw() 
     assert!(matches!(
         &created.geometry,
         SceneGeometryV1::CubicPath { path }
-            if path.subpaths[0].segments.len() == 1 && path.subpaths.len() == 2
+            if path.subpaths[0].segments.len() == 2 && path.subpaths.len() == 2
     ));
     assert!(matches!(
         &created.appearance,

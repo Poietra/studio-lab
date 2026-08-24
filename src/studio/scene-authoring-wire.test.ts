@@ -213,7 +213,7 @@ describe("Studio creation wire", () => {
     ).toEqual(["ellipse", "arc", "sector"]);
   });
 
-  it("passes one four-point cubic primitive to the Rust creation kind", () => {
+  it("passes a bounded cubic path to the Rust creation kind", () => {
     const command = buildStudioCreationProjectionCommand({
       baseDuration: 2,
       programs: [creationProgram("CubicBezier")],
@@ -235,6 +235,42 @@ describe("Studio creation wire", () => {
         kind: "create",
       }),
     );
+  });
+
+  it("preserves ordered continuation segments in the Rust creation command", () => {
+    const program = creationProgram("CubicBezier");
+    const operation = program.operations[0];
+    if (operation?.kind !== "CreateEntity" || !operation.entity.cubicBezier) {
+      throw new Error("Cubic Bézier wire fixture is incomplete.");
+    }
+    const continuationSegments = [
+      {
+        control1: { x: 2.5, y: 1 },
+        control2: { x: 3.5, y: 1 },
+        end: { x: 4, y: 0 },
+      },
+    ];
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 2,
+      programs: [
+        {
+          ...program,
+          operations: [
+            {
+              ...operation,
+              entity: {
+                ...operation.entity,
+                cubicBezier: { ...operation.entity.cubicBezier, continuationSegments },
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const projected = command.programs[0]?.operations[0];
+    if (projected?.kind !== "create") throw new Error("Cubic Bézier wire projection is incomplete.");
+    expect(projected.entity.cubicBezier?.continuationSegments).toEqual(continuationSegments);
   });
 
   it("maps coordinate objects to their Rust creation kinds", () => {
