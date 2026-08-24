@@ -278,6 +278,14 @@ function normalizedStudioCreationOperation(
       kind: operation.key === "fillColor" ? "fill-color" : "stroke-color",
     };
   }
+  if (operation.kind === "SetProperty" && operation.key === "strokeWidth") {
+    return {
+      ...common,
+      entityId: operation.entityId,
+      kind: "stroke-width",
+      widthWorld: typeof operation.value === "number" && Number.isFinite(operation.value) ? operation.value : null,
+    };
+  }
   if (operation.kind === "SetProperty" && operation.key === "appearance") {
     return {
       ...common,

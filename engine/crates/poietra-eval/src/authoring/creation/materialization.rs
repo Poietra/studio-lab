@@ -7,7 +7,8 @@ use super::{
     CreateSceneEntityDrawIn, CreateSceneEntityFadeIn, CreateSceneEntityGeometry,
     CreateSceneEntityInstantTransform, CreateSceneEntityMathTexMorph, CreateSceneEntityShapeMorph,
     CreateSceneEntityWriteIn, CubicPathV1, EasingV1, EngineSessionV1, FidelityV1, FillRuleV1,
-    FillStyleV1, IntervalV1, KeyframeV1, PathTrimParameterizationV1, PlannedSceneMotion,
+    FillStyleV1, IntervalV1, KeyframeV1, MAX_STUDIO_LINE_STROKE_WIDTH_WORLD,
+    MIN_STUDIO_LINE_STROKE_WIDTH_WORLD, PathTrimParameterizationV1, PlannedSceneMotion,
     PlannedStudioCameraAnimation, PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PointV1,
     ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS,
     SEGMENTED_MATH_TEX_MAX_FRAGMENTS, SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES,
@@ -399,6 +400,12 @@ pub(super) fn validate_create_scene_entities_command(
                     && close_transform_baseline_value(color.alpha, entity.paint_opacity)
             });
         let has_color_override = entity.fill_color.is_some() || entity.stroke_color.is_some();
+        let stroke_width_is_valid = entity.stroke_width_world.is_none_or(|width| {
+            width.is_finite()
+                && (MIN_STUDIO_LINE_STROKE_WIDTH_WORLD..=MAX_STUDIO_LINE_STROKE_WIDTH_WORLD)
+                    .contains(&width)
+                && matches!(entity.geometry, CreateSceneEntityGeometry::Line)
+        });
         let has_initial_draw_stroke = entity.draw_in.is_some()
             && entity.fill_color.is_none()
             && entity.stroke_color.is_some()
@@ -430,6 +437,7 @@ pub(super) fn validate_create_scene_entities_command(
             || !(0.0..=1.0).contains(&entity.paint_opacity)
             || !entity.rotation.is_finite()
             || !colors_are_valid
+            || !stroke_width_is_valid
             || unsupported_image_paint
             || unsupported_color_override
             || (entity.animated_resize.is_some()
@@ -840,6 +848,16 @@ pub(super) fn append_created_entity(
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
         stroke.color = color.clone();
+    }
+    if let Some(width_world) = entity.stroke_width_world {
+        let SceneAppearanceV1::Vector {
+            stroke: Some(stroke),
+            ..
+        } = &mut appearance
+        else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        };
+        stroke.width_world = width_world;
     }
     if let Some(first) = entity.material_parameter_keyframes.first() {
         let SceneAppearanceV1::Vector {
@@ -1979,6 +1997,7 @@ impl EngineSessionV1 {
                 .as_deref()
                 .map(color_with_opacity)
                 .transpose()?;
+            let stroke_width_world = state.stroke_width_world_override;
             let write_in = match (&state.write_interval, &state.write_easing) {
                 (Some(interval), Some(easing)) => {
                     let source = state
@@ -2043,6 +2062,7 @@ impl EngineSessionV1 {
                 source_z_index: state.source_z_index,
                 shape_morph,
                 stroke_color,
+                stroke_width_world,
                 visible: state.visible,
                 write_in,
             });

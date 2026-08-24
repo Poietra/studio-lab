@@ -54,6 +54,7 @@ const geometrySchema = z
               color: z.string().optional(),
               fillColor: z.string().optional(),
               strokeColor: z.string().optional(),
+              strokeWidth: finiteNumber.positive().optional(),
             })
             .strict(),
         })
@@ -109,6 +110,7 @@ const propertyChannelSchema = z
       "rotation",
       "scale",
       "strokeColor",
+      "strokeWidth",
     ]),
     samples: z.array(propertyChannelSampleSchema),
   })

@@ -223,6 +223,8 @@ function renderSelectedInspector(
   strokeColorValue: string | null = null,
   selectedEntityLocked = false,
   opacityUnavailableReason: string | null = null,
+  strokeWidthAvailable = false,
+  strokeWidthValue: number | null = null,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
@@ -242,6 +244,7 @@ function renderSelectedInspector(
       onEntityOpacityChange={vi.fn()}
       onEntityRotate={vi.fn()}
       onEntityScaleChange={vi.fn()}
+      onEntityStrokeWidthChange={vi.fn()}
       onInspectorFocusRestored={vi.fn()}
       onRenderSessionChange={vi.fn()}
       onSourceChanged={vi.fn()}
@@ -259,6 +262,8 @@ function renderSelectedInspector(
       selectedEntityLocked={selectedEntityLocked}
       sourceExport={null}
       strokeColorValue={strokeColorValue}
+      strokeWidthAvailable={strokeWidthAvailable}
+      strokeWidthValue={strokeWidthValue}
       suggestion={null}
       workspace={null}
     />,
@@ -1951,13 +1956,42 @@ describe("StudioCanvas retained preview layer", () => {
 
   it("exposes stroke but not fill color for Studio-created open paths", () => {
     for (const entity of [CUBIC_BEZIER_ENTITY, LINE_ENTITY, ARROW_ENTITY]) {
-      const markup = renderSelectedInspector(entity, null, null, false, false, null, true, "#123456", "#abcdef");
+      const line = entity.type === "Line";
+      const markup = renderSelectedInspector(
+        entity,
+        null,
+        null,
+        false,
+        false,
+        null,
+        true,
+        "#123456",
+        "#abcdef",
+        false,
+        null,
+        line,
+        line ? 0.08 : null,
+      );
       const name = entity.id.slice("entity:".length);
       const stroke = new RegExp(`<input aria-label="Stroke color ${name}"[^>]*>`);
 
       expect(markup).not.toContain(`aria-label="Fill color ${name}"`);
       expect(markup.match(stroke)?.[0]).not.toContain('disabled=""');
       expect(markup.match(stroke)?.[0]).toContain('value="#abcdef"');
+      if (line) {
+        const width = markup.match(/<input aria-label="Stroke width line"[^>]*>/u)?.[0];
+        expect(width).toBeDefined();
+        expect(width).not.toContain('disabled=""');
+        expect(width).toContain('value="0.08"');
+        expect(width).toContain('min="0.005"');
+        expect(width).toContain('max="0.5"');
+        expect(width).toContain('step="0.005"');
+        expect(renderSelectedInspector(entity, null)).toMatch(
+          /<input aria-label="Stroke width line"[^>]*disabled=""[^>]*>/u,
+        );
+      } else {
+        expect(markup).not.toContain(`aria-label="Stroke width ${name}"`);
+      }
     }
   });
 

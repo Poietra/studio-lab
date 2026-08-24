@@ -146,6 +146,8 @@ const SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES: usize = 256;
 const SEGMENTED_MATH_TEX_PHASE_BOUNDARY: f64 = 0.5;
 const SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH: f64 = 2.0;
 const MANIM_STROKE_WIDTH_TO_SCENE_WORLD: f64 = 0.01;
+const MIN_STUDIO_LINE_STROKE_WIDTH_WORLD: f64 = 0.005;
+const MAX_STUDIO_LINE_STROKE_WIDTH_WORLD: f64 = 0.5;
 
 fn manim_stroke_width_to_scene_world(width: f64) -> f64 {
     width * MANIM_STROKE_WIDTH_TO_SCENE_WORLD
@@ -189,6 +191,7 @@ struct CreateSceneEntity {
     source_z_index: Option<f64>,
     shape_morph: Option<CreateSceneEntityShapeMorph>,
     stroke_color: Option<RgbaColorV1>,
+    stroke_width_world: Option<f64>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
     visible: bool,
     write_in: Option<CreateSceneEntityWriteIn>,
@@ -350,6 +353,9 @@ pub enum StudioCreationProjectedMutationKind {
     },
     StrokeColor {
         value: String,
+    },
+    StrokeWidth {
+        value: f64,
     },
     Resize {
         from_dimensions: StudioAuthoringDimensions,
@@ -530,6 +536,9 @@ pub enum StudioCreationOperationKind {
     StrokeColor {
         color: Option<String>,
     },
+    StrokeWidth {
+        width_world: Option<f64>,
+    },
     Resize {
         from_dimensions: StudioAuthoringDimensions,
         from_position: PointV1,
@@ -699,6 +708,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::RotationKeyframes { .. }
             | StudioCreationOperationKind::FillColor { .. }
             | StudioCreationOperationKind::StrokeColor { .. }
+            | StudioCreationOperationKind::StrokeWidth { .. }
             | StudioCreationOperationKind::Resize { .. }
             | StudioCreationOperationKind::PersistentRemove { .. }
             | StudioCreationOperationKind::CreateMotion { .. }
@@ -838,6 +848,7 @@ struct PlannedStudioCreationEntity {
     draw_easing: Option<EasingV1>,
     draw_interval: Option<IntervalV1>,
     stroke_color_override: Option<String>,
+    stroke_width_world_override: Option<f64>,
     fade_interval: Option<IntervalV1>,
     initial_dimensions: StudioAuthoringDimensions,
     initial_position: PointV1,

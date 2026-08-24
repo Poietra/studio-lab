@@ -737,7 +737,7 @@ describe("Studio creation wire", () => {
     });
   });
 
-  it("normalizes created-shape colors without accepting non-canonical values", () => {
+  it("normalizes created-shape colors and Line width without accepting non-canonical values", () => {
     const entityId = "entity:Circle";
     const common = {
       dependsOn: [] as string[],
@@ -760,6 +760,14 @@ describe("Studio creation wire", () => {
         key: "strokeColor",
         value: "#FEDCBA",
       }),
+      creationProgram("Line"),
+      followupProgram("width:Line", {
+        ...common,
+        entityId: "entity:Line",
+        id: "width:Line",
+        key: "strokeWidth",
+        value: 0.08,
+      }),
     ];
 
     const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs });
@@ -770,6 +778,11 @@ describe("Studio creation wire", () => {
       kind: "fill-color",
     });
     expect(command.programs[2]?.operations[0]).toMatchObject({ color: null, entityId, kind: "stroke-color" });
+    expect(command.programs[4]?.operations[0]).toMatchObject({
+      entityId: "entity:Line",
+      kind: "stroke-width",
+      widthWorld: 0.08,
+    });
   });
 
   it("normalizes one complete Camera view transition without a synthetic entity", () => {

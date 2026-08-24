@@ -1,15 +1,16 @@
 //! Complete-batch planning from admitted Studio creation operations to a closed creation plan.
 
 use super::{
-    BTreeMap, BTreeSet, IntervalV1, KeyframeV1, PersistentSceneRemoval,
-    PlannedStudioAnimatedResize, PlannedStudioCameraClip, PlannedStudioCreationEntity,
-    PlannedStudioLogicalGroup, PlannedStudioMathTexTransform, PlannedStudioMotion,
-    PlannedStudioShapeTransform, ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1,
-    SceneEditExecution, SceneEditScheduleMode, StudioAuthoringDimensions,
-    StudioAuthoringEntityKind, StudioAuthoringOrigin, StudioCreationEditInput,
-    StudioCreationOperationKind, StudioCreationPlan, StudioCreationProjectedMutation,
-    StudioCreationProjectedMutationKind, StudioCreationShapeState, StudioMathTexTransformStrategy,
-    StudioMotionPlan, StudioMotionProjectionTarget, StudioPropertyEasing, TIMELINE_ANCHOR_EPSILON,
+    BTreeMap, BTreeSet, IntervalV1, KeyframeV1, MAX_STUDIO_LINE_STROKE_WIDTH_WORLD,
+    MIN_STUDIO_LINE_STROKE_WIDTH_WORLD, PersistentSceneRemoval, PlannedStudioAnimatedResize,
+    PlannedStudioCameraClip, PlannedStudioCreationEntity, PlannedStudioLogicalGroup,
+    PlannedStudioMathTexTransform, PlannedStudioMotion, PlannedStudioShapeTransform,
+    ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1, SceneEditExecution,
+    SceneEditScheduleMode, StudioAuthoringDimensions, StudioAuthoringEntityKind,
+    StudioAuthoringOrigin, StudioCreationEditInput, StudioCreationOperationKind,
+    StudioCreationPlan, StudioCreationProjectedMutation, StudioCreationProjectedMutationKind,
+    StudioCreationShapeState, StudioMathTexTransformStrategy, StudioMotionPlan,
+    StudioMotionProjectionTarget, StudioPropertyEasing, TIMELINE_ANCHOR_EPSILON,
     close_transform_baseline_value, closed_studio_creation_motion_operations,
     closed_studio_group_layer_order, closed_studio_group_rotation,
     closed_studio_material_parameter_track, closed_studio_opacity_track,
@@ -412,6 +413,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Visibility { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
+                | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
@@ -465,6 +467,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Visibility { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
+                | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
@@ -1059,6 +1062,7 @@ pub(super) fn plan_studio_creation_edits(
             draw_easing,
             draw_interval,
             stroke_color_override: None,
+            stroke_width_world_override: None,
             fade_interval,
             has_position_or_resize_instant: false,
             initial_dimensions: spec.dimensions,
@@ -2244,6 +2248,47 @@ pub(super) fn plan_studio_creation_edits(
                         },
                     ));
                 }
+                StudioCreationOperationKind::StrokeWidth {
+                    width_world: Some(width_world),
+                } if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                    && state.kind == StudioAuthoringEntityKind::Line
+                    && width_world.is_finite()
+                    && (MIN_STUDIO_LINE_STROKE_WIDTH_WORLD
+                        ..=MAX_STUDIO_LINE_STROKE_WIDTH_WORLD)
+                        .contains(width_world)
+                    && state.stroke_width_world_override != Some(*width_world)
+                    && studio_timeline_semantic_values_match(
+                        operation.interval.start,
+                        program.anchor_resolved_seconds,
+                    )
+                    && studio_timeline_semantic_values_match(
+                        operation.interval.end,
+                        program.anchor_resolved_seconds,
+                    )
+                    && studio_timeline_semantic_values_match(
+                        program.anchor_resolved_seconds,
+                        state.spec.lifetime_start,
+                    )
+                    && state.persistent_removal.is_none() =>
+                {
+                    state.stroke_width_world_override = Some(*width_world);
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: IntervalV1 {
+                                start: state.lifetime.start,
+                                end: state.lifetime.start,
+                            },
+                            kind: StudioCreationProjectedMutationKind::StrokeWidth {
+                                value: *width_world,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
                 StudioCreationOperationKind::TransformShape {
                     easing,
                     from_dimensions,
@@ -2484,6 +2529,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::RotationKeyframes { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
+                | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }

@@ -1000,6 +1000,71 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source).toContain('.set_fill("#12abef", opacity=0.4)');
     expect(result.lowered.source).toContain('.set_stroke("#fedcba")');
     expect(result.lowered.source).toContain(".rotate(0.5236)");
+
+    const lineBase = createCircleProgram("created-line-style", "line");
+    const lineEntityId = "tx:created-line-style/entity:line";
+    const lineOperations = lineBase.operations.map((operation): CanonicalEditOperation => {
+      if (operation.kind === "CreateEntity") {
+        return { ...operation, entity: { ...operation.entity, dimensions: {}, type: "Line" } };
+      }
+      if (operation.kind !== "ChangePresence") return operation;
+      return {
+        dependsOn: operation.dependsOn,
+        easing: "linear",
+        entityId: operation.entityId,
+        id: operation.id,
+        interval: operation.interval,
+        kind: "DrawIn",
+        provenance: operation.provenance,
+      };
+    });
+    const lineCreation: CanonicalEditProgram = {
+      ...lineBase,
+      operations: lineOperations,
+      schedule: { ...lineBase.schedule, order: lineOperations.map(({ id }) => id) },
+    };
+    const lineStyle = (transactionId: string, key: "strokeColor" | "strokeWidth", value: string | number) => {
+      const operation: CanonicalEditOperation = {
+        dependsOn: [],
+        entityId: lineEntityId,
+        id: `${transactionId}/operation`,
+        interval: { end: 5, start: 5 },
+        key,
+        kind: "SetProperty",
+        provenance: { evidence: [], origin: "direct-manipulation" },
+        value,
+      };
+      return {
+        ...lineCreation,
+        operations: [operation],
+        schedule: { edges: [], mode: "parallel" as const, order: [operation.id] },
+        transactionId,
+      };
+    };
+    const lineStroke = lineStyle("created-line-stroke", "strokeColor", "#fedcba");
+    const lineWidth = lineStyle("created-line-width", "strokeWidth", 0.08);
+    const lineAuthorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+    const lineResult = await lower(
+      { ...request(lineCreation), programs: [lineCreation, lineStroke, lineWidth] },
+      sceneSource,
+      async (input) => {
+        lineAuthorizations.push(input);
+      },
+    );
+
+    expect(lineAuthorizations[0]?.programs).toEqual([lineCreation, lineStroke, lineWidth]);
+    const initialStroke = '.set_stroke("#fedcba", width=8)';
+    expect(lineResult.lowered.source).toContain(initialStroke);
+    expect(lineResult.lowered.source.indexOf(initialStroke)).toBeLessThan(lineResult.lowered.source.indexOf("Create("));
+
+    const invalidLineWidth = lineStyle("invalid-line-width", "strokeWidth", 0.501);
+    let invalidLineAuthorizerCalls = 0;
+    await expect(
+      lower({ ...request(lineCreation), programs: [lineCreation, invalidLineWidth] }, sceneSource, async () => {
+        invalidLineAuthorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
+    expect(invalidLineAuthorizerCalls).toBe(0);
   });
 
   it("rejects a created entity plus an imported transform as an unsupported mixed family", async () => {

@@ -45,6 +45,7 @@ export type EntityStyle = Readonly<{
   color?: string;
   fillColor?: string;
   strokeColor?: string;
+  strokeWidth?: number;
 }>;
 
 export type TextLayout = Readonly<{
@@ -155,6 +156,7 @@ export type PropertyChannel = Readonly<{
     | "scale"
     | "shape"
     | "strokeColor"
+    | "strokeWidth"
     | "visibility";
   samples: readonly PropertyChannelSample[];
 }>;
