@@ -1,8 +1,8 @@
 //! Complete-batch planning from admitted Studio creation operations to a closed creation plan.
 
 use super::{
-    BTreeMap, BTreeSet, IntervalV1, KeyframeV1, MAX_STUDIO_LINE_STROKE_WIDTH_WORLD,
-    MIN_STUDIO_LINE_STROKE_WIDTH_WORLD, PersistentSceneRemoval, PlannedStudioAnimatedResize,
+    BTreeMap, BTreeSet, IntervalV1, KeyframeV1, MAX_STUDIO_STROKE_WIDTH_WORLD,
+    MIN_STUDIO_STROKE_WIDTH_WORLD, PersistentSceneRemoval, PlannedStudioAnimatedResize,
     PlannedStudioCameraClip, PlannedStudioCreationEntity, PlannedStudioLogicalGroup,
     PlannedStudioMathTexTransform, PlannedStudioMotion, PlannedStudioShapeTransform,
     ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1, SceneEditExecution,
@@ -23,10 +23,11 @@ use super::{
     studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
     studio_coordinate_system_parameters, studio_creation_initial_appearance_end,
     studio_creation_motion_is_compatible, studio_creation_spec_text_content,
-    studio_cubic_bezier_dimensions_are_canonical, studio_cubic_bezier_is_canonical,
-    studio_data_series_is_valid, studio_ellipse_parameters, studio_math_tex_content_is_canonical,
-    studio_regular_polygon_parameters, studio_shape_transform_path,
-    studio_text_content_is_canonical, studio_timeline_semantic_values_match,
+    studio_creation_supports_stroke_width, studio_cubic_bezier_dimensions_are_canonical,
+    studio_cubic_bezier_is_canonical, studio_data_series_is_valid, studio_ellipse_parameters,
+    studio_math_tex_content_is_canonical, studio_regular_polygon_parameters,
+    studio_shape_transform_path, studio_text_content_is_canonical,
+    studio_timeline_semantic_values_match,
 };
 
 fn studio_shape_transform_pair_is_supported(
@@ -2274,10 +2275,9 @@ pub(super) fn plan_studio_creation_edits(
                 StudioCreationOperationKind::StrokeWidth {
                     width_world: Some(width_world),
                 } if operation.origin == StudioAuthoringOrigin::DirectManipulation
-                    && state.kind == StudioAuthoringEntityKind::Line
+                    && studio_creation_supports_stroke_width(state.kind)
                     && width_world.is_finite()
-                    && (MIN_STUDIO_LINE_STROKE_WIDTH_WORLD
-                        ..=MAX_STUDIO_LINE_STROKE_WIDTH_WORLD)
+                    && (MIN_STUDIO_STROKE_WIDTH_WORLD..=MAX_STUDIO_STROKE_WIDTH_WORLD)
                         .contains(width_world)
                     && state.stroke_width_world_override != Some(*width_world)
                     && studio_timeline_semantic_values_match(

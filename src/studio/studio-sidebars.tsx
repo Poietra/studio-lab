@@ -30,6 +30,7 @@ import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragm
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity } from "./model";
+import { studioEntityTypeSupportsStrokeWidth } from "./scene-edit-contract";
 import {
   STUDIO_IMAGE_ASSET_DRAG_TYPE,
   type StudioNativeImageAssetV1,
@@ -1474,7 +1475,7 @@ export function StudioInspector({
                     </dd>
                   </div>
                 ) : null}
-                {selectedEntity.type === "Line" ? (
+                {studioEntityTypeSupportsStrokeWidth(selectedEntity.type) ? (
                   <div className="contents">
                     <dt className="self-center text-zinc-600">Stroke width</dt>
                     <dd>
@@ -1498,8 +1499,8 @@ export function StudioInspector({
                           step="0.005"
                           title={
                             strokeWidthAvailable
-                              ? "Set the Line stroke width in scene units"
-                              : "Stroke width editing requires a Studio-created Line at its creation time"
+                              ? "Set the object stroke width in scene units"
+                              : "Stroke width editing requires a supported Studio-created object at its creation time"
                           }
                           type="number"
                         />

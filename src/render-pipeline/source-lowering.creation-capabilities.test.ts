@@ -623,6 +623,7 @@ describe("Canonical EditProgram source lowering", () => {
     const opacity = propertyProgram("created-opacity", "appearance", 0.4);
     const fill = propertyProgram("created-fill", "fillColor", "#12abef");
     const stroke = propertyProgram("created-stroke", "strokeColor", "#fedcba");
+    const shapeWidth = propertyProgram("created-shape-width", "strokeWidth", 0.08);
 
     const lowered = lowerCanonicalProgramBatchSource(
       source,
@@ -634,6 +635,15 @@ describe("Canonical EditProgram source lowering", () => {
     expect(lowered.insertedCode).toContain('poietra_created_colors_1.set_fill("#12abef", opacity=0.4)');
     expect(lowered.insertedCode).toContain('poietra_created_colors_1.set_stroke("#fedcba")');
     expect(lowered.insertedCode.indexOf(".set_opacity(0.4)")).toBeLessThan(lowered.insertedCode.indexOf(".set_fill("));
+
+    const loweredShapeWidth = lowerCanonicalProgramBatchSource(
+      source,
+      request(create, []),
+      [create, shapeWidth].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    expect(loweredShapeWidth.insertedCode).toContain("poietra_created_colors_1.set_stroke(width=8)");
 
     const fillFirst = lowerCanonicalProgramBatchSource(
       source,
@@ -787,7 +797,7 @@ describe("Canonical EditProgram source lowering", () => {
     ]);
     expect(() =>
       lowerCanonicalProgramSource(source, request(importedStrokeWidth), { height: 8, width: 14.222 }, null),
-    ).toThrow(/only authorized Studio-created Line entities/i);
+    ).toThrow(/only authorized Studio-created Line or closed primitive entities/i);
 
     const importedStrokeCap = canonicalProgram([
       {

@@ -1159,7 +1159,7 @@ export function createDirectManipulationStrokeWidthProgram(
   }>,
 ): SceneEditValidationResult {
   if (!Number.isFinite(input.strokeWidth) || input.strokeWidth < 0.005 || input.strokeWidth > 0.5) {
-    throw new Error("Line stroke width must be from 0.005 to 0.5 scene units.");
+    throw new Error("Stroke width must be from 0.005 to 0.5 scene units.");
   }
   const sourceAnchor =
     Math.abs(input.start - input.capturedPlayhead) < 0.001
@@ -1177,7 +1177,7 @@ export function createDirectManipulationStrokeWidthProgram(
     interval: { end: input.start, start: input.start },
     key: "strokeWidth",
     kind: "SetProperty",
-    provenance: provenance("direct-manipulation", ["stroke width control", "absolute Line width"]),
+    provenance: provenance("direct-manipulation", ["stroke width control", "absolute stroke width"]),
     value: input.strokeWidth,
   };
   return validateAndScheduleProgram(
@@ -1186,7 +1186,7 @@ export function createDirectManipulationStrokeWidthProgram(
       intentCount: 1,
       loweringStatus: "supported",
       operations: [operation],
-      provenance: provenance("direct-manipulation", ["absolute static Line stroke width constraint"]),
+      provenance: provenance("direct-manipulation", ["absolute static object stroke width constraint"]),
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
       transactionId: input.transactionId,

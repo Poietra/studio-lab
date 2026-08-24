@@ -4299,15 +4299,64 @@ fn normalized_creation_rejects_invalid_curve_dimensions_atomically() {
     }
 }
 
+fn assert_studio_shape_paint_operation(
+    bundle: &SceneIrBundleV1,
+    kind: StudioAuthoringEntityKind,
+    dimensions: StudioAuthoringDimensions,
+    operation_id: &str,
+    operation: StudioCreationOperationKind,
+    accepted: bool,
+) {
+    let mut command = studio_path_creation_command(bundle, "shape", kind, dimensions);
+    command.programs.push(studio_created_appearance_edit_input(
+        0.5,
+        "tx:create/entity:shape",
+        operation_id,
+        operation,
+    ));
+    let projected = project_studio_creation_edits(bundle.scene.duration, &command.programs);
+    assert_eq!(projected.is_ok(), accepted);
+    if !accepted {
+        return;
+    }
+    let result = EngineSessionV1::new(bundle.clone())
+        .unwrap()
+        .apply_studio_creation_edit(command)
+        .unwrap();
+    if operation_id != "stroke-width" {
+        return;
+    }
+    let created = result
+        .bundle
+        .scene
+        .entities
+        .iter()
+        .find(|entity| entity.id == "tx:create/entity:shape")
+        .unwrap();
+    assert!(matches!(
+        &created.appearance,
+        SceneAppearanceV1::Vector {
+            stroke: Some(stroke),
+            ..
+        } if (stroke.width_world - 0.08).abs() < 1e-12
+    ));
+}
+
 #[test]
 fn normalized_creation_limits_shape_paint_to_closed_fill_and_vector_stroke() {
     let bundle = static_imported_bundle();
     let dimensions = |kind| match kind {
-        StudioAuthoringEntityKind::Ellipse => StudioAuthoringDimensions {
-            height: Some(1.0),
-            width: Some(2.0),
+        StudioAuthoringEntityKind::Circle => StudioAuthoringDimensions {
+            radius: Some(1.0),
             ..StudioAuthoringDimensions::default()
         },
+        StudioAuthoringEntityKind::Ellipse | StudioAuthoringEntityKind::Rectangle => {
+            StudioAuthoringDimensions {
+                height: Some(1.0),
+                width: Some(2.0),
+                ..StudioAuthoringDimensions::default()
+            }
+        }
         StudioAuthoringEntityKind::Arc | StudioAuthoringEntityKind::Sector => {
             StudioAuthoringDimensions {
                 angles: Some(StudioAuthoringAngles {
@@ -4331,8 +4380,10 @@ fn normalized_creation_limits_shape_paint_to_closed_fill_and_vector_stroke() {
     let cases = [
         (StudioAuthoringEntityKind::Arc, false, true),
         (StudioAuthoringEntityKind::Arrow, false, true),
+        (StudioAuthoringEntityKind::Circle, true, true),
         (StudioAuthoringEntityKind::Ellipse, true, true),
         (StudioAuthoringEntityKind::Line, false, true),
+        (StudioAuthoringEntityKind::Rectangle, true, true),
         (StudioAuthoringEntityKind::RegularPolygon, true, true),
         (StudioAuthoringEntityKind::Sector, true, true),
     ];
@@ -4358,7 +4409,14 @@ fn normalized_creation_limits_shape_paint_to_closed_fill_and_vector_stroke() {
                 StudioCreationOperationKind::StrokeWidth {
                     width_world: Some(0.08),
                 },
-                kind == StudioAuthoringEntityKind::Line,
+                matches!(
+                    kind,
+                    StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::Ellipse
+                        | StudioAuthoringEntityKind::Line
+                        | StudioAuthoringEntityKind::Rectangle
+                        | StudioAuthoringEntityKind::RegularPolygon
+                ),
             ),
             (
                 "stroke-cap",
@@ -4368,22 +4426,14 @@ fn normalized_creation_limits_shape_paint_to_closed_fill_and_vector_stroke() {
                 kind == StudioAuthoringEntityKind::Line,
             ),
         ] {
-            let mut command =
-                studio_path_creation_command(&bundle, "shape", kind, dimensions(kind));
-            command.programs.push(studio_created_appearance_edit_input(
-                0.5,
-                "tx:create/entity:shape",
+            assert_studio_shape_paint_operation(
+                &bundle,
+                kind,
+                dimensions(kind),
                 operation_id,
                 operation,
-            ));
-            let projected = project_studio_creation_edits(bundle.scene.duration, &command.programs);
-            assert_eq!(projected.is_ok(), accepted);
-            if accepted {
-                EngineSessionV1::new(bundle.clone())
-                    .unwrap()
-                    .apply_studio_creation_edit(command)
-                    .unwrap();
-            }
+                accepted,
+            );
         }
     }
 }

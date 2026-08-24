@@ -477,3 +477,14 @@ export function shapeTransformChangesShape(from: ShapeTransformEndpoint, to: Sha
     from.shape === "regular-polygon" && to.shape === "regular-polygon" && from.dimensions.sides !== to.dimensions.sides
   );
 }
+
+export function studioEntityTypeSupportsStrokeWidth(type: string) {
+  return (
+    type === "Line" ||
+    type === "Circle" ||
+    type === "Rectangle" ||
+    type === "Ellipse" ||
+    type === "Triangle" ||
+    type === "RegularPolygon"
+  );
+}

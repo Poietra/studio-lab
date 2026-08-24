@@ -907,16 +907,40 @@ describe("Studio draft validation boundary", () => {
       apply: "supported",
       lowering: "supported",
     });
-    expect(
-      createDirectManipulationStrokeWidthProgram({
-        capturedPlayhead: 0,
-        entityId,
-        scene,
-        start: 0,
-        strokeWidth: 0.08,
-        transactionId: "circle-width",
-      }),
-    ).toMatchObject({ kind: "invalid" });
+    for (const type of ["Circle", "Rectangle", "Ellipse", "Triangle", "RegularPolygon"] as const) {
+      const shapeEntityId = type === "Circle" ? entityId : `tx:shape/entity:${type.toLowerCase()}`;
+      const shapeScene =
+        type === "Circle"
+          ? scene
+          : {
+              ...scene,
+              objectGraph: {
+                ...scene.objectGraph,
+                entities: {
+                  ...scene.objectGraph.entities,
+                  [shapeEntityId]: {
+                    ...scene.objectGraph.entities[entityId],
+                    id: shapeEntityId,
+                    type,
+                  },
+                },
+              },
+            };
+      expect(
+        createDirectManipulationStrokeWidthProgram({
+          capturedPlayhead: 0,
+          entityId: shapeEntityId,
+          scene: shapeScene,
+          start: 0,
+          strokeWidth: 0.08,
+          transactionId: `${type.toLowerCase()}-width`,
+        }),
+      ).toMatchObject({
+        issues: [],
+        kind: "valid",
+        program: { operations: [{ entityId: shapeEntityId, key: "strokeWidth", value: 0.08 }] },
+      });
+    }
     expect(
       createDirectManipulationStrokeCapProgram({
         capturedPlayhead: 0,
