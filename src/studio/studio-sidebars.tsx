@@ -1181,6 +1181,7 @@ export function StudioInspector({
   onEntityOpacityChange,
   onEntityRotate,
   onEntityScaleChange,
+  onEntityStrokeWidthChange,
   onInspectorFocusRestored,
   onRenderSessionChange,
   onSourceChanged,
@@ -1201,6 +1202,8 @@ export function StudioInspector({
   sourceExport,
   sourceExportBlocker = null,
   strokeColorValue,
+  strokeWidthAvailable,
+  strokeWidthValue,
   suggestion,
   workspace,
 }: Readonly<{
@@ -1252,6 +1255,7 @@ export function StudioInspector({
   onEntityOpacityChange: (entityId: string, opacity: number) => void;
   onEntityRotate: (entityId: string, angleRadians: number) => void;
   onEntityScaleChange: (entityId: string, scale: number) => void;
+  onEntityStrokeWidthChange: (entityId: string, strokeWidth: number) => void;
   onInspectorFocusRestored: () => void;
   onRenderSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
   onSourceChanged: (target: RenderSourceRefreshTarget) => void | Promise<void>;
@@ -1272,6 +1276,8 @@ export function StudioInspector({
   sourceExport: OriginalManimSourceExportRequest | null;
   sourceExportBlocker?: string | null;
   strokeColorValue: string | null;
+  strokeWidthAvailable: boolean;
+  strokeWidthValue: number | null;
   suggestion: EditSuggestion | null;
   workspace: ManimWorkspaceView | null;
 }>) {
@@ -1420,6 +1426,46 @@ export function StudioInspector({
                     </dd>
                   </div>
                 ))}
+                {selectedEntity.type === "Line" ? (
+                  <div className="contents">
+                    <dt className="self-center text-zinc-600">Stroke width</dt>
+                    <dd>
+                      <form
+                        className="flex items-center gap-1"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const data = new FormData(event.currentTarget);
+                          onEntityStrokeWidthChange(selectedEntity.id, Number(data.get("strokeWidth")));
+                        }}
+                      >
+                        <input
+                          aria-label={`Stroke width ${entityLabel(selectedEntity)}`}
+                          className="h-7 min-w-0 flex-1 border border-zinc-700 bg-zinc-950 px-1.5 font-mono text-xs text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700"
+                          defaultValue={strokeWidthValue ?? 0.04}
+                          disabled={!strokeWidthAvailable}
+                          key={`${selectedEntity.id}/strokeWidth/${strokeWidthValue ?? 0.04}`}
+                          max="0.5"
+                          min="0.005"
+                          name="strokeWidth"
+                          step="0.005"
+                          title={
+                            strokeWidthAvailable
+                              ? "Set the Line stroke width in scene units"
+                              : "Stroke width editing requires a Studio-created Line at its creation time"
+                          }
+                          type="number"
+                        />
+                        <button
+                          className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                          disabled={!strokeWidthAvailable}
+                          type="submit"
+                        >
+                          Set
+                        </button>
+                      </form>
+                    </dd>
+                  </div>
+                ) : null}
                 <dt className="self-center text-zinc-600">Opacity</dt>
                 <dd>
                   <form

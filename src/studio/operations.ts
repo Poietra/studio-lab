@@ -20,6 +20,7 @@ export type PropertyChannelKey =
   | "scale"
   | "shape"
   | "strokeColor"
+  | "strokeWidth"
   | "visibility";
 
 export type ChannelAccess = Readonly<{

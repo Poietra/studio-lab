@@ -259,6 +259,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 source_z_index: None,
                 shape_morph: None,
                 stroke_color: None,
+                stroke_width_world: None,
                 instant_transform: None,
                 visible: true,
                 write_in: None,
@@ -290,6 +291,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 source_z_index: None,
                 shape_morph: None,
                 stroke_color: None,
+                stroke_width_world: None,
                 instant_transform: Some(CreateSceneEntityInstantTransform {
                     at: 1.25,
                     position: PointV1 { x: -1.0, y: 0.5 },
@@ -326,6 +328,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 source_z_index: None,
                 shape_morph: None,
                 stroke_color: None,
+                stroke_width_world: None,
                 instant_transform: None,
                 visible: true,
                 write_in: None,
@@ -4243,7 +4246,7 @@ fn normalized_creation_rejects_invalid_curve_dimensions_atomically() {
 }
 
 #[test]
-fn normalized_creation_limits_shape_colors_to_closed_fill_and_vector_stroke() {
+fn normalized_creation_limits_shape_paint_to_closed_fill_and_vector_stroke() {
     let bundle = static_imported_bundle();
     let dimensions = |kind| match kind {
         StudioAuthoringEntityKind::Ellipse => StudioAuthoringDimensions {
@@ -4296,6 +4299,13 @@ fn normalized_creation_limits_shape_colors_to_closed_fill_and_vector_stroke() {
                 },
                 accepts_stroke,
             ),
+            (
+                "stroke-width",
+                StudioCreationOperationKind::StrokeWidth {
+                    width_world: Some(0.08),
+                },
+                kind == StudioAuthoringEntityKind::Line,
+            ),
         ] {
             let mut command =
                 studio_path_creation_command(&bundle, "shape", kind, dimensions(kind));
@@ -4319,8 +4329,7 @@ fn normalized_creation_limits_shape_colors_to_closed_fill_and_vector_stroke() {
 #[test]
 fn normalized_creation_projects_and_applies_a_line() {
     let bundle = static_imported_bundle();
-    let mut command = studio_creation_command(&bundle);
-    command.programs.truncate(1);
+    let mut command = studio_draw_creation_command(&bundle);
     let program = &mut command.programs[0];
     for operation in &mut program.operations {
         if operation.entity_id.as_deref() == Some("tx:create/entity:circle") {
@@ -4333,10 +4342,28 @@ fn normalized_creation_projects_and_applies_a_line() {
     entity.id = "tx:create/entity:line".to_owned();
     entity.kind = StudioAuthoringEntityKind::Line;
     entity.dimensions = StudioAuthoringDimensions::default();
+    command.programs.push(studio_created_appearance_edit_input(
+        0.5,
+        "tx:create/entity:line",
+        "line-stroke-width",
+        StudioCreationOperationKind::StrokeWidth {
+            width_world: Some(0.08),
+        },
+    ));
 
     let projection =
         project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
     assert_eq!(projection.entities[0].kind, StudioAuthoringEntityKind::Line);
+    assert!(projection.mutations.iter().any(|mutation| matches!(
+        mutation,
+        StudioCreationProjectedMutation {
+            interval: IntervalV1 { start, end },
+            kind: StudioCreationProjectedMutationKind::StrokeWidth { value },
+            ..
+        } if (*start - 0.5).abs() < 1e-12
+            && (*end - 0.5).abs() < 1e-12
+            && (*value - 0.08).abs() < 1e-12
+    )));
 
     let mut session = EngineSessionV1::new(bundle).unwrap();
     let result = session.apply_studio_creation_edit(command).unwrap();
@@ -4359,9 +4386,82 @@ fn normalized_creation_projects_and_applies_a_line() {
         &created.appearance,
         SceneAppearanceV1::Vector {
             fill: None,
-            stroke: Some(_),
+            stroke: Some(stroke),
             ..
-        }
+        } if (stroke.width_world - 0.08).abs() < 1e-12
+    ));
+    assert!(
+        result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .any(|channel| matches!(
+                channel,
+                AnimationChannelV1::PathTrim { entity_id, .. }
+                    if entity_id == "tx:create/entity:line"
+            ))
+    );
+
+    for width_world in [0.004, 0.501, f64::NAN] {
+        let mut invalid = studio_path_creation_command(
+            &static_imported_bundle(),
+            "line",
+            StudioAuthoringEntityKind::Line,
+            StudioAuthoringDimensions::default(),
+        );
+        invalid.programs.push(studio_created_appearance_edit_input(
+            0.5,
+            "tx:create/entity:line",
+            "invalid-line-stroke-width",
+            StudioCreationOperationKind::StrokeWidth {
+                width_world: Some(width_world),
+            },
+        ));
+        assert!(matches!(
+            project_studio_creation_edits(0.5, &invalid.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+    }
+
+    let mut late = studio_path_creation_command(
+        &static_imported_bundle(),
+        "line",
+        StudioAuthoringEntityKind::Line,
+        StudioAuthoringDimensions::default(),
+    );
+    late.programs.push(studio_created_appearance_edit_input(
+        0.75,
+        "tx:create/entity:line",
+        "late-line-stroke-width",
+        StudioCreationOperationKind::StrokeWidth {
+            width_world: Some(0.08),
+        },
+    ));
+    assert!(matches!(
+        project_studio_creation_edits(0.5, &late.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+
+    let mut animated = studio_path_creation_command(
+        &static_imported_bundle(),
+        "line",
+        StudioAuthoringEntityKind::Line,
+        StudioAuthoringDimensions::default(),
+    );
+    let mut animated_width = studio_created_appearance_edit_input(
+        0.5,
+        "tx:create/entity:line",
+        "animated-line-stroke-width",
+        StudioCreationOperationKind::StrokeWidth {
+            width_world: Some(0.08),
+        },
+    );
+    animated_width.operations[0].interval.end = 0.75;
+    animated.programs.push(animated_width);
+    assert!(matches!(
+        project_studio_creation_edits(0.5, &animated.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
     ));
 }
 

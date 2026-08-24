@@ -604,14 +604,15 @@ describe("Canonical EditProgram source lowering", () => {
     );
     const propertyProgram = (
       transactionId: string,
-      key: "appearance" | "fillColor" | "strokeColor",
+      key: "appearance" | "fillColor" | "strokeColor" | "strokeWidth",
       value: number | string,
+      targetEntityId = entityId,
     ) =>
       canonicalProgram(
         [
           {
             ...operationBase(`${transactionId}/operation`, 7),
-            entityId,
+            entityId: targetEntityId,
             key,
             kind: "SetProperty",
             value,
@@ -645,6 +646,54 @@ describe("Canonical EditProgram source lowering", () => {
     expect(fillFirst.insertedCode.indexOf(".set_fill(")).toBeLessThan(
       fillFirst.insertedCode.indexOf(".set_opacity(0.4)"),
     );
+
+    const lineEntityId = "tx:created-line-style/entity:line";
+    const createLineId = "tx:created-line-style/operation:create";
+    const createLine = canonicalProgram(
+      [
+        {
+          ...operationBase(createLineId, 7),
+          entity: {
+            id: lineEntityId,
+            lifetime: { end: null, start: 7 },
+            type: "Line",
+          },
+          kind: "CreateEntity",
+        },
+        {
+          ...operationBase("tx:created-line-style/operation:draw", 7, 7.5),
+          dependsOn: [createLineId],
+          easing: "linear",
+          entityId: lineEntityId,
+          kind: "DrawIn",
+        },
+      ],
+      "created-line-style",
+    );
+    const lineStroke = propertyProgram("created-line-stroke", "strokeColor", "#fedcba", lineEntityId);
+    const lineWidth = propertyProgram("created-line-width", "strokeWidth", 0.08, lineEntityId);
+    const loweredLine = lowerCanonicalProgramBatchSource(
+      source,
+      request(createLine, []),
+      [createLine, lineStroke, lineWidth].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    const initialStroke = 'poietra_created_line_style_1.set_stroke("#fedcba", width=8)';
+    expect(loweredLine.insertedCode).toContain(initialStroke);
+    expect(loweredLine.insertedCode.indexOf(initialStroke)).toBeLessThan(loweredLine.insertedCode.indexOf("Create("));
+    expect(loweredLine.insertedCode.match(/\.set_stroke\(/gu)).toHaveLength(1);
+
+    const invalidLineWidth = propertyProgram("invalid-line-width", "strokeWidth", 0.501, lineEntityId);
+    expect(() =>
+      lowerCanonicalProgramBatchSource(
+        source,
+        request(createLine, []),
+        [createLine, invalidLineWidth].map((program) => ({ program, sourceAnchor: 7 })),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/between 0\.005 and 0\.5 world units/i);
   });
 
   it("rejects shape colors for imported entities", () => {
@@ -661,6 +710,19 @@ describe("Canonical EditProgram source lowering", () => {
     expect(() =>
       lowerCanonicalProgramSource(source, request(importedFill), { height: 8, width: 14.222 }, null),
     ).toThrow(/only authorized Studio-created entities/i);
+
+    const importedStrokeWidth = canonicalProgram([
+      {
+        ...operationBase("imported-stroke-width", 7),
+        entityId: "equation_1",
+        key: "strokeWidth",
+        kind: "SetProperty",
+        value: 0.08,
+      },
+    ]);
+    expect(() =>
+      lowerCanonicalProgramSource(source, request(importedStrokeWidth), { height: 8, width: 14.222 }, null),
+    ).toThrow(/only authorized Studio-created Line entities/i);
   });
 
   it("lowers a Scene duration extension to an explicit wait", () => {

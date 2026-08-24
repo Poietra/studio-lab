@@ -18,6 +18,7 @@ import {
   createDirectManipulationResizeProgram,
   createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
+  createDirectManipulationStrokeWidthProgram,
   createDirectManipulationVisibilityProgram,
 } from "./suggestion-program";
 
@@ -720,7 +721,7 @@ describe("Studio draft validation boundary", () => {
     ).toThrow(/unique/i);
   });
 
-  it("creates only the canonical colors supported by a Studio-created object", () => {
+  it("creates only the canonical styles supported by a Studio-created object", () => {
     const entityId = "tx:shape/entity:circle";
     const scene = {
       ...STUDIO_FIXTURE_SCENE,
@@ -855,6 +856,69 @@ describe("Studio draft validation boundary", () => {
         transactionId: "imported-stroke",
       }),
     ).toMatchObject({ kind: "invalid" });
+
+    const lineEntityId = "tx:shape/entity:line-width";
+    const lineScene = {
+      ...scene,
+      objectGraph: {
+        ...scene.objectGraph,
+        entities: {
+          ...scene.objectGraph.entities,
+          [lineEntityId]: {
+            ...scene.objectGraph.entities[entityId],
+            id: lineEntityId,
+            type: "Line",
+          },
+        },
+      },
+    };
+    const lineWidth = createDirectManipulationStrokeWidthProgram({
+      capturedPlayhead: 0,
+      entityId: lineEntityId,
+      scene: lineScene,
+      start: 0,
+      strokeWidth: 0.08,
+      transactionId: "line-width",
+    });
+    expect(lineWidth).toMatchObject({
+      issues: [],
+      kind: "valid",
+      program: { operations: [{ entityId: lineEntityId, key: "strokeWidth", value: 0.08 }] },
+    });
+    expect(programExecutionCapabilities(lineWidth.program)).toMatchObject({
+      apply: "supported",
+      lowering: "supported",
+    });
+    expect(
+      createDirectManipulationStrokeWidthProgram({
+        capturedPlayhead: 0,
+        entityId,
+        scene,
+        start: 0,
+        strokeWidth: 0.08,
+        transactionId: "circle-width",
+      }),
+    ).toMatchObject({ kind: "invalid" });
+    expect(
+      createDirectManipulationStrokeWidthProgram({
+        capturedPlayhead: 0,
+        entityId: "equation_1",
+        scene,
+        start: 0,
+        strokeWidth: 0.08,
+        transactionId: "imported-width",
+      }),
+    ).toMatchObject({ kind: "invalid" });
+    expect(() =>
+      createDirectManipulationStrokeWidthProgram({
+        capturedPlayhead: 0,
+        entityId: lineEntityId,
+        scene: lineScene,
+        start: 0,
+        strokeWidth: 0.501,
+        transactionId: "invalid-line-width",
+      }),
+    ).toThrow(/0\.005 to 0\.5/u);
   });
 
   it("samples projected shape colors only from their edit time", () => {

@@ -98,8 +98,17 @@ export function drawInUnavailableReason(
 
 function loweringStatusFor(operations: readonly SceneEditOperation[]) {
   const rank = { illustrative: 1, supported: 0, unsupported: 2 } as const;
+  const sourceLowerableLineIds = new Set(
+    operations.flatMap((operation) =>
+      operation.kind === "CreateEntity" && operation.entity.type === "Line" ? [operation.entity.id] : [],
+    ),
+  );
   return operations
-    .map((operation) => operationExecutionCapabilities(operation).lowering)
+    .map((operation) =>
+      operation.kind === "DrawIn" && sourceLowerableLineIds.has(operation.entityId)
+        ? "supported"
+        : operationExecutionCapabilities(operation).lowering,
+    )
     .reduce<SceneEdit["loweringStatus"]>(
       (current, candidate) => (rank[candidate] > rank[current] ? candidate : current),
       "supported",

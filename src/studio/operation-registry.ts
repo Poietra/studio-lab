@@ -101,6 +101,14 @@ function setPropertyExecution(
     return SUPPORTED_EXECUTION;
   if ((operation.key === "fillColor" || operation.key === "strokeColor") && isCanonicalRgbHex(operation.value))
     return SUPPORTED_EXECUTION;
+  if (
+    operation.key === "strokeWidth" &&
+    typeof operation.value === "number" &&
+    Number.isFinite(operation.value) &&
+    operation.value >= 0.005 &&
+    operation.value <= 0.5
+  )
+    return SUPPORTED_EXECUTION;
   if (operation.key === "sourceZIndex" && typeof operation.value === "number" && Number.isFinite(operation.value)) {
     return operation.documentStatic ? CLIENT_ONLY_EXECUTION : SUPPORTED_EXECUTION;
   }
@@ -229,6 +237,20 @@ function sourceAnimationEnd(operation: SceneEditOperation) {
   )
     return operation.interval.end;
   return null;
+}
+
+function drawInHasTruthfulLineCreation(program: SceneEdit, operation: Extract<SceneEditOperation, { kind: "DrawIn" }>) {
+  const create = program.operations.find(
+    (candidate) => candidate.kind === "CreateEntity" && candidate.entity.id === operation.entityId,
+  );
+  if (!create || create.kind !== "CreateEntity" || create.entity.type !== "Line") return false;
+  const lifetime = create.entity.lifetime;
+  return (
+    Math.abs(program.anchor.resolvedSeconds - lifetime.start) < SOURCE_LOWERING_EPSILON &&
+    Math.abs(operation.interval.start - lifetime.start) < SOURCE_LOWERING_EPSILON &&
+    operation.interval.end - operation.interval.start > SOURCE_LOWERING_EPSILON &&
+    (lifetime.end === null || operation.interval.end <= lifetime.end + SOURCE_LOWERING_EPSILON)
+  );
 }
 
 function programStructureBlocker(program: SceneEdit) {
@@ -680,6 +702,32 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
         code: "schema-invalid" as const,
         field: "entityId",
         message: `Object ${operation.key === "fillColor" ? "fill" : "stroke"} is unavailable for this entity.`,
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+  }
+  if (operation.key === "strokeWidth") {
+    const entity = scene.objectGraph.entities[operation.entityId];
+    if (
+      typeof operation.value !== "number" ||
+      !Number.isFinite(operation.value) ||
+      operation.value < 0.005 ||
+      operation.value > 0.5
+    ) {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "value",
+        message: "Line stroke width must be from 0.005 to 0.5 scene units.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+    if (!entity?.transactionId || entity.type !== "Line") {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "entityId",
+        message: "Stroke width is available only for a Studio-created Line.",
         operationId: operation.id,
         severity: "error" as const,
       });
@@ -1464,7 +1512,12 @@ const LOWERING_PRIORITY: Readonly<Record<OperationExecutionCapabilities["lowerin
 };
 
 export function programExecutionCapabilities(program: SceneEdit): ProgramExecutionCapabilities {
-  const operationCapabilities = program.operations.map(operationExecutionCapabilities);
+  const operationCapabilities = program.operations.map((operation) => {
+    const capabilities = operationExecutionCapabilities(operation);
+    return operation.kind === "DrawIn" && drawInHasTruthfulLineCreation(program, operation)
+      ? { ...capabilities, lowering: "supported" as const }
+      : capabilities;
+  });
   const operationLowering = operationCapabilities
     .map((capability) => capability.lowering)
     .reduce<OperationExecutionCapabilities["lowering"]>(

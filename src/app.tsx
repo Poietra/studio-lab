@@ -348,6 +348,7 @@ import {
   createDirectManipulationResizeProgram,
   createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
+  createDirectManipulationStrokeWidthProgram,
   createDirectManipulationVisibilityProgram,
 } from "./studio/suggestion-program";
 import {
@@ -7589,6 +7590,52 @@ export function App({
     }
   }
 
+  function setEntityStrokeWidthFromInspector(entityId: string, strokeWidth: number) {
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!createdAuthority || entity?.type !== "Line") {
+      setDraftError("Stroke width is available only for a Studio-created Line.");
+      return false;
+    }
+    if (!Number.isFinite(strokeWidth) || strokeWidth < 0.005 || strokeWidth > 0.5) {
+      setDraftError("Line stroke width must be from 0.005 to 0.5 scene units.");
+      return false;
+    }
+    const currentWidth =
+      entity.geometry.style.kind === "known" ? (entity.geometry.style.value.strokeWidth ?? 0.04) : null;
+    if (currentWidth !== null && Math.abs(currentWidth - strokeWidth) < 0.0005) return false;
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "Line stroke width edit",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor || Math.abs(anchor.sourceTime - createdAuthority.sourceAnchor) >= 0.0005) return false;
+    try {
+      const validation = createDirectManipulationStrokeWidthProgram({
+        capturedPlayhead: createdAuthority.sourceAnchor,
+        entityId,
+        scene: sourceScene,
+        start: createdAuthority.sourceAnchor,
+        strokeWidth,
+        transactionId: `studio-stroke-width-input-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, createdAuthority.sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Line stroke width could not be changed.");
+      return false;
+    }
+  }
+
   function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     if (previewSelectionOnly) {
       setDraftError("This verified snapshot is selection-only because it has no safe .py source edit anchor.");
@@ -9356,6 +9403,9 @@ export function App({
               onEntityOpacityChange={(entityId, opacity) => void setEntityOpacityFromInspector(entityId, opacity)}
               onEntityRotate={(entityId, angleRadians) => void rotateEntityFromInspector(entityId, angleRadians)}
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
+              onEntityStrokeWidthChange={(entityId, strokeWidth) =>
+                void setEntityStrokeWidthFromInspector(entityId, strokeWidth)
+              }
               onInspectorFocusRestored={() => setInspectorReturnFocus(null)}
               onRenderSessionChange={retainRenderSession}
               onSourceChanged={reconcileRenderedSource}
@@ -9439,6 +9489,12 @@ export function App({
                   ? (selectedEntity.geometry.style.value.strokeColor ??
                     selectedEntity.geometry.style.value.color ??
                     (selectedStudioCreationAppearanceAuthority ? "#ffffff" : null))
+                  : null
+              }
+              strokeWidthAvailable={selectedStudioCreationAppearanceAtAnchor && selectedEntity?.type === "Line"}
+              strokeWidthValue={
+                selectedEntity?.geometry.style.kind === "known" && selectedEntity.type === "Line"
+                  ? (selectedEntity.geometry.style.value.strokeWidth ?? 0.04)
                   : null
               }
               sourceExport={

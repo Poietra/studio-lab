@@ -636,6 +636,27 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await page.getByRole("checkbox", { name: "Select Line" }).check();
     await expect(lineStroke).toHaveValue("#22c55e");
 
+    const thinMp4 = await exportLocalMp4(page);
+    const [thinStrokePixels = 0] = await decodedBrightPixelCounts(page, thinMp4, [1.6], "green-dominant");
+    const lineStrokeWidth = page.getByRole("spinbutton", { name: "Stroke width Line" });
+    await expect(lineStrokeWidth).toHaveValue("0.04");
+    await lineStrokeWidth.fill("0.08");
+    await lineStrokeWidth.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(lineStrokeWidth).toHaveValue("0.08");
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(lineStrokeWidth).toHaveValue("0.04");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(lineStrokeWidth).toHaveValue("0.08");
+
+    await page.getByRole("button", { name: "Add Draw entrance for Line" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
     await page.getByRole("button", { name: "Export settings" }).click();
     const sourceExport = page.locator("[data-studio-manim-source-export-state]");
     await expect(sourceExport).toHaveAttribute("data-studio-manim-source-export-state", "ready");
@@ -644,14 +665,11 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     const sourceDownload = await sourceDownloadPromise;
     const sourcePath = await sourceDownload.path();
     if (!sourcePath) throw new Error("The Line Python download was not persisted by Playwright.");
-    expect(await readFile(sourcePath, "utf8")).toContain('.set_stroke("#22c55e")');
+    const exportedSource = await readFile(sourcePath, "utf8");
+    const strokeStyle = '.set_stroke("#22c55e", width=8)';
+    expect(exportedSource).toContain(strokeStyle);
+    expect(exportedSource.indexOf(strokeStyle)).toBeLessThan(exportedSource.indexOf("Create("));
     await page.getByRole("button", { name: "Close" }).click();
-
-    await page.getByRole("button", { name: "Add Draw entrance for Line" }).click();
-    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-    await page.getByRole("button", { name: "Replace program" }).click();
-    await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
-    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     await page.getByRole("button", { name: /Insert circle/ }).click();
     await canvas.click({ position: { x: 560, y: 300 } });
@@ -736,11 +754,13 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await expect(page.getByRole("combobox", { name: "Draw easing for Line" })).toHaveValue("linear");
     await page.getByRole("button", { name: "Discard" }).click();
     await expect(page.getByLabel("Stroke color Line")).toHaveValue("#22c55e");
+    await expect(page.getByRole("spinbutton", { name: "Stroke width Line" })).toHaveValue("0.08");
 
     const mp4 = await exportLocalMp4(page);
     const exportedStrokePixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6], "green-dominant");
     expect(exportedStrokePixels[1] ?? 0).toBeGreaterThan((exportedStrokePixels[0] ?? 0) + 20);
     expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan((exportedStrokePixels[1] ?? 0) * 1.25);
+    expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan(thinStrokePixels * 1.5);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

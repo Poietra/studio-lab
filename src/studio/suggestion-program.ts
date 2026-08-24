@@ -1148,6 +1148,54 @@ export function createDirectManipulationColorProgram(
   );
 }
 
+export function createDirectManipulationStrokeWidthProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityId: string;
+    scene: RuntimeSceneState;
+    start: number;
+    strokeWidth: number;
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  if (!Number.isFinite(input.strokeWidth) || input.strokeWidth < 0.005 || input.strokeWidth > 0.5) {
+    throw new Error("Line stroke width must be from 0.005 to 0.5 scene units.");
+  }
+  const sourceAnchor =
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute" as const, seconds: input.start };
+  const resolution = resolveTimeAnchorOnce(sourceAnchor, {
+    capturedPlayhead: input.capturedPlayhead,
+    sceneDuration: input.scene.duration,
+  });
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: SceneEditOperation = {
+    dependsOn: [],
+    entityId: input.entityId,
+    id: operationId(input.transactionId, "set-stroke-width"),
+    interval: { end: input.start, start: input.start },
+    key: "strokeWidth",
+    kind: "SetProperty",
+    provenance: provenance("direct-manipulation", ["stroke width control", "absolute Line width"]),
+    value: input.strokeWidth,
+  };
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["absolute static Line stroke width constraint"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
+}
+
 export function createDirectManipulationScaleProgram(
   input: Readonly<{
     capturedPlayhead: number;

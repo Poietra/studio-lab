@@ -137,8 +137,12 @@ type ProgramSourceLoweringOptions = Readonly<{
   entityScaleStates?: Map<string, SourceScaleState>;
   finiteCreatedLifetimesHandled?: boolean;
   generatedEntityIds?: ReadonlySet<string>;
+  generatedEntityTypes?: ReadonlyMap<string, string>;
   hoistedInitialGeneratedFillOperationIds?: ReadonlySet<string>;
+  hoistedInitialGeneratedStrokeOperationIds?: ReadonlySet<string>;
   initialGeneratedFillColors?: ReadonlyMap<string, string>;
+  initialGeneratedStrokeColors?: ReadonlyMap<string, string>;
+  initialGeneratedStrokeWidths?: ReadonlyMap<string, number>;
   reservedSourceVariables?: ReadonlySet<string>;
   sourceAnchor?: number;
   snapshotAuthorizedSourceBoundRotation?: boolean;
@@ -879,7 +883,14 @@ function contentReplacementExpression(variable: string, target: NonNullable<Retu
 type LoweredAnimationOperation = Extract<
   SceneEditOperation,
   {
-    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent" | "WriteIn";
+    kind:
+      | "AnimateProperty"
+      | "ChangePresence"
+      | "CreateMotion"
+      | "DrawIn"
+      | "ResizeEntity"
+      | "TransformContent"
+      | "WriteIn";
   }
 >;
 
@@ -887,6 +898,7 @@ function animationOperation(operation: SceneEditOperation): operation is Lowered
   return (
     operation.kind === "ChangePresence" ||
     operation.kind === "CreateMotion" ||
+    operation.kind === "DrawIn" ||
     operation.kind === "ResizeEntity" ||
     operation.kind === "TransformContent" ||
     operation.kind === "WriteIn" ||
@@ -896,6 +908,7 @@ function animationOperation(operation: SceneEditOperation): operation is Lowered
 
 function animationEasing(operation: LoweredAnimationOperation): MotionEasing {
   if (operation.kind === "CreateMotion") return operation.easing;
+  if (operation.kind === "DrawIn") return operation.easing;
   if (operation.kind === "TransformContent") return operation.easing ?? "smooth";
   if (operation.kind === "WriteIn") return operation.easing;
   if (operation.kind !== "AnimateProperty") return "smooth";
@@ -984,6 +997,8 @@ function resizeMarkerEntry(
 function assertLoweringSupported(
   operation: SceneEditOperation,
   options: ProgramSourceLoweringOptions,
+  currentGeneratedEntityTypes: ReadonlyMap<string, string>,
+  currentGeneratedLineLifetimes: ReadonlyMap<string, Readonly<{ end: number | null; start: number }>>,
   currentGeneratedMathTexLifetimes: ReadonlyMap<string, Readonly<{ end: number | null; start: number }>>,
 ) {
   if (operation.kind === "CreateEntity") {
@@ -1058,11 +1073,42 @@ function assertLoweringSupported(
       "Object colors currently support only authorized Studio-created entities.",
     );
   }
+  if (operation.kind === "SetProperty" && operation.key === "strokeWidth") {
+    if (!isStudioLineStrokeWidthWorld(operation.value)) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        `Line stroke width must be between ${MIN_STUDIO_LINE_STROKE_WIDTH_WORLD} and ${MAX_STUDIO_LINE_STROKE_WIDTH_WORLD} world units.`,
+      );
+    }
+    const type =
+      currentGeneratedEntityTypes.get(operation.entityId) ?? options.generatedEntityTypes?.get(operation.entityId);
+    if (type === "Line") return;
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Stroke width currently supports only authorized Studio-created Line entities.",
+    );
+  }
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
     if (options.generatedEntityIds?.has(operation.entityId) || options.snapshotAuthorizedSourceBoundRotation) return;
     throw new ProgramLoweringError(
       "operation-unsupported",
       "Relative rotation requires the Runtime Trace source lowerer.",
+    );
+  }
+  if (operation.kind === "DrawIn") {
+    const lifetime = currentGeneratedLineLifetimes.get(operation.entityId);
+    if (
+      lifetime &&
+      Number.isFinite(operation.interval.start) &&
+      Number.isFinite(operation.interval.end) &&
+      Math.abs(operation.interval.start - lifetime.start) < EPSILON &&
+      operation.interval.end > operation.interval.start &&
+      (lifetime.end === null || operation.interval.end <= lifetime.end + EPSILON)
+    )
+      return;
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Create currently supports only a Line entity created in the same Studio Program.",
     );
   }
   if (operation.kind === "WriteIn") {
@@ -1477,8 +1523,26 @@ export function lowerCanonicalProgramSource(
         : [],
     ),
   );
+  const currentGeneratedLineLifetimes = new Map(
+    request.program.operations.flatMap((operation) =>
+      operation.kind === "CreateEntity" && operation.entity.type === "Line"
+        ? ([[operation.entity.id, operation.entity.lifetime]] as const)
+        : [],
+    ),
+  );
+  const currentGeneratedEntityTypes = new Map(
+    request.program.operations.flatMap((operation) =>
+      operation.kind === "CreateEntity" ? ([[operation.entity.id, operation.entity.type]] as const) : [],
+    ),
+  );
   request.program.operations.forEach((operation) =>
-    assertLoweringSupported(operation, options, currentGeneratedMathTexLifetimes),
+    assertLoweringSupported(
+      operation,
+      options,
+      currentGeneratedEntityTypes,
+      currentGeneratedLineLifetimes,
+      currentGeneratedMathTexLifetimes,
+    ),
   );
   const execution = programExecutionCapabilities(request.program);
   if (execution.lowering !== "supported") {
@@ -1627,6 +1691,15 @@ export function lowerCanonicalProgramSource(
           output.push(`${variable}.set_fill(${JSON.stringify(initialFill)}, opacity=1)`);
           options.entityFillColorStates?.set(operation.entity.id, initialFill);
         }
+        const initialStrokeColor = options.initialGeneratedStrokeColors?.get(operation.entity.id);
+        const initialStrokeWidth = options.initialGeneratedStrokeWidths?.get(operation.entity.id);
+        if (initialStrokeColor || initialStrokeWidth !== undefined) {
+          const arguments_ = [
+            ...(initialStrokeColor ? [JSON.stringify(initialStrokeColor)] : []),
+            ...(initialStrokeWidth === undefined ? [] : [`width=${manimStrokeWidth(initialStrokeWidth)}`]),
+          ];
+          output.push(`${variable}.set_stroke(${arguments_.join(", ")})`);
+        }
         options.entityOpacityStates?.set(operation.entity.id, 1);
       } else if (operation.kind === "TransformContent") {
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
@@ -1766,9 +1839,18 @@ export function lowerCanonicalProgramSource(
         variable &&
         operation.kind === "SetProperty" &&
         operation.key === "strokeColor" &&
-        isCanonicalRgbHex(operation.value)
+        isCanonicalRgbHex(operation.value) &&
+        !options.hoistedInitialGeneratedStrokeOperationIds?.has(operation.id)
       ) {
         output.push(`${variable}.set_stroke(${JSON.stringify(operation.value)})`);
+      } else if (
+        variable &&
+        operation.kind === "SetProperty" &&
+        operation.key === "strokeWidth" &&
+        isStudioLineStrokeWidthWorld(operation.value) &&
+        !options.hoistedInitialGeneratedStrokeOperationIds?.has(operation.id)
+      ) {
+        output.push(`${variable}.set_stroke(width=${manimStrokeWidth(operation.value)})`);
       } else if (
         variable &&
         operation.kind === "AnimateProperty" &&
@@ -1923,6 +2005,8 @@ export function lowerCanonicalProgramSource(
         }
       } else if (operation.kind === "WriteIn") {
         actions.push(`Write(${requireVariable(variableByEntity, operation.entityId)})`);
+      } else if (operation.kind === "DrawIn") {
+        actions.push(`Create(${requireVariable(variableByEntity, operation.entityId)})`);
       } else if (operation.kind === "AnimateProperty" && operation.key === "scale") {
         const variable = requireVariable(variableByEntity, operation.entityId);
         const change = resolvedScaleChanges.get(operation.id) ?? scaleChange(operation);
@@ -2047,6 +2131,23 @@ type MutableBatchGroup = {
   insertedLines: string[];
   sourceAnchor: number;
 };
+
+const MIN_STUDIO_LINE_STROKE_WIDTH_WORLD = 0.005;
+const MAX_STUDIO_LINE_STROKE_WIDTH_WORLD = 0.5;
+const MANIM_STROKE_WIDTH_WORLD_UNIT = 0.01;
+
+function isStudioLineStrokeWidthWorld(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= MIN_STUDIO_LINE_STROKE_WIDTH_WORLD &&
+    value <= MAX_STUDIO_LINE_STROKE_WIDTH_WORLD
+  );
+}
+
+function manimStrokeWidth(widthWorld: number) {
+  return formatAmount(widthWorld / MANIM_STROKE_WIDTH_WORLD_UNIT);
+}
 
 function applySceneDurationProjection(
   entries: readonly LoweredProgramBatchEntry[],
@@ -3180,6 +3281,7 @@ export function lowerCanonicalProgramBatchSource(
   const newline = source.includes("\r\n") ? "\r\n" : "\n";
   const sourceBindings = new Map(request.sourceBindings.map((binding) => [binding.entityId, binding.sourceVariable]));
   const generatedEntityIds = new Set<string>();
+  const generatedEntityTypes = new Map<string, string>();
   const generatedSourceVariables = new Set<string>();
   const entityOpacityStates = new Map<string, number>();
   const entityFillColorStates = new Map<string, string>();
@@ -3197,7 +3299,10 @@ export function lowerCanonicalProgramBatchSource(
   const normalizedEntries = applySceneDurationProjection(orderedEntries, timelineTransforms);
 
   const initialGeneratedFillColors = new Map<string, string>();
+  const initialGeneratedStrokeColors = new Map<string, string>();
+  const initialGeneratedStrokeWidths = new Map<string, number>();
   const hoistedInitialGeneratedFillOperationIds = new Set<string>();
+  const hoistedInitialGeneratedStrokeOperationIds = new Set<string>();
   for (let start = 0; start < normalizedEntries.length; ) {
     let end = start + 1;
     while (
@@ -3208,13 +3313,10 @@ export function lowerCanonicalProgramBatchSource(
     }
     const group = normalizedEntries.slice(start, end);
     const initialGlyphLifetimeStarts = new Map<string, number>();
+    const initialLineLifetimeStarts = new Map<string, number>();
     for (const { program, sourceAnchor } of group) {
       for (const operation of program.operations) {
-        if (
-          operation.kind !== "CreateEntity" ||
-          (operation.entity.type !== "MathTex" && operation.entity.type !== "Text")
-        )
-          continue;
+        if (operation.kind !== "CreateEntity") continue;
         const lifetimeStart = operation.entity.lifetime.start;
         const entrance = program.operations.find(
           (candidate) =>
@@ -3223,10 +3325,15 @@ export function lowerCanonicalProgramBatchSource(
             candidate.interval.end > candidate.interval.start &&
             Math.abs(candidate.interval.start - lifetimeStart) < EPSILON &&
             ((candidate.kind === "ChangePresence" && candidate.effect === "fade-in" && candidate.persistent) ||
-              (operation.entity.type === "MathTex" && candidate.kind === "WriteIn")),
+              (operation.entity.type === "MathTex" && candidate.kind === "WriteIn") ||
+              (operation.entity.type === "Line" && candidate.kind === "DrawIn")),
         );
         if (entrance && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
-          initialGlyphLifetimeStarts.set(operation.entity.id, lifetimeStart);
+          if (operation.entity.type === "MathTex" || operation.entity.type === "Text") {
+            initialGlyphLifetimeStarts.set(operation.entity.id, lifetimeStart);
+          } else if (operation.entity.type === "Line") {
+            initialLineLifetimeStarts.set(operation.entity.id, lifetimeStart);
+          }
         }
       }
     }
@@ -3234,6 +3341,24 @@ export function lowerCanonicalProgramBatchSource(
       if (program.operations.length !== 1) continue;
       const operation = program.operations[0]!;
       if (operation.kind !== "SetProperty" || operation.key !== "fillColor" || !isCanonicalRgbHex(operation.value)) {
+        if (operation.kind !== "SetProperty" || (operation.key !== "strokeColor" && operation.key !== "strokeWidth")) {
+          continue;
+        }
+        const lifetimeStart = initialLineLifetimeStarts.get(operation.entityId);
+        if (
+          lifetimeStart === undefined ||
+          Math.abs(operation.interval.start - lifetimeStart) >= EPSILON ||
+          Math.abs(operation.interval.end - lifetimeStart) >= EPSILON
+        ) {
+          continue;
+        }
+        if (operation.key === "strokeColor" && isCanonicalRgbHex(operation.value)) {
+          initialGeneratedStrokeColors.set(operation.entityId, operation.value);
+          hoistedInitialGeneratedStrokeOperationIds.add(operation.id);
+        } else if (operation.key === "strokeWidth" && isStudioLineStrokeWidthWorld(operation.value)) {
+          initialGeneratedStrokeWidths.set(operation.entityId, operation.value);
+          hoistedInitialGeneratedStrokeOperationIds.add(operation.id);
+        }
         continue;
       }
       const lifetimeStart = initialGlyphLifetimeStarts.get(operation.entityId);
@@ -3282,8 +3407,12 @@ export function lowerCanonicalProgramBatchSource(
         entityScaleStates,
         finiteCreatedLifetimesHandled: true,
         generatedEntityIds,
+        generatedEntityTypes,
         hoistedInitialGeneratedFillOperationIds,
+        hoistedInitialGeneratedStrokeOperationIds,
         initialGeneratedFillColors,
+        initialGeneratedStrokeColors,
+        initialGeneratedStrokeWidths,
         reservedSourceVariables: generatedSourceVariables,
         sourceAnchor: entry.sourceAnchor,
         snapshotAuthorizedSourceBoundRotation: authorization.snapshotAuthorizedSourceBoundRotation,
@@ -3302,6 +3431,10 @@ export function lowerCanonicalProgramBatchSource(
       }
       sourceBindings.set(binding.entityId, binding.sourceVariable);
       generatedEntityIds.add(binding.entityId);
+      const createdType = entry.program.operations.find(
+        (operation) => operation.kind === "CreateEntity" && operation.entity.id === binding.entityId,
+      );
+      if (createdType?.kind === "CreateEntity") generatedEntityTypes.set(binding.entityId, createdType.entity.type);
       generatedSourceVariables.add(binding.sourceVariable);
     }
     let group = groups.at(-1);

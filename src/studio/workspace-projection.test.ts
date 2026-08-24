@@ -1791,9 +1791,10 @@ describe("Studio workspace projection", () => {
     ).toHaveLength(1);
   });
 
-  it("installs Studio-created shape color and ordering channels from the Rust projection", () => {
+  it("installs Studio-created shape styles and ordering channels from the Rust projection", () => {
     const imported = workspaceScene("First", null);
-    const entityId = "tx:create-color/entity:circle";
+    const entityId = "tx:create-style/entity:line";
+    const circleEntityId = "tx:create-style/entity:circle";
     const creationProgram: CanonicalEditProgram = {
       anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
       intentCount: 1,
@@ -1802,12 +1803,12 @@ describe("Studio workspace projection", () => {
         {
           dependsOn: [],
           entity: {
-            dimensions: { radius: 1 },
+            dimensions: {},
             id: entityId,
             lifetime: { end: null, start: 0 },
-            type: "Circle",
+            type: "Line",
           },
-          id: "create-color/circle",
+          id: "create-style/line",
           interval: { end: 0, start: 0 },
           kind: "CreateEntity",
           provenance: { evidence: [], origin: "studio-default" },
@@ -1815,9 +1816,29 @@ describe("Studio workspace projection", () => {
       ],
       provenance: { evidence: [], origin: "studio-default" },
       requestedExecution: "parallel",
-      schedule: { edges: [], mode: "parallel", order: ["create-color/circle"] },
-      transactionId: "create-color",
+      schedule: { edges: [], mode: "parallel", order: ["create-style/line"] },
+      transactionId: "create-style",
       version: 1,
+    };
+    const circleCreationProgram: CanonicalEditProgram = {
+      ...creationProgram,
+      operations: [
+        {
+          dependsOn: [],
+          entity: {
+            dimensions: { radius: 1 },
+            id: circleEntityId,
+            lifetime: { end: null, start: 0 },
+            type: "Circle",
+          },
+          id: "create-style/circle",
+          interval: { end: 0, start: 0 },
+          kind: "CreateEntity",
+          provenance: { evidence: [], origin: "studio-default" },
+        },
+      ],
+      schedule: { edges: [], mode: "parallel", order: ["create-style/circle"] },
+      transactionId: "create-circle-style",
     };
     const colorProgram: CanonicalEditProgram = {
       anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
@@ -1827,9 +1848,9 @@ describe("Studio workspace projection", () => {
         {
           dependsOn: [],
           entityId,
-          id: "fill-color/circle",
+          id: "stroke-color/line",
           interval: { end: 0, start: 0 },
-          key: "fillColor",
+          key: "strokeColor",
           kind: "SetProperty",
           provenance: { evidence: [], origin: "direct-manipulation" },
           value: "#12abef",
@@ -1837,9 +1858,43 @@ describe("Studio workspace projection", () => {
       ],
       provenance: { evidence: [], origin: "direct-manipulation" },
       requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: ["stroke-color/line"] },
+      transactionId: "stroke-color",
+      version: 1,
+    };
+    const fillProgram: CanonicalEditProgram = {
+      ...colorProgram,
+      operations: [
+        {
+          dependsOn: [],
+          entityId: circleEntityId,
+          id: "fill-color/circle",
+          interval: { end: 0, start: 0 },
+          key: "fillColor",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          value: "#22c55e",
+        },
+      ],
       schedule: { edges: [], mode: "parallel", order: ["fill-color/circle"] },
       transactionId: "fill-color",
-      version: 1,
+    };
+    const widthProgram: CanonicalEditProgram = {
+      ...colorProgram,
+      operations: [
+        {
+          dependsOn: [],
+          entityId,
+          id: "stroke-width/line",
+          interval: { end: 0, start: 0 },
+          key: "strokeWidth",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          value: 0.08,
+        },
+      ],
+      schedule: { edges: [], mode: "parallel", order: ["stroke-width/line"] },
+      transactionId: "stroke-width",
     };
     const orderingProgram: CanonicalEditProgram = {
       ...colorProgram,
@@ -1847,7 +1902,7 @@ describe("Studio workspace projection", () => {
         {
           dependsOn: [],
           entityId,
-          id: "ordering/circle",
+          id: "ordering/line",
           interval: { end: 0, start: 0 },
           key: "sourceZIndex",
           kind: "SetProperty",
@@ -1855,7 +1910,7 @@ describe("Studio workspace projection", () => {
           value: -2.5,
         },
       ],
-      schedule: { edges: [], mode: "parallel", order: ["ordering/circle"] },
+      schedule: { edges: [], mode: "parallel", order: ["ordering/line"] },
       transactionId: "ordering",
     };
     const projection: StudioCreationProjectionV1 = {
@@ -1864,30 +1919,56 @@ describe("Studio workspace projection", () => {
         {
           createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
           entityId,
+          initialDimensions: {},
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "line",
+          operationId: "create-style/line",
+          transactionId: "create-style",
+        },
+        {
+          createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
+          entityId: circleEntityId,
           initialDimensions: { radius: 1 },
           initialRotation: 0,
           initialScale: 1,
           kind: "circle",
-          operationId: "create-color/circle",
-          transactionId: "create-color",
+          operationId: "create-style/circle",
+          transactionId: "create-circle-style",
         },
       ],
       insertions: [],
       motions: [],
       mutations: [
         {
-          entityId,
+          entityId: circleEntityId,
           interval: { end: imported.runtimeSceneState.duration, start: 0 },
           kind: "fill-color",
           operationId: "fill-color/circle",
           transactionId: "fill-color",
+          value: "#22c55e",
+        },
+        {
+          entityId,
+          interval: { end: imported.runtimeSceneState.duration, start: 0 },
+          kind: "stroke-color",
+          operationId: "stroke-color/line",
+          transactionId: "stroke-color",
           value: "#12abef",
         },
         {
           entityId,
           interval: { end: 0, start: 0 },
+          kind: "stroke-width",
+          operationId: "stroke-width/line",
+          transactionId: "stroke-width",
+          value: 0.08,
+        },
+        {
+          entityId,
+          interval: { end: 0, start: 0 },
           kind: "source-z-index",
-          operationId: "ordering/circle",
+          operationId: "ordering/line",
           sourceZIndex: -2.5,
           transactionId: "ordering",
         },
@@ -1901,7 +1982,10 @@ describe("Studio workspace projection", () => {
       activeScene: imported,
       appliedEdits: [
         programRecord(creationProgram, { issues: [], kind: "valid" }),
+        programRecord(circleCreationProgram, { issues: [], kind: "valid" }),
         programRecord(colorProgram, { issues: [], kind: "valid" }),
+        programRecord(fillProgram, { issues: [], kind: "valid" }),
+        programRecord(widthProgram, { issues: [], kind: "valid" }),
         programRecord(orderingProgram, { issues: [], kind: "valid" }),
       ],
       creationProjection: projection,
@@ -1912,16 +1996,25 @@ describe("Studio workspace projection", () => {
       selectedObjectIds: [entityId],
     });
 
-    expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/fillColor`]?.samples).toEqual([
+    expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/strokeColor`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: "#12abef" }),
+    ]);
+    expect(projected.proposedState.evaluatedScene.propertyChannels[`${circleEntityId}/fillColor`]?.samples).toEqual([
+      expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: "#22c55e" }),
+    ]);
+    expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/strokeWidth`]?.samples).toEqual([
+      expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: 0.08 }),
     ]);
     expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/sourceZIndex`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: -2.5 }),
     ]);
     expect(projected.projection.inspector.entities.find((entity) => entity.id === entityId)?.geometry.style).toEqual({
       kind: "known",
-      value: { fillColor: "#12abef" },
+      value: { strokeColor: "#12abef", strokeWidth: 0.08 },
     });
+    expect(
+      projected.projection.inspector.entities.find((entity) => entity.id === circleEntityId)?.geometry.style,
+    ).toEqual({ kind: "known", value: { fillColor: "#22c55e" } });
   });
 
   it("waits for exact Rust authority for non-timeline Program batches", () => {

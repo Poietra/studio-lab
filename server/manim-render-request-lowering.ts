@@ -47,6 +47,10 @@ export type ManimRenderRequestLoweringResult = Readonly<{
   renderRequest: ProgramRenderRequest;
 }>;
 
+function isStudioLineStrokeWidthWorld(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0.005 && value <= 0.5;
+}
+
 function isStudioCreationProgramBatch(programs: readonly SceneEdit[], sceneDuration: number) {
   const operations = programs.flatMap((program) => program.operations);
   const createdEntities = new Map(
@@ -79,6 +83,41 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[], sceneDurat
     return glyphFillCount === 0 || (glyphFillCount === 1 && program.operations.length === 1);
   });
   if (!glyphFillProgramsAreClosed) return false;
+  const lineStrokeStyleProgramsAreClosed = programs.every((program) => {
+    const lineStrokeStyleCount = program.operations.filter(
+      (operation) =>
+        operation.kind === "SetProperty" &&
+        (operation.key === "strokeColor" || operation.key === "strokeWidth") &&
+        generatedEntityTypes.get(operation.entityId) === "Line",
+    ).length;
+    return lineStrokeStyleCount === 0 || (lineStrokeStyleCount === 1 && program.operations.length === 1);
+  });
+  if (!lineStrokeStyleProgramsAreClosed) return false;
+  const lineDrawProgramsAreClosed = programs.every((program) =>
+    program.operations.every(
+      (operation) =>
+        operation.kind !== "DrawIn" ||
+        (() => {
+          const creation = program.operations.find(
+            (candidate) =>
+              candidate.kind === "CreateEntity" &&
+              candidate.entity.id === operation.entityId &&
+              candidate.entity.type === "Line",
+          );
+          if (!creation || creation.kind !== "CreateEntity") return false;
+          const lifetime = creation.entity.lifetime;
+          const upperBound = lifetime.end ?? sceneDuration;
+          return (
+            Number.isFinite(operation.interval.start) &&
+            Number.isFinite(operation.interval.end) &&
+            Math.abs(operation.interval.start - lifetime.start) < 0.0005 &&
+            operation.interval.end > operation.interval.start &&
+            operation.interval.end <= upperBound + 0.0005
+          );
+        })(),
+    ),
+  );
+  if (!lineDrawProgramsAreClosed) return false;
   const mathTexWriteProgramsAreClosed = programs.every((program) =>
     program.operations.every(
       (operation) =>
@@ -151,12 +190,17 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[], sceneDurat
       );
     }
     if (!("entityId" in operation) || !generatedEntityTypes.has(operation.entityId)) return false;
+    if (operation.kind === "DrawIn") return generatedEntityTypes.get(operation.entityId) === "Line";
     if (operation.kind === "WriteIn") return generatedEntityTypes.get(operation.entityId) === "MathTex";
+    if (operation.kind === "SetProperty" && operation.key === "strokeWidth") {
+      return generatedEntityTypes.get(operation.entityId) === "Line" && isStudioLineStrokeWidthWorld(operation.value);
+    }
     if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
       const type = generatedEntityTypes.get(operation.entityId);
       const colorIsSupported =
         type === "Circle" ||
         type === "Rectangle" ||
+        (operation.key === "strokeColor" && type === "Line") ||
         (operation.key === "fillColor" && (type === "MathTex" || type === "Text"));
       return colorIsSupported && isCanonicalRgbHex(operation.value);
     }

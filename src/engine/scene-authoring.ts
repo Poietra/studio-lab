@@ -724,6 +724,16 @@ const studioCreationProjectionV1Schema = z
           .object({
             entityId: z.string().min(1),
             interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("stroke-width"),
+            operationId: z.string().min(1),
+            transactionId: z.string().min(1),
+            value: finiteNumberSchema.min(0.005).max(0.5),
+          })
+          .strict(),
+        z
+          .object({
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("position"),
             operationId: z.string().min(1),
             transactionId: z.string().min(1),
@@ -1096,6 +1106,7 @@ type StudioCreationOperationV1 = Readonly<{
       }>
     | Readonly<{ entityId: string; kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
     | Readonly<{ color: string | null; entityId: string; kind: "fill-color" | "stroke-color" }>
+    | Readonly<{ entityId: string; kind: "stroke-width"; widthWorld: number | null }>
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
     | Readonly<{ easing: "linear" | "smooth"; entityId: string; from: 0; kind: "draw-in"; to: 1 }>
     | Readonly<{ easing: "linear"; entityId: string; kind: "write-in" }>

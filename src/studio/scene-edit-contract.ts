@@ -144,6 +144,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
       "rotation",
       "scale",
       "strokeColor",
+      "strokeWidth",
       "visibility",
     ]),
     kind: z.literal("SetProperty"),
@@ -307,6 +308,20 @@ export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superR
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: `${operation.key} must be a lowercase canonical #rrggbb color.`,
+      path: ["value"],
+    });
+  }
+  if (
+    operation.kind === "SetProperty" &&
+    operation.key === "strokeWidth" &&
+    (typeof operation.value !== "number" ||
+      !Number.isFinite(operation.value) ||
+      operation.value < 0.005 ||
+      operation.value > 0.5)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "strokeWidth must be a finite world-space width from 0.005 to 0.5.",
       path: ["value"],
     });
   }

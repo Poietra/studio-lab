@@ -74,6 +74,7 @@ describe("Draw entrance editing", () => {
     "CubicBezier",
     "DataPlot",
     "Ellipse",
+    "Line",
     "NumberLine",
     "NumberPlane",
     "Sector",
@@ -133,6 +134,7 @@ describe("Draw entrance editing", () => {
 
     expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
     expect(drawInClipFromProgram(drawn.program)?.entityId).toBe(entityId);
+    expect(drawn.program.loweringStatus).toBe(type === "Line" ? "supported" : "unsupported");
   });
 
   it("supports Draw on a Rust-validated stroke-only SVG path and rejects filled SVG paths", () => {
