@@ -14,6 +14,7 @@ import {
   type SceneEdit,
   type SceneEditOperation,
   sceneEditOperationSchema,
+  shapeTransformChangesShape,
 } from "./scene-edit-contract";
 
 export { sceneEditOperationSchema as canonicalOperationSchema } from "./scene-edit-contract";
@@ -1278,18 +1279,32 @@ export const OPERATION_REGISTRY = {
     execution: () => CLIENT_ONLY_EXECUTION,
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
-      const dimensionsAreValid = (endpoint: typeof operation.from) =>
-        endpoint.shape === "circle"
-          ? endpoint.dimensions.radius !== undefined &&
-            endpoint.dimensions.height === undefined &&
-            endpoint.dimensions.sides === undefined &&
-            endpoint.dimensions.width === undefined
-          : endpoint.dimensions.height !== undefined &&
-            endpoint.dimensions.width !== undefined &&
-            endpoint.dimensions.radius === undefined &&
-            endpoint.dimensions.sides === undefined;
+      const dimensionsAreValid = (endpoint: typeof operation.from) => {
+        const { angles, coordinateSystem, height, radius, sides, width } = endpoint.dimensions;
+        const positive = (value: unknown): value is number =>
+          typeof value === "number" && Number.isFinite(value) && value > 0;
+        if (angles !== undefined || coordinateSystem !== undefined) return false;
+        if (endpoint.shape === "circle") {
+          return positive(radius) && height === undefined && sides === undefined && width === undefined;
+        }
+        if (endpoint.shape === "ellipse" || endpoint.shape === "rectangle") {
+          return positive(height) && positive(width) && radius === undefined && sides === undefined;
+        }
+        if (endpoint.shape === "triangle") {
+          return positive(radius) && sides === 3 && height === undefined && width === undefined;
+        }
+        return (
+          positive(radius) &&
+          sides !== undefined &&
+          Number.isInteger(sides) &&
+          sides >= 3 &&
+          sides <= 32 &&
+          height === undefined &&
+          width === undefined
+        );
+      };
       if (
-        operation.from.shape === operation.to.shape ||
+        !shapeTransformChangesShape(operation.from, operation.to) ||
         !dimensionsAreValid(operation.from) ||
         !dimensionsAreValid(operation.to) ||
         operation.interval.end <= operation.interval.start
@@ -1297,7 +1312,8 @@ export const OPERATION_REGISTRY = {
         issues.push({
           code: "schema-invalid",
           field: "shape",
-          message: "Shape Transform requires one positive-duration Circle/Rectangle transition with exact dimensions.",
+          message:
+            "Shape Transform requires a positive-duration transition between distinct closed primitives with exact dimensions.",
           operationId: operation.id,
           severity: "error",
         });

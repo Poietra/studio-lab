@@ -101,7 +101,7 @@ async function exportDecodedBrightPixelCounts(page: Page, sampleTimes: readonly 
   );
 }
 
-test("morphs one Rectangle to Circle and back through WebGPU, reload, and decoded MP4", async ({ page }) => {
+test("morphs one closed primitive through the full shape family, reload, and decoded MP4", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(10_000);
   let projectId: string | null = null;
@@ -178,16 +178,45 @@ test("morphs one Rectangle to Circle and back through WebGPU, reload, and decode
     await page.getByRole("button", { name: "Redo" }).click();
     await expect(clips).toHaveCount(2);
 
+    await scrubClip(page, clips.nth(1), 1);
+    const familyFrames: Buffer[] = [];
+    for (const [target, dimensions] of [
+      ["Ellipse", { height: 1.6, width: 3.2 }],
+      ["Triangle", { radius: 1.3 }],
+      ["RegularPolygon", { radius: 1.3, sides: 6 }],
+      ["RegularPolygon", { radius: 1.3, sides: 7 }],
+      ["Circle", { radius: 1.1 }],
+    ] as const) {
+      await page.getByRole("combobox", { name: /Shape transform target of/ }).selectOption(target);
+      for (const [field, value] of Object.entries(dimensions)) {
+        await page
+          .getByRole("spinbutton", { name: new RegExp(`Shape transform target ${field} of`, "u") })
+          .fill(String(value));
+      }
+      await page.getByRole("spinbutton", { name: /Shape transform duration of/ }).fill("0.4");
+      await page.getByRole("button", { name: "Create Shape Transform clip" }).click();
+      await page.getByRole("button", { name: "Apply program" }).click();
+      clips = page.locator("[data-shape-transform-clip]");
+      await expect(clips).toHaveCount(familyFrames.length + 3);
+      await scrubClip(page, clips.last(), 1);
+      await expect(logicalRoot).toHaveCount(1);
+      familyFrames.push(await canvas.screenshot());
+    }
+    expect(new Set(familyFrames.map((frame) => frame.toString("base64"))).size).toBe(familyFrames.length);
+
     await page.reload();
     await page.getByRole("button", { name: "Open Shape Transform fixture workspace" }).click();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     clips = page.locator("[data-shape-transform-clip]");
-    await expect(clips).toHaveCount(2);
-    await scrubClip(page, clips.nth(1), 1);
-    await expect(page.getByRole("button", { name: "Move Rectangle", exact: true })).toHaveAttribute(
-      "data-studio-entity",
-      rootId,
-    );
+    await expect(clips).toHaveCount(7);
+    await scrubClip(page, clips.last(), 1);
+    await expect(logicalRoot).toHaveCount(1);
+    await expect(
+      page
+        .locator("dt")
+        .filter({ hasText: /^Type$/u })
+        .locator("xpath=following-sibling::dd[1]"),
+    ).toHaveText("Circle");
 
     const sampleTimes = await Promise.all([
       clipTime(page, clips.nth(0), 0),
@@ -195,11 +224,17 @@ test("morphs one Rectangle to Circle and back through WebGPU, reload, and decode
       clipTime(page, clips.nth(0), 1),
       clipTime(page, clips.nth(1), 0.5),
       clipTime(page, clips.nth(1), 1),
+      clipTime(page, clips.nth(2), 1),
+      clipTime(page, clips.nth(3), 1),
+      clipTime(page, clips.nth(4), 1),
+      clipTime(page, clips.nth(5), 1),
+      clipTime(page, clips.nth(6), 1),
     ]);
     const counts = await exportDecodedBrightPixelCounts(page, sampleTimes);
     expect(Math.max(...counts) - Math.min(...counts)).toBeGreaterThan(20);
     expect(Math.abs((counts[1] ?? 0) - (counts[0] ?? 0))).toBeGreaterThan(10);
     expect(Math.abs((counts[3] ?? 0) - (counts[4] ?? 0))).toBeGreaterThan(10);
+    expect(Math.abs((counts[6] ?? 0) - (counts[7] ?? 0))).toBeGreaterThan(10);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

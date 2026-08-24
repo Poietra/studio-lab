@@ -23,15 +23,15 @@ use super::{
     apply_world_rotation, authored_motion_easing, canonical_studio_hex_color,
     close_transform_baseline_value, created_geometry_and_appearance, insert_scene_time,
     manim_stroke_width_to_scene_world, plan_studio_creation_edits, rotation_is_noop,
-    scale_cubic_path, scene_geometry_as_cubic_path_v1, set_vector_paint_alpha,
-    studio_arc_parameters, studio_arc_path, studio_authoring_shape_size,
-    studio_authoring_size_is_positive, studio_camera_aspects_match, studio_camera_view_is_bounded,
-    studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
-    studio_coordinate_system_parameters, studio_coordinate_system_path,
+    scale_cubic_path, set_vector_paint_alpha, studio_arc_parameters, studio_arc_path,
+    studio_authoring_shape_size, studio_authoring_size_is_positive, studio_camera_aspects_match,
+    studio_camera_view_is_bounded, studio_camera_view_is_within_zoom_bounds,
+    studio_camera_views_match, studio_coordinate_system_parameters, studio_coordinate_system_path,
     studio_cubic_bezier_appearance, studio_data_plot_path, studio_ellipse_parameters,
     studio_ellipse_path, studio_math_tex_appearance, studio_point_to_scene_point,
     studio_regular_polygon_parameters, studio_regular_polygon_path, studio_sector_path,
-    studio_timeline_semantic_values_match, studio_vector_to_scene_vector, unused_channel_id,
+    studio_shape_transform_path, studio_timeline_semantic_values_match,
+    studio_vector_to_scene_vector, unused_channel_id,
 };
 
 pub(super) fn create_entity_initial_appearance_end(entity: &CreateSceneEntity) -> Option<f64> {
@@ -722,40 +722,8 @@ pub(super) fn planned_math_tex_morph(
 pub(super) fn studio_creation_shape_path(
     shape: StudioCreationShapeState,
 ) -> Result<CubicPathV1, ApplyStudioCreationEditError> {
-    let size = studio_authoring_shape_size(shape.kind, shape.dimensions)
-        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-    let geometry = match shape.kind {
-        StudioAuthoringEntityKind::Circle => SceneGeometryV1::Circle {
-            center: PointV1 { x: 0.0, y: 0.0 },
-            radius: size.width / 2.0,
-        },
-        StudioAuthoringEntityKind::Rectangle => SceneGeometryV1::Rectangle {
-            center: PointV1 { x: 0.0, y: 0.0 },
-            corner_radius: 0.0,
-            height: size.height,
-            width: size.width,
-        },
-        StudioAuthoringEntityKind::Arc
-        | StudioAuthoringEntityKind::Arrow
-        | StudioAuthoringEntityKind::Axes
-        | StudioAuthoringEntityKind::CubicBezier
-        | StudioAuthoringEntityKind::DataPlot
-        | StudioAuthoringEntityKind::Ellipse
-        | StudioAuthoringEntityKind::Image
-        | StudioAuthoringEntityKind::Line
-        | StudioAuthoringEntityKind::MathTex
-        | StudioAuthoringEntityKind::NumberLine
-        | StudioAuthoringEntityKind::NumberPlane
-        | StudioAuthoringEntityKind::Other
-        | StudioAuthoringEntityKind::RegularPolygon
-        | StudioAuthoringEntityKind::Sector
-        | StudioAuthoringEntityKind::SvgPath
-        | StudioAuthoringEntityKind::Text => {
-            return Err(ApplyStudioCreationEditError::Unsupported);
-        }
-    };
-    scene_geometry_as_cubic_path_v1(&geometry)
-        .map_err(|_| ApplyStudioCreationEditError::Unsupported)
+    studio_shape_transform_path(shape.kind, shape.dimensions)
+        .ok_or(ApplyStudioCreationEditError::Unsupported)
 }
 
 pub(super) fn planned_shape_morph(
@@ -1793,10 +1761,16 @@ impl EngineSessionV1 {
                     }
                 }
                 StudioAuthoringEntityKind::Ellipse => {
-                    let (width, height) = studio_ellipse_parameters(state.initial_dimensions)
-                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    CreateSceneEntityGeometry::ShapeOutline {
-                        path: studio_ellipse_path(width, height),
+                    if let Some(morph) = &shape_morph {
+                        CreateSceneEntityGeometry::ShapeOutline {
+                            path: morph.initial_path.clone(),
+                        }
+                    } else {
+                        let (width, height) = studio_ellipse_parameters(state.initial_dimensions)
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        CreateSceneEntityGeometry::ShapeOutline {
+                            path: studio_ellipse_path(width, height),
+                        }
                     }
                 }
                 StudioAuthoringEntityKind::Image => {
@@ -1834,11 +1808,17 @@ impl EngineSessionV1 {
                     }
                 }
                 StudioAuthoringEntityKind::RegularPolygon => {
-                    let (sides, radius) =
-                        studio_regular_polygon_parameters(state.initial_dimensions)
-                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    CreateSceneEntityGeometry::ShapeOutline {
-                        path: studio_regular_polygon_path(sides, radius),
+                    if let Some(morph) = &shape_morph {
+                        CreateSceneEntityGeometry::ShapeOutline {
+                            path: morph.initial_path.clone(),
+                        }
+                    } else {
+                        let (sides, radius) =
+                            studio_regular_polygon_parameters(state.initial_dimensions)
+                                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        CreateSceneEntityGeometry::ShapeOutline {
+                            path: studio_regular_polygon_path(sides, radius),
+                        }
                     }
                 }
                 StudioAuthoringEntityKind::Sector => {

@@ -13,7 +13,11 @@ import {
 import type { MathTexTransformEasing } from "./mathtex-transform-clip-edit";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
-import type { ShapeTransformEasing, ShapeTransformKind } from "./shape-transform-clip-edit";
+import {
+  type ShapeTransformEasing,
+  type ShapeTransformKind,
+  shapeTransformKindLabel,
+} from "./shape-transform-clip-edit";
 import type { StudioPlaybackClock } from "./studio-playback-clock";
 import { markStudioRenderBoundary } from "./studio-render-profiler";
 import {
@@ -1268,7 +1272,7 @@ export function StudioTimeline({
         <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
           <span className="max-w-64 truncate text-cyan-300" title={editingShapeTransformClip.label}>
             Shape Transform · {editingShapeTransformClip.label} →{" "}
-            {editingShapeTransformClip.targetShape === "circle" ? "Circle" : "Rectangle"}
+            {shapeTransformKindLabel(editingShapeTransformClip.targetShape)}
           </span>
           <div className="flex items-center gap-1 text-zinc-500">
             Duration
@@ -2316,7 +2320,7 @@ export function StudioTimeline({
                         : (clip.readOnlyReason ??
                           (!onShapeTransformClipSelect ? "Shape Transform clip editing is unavailable." : null));
                     const displayedClip = { ...clip, readOnlyReason };
-                    const targetLabel = clip.targetShape === "circle" ? "Circle" : "Rectangle";
+                    const targetLabel = shapeTransformKindLabel(clip.targetShape);
                     return (
                       <button
                         aria-label={`Edit ${clip.label} Shape Transform`}

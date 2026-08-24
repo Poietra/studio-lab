@@ -1,5 +1,6 @@
 //! Pure geometry and base-appearance construction for Studio-created entities.
 
+use poietra_geometry::scene_geometry_as_cubic_path_v1;
 use poietra_scene_ir::{
     CubicPathV1, CubicSegmentV1, CubicSubpathV1, PointV1, RgbaColorV1, SceneAppearanceV1,
     SceneCapabilityV1, SceneGeometryV1,
@@ -9,7 +10,8 @@ use super::{
     CreateSceneEntityGeometry, StudioAuthoringAngles, StudioAuthoringCoordinateRange,
     StudioAuthoringCoordinateSystem, StudioAuthoringDimensions, StudioAuthoringEntityKind,
     StudioCreationCubicBezierSpec, StudioCubicBezierStrokeCap, StudioDataPlotInterpolation,
-    StudioDataSeries, studio_arrow_appearance, studio_math_tex_appearance, studio_shape_appearance,
+    StudioDataSeries, studio_arrow_appearance, studio_authoring_shape_size,
+    studio_math_tex_appearance, studio_shape_appearance,
 };
 
 pub(super) fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
@@ -528,6 +530,54 @@ pub(super) fn studio_regular_polygon_path(sides: u32, radius: f64) -> CubicPathV
             segments,
             start: points[0].clone(),
         }],
+    }
+}
+
+pub(super) fn studio_shape_transform_path(
+    kind: StudioAuthoringEntityKind,
+    dimensions: StudioAuthoringDimensions,
+) -> Option<CubicPathV1> {
+    match kind {
+        StudioAuthoringEntityKind::Circle => {
+            let size = studio_authoring_shape_size(kind, dimensions)?;
+            let geometry = SceneGeometryV1::Circle {
+                center: PointV1 { x: 0.0, y: 0.0 },
+                radius: size.width / 2.0,
+            };
+            scene_geometry_as_cubic_path_v1(&geometry).ok()
+        }
+        StudioAuthoringEntityKind::Rectangle => {
+            let size = studio_authoring_shape_size(kind, dimensions)?;
+            let geometry = SceneGeometryV1::Rectangle {
+                center: PointV1 { x: 0.0, y: 0.0 },
+                corner_radius: 0.0,
+                height: size.height,
+                width: size.width,
+            };
+            scene_geometry_as_cubic_path_v1(&geometry).ok()
+        }
+        StudioAuthoringEntityKind::Ellipse => {
+            let (width, height) = studio_ellipse_parameters(dimensions)?;
+            Some(studio_ellipse_path(width, height))
+        }
+        StudioAuthoringEntityKind::RegularPolygon => {
+            let (sides, radius) = studio_regular_polygon_parameters(dimensions)?;
+            Some(studio_regular_polygon_path(sides, radius))
+        }
+        StudioAuthoringEntityKind::Arc
+        | StudioAuthoringEntityKind::Arrow
+        | StudioAuthoringEntityKind::Axes
+        | StudioAuthoringEntityKind::CubicBezier
+        | StudioAuthoringEntityKind::DataPlot
+        | StudioAuthoringEntityKind::Image
+        | StudioAuthoringEntityKind::Line
+        | StudioAuthoringEntityKind::MathTex
+        | StudioAuthoringEntityKind::NumberLine
+        | StudioAuthoringEntityKind::NumberPlane
+        | StudioAuthoringEntityKind::Other
+        | StudioAuthoringEntityKind::Sector
+        | StudioAuthoringEntityKind::SvgPath
+        | StudioAuthoringEntityKind::Text => None,
     }
 }
 

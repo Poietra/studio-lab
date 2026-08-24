@@ -393,6 +393,10 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   return null;
 }
 
+function canonicalShapeTransformKind(shape: Extract<SceneEditOperation, { kind: "TransformShape" }>["to"]["shape"]) {
+  return shape === "triangle" ? "regular-polygon" : shape;
+}
+
 function correlateCreationProjection(
   baseDuration: number,
   programs: readonly SceneEdit[],
@@ -621,8 +625,8 @@ function correlateCreationProjection(
       mutation.kind === "shape-transform" &&
       mutation.entityId === operation.entityId &&
       mutation.easing.kind === (operation.easing === "smooth" ? "manim-smooth" : "linear") &&
-      mutation.fromShape === operation.from.shape &&
-      mutation.toShape === operation.to.shape &&
+      mutation.fromShape === canonicalShapeTransformKind(operation.from.shape) &&
+      mutation.toShape === canonicalShapeTransformKind(operation.to.shape) &&
       sameProjectionDimensions(mutation.fromDimensions, operation.from.dimensions) &&
       sameProjectionDimensions(mutation.toDimensions, operation.to.dimensions) &&
       sameProjectionNumber(mutation.interval.start, shapeTransformInsertion.at) &&
@@ -1179,6 +1183,7 @@ function appendProjectedMutation(
   draft: MotionProjectionDraft,
   mutation: StudioBoundEntityProjectionV1 | StudioCreationProjectionMutationV1 | StudioStaticRootMutationV1,
   projectedDuration?: number,
+  semanticShape?: Extract<SceneEditOperation, { kind: "TransformShape" }>["to"]["shape"],
 ) {
   if (mutation.kind === "animate-camera") {
     // The exact prepared interaction bounds already include the sampled Rust
@@ -1325,7 +1330,7 @@ function appendProjectedMutation(
       ...metadata,
       interval: { end: mutation.interval.end, start: mutation.interval.end },
       kind: "exact",
-      value: mutation.toShape,
+      value: semanticShape ?? mutation.toShape,
     });
   } else if (mutation.kind === "math-tex-transform") {
     appendProjectedSample(draft.propertyChannels, entityId, "content", {
@@ -1623,7 +1628,12 @@ function projectCreationWorkingState(
     }
     appendProjectedOperationRecord(draft, operation, program, mutation.interval);
     recordedMotionOperationIds.add(operation.id);
-    appendProjectedMutation(draft, mutation, projection.projectedDuration);
+    appendProjectedMutation(
+      draft,
+      mutation,
+      projection.projectedDuration,
+      operation.kind === "TransformShape" ? operation.to.shape : undefined,
+    );
   }
   appendCorrelatedMotions(draft, correlated.motions, recordedMotionOperationIds);
   appendPersistentRemovals(draft, programs, correlated.removals);

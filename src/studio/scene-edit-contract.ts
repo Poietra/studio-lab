@@ -198,14 +198,14 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     from: z
       .object({
         dimensions: dimensionsSchema,
-        shape: z.enum(["circle", "rectangle"]),
+        shape: z.enum(["circle", "ellipse", "rectangle", "regular-polygon", "triangle"]),
       })
       .strict(),
     kind: z.literal("TransformShape"),
     to: z
       .object({
         dimensions: dimensionsSchema,
-        shape: z.enum(["circle", "rectangle"]),
+        shape: z.enum(["circle", "ellipse", "rectangle", "regular-polygon", "triangle"]),
       })
       .strict(),
   }),
@@ -468,3 +468,12 @@ export type SceneEditOperation = DeepReadonly<z.infer<typeof sceneEditOperationS
 export type SceneEdit = DeepReadonly<z.infer<typeof sceneEditSchema>>;
 export type SceneEditDraft = DeepReadonly<z.infer<typeof sceneEditDraftSchema>>;
 export type SceneEditOrigin = SceneEdit["provenance"]["origin"];
+
+type ShapeTransformEndpoint = Extract<SceneEditOperation, { kind: "TransformShape" }>["from"];
+
+export function shapeTransformChangesShape(from: ShapeTransformEndpoint, to: ShapeTransformEndpoint) {
+  if (from.shape !== to.shape) return true;
+  return (
+    from.shape === "regular-polygon" && to.shape === "regular-polygon" && from.dimensions.sides !== to.dimensions.sides
+  );
+}

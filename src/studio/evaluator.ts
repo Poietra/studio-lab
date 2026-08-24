@@ -74,6 +74,15 @@ function channelAt(scene: RuntimeSceneState, entityId: string, key: PropertyChan
   return samplePropertyValue(scene.propertyChannels[`${entityId}/${key}`]?.samples ?? [], time);
 }
 
+function projectedShapeType(shape: PropertyValue | undefined, fallback: string) {
+  if (shape === "circle") return "Circle";
+  if (shape === "ellipse") return "Ellipse";
+  if (shape === "rectangle") return "Rectangle";
+  if (shape === "regular-polygon") return "RegularPolygon";
+  if (shape === "triangle") return "Triangle";
+  return fallback;
+}
+
 function timelineLabel(entity: RuntimeEntity) {
   return (
     entity.content?.label ??
@@ -199,7 +208,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         scale: sampledScale,
         sourceIdentity: entity.sourceIdentity,
         transactionId: entity.transactionId,
-        type: shape === "circle" ? "Circle" : shape === "rectangle" ? "Rectangle" : entity.type,
+        type: projectedShapeType(shape, entity.type),
       };
     })
     .sort((left, right) => left.id.localeCompare(right.id));

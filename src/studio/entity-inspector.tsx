@@ -11,7 +11,13 @@ import {
 } from "./inspector-edit";
 import { MATH_TEX_TRANSFORM_EASINGS, type MathTexTransformEasing } from "./mathtex-transform-clip-edit";
 import type { ProjectedEntity } from "./model";
-import { SHAPE_TRANSFORM_EASINGS, type ShapeTransformEasing } from "./shape-transform-clip-edit";
+import {
+  isShapeTransformTarget,
+  SHAPE_TRANSFORM_EASINGS,
+  SHAPE_TRANSFORM_TARGETS,
+  type ShapeTransformEasing,
+  type ShapeTransformTarget,
+} from "./shape-transform-clip-edit";
 import { entityLabel } from "./studio-viewport";
 
 export type MathTexTransformInspectorInput = Readonly<{
@@ -26,13 +32,19 @@ export type MathTexTransformInspectorAuthoring = Readonly<{
   unavailableReason: string | null;
 }>;
 
-export type ShapeTransformInspectorTarget = "Circle" | "Rectangle";
+export type ShapeTransformInspectorTarget = ShapeTransformTarget;
 
-export type ShapeTransformInspectorInput = Readonly<{
+type ShapeTransformInspectorInputBase = Readonly<{
   duration: number;
   easing: ShapeTransformEasing;
-  target: ShapeTransformInspectorTarget;
 }>;
+
+export type ShapeTransformInspectorInput = ShapeTransformInspectorInputBase &
+  (
+    | Readonly<{ radius: number; target: "Circle" | "Triangle" }>
+    | Readonly<{ height: number; target: "Ellipse" | "Rectangle"; width: number }>
+    | Readonly<{ radius: number; sides: number; target: "RegularPolygon" }>
+  );
 
 export type ShapeTransformInspectorAuthoring = Readonly<{
   currentShape: ShapeTransformInspectorTarget;
@@ -40,6 +52,14 @@ export type ShapeTransformInspectorAuthoring = Readonly<{
   onCreate: (entityId: string, input: ShapeTransformInspectorInput) => boolean;
   unavailableReason: string | null;
 }>;
+
+function defaultShapeTransformTarget(currentShape: ShapeTransformInspectorTarget | undefined) {
+  return currentShape === "Circle" ? "Rectangle" : "Circle";
+}
+
+function shapeTransformTargetLabel(target: ShapeTransformInspectorTarget) {
+  return target === "RegularPolygon" ? "Regular Polygon" : target;
+}
 
 export type CameraInspectorAuthoring = Readonly<{
   defaultDuration: number;
@@ -227,8 +247,12 @@ export function EntityInspectorEditor({
   const [shapeTransformEasing, setShapeTransformEasing] = useState<ShapeTransformEasing>("smooth");
   const [shapeTransformMessage, setShapeTransformMessage] = useState<string | null>(null);
   const [shapeTransformTarget, setShapeTransformTarget] = useState<ShapeTransformInspectorTarget>(
-    shapeTransform?.currentShape === "Circle" ? "Rectangle" : "Circle",
+    defaultShapeTransformTarget(shapeTransform?.currentShape),
   );
+  const [shapeTransformTargetHeight, setShapeTransformTargetHeight] = useState("2");
+  const [shapeTransformTargetRadius, setShapeTransformTargetRadius] = useState("1");
+  const [shapeTransformTargetSides, setShapeTransformTargetSides] = useState("6");
+  const [shapeTransformTargetWidth, setShapeTransformTargetWidth] = useState("4");
   const positionAvailable = entity.geometry.position.kind === "known";
   const contentAvailable =
     (entity.type === "Text" || entity.type === "MathTex") &&
@@ -243,7 +267,7 @@ export function EntityInspectorEditor({
 
   useEffect(() => {
     if (!shapeTransform) return;
-    setShapeTransformTarget(shapeTransform.currentShape === "Circle" ? "Rectangle" : "Circle");
+    setShapeTransformTarget(defaultShapeTransformTarget(shapeTransform.currentShape));
     setShapeTransformMessage(null);
   }, [shapeTransform?.currentShape]);
 
@@ -350,7 +374,7 @@ export function EntityInspectorEditor({
   }
 
   function createShapeTransform() {
-    if (!shapeTransform || (entity.type !== "Circle" && entity.type !== "Rectangle")) return;
+    if (!shapeTransform || !isShapeTransformTarget(entity.type)) return;
     if (shapeTransform.unavailableReason) {
       setShapeTransformMessage(shapeTransform.unavailableReason);
       return;
@@ -360,17 +384,44 @@ export function EntityInspectorEditor({
       setShapeTransformMessage("Shape Transform duration must be at least 0.1 seconds.");
       return;
     }
-    if (shapeTransformTarget === shapeTransform.currentShape) {
-      setShapeTransformMessage("Choose the other shape as the Transform target.");
+    if (shapeTransformTarget === shapeTransform.currentShape && shapeTransformTarget !== "RegularPolygon") {
+      setShapeTransformMessage("Choose a different shape as the Transform target.");
       return;
     }
+    const radius = Number(shapeTransformTargetRadius);
     if (
-      shapeTransform.onCreate(entity.id, {
-        duration,
-        easing: shapeTransformEasing,
-        target: shapeTransformTarget,
-      })
+      (shapeTransformTarget === "Circle" ||
+        shapeTransformTarget === "Triangle" ||
+        shapeTransformTarget === "RegularPolygon") &&
+      (!Number.isFinite(radius) || radius <= 0)
     ) {
+      setShapeTransformMessage("Shape Transform target radius must be a positive number.");
+      return;
+    }
+    const height = Number(shapeTransformTargetHeight);
+    const width = Number(shapeTransformTargetWidth);
+    if (
+      (shapeTransformTarget === "Ellipse" || shapeTransformTarget === "Rectangle") &&
+      (!Number.isFinite(height) || height <= 0 || !Number.isFinite(width) || width <= 0)
+    ) {
+      setShapeTransformMessage("Shape Transform target width and height must be positive numbers.");
+      return;
+    }
+    const sides = Number(shapeTransformTargetSides);
+    if (shapeTransformTarget === "RegularPolygon" && (!Number.isInteger(sides) || sides < 3 || sides > 32)) {
+      setShapeTransformMessage("Regular Polygon sides must be an integer from 3 to 32.");
+      return;
+    }
+    const common = { duration, easing: shapeTransformEasing } as const;
+    const input: ShapeTransformInspectorInput =
+      shapeTransformTarget === "Circle" || shapeTransformTarget === "Triangle"
+        ? { ...common, radius, target: shapeTransformTarget }
+        : shapeTransformTarget === "Ellipse" || shapeTransformTarget === "Rectangle"
+          ? { ...common, height, target: shapeTransformTarget, width }
+          : sides === 3
+            ? { ...common, radius, target: "Triangle" }
+            : { ...common, radius, sides, target: "RegularPolygon" };
+    if (shapeTransform.onCreate(entity.id, input)) {
       setShapeTransformMessage(null);
     }
   }
@@ -645,7 +696,7 @@ export function EntityInspectorEditor({
         </fieldset>
       ) : null}
 
-      {(entity.type === "Circle" || entity.type === "Rectangle") && shapeTransform ? (
+      {isShapeTransformTarget(entity.type) && shapeTransform ? (
         <fieldset className="border-t border-zinc-800 pt-4">
           <legend className="text-balance text-xs font-medium text-zinc-300">Animate Shape Transform</legend>
           <div className="mt-2 space-y-3">
@@ -661,14 +712,91 @@ export function EntityInspectorEditor({
                 }}
                 value={shapeTransformTarget}
               >
-                <option disabled={shapeTransform.currentShape === "Rectangle"} value="Rectangle">
-                  Rectangle
-                </option>
-                <option disabled={shapeTransform.currentShape === "Circle"} value="Circle">
-                  Circle
-                </option>
+                {SHAPE_TRANSFORM_TARGETS.map((target) => (
+                  <option
+                    disabled={shapeTransform.currentShape === target && target !== "RegularPolygon"}
+                    key={target}
+                    value={target}
+                  >
+                    {shapeTransformTargetLabel(target)}
+                  </option>
+                ))}
               </select>
             </label>
+            {shapeTransformTarget === "Ellipse" || shapeTransformTarget === "Rectangle" ? (
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-[10px] text-zinc-500">
+                  Target width
+                  <input
+                    aria-label={`Shape transform target width of ${entityLabel(entity)}`}
+                    className={inputClass}
+                    disabled={shapeTransform.unavailableReason !== null}
+                    min="0.01"
+                    onChange={(event) => {
+                      setShapeTransformTargetWidth(event.currentTarget.value);
+                      setShapeTransformMessage(null);
+                    }}
+                    step="0.1"
+                    type="number"
+                    value={shapeTransformTargetWidth}
+                  />
+                </label>
+                <label className="text-[10px] text-zinc-500">
+                  Target height
+                  <input
+                    aria-label={`Shape transform target height of ${entityLabel(entity)}`}
+                    className={inputClass}
+                    disabled={shapeTransform.unavailableReason !== null}
+                    min="0.01"
+                    onChange={(event) => {
+                      setShapeTransformTargetHeight(event.currentTarget.value);
+                      setShapeTransformMessage(null);
+                    }}
+                    step="0.1"
+                    type="number"
+                    value={shapeTransformTargetHeight}
+                  />
+                </label>
+              </div>
+            ) : (
+              <div className={shapeTransformTarget === "RegularPolygon" ? "grid grid-cols-2 gap-2" : undefined}>
+                <label className="text-[10px] text-zinc-500">
+                  Target radius
+                  <input
+                    aria-label={`Shape transform target radius of ${entityLabel(entity)}`}
+                    className={inputClass}
+                    disabled={shapeTransform.unavailableReason !== null}
+                    min="0.01"
+                    onChange={(event) => {
+                      setShapeTransformTargetRadius(event.currentTarget.value);
+                      setShapeTransformMessage(null);
+                    }}
+                    step="0.1"
+                    type="number"
+                    value={shapeTransformTargetRadius}
+                  />
+                </label>
+                {shapeTransformTarget === "RegularPolygon" ? (
+                  <label className="text-[10px] text-zinc-500">
+                    Target sides
+                    <input
+                      aria-label={`Shape transform target sides of ${entityLabel(entity)}`}
+                      className={inputClass}
+                      disabled={shapeTransform.unavailableReason !== null}
+                      max="32"
+                      min="3"
+                      onChange={(event) => {
+                        setShapeTransformTargetSides(event.currentTarget.value);
+                        setShapeTransformMessage(null);
+                      }}
+                      step="1"
+                      type="number"
+                      value={shapeTransformTargetSides}
+                    />
+                  </label>
+                ) : null}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <label className="text-[10px] text-zinc-500">
                 Duration (seconds)

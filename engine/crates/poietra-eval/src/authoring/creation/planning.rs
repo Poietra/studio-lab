@@ -25,9 +25,23 @@ use super::{
     studio_creation_motion_is_compatible, studio_creation_spec_text_content,
     studio_cubic_bezier_dimensions_are_canonical, studio_cubic_bezier_is_canonical,
     studio_data_series_is_valid, studio_ellipse_parameters, studio_math_tex_content_is_canonical,
-    studio_regular_polygon_parameters, studio_text_content_is_canonical,
-    studio_timeline_semantic_values_match,
+    studio_regular_polygon_parameters, studio_shape_transform_path,
+    studio_text_content_is_canonical, studio_timeline_semantic_values_match,
 };
+
+fn studio_shape_transform_pair_is_supported(
+    from: StudioCreationShapeState,
+    to: StudioCreationShapeState,
+) -> bool {
+    if studio_shape_transform_path(from.kind, from.dimensions).is_none()
+        || studio_shape_transform_path(to.kind, to.dimensions).is_none()
+    {
+        return false;
+    }
+    from.kind != to.kind
+        || (from.kind == StudioAuthoringEntityKind::RegularPolygon
+            && from.dimensions.sides != to.dimensions.sides)
+}
 
 #[allow(
     clippy::float_cmp,
@@ -1051,7 +1065,10 @@ pub(super) fn plan_studio_creation_edits(
             current_dimensions: spec.dimensions,
             current_shape: matches!(
                 spec.kind,
-                StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
+                StudioAuthoringEntityKind::Circle
+                    | StudioAuthoringEntityKind::Ellipse
+                    | StudioAuthoringEntityKind::Rectangle
+                    | StudioAuthoringEntityKind::RegularPolygon
             )
             .then_some(StudioCreationShapeState {
                 dimensions: spec.dimensions,
@@ -1083,7 +1100,10 @@ pub(super) fn plan_studio_creation_edits(
             scale: 1.0,
             shape_path_dimensions: matches!(
                 spec.kind,
-                StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
+                StudioAuthoringEntityKind::Circle
+                    | StudioAuthoringEntityKind::Ellipse
+                    | StudioAuthoringEntityKind::Rectangle
+                    | StudioAuthoringEntityKind::RegularPolygon
             )
             .then_some(spec.dimensions),
             shape_transforms: Vec::new(),
@@ -2334,24 +2354,22 @@ pub(super) fn plan_studio_creation_edits(
                     to_shape,
                 } if operation.origin == StudioAuthoringOrigin::DirectManipulation
                     && entity_id == state.spec.id
-                    && matches!(
-                        (from_shape, to_shape),
-                        (
-                            StudioAuthoringEntityKind::Circle,
-                            StudioAuthoringEntityKind::Rectangle
-                        ) | (
-                            StudioAuthoringEntityKind::Rectangle,
-                            StudioAuthoringEntityKind::Circle
-                        )
-                    )
                     && state.current_shape
                         == Some(StudioCreationShapeState {
                             dimensions: *from_dimensions,
                             kind: *from_shape,
                         })
                     && state.shape_path_dimensions == Some(*from_dimensions)
-                    && studio_authoring_shape_size(*from_shape, *from_dimensions).is_some()
-                    && studio_authoring_shape_size(*to_shape, *to_dimensions).is_some()
+                    && studio_shape_transform_pair_is_supported(
+                        StudioCreationShapeState {
+                            dimensions: *from_dimensions,
+                            kind: *from_shape,
+                        },
+                        StudioCreationShapeState {
+                            dimensions: *to_dimensions,
+                            kind: *to_shape,
+                        },
+                    )
                     && matches!(
                         easing,
                         StudioPropertyEasing::Linear | StudioPropertyEasing::Smooth

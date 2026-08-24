@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use poietra_geometry::{align_cubic_path_morph_chain, scene_geometry_as_cubic_path_v1};
+use poietra_geometry::align_cubic_path_morph_chain;
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetReferenceV1, ContractVersionV1, CubicPathV1,
     EasingV1, FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1, ImageLocalRectV1,
@@ -25,7 +25,7 @@ use geometry::{
     studio_coordinate_system_parameters, studio_coordinate_system_path,
     studio_cubic_bezier_appearance, studio_data_plot_path, studio_data_series_is_valid,
     studio_ellipse_parameters, studio_ellipse_path, studio_regular_polygon_parameters,
-    studio_regular_polygon_path, studio_sector_path,
+    studio_regular_polygon_path, studio_sector_path, studio_shape_transform_path,
 };
 use planning::{canonical_studio_hex_color, plan_studio_creation_edits};
 #[cfg(test)]
