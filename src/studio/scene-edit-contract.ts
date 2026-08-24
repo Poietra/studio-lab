@@ -523,5 +523,8 @@ export function studioPaintColorTrackProperty(type: string): "fillColor" | "stro
   if (["Circle", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Text", "Triangle"].includes(type)) {
     return "fillColor";
   }
-  return type === "Line" ? "strokeColor" : null;
+  if (["Arc", "Axes", "CubicBezier", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(type)) {
+    return "strokeColor";
+  }
+  return null;
 }

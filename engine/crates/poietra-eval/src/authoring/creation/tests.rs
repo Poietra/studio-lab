@@ -139,6 +139,29 @@ fn paint_color_keyframe_wire_uses_one_property_discriminant() {
 }
 
 #[test]
+fn stroke_color_tracks_are_limited_to_stroke_only_paths() {
+    for kind in [
+        StudioAuthoringEntityKind::Arc,
+        StudioAuthoringEntityKind::Axes,
+        StudioAuthoringEntityKind::CubicBezier,
+        StudioAuthoringEntityKind::DataPlot,
+        StudioAuthoringEntityKind::Line,
+        StudioAuthoringEntityKind::NumberLine,
+        StudioAuthoringEntityKind::NumberPlane,
+    ] {
+        assert!(studio_creation_supports_stroke_color_track(kind));
+    }
+    for kind in [
+        StudioAuthoringEntityKind::Arrow,
+        StudioAuthoringEntityKind::Circle,
+        StudioAuthoringEntityKind::Sector,
+        StudioAuthoringEntityKind::SvgPath,
+    ] {
+        assert!(!studio_creation_supports_stroke_color_track(kind));
+    }
+}
+
+#[test]
 fn camera_animation_wire_uses_scene_level_views() {
     let operation: StudioCreationOperationKind = serde_json::from_value(serde_json::json!({
         "kind": "animate-camera",
@@ -3822,6 +3845,15 @@ fn normalized_creation_projects_and_applies_curve_primitives_as_cubic_paths() {
                 to: Some(1.0),
             };
             program.schedule_order[2] = "draw".to_owned();
+            add_creation_paint_color_segment(
+                program,
+                "tx:create/entity:arc",
+                StudioPaintColorProperty::StrokeColor,
+                "#ffffff",
+                "#22c55e",
+                1.5,
+                2.0,
+            );
         }
 
         let projection =
@@ -3855,6 +3887,10 @@ fn normalized_creation_projects_and_applies_curve_primitives_as_cubic_paths() {
         );
         if kind == StudioAuthoringEntityKind::Arc {
             assert_eq!(
+                projection.entities[0].stroke_color.as_deref(),
+                Some("#ffffff")
+            );
+            assert_eq!(
                 serde_json::to_value(&projection).unwrap()["entities"][0]["initialDimensions"],
                 serde_json::json!({
                     "angles": { "start": FRAC_PI_2, "sweep": PI },
@@ -3872,6 +3908,27 @@ fn normalized_creation_projects_and_applies_curve_primitives_as_cubic_paths() {
                             channel,
                             AnimationChannelV1::PathTrim { entity_id, .. }
                                 if entity_id == "tx:create/entity:arc"
+                        )
+                    })
+            );
+            assert!(
+                result
+                    .bundle
+                    .scene
+                    .animation_channels
+                    .iter()
+                    .any(|channel| {
+                        matches!(
+                            channel,
+                            AnimationChannelV1::VectorAppearance {
+                                entity_id,
+                                keyframes,
+                                ..
+                            } if entity_id == "tx:create/entity:arc"
+                                && keyframes.iter().all(|keyframe| matches!(
+                                    &keyframe.value,
+                                    VectorAppearanceValueV1 { fill: None, stroke: Some(_) }
+                                ))
                         )
                     })
             );
@@ -4919,6 +4976,15 @@ fn normalized_cubic_bezier_creation_keeps_one_editable_segment_arrow_and_draw() 
     entity.kind = StudioAuthoringEntityKind::CubicBezier;
     entity.dimensions = inspection.dimensions;
     entity.cubic_bezier = Some(inspection.cubic_bezier.clone());
+    add_creation_paint_color_segment(
+        program,
+        "tx:create/entity:circle",
+        StudioPaintColorProperty::StrokeColor,
+        "#ffffff",
+        "#22c55e",
+        1.5,
+        2.0,
+    );
     let renormalized = normalize_studio_cubic_bezier(&inspection.cubic_bezier).unwrap();
     assert!(studio_cubic_bezier_is_canonical(
         &inspection.cubic_bezier,
@@ -4978,6 +5044,34 @@ fn normalized_cubic_bezier_creation_keeps_one_editable_segment_arrow_and_draw() 
             AnimationChannelV1::PathTrim { entity_id, .. }
                 if entity_id == "tx:create/entity:circle"
                 ))
+    );
+    assert!(
+        result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .any(|channel| {
+                matches!(
+                    channel,
+                    AnimationChannelV1::VectorAppearance {
+                        entity_id,
+                        keyframes,
+                        ..
+                    } if entity_id == "tx:create/entity:circle"
+                        && keyframes.iter().all(|keyframe| matches!(
+                            &keyframe.value,
+                            VectorAppearanceValueV1 {
+                                fill: None,
+                                stroke: Some(poietra_scene_ir::StrokeStyleV1 {
+                                    cap: poietra_scene_ir::StrokeCapV1::Square,
+                                    width_world,
+                                    ..
+                                }),
+                            } if (*width_world - 0.06).abs() < 1.0e-12
+                        ))
+                )
+            })
     );
 }
 
