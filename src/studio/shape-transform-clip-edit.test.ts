@@ -10,7 +10,13 @@ import {
 
 const ROOT_ID = "tx:create-shape/entity:shape";
 
-function studioScene(): RuntimeSceneState {
+function studioScene(
+  type = "Rectangle",
+  dimensions: Readonly<{ height?: number; radius?: number; sides?: number; width?: number }> = {
+    height: 2,
+    width: 4,
+  },
+): RuntimeSceneState {
   return {
     ...STUDIO_FIXTURE_SCENE,
     objectGraph: {
@@ -19,7 +25,7 @@ function studioScene(): RuntimeSceneState {
         ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
         [ROOT_ID]: {
           geometry: {
-            dimensions: { kind: "known", value: { height: 2, width: 4 } },
+            dimensions: { kind: "known", value: dimensions },
             position: { kind: "known", value: { x: 0, y: 0 } },
             scale: { kind: "known", value: 1 },
             style: { kind: "known", value: {} },
@@ -29,7 +35,7 @@ function studioScene(): RuntimeSceneState {
           provisional: false,
           sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
           transactionId: "create-shape",
-          type: "Rectangle",
+          type,
         },
       },
     },
@@ -97,6 +103,56 @@ describe("Studio Shape Transform clip editing", () => {
     });
   });
 
+  it("creates Ellipse-to-Triangle and Triangle-to-RegularPolygon clips", () => {
+    const ellipseToTriangle = createShapeTransformProgram({
+      capturedPlayhead: 2,
+      easing: "smooth",
+      end: 3,
+      entityId: ROOT_ID,
+      from: { dimensions: { height: 2, width: 4 }, shape: "ellipse" },
+      scene: studioScene("Ellipse", { height: 2, width: 4 }),
+      start: 2,
+      to: { dimensions: { radius: 1, sides: 3 }, shape: "triangle" },
+      transactionId: "transform-triangle",
+    });
+    expect(ellipseToTriangle.kind, JSON.stringify(ellipseToTriangle.issues)).toBe("valid");
+    expect(shapeTransformClipFromProgram(ellipseToTriangle.program)).toMatchObject({
+      from: { shape: "ellipse" },
+      to: { dimensions: { radius: 1, sides: 3 }, shape: "triangle" },
+    });
+
+    const triangleToPolygon = createShapeTransformProgram({
+      capturedPlayhead: 4,
+      easing: "linear",
+      end: 5,
+      entityId: ROOT_ID,
+      from: { dimensions: { radius: 1, sides: 3 }, shape: "triangle" },
+      scene: studioScene("Triangle", { radius: 1, sides: 3 }),
+      start: 4,
+      to: { dimensions: { radius: 1.5, sides: 7 }, shape: "regular-polygon" },
+      transactionId: "transform-polygon",
+    });
+    expect(triangleToPolygon.kind, JSON.stringify(triangleToPolygon.issues)).toBe("valid");
+    expect(shapeTransformClipFromProgram(triangleToPolygon.program)?.to).toEqual({
+      dimensions: { radius: 1.5, sides: 7 },
+      shape: "regular-polygon",
+    });
+
+    const polygonSideChange = createShapeTransformProgram({
+      capturedPlayhead: 4,
+      easing: "smooth",
+      end: 5,
+      entityId: ROOT_ID,
+      from: { dimensions: { radius: 1.5, sides: 7 }, shape: "regular-polygon" },
+      scene: studioScene("RegularPolygon", { radius: 1.5, sides: 7 }),
+      start: 4,
+      to: { dimensions: { radius: 1.5, sides: 5 }, shape: "regular-polygon" },
+      transactionId: "transform-polygon-sides",
+    });
+    expect(polygonSideChange.kind, JSON.stringify(polygonSideChange.issues)).toBe("valid");
+    expect(shapeTransformClipFromProgram(polygonSideChange.program)?.to.dimensions.sides).toBe(5);
+  });
+
   it("rejects a same-shape target and clips outside the root lifetime", () => {
     expect(() =>
       createShapeTransformProgram({
@@ -110,7 +166,21 @@ describe("Studio Shape Transform clip editing", () => {
         to: { dimensions: { height: 1, width: 1 }, shape: "rectangle" },
         transactionId: "same-shape",
       }),
-    ).toThrow(/between Rectangle and Circle/);
+    ).toThrow(/different closed primitive/);
+
+    expect(() =>
+      createShapeTransformProgram({
+        capturedPlayhead: 2,
+        easing: "smooth",
+        end: 3,
+        entityId: ROOT_ID,
+        from: { dimensions: { radius: 1, sides: 6 }, shape: "regular-polygon" },
+        scene: studioScene("RegularPolygon", { radius: 1, sides: 6 }),
+        start: 2,
+        to: { dimensions: { radius: 1.2, sides: 6 }, shape: "regular-polygon" },
+        transactionId: "same-polygon-sides",
+      }),
+    ).toThrow(/different closed primitive/);
 
     expect(() =>
       createShapeTransformProgram({
@@ -127,27 +197,32 @@ describe("Studio Shape Transform clip editing", () => {
     ).toThrow(/lifetime/);
   });
 
-  it("rejects polygon metadata on Rectangle and Circle endpoints", () => {
-    const result = createShapeTransformProgram({
-      capturedPlayhead: 2,
-      easing: "smooth",
-      end: 3,
-      entityId: ROOT_ID,
-      from: { dimensions: { height: 2, sides: 6, width: 4 }, shape: "rectangle" },
-      scene: studioScene(),
-      start: 2,
-      to: { dimensions: { radius: 1 }, shape: "circle" },
-      transactionId: "polygon-metadata",
-    });
-
-    expect(result.kind).toBe("invalid");
-    expect(result.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          code: "schema-invalid",
-          message: expect.stringContaining("exact dimensions"),
-        }),
-      ]),
-    );
+  it("rejects mismatched dimensions and out-of-range polygon sides", () => {
+    expect(() =>
+      createShapeTransformProgram({
+        capturedPlayhead: 2,
+        easing: "smooth",
+        end: 3,
+        entityId: ROOT_ID,
+        from: { dimensions: { height: 2, sides: 6, width: 4 }, shape: "rectangle" },
+        scene: studioScene(),
+        start: 2,
+        to: { dimensions: { radius: 1 }, shape: "circle" },
+        transactionId: "polygon-metadata",
+      }),
+    ).toThrow(/exact finite dimensions/);
+    expect(() =>
+      createShapeTransformProgram({
+        capturedPlayhead: 2,
+        easing: "smooth",
+        end: 3,
+        entityId: ROOT_ID,
+        from: { dimensions: { height: 2, width: 4 }, shape: "rectangle" },
+        scene: studioScene(),
+        start: 2,
+        to: { dimensions: { radius: 1, sides: 33 }, shape: "regular-polygon" },
+        transactionId: "too-many-sides",
+      }),
+    ).toThrow(/exact finite dimensions/);
   });
 });

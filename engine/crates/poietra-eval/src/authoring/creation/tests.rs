@@ -1533,6 +1533,30 @@ fn studio_shape_transform_chain_command(
         sides: None,
         width: Some(4.0),
     };
+    let ellipse = StudioAuthoringDimensions {
+        angles: None,
+        coordinate_system: None,
+        height: Some(1.5),
+        radius: None,
+        sides: None,
+        width: Some(3.0),
+    };
+    let triangle = StudioAuthoringDimensions {
+        angles: None,
+        coordinate_system: None,
+        height: None,
+        radius: Some(1.25),
+        sides: Some(3),
+        width: None,
+    };
+    let polygon = StudioAuthoringDimensions {
+        angles: None,
+        coordinate_system: None,
+        height: None,
+        radius: Some(1.25),
+        sides: Some(6),
+        width: None,
+    };
     let circle = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
@@ -1542,11 +1566,38 @@ fn studio_shape_transform_chain_command(
         width: None,
     };
     command.programs.push(studio_shape_transform_program(
-        "shape-to-circle",
-        "shape-to-circle",
+        "shape-to-ellipse",
+        "shape-to-ellipse",
         root_id,
         StudioAuthoringEntityKind::Rectangle,
         rectangle,
+        StudioAuthoringEntityKind::Ellipse,
+        ellipse,
+    ));
+    command.programs.push(studio_shape_transform_program(
+        "shape-to-triangle",
+        "shape-to-triangle",
+        root_id,
+        StudioAuthoringEntityKind::Ellipse,
+        ellipse,
+        StudioAuthoringEntityKind::RegularPolygon,
+        triangle,
+    ));
+    command.programs.push(studio_shape_transform_program(
+        "shape-to-polygon",
+        "shape-to-polygon",
+        root_id,
+        StudioAuthoringEntityKind::RegularPolygon,
+        triangle,
+        StudioAuthoringEntityKind::RegularPolygon,
+        polygon,
+    ));
+    command.programs.push(studio_shape_transform_program(
+        "shape-to-circle",
+        "shape-to-circle",
+        root_id,
+        StudioAuthoringEntityKind::RegularPolygon,
+        polygon,
         StudioAuthoringEntityKind::Circle,
         circle,
     ));
@@ -5219,7 +5270,7 @@ fn normalized_math_tex_write_switches_to_one_root_owned_a_b_a_path_morph() {
     clippy::too_many_lines,
     reason = "one vertical slice pins root identity, shape-state admission, topology, and samples"
 )]
-fn normalized_rectangle_circle_chain_uses_one_root_owned_path_morph() {
+fn normalized_closed_primitive_chain_uses_one_root_owned_path_morph() {
     let bundle = static_imported_bundle();
     let base_duration = bundle.scene.duration;
     let command = studio_shape_transform_chain_command(&bundle);
@@ -5229,7 +5280,7 @@ fn normalized_rectangle_circle_chain_uses_one_root_owned_path_morph() {
         project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
     assert_eq!(projection.entities.len(), 1);
     assert_eq!(projection.entities[0].entity_id, root_id);
-    assert!((projection.projected_duration - (base_duration + 1.4)).abs() < 1e-12);
+    assert!((projection.projected_duration - (base_duration + 2.9)).abs() < 1e-12);
     let transforms = projection
         .mutations
         .iter()
@@ -5240,7 +5291,7 @@ fn normalized_rectangle_circle_chain_uses_one_root_owned_path_morph() {
             )
         })
         .collect::<Vec<_>>();
-    assert_eq!(transforms.len(), 2);
+    assert_eq!(transforms.len(), 5);
     assert!(
         transforms
             .iter()
@@ -5251,12 +5302,39 @@ fn normalized_rectangle_circle_chain_uses_one_root_owned_path_morph() {
         StudioCreationProjectedMutationKind::ShapeTransform {
             easing: EasingV1::ManimSmooth {},
             from_shape: StudioAuthoringEntityKind::Rectangle,
-            to_shape: StudioAuthoringEntityKind::Circle,
+            to_shape: StudioAuthoringEntityKind::Ellipse,
             ..
         }
     ));
     assert!(matches!(
         &transforms[1].kind,
+        StudioCreationProjectedMutationKind::ShapeTransform {
+            from_shape: StudioAuthoringEntityKind::Ellipse,
+            to_shape: StudioAuthoringEntityKind::RegularPolygon,
+            to_dimensions,
+            ..
+        } if to_dimensions.sides == Some(3)
+    ));
+    assert!(matches!(
+        &transforms[2].kind,
+        StudioCreationProjectedMutationKind::ShapeTransform {
+            from_shape: StudioAuthoringEntityKind::RegularPolygon,
+            from_dimensions,
+            to_shape: StudioAuthoringEntityKind::RegularPolygon,
+            to_dimensions,
+            ..
+        } if from_dimensions.sides == Some(3) && to_dimensions.sides == Some(6)
+    ));
+    assert!(matches!(
+        &transforms[3].kind,
+        StudioCreationProjectedMutationKind::ShapeTransform {
+            from_shape: StudioAuthoringEntityKind::RegularPolygon,
+            to_shape: StudioAuthoringEntityKind::Circle,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &transforms[4].kind,
         StudioCreationProjectedMutationKind::ShapeTransform {
             from_shape: StudioAuthoringEntityKind::Circle,
             to_shape: StudioAuthoringEntityKind::Rectangle,
@@ -5300,19 +5378,23 @@ fn normalized_rectangle_circle_chain_uses_one_root_owned_path_morph() {
             _ => None,
         })
         .unwrap();
-    assert_eq!(keyframes.len(), 3);
+    assert_eq!(keyframes.len(), 6);
     assert!(
         keyframes
             .iter()
-            .zip([1.3, 1.8, 2.3])
+            .zip([1.3, 1.8, 2.3, 2.8, 3.3, 3.8])
             .all(|(keyframe, expected)| (keyframe.at - expected).abs() < 1e-12)
     );
-    assert_eq!(keyframes[0].value, keyframes[2].value);
-    assert_ne!(keyframes[0].value, keyframes[1].value);
+    assert_eq!(keyframes[0].value, keyframes[5].value);
+    assert!(
+        keyframes
+            .windows(2)
+            .all(|pair| pair[0].value != pair[1].value)
+    );
     assert!(keyframes.iter().all(|keyframe| {
         keyframe.value.subpaths.len() == 1
             && keyframe.value.subpaths[0].closed
-            && keyframe.value.subpaths[0].segments.len() == 4
+            && keyframe.value.subpaths[0].segments.len() == 6
     }));
 
     let sample_path = |sample_time| {
@@ -5339,16 +5421,84 @@ fn normalized_rectangle_circle_chain_uses_one_root_owned_path_morph() {
     };
     let start = sample_path(keyframes[0].at);
     let first_midpoint = sample_path((keyframes[0].at + keyframes[1].at) / 2.0);
-    let circle = sample_path(keyframes[1].at);
-    let second_midpoint = sample_path((keyframes[1].at + keyframes[2].at) / 2.0);
-    let restored = sample_path(keyframes[2].at);
+    let ellipse = sample_path(keyframes[1].at);
+    let triangle = sample_path(keyframes[2].at);
+    let polygon = sample_path(keyframes[3].at);
+    let circle = sample_path(keyframes[4].at);
+    let restored = sample_path(keyframes[5].at);
     assert_eq!(start, keyframes[0].value);
-    assert_eq!(circle, keyframes[1].value);
+    assert_eq!(ellipse, keyframes[1].value);
+    assert_eq!(triangle, keyframes[2].value);
+    assert_eq!(polygon, keyframes[3].value);
+    assert_eq!(circle, keyframes[4].value);
     assert_eq!(restored, start);
     assert_ne!(first_midpoint, start);
-    assert_ne!(first_midpoint, circle);
-    assert_ne!(second_midpoint, circle);
-    assert_ne!(second_midpoint, restored);
+    assert_ne!(first_midpoint, ellipse);
+
+    let triangle_bundle = static_imported_bundle();
+    let mut triangle_command = studio_shape_transform_chain_command(&triangle_bundle);
+    triangle_command.programs.truncate(1);
+    let StudioCreationOperationKind::Create { entity } =
+        &mut triangle_command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    let triangle_dimensions = StudioAuthoringDimensions {
+        angles: None,
+        coordinate_system: None,
+        height: None,
+        radius: Some(1.25),
+        sides: Some(3),
+        width: None,
+    };
+    entity.kind = StudioAuthoringEntityKind::RegularPolygon;
+    entity.dimensions = triangle_dimensions;
+    triangle_command
+        .programs
+        .push(studio_shape_transform_program(
+            "triangle-to-ellipse",
+            "triangle-to-ellipse",
+            root_id,
+            StudioAuthoringEntityKind::RegularPolygon,
+            triangle_dimensions,
+            StudioAuthoringEntityKind::Ellipse,
+            StudioAuthoringDimensions {
+                angles: None,
+                coordinate_system: None,
+                height: Some(1.5),
+                radius: None,
+                sides: None,
+                width: Some(3.0),
+            },
+        ));
+    let mut triangle_session = EngineSessionV1::new(triangle_bundle).unwrap();
+    let triangle_scene = triangle_session
+        .apply_studio_creation_edit(triangle_command)
+        .unwrap()
+        .bundle
+        .scene;
+    let initial_path = triangle_scene
+        .entities
+        .iter()
+        .find_map(|entity| match &entity.geometry {
+            SceneGeometryV1::CubicPath { path } if entity.id == root_id => Some(path),
+            _ => None,
+        })
+        .unwrap();
+    let first_morph_path = triangle_scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::PathMorph {
+                entity_id,
+                keyframes,
+                ..
+            } if entity_id == root_id => keyframes.first().map(|keyframe| &keyframe.value),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(initial_path, first_morph_path);
+    assert_eq!(initial_path.subpaths[0].segments.len(), 4);
 }
 
 #[test]
@@ -5387,6 +5537,20 @@ fn normalized_shape_transform_rejects_broken_state_or_unsupported_kind() {
         project_studio_creation_edits(bundle.scene.duration, &unsupported_kind.programs),
         Err(ProjectStudioCreationEditError::Unsupported)
     ));
+
+    for sides in [2, 33] {
+        let mut invalid_polygon = studio_shape_transform_chain_command(&bundle);
+        let StudioCreationOperationKind::TransformShape { to_dimensions, .. } =
+            &mut invalid_polygon.programs[2].operations[0].kind
+        else {
+            unreachable!();
+        };
+        to_dimensions.sides = Some(sides);
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &invalid_polygon.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+    }
 }
 
 #[test]

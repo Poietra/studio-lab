@@ -1,7 +1,7 @@
 import type { RuntimeSceneState } from "./model";
 import { EDIT_OPERATION_VERSION, operationId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
-import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import { type SceneEdit, type SceneEditOperation, shapeTransformChangesShape } from "./scene-edit-contract";
 import { resolveTimeAnchorOnce } from "./time";
 
 const MINIMUM_SHAPE_TRANSFORM_DURATION = 0.1;
@@ -10,9 +10,28 @@ const SHAPE_TRANSFORM_EPSILON = 0.0005;
 export const SHAPE_TRANSFORM_EASINGS = ["linear", "smooth"] as const;
 export type ShapeTransformEasing = (typeof SHAPE_TRANSFORM_EASINGS)[number];
 
+export const SHAPE_TRANSFORM_TARGETS = ["Circle", "Rectangle", "Ellipse", "Triangle", "RegularPolygon"] as const;
+export type ShapeTransformTarget = (typeof SHAPE_TRANSFORM_TARGETS)[number];
+
+export function isShapeTransformTarget(value: string): value is ShapeTransformTarget {
+  return (SHAPE_TRANSFORM_TARGETS as readonly string[]).includes(value);
+}
+
 type ShapeTransformOperation = Extract<SceneEditOperation, { kind: "TransformShape" }>;
 export type ShapeTransformState = ShapeTransformOperation["from"];
 export type ShapeTransformKind = ShapeTransformState["shape"];
+
+export function shapeTransformKindLabel(kind: ShapeTransformKind) {
+  return kind === "regular-polygon"
+    ? "Regular Polygon"
+    : kind === "circle"
+      ? "Circle"
+      : kind === "ellipse"
+        ? "Ellipse"
+        : kind === "rectangle"
+          ? "Rectangle"
+          : "Triangle";
+}
 
 export type ShapeTransformClip = Readonly<{
   easing: ShapeTransformEasing;
@@ -30,7 +49,7 @@ function transformOperation(program: SceneEdit): ShapeTransformOperation | null 
   return operation?.kind === "TransformShape" ? operation : null;
 }
 
-/** Returns the one independently editable Rectangle/Circle Transform clip owned by a Program. */
+/** Returns the one independently editable closed-primitive Transform clip owned by a Program. */
 export function shapeTransformClipFromProgram(program: SceneEdit): ShapeTransformClip | null {
   const operation = transformOperation(program);
   return operation
@@ -50,21 +69,36 @@ function studioShapeRoot(scene: RuntimeSceneState, entityId: string) {
   const entity = scene.objectGraph.entities[entityId];
   if (
     !entity ||
-    (entity.type !== "Circle" && entity.type !== "Rectangle") ||
+    !isShapeTransformTarget(entity.type) ||
     !entity.transactionId ||
     entity.sourceIdentity.kind !== "unknown"
   ) {
-    throw new TypeError("Shape Transform supports only Studio-created Rectangle and Circle objects.");
+    throw new TypeError("Shape Transform supports only Studio-created closed primitive objects.");
   }
   return entity;
 }
 
 function validateShapeState(state: ShapeTransformState) {
-  const values =
-    state.shape === "circle" ? [state.dimensions.radius] : [state.dimensions.width, state.dimensions.height];
-  if (values.some((value) => typeof value !== "number" || !Number.isFinite(value) || value <= 0)) {
-    throw new TypeError("Shape Transform dimensions must be finite positive numbers.");
-  }
+  const { angles, coordinateSystem, height, radius, sides, width } = state.dimensions;
+  const positive = (value: unknown): value is number =>
+    typeof value === "number" && Number.isFinite(value) && value > 0;
+  const noUnrelatedDimensions = angles === undefined && coordinateSystem === undefined;
+  const valid =
+    noUnrelatedDimensions &&
+    (state.shape === "circle"
+      ? positive(radius) && height === undefined && sides === undefined && width === undefined
+      : state.shape === "ellipse" || state.shape === "rectangle"
+        ? positive(height) && positive(width) && radius === undefined && sides === undefined
+        : state.shape === "triangle"
+          ? positive(radius) && sides === 3 && height === undefined && width === undefined
+          : positive(radius) &&
+            Number.isInteger(sides) &&
+            sides !== undefined &&
+            sides >= 3 &&
+            sides <= 32 &&
+            height === undefined &&
+            width === undefined);
+  if (!valid) throw new TypeError("Shape Transform requires exact finite dimensions for the selected shape.");
 }
 
 function validateInterval(
@@ -101,8 +135,8 @@ function canonicalTransformOperation(
 ): ShapeTransformOperation {
   validateShapeState(input.from);
   validateShapeState(input.to);
-  if (input.from.shape === input.to.shape) {
-    throw new TypeError("Shape Transform must change between Rectangle and Circle.");
+  if (!shapeTransformChangesShape(input.from, input.to)) {
+    throw new TypeError("Shape Transform must change to a different closed primitive.");
   }
   return {
     dependsOn: [],
@@ -120,7 +154,7 @@ function canonicalTransformOperation(
   };
 }
 
-/** Creates one Rectangle/Circle Transform clip while retaining the logical root identity. */
+/** Creates one closed-primitive Transform clip while retaining the logical root identity. */
 export function createShapeTransformProgram(
   input: Readonly<{
     capturedPlayhead: number;

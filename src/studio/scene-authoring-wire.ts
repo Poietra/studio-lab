@@ -195,6 +195,10 @@ export function studioCreationTextContent(value: unknown) {
   return canonicalStudioCreationTextContent(value);
 }
 
+function canonicalShapeTransformKind(shape: Extract<SceneEditOperation, { kind: "TransformShape" }>["from"]["shape"]) {
+  return shape === "triangle" ? "regular-polygon" : shape;
+}
+
 function normalizedStudioCreationOperation(
   operation: SceneEditOperation,
   mathTexTransformRootEntityId?: string,
@@ -431,10 +435,10 @@ function normalizedStudioCreationOperation(
       easing: operation.easing,
       entityId: operation.entityId,
       fromDimensions: operation.from.dimensions,
-      fromShape: operation.from.shape,
+      fromShape: canonicalShapeTransformKind(operation.from.shape),
       kind: "shape-transform",
       toDimensions: operation.to.dimensions,
-      toShape: operation.to.shape,
+      toShape: canonicalShapeTransformKind(operation.to.shape),
     };
   }
   if (operation.kind === "AnimateCamera") {

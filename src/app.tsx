@@ -91,6 +91,7 @@ import {
   WORKSPACE_REIMPORT_BLOCKER,
 } from "./studio/editor-revision-policy";
 import { editorSessionIdentityKey } from "./studio/editor-session-store";
+import type { ShapeTransformInspectorInput } from "./studio/entity-inspector";
 import { LOCKED_ENTITY_MUTATION_MESSAGE, lockedEntityMutationTargets, toggleEntityLock } from "./studio/entity-lock";
 import {
   assignStudioFragmentMaterialV1,
@@ -240,7 +241,7 @@ import {
   scaleKeyframeTransformConflictEntity,
 } from "./studio/scale-keyframe-edit";
 import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-authoring-wire";
-import type { SceneEdit } from "./studio/scene-edit-contract";
+import { type SceneEdit, shapeTransformChangesShape } from "./studio/scene-edit-contract";
 import {
   isSelectionLayoutCommand,
   planSelectionLayout,
@@ -282,9 +283,8 @@ import {
 } from "./studio/shape-resize";
 import {
   createShapeTransformProgram,
+  isShapeTransformTarget,
   replaceShapeTransformProgram,
-  type ShapeTransformEasing,
-  type ShapeTransformKind,
   type ShapeTransformState,
   shapeTransformClipFromProgram,
 } from "./studio/shape-transform-clip-edit";
@@ -4214,49 +4214,65 @@ export function App({
         ? { dimensions: { height, width }, shape: "rectangle" }
         : null;
     }
+    if (entity.type === "Ellipse") {
+      const { height, width } = entity.geometry.dimensions.value;
+      return typeof width === "number" &&
+        Number.isFinite(width) &&
+        width > 0 &&
+        typeof height === "number" &&
+        Number.isFinite(height) &&
+        height > 0
+        ? { dimensions: { height, width }, shape: "ellipse" }
+        : null;
+    }
+    if (entity.type === "Triangle") {
+      const radius = entity.geometry.dimensions.value.radius;
+      return typeof radius === "number" && Number.isFinite(radius) && radius > 0
+        ? { dimensions: { radius, sides: 3 }, shape: "triangle" }
+        : null;
+    }
+    if (entity.type === "RegularPolygon") {
+      const { radius, sides } = entity.geometry.dimensions.value;
+      return typeof radius === "number" &&
+        Number.isFinite(radius) &&
+        radius > 0 &&
+        typeof sides === "number" &&
+        Number.isInteger(sides) &&
+        sides >= 3 &&
+        sides <= 32
+        ? { dimensions: { radius, sides }, shape: "regular-polygon" }
+        : null;
+    }
     return null;
   }
 
-  function priorShapeTransformState(entityId: string, shape: ShapeTransformKind): ShapeTransformState {
-    const states = previewAppliedEdits.flatMap(({ program }) =>
-      program.operations.flatMap((operation) =>
-        operation.kind === "TransformShape" && operation.entityId === entityId
-          ? [operation.from, operation.to]
-          : operation.kind === "CreateEntity" && operation.entity.id === entityId
-            ? operation.entity.type === "Circle" && typeof operation.entity.dimensions?.radius === "number"
-              ? [{ dimensions: { radius: operation.entity.dimensions.radius }, shape: "circle" as const }]
-              : operation.entity.type === "Rectangle" &&
-                  typeof operation.entity.dimensions?.width === "number" &&
-                  typeof operation.entity.dimensions?.height === "number"
-                ? [
-                    {
-                      dimensions: {
-                        height: operation.entity.dimensions.height,
-                        width: operation.entity.dimensions.width,
-                      },
-                      shape: "rectangle" as const,
-                    },
-                  ]
-                : []
-            : [],
-      ),
-    );
-    const prior = states.findLast((state) => state.shape === shape);
-    return (
-      prior ??
-      (shape === "circle" ? { dimensions: { radius: 1 }, shape } : { dimensions: { height: 2, width: 4 }, shape })
-    );
+  function targetShapeTransformState(input: ShapeTransformInspectorInput): ShapeTransformState {
+    if (input.target === "Circle") return { dimensions: { radius: input.radius }, shape: "circle" };
+    if (input.target === "Ellipse") {
+      return { dimensions: { height: input.height, width: input.width }, shape: "ellipse" };
+    }
+    if (input.target === "Rectangle") {
+      return { dimensions: { height: input.height, width: input.width }, shape: "rectangle" };
+    }
+    if (input.target === "Triangle") return { dimensions: { radius: input.radius, sides: 3 }, shape: "triangle" };
+    if (input.target === "RegularPolygon") {
+      return {
+        dimensions: { radius: input.radius, sides: input.sides },
+        shape: "regular-polygon",
+      };
+    }
+    throw new Error("Unsupported Shape Transform target.");
   }
 
   function shapeTransformUnavailableReason(entityId: string) {
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (
       !entity ||
-      (entity.type !== "Circle" && entity.type !== "Rectangle") ||
+      !isShapeTransformTarget(entity.type) ||
       entity.sourceIdentity.kind !== "unknown" ||
       !entity.transactionId
     ) {
-      return "Shape Transform supports only Studio-created Rectangle and Circle objects.";
+      return "Shape Transform supports only Studio-created closed primitive objects.";
     }
     if (previewRenderer?.state.phase !== "presented" || !workspaceCreationProjection || !workspaceProjection) {
       return "Wait for the canonical WebGPU preview before creating Shape Transform.";
@@ -4280,19 +4296,16 @@ export function App({
     return null;
   }
 
-  function addShapeTransform(
-    entityId: string,
-    input: Readonly<{ duration: number; easing: ShapeTransformEasing; target: "Circle" | "Rectangle" }>,
-  ) {
+  function addShapeTransform(entityId: string, input: ShapeTransformInspectorInput) {
     const unavailable = shapeTransformUnavailableReason(entityId);
     if (unavailable) {
       setDraftError(unavailable);
       return false;
     }
     const from = currentShapeTransformState(entityId);
-    const targetShape = input.target === "Circle" ? "circle" : "rectangle";
-    if (!from || from.shape === targetShape) {
-      setDraftError("Shape Transform must change between Rectangle and Circle.");
+    const to = targetShapeTransformState(input);
+    if (!from || !shapeTransformChangesShape(from, to)) {
+      setDraftError("Shape Transform must change to a different closed primitive.");
       return false;
     }
     const gestureContext = directGestureContext();
@@ -4319,7 +4332,7 @@ export function App({
         from,
         scene: sourceScene,
         start: anchor.sourceTime,
-        to: priorShapeTransformState(entityId, targetShape),
+        to,
         transactionId: `studio-shape-transform-${crypto.randomUUID()}`,
       });
       const validated = validatedProgramRecord(validation);
@@ -9427,7 +9440,7 @@ export function App({
                   : undefined
               }
               shapeTransform={
-                selectedEntity?.type === "Circle" || selectedEntity?.type === "Rectangle"
+                selectedEntity && isShapeTransformTarget(selectedEntity.type)
                   ? {
                       currentShape: selectedEntity.type,
                       defaultDuration: motionDuration,

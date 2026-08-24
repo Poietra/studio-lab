@@ -779,12 +779,12 @@ const studioCreationProjectionV1Schema = z
             easing: easingV1Schema,
             entityId: z.string().min(1),
             fromDimensions: studioStaticRootDimensionsV1Schema,
-            fromShape: z.enum(["circle", "rectangle"]),
+            fromShape: z.enum(["circle", "ellipse", "rectangle", "regular-polygon"]),
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("shape-transform"),
             operationId: z.string().min(1),
             toDimensions: studioStaticRootDimensionsV1Schema,
-            toShape: z.enum(["circle", "rectangle"]),
+            toShape: z.enum(["circle", "ellipse", "rectangle", "regular-polygon"]),
             transactionId: z.string().min(1),
           })
           .strict(),
@@ -1210,10 +1210,10 @@ type StudioCreationOperationV1 = Readonly<{
         easing: "linear" | "smooth";
         entityId: string;
         fromDimensions: StudioCreationDimensionsV1;
-        fromShape: "circle" | "rectangle";
+        fromShape: "circle" | "ellipse" | "rectangle" | "regular-polygon";
         kind: "shape-transform";
         toDimensions: StudioCreationDimensionsV1;
-        toShape: "circle" | "rectangle";
+        toShape: "circle" | "ellipse" | "rectangle" | "regular-polygon";
       }>
     | Readonly<{
         easing: "linear" | "smooth";

@@ -156,6 +156,32 @@ describe("Studio creation wire", () => {
     ]);
   });
 
+  it("normalizes Triangle Shape Transform endpoints while preserving the other closed primitive kinds", () => {
+    const transform = followupProgram("shape-transform:Triangle", {
+      dependsOn: [],
+      easing: "smooth",
+      entityId: "entity:Triangle",
+      from: { dimensions: { radius: 1, sides: 3 }, shape: "triangle" },
+      id: "shape-transform:Triangle/operation",
+      interval: { end: 2, start: 1 },
+      kind: "TransformShape",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      to: { dimensions: { height: 2, width: 3 }, shape: "ellipse" },
+    });
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 3,
+      programs: [creationProgram("Triangle"), transform],
+    });
+
+    expect(command.programs[1]?.operations[0]).toMatchObject({
+      fromDimensions: { radius: 1, sides: 3 },
+      fromShape: "regular-polygon",
+      kind: "shape-transform",
+      toDimensions: { height: 2, width: 3 },
+      toShape: "ellipse",
+    });
+  });
+
   it("maps native curve primitives to their Rust creation kinds", () => {
     const command = buildStudioCreationProjectionCommand({
       baseDuration: 2,
