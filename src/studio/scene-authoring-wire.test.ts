@@ -237,7 +237,7 @@ describe("Studio creation wire", () => {
     );
   });
 
-  it("preserves ordered continuation segments in the Rust creation command", () => {
+  it("preserves ordered continuation segments and closed fill in the Rust creation command", () => {
     const program = creationProgram("CubicBezier");
     const operation = program.operations[0];
     if (operation?.kind !== "CreateEntity" || !operation.entity.cubicBezier) {
@@ -260,7 +260,13 @@ describe("Studio creation wire", () => {
               ...operation,
               entity: {
                 ...operation.entity,
-                cubicBezier: { ...operation.entity.cubicBezier, continuationSegments },
+                cubicBezier: {
+                  ...operation.entity.cubicBezier,
+                  arrowEnd: false,
+                  closed: true,
+                  continuationSegments,
+                  fillColor: "#38bdf8",
+                },
               },
             },
           ],
@@ -270,7 +276,12 @@ describe("Studio creation wire", () => {
 
     const projected = command.programs[0]?.operations[0];
     if (projected?.kind !== "create") throw new Error("Cubic Bézier wire projection is incomplete.");
-    expect(projected.entity.cubicBezier?.continuationSegments).toEqual(continuationSegments);
+    expect(projected.entity.cubicBezier).toMatchObject({
+      arrowEnd: false,
+      closed: true,
+      continuationSegments,
+      fillColor: "#38bdf8",
+    });
   });
 
   it("maps coordinate objects to their Rust creation kinds", () => {

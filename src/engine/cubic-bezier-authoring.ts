@@ -5,6 +5,7 @@ import { loadPoietraWasmModule } from "./poietra-wasm-module";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const pointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
+const canonicalRgbHexSchema = z.string().regex(/^#[0-9a-f]{6}$/u);
 export const studioCubicBezierContinuationSegmentSchema = z
   .object({
     control1: pointSchema,
@@ -16,15 +17,33 @@ export const studioCubicBezierContinuationSegmentSchema = z
 export const studioCubicBezierSpecSchema = z
   .object({
     arrowEnd: z.boolean(),
+    closed: z.boolean().optional(),
     control1: pointSchema,
     control2: pointSchema,
     continuationSegments: z.array(studioCubicBezierContinuationSegmentSchema).max(7).optional(),
     end: pointSchema,
+    fillColor: canonicalRgbHexSchema.optional(),
     start: pointSchema,
     strokeCap: z.enum(["butt", "round", "square"]),
     strokeWidth: z.number().finite().min(0.005).max(0.5),
   })
-  .strict();
+  .strict()
+  .superRefine((spec, context) => {
+    if (spec.closed === true && spec.arrowEnd) {
+      context.addIssue({
+        code: "custom",
+        message: "A closed cubic Bézier path cannot have an arrow end.",
+        path: ["arrowEnd"],
+      });
+    }
+    if (spec.fillColor !== undefined && spec.closed !== true) {
+      context.addIssue({
+        code: "custom",
+        message: "A cubic Bézier fill requires a closed path.",
+        path: ["fillColor"],
+      });
+    }
+  });
 
 export const studioCubicBezierInspectionSchema = z
   .object({
@@ -48,10 +67,12 @@ export type StudioCubicBezierContinuationSegment = Readonly<{
 }>;
 export type StudioCubicBezierSpec = Readonly<{
   arrowEnd: boolean;
+  closed?: boolean;
   control1: StudioCubicBezierPoint;
   control2: StudioCubicBezierPoint;
   continuationSegments?: readonly StudioCubicBezierContinuationSegment[];
   end: StudioCubicBezierPoint;
+  fillColor?: string;
   start: StudioCubicBezierPoint;
   strokeCap: "butt" | "round" | "square";
   strokeWidth: number;

@@ -82,6 +82,9 @@ export function drawInUnavailableReason(
       ? 'Draw supports stroke-only SVG paths. Import a path with fill="none" to animate its stroke.'
       : "Wait for the Rust-validated SVG paint metadata before adding Draw.";
   }
+  if (create.entity.type === "CubicBezier" && create.entity.cubicBezier?.closed) {
+    return "Draw currently supports open Pen paths. Reopen the path before adding Draw.";
+  }
   const otherDraw = program.operations.find(
     (operation) => operation.kind === "DrawIn" && operation.entityId !== entityId,
   );

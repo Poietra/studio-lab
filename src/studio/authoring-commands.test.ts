@@ -628,7 +628,13 @@ describe("manual Studio authoring commands", () => {
       },
     ];
     const replacement = replaceStudioCreatedCubicBezierProgram({
-      cubicBezier: { ...cubicBezier, continuationSegments, control1: { x: -0.5, y: 1 } },
+      cubicBezier: {
+        ...cubicBezier,
+        closed: true,
+        continuationSegments,
+        control1: { x: -0.5, y: 1 },
+        fillColor: "#38bdf8",
+      },
       dimensions: { height: 2, width: 4 },
       entityId,
       owner,
@@ -640,7 +646,12 @@ describe("manual Studio authoring commands", () => {
       expect.arrayContaining([
         expect.objectContaining({
           entity: expect.objectContaining({
-            cubicBezier: expect.objectContaining({ continuationSegments, control1: { x: -0.5, y: 1 } }),
+            cubicBezier: expect.objectContaining({
+              closed: true,
+              continuationSegments,
+              control1: { x: -0.5, y: 1 },
+              fillColor: "#38bdf8",
+            }),
           }),
           kind: "CreateEntity",
         }),

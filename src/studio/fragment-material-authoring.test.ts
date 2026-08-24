@@ -8,11 +8,13 @@ import {
 } from "../engine/fragment-material-registry";
 import {
   assignStudioFragmentMaterialV1,
+  CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER,
   createStudioFragmentMaterialV1,
   createStudioGradientFragmentMaterialPresetV1,
   createStudioPulseFragmentMaterialPresetV1,
   createStudioTextureFragmentMaterialPresetV1,
   createStudioWaveFragmentMaterialPresetV1,
+  cubicBezierFragmentMaterialTransitionBlocker,
   duplicateStudioFragmentMaterialV1,
   EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1,
   listStudioFragmentMaterialsV1,
@@ -33,6 +35,32 @@ import {
 } from "./fragment-material-authoring";
 
 describe("project-local fragment material authoring", () => {
+  it("blocks history from reopening a Pen path while its fill material remains assigned", () => {
+    const assignment = {
+      parameters: [0.35, 8],
+      revision: 1,
+      shaderId: "project-fragment:material-1",
+    };
+    const program = (closed: boolean, fillColor?: string) => ({
+      operations: [
+        {
+          entity: {
+            cubicBezier: { closed, ...(fillColor ? { fillColor } : {}) },
+            id: "curve",
+            type: "CubicBezier",
+          },
+          kind: "CreateEntity",
+        },
+      ],
+    });
+
+    expect(cubicBezierFragmentMaterialTransitionBlocker({ curve: assignment }, [program(true, "#ffffff")])).toBeNull();
+    expect(cubicBezierFragmentMaterialTransitionBlocker({ curve: assignment }, [program(false)])).toBe(
+      CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER,
+    );
+    expect(cubicBezierFragmentMaterialTransitionBlocker({}, [program(false)])).toBeNull();
+  });
+
   it("assigns one declared screen texture per object and preserves the slot while duplicating", () => {
     const preset = createStudioTextureFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
     expect(listStudioFragmentMaterialsV1(preset.state)).toMatchObject([

@@ -2,16 +2,16 @@
 
 use poietra_geometry::scene_geometry_as_cubic_path_v1;
 use poietra_scene_ir::{
-    CubicPathV1, CubicSegmentV1, CubicSubpathV1, PointV1, RgbaColorV1, SceneAppearanceV1,
-    SceneCapabilityV1, SceneGeometryV1,
+    CubicPathV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, PointV1, RgbaColorV1,
+    SceneAppearanceV1, SceneCapabilityV1, SceneGeometryV1,
 };
 
 use super::{
     CreateSceneEntityGeometry, StudioAuthoringAngles, StudioAuthoringCoordinateRange,
     StudioAuthoringCoordinateSystem, StudioAuthoringDimensions, StudioAuthoringEntityKind,
     StudioCreationCubicBezierSpec, StudioCubicBezierStrokeCap, StudioDataPlotInterpolation,
-    StudioDataSeries, studio_arrow_appearance, studio_authoring_shape_size,
-    studio_math_tex_appearance, studio_shape_appearance,
+    StudioDataSeries, canonical_studio_hex_color, studio_arrow_appearance,
+    studio_authoring_shape_size, studio_math_tex_appearance, studio_shape_appearance,
 };
 
 pub(super) fn straight_cubic_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
@@ -630,7 +630,15 @@ pub(super) fn studio_cubic_bezier_appearance(
         StudioCubicBezierStrokeCap::Square => poietra_scene_ir::StrokeCapV1::Square,
     };
     SceneAppearanceV1::Vector {
-        fill: None,
+        fill: spec
+            .fill_color
+            .as_deref()
+            .and_then(canonical_studio_hex_color)
+            .map(|color| FillStyleV1 {
+                color,
+                fragment_material: None,
+                rule: FillRuleV1::NonZero,
+            }),
         opacity: 1.0,
         stroke: Some(poietra_scene_ir::StrokeStyleV1 {
             cap,

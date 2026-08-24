@@ -2760,7 +2760,19 @@ mod tests {
             &inspect_studio_cubic_bezier_json(&serde_json::to_vec(&spec).unwrap()).unwrap(),
         )
         .unwrap();
+        assert!(legacy["cubicBezier"].get("closed").is_none());
         assert!(legacy["cubicBezier"].get("continuationSegments").is_none());
+        assert!(legacy["cubicBezier"].get("fillColor").is_none());
+
+        let mut closed_fill = spec.clone();
+        closed_fill["closed"] = json!(true);
+        closed_fill["fillColor"] = json!("#22c55e");
+        let filled: serde_json::Value = serde_json::from_slice(
+            &inspect_studio_cubic_bezier_json(&serde_json::to_vec(&closed_fill).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(filled["cubicBezier"]["closed"], true);
+        assert_eq!(filled["cubicBezier"]["fillColor"], "#22c55e");
 
         let extend = json!({
             "action": "extend",

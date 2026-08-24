@@ -1017,7 +1017,7 @@ export function StudioCanvas({
             (insertTool === "select" && !cubicBezierExtensionActive) ||
             inlineTextEditor !== null ||
             boundaryActive ||
-            isCanvasInteractionTarget(event.target)
+            (!cubicBezierExtensionActive && isCanvasInteractionTarget(event.target))
           )
             return;
           const point = clientPointToViewport(event.currentTarget.getBoundingClientRect(), {
@@ -1273,6 +1273,7 @@ export function StudioCanvas({
                     }
                     onPointerCancel={selectorOnlyEntity ? undefined : onEntityPointerCancel}
                     onPointerDown={(event) => {
+                      if (cubicBezierExtensionActive) return;
                       if (event.shiftKey || event.metaKey || event.ctrlKey) {
                         event.preventDefault();
                         event.stopPropagation();

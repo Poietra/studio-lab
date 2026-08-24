@@ -25,11 +25,15 @@ pub enum StudioCubicBezierStrokeCap {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCreationCubicBezierSpec {
     pub arrow_end: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub closed: bool,
     pub control1: PointV1,
     pub control2: PointV1,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub continuation_segments: Vec<CubicSegmentV1>,
     pub end: PointV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill_color: Option<String>,
     pub start: PointV1,
     pub stroke_cap: StudioCubicBezierStrokeCap,
     pub stroke_width: f64,
@@ -61,6 +65,14 @@ pub enum StudioCubicBezierError {
     Degenerate,
     #[error("cubic Bézier paths accept at most 8 segments")]
     TooManySegments,
+    #[error("cubic Bézier fill color must use canonical lowercase #rrggbb")]
+    InvalidFillColor,
+    #[error("cubic Bézier fill requires a closed path, and closed paths cannot have arrows")]
+    InvalidClosedAppearance,
+    #[error("filled cubic Bézier paths must contain a non-collinear contour")]
+    DegenerateFill,
+    #[error("closed cubic Bézier paths cannot be extended")]
+    ClosedExtension,
     #[error("cubic Bézier stroke width must be between 0.005 and 0.5 Scene units")]
     InvalidStrokeWidth,
 }
@@ -96,6 +108,39 @@ fn valid_point(point: &PointV1) -> bool {
         && point.y.is_finite()
         && point.x.abs() <= MAX_COORDINATE_V1
         && point.y.abs() <= MAX_COORDINATE_V1
+}
+
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde skip_serializing_if requires a function accepting a shared reference"
+)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn canonical_fill_color(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 7
+        && bytes[0] == b'#'
+        && bytes[1..]
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+}
+
+fn points_contain_non_collinear_triple<'a>(mut points: impl Iterator<Item = &'a PointV1>) -> bool {
+    let Some(first) = points.next() else {
+        return false;
+    };
+    let Some(second) = points.find(|point| {
+        (point.x - first.x).abs() > MIN_CURVE_SPAN || (point.y - first.y).abs() > MIN_CURVE_SPAN
+    }) else {
+        return false;
+    };
+    points.any(|point| {
+        let cross =
+            (second.x - first.x) * (point.y - first.y) - (second.y - first.y) * (point.x - first.x);
+        cross.abs() > MIN_CURVE_SPAN * MIN_CURVE_SPAN
+    })
 }
 
 fn straight_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
@@ -186,6 +231,16 @@ fn path_for_spec(
     {
         return Err(StudioCubicBezierError::InvalidStrokeWidth);
     }
+    if spec.closed && spec.arrow_end || spec.fill_color.is_some() && !spec.closed {
+        return Err(StudioCubicBezierError::InvalidClosedAppearance);
+    }
+    if spec
+        .fill_color
+        .as_deref()
+        .is_some_and(|color| !canonical_fill_color(color))
+    {
+        return Err(StudioCubicBezierError::InvalidFillColor);
+    }
     let mut segments = Vec::with_capacity(spec.continuation_segments.len() + 1);
     segments.push(CubicSegmentV1 {
         control1: spec.control1.clone(),
@@ -219,6 +274,18 @@ fn path_for_spec(
         segment_start = &segment.end;
     }
 
+    if spec.fill_color.is_some()
+        && !points_contain_non_collinear_triple(
+            std::iter::once(&spec.start).chain(
+                segments
+                    .iter()
+                    .flat_map(|segment| [&segment.control1, &segment.control2, &segment.end]),
+            ),
+        )
+    {
+        return Err(StudioCubicBezierError::DegenerateFill);
+    }
+
     let span = (bounds.right - bounds.left).max(bounds.top - bounds.bottom);
     let final_segment_start = if segments.len() == 1 {
         &spec.start
@@ -234,7 +301,7 @@ fn path_for_spec(
         span,
     );
     let mut subpaths = vec![CubicSubpathV1 {
-        closed: false,
+        closed: spec.closed,
         segments,
         start: spec.start.clone(),
     }];
@@ -336,6 +403,9 @@ pub fn extend_studio_cubic_bezier(
     spec: &StudioCreationCubicBezierSpec,
     endpoint: &PointV1,
 ) -> Result<StudioCubicBezierInspection, StudioCubicBezierError> {
+    if spec.closed {
+        return Err(StudioCubicBezierError::ClosedExtension);
+    }
     let mut extended = spec.clone();
     let segment_start = extended
         .continuation_segments
@@ -364,6 +434,8 @@ pub(super) fn studio_cubic_bezier_is_canonical(
     normalized: &NormalizedStudioCubicBezier,
 ) -> bool {
     source.arrow_end == normalized.spec.arrow_end
+        && source.closed == normalized.spec.closed
+        && source.fill_color == normalized.spec.fill_color
         && source.stroke_cap == normalized.spec.stroke_cap
         && (source.stroke_width - normalized.spec.stroke_width).abs() <= CANONICAL_EPSILON
         && [
@@ -414,10 +486,12 @@ mod tests {
     fn curve(arrow_end: bool) -> StudioCreationCubicBezierSpec {
         StudioCreationCubicBezierSpec {
             arrow_end,
+            closed: false,
             control1: PointV1 { x: -1.0, y: 1.0 },
             control2: PointV1 { x: 1.0, y: -1.0 },
             continuation_segments: Vec::new(),
             end: PointV1 { x: 2.0, y: 0.5 },
+            fill_color: None,
             start: PointV1 { x: -2.0, y: -0.5 },
             stroke_cap: StudioCubicBezierStrokeCap::Round,
             stroke_width: 0.04,
@@ -450,8 +524,68 @@ mod tests {
             "strokeWidth": 0.04
         });
         let parsed: StudioCreationCubicBezierSpec = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(!parsed.closed);
         assert!(parsed.continuation_segments.is_empty());
+        assert!(parsed.fill_color.is_none());
         assert_eq!(serde_json::to_value(parsed).unwrap(), legacy);
+    }
+
+    #[test]
+    fn normalizes_a_closed_filled_curve_without_an_arrow() {
+        let mut candidate = curve(false);
+        candidate.closed = true;
+        candidate.fill_color = Some("#22c55e".to_owned());
+
+        let inspection = inspect_studio_cubic_bezier(&candidate).unwrap();
+        let normalized = normalize_studio_cubic_bezier(&inspection.cubic_bezier).unwrap();
+
+        assert_eq!(normalized.path.subpaths.len(), 1);
+        assert!(normalized.path.subpaths[0].closed);
+        assert_eq!(normalized.spec.fill_color.as_deref(), Some("#22c55e"));
+        assert!(studio_cubic_bezier_is_canonical(
+            &inspection.cubic_bezier,
+            &normalized
+        ));
+    }
+
+    #[test]
+    fn rejects_incompatible_or_degenerate_fill_configuration() {
+        let mut open_fill = curve(false);
+        open_fill.fill_color = Some("#22c55e".to_owned());
+        assert_eq!(
+            inspect_studio_cubic_bezier(&open_fill),
+            Err(StudioCubicBezierError::InvalidClosedAppearance)
+        );
+
+        let mut closed_arrow = curve(true);
+        closed_arrow.closed = true;
+        assert_eq!(
+            inspect_studio_cubic_bezier(&closed_arrow),
+            Err(StudioCubicBezierError::InvalidClosedAppearance)
+        );
+
+        let mut invalid_color = curve(false);
+        invalid_color.closed = true;
+        invalid_color.fill_color = Some("#22C55E".to_owned());
+        assert_eq!(
+            inspect_studio_cubic_bezier(&invalid_color),
+            Err(StudioCubicBezierError::InvalidFillColor)
+        );
+
+        let mut collinear = curve(false);
+        collinear.closed = true;
+        collinear.fill_color = Some("#22c55e".to_owned());
+        collinear.start = PointV1 { x: -2.0, y: 0.0 };
+        collinear.control1 = PointV1 { x: -1.0, y: 0.0 };
+        collinear.control2 = PointV1 { x: 1.0, y: 0.0 };
+        collinear.end = PointV1 { x: 2.0, y: 0.0 };
+        assert_eq!(
+            inspect_studio_cubic_bezier(&collinear),
+            Err(StudioCubicBezierError::DegenerateFill)
+        );
+
+        collinear.fill_color = None;
+        assert!(inspect_studio_cubic_bezier(&collinear).is_ok());
     }
 
     #[test]
@@ -555,6 +689,17 @@ mod tests {
     }
 
     #[test]
+    fn rejects_extending_a_closed_curve() {
+        let mut closed = curve(false);
+        closed.closed = true;
+
+        assert_eq!(
+            extend_studio_cubic_bezier(&closed, &PointV1 { x: 3.0, y: 1.0 }),
+            Err(StudioCubicBezierError::ClosedExtension)
+        );
+    }
+
+    #[test]
     fn enforces_segment_limit_and_rejects_degenerate_continuations() {
         let mut maximum = curve(false);
         let mut start = maximum.end.clone();
@@ -643,6 +788,7 @@ mod tests {
     fn accepts_json_round_trip_dimensions_from_the_browser_inspector() {
         let source = StudioCreationCubicBezierSpec {
             arrow_end: false,
+            closed: false,
             control1: PointV1 {
                 x: -1.176_779_616_495_929,
                 y: 1.681_113_737_851_326_6,
@@ -656,6 +802,7 @@ mod tests {
                 x: 1.849_225_111_636_459_3,
                 y: 0.672_445_495_140_530_9,
             },
+            fill_color: None,
             start: PointV1 {
                 x: -1.849_225_111_636_459_5,
                 y: -0.672_445_495_140_530_4,

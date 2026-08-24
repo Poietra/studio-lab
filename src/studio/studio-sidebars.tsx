@@ -1182,6 +1182,7 @@ export function StudioInspector({
   authoringAvailable = true,
   className,
   colorAvailable,
+  cubicBezierClosed,
   dataPlotAuthoring,
   cameraAuthoring,
   draftApplyPending,
@@ -1253,6 +1254,7 @@ export function StudioInspector({
   authoringAvailable?: boolean;
   className?: string;
   colorAvailable: boolean;
+  cubicBezierClosed: boolean;
   dataPlotAuthoring?: DataPlotInspectorAuthoring;
   cameraAuthoring?: CameraInspectorAuthoring;
   draftApplyPending: boolean;
@@ -1362,14 +1364,19 @@ export function StudioInspector({
     ].includes(selectedEntity.type)
       ? selectedEntity.type === "Text" || selectedEntity.type === "MathTex"
         ? [["Fill", "fillColor", fillColorValue]]
-        : ["Arc", "Arrow", "Axes", "CubicBezier", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(
-              selectedEntity.type,
-            )
-          ? [["Stroke", "strokeColor", strokeColorValue]]
-          : [
+        : selectedEntity.type === "CubicBezier" && cubicBezierClosed
+          ? [
               ["Fill", "fillColor", fillColorValue],
               ["Stroke", "strokeColor", strokeColorValue],
             ]
+          : ["Arc", "Arrow", "Axes", "CubicBezier", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(
+                selectedEntity.type,
+              )
+            ? [["Stroke", "strokeColor", strokeColorValue]]
+            : [
+                ["Fill", "fillColor", fillColorValue],
+                ["Stroke", "strokeColor", strokeColorValue],
+              ]
       : [];
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>

@@ -535,9 +535,7 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
   }
 });
 
-test("imports one canonical SVG path and preserves editing, WGSL material, reload, and MP4 export", async ({
-  page,
-}) => {
+test("paints imported SVG and a closed Pen path with WGSL through reload and MP4 export", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(10_000);
   let projectId: string | null = null;
@@ -597,6 +595,67 @@ test("imports one canonical SVG path and preserves editing, WGSL material, reloa
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
+    await page.getByRole("button", { name: /Pen tool/ }).click();
+    for (const position of [
+      { x: 60, y: 300 },
+      { x: 220, y: 300 },
+      { x: 100, y: 200 },
+      { x: 180, y: 200 },
+    ]) {
+      await canvas.click({ position });
+    }
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const pen = page.getByRole("button", { name: "Move CubicBezier", exact: true });
+    await pen.click();
+    const penId = await pen.getAttribute("data-studio-entity");
+    if (!penId) throw new Error("The Pen path did not expose its Studio entity id.");
+    await page.getByRole("button", { name: /Extend path/ }).click();
+    await canvas.click({ position: { x: 140, y: 260 } });
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await page.getByRole("button", { name: "Close path" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.getByRole("button", { name: "Close path" })).toBeVisible();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.getByRole("button", { name: "Reopen path" })).toBeVisible();
+    await page.getByRole("button", { name: "Reopen path" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    const penFill = page.getByLabel("Fill color CubicBezier");
+    await expect(penFill).toHaveValue("#ffffff");
+    await penFill.fill("#f97316");
+    await penFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveValue("#f97316");
+    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
+    await page.getByRole("button", { name: "Move playhead to source anchor 0.400 seconds" }).click();
+    await page.getByRole("button", { name: "Reopen path" }).click();
+    await expect(page.getByRole("button", { name: "Replace program" })).toBeVisible();
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByRole("button", { name: "Reopen path" })).toBeVisible();
+    const gradientPreset = page.getByText("Gradient preset").locator("xpath=../..");
+    await gradientPreset.getByRole("button", { name: "Create & apply" }).click();
+    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "Unassign the fragment material before reopening or undoing this Pen path.",
+    );
+    await expect(page.getByRole("button", { name: "Reopen path" })).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await page.getByRole("button", { name: "Reopen path" }).click();
+    await expect(page.getByRole("alert")).toContainText(
+      "Unassign the fragment material before reopening or undoing this Pen path.",
+    );
+    await expect(page.getByRole("button", { name: "Reopen path" })).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
     await svgInput.setInputFiles({
       buffer: Buffer.from(
         '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 60"><path d="M10 50 Q50 0 90 50" fill="none" stroke="#f59e0b" stroke-width="5" stroke-linecap="round"/></svg>',
@@ -633,7 +692,13 @@ test("imports one canonical SVG path and preserves editing, WGSL material, reloa
       .getByRole("button", { name: "insert-0", exact: true })
       .click();
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
-    await exportLocalMp4(page);
+    await page.getByRole("button", { name: "Move CubicBezier", exact: true }).click();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveValue("#f97316");
+    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    await expect(page.locator(`[data-studio-entity="${penId}"]`)).toBeVisible();
+    const mp4 = await exportLocalMp4(page);
+    const [paintedPixels = 0] = await decodedBrightPixelCounts(page, mp4, [1]);
+    expect(paintedPixels).toBeGreaterThan(100);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

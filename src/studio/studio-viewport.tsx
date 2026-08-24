@@ -70,6 +70,7 @@ export type StudioViewportProps = Readonly<
       gesturePreviewStore: StudioGesturePreviewStore;
       insertValue: string;
       onCoordinateInsertSettingsChange: (settings: CoordinateInsertSettings) => void;
+      onCubicBezierClosedToggle?: () => void;
       onCubicBezierExtensionToggle?: () => void;
       onCubicBezierRemoveLastSegment?: () => void;
       onCubicBezierStyleChange?: (change: CubicBezierStyleChange) => void;
@@ -171,6 +172,7 @@ export function StudioViewport({
   onInlineTextCommit,
   onInteractionModeChange,
   onCoordinateInsertSettingsChange,
+  onCubicBezierClosedToggle,
   onCubicBezierExtensionToggle,
   onCubicBezierRemoveLastSegment,
   onCubicBezierStyleChange,
@@ -251,6 +253,7 @@ export function StudioViewport({
           insertValue={insertValue}
           insertionAvailable={insertionAvailable}
           onCoordinateInsertSettingsChange={onCoordinateInsertSettingsChange}
+          onCubicBezierClosedToggle={onCubicBezierClosedToggle}
           onCubicBezierExtensionToggle={onCubicBezierExtensionToggle}
           onCubicBezierRemoveLastSegment={onCubicBezierRemoveLastSegment}
           onCubicBezierStyleChange={onCubicBezierStyleChange}

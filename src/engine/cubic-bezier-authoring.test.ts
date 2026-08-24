@@ -36,4 +36,29 @@ describe("Studio cubic Bézier authoring contract", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("accepts canonical fill only for a closed path without an arrow end", () => {
+    expect(
+      studioCubicBezierSpecSchema.safeParse({
+        ...singleSegment,
+        closed: true,
+        fillColor: "#38bdf8",
+      }).success,
+    ).toBe(true);
+    expect(studioCubicBezierSpecSchema.safeParse({ ...singleSegment, fillColor: "#38bdf8" }).success).toBe(false);
+    expect(
+      studioCubicBezierSpecSchema.safeParse({
+        ...singleSegment,
+        closed: true,
+        fillColor: "#38BDF8",
+      }).success,
+    ).toBe(false);
+    expect(
+      studioCubicBezierSpecSchema.safeParse({
+        ...singleSegment,
+        arrowEnd: true,
+        closed: true,
+      }).success,
+    ).toBe(false);
+  });
 });

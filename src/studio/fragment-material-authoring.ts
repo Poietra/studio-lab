@@ -74,6 +74,37 @@ export type StudioFragmentMaterialParameterV1 =
 export type StudioFragmentMaterialParameterSchemaV1 = readonly StudioFragmentMaterialParameterV1[];
 export type StudioFragmentMaterialParameterValueV1 = number | StudioFragmentMaterialRgbV1;
 
+export const CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER =
+  "Unassign the fragment material before reopening or undoing this Pen path.";
+
+type StudioCreationProgramLike = Readonly<{
+  operations: readonly Readonly<{
+    entity?: Readonly<{
+      cubicBezier?: Readonly<{ closed?: boolean; fillColor?: string }>;
+      id: string;
+      type: string;
+    }>;
+    kind: string;
+  }>[];
+}>;
+
+/** Keeps material assignments from outliving the filled Pen geometry they target. */
+export function cubicBezierFragmentMaterialTransitionBlocker(
+  assignments: SceneFragmentMaterialStateV1["assignments"],
+  programs: readonly StudioCreationProgramLike[],
+) {
+  for (const program of programs) {
+    for (const operation of program.operations) {
+      const entity = operation.kind === "CreateEntity" ? operation.entity : undefined;
+      if (!entity || entity.type !== "CubicBezier" || assignments[entity.id] === undefined) continue;
+      if (entity.cubicBezier?.closed !== true || entity.cubicBezier.fillColor === undefined) {
+        return CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER;
+      }
+    }
+  }
+  return null;
+}
+
 export function studioFragmentMaterialParameterLayoutV1(schema: StudioFragmentMaterialParameterSchemaV1) {
   const defaults: number[] = [];
   const entries: Readonly<{ offset: number; parameter: StudioFragmentMaterialParameterV1 }>[] = [];
