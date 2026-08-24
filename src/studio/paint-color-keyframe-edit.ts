@@ -92,7 +92,7 @@ export function replacePaintColorKeyframeProgram(
   if (!targetCreate || targetCreate.kind !== "CreateEntity") {
     throw new TypeError("Paint color keyframes support only Studio-created objects.");
   }
-  if (studioPaintColorTrackProperty(targetCreate.entity.type) !== input.property) {
+  if (studioPaintColorTrackProperty(targetCreate.entity.type, targetCreate.entity.cubicBezier) !== input.property) {
     throw new TypeError("This Studio-created object does not support the requested paint color track.");
   }
   if (!isCanonicalRgbHex(input.baseline)) {

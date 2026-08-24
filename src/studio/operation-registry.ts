@@ -996,7 +996,11 @@ export const OPERATION_REGISTRY = {
               severity: "error",
             });
           }
-          if (entity && (!entity.transactionId || studioPaintColorTrackProperty(entity.type) !== operation.key)) {
+          if (
+            entity &&
+            (!entity.transactionId ||
+              (entity.type !== "CubicBezier" && studioPaintColorTrackProperty(entity.type) !== operation.key))
+          ) {
             issues.push({
               code: "lowering-unsupported",
               field: "entityId",

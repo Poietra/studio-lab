@@ -2822,26 +2822,32 @@ pub(super) fn plan_studio_creation_edits(
             .find(|state| state.spec.id == entity_id)
             .ok_or(ProjectStudioCreationEditError::Unsupported)?;
         let program_rank = timeline.ranks[program_index];
+        let closed_cubic_bezier = state.cubic_bezier.as_ref().filter(|curve| {
+            state.kind == StudioAuthoringEntityKind::CubicBezier && curve.spec.closed
+        });
         let baseline = match property {
-            StudioPaintColorProperty::FillColor
-                if matches!(
-                    state.kind,
-                    StudioAuthoringEntityKind::Circle
-                        | StudioAuthoringEntityKind::Ellipse
-                        | StudioAuthoringEntityKind::MathTex
-                        | StudioAuthoringEntityKind::Rectangle
-                        | StudioAuthoringEntityKind::RegularPolygon
-                        | StudioAuthoringEntityKind::Text
-                ) =>
-            {
-                state.fill_color_override.as_deref()
-            }
+            StudioPaintColorProperty::FillColor => closed_cubic_bezier
+                .and_then(|curve| curve.spec.fill_color.as_deref())
+                .or_else(|| {
+                    matches!(
+                        state.kind,
+                        StudioAuthoringEntityKind::Circle
+                            | StudioAuthoringEntityKind::Ellipse
+                            | StudioAuthoringEntityKind::MathTex
+                            | StudioAuthoringEntityKind::Rectangle
+                            | StudioAuthoringEntityKind::RegularPolygon
+                            | StudioAuthoringEntityKind::Text
+                    )
+                    .then(|| state.fill_color_override.as_deref())
+                    .flatten()
+                }),
             StudioPaintColorProperty::StrokeColor
-                if studio_creation_supports_stroke_color_track(state.kind) =>
+                if closed_cubic_bezier.is_none()
+                    && studio_creation_supports_stroke_color_track(state.kind) =>
             {
                 Some(state.stroke_color_override.as_deref().unwrap_or("#ffffff"))
             }
-            StudioPaintColorProperty::FillColor | StudioPaintColorProperty::StrokeColor => None,
+            StudioPaintColorProperty::StrokeColor => None,
         };
         let baseline_color = baseline
             .and_then(canonical_studio_hex_color)
