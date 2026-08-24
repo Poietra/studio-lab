@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { createStudioSceneBackgroundProgram } from "./authoring-commands";
+import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import {
   buildStudioCreationEditCommand,
   buildStudioCreationProjectionCommand,
@@ -138,6 +140,20 @@ function followupProgram(transactionId: string, operation: SceneEdit["operations
 }
 
 describe("Studio creation wire", () => {
+  it("normalizes one opaque Scene background without an entity target", () => {
+    const program = createStudioSceneBackgroundProgram({
+      color: "#123456",
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "scene-background",
+    }).program;
+    const command = buildStudioCreationProjectionCommand({ baseDuration: 2, programs: [program] });
+    expect(command.programs[0]?.operations).toEqual([
+      expect.objectContaining({ color: "#123456", kind: "scene-background" }),
+    ]);
+    expect(command.programs[0]?.operations[0]).not.toHaveProperty("entityId");
+    expect(command.programs[0]?.loweringSupported).toBe(false);
+  });
+
   it("normalizes Triangle and Regular Polygon to the one Rust regular-polygon kind", () => {
     const command = buildStudioCreationProjectionCommand({
       baseDuration: 2,

@@ -15,6 +15,7 @@ import {
   isExactStaticRootProjectionProgramBatch,
   isSceneDurationOperation,
   isStaticRootTransformOperation,
+  isStudioNativeAuthoringBatchOperation,
 } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
 import {
@@ -121,32 +122,34 @@ export async function materializeAuthoritativeEditorProgramsV1(
   const operations = programs.flatMap((program) => program.operations);
   const hasMathTexTransform = operations.some(({ kind }) => kind === "TransformContent");
   const hasMotion = operations.some(({ kind }) => kind === "CreateMotion");
-  const hasCreation = operations.some(({ kind }) => kind === "CreateEntity");
+  const hasStudioNativeAuthoring = operations.some(isStudioNativeAuthoringBatchOperation);
   const hasPersistentRemove = operations.some(isPersistentRemoveOperation);
   const hasClosedValidationPath = isClosedValidationProgramBatch(programs);
   const isExactMathTexTransform = isExactStudioMathTexTransformProgramBatch(programs);
-  if (hasMathTexTransform && !hasCreation && !isExactMathTexTransform) {
+  if (hasMathTexTransform && !hasStudioNativeAuthoring && !isExactMathTexTransform) {
     throw new TypeError(
       "The authoritative Editor projection may contain TransformContent only as an exact Rust MathTex transform batch.",
     );
   }
   const motionBatchKind =
-    !hasCreation && !isExactMathTexTransform && hasMotion ? studioMotionProjectionBatchKind(programs) : null;
-  if (hasMotion && !hasCreation && !isExactMathTexTransform && !motionBatchKind) {
+    !hasStudioNativeAuthoring && !isExactMathTexTransform && hasMotion
+      ? studioMotionProjectionBatchKind(programs)
+      : null;
+  if (hasMotion && !hasStudioNativeAuthoring && !isExactMathTexTransform && !motionBatchKind) {
     throw new EditorMotionAdmissionError(
       "The authoritative Editor projection contains CreateMotion outside a supported Rust motion batch.",
     );
   }
-  if (hasPersistentRemove && !hasCreation && !hasClosedValidationPath) {
+  if (hasPersistentRemove && !hasStudioNativeAuthoring && !hasClosedValidationPath) {
     throw new TypeError("The authoritative Editor projection contains persistent remove outside a closed Rust batch.");
   }
   const sceneDurationOperationCount = operations.filter(isSceneDurationOperation).length;
-  if (!hasCreation && sceneDurationOperationCount > 0 && sceneDurationOperationCount < operations.length) {
+  if (!hasStudioNativeAuthoring && sceneDurationOperationCount > 0 && sceneDurationOperationCount < operations.length) {
     throw new EditorTimelineAdmissionError(
       "The authoritative Editor projection must not mix Scene duration and other Programs.",
     );
   }
-  if (!hasCreation && sceneDurationOperationCount > 0 && !isSceneDurationProgramBatch(programs)) {
+  if (!hasStudioNativeAuthoring && sceneDurationOperationCount > 0 && !isSceneDurationProgramBatch(programs)) {
     throw new EditorTimelineAdmissionError(
       "The authoritative Editor projection requires one Scene duration operation per Program.",
     );
@@ -159,7 +162,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
         );
       })
     : null;
-  const creationProjection = hasCreation
+  const creationProjection = hasStudioNativeAuthoring
     ? await creationCompiler(
         buildStudioCreationProjectionCommand({ baseDuration: scene.runtimeSceneState.duration, programs }),
       )

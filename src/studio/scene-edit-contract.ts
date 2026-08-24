@@ -260,6 +260,10 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     kind: z.literal("InsertSceneBoundary"),
   }),
   operationBaseSchema.extend({
+    color: canonicalRgbHexSchema,
+    kind: z.literal("SetSceneBackground"),
+  }),
+  operationBaseSchema.extend({
     easing: z.enum(["linear", "smooth"]),
     from: z
       .object({

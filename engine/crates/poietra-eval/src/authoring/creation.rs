@@ -246,6 +246,7 @@ struct CreateSceneEntitiesCommand {
     next_revision: String,
     persistent_removals: Vec<PersistentSceneRemoval>,
     provenance: ProvenanceRecordV1,
+    scene_background: Option<RgbaColorV1>,
     timeline_insertions: Vec<SceneTimelineInsertion>,
 }
 
@@ -317,6 +318,9 @@ pub struct StudioDataSeries {
     rename_all_fields = "camelCase"
 )]
 pub enum StudioCreationProjectedMutationKind {
+    SceneBackground {
+        value: String,
+    },
     AnimateCamera {
         easing: EasingV1,
         from_view: SceneCameraViewV1,
@@ -498,6 +502,9 @@ pub enum StudioPropertyEasing {
 pub enum StudioCreationOperationKind {
     Create {
         entity: StudioCreationEntitySpec,
+    },
+    SceneBackground {
+        color: Option<String>,
     },
     Position {
         position: Option<PointV1>,
@@ -751,7 +758,8 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             StudioCreationOperationKind::Create { entity } => {
                 Some((entity.id.as_str(), operation.id.as_str()))
             }
-            StudioCreationOperationKind::Position { .. }
+            StudioCreationOperationKind::SceneBackground { .. }
+            | StudioCreationOperationKind::Position { .. }
             | StudioCreationOperationKind::FadeIn { .. }
             | StudioCreationOperationKind::DrawIn { .. }
             | StudioCreationOperationKind::WriteIn { .. }
@@ -1411,6 +1419,7 @@ struct StudioCreationPlan {
     groups: Vec<PlannedStudioLogicalGroup>,
     motion_projection: StudioMotionProjection,
     mutations: Vec<StudioCreationProjectedMutation>,
+    scene_background: Option<RgbaColorV1>,
     timeline_insertions: Vec<SceneTimelineInsertion>,
     timeline_projection: StudioTimelineProjection,
 }

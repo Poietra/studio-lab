@@ -1549,6 +1549,30 @@ export const OPERATION_REGISTRY = {
     execution: () => SUPPORTED_EXECUTION,
     validate: (operation, scene) => baseIssues(operation, scene),
   } satisfies Capability<"InsertSceneBoundary">,
+  SetSceneBackground: {
+    access: () => ({
+      reads: [{ channel: "camera", entityId: "camera" }],
+      writes: [{ channel: "camera", entityId: "camera" }],
+    }),
+    execution: () => CLIENT_ONLY_EXECUTION,
+    validate: (operation, scene) => {
+      const issues = [...baseIssues(operation, scene)];
+      if (
+        operation.interval.start !== 0 ||
+        operation.interval.end !== 0 ||
+        operation.provenance.origin !== "studio-default"
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "background",
+          message: "A Scene background edit must be one Studio Scene-graph setting at time zero.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"SetSceneBackground">,
   AnimateCamera: {
     access: () => ({
       reads: [{ channel: "camera", entityId: "camera" }],

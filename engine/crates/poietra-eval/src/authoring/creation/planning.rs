@@ -169,7 +169,23 @@ pub(super) fn plan_studio_creation_edits(
             })
         })
         .collect::<Vec<_>>();
-    if create_programs.is_empty() && camera_programs.is_empty() {
+    let background_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| {
+            programs[*index].operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::SceneBackground { .. }
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    if create_programs.is_empty() && camera_programs.is_empty() && background_programs.is_empty() {
+        return Err(ProjectStudioCreationEditError::Unsupported);
+    }
+    if background_programs.len() > 1 {
         return Err(ProjectStudioCreationEditError::Unsupported);
     }
     let opacity_programs = timeline
@@ -455,6 +471,7 @@ pub(super) fn plan_studio_creation_edits(
                 && !math_tex_transform_programs.contains(index)
                 && !hierarchy_programs.contains(index)
                 && !camera_programs.contains(index)
+                && !background_programs.contains(index)
                 && !timeline.duration_program_indices.contains(index)
         })
         .collect::<Vec<_>>();
@@ -558,7 +575,8 @@ pub(super) fn plan_studio_creation_edits(
                     .entity_id
                     .as_deref()
                     .is_none_or(|entity_id| !program_created_ids.contains(entity_id)),
-                StudioCreationOperationKind::DrawIn { .. }
+                StudioCreationOperationKind::SceneBackground { .. }
+                | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::TransformShape { .. }
                 | StudioCreationOperationKind::AnimateCamera { .. }
@@ -607,7 +625,8 @@ pub(super) fn plan_studio_creation_edits(
                         .entity_id
                         .as_deref()
                         .is_some_and(|entity_id| scheduled_created_ids.contains(entity_id)) => {}
-                StudioCreationOperationKind::Position { .. }
+                StudioCreationOperationKind::SceneBackground { .. }
+                | StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::WriteIn { .. }
@@ -680,6 +699,53 @@ pub(super) fn plan_studio_creation_edits(
     }
 
     let mut ranked_mutations = Vec::new();
+    let scene_background = if let Some(program_index) = background_programs.first().copied() {
+        let program = &programs[program_index];
+        if program.origin != StudioAuthoringOrigin::StudioDefault
+            || program.lowering_supported
+            || program.requested_execution != SceneEditExecution::Parallel
+            || program.schedule_mode != SceneEditScheduleMode::Parallel
+            || program.schedule_edge_count != 0
+            || program.intent_count != 1
+            || program.operations.len() != 1
+            || program.schedule_order != [program.operations[0].id.clone()]
+            || !studio_timeline_semantic_values_match(program.anchor_captured_playhead, 0.0)
+            || !studio_timeline_semantic_values_match(program.anchor_resolved_seconds, 0.0)
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let operation = &program.operations[0];
+        let StudioCreationOperationKind::SceneBackground { color: Some(color) } = &operation.kind
+        else {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        };
+        let background =
+            canonical_studio_hex_color(color).ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        if operation.origin != StudioAuthoringOrigin::StudioDefault
+            || operation.entity_id.is_some()
+            || !operation.depends_on.is_empty()
+            || !interval_is_exact_point(&operation.interval)
+            || !studio_timeline_semantic_values_match(operation.interval.start, 0.0)
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        ranked_mutations.push((
+            timeline.ranks[program_index],
+            0,
+            StudioCreationProjectedMutation {
+                entity_id: String::new(),
+                interval: operation.interval.clone(),
+                kind: StudioCreationProjectedMutationKind::SceneBackground {
+                    value: color.clone(),
+                },
+                operation_id: operation.id.clone(),
+                transaction_id: program.transaction_id.clone(),
+            },
+        ));
+        Some(background)
+    } else {
+        None
+    };
     let mut camera_clips = Vec::with_capacity(camera_programs.len());
     for program_index in &camera_programs {
         let program = &programs[*program_index];
@@ -2710,6 +2776,7 @@ pub(super) fn plan_studio_creation_edits(
                     });
                 }
                 StudioCreationOperationKind::Create { .. }
+                | StudioCreationOperationKind::SceneBackground { .. }
                 | StudioCreationOperationKind::Position { .. }
                 | StudioCreationOperationKind::FadeIn { .. }
                 | StudioCreationOperationKind::DrawIn { .. }
@@ -3147,6 +3214,7 @@ pub(super) fn plan_studio_creation_edits(
             .into_iter()
             .map(|(_, _, mutation)| mutation)
             .collect(),
+        scene_background,
         timeline_insertions: timeline
             .ranked_insertions
             .into_iter()

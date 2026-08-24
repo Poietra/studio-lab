@@ -207,6 +207,115 @@ fn camera_animation_wire_uses_scene_level_views() {
     assert_eq!(serialized["toView"]["frameWidth"], 8.0);
 }
 
+fn studio_scene_background_edit_input(color: Option<&str>) -> StudioCreationEditInput {
+    StudioCreationEditInput {
+        anchor_captured_playhead: 0.0,
+        anchor_resolved_seconds: 0.0,
+        anchor_source: SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(0.0),
+        },
+        intent_count: 1,
+        lowering_supported: false,
+        operations: vec![StudioCreationOperation {
+            depends_on: vec![],
+            entity_id: None,
+            id: "set-scene-background".to_owned(),
+            interval: IntervalV1 {
+                end: 0.0,
+                start: 0.0,
+            },
+            kind: StudioCreationOperationKind::SceneBackground {
+                color: color.map(str::to_owned),
+            },
+            origin: StudioAuthoringOrigin::StudioDefault,
+        }],
+        origin: StudioAuthoringOrigin::StudioDefault,
+        requested_execution: SceneEditExecution::Parallel,
+        schedule_edge_count: 0,
+        schedule_mode: SceneEditScheduleMode::Parallel,
+        schedule_order: vec!["set-scene-background".to_owned()],
+        transaction_id: "scene-background".to_owned(),
+    }
+}
+
+#[test]
+fn studio_native_scene_background_is_projected_and_materialized_atomically() {
+    let mut bundle = static_imported_bundle();
+    bundle.scene.source = SceneSourceV1::StudioEditProgram {
+        edit_program_version: ContractVersionV1,
+        revision_hash: "ab".repeat(32),
+    };
+    bundle.scene.provenance.push(ProvenanceRecordV1 {
+        evidence: vec!["Source-free Studio-native Editor Document".to_owned()],
+        id: "studio-native-document".to_owned(),
+        origin: ProvenanceOriginV1::StudioEditProgram,
+    });
+    let program = studio_scene_background_edit_input(Some("#123456"));
+    let projection =
+        project_studio_creation_edits(bundle.scene.duration, std::slice::from_ref(&program))
+            .unwrap();
+    assert!(projection.entities.is_empty());
+    assert_eq!(projection.mutations.len(), 1);
+    assert!(matches!(
+        &projection.mutations[0].kind,
+        StudioCreationProjectedMutationKind::SceneBackground { value } if value == "#123456"
+    ));
+
+    let mut command = studio_creation_command(&bundle);
+    command.programs = vec![program];
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    assert_eq!(result.creation_projection, Some(projection));
+    assert_eq!(
+        result.bundle.scene.camera.background,
+        RgbaColorV1 {
+            alpha: 1.0,
+            blue: 86.0 / 255.0,
+            green: 52.0 / 255.0,
+            red: 18.0 / 255.0,
+        }
+    );
+    assert_eq!(
+        session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "scene-background",
+                sample_time: 0.0,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap()
+            .camera
+            .clear_color,
+        result.bundle.scene.camera.background
+    );
+}
+
+#[test]
+fn scene_background_rejects_alpha_and_imported_scenes() {
+    let mut imported = static_imported_bundle();
+    imported.scene.provenance.push(ProvenanceRecordV1 {
+        evidence: vec!["forged Studio-native marker".to_owned()],
+        id: "studio-native-document".to_owned(),
+        origin: ProvenanceOriginV1::StudioEditProgram,
+    });
+    let invalid = studio_scene_background_edit_input(Some("#123456ff"));
+    assert!(matches!(
+        project_studio_creation_edits(imported.scene.duration, &[invalid]),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+
+    let mut command = studio_creation_command(&imported);
+    command.programs = vec![studio_scene_background_edit_input(Some("#123456"))];
+    let mut session = EngineSessionV1::new(imported).unwrap();
+    assert!(matches!(
+        session.apply_studio_creation_edit(command),
+        Err(ApplyStudioCreationEditError::Unsupported)
+    ));
+}
+
 fn studio_persistent_remove_edit_input(
     entity_id: &str,
     start: f64,
@@ -410,6 +519,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
             id: "studio-create".to_owned(),
             origin: ProvenanceOriginV1::StudioEditProgram,
         },
+        scene_background: None,
         timeline_insertions: vec![
             SceneTimelineInsertion {
                 at: 0.5,

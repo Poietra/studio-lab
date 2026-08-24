@@ -108,7 +108,9 @@ async function exportDecodedFrameEvidence(page: Page, sampleTimes: readonly numb
         canvas.height = video.videoHeight;
         const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
         if (!context) throw new Error("The decoded shape Transform frame canvas is unavailable.");
-        const evidence: Array<Readonly<{ blueDominant: number; bright: number; redDominant: number }>> = [];
+        const evidence: Array<
+          Readonly<{ blueDominant: number; bright: number; corner: readonly number[]; redDominant: number }>
+        > = [];
         for (const sampleTime of sampleTimes) {
           await new Promise<void>((resolve) => {
             video.addEventListener("seeked", () => resolve(), { once: true });
@@ -116,6 +118,7 @@ async function exportDecodedFrameEvidence(page: Page, sampleTimes: readonly numb
           });
           context.drawImage(video, 0, 0);
           const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
+          const corner = Array.from(rgba.slice(0, 4));
           let blueDominant = 0;
           let bright = 0;
           let redDominant = 0;
@@ -123,11 +126,11 @@ async function exportDecodedFrameEvidence(page: Page, sampleTimes: readonly numb
             const red = rgba[offset] ?? 0;
             const green = rgba[offset + 1] ?? 0;
             const blue = rgba[offset + 2] ?? 0;
-            if (red + green + blue > 90) bright += 1;
-            if (red > 50 && red > green * 1.3 && red > blue * 1.3) redDominant += 1;
-            if (blue > 50 && blue > green * 1.3 && blue > red * 1.3) blueDominant += 1;
+            if (red + green + blue > 200) bright += 1;
+            if (red > 100 && red > green * 1.3 && red > blue * 1.3) redDominant += 1;
+            if (blue > 100 && blue > green * 1.3 && blue > red * 1.3) blueDominant += 1;
           }
-          evidence.push({ blueDominant, bright, redDominant });
+          evidence.push({ blueDominant, bright, corner, redDominant });
         }
         return evidence;
       } finally {
@@ -148,6 +151,16 @@ test("morphs one closed primitive through the full shape family, reload, and dec
     const playhead = page.getByRole("slider", { name: "Scene playhead" });
 
     await expect(page.getByLabel("Current workspace")).toHaveText("Shape Transform fixture");
+    const backgroundColor = page.getByLabel("Scene background color");
+    await expect(backgroundColor).toHaveValue("#000000");
+    await backgroundColor.fill("#123456");
+    await backgroundColor.locator("xpath=..").getByRole("button", { name: "Update" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(backgroundColor).toHaveValue("#123456");
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(backgroundColor).toHaveValue("#000000");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(backgroundColor).toHaveValue("#123456");
     const insertRectangle = page.getByRole("button", { name: /Insert rectangle/ });
     await expect(insertRectangle).toBeEnabled();
     await insertRectangle.click();
@@ -300,6 +313,7 @@ test("morphs one closed primitive through the full shape family, reload, and dec
         .locator("xpath=following-sibling::dd[1]"),
     ).toHaveText("Circle");
     await expect(page.getByRole("spinbutton", { name: "Stroke width Rectangle" })).toHaveValue("0.12");
+    await expect(page.getByLabel("Scene background color")).toHaveValue("#123456");
     await expect(page.getByLabel("Fill color Rectangle")).toHaveValue("#ef4444");
     await expect(page.locator("[data-paint-color-keyframe]")).toHaveCount(2);
     await expect(page.getByRole("button", { name: "Fill color keyframe 2 at 1.00 seconds" })).toBeVisible();
@@ -318,6 +332,12 @@ test("morphs one closed primitive through the full shape family, reload, and dec
       clipTime(page, clips.nth(6), 1),
     ]);
     const decodedFrames = await exportDecodedFrameEvidence(page, sampleTimes);
+    for (const { corner } of decodedFrames) {
+      expect(Math.abs((corner[0] ?? -255) - 18)).toBeLessThanOrEqual(12);
+      expect(Math.abs((corner[1] ?? -255) - 52)).toBeLessThanOrEqual(12);
+      expect(Math.abs((corner[2] ?? -255) - 86)).toBeLessThanOrEqual(12);
+      expect(corner[3]).toBe(255);
+    }
     const colorStart = decodedFrames[0]!;
     const colorEnd = decodedFrames[2]!;
     expect(colorStart.redDominant - colorStart.blueDominant).toBeGreaterThan(100);

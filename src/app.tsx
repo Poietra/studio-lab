@@ -44,6 +44,7 @@ import {
   createStudioEntitiesProgram,
   createStudioGroupLifetimeTrimProgram,
   createStudioGroupProgram,
+  createStudioSceneBackgroundProgram,
   createStudioUngroupProgram,
   defaultEntityContent,
   duplicateEntityInput,
@@ -51,6 +52,7 @@ import {
   replaceStudioCreatedCubicBezierProgram,
   replaceStudioCreatedDataSeriesProgram,
   replaceStudioEntityLifetimeProgram,
+  replaceStudioSceneBackgroundProgram,
   type StudioEntityInput,
 } from "./studio/authoring-commands";
 import {
@@ -201,7 +203,12 @@ import {
   replaceOpacityKeyframeProgram,
 } from "./studio/opacity-keyframe-edit";
 import { programExecutionCapabilities } from "./studio/operation-registry";
-import { initialAppearanceEnd, isSceneDurationOperation, type OperationOrigin } from "./studio/operations";
+import {
+  initialAppearanceEnd,
+  isSceneDurationOperation,
+  isStudioNativeAuthoringBatchOperation,
+  type OperationOrigin,
+} from "./studio/operations";
 import {
   appendPaintColorKeyframe,
   initialPaintColorKeyframes,
@@ -1469,7 +1476,7 @@ export function App({
     if (durationPrograms.length === 0) return null;
     if (!projectedEditorScene) return undefined;
     try {
-      if (programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) {
+      if (programs.some((program) => program.operations.some(isStudioNativeAuthoringBatchOperation))) {
         const creationProjection = creationProjectionForPrograms(programs);
         return creationProjection === undefined ? undefined : creationProjection?.timelineProjection;
       }
@@ -1488,7 +1495,7 @@ export function App({
     }
   }
   function creationProjectionForPrograms(programs: readonly SceneEdit[]) {
-    if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
+    if (!programs.some((program) => program.operations.some(isStudioNativeAuthoringBatchOperation))) return null;
     if (!projectedEditorScene || !previewRenderer) return undefined;
     try {
       const fullPrograms = previewEditRecords.map((record) => record.program);
@@ -1534,7 +1541,7 @@ export function App({
     return timelineProjectionForPrograms(records.map((record) => record.program));
   }
   function persistentRemoveProjectionForPrograms(programs: readonly SceneEdit[]) {
-    if (programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
+    if (programs.some((program) => program.operations.some(isStudioNativeAuthoringBatchOperation))) return null;
     const containsPersistentRemove = programs.some((program) =>
       program.operations.some(
         (operation) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
@@ -1570,7 +1577,7 @@ export function App({
   }
   function creationProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
-    if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
+    if (!programs.some((program) => program.operations.some(isStudioNativeAuthoringBatchOperation))) return null;
     const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "rust-authorized-batch") return null;
@@ -1578,7 +1585,7 @@ export function App({
   }
   function motionProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
-    if (programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
+    if (programs.some((program) => program.operations.some(isStudioNativeAuthoringBatchOperation))) return null;
     if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateMotion"))) return null;
     const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
@@ -1658,6 +1665,15 @@ export function App({
   const workspaceTimelineProjection = timelineProjectionForRecords(previewEditRecords);
   const workspaceBoundEntityProjection = boundEntityProjectionForRecords(previewEditRecords);
   const workspaceCreationProjection = creationProjectionForRecords(previewEditRecords);
+  const sceneBackgroundColor =
+    workspaceCreationProjection?.mutations
+      .filter(
+        (
+          mutation,
+        ): mutation is Extract<(typeof workspaceCreationProjection.mutations)[number], { kind: "scene-background" }> =>
+          mutation.kind === "scene-background",
+      )
+      .at(-1)?.value ?? "#000000";
   const workspaceEntityCreationProjection = workspaceCreationProjection
     ? {
         ...workspaceCreationProjection,
@@ -5857,6 +5873,51 @@ export function App({
     }
   }
 
+  function changeSceneBackground(color: string) {
+    if (!nativeSceneActive || !draftBaseState) {
+      setDraftError("Scene background editing is available only in a Studio-native workspace.");
+      return false;
+    }
+    if (draftEdit || editingAppliedProgram) {
+      setDraftError("Apply or discard the current draft before changing the Scene background.");
+      return false;
+    }
+    if (color === sceneBackgroundColor) return true;
+    try {
+      const owners = appliedEdits.flatMap((record, index) =>
+        record.program.operations.some((operation) => operation.kind === "SetSceneBackground")
+          ? [{ index, record }]
+          : [],
+      );
+      if (owners.length > 1) throw new Error("More than one applied Program controls the Scene background.");
+      const owner = owners[0];
+      if (owner) {
+        const current = owner.record.program.operations.find((operation) => operation.kind === "SetSceneBackground");
+        if (current?.kind !== "SetSceneBackground") throw new Error("The Scene background Program is invalid.");
+        if (current.color === color) return true;
+        const preceding = sourceSceneBeforeAppliedProgram(owner.index);
+        const validation = replaceStudioSceneBackgroundProgram({ color, owner: owner.record, scene: preceding.scene });
+        const validated = validatedProgramRecord(validation);
+        if (validated.kind === "invalid") throw new Error(validated.message);
+        return installCanonicalDraft(validated.record, [], preceding.canonical, null, {
+          index: owner.index,
+          original: owner.record,
+        });
+      }
+      const validation = createStudioSceneBackgroundProgram({
+        color,
+        scene: draftBaseState.evaluatedScene,
+        transactionId: `studio-background-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Scene background could not be changed.");
+      return false;
+    }
+  }
+
   function sourceSceneBeforeAppliedProgram(index: number) {
     if (!projectedEditorScene) throw new Error("The active Scene is unavailable.");
     const preceding = appliedEdits.slice(0, index);
@@ -9452,6 +9513,7 @@ export function App({
               onImportImageFiles={nativeSceneActive ? (files) => void importNativeProjectImageFiles(files) : undefined}
               onImportSvgFiles={nativeSceneActive ? (files) => void importNativeProjectSvgFiles(files) : undefined}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
+              onSceneBackgroundChange={(color) => void changeSceneBackground(color)}
               onAddImageAsset={(asset) => {
                 setIsPlaying(false);
                 void insertEntitiesAt({ x: 320, y: 180 }, [
@@ -9491,6 +9553,15 @@ export function App({
               }
               onUndo={undoProgramCommitFirst}
               redoCount={redoPrograms.length + lockRedoEntries.length}
+              sceneBackgroundAvailable={nativeSceneActive && draftEdit === null && editingAppliedProgram === null}
+              sceneBackgroundColor={sceneBackgroundColor}
+              sceneBackgroundUnavailableReason={
+                nativeSceneActive
+                  ? draftEdit || editingAppliedProgram
+                    ? "Apply or discard the current draft before changing the Scene background."
+                    : null
+                  : "Scene background editing is available only in a Studio-native workspace."
+              }
               selectedIds={selectedSet}
               selectedGroupId={selectedLayerGroup?.groupId ?? null}
               sourceImportOutcomes={activeEditorScene.importOutcomes}

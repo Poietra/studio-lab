@@ -81,6 +81,7 @@ import {
   isExactStaticRootTransformProgramBatch,
   isExactStudioMathTexContentProgramBatch,
   isSceneDurationOperation,
+  isStudioNativeAuthoringBatchOperation,
 } from "./operations";
 import {
   detectStudioPreviewCapabilities,
@@ -643,10 +644,10 @@ async function projectExactAppliedAuthoringPrefix(
   const programs = input.workingState.appliedEdits.map(({ program }) => program);
   if (programs.length === 0) return { creation: null, timeline: null };
 
-  const hasCreation = programs.some((program) =>
-    program.operations.some((operation) => operation.kind === "CreateEntity"),
+  const hasStudioNativeAuthoring = programs.some((program) =>
+    program.operations.some(isStudioNativeAuthoringBatchOperation),
   );
-  if (hasCreation) {
+  if (hasStudioNativeAuthoring) {
     const projected = await (input.projectStudioCreationCompiler ?? projectStudioCreation)(
       buildStudioCreationProjectionCommand({ baseDuration: input.baseDuration, programs }),
     );
@@ -833,10 +834,10 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
   }
   const sourceProgramBatch = sourceEdits.map(({ program }) => program);
   const importedSource = input.snapshot.snapshot.scene.source;
-  const hasStudioCreation = sourceEdits.some(({ program }) =>
-    program.operations.some(({ kind }) => kind === "CreateEntity"),
+  const hasStudioNativeAuthoring = sourceEdits.some(({ program }) =>
+    program.operations.some(isStudioNativeAuthoringBatchOperation),
   );
-  if (hasStudioCreation) {
+  if (hasStudioNativeAuthoring) {
     const nativeBase = isStudioNativePreviewSceneIdentityV1(input.snapshot.correlation.context);
     if (
       nativeBase ? !studioNativeWorkingSourceIsExact(input) : !importedSnapshotCorrelationIsExact(input.snapshot, true)
