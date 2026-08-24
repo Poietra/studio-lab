@@ -5,7 +5,7 @@ const KEYFRAME_TIME_EPSILON = 0.0005;
 type PropertyKeyframe = Readonly<{
   easing: StudioPropertyKeyframeEasing;
   time: number;
-  value: number;
+  value: unknown;
 }>;
 
 export function duplicatePropertyKeyframeAtTime<T extends PropertyKeyframe>(

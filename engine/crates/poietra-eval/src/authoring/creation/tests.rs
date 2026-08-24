@@ -102,6 +102,43 @@ fn shape_transform_wire_uses_the_bounded_flat_contract() {
 }
 
 #[test]
+fn paint_color_keyframe_wire_uses_one_property_discriminant() {
+    let operation: StudioCreationOperationKind = serde_json::from_value(serde_json::json!({
+        "kind": "paint-color-keyframes",
+        "easing": "smooth",
+        "from": "#ff0000",
+        "property": "fill-color",
+        "to": "#0000ff"
+    }))
+    .unwrap();
+    assert!(matches!(
+        operation,
+        StudioCreationOperationKind::PaintColorKeyframes {
+            easing: StudioPropertyEasing::Smooth,
+            property: StudioPaintColorProperty::FillColor,
+            ..
+        }
+    ));
+
+    let projection = StudioCreationProjectedMutationKind::PaintColorKeyframes {
+        easing: EasingV1::Linear {},
+        from: "#ffffff".to_owned(),
+        property: StudioPaintColorProperty::StrokeColor,
+        to: "#22c55e".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_value(projection).unwrap(),
+        serde_json::json!({
+            "kind": "paint-color-keyframes",
+            "easing": { "kind": "linear" },
+            "from": "#ffffff",
+            "property": "stroke-color",
+            "to": "#22c55e"
+        })
+    );
+}
+
+#[test]
 fn camera_animation_wire_uses_scene_level_views() {
     let operation: StudioCreationOperationKind = serde_json::from_value(serde_json::json!({
         "kind": "animate-camera",
@@ -251,6 +288,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 math_tex_morph: None,
                 paint_opacity: 1.0,
                 opacity_keyframes: vec![],
+                paint_color_track: None,
                 position: PointV1 { x: 2.0, y: -1.0 },
                 rotation: 0.0,
                 rotation_keyframes: vec![],
@@ -284,6 +322,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 math_tex_morph: None,
                 paint_opacity: 1.0,
                 opacity_keyframes: vec![],
+                paint_color_track: None,
                 position: PointV1 { x: -2.0, y: 1.0 },
                 rotation: 0.0,
                 rotation_keyframes: vec![],
@@ -322,6 +361,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 math_tex_morph: None,
                 paint_opacity: 1.0,
                 opacity_keyframes: vec![],
+                paint_color_track: None,
                 position: PointV1 { x: 0.0, y: 1.5 },
                 rotation: 0.0,
                 rotation_keyframes: vec![],
@@ -1733,6 +1773,39 @@ fn add_creation_opacity_segment(
     });
     program.schedule_order.push("opacity-segment".to_owned());
     program.schedule_edge_count = 6;
+}
+
+fn add_creation_paint_color_segment(
+    program: &mut StudioCreationEditInput,
+    entity_id: &str,
+    property: StudioPaintColorProperty,
+    from: &str,
+    to: &str,
+    start: f64,
+    end: f64,
+) {
+    for operation in &mut program.operations {
+        operation.origin = StudioAuthoringOrigin::DirectManipulation;
+    }
+    program.origin = StudioAuthoringOrigin::DirectManipulation;
+    program.requested_execution = SceneEditExecution::Sequence;
+    program.schedule_mode = SceneEditScheduleMode::Sequence;
+    let operation_id = format!("paint-color-segment-{}", program.operations.len());
+    program.operations.push(StudioCreationOperation {
+        depends_on: vec![],
+        entity_id: Some(entity_id.to_owned()),
+        id: operation_id.clone(),
+        interval: IntervalV1 { end, start },
+        kind: StudioCreationOperationKind::PaintColorKeyframes {
+            easing: StudioPropertyEasing::Linear,
+            from: Some(from.to_owned()),
+            property,
+            to: Some(to.to_owned()),
+        },
+        origin: StudioAuthoringOrigin::DirectManipulation,
+    });
+    program.schedule_order.push(operation_id);
+    program.schedule_edge_count = 2 * (program.operations.len() - 1);
 }
 
 fn add_creation_material_parameter_segment(
@@ -6582,6 +6655,300 @@ fn creation_opacity_track_uses_the_existing_timeline_without_inserting_time() {
         .map(poietra_scene_ir::RenderDrawV1::opacity)
         .unwrap();
     assert!((alpha - 0.5).abs() < 1e-12, "sampled alpha: {alpha}");
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one vertical-slice test pins Triangle normalization, shape morph, appearance fusion, and sampling"
+)]
+fn creation_triangle_fill_color_track_uses_one_vector_appearance_channel() {
+    let bundle = static_imported_bundle();
+    let entity_id = "tx:create/entity:regular-polygon";
+    let mut command = studio_regular_polygon_creation_command(&bundle, 3, 1.0);
+    let program = &mut command.programs[0];
+    add_creation_paint_color_segment(
+        program,
+        entity_id,
+        StudioPaintColorProperty::FillColor,
+        "#ff0000",
+        "#0000ff",
+        1.0,
+        1.4,
+    );
+    add_creation_opacity_segment(program, entity_id, 1.0, 1.4);
+    program.schedule_edge_count = 2 * (program.operations.len() - 1);
+    command.programs.push(studio_created_appearance_edit_input(
+        0.5,
+        entity_id,
+        "initial-fill-color",
+        StudioCreationOperationKind::FillColor {
+            color: Some("#ff0000".to_owned()),
+        },
+    ));
+    command.programs.push(studio_shape_transform_program(
+        "triangle-to-circle",
+        "triangle-to-circle",
+        entity_id,
+        StudioAuthoringEntityKind::RegularPolygon,
+        StudioAuthoringDimensions {
+            radius: Some(1.0),
+            sides: Some(3),
+            ..StudioAuthoringDimensions::default()
+        },
+        StudioAuthoringEntityKind::Circle,
+        StudioAuthoringDimensions {
+            radius: Some(1.0),
+            ..StudioAuthoringDimensions::default()
+        },
+    ));
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+
+    let result = session.apply_studio_creation_edit(command).unwrap();
+
+    let projection = result.creation_projection.as_ref().unwrap();
+    let projected = projection
+        .entities
+        .iter()
+        .find(|entity| entity.entity_id == entity_id)
+        .unwrap();
+    assert_eq!(projected.fill_color.as_deref(), Some("#ff0000"));
+    assert!(projected.stroke_color.is_none());
+    assert!(projection.mutations.iter().any(|mutation| matches!(
+        &mutation.kind,
+        StudioCreationProjectedMutationKind::PaintColorKeyframes {
+            easing: EasingV1::Linear {},
+            from,
+            property: StudioPaintColorProperty::FillColor,
+            to,
+        } if from == "#ff0000" && to == "#0000ff"
+    )));
+    let appearance_channels = result
+        .bundle
+        .scene
+        .animation_channels
+        .iter()
+        .filter_map(|channel| match channel {
+            AnimationChannelV1::VectorAppearance {
+                entity_id: candidate,
+                keyframes,
+                ..
+            } if candidate == entity_id => Some(keyframes),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(appearance_channels.len(), 1);
+    let keyframes = appearance_channels[0];
+    assert_eq!(keyframes.len(), 3);
+    assert!(keyframes.iter().all(|keyframe| matches!(
+        &keyframe.value,
+        VectorAppearanceValueV1 {
+            fill: Some(fill),
+            stroke: Some(stroke),
+        } if (fill.color.alpha - 1.0).abs() < 1e-12
+            && (stroke.color.red - 1.0).abs() < 1e-12
+            && (stroke.color.green - 1.0).abs() < 1e-12
+            && (stroke.color.blue - 1.0).abs() < 1e-12
+    )));
+    let sample_time = f64::midpoint(keyframes[1].at, keyframes[2].at);
+    let packet = session
+        .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+            evidence: &[],
+            packet_id: "fill-color-track-midpoint",
+            sample_time,
+            viewport: poietra_scene_ir::ViewportV1 {
+                height_px: 900,
+                width_px: 1600,
+            },
+        })
+        .unwrap();
+    assert!(packet.draws.iter().any(|draw| matches!(
+        draw,
+        poietra_scene_ir::RenderDrawV1::Path {
+            entity_id: candidate,
+            fill: Some(fill),
+            stroke: Some(stroke),
+            ..
+        } if candidate == entity_id
+            && (fill.color.red - 0.5).abs() < 1e-12
+            && fill.color.green.abs() < 1e-12
+            && (fill.color.blue - 0.5).abs() < 1e-12
+            && (stroke.color.red - 1.0).abs() < 1e-12
+    )));
+    assert!(
+        result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .any(|channel| matches!(
+                channel,
+                AnimationChannelV1::Opacity { entity_id: candidate, .. } if candidate == entity_id
+            ))
+    );
+    assert!(
+        result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .any(|channel| matches!(
+                channel,
+                AnimationChannelV1::PathMorph { entity_id: candidate, .. }
+                    if candidate == entity_id
+            ))
+    );
+}
+
+#[test]
+fn creation_line_stroke_color_track_preserves_draw_width_and_cap() {
+    let bundle = static_imported_bundle();
+    let entity_id = "tx:create/entity:line";
+    let mut command = studio_path_creation_command(
+        &bundle,
+        "line",
+        StudioAuthoringEntityKind::Line,
+        StudioAuthoringDimensions::default(),
+    );
+    let program = &mut command.programs[0];
+    let draw = program
+        .operations
+        .iter_mut()
+        .find(|operation| matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. }))
+        .unwrap();
+    draw.id = "draw".to_owned();
+    draw.interval.end = 1.25;
+    draw.kind = StudioCreationOperationKind::DrawIn {
+        easing: StudioPropertyEasing::Smooth,
+        from: Some(0.0),
+        to: Some(1.0),
+    };
+    program.schedule_order[2] = "draw".to_owned();
+    add_creation_paint_color_segment(
+        program,
+        entity_id,
+        StudioPaintColorProperty::StrokeColor,
+        "#ffffff",
+        "#22c55e",
+        1.5,
+        2.0,
+    );
+    command.programs.extend([
+        studio_created_appearance_edit_input(
+            0.5,
+            entity_id,
+            "line-stroke-width",
+            StudioCreationOperationKind::StrokeWidth {
+                width_world: Some(0.08),
+            },
+        ),
+        studio_created_appearance_edit_input(
+            0.5,
+            entity_id,
+            "line-stroke-cap",
+            StudioCreationOperationKind::StrokeCap {
+                cap: Some(poietra_scene_ir::StrokeCapV1::Round),
+            },
+        ),
+    ]);
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+
+    let result = session.apply_studio_creation_edit(command).unwrap();
+
+    let projected = result
+        .creation_projection
+        .as_ref()
+        .unwrap()
+        .entities
+        .iter()
+        .find(|entity| entity.entity_id == entity_id)
+        .unwrap();
+    assert!(projected.fill_color.is_none());
+    assert_eq!(projected.stroke_color.as_deref(), Some("#ffffff"));
+    let keyframes = result
+        .bundle
+        .scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::VectorAppearance {
+                entity_id: candidate,
+                keyframes,
+                ..
+            } if candidate == entity_id => Some(keyframes),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(keyframes.len(), 2);
+    assert!(keyframes.iter().all(|keyframe| matches!(
+        &keyframe.value,
+        VectorAppearanceValueV1 {
+            fill: None,
+            stroke: Some(stroke),
+        } if (stroke.width_world - 0.08).abs() < 1e-12
+            && stroke.cap == poietra_scene_ir::StrokeCapV1::Round
+    )));
+    assert!(
+        result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .any(|channel| matches!(
+                channel,
+                AnimationChannelV1::PathTrim { entity_id: candidate, .. } if candidate == entity_id
+            ))
+    );
+}
+
+#[test]
+fn creation_paint_color_track_rejects_missing_baselines_and_conflicts() {
+    let bundle = static_imported_bundle();
+    let entity_id = "tx:create/entity:circle";
+
+    let mut unfilled = studio_creation_command(&bundle);
+    unfilled.programs.truncate(1);
+    add_creation_paint_color_segment(
+        &mut unfilled.programs[0],
+        entity_id,
+        StudioPaintColorProperty::FillColor,
+        "#ffffff",
+        "#0000ff",
+        1.0,
+        1.4,
+    );
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &unfilled.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+
+    let mut conflicting = studio_creation_command(&bundle);
+    conflicting.programs.truncate(1);
+    let program = &mut conflicting.programs[0];
+    add_creation_paint_color_segment(
+        program,
+        entity_id,
+        StudioPaintColorProperty::FillColor,
+        "#ff0000",
+        "#0000ff",
+        1.0,
+        1.4,
+    );
+    add_creation_material_parameter_segment(program, entity_id, 1.0, 1.4);
+    conflicting
+        .programs
+        .push(studio_created_appearance_edit_input(
+            0.5,
+            entity_id,
+            "initial-fill-color",
+            StudioCreationOperationKind::FillColor {
+                color: Some("#ff0000".to_owned()),
+            },
+        ));
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &conflicting.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
 }
 
 #[test]

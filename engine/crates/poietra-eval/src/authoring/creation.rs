@@ -164,6 +164,19 @@ fn studio_creation_supports_stroke_width(kind: StudioAuthoringEntityKind) -> boo
     )
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioPaintColorProperty {
+    FillColor,
+    StrokeColor,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StudioPaintColorTrack {
+    keyframes: Vec<KeyframeV1<RgbaColorV1>>,
+    property: StudioPaintColorProperty,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct CreateSceneEntityInstantTransform {
     at: f64,
@@ -193,6 +206,7 @@ struct CreateSceneEntity {
     material_parameter_keyframes: Vec<KeyframeV1<FragmentMaterialV1>>,
     math_tex_morph: Option<CreateSceneEntityMathTexMorph>,
     opacity_keyframes: Vec<KeyframeV1<f64>>,
+    paint_color_track: Option<StudioPaintColorTrack>,
     paint_opacity: f64,
     position: PointV1,
     rotation: f64,
@@ -232,6 +246,8 @@ pub struct StudioProjectedCreationEntity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_series: Option<StudioDataSeries>,
     pub entity_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill_color: Option<String>,
     pub initial_dimensions: StudioAuthoringDimensions,
     pub initial_rotation: f64,
     pub initial_scale: f64,
@@ -241,6 +257,8 @@ pub struct StudioProjectedCreationEntity {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<StudioTextLayout>,
     pub operation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stroke_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -365,6 +383,12 @@ pub enum StudioCreationProjectedMutationKind {
     },
     StrokeColor {
         value: String,
+    },
+    PaintColorKeyframes {
+        easing: EasingV1,
+        from: String,
+        property: StudioPaintColorProperty,
+        to: String,
     },
     StrokeCap {
         value: StrokeCapV1,
@@ -551,6 +575,12 @@ pub enum StudioCreationOperationKind {
     StrokeColor {
         color: Option<String>,
     },
+    PaintColorKeyframes {
+        easing: StudioPropertyEasing,
+        from: Option<String>,
+        property: StudioPaintColorProperty,
+        to: Option<String>,
+    },
     StrokeCap {
         cap: Option<StrokeCapV1>,
     },
@@ -726,6 +756,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::RotationKeyframes { .. }
             | StudioCreationOperationKind::FillColor { .. }
             | StudioCreationOperationKind::StrokeColor { .. }
+            | StudioCreationOperationKind::PaintColorKeyframes { .. }
             | StudioCreationOperationKind::StrokeCap { .. }
             | StudioCreationOperationKind::StrokeWidth { .. }
             | StudioCreationOperationKind::Resize { .. }
@@ -880,6 +911,7 @@ struct PlannedStudioCreationEntity {
     material_parameter_keyframes: Vec<KeyframeV1<FragmentMaterialV1>>,
     math_tex_transforms: Vec<PlannedStudioMathTexTransform>,
     opacity_keyframes: Vec<KeyframeV1<f64>>,
+    paint_color_track: Option<StudioPaintColorTrack>,
     persistent_removal: Option<PersistentSceneRemoval>,
     position: PointV1,
     rotation_keyframes: Vec<KeyframeV1<f64>>,
@@ -1389,6 +1421,15 @@ impl StudioCreationPlan {
                     created_lifetime: state.lifetime.clone(),
                     data_series: state.spec.data_series.clone(),
                     entity_id: state.spec.id.clone(),
+                    fill_color: matches!(
+                        state.kind,
+                        StudioAuthoringEntityKind::Circle
+                            | StudioAuthoringEntityKind::Ellipse
+                            | StudioAuthoringEntityKind::Rectangle
+                            | StudioAuthoringEntityKind::RegularPolygon
+                    )
+                    .then(|| state.fill_color_override.clone())
+                    .flatten(),
                     initial_dimensions: state.initial_dimensions,
                     initial_rotation: 0.0,
                     initial_scale: 1.0,
@@ -1398,6 +1439,12 @@ impl StudioCreationPlan {
                         (content.layout != StudioTextLayout::default()).then_some(content.layout)
                     }),
                     operation_id: state.create_operation_id.clone(),
+                    stroke_color: (state.kind == StudioAuthoringEntityKind::Line).then(|| {
+                        state
+                            .stroke_color_override
+                            .clone()
+                            .unwrap_or_else(|| "#ffffff".to_owned())
+                    }),
                     text: initial_text.map(|content| content.text),
                     tex_parts: state.spec.tex_parts.clone(),
                     transaction_id: state.creation_transaction_id.clone(),

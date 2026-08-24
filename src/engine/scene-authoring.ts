@@ -665,6 +665,7 @@ const studioCreationProjectionV1Schema = z
           cubicBezier: studioCubicBezierSpecSchema.optional(),
           dataSeries: studioDataSeriesV1Schema.optional(),
           entityId: z.string().min(1),
+          fillColor: canonicalRgbHexSchema.optional(),
           initialDimensions: studioStaticRootDimensionsV1Schema,
           initialRotation: finiteNumberSchema,
           initialScale: finiteNumberSchema.positive(),
@@ -690,6 +691,7 @@ const studioCreationProjectionV1Schema = z
           ]),
           layout: studioTextLayoutV1Schema.optional(),
           operationId: z.string().min(1),
+          strokeColor: canonicalRgbHexSchema.optional(),
           text: z.string().min(1).max(256).optional(),
           texParts: z.array(z.string().min(1)).optional(),
           transactionId: z.string().min(1),
@@ -700,6 +702,19 @@ const studioCreationProjectionV1Schema = z
     motions: z.array(studioProjectedMotionV1Schema),
     mutations: z.array(
       z.discriminatedUnion("kind", [
+        z
+          .object({
+            easing: easingV1Schema,
+            entityId: z.string().min(1),
+            from: canonicalRgbHexSchema,
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("paint-color-keyframes"),
+            operationId: z.string().min(1),
+            property: z.enum(["fill-color", "stroke-color"]),
+            to: canonicalRgbHexSchema,
+            transactionId: z.string().min(1),
+          })
+          .strict(),
         z
           .object({
             entityId: z.string().min(1),
@@ -1116,6 +1131,14 @@ type StudioCreationOperationV1 = Readonly<{
       }>
     | Readonly<{ entityId: string; kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
     | Readonly<{ color: string | null; entityId: string; kind: "fill-color" | "stroke-color" }>
+    | Readonly<{
+        easing: StudioPropertyKeyframeEasing;
+        entityId: string;
+        from: string | null;
+        kind: "paint-color-keyframes";
+        property: "fill-color" | "stroke-color";
+        to: string | null;
+      }>
     | Readonly<{ cap: "butt" | "round" | "square" | null; entityId: string; kind: "stroke-cap" }>
     | Readonly<{ entityId: string; kind: "stroke-width"; widthWorld: number | null }>
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>

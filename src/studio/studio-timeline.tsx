@@ -13,6 +13,7 @@ import {
 import type { MathTexTransformEasing } from "./mathtex-transform-clip-edit";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
+import type { PaintColorKeyframeEasing, PaintColorProperty } from "./paint-color-keyframe-edit";
 import {
   type ShapeTransformEasing,
   type ShapeTransformKind,
@@ -54,6 +55,8 @@ export type StudioTimelineProps = Readonly<{
   objectTracks: readonly TimelineObjectTrack[];
   opacityTrackEligibleIds: ReadonlySet<string>;
   opacityTracks: readonly StudioOpacityTimelineTrack[];
+  paintColorTrackEligibleProperties?: ReadonlyMap<string, PaintColorProperty>;
+  paintColorTracks?: readonly StudioPaintColorTimelineTrack[];
   rotationTrackEligibleIds: ReadonlySet<string>;
   rotationTracks: readonly StudioRotationTimelineTrack[];
   scaleTrackEligibleIds: ReadonlySet<string>;
@@ -95,6 +98,14 @@ export type StudioTimelineProps = Readonly<{
   ) => void;
   onOpacityKeyframeDelete: (track: StudioOpacityTimelineTrack, index: number) => void;
   onOpacityKeyframeDuplicate: (track: StudioOpacityTimelineTrack, index: number) => number | null;
+  onPaintColorKeyframeAdd?: (entityId: string) => void;
+  onPaintColorKeyframeChange?: (
+    track: StudioPaintColorTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioPaintColorTimelineKeyframe, "easing" | "time" | "value">>,
+  ) => void;
+  onPaintColorKeyframeDelete?: (track: StudioPaintColorTimelineTrack, index: number) => void;
+  onPaintColorKeyframeDuplicate?: (track: StudioPaintColorTimelineTrack, index: number) => number | null;
   onRotationKeyframeAdd: (entityId: string) => void;
   onRotationKeyframeChange: (
     track: StudioRotationTimelineTrack,
@@ -299,6 +310,27 @@ export type StudioOpacityTimelineTrack = Readonly<{
   readOnlyReason: string | null;
   transactionId: string;
 }>;
+
+export type StudioPaintColorTimelineKeyframe = Readonly<{
+  easing: PaintColorKeyframeEasing;
+  sourceTime: number;
+  time: number;
+  value: string;
+}>;
+
+export type StudioPaintColorTimelineTrack = Readonly<{
+  entityId: string;
+  keyframes: readonly StudioPaintColorTimelineKeyframe[];
+  label: string;
+  programIndex: number;
+  property: PaintColorProperty;
+  readOnlyReason: string | null;
+  transactionId: string;
+}>;
+
+function paintColorPropertyLabel(property: PaintColorProperty) {
+  return property === "fillColor" ? "Fill color" : "Stroke color";
+}
 
 export type StudioMaterialParameterTimelineKeyframe = StudioOpacityTimelineKeyframe;
 export type StudioRotationTimelineKeyframe = StudioOpacityTimelineKeyframe;
@@ -521,15 +553,17 @@ function PropertyKeyframeMarker({
   locked,
   onChange,
   onSelect,
+  paintProperty,
   selected,
 }: Readonly<{
   duration: number;
   index: number;
-  keyframe: StudioOpacityTimelineKeyframe;
-  kind: "material" | "opacity" | "rotation" | "scale";
+  keyframe: StudioOpacityTimelineKeyframe | StudioPaintColorTimelineKeyframe;
+  kind: "material" | "opacity" | "paint-color" | "rotation" | "scale";
   locked: boolean;
   onChange: (patch: Partial<Pick<StudioOpacityTimelineKeyframe, "time">>) => void;
   onSelect: () => void;
+  paintProperty?: PaintColorProperty;
   selected: boolean;
 }>) {
   const drag = useRef<Readonly<{ pointerId: number }> | null>(null);
@@ -551,38 +585,56 @@ function PropertyKeyframeMarker({
   const propertyLabel =
     kind === "material"
       ? "Material parameter"
+      : kind === "paint-color"
+        ? paintProperty === "strokeColor"
+          ? "Stroke color"
+          : "Fill color"
+        : kind === "rotation"
+          ? "Rotation"
+          : kind === "scale"
+            ? "Scale"
+            : "Opacity";
+  const displayedValue =
+    typeof keyframe.value === "string"
+      ? keyframe.value
       : kind === "rotation"
-        ? "Rotation"
-        : kind === "scale"
-          ? "Scale"
-          : "Opacity";
-  const displayedValue = kind === "rotation" ? `${keyframe.value.toFixed(1)}°` : keyframe.value.toFixed(2);
+        ? `${keyframe.value.toFixed(1)}°`
+        : keyframe.value.toFixed(2);
   return (
     <button
       aria-label={`${propertyLabel} keyframe ${index + 1} at ${keyframe.time.toFixed(2)} seconds`}
       aria-pressed={selected}
       className={cn(
         "absolute z-40 size-3 -translate-x-1/2 -translate-y-1/2 rotate-45 border",
-        kind === "material" ? "top-1/4" : kind === "scale" || kind === "rotation" ? "top-3/4" : "top-1/2",
+        kind === "material" || kind === "paint-color"
+          ? "top-1/4"
+          : kind === "scale" || kind === "rotation"
+            ? "top-3/4"
+            : "top-1/2",
         selected
           ? kind === "material"
             ? "border-fuchsia-100 bg-fuchsia-400"
-            : kind === "rotation"
-              ? "border-amber-100 bg-amber-400"
-              : kind === "scale"
-                ? "border-emerald-100 bg-emerald-400"
-                : "border-sky-100 bg-sky-400"
+            : kind === "paint-color"
+              ? "border-white"
+              : kind === "rotation"
+                ? "border-amber-100 bg-amber-400"
+                : kind === "scale"
+                  ? "border-emerald-100 bg-emerald-400"
+                  : "border-sky-100 bg-sky-400"
           : kind === "material"
             ? "border-fuchsia-300 bg-fuchsia-800"
-            : kind === "rotation"
-              ? "border-amber-300 bg-amber-800"
-              : kind === "scale"
-                ? "border-emerald-300 bg-emerald-800"
-                : "border-sky-300 bg-sky-700",
+            : kind === "paint-color"
+              ? "border-zinc-300"
+              : kind === "rotation"
+                ? "border-amber-300 bg-amber-800"
+                : kind === "scale"
+                  ? "border-emerald-300 bg-emerald-800"
+                  : "border-sky-300 bg-sky-700",
         locked ? "cursor-not-allowed opacity-50" : "cursor-ew-resize",
       )}
       data-property-keyframe={kind}
       data-opacity-keyframe={kind === "opacity" ? "" : undefined}
+      data-paint-color-keyframe={kind === "paint-color" ? "" : undefined}
       data-rotation-keyframe={kind === "rotation" ? "" : undefined}
       data-scale-keyframe={kind === "scale" ? "" : undefined}
       disabled={locked}
@@ -613,9 +665,13 @@ function PropertyKeyframeMarker({
         if (drag.current?.pointerId !== event.pointerId) return;
         const time = pointerTime(event);
         cancelDrag();
-        onChange({ time });
+        if (Math.abs(time - keyframe.time) > 0.0005) onChange({ time });
       }}
-      style={{ left: `${timelinePositionPercent(displayedTime, duration)}%`, touchAction: "none" }}
+      style={{
+        ...(kind === "paint-color" && typeof keyframe.value === "string" ? { backgroundColor: keyframe.value } : {}),
+        left: `${timelinePositionPercent(displayedTime, duration)}%`,
+        touchAction: "none",
+      }}
       title={`${propertyLabel} ${displayedValue} · ${keyframe.easing}`}
       type="button"
     />
@@ -881,6 +937,8 @@ export function StudioTimeline({
   objectTracks,
   opacityTrackEligibleIds,
   opacityTracks,
+  paintColorTrackEligibleProperties = new Map(),
+  paintColorTracks = [],
   rotationTrackEligibleIds,
   rotationTracks,
   scaleTrackEligibleIds,
@@ -911,6 +969,10 @@ export function StudioTimeline({
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
   onOpacityKeyframeDuplicate,
+  onPaintColorKeyframeAdd,
+  onPaintColorKeyframeChange,
+  onPaintColorKeyframeDelete,
+  onPaintColorKeyframeDuplicate,
   onRotationKeyframeAdd,
   onRotationKeyframeChange,
   onRotationKeyframeDelete,
@@ -940,6 +1002,7 @@ export function StudioTimeline({
   >({});
   const [selectedMaterialKeyframe, setSelectedMaterialKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedOpacityKeyframe, setSelectedOpacityKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
+  const [selectedPaintColorKeyframe, setSelectedPaintColorKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedRotationKeyframe, setSelectedRotationKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedScaleKeyframe, setSelectedScaleKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const selectedLifetimeTrack =
@@ -1028,6 +1091,10 @@ export function StudioTimeline({
     ? (opacityTracks.find((track) => track.transactionId === selectedOpacityKeyframe.transactionId) ?? null)
     : null;
   const selectedOpacityMarker = selectedOpacityTrack?.keyframes[selectedOpacityKeyframe?.index ?? -1] ?? null;
+  const selectedPaintColorTrack = selectedPaintColorKeyframe
+    ? (paintColorTracks.find((track) => track.transactionId === selectedPaintColorKeyframe.transactionId) ?? null)
+    : null;
+  const selectedPaintColorMarker = selectedPaintColorTrack?.keyframes[selectedPaintColorKeyframe?.index ?? -1] ?? null;
   const selectedMaterialTrack = selectedMaterialKeyframe
     ? (materialParameterTracks.find((track) => track.transactionId === selectedMaterialKeyframe.transactionId) ?? null)
     : null;
@@ -1042,6 +1109,9 @@ export function StudioTimeline({
   const selectedRotationMarker = selectedRotationTrack?.keyframes[selectedRotationKeyframe?.index ?? -1] ?? null;
   const selectedLifetimeLocked = Boolean(selectedLifetime && lockedEntityIds.has(selectedLifetime.entityId));
   const selectedOpacityLocked = Boolean(selectedOpacityTrack && lockedEntityIds.has(selectedOpacityTrack.entityId));
+  const selectedPaintColorLocked = Boolean(
+    selectedPaintColorTrack && lockedEntityIds.has(selectedPaintColorTrack.entityId),
+  );
   const selectedMaterialLocked = Boolean(selectedMaterialTrack && lockedEntityIds.has(selectedMaterialTrack.entityId));
   const selectedScaleLocked = Boolean(selectedScaleTrack && lockedEntityIds.has(selectedScaleTrack.entityId));
   const selectedRotationLocked = Boolean(selectedRotationTrack && lockedEntityIds.has(selectedRotationTrack.entityId));
@@ -1461,6 +1531,121 @@ export function StudioTimeline({
             <span className="text-amber-500">{selectedOpacityTrack.readOnlyReason}</span>
           ) : null}
           {selectedOpacityLocked ? <span className="text-amber-500">{LOCKED_ENTITY_MUTATION_MESSAGE}</span> : null}
+        </div>
+      ) : null}
+      {selectedPaintColorTrack && selectedPaintColorMarker ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="max-w-48 truncate text-cyan-300" title={selectedPaintColorTrack.label}>
+            {paintColorPropertyLabel(selectedPaintColorTrack.property)} · {selectedPaintColorTrack.label}
+          </span>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Time
+            <input
+              aria-label={`${paintColorPropertyLabel(selectedPaintColorTrack.property)} keyframe time`}
+              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-cyan-500"
+              disabled={
+                selectedPaintColorLocked ||
+                selectedPaintColorTrack.readOnlyReason !== null ||
+                !onPaintColorKeyframeChange
+              }
+              max={duration}
+              min="0"
+              onChange={(event) =>
+                onPaintColorKeyframeChange?.(selectedPaintColorTrack, selectedPaintColorKeyframe!.index, {
+                  time: Number(event.currentTarget.value),
+                })
+              }
+              step="0.05"
+              type="number"
+              value={selectedPaintColorMarker.time}
+            />
+            s
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Color
+            <input
+              aria-label={`${paintColorPropertyLabel(selectedPaintColorTrack.property)} keyframe value`}
+              className="h-7 w-10 cursor-pointer border border-zinc-700 bg-zinc-950 p-0.5 disabled:cursor-not-allowed"
+              disabled={
+                selectedPaintColorLocked ||
+                selectedPaintColorTrack.readOnlyReason !== null ||
+                selectedPaintColorKeyframe!.index === 0 ||
+                !onPaintColorKeyframeChange
+              }
+              onChange={(event) =>
+                onPaintColorKeyframeChange?.(selectedPaintColorTrack, selectedPaintColorKeyframe!.index, {
+                  value: event.currentTarget.value,
+                })
+              }
+              type="color"
+              value={selectedPaintColorMarker.value}
+            />
+            <span className="font-mono text-zinc-300">{selectedPaintColorMarker.value}</span>
+          </label>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label={`${paintColorPropertyLabel(selectedPaintColorTrack.property)} segment easing`}
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-cyan-500"
+              disabled={
+                selectedPaintColorLocked ||
+                selectedPaintColorTrack.readOnlyReason !== null ||
+                selectedPaintColorKeyframe!.index === selectedPaintColorTrack.keyframes.length - 1 ||
+                !onPaintColorKeyframeChange
+              }
+              onChange={(event) =>
+                onPaintColorKeyframeChange?.(selectedPaintColorTrack, selectedPaintColorKeyframe!.index, {
+                  easing: event.currentTarget.value as PaintColorKeyframeEasing,
+                })
+              }
+              value={selectedPaintColorMarker.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <DuplicateKeyframeButton
+            disabledReason={
+              onPaintColorKeyframeDuplicate
+                ? keyframeDuplicateDisabledReason(
+                    readOnly,
+                    selectedPaintColorLocked,
+                    selectedPaintColorTrack.readOnlyReason,
+                  )
+                : "Paint color keyframe duplication is unavailable."
+            }
+            onClick={() => {
+              const index = onPaintColorKeyframeDuplicate?.(selectedPaintColorTrack, selectedPaintColorKeyframe!.index);
+              if (index !== undefined && index !== null) {
+                setSelectedPaintColorKeyframe({
+                  index,
+                  transactionId: selectedPaintColorTrack.transactionId,
+                });
+              }
+            }}
+            propertyLabel="paint color"
+          />
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={
+              selectedPaintColorLocked ||
+              selectedPaintColorTrack.readOnlyReason !== null ||
+              selectedPaintColorKeyframe!.index === 0 ||
+              !onPaintColorKeyframeDelete
+            }
+            onClick={() => {
+              if (selectedPaintColorKeyframe!.index === 0) return;
+              onPaintColorKeyframeDelete?.(selectedPaintColorTrack, selectedPaintColorKeyframe!.index);
+              setSelectedPaintColorKeyframe(null);
+            }}
+            type="button"
+          >
+            {selectedPaintColorTrack.keyframes.length === 2 ? "Remove color track" : "Delete keyframe"}
+          </button>
+          {selectedPaintColorTrack.readOnlyReason ? (
+            <span className="text-amber-500">{selectedPaintColorTrack.readOnlyReason}</span>
+          ) : null}
+          {selectedPaintColorLocked ? <span className="text-amber-500">{LOCKED_ENTITY_MUTATION_MESSAGE}</span> : null}
         </div>
       ) : null}
       {selectedScaleTrack && selectedScaleMarker ? (
@@ -1890,6 +2075,8 @@ export function StudioTimeline({
                 ? requestedMaterialName
                 : (materialTracks[0]?.parameterName ?? materialOptions[0]?.name ?? "");
             const opacityTrack = opacityTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
+            const paintColorProperty = paintColorTrackEligibleProperties.get(track.entityId) ?? null;
+            const paintColorTrack = paintColorTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const rotationTrack = rotationTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const scaleTrack = scaleTracks.find((candidate) => candidate.entityId === track.entityId) ?? null;
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
@@ -2002,6 +2189,18 @@ export function StudioTimeline({
                       type="button"
                     >
                       +
+                    </button>
+                  ) : null}
+                  {selected && paintColorProperty && onPaintColorKeyframeAdd ? (
+                    <button
+                      aria-label={`Add ${paintColorProperty === "fillColor" ? "fill" : "stroke"} color keyframe for ${track.label}`}
+                      className="mr-1 h-5 shrink-0 px-1 text-[9px] leading-none text-cyan-300 hover:bg-cyan-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+                      disabled={mutationLocked}
+                      onClick={() => onPaintColorKeyframeAdd(track.entityId)}
+                      title={`Add ${paintColorProperty === "fillColor" ? "fill" : "stroke"} color keyframe at the playhead`}
+                      type="button"
+                    >
+                      {paintColorProperty === "fillColor" ? "F+" : "St+"}
                     </button>
                   ) : null}
                   {selected && scaleTrackEligibleIds.has(track.entityId) ? (
@@ -2128,6 +2327,7 @@ export function StudioTimeline({
                       onSelect={() => {
                         onSelectEntity(track.entityId);
                         setSelectedMaterialKeyframe(null);
+                        setSelectedPaintColorKeyframe(null);
                         setSelectedRotationKeyframe(null);
                         setSelectedScaleKeyframe(null);
                         setSelectedOpacityKeyframe({ index, transactionId: opacityTrack.transactionId });
@@ -2135,6 +2335,30 @@ export function StudioTimeline({
                       selected={
                         selectedOpacityKeyframe?.transactionId === opacityTrack.transactionId &&
                         selectedOpacityKeyframe.index === index
+                      }
+                    />
+                  ))}
+                  {paintColorTrack?.keyframes.map((keyframe, index) => (
+                    <PropertyKeyframeMarker
+                      duration={duration}
+                      index={index}
+                      key={`${paintColorTrack.transactionId}/${paintColorTrack.property}/${index}`}
+                      keyframe={keyframe}
+                      kind="paint-color"
+                      locked={mutationLocked || paintColorTrack.readOnlyReason !== null}
+                      onChange={(patch) => onPaintColorKeyframeChange?.(paintColorTrack, index, patch)}
+                      onSelect={() => {
+                        onSelectEntity(track.entityId);
+                        setSelectedMaterialKeyframe(null);
+                        setSelectedOpacityKeyframe(null);
+                        setSelectedRotationKeyframe(null);
+                        setSelectedScaleKeyframe(null);
+                        setSelectedPaintColorKeyframe({ index, transactionId: paintColorTrack.transactionId });
+                      }}
+                      paintProperty={paintColorTrack.property}
+                      selected={
+                        selectedPaintColorKeyframe?.transactionId === paintColorTrack.transactionId &&
+                        selectedPaintColorKeyframe.index === index
                       }
                     />
                   ))}
@@ -2151,6 +2375,7 @@ export function StudioTimeline({
                         onSelectEntity(track.entityId);
                         setSelectedMaterialKeyframe(null);
                         setSelectedOpacityKeyframe(null);
+                        setSelectedPaintColorKeyframe(null);
                         setSelectedRotationKeyframe(null);
                         setSelectedScaleKeyframe({ index, transactionId: scaleTrack.transactionId });
                       }}
@@ -2173,6 +2398,7 @@ export function StudioTimeline({
                         onSelectEntity(track.entityId);
                         setSelectedMaterialKeyframe(null);
                         setSelectedOpacityKeyframe(null);
+                        setSelectedPaintColorKeyframe(null);
                         setSelectedScaleKeyframe(null);
                         setSelectedRotationKeyframe({ index, transactionId: rotationTrack.transactionId });
                       }}
@@ -2195,6 +2421,7 @@ export function StudioTimeline({
                         onSelect={() => {
                           onSelectEntity(track.entityId);
                           setSelectedOpacityKeyframe(null);
+                          setSelectedPaintColorKeyframe(null);
                           setSelectedRotationKeyframe(null);
                           setSelectedScaleKeyframe(null);
                           setSelectedMaterialParameterByEntity((current) => ({

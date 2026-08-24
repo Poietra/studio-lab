@@ -126,6 +126,8 @@ export function StudioViewport({
   motionPaths,
   opacityTrackEligibleIds,
   opacityTracks,
+  paintColorTrackEligibleProperties,
+  paintColorTracks,
   rotationTrackEligibleIds,
   rotationTracks,
   scaleTrackEligibleIds,
@@ -188,6 +190,10 @@ export function StudioViewport({
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
   onOpacityKeyframeDuplicate,
+  onPaintColorKeyframeAdd,
+  onPaintColorKeyframeChange,
+  onPaintColorKeyframeDelete,
+  onPaintColorKeyframeDuplicate,
   onRotationKeyframeAdd,
   onRotationKeyframeChange,
   onRotationKeyframeDelete,
@@ -344,6 +350,8 @@ export function StudioViewport({
           objectTracks={projection.timeline.objectTracks}
           opacityTrackEligibleIds={opacityTrackEligibleIds}
           opacityTracks={opacityTracks}
+          paintColorTrackEligibleProperties={paintColorTrackEligibleProperties}
+          paintColorTracks={paintColorTracks}
           rotationTrackEligibleIds={rotationTrackEligibleIds}
           rotationTracks={rotationTracks}
           scaleTrackEligibleIds={scaleTrackEligibleIds}
@@ -374,6 +382,10 @@ export function StudioViewport({
           onOpacityKeyframeChange={onOpacityKeyframeChange}
           onOpacityKeyframeDelete={onOpacityKeyframeDelete}
           onOpacityKeyframeDuplicate={onOpacityKeyframeDuplicate}
+          onPaintColorKeyframeAdd={onPaintColorKeyframeAdd}
+          onPaintColorKeyframeChange={onPaintColorKeyframeChange}
+          onPaintColorKeyframeDelete={onPaintColorKeyframeDelete}
+          onPaintColorKeyframeDuplicate={onPaintColorKeyframeDuplicate}
           onRotationKeyframeAdd={onRotationKeyframeAdd}
           onRotationKeyframeChange={onRotationKeyframeChange}
           onRotationKeyframeDelete={onRotationKeyframeDelete}

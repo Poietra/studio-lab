@@ -375,6 +375,9 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "AnimateProperty" && operation.key === "appearance") {
     return operation.materialParameter ? "material-parameter-keyframes" : "opacity-keyframes";
   }
+  if (operation.kind === "AnimateProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
+    return "paint-color-keyframes";
+  }
   if (operation.kind === "SetProperty" && operation.key === "fillColor") return "fill-color";
   if (operation.kind === "SetProperty" && operation.key === "strokeColor") return "stroke-color";
   if (operation.kind === "SetProperty" && operation.key === "strokeCap") return "stroke-cap";
@@ -593,6 +596,15 @@ function correlateCreationProjection(
         mutation.interval.end - mutation.interval.start,
         operation.interval.end - operation.interval.start,
       );
+    const isCorrelatedPaintColorTrack =
+      operation?.kind === "AnimateProperty" &&
+      (operation.key === "fillColor" || operation.key === "strokeColor") &&
+      mutation.kind === "paint-color-keyframes" &&
+      mutation.entityId === operation.entityId &&
+      mutation.property === (operation.key === "fillColor" ? "fill-color" : "stroke-color") &&
+      mutation.easing.kind === (operation.easing === "smooth" ? "manim-smooth" : "linear") &&
+      mutation.from === operation.from &&
+      mutation.to === operation.to;
     const expectedMathTexContent =
       operation?.kind === "TransformContent" ? canonicalEditableContent(operation.replacement, "MathTex") : null;
     const mathTexTransformInsertion = expected
@@ -655,6 +667,7 @@ function correlateCreationProjection(
       operation?.kind !== "AnimateCamera" &&
       operation?.kind !== "DrawIn" &&
       operation?.kind !== "WriteIn" &&
+      !(operation?.kind === "AnimateProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) &&
       expectedMutationKind !== null &&
       expectedMutationKind === mutation.kind &&
       "entityId" in mutation &&
@@ -669,7 +682,8 @@ function correlateCreationProjection(
         !isCorrelatedCamera &&
         !isCorrelatedSpin &&
         !isCorrelatedDraw &&
-        !isCorrelatedWrite)
+        !isCorrelatedWrite &&
+        !isCorrelatedPaintColorTrack)
     ) {
       throw new TypeError(`Creation mutation ${mutation.operationId} is not correlated with the Rust projection.`);
     }
@@ -1224,6 +1238,9 @@ function appendProjectedMutation(
   } else if (mutation.kind === "material-parameter-keyframes") {
     // The canonical VectorAppearance channel is sampled in Rust; this correlated mutation
     // only supplies working-time marker positions to the timeline.
+  } else if (mutation.kind === "paint-color-keyframes") {
+    // Rust owns color interpolation in the canonical VectorAppearance channel.
+    // This mutation only correlates the Timeline marker interval with its Program.
   } else if (mutation.kind === "draw-in" || mutation.kind === "write-in") {
     // Rust evaluates the canonical entrance channels. This projection only
     // correlates the Studio timeline clip with those authoritative channels.
@@ -1586,7 +1603,13 @@ function projectCreationWorkingState(
               dimensions: { kind: "known" as const, value: entity.initialDimensions },
               position: { kind: "unknown" as const, reason: "Position is projected by its creation mutation." },
               scale: { kind: "known" as const, value: entity.initialScale },
-              style: { kind: "known" as const, value: {} },
+              style: {
+                kind: "known" as const,
+                value: {
+                  ...(entity.fillColor === undefined ? {} : { fillColor: entity.fillColor }),
+                  ...(entity.strokeColor === undefined ? {} : { strokeColor: entity.strokeColor }),
+                },
+              },
             },
           }
         : {}),

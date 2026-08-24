@@ -40,7 +40,7 @@ type CreationRotationAuthority = Readonly<{
     entityId: string;
     interval?: Readonly<{ start: number }>;
     kind: string;
-    to?: number;
+    to?: unknown;
     transactionId?: string;
   }>[];
 }>;

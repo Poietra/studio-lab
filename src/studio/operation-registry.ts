@@ -16,6 +16,7 @@ import {
   sceneEditOperationSchema,
   shapeTransformChangesShape,
   studioEntityTypeSupportsStrokeWidth,
+  studioPaintColorTrackProperty,
 } from "./scene-edit-contract";
 
 export { sceneEditOperationSchema as canonicalOperationSchema } from "./scene-edit-contract";
@@ -133,6 +134,15 @@ function setPropertyExecution(
 function animatePropertyExecution(
   operation: Extract<SceneEditOperation, { kind: "AnimateProperty" }>,
 ): OperationExecutionCapabilities {
+  if (
+    operation.timelineTrack === true &&
+    (operation.key === "fillColor" || operation.key === "strokeColor") &&
+    isCanonicalRgbHex(operation.from) &&
+    isCanonicalRgbHex(operation.to) &&
+    (operation.interval.end > operation.interval.start || operation.from === operation.to)
+  ) {
+    return CLIENT_ONLY_EXECUTION;
+  }
   if (
     operation.timelineTrack === true &&
     typeof operation.from === "number" &&
@@ -965,6 +975,40 @@ export const OPERATION_REGISTRY = {
       }
       if (operation.timelineTrack === true) {
         const entity = scene.objectGraph.entities[operation.entityId];
+        if (operation.key === "fillColor" || operation.key === "strokeColor") {
+          if (
+            (operation.easing !== "linear" && operation.easing !== "smooth") ||
+            operation.control !== undefined ||
+            operation.materialParameter !== undefined ||
+            operation.relativeDelta !== undefined ||
+            operation.relativeFactor !== undefined ||
+            !isCanonicalRgbHex(operation.from) ||
+            !isCanonicalRgbHex(operation.to) ||
+            (operation.interval.start === operation.interval.end && operation.from !== operation.to)
+          ) {
+            issues.push({
+              code: "schema-invalid",
+              field: "timelineTrack",
+              message:
+                "A paint color Timeline track requires canonical #rrggbb endpoints and no relative or material fields; a point marker must keep one color.",
+              operationId: operation.id,
+              severity: "error",
+            });
+          }
+          if (entity && (!entity.transactionId || studioPaintColorTrackProperty(entity.type) !== operation.key)) {
+            issues.push({
+              code: "lowering-unsupported",
+              field: "entityId",
+              message:
+                operation.key === "fillColor"
+                  ? "Fill color keyframes support only Studio-created closed primitives."
+                  : "Stroke color keyframes support only Studio-created Line objects.",
+              operationId: operation.id,
+              severity: "error",
+            });
+          }
+          return issues;
+        }
         const valuesAreValid =
           typeof operation.from === "number" &&
           typeof operation.to === "number" &&

@@ -7,10 +7,11 @@ use super::{
     PlannedStudioMathTexTransform, PlannedStudioMotion, PlannedStudioShapeTransform,
     ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1, SceneEditExecution,
     SceneEditScheduleMode, StudioAuthoringDimensions, StudioAuthoringEntityKind,
-    StudioAuthoringOrigin, StudioCreationEditInput, StudioCreationOperationKind,
-    StudioCreationPlan, StudioCreationProjectedMutation, StudioCreationProjectedMutationKind,
-    StudioCreationShapeState, StudioMathTexTransformStrategy, StudioMotionPlan,
-    StudioMotionProjectionTarget, StudioPropertyEasing, TIMELINE_ANCHOR_EPSILON,
+    StudioAuthoringOrigin, StudioCreationEditInput, StudioCreationOperation,
+    StudioCreationOperationKind, StudioCreationPlan, StudioCreationProjectedMutation,
+    StudioCreationProjectedMutationKind, StudioCreationShapeState, StudioMathTexTransformStrategy,
+    StudioMotionPlan, StudioMotionProjectionTarget, StudioPaintColorProperty,
+    StudioPaintColorTrack, StudioPropertyEasing, TIMELINE_ANCHOR_EPSILON,
     close_transform_baseline_value, closed_studio_creation_motion_operations,
     closed_studio_group_layer_order, closed_studio_group_rotation,
     closed_studio_material_parameter_track, closed_studio_opacity_track,
@@ -29,6 +30,95 @@ use super::{
     studio_shape_transform_path, studio_text_content_is_canonical,
     studio_timeline_semantic_values_match,
 };
+
+const MIN_STUDIO_PAINT_COLOR_KEYFRAMES: usize = 2;
+const MAX_STUDIO_PAINT_COLOR_KEYFRAMES: usize = 32;
+
+fn closed_studio_paint_color_track(
+    program: &StudioCreationEditInput,
+) -> Option<(
+    &str,
+    StudioPaintColorProperty,
+    Vec<&StudioCreationOperation>,
+)> {
+    if program.origin != StudioAuthoringOrigin::DirectManipulation
+        || program.requested_execution != SceneEditExecution::Sequence
+        || program.schedule_mode != SceneEditScheduleMode::Sequence
+        || program.operations.is_empty()
+    {
+        return None;
+    }
+    let operations = program
+        .schedule_order
+        .iter()
+        .filter_map(|operation_id| {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)?;
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::PaintColorKeyframes { .. }
+            )
+            .then_some(operation)
+        })
+        .collect::<Vec<_>>();
+    if !(MIN_STUDIO_PAINT_COLOR_KEYFRAMES - 1..=MAX_STUDIO_PAINT_COLOR_KEYFRAMES - 1)
+        .contains(&operations.len())
+    {
+        return None;
+    }
+    let first = *operations.first()?;
+    let entity_id = first.entity_id.as_deref()?;
+    let property = match &first.kind {
+        StudioCreationOperationKind::PaintColorKeyframes { property, .. } => *property,
+        _ => return None,
+    };
+    if first.interval.start + TIMELINE_ANCHOR_EPSILON < program.anchor_resolved_seconds {
+        return None;
+    }
+    for (index, operation) in operations.iter().enumerate() {
+        let (easing, from, to) = match &operation.kind {
+            StudioCreationOperationKind::PaintColorKeyframes {
+                easing,
+                from: Some(from),
+                property: candidate_property,
+                to: Some(to),
+            } if *candidate_property == property => (easing, from, to),
+            _ => return None,
+        };
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || operation.entity_id.as_deref() != Some(entity_id)
+            || !matches!(
+                easing,
+                StudioPropertyEasing::Linear | StudioPropertyEasing::Smooth
+            )
+            || canonical_studio_hex_color(from).is_none()
+            || canonical_studio_hex_color(to).is_none()
+            || operation.interval.end <= operation.interval.start + TIMELINE_ANCHOR_EPSILON
+        {
+            return None;
+        }
+        if let Some(previous) = index.checked_sub(1).and_then(|prior| operations.get(prior)) {
+            let previous_to = match &previous.kind {
+                StudioCreationOperationKind::PaintColorKeyframes {
+                    property: candidate_property,
+                    to: Some(previous_to),
+                    ..
+                } if *candidate_property == property => previous_to,
+                _ => return None,
+            };
+            if !studio_timeline_semantic_values_match(
+                previous.interval.end,
+                operation.interval.start,
+            ) || previous_to != from
+            {
+                return None;
+            }
+        }
+    }
+    Some((entity_id, property, operations))
+}
 
 fn studio_shape_transform_pair_is_supported(
     from: StudioCreationShapeState,
@@ -117,6 +207,7 @@ pub(super) fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::WriteIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                        | StudioCreationOperationKind::PaintColorKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                         | StudioCreationOperationKind::RotationKeyframes { .. }
                 )
@@ -139,6 +230,52 @@ pub(super) fn plan_studio_creation_edits(
         if !creates_target
             || !contains_only_creation_scaffold_or_opacity
             || has_competing_appearance_or_removal
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+    }
+    let paint_color_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| {
+            programs[*index].operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::PaintColorKeyframes { .. }
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut paint_color_entity_ids = BTreeSet::new();
+    for index in &paint_color_programs {
+        let program = &programs[*index];
+        let Some((entity_id, _, _)) = closed_studio_paint_color_track(program) else {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        };
+        let creates_target = program.operations.iter().any(|operation| {
+            matches!(
+                &operation.kind,
+                StudioCreationOperationKind::Create { entity } if entity.id == entity_id
+            )
+        });
+        let contains_only_creation_scaffold_or_compatible_tracks =
+            program.operations.iter().all(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::Create { .. }
+                        | StudioCreationOperationKind::Position { .. }
+                        | StudioCreationOperationKind::FadeIn { .. }
+                        | StudioCreationOperationKind::DrawIn { .. }
+                        | StudioCreationOperationKind::OpacityKeyframes { .. }
+                        | StudioCreationOperationKind::PaintColorKeyframes { .. }
+                        | StudioCreationOperationKind::UniformScaleKeyframes { .. }
+                        | StudioCreationOperationKind::RotationKeyframes { .. }
+                )
+            });
+        if !creates_target
+            || !contains_only_creation_scaffold_or_compatible_tracks
+            || !paint_color_entity_ids.insert(entity_id.to_owned())
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
@@ -221,6 +358,7 @@ pub(super) fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::WriteIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                        | StudioCreationOperationKind::PaintColorKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                         | StudioCreationOperationKind::RotationKeyframes { .. }
                 )
@@ -264,6 +402,7 @@ pub(super) fn plan_studio_creation_edits(
                         | StudioCreationOperationKind::WriteIn { .. }
                         | StudioCreationOperationKind::OpacityKeyframes { .. }
                         | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                        | StudioCreationOperationKind::PaintColorKeyframes { .. }
                         | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                         | StudioCreationOperationKind::RotationKeyframes { .. }
                 )
@@ -309,6 +448,7 @@ pub(super) fn plan_studio_creation_edits(
         .filter(|index| {
             !create_programs.contains(index)
                 && !opacity_programs.contains(index)
+                && !paint_color_programs.contains(index)
                 && !material_parameter_programs.contains(index)
                 && !uniform_scale_programs.contains(index)
                 && !rotation_programs.contains(index)
@@ -412,6 +552,7 @@ pub(super) fn plan_studio_creation_edits(
                 }
                 StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                | StudioCreationOperationKind::PaintColorKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                 | StudioCreationOperationKind::RotationKeyframes { .. } => operation
                     .entity_id
@@ -459,6 +600,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                | StudioCreationOperationKind::PaintColorKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                 | StudioCreationOperationKind::RotationKeyframes { .. }
                     if operation
@@ -474,6 +616,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::AnimateCamera { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                | StudioCreationOperationKind::PaintColorKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                 | StudioCreationOperationKind::RotationKeyframes { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
@@ -1095,6 +1238,7 @@ pub(super) fn plan_studio_creation_edits(
             material_parameter_keyframes: Vec::new(),
             math_tex_transforms: Vec::new(),
             opacity_keyframes: Vec::new(),
+            paint_color_track: None,
             persistent_removal: None,
             position: initial_position.clone(),
             rotation_keyframes: Vec::new(),
@@ -2580,6 +2724,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Visibility { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+                | StudioCreationOperationKind::PaintColorKeyframes { .. }
                 | StudioCreationOperationKind::UniformScaleKeyframes { .. }
                 | StudioCreationOperationKind::RotationKeyframes { .. }
                 | StudioCreationOperationKind::FillColor { .. }
@@ -2598,6 +2743,141 @@ pub(super) fn plan_studio_creation_edits(
                 }
             }
         }
+    }
+
+    for program_index in paint_color_programs {
+        let program = &programs[program_index];
+        let (entity_id, property, track_operations) = closed_studio_paint_color_track(program)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let state = entities
+            .iter_mut()
+            .find(|state| state.spec.id == entity_id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let program_rank = timeline.ranks[program_index];
+        let baseline = match property {
+            StudioPaintColorProperty::FillColor
+                if matches!(
+                    state.kind,
+                    StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::Ellipse
+                        | StudioAuthoringEntityKind::Rectangle
+                        | StudioAuthoringEntityKind::RegularPolygon
+                ) =>
+            {
+                state.fill_color_override.as_deref()
+            }
+            StudioPaintColorProperty::StrokeColor
+                if state.kind == StudioAuthoringEntityKind::Line =>
+            {
+                Some(state.stroke_color_override.as_deref().unwrap_or("#ffffff"))
+            }
+            StudioPaintColorProperty::FillColor | StudioPaintColorProperty::StrokeColor => None,
+        };
+        let baseline_color = baseline
+            .and_then(canonical_studio_hex_color)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        if state.creation_program_rank > program_rank
+            || (state.creation_program_rank == program_rank
+                && state.creation_transaction_id != program.transaction_id)
+            || state.paint_color_track.is_some()
+            || !state.material_parameter_keyframes.is_empty()
+            || state.write_interval.is_some()
+            || state.persistent_removal.is_some()
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut projected = Vec::with_capacity(track_operations.len());
+        for operation in track_operations {
+            let StudioCreationOperationKind::PaintColorKeyframes {
+                easing,
+                from: Some(from),
+                property: operation_property,
+                to: Some(to),
+            } = &operation.kind
+            else {
+                unreachable!();
+            };
+            if *operation_property != property {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            let mut interval = IntervalV1 {
+                end: operation.interval.end + timeline.offsets[program_index],
+                start: operation.interval.start + timeline.offsets[program_index],
+            };
+            if state.creation_program_rank == program_rank
+                && let Some((_, insertion)) = timeline
+                    .ranked_insertions
+                    .iter()
+                    .find(|(rank, _)| *rank == program_rank)
+            {
+                shift_interval_for_insertion(&mut interval, insertion);
+            }
+            for (rank, insertion) in &timeline.ranked_insertions {
+                if *rank > program_rank {
+                    shift_interval_for_insertion(&mut interval, insertion);
+                }
+            }
+            if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+                || studio_creation_initial_appearance_end(state)
+                    .is_some_and(|end| interval.start <= end + TIMELINE_ANCHOR_EPSILON)
+            {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            let schedule_index = program
+                .schedule_order
+                .iter()
+                .position(|operation_id| operation_id == &operation.id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let from_color = canonical_studio_hex_color(from)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let to_color = canonical_studio_hex_color(to)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            ranked_mutations.push((
+                program_rank,
+                schedule_index,
+                StudioCreationProjectedMutation {
+                    entity_id: entity_id.to_owned(),
+                    interval: interval.clone(),
+                    kind: StudioCreationProjectedMutationKind::PaintColorKeyframes {
+                        easing: property_easing(*easing),
+                        from: from.clone(),
+                        property,
+                        to: to.clone(),
+                    },
+                    operation_id: operation.id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                },
+            ));
+            projected.push((interval, *easing, from_color, to_color));
+        }
+        if projected
+            .first()
+            .is_none_or(|(_, _, from, _)| from != &baseline_color)
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut keyframes = Vec::with_capacity(projected.len() + 1);
+        for (index, (interval, easing, from, to)) in projected.iter().enumerate() {
+            if index == 0 {
+                keyframes.push(KeyframeV1 {
+                    at: interval.start,
+                    easing_to_next: Some(property_easing(*easing)),
+                    value: from.clone(),
+                });
+            }
+            keyframes.push(KeyframeV1 {
+                at: interval.end,
+                easing_to_next: projected
+                    .get(index + 1)
+                    .map(|(_, next_easing, _, _)| property_easing(*next_easing)),
+                value: to.clone(),
+            });
+        }
+        state.paint_color_track = Some(StudioPaintColorTrack {
+            keyframes,
+            property,
+        });
     }
 
     if spun_entity_ids

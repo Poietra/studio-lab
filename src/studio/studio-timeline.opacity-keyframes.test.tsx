@@ -195,6 +195,39 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain('aria-label="Add opacity keyframe for Circle"');
   });
 
+  it("renders the canonical fill color add control and projected color markers", () => {
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...props()}
+        onPaintColorKeyframeAdd={vi.fn()}
+        onPaintColorKeyframeChange={vi.fn()}
+        onPaintColorKeyframeDelete={vi.fn()}
+        onPaintColorKeyframeDuplicate={vi.fn(() => null)}
+        paintColorTrackEligibleProperties={new Map([["circle", "fillColor"]])}
+        paintColorTracks={[
+          {
+            entityId: "circle",
+            keyframes: [
+              { easing: "linear", sourceTime: 1.001, time: 1.001, value: "#ffffff" },
+              { easing: "smooth", sourceTime: 3, time: 3, value: "#0ea5e9" },
+            ],
+            label: "Circle",
+            programIndex: 0,
+            property: "fillColor",
+            readOnlyReason: null,
+            transactionId: "create-circle",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Add fill color keyframe for Circle"');
+    expect(markup).toContain('aria-label="Fill color keyframe 1 at 1.00 seconds"');
+    expect(markup).toContain('aria-label="Fill color keyframe 2 at 3.00 seconds"');
+    expect(markup.match(/data-paint-color-keyframe/g)).toHaveLength(2);
+    expect(markup).toContain("background-color:#0ea5e9");
+  });
+
   it("explains why imported Manim animations are read-only", () => {
     const base = props();
     const reason = "This animation is owned by the imported Manim source. Edit the Python source to change it.";

@@ -20,6 +20,23 @@ describe("property keyframe duplication", () => {
     ]);
   });
 
+  it("preserves a canonical color value without interpreting it", () => {
+    expect(
+      duplicatePropertyKeyframeAtTime(
+        [
+          { easing: "linear" as const, time: 1, value: "#ffffff" },
+          { easing: "smooth" as const, time: 4, value: "#0ea5e9" },
+        ],
+        1,
+        2.5,
+      ),
+    ).toEqual([
+      { easing: "linear", time: 1, value: "#ffffff" },
+      { easing: "smooth", time: 2.5, value: "#0ea5e9" },
+      { easing: "smooth", time: 4, value: "#0ea5e9" },
+    ]);
+  });
+
   it("rejects the same playhead time and non-finite time", () => {
     const keyframes = [{ easing: "smooth" as const, time: 2, value: 1 }];
 
