@@ -50,9 +50,9 @@ pub use authoring::{
     StudioTextFontFamily, StudioTimelineEditInput, StudioTimelineEditProjection,
     StudioTimelineEditTransform, StudioTimelineEventKind, StudioTimelineOperation,
     StudioTimelineProjection, StudioTimelinePurpose, StudioTimelineWaitReduction,
-    inspect_studio_cubic_bezier, inspect_studio_svg_path_asset, project_studio_creation_edits,
-    project_studio_math_tex_transform_edits, project_studio_motion_edit,
-    project_studio_timeline_edits,
+    extend_studio_cubic_bezier, inspect_studio_cubic_bezier, inspect_studio_svg_path_asset,
+    project_studio_creation_edits, project_studio_math_tex_transform_edits,
+    project_studio_motion_edit, project_studio_timeline_edits,
 };
 // Compatibility names for downstream Rust callers. Internal code and adapters use the
 // Scene Edit vocabulary above; these aliases do not affect the serialized contracts.

@@ -5,12 +5,20 @@ import { loadPoietraWasmModule } from "./poietra-wasm-module";
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const pointSchema = z.object({ x: z.number().finite(), y: z.number().finite() }).strict();
+export const studioCubicBezierContinuationSegmentSchema = z
+  .object({
+    control1: pointSchema,
+    control2: pointSchema,
+    end: pointSchema,
+  })
+  .strict();
 
 export const studioCubicBezierSpecSchema = z
   .object({
     arrowEnd: z.boolean(),
     control1: pointSchema,
     control2: pointSchema,
+    continuationSegments: z.array(studioCubicBezierContinuationSegmentSchema).max(7).optional(),
     end: pointSchema,
     start: pointSchema,
     strokeCap: z.enum(["butt", "round", "square"]),
@@ -32,9 +40,34 @@ export const studioCubicBezierInspectionSchema = z
   })
   .strict();
 
-export type StudioCubicBezierSpec = z.infer<typeof studioCubicBezierSpecSchema>;
-export type StudioCubicBezierInspection = z.infer<typeof studioCubicBezierInspectionSchema>;
-export type StudioCubicBezierPointName = "control1" | "control2" | "end" | "start";
+export type StudioCubicBezierPoint = Readonly<{ x: number; y: number }>;
+export type StudioCubicBezierContinuationSegment = Readonly<{
+  control1: StudioCubicBezierPoint;
+  control2: StudioCubicBezierPoint;
+  end: StudioCubicBezierPoint;
+}>;
+export type StudioCubicBezierSpec = Readonly<{
+  arrowEnd: boolean;
+  control1: StudioCubicBezierPoint;
+  control2: StudioCubicBezierPoint;
+  continuationSegments?: readonly StudioCubicBezierContinuationSegment[];
+  end: StudioCubicBezierPoint;
+  start: StudioCubicBezierPoint;
+  strokeCap: "butt" | "round" | "square";
+  strokeWidth: number;
+}>;
+export type StudioCubicBezierInspection = Readonly<{
+  centerOffset: StudioCubicBezierPoint;
+  cubicBezier: StudioCubicBezierSpec;
+  dimensions: Readonly<{ height?: number; width?: number }>;
+}>;
+export type StudioCubicBezierPointRef =
+  | Readonly<{ kind: "start" }>
+  | Readonly<{
+      kind: "segment";
+      point: "control1" | "control2" | "end";
+      segmentIndex: number;
+    }>;
 
 type CubicBezierBindings = Readonly<{
   inspectStudioCubicBezierV1: (commandJson: Uint8Array) => Uint8Array;
@@ -46,7 +79,7 @@ async function loadBindings(): Promise<CubicBezierBindings> {
   if (bindingsPromise) return bindingsPromise;
   const pending = loadPoietraWasmModule().then((candidate) => {
     if (typeof candidate.inspectStudioCubicBezierV1 !== "function") {
-      throw new Error("The Poietra WASM module does not export cubic Bézier normalization.");
+      throw new Error("The Poietra WASM module does not export cubic Bézier authoring.");
     }
     return {
       inspectStudioCubicBezierV1:
@@ -57,10 +90,32 @@ async function loadBindings(): Promise<CubicBezierBindings> {
   return pending;
 }
 
-/** Normalizes four authoring points without exposing CubicPath evaluation to TypeScript. */
+/** Normalizes one bounded authoring path without exposing CubicPath evaluation to TypeScript. */
 export async function inspectStudioCubicBezier(input: StudioCubicBezierSpec): Promise<StudioCubicBezierInspection> {
   const command = studioCubicBezierSpecSchema.parse(input);
   const bindings = await loadBindings();
   const response = bindings.inspectStudioCubicBezierV1(encoder.encode(JSON.stringify(command)));
+  return studioCubicBezierInspectionSchema.parse(JSON.parse(decoder.decode(response)) as unknown);
+}
+
+/** Appends one normalized segment through the canonical Rust authoring authority. */
+export async function extendStudioCubicBezier(
+  input: Readonly<{
+    cubicBezier: StudioCubicBezierSpec;
+    end: Readonly<{ x: number; y: number }>;
+  }>,
+): Promise<StudioCubicBezierInspection> {
+  const cubicBezier = studioCubicBezierSpecSchema.parse(input.cubicBezier);
+  const end = pointSchema.parse(input.end);
+  const bindings = await loadBindings();
+  const response = bindings.inspectStudioCubicBezierV1(
+    encoder.encode(
+      JSON.stringify({
+        action: "extend",
+        cubicBezier,
+        end,
+      }),
+    ),
+  );
   return studioCubicBezierInspectionSchema.parse(JSON.parse(decoder.decode(response)) as unknown);
 }

@@ -1,6 +1,6 @@
 import { type DragEvent, type KeyboardEvent, type PointerEvent, useState } from "react";
 
-import type { StudioCubicBezierPointName } from "../engine/cubic-bezier-authoring";
+import type { StudioCubicBezierPointRef } from "../engine/cubic-bezier-authoring";
 import { cn } from "../lib/cn";
 import type { CanvasSelectionMode } from "./canvas-selection";
 import type {
@@ -55,6 +55,7 @@ export type StudioCanvasProps = Readonly<{
   boundaryActive: boolean;
   cameraScale: number;
   cubicBezierControls?: StudioCubicBezierCanvasControls | null;
+  cubicBezierExtensionActive?: boolean;
   cubicBezierPenPoints?: readonly Point[];
   dragPreview: EntityDragPreview | null;
   editableMotionIds: ReadonlySet<string>;
@@ -73,7 +74,7 @@ export type StudioCanvasProps = Readonly<{
   lockedEntityIds?: ReadonlySet<string>;
   motionPaths: readonly StudioMotionPath[];
   onCanvasPlace: (point: Point) => void;
-  onCubicBezierControlChange?: (name: StudioCubicBezierPointName, point: Point) => void;
+  onCubicBezierControlChange?: (pointRef: StudioCubicBezierPointRef, point: Point) => void;
   onCreateEmptyWorkspaceEntity?: (type: StudioEmptyWorkspaceEntityType) => void;
   onCreateStarterComposition?: () => void;
   onImageAssetDrop?: (payload: string, point: Point) => void;
@@ -143,7 +144,8 @@ export type StudioCanvasProps = Readonly<{
 
 export type StudioCubicBezierCanvasControls = Readonly<{
   entityId: string;
-  points: Readonly<Record<StudioCubicBezierPointName, Point>>;
+  segments: readonly Readonly<{ control1: Point; control2: Point; end: Point }>[];
+  start: Point;
 }>;
 
 export function entityLabel(entity: ProjectedEntity) {
@@ -244,7 +246,7 @@ function entityDimensionStyle(dimensions: EntityDimensions | null, frame: Readon
   };
 }
 
-const CUBIC_BEZIER_CONTROL_POINTS: readonly StudioCubicBezierPointName[] = ["start", "end", "control1", "control2"];
+const CUBIC_BEZIER_CONTROL_POINTS = ["start", "end", "control1", "control2"] as const;
 
 function CubicBezierPenOverlay({ points }: Readonly<{ points: readonly Point[] }>) {
   if (points.length === 0) return null;
@@ -269,14 +271,17 @@ function CubicBezierControlOverlay({
 }: Readonly<{
   cameraScale: number;
   controls: StudioCubicBezierCanvasControls;
-  onChange: (name: StudioCubicBezierPointName, point: Point) => void;
+  onChange: (pointRef: StudioCubicBezierPointRef, point: Point) => void;
 }>) {
   const [drag, setDrag] = useState<Readonly<{
-    name: StudioCubicBezierPointName;
+    key: string;
     point: Point;
     pointerId: number;
   }> | null>(null);
-  const pointFor = (name: StudioCubicBezierPointName) => (drag?.name === name ? drag.point : controls.points[name]);
+  const pointKey = (pointRef: StudioCubicBezierPointRef) =>
+    pointRef.kind === "start" ? "start" : `segment-${pointRef.segmentIndex}-${pointRef.point}`;
+  const pointFor = (pointRef: StudioCubicBezierPointRef, point: Point) =>
+    drag?.key === pointKey(pointRef) ? drag.point : point;
   const clientPoint = (event: PointerEvent<HTMLButtonElement>) => {
     const canvas = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]");
     if (!canvas) return null;
@@ -285,30 +290,51 @@ function CubicBezierControlOverlay({
       cameraScale,
     );
   };
-  const start = pointFor("start");
-  const end = pointFor("end");
-  const control1 = pointFor("control1");
-  const control2 = pointFor("control2");
+  const startRef = { kind: "start" } as const;
+  const start = pointFor(startRef, controls.start);
+  const segments = controls.segments.map((segment, segmentIndex) => ({
+    control1: pointFor({ kind: "segment", point: "control1", segmentIndex }, segment.control1),
+    control2: pointFor({ kind: "segment", point: "control2", segmentIndex }, segment.control2),
+    end: pointFor({ kind: "segment", point: "end", segmentIndex }, segment.end),
+  }));
+  const handles = [
+    { dataName: "start", endpoint: true, label: "start", point: start, pointRef: startRef },
+    ...segments.flatMap((segment, segmentIndex) =>
+      (["control1", "control2", "end"] as const).map((point) => ({
+        dataName: segmentIndex === 0 ? point : `segment-${segmentIndex + 1}-${point}`,
+        endpoint: point === "end",
+        label: segmentIndex === 0 ? point : `segment ${segmentIndex + 1} ${point}`,
+        point: segment[point],
+        pointRef: { kind: "segment", point, segmentIndex } as const,
+      })),
+    ),
+  ];
   return (
     <div className="pointer-events-none absolute inset-0 z-30" data-cubic-bezier-controls={controls.entityId}>
       <svg aria-hidden="true" className="absolute inset-0 size-full" viewBox="0 0 640 360">
         <g fill="none" stroke="#38bdf8" strokeDasharray="4 3" strokeWidth="1">
-          <line x1={start.x} x2={control1.x} y1={start.y} y2={control1.y} />
-          <line x1={end.x} x2={control2.x} y1={end.y} y2={control2.y} />
+          {segments.map((segment, index) => {
+            const segmentStart = index === 0 ? start : segments[index - 1]?.end;
+            return segmentStart ? (
+              <g key={`segment-${index}`}>
+                <line x1={segmentStart.x} x2={segment.control1.x} y1={segmentStart.y} y2={segment.control1.y} />
+                <line x1={segment.end.x} x2={segment.control2.x} y1={segment.end.y} y2={segment.control2.y} />
+              </g>
+            ) : null;
+          })}
         </g>
       </svg>
-      {CUBIC_BEZIER_CONTROL_POINTS.map((name) => {
-        const point = pointFor(name);
-        const endpoint = name === "start" || name === "end";
+      {handles.map(({ dataName, endpoint, label, point, pointRef }) => {
+        const key = pointKey(pointRef);
         return (
           <button
-            aria-label={`Move Bézier ${name}`}
+            aria-label={`Move Bézier ${label}`}
             className={cn(
               "pointer-events-auto absolute size-3 -translate-x-1/2 -translate-y-1/2 border border-sky-950 outline-none focus-visible:ring-2 focus-visible:ring-sky-200",
               endpoint ? "bg-sky-300" : "rotate-45 bg-sky-500",
             )}
-            data-cubic-bezier-control={name}
-            key={name}
+            data-cubic-bezier-control={dataName}
+            key={key}
             onLostPointerCapture={() => setDrag(null)}
             onPointerCancel={() => setDrag(null)}
             onPointerDown={(event) => {
@@ -317,24 +343,24 @@ function CubicBezierControlOverlay({
               event.preventDefault();
               event.stopPropagation();
               event.currentTarget.setPointerCapture(event.pointerId);
-              setDrag({ name, point, pointerId: event.pointerId });
+              setDrag({ key, point, pointerId: event.pointerId });
             }}
             onPointerMove={(event) => {
-              if (drag?.name !== name || drag.pointerId !== event.pointerId) return;
+              if (drag?.key !== key || drag.pointerId !== event.pointerId) return;
               const point = clientPoint(event);
               if (point) setDrag({ ...drag, point });
             }}
             onPointerUp={(event) => {
-              if (drag?.name !== name || drag.pointerId !== event.pointerId) return;
+              if (drag?.key !== key || drag.pointerId !== event.pointerId) return;
               const point = clientPoint(event) ?? drag.point;
               event.preventDefault();
               event.stopPropagation();
               event.currentTarget.releasePointerCapture(event.pointerId);
               setDrag(null);
-              onChange(name, point);
+              onChange(pointRef, point);
             }}
             style={viewportPositionStyle(point)}
-            title={`Drag ${name}`}
+            title={`Drag ${label}`}
             type="button"
           />
         );
@@ -672,6 +698,7 @@ export function StudioCanvas({
   boundaryActive,
   cameraScale,
   cubicBezierControls = null,
+  cubicBezierExtensionActive = false,
   cubicBezierPenPoints = [],
   dragPreview,
   editableMotionIds,
@@ -987,7 +1014,7 @@ export function StudioCanvas({
             !showingCanvasPixels ||
             displayOnlyPreview ||
             selectionOnlyPreview ||
-            insertTool === "select" ||
+            (insertTool === "select" && !cubicBezierExtensionActive) ||
             inlineTextEditor !== null ||
             boundaryActive ||
             isCanvasInteractionTarget(event.target)
@@ -997,7 +1024,11 @@ export function StudioCanvas({
             x: event.clientX,
             y: event.clientY,
           });
-          onCanvasPlace(insertTool === "CubicBezier" ? cubicBezierOverlayPointFromViewport(point, cameraScale) : point);
+          onCanvasPlace(
+            insertTool === "CubicBezier" || cubicBezierExtensionActive
+              ? cubicBezierOverlayPointFromViewport(point, cameraScale)
+              : point,
+          );
         }}
         role="group"
       >

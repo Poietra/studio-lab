@@ -534,8 +534,8 @@ export function replaceStudioCreatedDataSeriesProgram(
   return validateAndScheduleProgram({ ...input.owner.program, operations }, input.scene);
 }
 
-/** Replaces the one canonical cubic primitive and its placement in the owning
- * creation Program. Rust has already normalized the supplied four points. */
+/** Replaces the canonical cubic path and its placement in the owning creation
+ * Program. Rust has already normalized the supplied nodes and handles. */
 export function replaceStudioCreatedCubicBezierProgram(
   input: Readonly<{
     cubicBezier: StudioCubicBezierSpec;
@@ -551,7 +551,7 @@ export function replaceStudioCreatedCubicBezierProgram(
   const operations = input.owner.program.operations.map((operation) => {
     if (operation.kind === "CreateEntity" && operation.entity.id === input.entityId) {
       if (operation.entity.type !== "CubicBezier") {
-        throw new Error("Only a Studio-created cubic Bézier can replace its four control points.");
+        throw new Error("Only a Studio-created cubic Bézier can replace its path nodes and handles.");
       }
       createCount += 1;
       return {

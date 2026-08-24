@@ -848,7 +848,7 @@ export const OPERATION_REGISTRY = {
         issues.push({
           code: "schema-invalid",
           field: "entity.cubicBezier",
-          message: "A Studio-native CubicBezier requires one Rust-normalized four-point primitive.",
+          message: "A Studio-native CubicBezier requires one Rust-normalized path.",
           operationId: operation.id,
           severity: "error",
         });

@@ -70,6 +70,8 @@ export type StudioViewportProps = Readonly<
       gesturePreviewStore: StudioGesturePreviewStore;
       insertValue: string;
       onCoordinateInsertSettingsChange: (settings: CoordinateInsertSettings) => void;
+      onCubicBezierExtensionToggle?: () => void;
+      onCubicBezierRemoveLastSegment?: () => void;
       onCubicBezierStyleChange?: (change: CubicBezierStyleChange) => void;
       onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
       onInsertAtCenter: () => void;
@@ -169,6 +171,8 @@ export function StudioViewport({
   onInlineTextCommit,
   onInteractionModeChange,
   onCoordinateInsertSettingsChange,
+  onCubicBezierExtensionToggle,
+  onCubicBezierRemoveLastSegment,
   onCubicBezierStyleChange,
   onCurveInsertSettingsChange,
   onInsertAtCenter,
@@ -247,6 +251,8 @@ export function StudioViewport({
           insertValue={insertValue}
           insertionAvailable={insertionAvailable}
           onCoordinateInsertSettingsChange={onCoordinateInsertSettingsChange}
+          onCubicBezierExtensionToggle={onCubicBezierExtensionToggle}
+          onCubicBezierRemoveLastSegment={onCubicBezierRemoveLastSegment}
           onCubicBezierStyleChange={onCubicBezierStyleChange}
           onCurveInsertSettingsChange={onCurveInsertSettingsChange}
           onInsertAtCenter={onInsertAtCenter}
@@ -265,6 +271,7 @@ export function StudioViewport({
         boundaryActive={boundaryActive}
         cameraScale={projection.camera.scale}
         cubicBezierControls={cubicBezierControls}
+        cubicBezierExtensionActive={cubicBezierStyle?.extensionActive ?? false}
         cubicBezierPenPoints={cubicBezierPenPoints}
         editableMotionIds={editableMotionIds}
         entities={entities}

@@ -83,6 +83,50 @@ describe("StudioToolbar selection layout", () => {
     expect(plane).toContain('aria-label="Display height"');
   });
 
+  it("bounds connected Pen paths and keeps the first segment", () => {
+    const single = renderToStaticMarkup(
+      <StudioToolbar
+        {...props({
+          cubicBezierStyle: {
+            arrowEnd: false,
+            entityId: "curve",
+            extensionActive: false,
+            segmentCount: 1,
+            strokeCap: "round",
+            strokeWidth: 0.04,
+          },
+          onCubicBezierExtensionToggle: vi.fn(),
+          onCubicBezierRemoveLastSegment: vi.fn(),
+          onCubicBezierStyleChange: vi.fn(),
+        })}
+      />,
+    );
+    const maximum = renderToStaticMarkup(
+      <StudioToolbar
+        {...props({
+          cubicBezierStyle: {
+            arrowEnd: false,
+            entityId: "curve",
+            extensionActive: true,
+            segmentCount: 8,
+            strokeCap: "round",
+            strokeWidth: 0.04,
+          },
+          onCubicBezierExtensionToggle: vi.fn(),
+          onCubicBezierRemoveLastSegment: vi.fn(),
+          onCubicBezierStyleChange: vi.fn(),
+        })}
+      />,
+    );
+
+    expect(single).toContain("1/8 segments");
+    expect(single.match(/<button[^>]*>\+ Extend path<\/button>/u)?.[0]).not.toContain('disabled=""');
+    expect(single.match(/<button[^>]*>Remove last<\/button>/u)?.[0]).toContain('disabled=""');
+    expect(maximum).toContain("8/8 segments");
+    expect(maximum.match(/<button[^>]*>Cancel extend<\/button>/u)?.[0]).toContain('disabled=""');
+    expect(maximum.match(/<button[^>]*>Remove last<\/button>/u)?.[0]).not.toContain('disabled=""');
+  });
+
   it("offers alignment for two selected objects and requires three for distribution", () => {
     const markup = renderToStaticMarkup(<StudioToolbar {...props()} />);
 

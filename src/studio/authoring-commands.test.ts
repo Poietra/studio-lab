@@ -587,7 +587,7 @@ describe("manual Studio authoring commands", () => {
     expect(result.validation.program.provenance.styleProfileRef).toEqual(styleProfileRef(STUDIO_STYLE_PROFILE));
   });
 
-  it("keeps one canonical cubic primitive and four-point replacement in its creation Program", () => {
+  it("keeps one canonical cubic path replacement in its creation Program", () => {
     const cubicBezier = {
       arrowEnd: false,
       control1: { x: -1, y: 1 },
@@ -620,8 +620,15 @@ describe("manual Studio authoring commands", () => {
     );
 
     const owner = programRecord(created.validation.program, created.validation);
+    const continuationSegments = [
+      {
+        control1: { x: 2.5, y: 1 },
+        control2: { x: 3.5, y: 1 },
+        end: { x: 4, y: 0 },
+      },
+    ];
     const replacement = replaceStudioCreatedCubicBezierProgram({
-      cubicBezier: { ...cubicBezier, control1: { x: -0.5, y: 1 } },
+      cubicBezier: { ...cubicBezier, continuationSegments, control1: { x: -0.5, y: 1 } },
       dimensions: { height: 2, width: 4 },
       entityId,
       owner,
@@ -633,7 +640,7 @@ describe("manual Studio authoring commands", () => {
       expect.arrayContaining([
         expect.objectContaining({
           entity: expect.objectContaining({
-            cubicBezier: expect.objectContaining({ control1: { x: -0.5, y: 1 } }),
+            cubicBezier: expect.objectContaining({ continuationSegments, control1: { x: -0.5, y: 1 } }),
           }),
           kind: "CreateEntity",
         }),
