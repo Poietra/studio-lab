@@ -44,6 +44,7 @@ export type EntityDimensions = Readonly<{
 export type EntityStyle = Readonly<{
   color?: string;
   fillColor?: string;
+  strokeCap?: "butt" | "round" | "square";
   strokeColor?: string;
   strokeWidth?: number;
 }>;
@@ -155,6 +156,7 @@ export type PropertyChannel = Readonly<{
     | "rotation"
     | "scale"
     | "shape"
+    | "strokeCap"
     | "strokeColor"
     | "strokeWidth"
     | "visibility";

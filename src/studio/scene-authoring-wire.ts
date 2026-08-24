@@ -286,6 +286,17 @@ function normalizedStudioCreationOperation(
       widthWorld: typeof operation.value === "number" && Number.isFinite(operation.value) ? operation.value : null,
     };
   }
+  if (operation.kind === "SetProperty" && operation.key === "strokeCap") {
+    return {
+      ...common,
+      cap:
+        operation.value === "butt" || operation.value === "round" || operation.value === "square"
+          ? operation.value
+          : null,
+      entityId: operation.entityId,
+      kind: "stroke-cap",
+    };
+  }
   if (operation.kind === "SetProperty" && operation.key === "appearance") {
     return {
       ...common,

@@ -141,6 +141,7 @@ type ProgramSourceLoweringOptions = Readonly<{
   hoistedInitialGeneratedFillOperationIds?: ReadonlySet<string>;
   hoistedInitialGeneratedStrokeOperationIds?: ReadonlySet<string>;
   initialGeneratedFillColors?: ReadonlyMap<string, string>;
+  initialGeneratedStrokeCaps?: ReadonlyMap<string, StudioLineStrokeCap>;
   initialGeneratedStrokeColors?: ReadonlyMap<string, string>;
   initialGeneratedStrokeWidths?: ReadonlyMap<string, number>;
   reservedSourceVariables?: ReadonlySet<string>;
@@ -1088,6 +1089,24 @@ function assertLoweringSupported(
       "Stroke width currently supports only authorized Studio-created Line entities.",
     );
   }
+  if (operation.kind === "SetProperty" && operation.key === "strokeCap") {
+    if (!isStudioLineStrokeCap(operation.value)) {
+      throw new ProgramLoweringError("operation-unsupported", "Line stroke cap must be butt, round, or square.");
+    }
+    const type =
+      currentGeneratedEntityTypes.get(operation.entityId) ?? options.generatedEntityTypes?.get(operation.entityId);
+    if (type !== "Line") {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "Stroke cap currently supports only authorized Studio-created Line entities.",
+      );
+    }
+    if (options.hoistedInitialGeneratedStrokeOperationIds?.has(operation.id)) return;
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Stroke cap must be one static operation at the Studio-created Line creation anchor.",
+    );
+  }
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
     if (options.generatedEntityIds?.has(operation.entityId) || options.snapshotAuthorizedSourceBoundRotation) return;
     throw new ProgramLoweringError(
@@ -1700,6 +1719,10 @@ export function lowerCanonicalProgramSource(
           ];
           output.push(`${variable}.set_stroke(${arguments_.join(", ")})`);
         }
+        const initialStrokeCap = options.initialGeneratedStrokeCaps?.get(operation.entity.id);
+        if (initialStrokeCap) {
+          output.push(`${variable}.set_cap_style(${manimStrokeCap(initialStrokeCap)})`);
+        }
         options.entityOpacityStates?.set(operation.entity.id, 1);
       } else if (operation.kind === "TransformContent") {
         const targetVariable = requireVariable(variableByEntity, operation.targetEntityId);
@@ -2135,6 +2158,7 @@ type MutableBatchGroup = {
 const MIN_STUDIO_LINE_STROKE_WIDTH_WORLD = 0.005;
 const MAX_STUDIO_LINE_STROKE_WIDTH_WORLD = 0.5;
 const MANIM_STROKE_WIDTH_WORLD_UNIT = 0.01;
+type StudioLineStrokeCap = "butt" | "round" | "square";
 
 function isStudioLineStrokeWidthWorld(value: unknown): value is number {
   return (
@@ -2147,6 +2171,14 @@ function isStudioLineStrokeWidthWorld(value: unknown): value is number {
 
 function manimStrokeWidth(widthWorld: number) {
   return formatAmount(widthWorld / MANIM_STROKE_WIDTH_WORLD_UNIT);
+}
+
+function isStudioLineStrokeCap(value: unknown): value is StudioLineStrokeCap {
+  return value === "butt" || value === "round" || value === "square";
+}
+
+function manimStrokeCap(cap: StudioLineStrokeCap) {
+  return `CapStyleType.${cap.toUpperCase()}`;
 }
 
 function applySceneDurationProjection(
@@ -3299,6 +3331,7 @@ export function lowerCanonicalProgramBatchSource(
   const normalizedEntries = applySceneDurationProjection(orderedEntries, timelineTransforms);
 
   const initialGeneratedFillColors = new Map<string, string>();
+  const initialGeneratedStrokeCaps = new Map<string, StudioLineStrokeCap>();
   const initialGeneratedStrokeColors = new Map<string, string>();
   const initialGeneratedStrokeWidths = new Map<string, number>();
   const hoistedInitialGeneratedFillOperationIds = new Set<string>();
@@ -3328,11 +3361,12 @@ export function lowerCanonicalProgramBatchSource(
               (operation.entity.type === "MathTex" && candidate.kind === "WriteIn") ||
               (operation.entity.type === "Line" && candidate.kind === "DrawIn")),
         );
+        if (operation.entity.type === "Line" && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
+          initialLineLifetimeStarts.set(operation.entity.id, lifetimeStart);
+        }
         if (entrance && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
           if (operation.entity.type === "MathTex" || operation.entity.type === "Text") {
             initialGlyphLifetimeStarts.set(operation.entity.id, lifetimeStart);
-          } else if (operation.entity.type === "Line") {
-            initialLineLifetimeStarts.set(operation.entity.id, lifetimeStart);
           }
         }
       }
@@ -3341,7 +3375,10 @@ export function lowerCanonicalProgramBatchSource(
       if (program.operations.length !== 1) continue;
       const operation = program.operations[0]!;
       if (operation.kind !== "SetProperty" || operation.key !== "fillColor" || !isCanonicalRgbHex(operation.value)) {
-        if (operation.kind !== "SetProperty" || (operation.key !== "strokeColor" && operation.key !== "strokeWidth")) {
+        if (
+          operation.kind !== "SetProperty" ||
+          (operation.key !== "strokeCap" && operation.key !== "strokeColor" && operation.key !== "strokeWidth")
+        ) {
           continue;
         }
         const lifetimeStart = initialLineLifetimeStarts.get(operation.entityId);
@@ -3352,7 +3389,10 @@ export function lowerCanonicalProgramBatchSource(
         ) {
           continue;
         }
-        if (operation.key === "strokeColor" && isCanonicalRgbHex(operation.value)) {
+        if (operation.key === "strokeCap" && isStudioLineStrokeCap(operation.value)) {
+          initialGeneratedStrokeCaps.set(operation.entityId, operation.value);
+          hoistedInitialGeneratedStrokeOperationIds.add(operation.id);
+        } else if (operation.key === "strokeColor" && isCanonicalRgbHex(operation.value)) {
           initialGeneratedStrokeColors.set(operation.entityId, operation.value);
           hoistedInitialGeneratedStrokeOperationIds.add(operation.id);
         } else if (operation.key === "strokeWidth" && isStudioLineStrokeWidthWorld(operation.value)) {
@@ -3411,6 +3451,7 @@ export function lowerCanonicalProgramBatchSource(
         hoistedInitialGeneratedFillOperationIds,
         hoistedInitialGeneratedStrokeOperationIds,
         initialGeneratedFillColors,
+        initialGeneratedStrokeCaps,
         initialGeneratedStrokeColors,
         initialGeneratedStrokeWidths,
         reservedSourceVariables: generatedSourceVariables,

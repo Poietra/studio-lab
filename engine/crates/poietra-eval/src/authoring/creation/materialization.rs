@@ -406,6 +406,9 @@ pub(super) fn validate_create_scene_entities_command(
                     .contains(&width)
                 && matches!(entity.geometry, CreateSceneEntityGeometry::Line)
         });
+        let stroke_cap_is_valid = entity
+            .stroke_cap
+            .is_none_or(|_| matches!(entity.geometry, CreateSceneEntityGeometry::Line));
         let has_initial_draw_stroke = entity.draw_in.is_some()
             && entity.fill_color.is_none()
             && entity.stroke_color.is_some()
@@ -438,6 +441,7 @@ pub(super) fn validate_create_scene_entities_command(
             || !entity.rotation.is_finite()
             || !colors_are_valid
             || !stroke_width_is_valid
+            || !stroke_cap_is_valid
             || unsupported_image_paint
             || unsupported_color_override
             || (entity.animated_resize.is_some()
@@ -858,6 +862,16 @@ pub(super) fn append_created_entity(
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
         stroke.width_world = width_world;
+    }
+    if let Some(cap) = entity.stroke_cap {
+        let SceneAppearanceV1::Vector {
+            stroke: Some(stroke),
+            ..
+        } = &mut appearance
+        else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        };
+        stroke.cap = cap;
     }
     if let Some(first) = entity.material_parameter_keyframes.first() {
         let SceneAppearanceV1::Vector {
@@ -1998,6 +2012,7 @@ impl EngineSessionV1 {
                 .map(color_with_opacity)
                 .transpose()?;
             let stroke_width_world = state.stroke_width_world_override;
+            let stroke_cap = state.stroke_cap_override;
             let write_in = match (&state.write_interval, &state.write_easing) {
                 (Some(interval), Some(easing)) => {
                     let source = state
@@ -2062,6 +2077,7 @@ impl EngineSessionV1 {
                 source_z_index: state.source_z_index,
                 shape_morph,
                 stroke_color,
+                stroke_cap,
                 stroke_width_world,
                 visible: state.visible,
                 write_in,

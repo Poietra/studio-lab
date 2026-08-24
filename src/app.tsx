@@ -348,6 +348,7 @@ import {
   createDirectManipulationResizeProgram,
   createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
+  createDirectManipulationStrokeCapProgram,
   createDirectManipulationStrokeWidthProgram,
   createDirectManipulationVisibilityProgram,
 } from "./studio/suggestion-program";
@@ -7636,6 +7637,48 @@ export function App({
     }
   }
 
+  function setEntityStrokeCapFromInspector(entityId: string, strokeCap: "butt" | "round" | "square") {
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!createdAuthority || entity?.type !== "Line") {
+      setDraftError("Stroke cap is available only for a Studio-created Line.");
+      return false;
+    }
+    const currentCap =
+      entity.geometry.style.kind === "known" ? (entity.geometry.style.value.strokeCap ?? "butt") : null;
+    if (currentCap === strokeCap) return false;
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "Line stroke cap edit",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor || Math.abs(anchor.sourceTime - createdAuthority.sourceAnchor) >= 0.0005) return false;
+    try {
+      const validation = createDirectManipulationStrokeCapProgram({
+        capturedPlayhead: createdAuthority.sourceAnchor,
+        entityId,
+        scene: sourceScene,
+        start: createdAuthority.sourceAnchor,
+        strokeCap,
+        transactionId: `studio-stroke-cap-input-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, createdAuthority.sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Line stroke cap could not be changed.");
+      return false;
+    }
+  }
+
   function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     if (previewSelectionOnly) {
       setDraftError("This verified snapshot is selection-only because it has no safe .py source edit anchor.");
@@ -9403,6 +9446,9 @@ export function App({
               onEntityOpacityChange={(entityId, opacity) => void setEntityOpacityFromInspector(entityId, opacity)}
               onEntityRotate={(entityId, angleRadians) => void rotateEntityFromInspector(entityId, angleRadians)}
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
+              onEntityStrokeCapChange={(entityId, strokeCap) =>
+                void setEntityStrokeCapFromInspector(entityId, strokeCap)
+              }
               onEntityStrokeWidthChange={(entityId, strokeWidth) =>
                 void setEntityStrokeWidthFromInspector(entityId, strokeWidth)
               }
@@ -9489,6 +9535,12 @@ export function App({
                   ? (selectedEntity.geometry.style.value.strokeColor ??
                     selectedEntity.geometry.style.value.color ??
                     (selectedStudioCreationAppearanceAuthority ? "#ffffff" : null))
+                  : null
+              }
+              strokeCapAvailable={selectedStudioCreationAppearanceAtAnchor && selectedEntity?.type === "Line"}
+              strokeCapValue={
+                selectedEntity?.geometry.style.kind === "known" && selectedEntity.type === "Line"
+                  ? (selectedEntity.geometry.style.value.strokeCap ?? "butt")
                   : null
               }
               strokeWidthAvailable={selectedStudioCreationAppearanceAtAnchor && selectedEntity?.type === "Line"}
