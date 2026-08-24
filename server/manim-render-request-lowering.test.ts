@@ -793,6 +793,81 @@ describe("Manim render request lowering", () => {
       }),
     ).rejects.toMatchObject(unsupportedProgramBatchError);
     expect(rejectedAuthorizerCalls).toBe(0);
+
+    const mathTexBase = createCircleProgram("mathtex-creation");
+    const mathTexEntityId = "tx:mathtex-creation/entity:circle";
+    const mathTexOperations: CanonicalEditOperation[] = mathTexBase.operations.map((operation) => {
+      if (operation.kind === "CreateEntity") {
+        return {
+          ...operation,
+          entity: {
+            ...operation.entity,
+            content: { displayLines: ["E = mc^2"], texParts: ["E", "=", "m", "c^2"] },
+            type: "MathTex",
+          },
+        };
+      }
+      if (operation.kind !== "ChangePresence") return operation;
+      return {
+        dependsOn: operation.dependsOn,
+        easing: "linear",
+        entityId: operation.entityId,
+        id: operation.id,
+        interval: operation.interval,
+        kind: "WriteIn",
+        provenance: operation.provenance,
+      };
+    });
+    const mathTexCreation: CanonicalEditProgram = {
+      ...mathTexBase,
+      operations: mathTexOperations,
+      schedule: { ...mathTexBase.schedule, order: mathTexOperations.map(({ id }) => id) },
+    };
+    const mathTexFillOperation: CanonicalEditOperation = {
+      ...fillOperation,
+      entityId: mathTexEntityId,
+      id: "mathtex-creation-fill/operation",
+    };
+    const mathTexFill: CanonicalEditProgram = {
+      ...fill,
+      operations: [mathTexFillOperation],
+      schedule: { edges: [], mode: "parallel", order: [mathTexFillOperation.id] },
+      transactionId: "mathtex-creation-fill",
+    };
+    const transform = mathTexTransformProgram("created-mathtex-transform", mathTexEntityId);
+    const mathTexAuthorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+    const mathTexResult = await lower(
+      { ...request(mathTexCreation), programs: [mathTexCreation, mathTexFill, transform] },
+      sceneSource,
+      async (input) => {
+        mathTexAuthorizations.push(input);
+      },
+    );
+
+    expect(mathTexAuthorizations[0]?.programs).toEqual([mathTexCreation, mathTexFill, transform]);
+    expect(mathTexResult.lowered.source.match(/\.set_fill\("#22c55e", opacity=1\)/gu)).toHaveLength(3);
+    expect(mathTexResult.lowered.source.indexOf('.set_fill("#22c55e", opacity=1)')).toBeLessThan(
+      mathTexResult.lowered.source.indexOf("Write("),
+    );
+    expect(mathTexResult.lowered.source.lastIndexOf('.set_fill("#22c55e", opacity=1)')).toBeLessThan(
+      mathTexResult.lowered.source.lastIndexOf("TransformMatchingTex("),
+    );
+
+    const invalidWriteOperations = mathTexOperations.map((operation) =>
+      operation.kind === "WriteIn" ? { ...operation, interval: { end: 5.4, start: 5.1 } } : operation,
+    );
+    const invalidWriteCreation: CanonicalEditProgram = {
+      ...mathTexCreation,
+      operations: invalidWriteOperations,
+      schedule: { ...mathTexCreation.schedule, order: invalidWriteOperations.map(({ id }) => id) },
+    };
+    let invalidWriteAuthorizerCalls = 0;
+    await expect(
+      lower(request(invalidWriteCreation), sceneSource, async () => {
+        invalidWriteAuthorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
+    expect(invalidWriteAuthorizerCalls).toBe(0);
   });
 
   it("rejects non-canonical Text creation before snapshot authorization", async () => {

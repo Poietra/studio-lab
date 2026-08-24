@@ -47,24 +47,64 @@ export type ManimRenderRequestLoweringResult = Readonly<{
   renderRequest: ProgramRenderRequest;
 }>;
 
-function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
+function isStudioCreationProgramBatch(programs: readonly SceneEdit[], sceneDuration: number) {
   const operations = programs.flatMap((program) => program.operations);
   const createdEntities = new Map(
     operations.flatMap((operation) =>
-      operation.kind === "CreateEntity" ? [[operation.entity.id, operation.entity.type] as const] : [],
+      operation.kind === "CreateEntity" ? [[operation.entity.id, operation.entity] as const] : [],
     ),
   );
   if (createdEntities.size === 0) return false;
-  const textFillProgramsAreClosed = programs.every((program) => {
-    const textFillCount = program.operations.filter(
+  const generatedEntityTypes = new Map(
+    [...createdEntities].map(([entityId, entity]) => [entityId, entity.type] as const),
+  );
+  for (const operation of operations) {
+    if (
+      operation.kind === "TransformContent" &&
+      generatedEntityTypes.get(operation.sourceEntityId) === "MathTex" &&
+      operation.targetType === "MathTex" &&
+      studioCreationMathTexParts(operation.replacement) !== null
+    ) {
+      generatedEntityTypes.set(operation.targetEntityId, "MathTex");
+    }
+  }
+  const glyphFillProgramsAreClosed = programs.every((program) => {
+    const glyphFillCount = program.operations.filter(
       (operation) =>
         operation.kind === "SetProperty" &&
         operation.key === "fillColor" &&
-        createdEntities.get(operation.entityId) === "Text",
+        (generatedEntityTypes.get(operation.entityId) === "MathTex" ||
+          generatedEntityTypes.get(operation.entityId) === "Text"),
     ).length;
-    return textFillCount === 0 || (textFillCount === 1 && program.operations.length === 1);
+    return glyphFillCount === 0 || (glyphFillCount === 1 && program.operations.length === 1);
   });
-  if (!textFillProgramsAreClosed) return false;
+  if (!glyphFillProgramsAreClosed) return false;
+  const mathTexWriteProgramsAreClosed = programs.every((program) =>
+    program.operations.every(
+      (operation) =>
+        operation.kind !== "WriteIn" ||
+        (() => {
+          const creation = program.operations.find(
+            (candidate) =>
+              candidate.kind === "CreateEntity" &&
+              candidate.entity.id === operation.entityId &&
+              candidate.entity.type === "MathTex",
+          );
+          if (!creation || creation.kind !== "CreateEntity") return false;
+          const lifetime = creation.entity.lifetime;
+          const upperBound = lifetime.end ?? sceneDuration;
+          return (
+            operation.easing === "linear" &&
+            Number.isFinite(operation.interval.start) &&
+            Number.isFinite(operation.interval.end) &&
+            Math.abs(operation.interval.start - lifetime.start) < 0.0005 &&
+            operation.interval.end > operation.interval.start &&
+            operation.interval.end <= upperBound + 0.0005
+          );
+        })(),
+    ),
+  );
+  if (!mathTexWriteProgramsAreClosed) return false;
   return operations.every((operation) => {
     if (operation.kind === "CreateEntity") {
       const { dimensions, type } = operation.entity;
@@ -102,11 +142,22 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[]) {
       return type === "MathTex" && studioCreationMathTexParts(operation.entity.content) !== null;
     }
     if (operation.kind === "CreateMotion") return true;
-    if (!("entityId" in operation) || !createdEntities.has(operation.entityId)) return false;
+    if (operation.kind === "TransformContent") {
+      return (
+        generatedEntityTypes.get(operation.sourceEntityId) === "MathTex" &&
+        generatedEntityTypes.get(operation.targetEntityId) === "MathTex" &&
+        operation.targetType === "MathTex" &&
+        studioCreationMathTexParts(operation.replacement) !== null
+      );
+    }
+    if (!("entityId" in operation) || !generatedEntityTypes.has(operation.entityId)) return false;
+    if (operation.kind === "WriteIn") return generatedEntityTypes.get(operation.entityId) === "MathTex";
     if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
-      const type = createdEntities.get(operation.entityId);
+      const type = generatedEntityTypes.get(operation.entityId);
       const colorIsSupported =
-        type === "Circle" || type === "Rectangle" || (operation.key === "fillColor" && type === "Text");
+        type === "Circle" ||
+        type === "Rectangle" ||
+        (operation.key === "fillColor" && (type === "MathTex" || type === "Text"));
       return colorIsSupported && isCanonicalRgbHex(operation.value);
     }
     return (
@@ -175,7 +226,10 @@ export async function lowerManimRenderRequest({
   const isStudioMotionBatch = isExactStudioMotionProgramBatch(sourceOrderedPrograms);
   const isStudioMathTexContentBatch = isExactStudioMathTexContentProgramBatch(sourceOrderedPrograms);
   const isStudioMathTexTransformBatch = isExactStudioMathTexTransformProgramBatch(sourceOrderedPrograms);
-  const isStudioCreationBatch = isStudioCreationProgramBatch(sourceOrderedPrograms);
+  const isStudioCreationBatch = isStudioCreationProgramBatch(
+    sourceOrderedPrograms,
+    activeScene.runtimeSceneState.duration,
+  );
   if (request.sourceValidation === "runtime-trace") {
     if (containsPersistentRemove) {
       throw new HttpError("Runtime Trace does not authorize persistent remove Programs.", 400);

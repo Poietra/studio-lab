@@ -4326,6 +4326,7 @@ fn plan_studio_creation_edits(
                             state.kind,
                             StudioAuthoringEntityKind::Circle
                                 | StudioAuthoringEntityKind::Ellipse
+                                | StudioAuthoringEntityKind::MathTex
                                 | StudioAuthoringEntityKind::Rectangle
                                 | StudioAuthoringEntityKind::RegularPolygon
                                 | StudioAuthoringEntityKind::Sector
@@ -4343,9 +4344,10 @@ fn plan_studio_creation_edits(
                         )
                         && state.persistent_removal.is_none() =>
                 {
-                    let initial_text_fade_fill = state.kind == StudioAuthoringEntityKind::Text
-                        && state.fade_interval.is_some();
-                    if !initial_text_fade_fill {
+                    let initial_solid_glyph_fill =
+                        studio_creation_supports_solid_glyph_fill(state.kind)
+                            && (state.fade_interval.is_some() || state.write_interval.is_some());
+                    if !initial_solid_glyph_fill {
                         record_planned_studio_creation_appearance(state, instant_at)?;
                     }
                     state.fill_color_override = Some(color.clone());
@@ -4354,7 +4356,7 @@ fn plan_studio_creation_edits(
                         schedule_index,
                         StudioCreationProjectedMutation {
                             entity_id: entity_id.to_owned(),
-                            interval: if initial_text_fade_fill {
+                            interval: if initial_solid_glyph_fill {
                                 IntervalV1 {
                                     end: state.lifetime.start,
                                     start: state.lifetime.start,
@@ -4993,6 +4995,13 @@ fn canonical_studio_hex_color(value: &str) -> Option<RgbaColorV1> {
         green: component(3)?,
         red: component(1)?,
     })
+}
+
+fn studio_creation_supports_solid_glyph_fill(kind: StudioAuthoringEntityKind) -> bool {
+    matches!(
+        kind,
+        StudioAuthoringEntityKind::MathTex | StudioAuthoringEntityKind::Text
+    )
 }
 
 fn record_planned_studio_creation_appearance(
@@ -5684,6 +5693,25 @@ fn create_entity_initial_appearance_end(entity: &CreateSceneEntity) -> Option<f6
         .or_else(|| entity.write_in.as_ref().map(|write| write.interval.end))
 }
 
+fn create_entity_has_initial_solid_glyph_fill(entity: &CreateSceneEntity) -> bool {
+    entity.fill_color.is_some()
+        && entity.stroke_color.is_none()
+        && ((entity.fade_in.is_some()
+            && matches!(
+                entity.geometry,
+                CreateSceneEntityGeometry::CubicOutline { .. }
+                    | CreateSceneEntityGeometry::TextOutline { .. }
+            ))
+            || (entity.write_in.is_some()
+                && matches!(entity.geometry, CreateSceneEntityGeometry::LogicalGroup)))
+}
+
+fn create_entity_has_only_initial_solid_glyph_fill(entity: &CreateSceneEntity) -> bool {
+    create_entity_has_initial_solid_glyph_fill(entity)
+        && close_transform_baseline_value(entity.paint_opacity, 1.0)
+        && rotation_is_noop(entity.rotation)
+}
+
 fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
     entity.draw_in.as_ref().is_none_or(|draw| {
         draw.end.is_finite()
@@ -6027,20 +6055,15 @@ fn validate_create_scene_entities_command(
             && entity.stroke_color.is_some()
             && close_transform_baseline_value(entity.paint_opacity, 1.0)
             && rotation_is_noop(entity.rotation);
-        let has_initial_text_fade_fill = entity.fade_in.is_some()
-            && entity.fill_color.is_some()
-            && entity.stroke_color.is_none()
-            && matches!(
-                entity.geometry,
-                CreateSceneEntityGeometry::TextOutline { .. }
-            )
-            && close_transform_baseline_value(entity.paint_opacity, 1.0)
-            && rotation_is_noop(entity.rotation);
+        let has_only_initial_solid_glyph_fill =
+            create_entity_has_only_initial_solid_glyph_fill(entity);
         let appearance_changed = !close_transform_baseline_value(entity.paint_opacity, 1.0)
             || !rotation_is_noop(entity.rotation)
             || has_color_override;
         let unsupported_color_override = match &entity.geometry {
-            CreateSceneEntityGeometry::TextOutline { .. } => entity.stroke_color.is_some(),
+            CreateSceneEntityGeometry::CubicOutline { .. }
+            | CreateSceneEntityGeometry::TextOutline { .. }
+            | CreateSceneEntityGeometry::LogicalGroup => entity.stroke_color.is_some(),
             CreateSceneEntityGeometry::Arrow
             | CreateSceneEntityGeometry::Circle { .. }
             | CreateSceneEntityGeometry::CubicBezier { .. }
@@ -6048,7 +6071,7 @@ fn validate_create_scene_entities_command(
             | CreateSceneEntityGeometry::Rectangle { .. }
             | CreateSceneEntityGeometry::ShapeOutline { .. }
             | CreateSceneEntityGeometry::SvgPath { .. } => false,
-            _ => has_color_override,
+            CreateSceneEntityGeometry::Image { .. } => has_color_override,
         };
         let unsupported_image_paint =
             matches!(entity.geometry, CreateSceneEntityGeometry::Image { .. })
@@ -6079,7 +6102,7 @@ fn validate_create_scene_entities_command(
             || (appearance_changed
                 && entity.appearance_at.is_none()
                 && !has_initial_draw_stroke
-                && !has_initial_text_fade_fill)
+                && !has_only_initial_solid_glyph_fill)
             || entity.appearance_at.is_some_and(|at| {
                 !at.is_finite()
                     || at < entity.lifetime.start
@@ -6107,6 +6130,7 @@ fn append_created_write_fragments(
     root_id: &str,
     root_lifetime: &IntervalV1,
     write: CreateSceneEntityWriteIn,
+    solid_fill_color: Option<&RgbaColorV1>,
     provenance_id: &str,
     first_scene_order: u32,
     source_z_index: f64,
@@ -6147,9 +6171,12 @@ fn append_created_write_fragments(
 
         let outline_id = write_fragment_entity_id(root_id, &fragment.id, "outline");
         let fill_id = write_fragment_entity_id(root_id, &fragment.id, "fill");
+        let paint = solid_fill_color
+            .cloned()
+            .unwrap_or_else(|| fragment.paint.clone());
         let stroke = poietra_scene_ir::StrokeStyleV1 {
             cap: poietra_scene_ir::StrokeCapV1::Butt,
-            color: fragment.paint.clone(),
+            color: paint.clone(),
             join: poietra_scene_ir::StrokeJoinV1::Miter,
             miter_limit: 10.0,
             width_world: outline_stroke_width,
@@ -6197,7 +6224,7 @@ fn append_created_write_fragments(
             provenance_id: provenance_id.to_owned(),
         });
 
-        let mut transparent_paint = fragment.paint.clone();
+        let mut transparent_paint = paint.clone();
         transparent_paint.alpha = 0.0;
         let initial_fill = FillStyleV1 {
             color: transparent_paint,
@@ -6205,7 +6232,7 @@ fn append_created_write_fragments(
             rule: fragment.fill_rule,
         };
         let final_fill = FillStyleV1 {
-            color: fragment.paint,
+            color: paint,
             fragment_material: None,
             rule: fragment.fill_rule,
         };
@@ -6433,28 +6460,25 @@ fn append_created_entity(
     let write_in = entity.write_in.clone();
     let math_tex_morph = entity.math_tex_morph.clone();
     let shape_morph = entity.shape_morph.clone();
-    let has_initial_text_fade_fill = entity.fade_in.is_some()
-        && entity.fill_color.is_some()
-        && matches!(
-            entity.geometry,
-            CreateSceneEntityGeometry::TextOutline { .. }
-        );
+    let solid_fill_color = entity.fill_color.clone();
+    let has_initial_solid_glyph_fill = create_entity_has_initial_solid_glyph_fill(&entity);
     let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
     let is_logical_group = matches!(&geometry, SceneGeometryV1::Group {});
     let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
     if let Some(color) = &entity.fill_color {
-        let SceneAppearanceV1::Vector { fill, .. } = &mut appearance else {
-            unreachable!("Studio shape color admission requires vector appearance");
-        };
-        let mut base_color = color.clone();
-        if !has_initial_text_fade_fill {
-            base_color.alpha = 0.0;
+        if let SceneAppearanceV1::Vector { fill, .. } = &mut appearance {
+            let mut base_color = color.clone();
+            if !has_initial_solid_glyph_fill {
+                base_color.alpha = 0.0;
+            }
+            *fill = Some(FillStyleV1 {
+                color: base_color,
+                fragment_material: None,
+                rule: FillRuleV1::NonZero,
+            });
+        } else if !matches!(&appearance, SceneAppearanceV1::Group { .. }) || write_in.is_none() {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         }
-        *fill = Some(FillStyleV1 {
-            color: base_color,
-            fragment_material: None,
-            rule: FillRuleV1::NonZero,
-        });
     }
     if entity.draw_in.is_some()
         && let Some(color) = &entity.stroke_color
@@ -6810,6 +6834,7 @@ fn append_created_entity(
             &created_id,
             &write_lifetime,
             write,
+            solid_fill_color.as_ref(),
             provenance_id,
             scene_order
                 .checked_add(1)
@@ -6825,8 +6850,18 @@ fn append_created_entity(
         capabilities.insert(SceneCapabilityV1::PathMorphAnimation);
         let target_id = if is_logical_group {
             let id = format!("{created_id}/math-tex-morph");
+            let mut morph_appearance = studio_math_tex_appearance();
+            if let (
+                Some(color),
+                SceneAppearanceV1::Vector {
+                    fill: Some(fill), ..
+                },
+            ) = (&solid_fill_color, &mut morph_appearance)
+            {
+                fill.color = color.clone();
+            }
             scene.entities.push(SceneEntityV1 {
-                appearance: studio_math_tex_appearance(),
+                appearance: morph_appearance,
                 geometry: SceneGeometryV1::CubicPath {
                     path: morph.initial_path,
                 },
@@ -12423,7 +12458,15 @@ mod tests {
     )]
     fn normalized_math_tex_write_projects_and_appends_one_retained_subtree() {
         let bundle = static_imported_bundle();
-        let command = studio_math_tex_write_creation_command(&bundle);
+        let mut command = studio_math_tex_write_creation_command(&bundle);
+        command.programs.push(studio_created_appearance_edit_input(
+            0.5,
+            "tx:create/entity:circle",
+            "math-tex-write-fill",
+            StudioCreationOperationKind::FillColor {
+                color: Some("#22c55e".to_owned()),
+            },
+        ));
         assert!(
             (command.segmented_math_tex_outlines[0]
                 .write_plan
@@ -12504,6 +12547,7 @@ mod tests {
             panic!("Write outline must retain its stroke appearance");
         };
         assert!((outline_stroke.width_world - 0.02).abs() < 1e-12);
+        assert!((outline_stroke.color.green - 197.0 / 255.0).abs() < 1e-12);
         let path_trim_channels = scene
             .animation_channels
             .iter()
@@ -12539,9 +12583,12 @@ mod tests {
         assert!(matches!(
             &fill_one_keyframes[1].value,
             VectorAppearanceValueV1 {
+                fill: Some(fill),
                 stroke: Some(stroke),
                 ..
-            } if stroke.color.alpha.to_bits() == 1.0_f64.to_bits()
+            } if (fill.color.green - 197.0 / 255.0).abs() < 1e-12
+                && (stroke.color.green - 197.0 / 255.0).abs() < 1e-12
+                && stroke.color.alpha.to_bits() == 1.0_f64.to_bits()
                 && stroke.width_world.to_bits() == 0.0_f64.to_bits()
         ));
 
@@ -12593,6 +12640,15 @@ mod tests {
                 .iter()
                 .any(|draw| draw.entity_id() == fill_one)
         );
+        assert!(complete.draws.iter().any(|draw| matches!(
+            draw,
+            poietra_scene_ir::RenderDrawV1::Path {
+                entity_id,
+                fill: Some(fill),
+                ..
+            } if entity_id == &fill_one
+                && (fill.color.green - 197.0 / 255.0).abs() < 1e-12
+        )));
         assert!(complete.draws.iter().all(|draw| {
             ![root_id, outline_zero.as_str(), outline_one.as_str()].contains(&draw.entity_id())
         }));
@@ -12606,10 +12662,21 @@ mod tests {
     fn normalized_math_tex_write_switches_to_one_root_owned_a_b_a_path_morph() {
         let bundle = static_imported_bundle();
         let base_duration = bundle.scene.duration;
-        let command = studio_math_tex_write_transform_chain_command(&bundle);
+        let mut command = studio_math_tex_write_transform_chain_command(&bundle);
         let root_id = "tx:create/entity:circle";
         let middle_id = "tx:transform-middle/entity:formula";
         let restored_id = "tx:transform-restored/entity:formula";
+        command.programs.insert(
+            1,
+            studio_created_appearance_edit_input(
+                0.5,
+                root_id,
+                "math-tex-transform-fill",
+                StudioCreationOperationKind::FillColor {
+                    color: Some("#22c55e".to_owned()),
+                },
+            ),
+        );
 
         let projection =
             project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
@@ -12666,6 +12733,12 @@ mod tests {
             .unwrap();
         assert_eq!(morph_entity.parent_id.as_deref(), Some(root_id));
         assert!((morph_entity.lifetimes[0].start - 1.5).abs() < 1e-12);
+        assert!(matches!(
+            &morph_entity.appearance,
+            SceneAppearanceV1::Vector { fill: Some(fill), stroke: None, .. }
+                if (fill.color.green - 197.0 / 255.0).abs() < 1e-12
+                    && (fill.color.alpha - 1.0).abs() < 1e-12
+        ));
         assert!(
             scene
                 .entities
@@ -15565,6 +15638,16 @@ mod tests {
             .push(studio_created_appearance_edit_input(
                 0.5,
                 entity_id,
+                "text-fill-before-rotation",
+                StudioCreationOperationKind::FillColor {
+                    color: Some("#22c55e".to_owned()),
+                },
+            ));
+        rotation_command
+            .programs
+            .push(studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
                 "rotate-text",
                 StudioCreationOperationKind::Rotation {
                     control_present: false,
@@ -15591,6 +15674,29 @@ mod tests {
                     )
                 })
         );
+        let rotation_packet = rotation_session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "initial-text-fill-before-rotation",
+                sample_time: 0.7,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert!(rotation_packet.draws.iter().any(|draw| matches!(
+            draw,
+            poietra_scene_ir::RenderDrawV1::Path {
+                entity_id: target,
+                fill: Some(fill),
+                opacity,
+                ..
+            } if target == entity_id
+                && (fill.color.green - 197.0 / 255.0).abs() < 1e-12
+                && *opacity > 0.0
+                && *opacity < 1.0
+        )));
 
         let mut math_tex_command = studio_text_creation_command(&bundle, "E = mc^2");
         math_tex_command.programs.truncate(1);
@@ -15608,6 +15714,7 @@ mod tests {
             path: mathtex_fixture_path(),
             tex_parts: vec!["E = mc^2".to_owned()],
         }];
+        let base_math_tex_command = math_tex_command.clone();
         math_tex_command
             .programs
             .push(studio_created_appearance_edit_input(
@@ -15618,11 +15725,59 @@ mod tests {
                     color: Some("#22c55e".to_owned()),
                 },
             ));
-        let mut math_tex_session = EngineSessionV1::new(bundle).unwrap();
-        assert!(matches!(
-            math_tex_session.apply_studio_creation_edit(math_tex_command),
-            Err(ApplyStudioCreationEditError::Unsupported)
-        ));
+        let mut math_tex_session = EngineSessionV1::new(bundle.clone()).unwrap();
+        math_tex_session
+            .apply_studio_creation_edit(math_tex_command)
+            .unwrap();
+        let packet = math_tex_session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "initial-math-tex-fill",
+                sample_time: 0.7,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert!(packet.draws.iter().any(|draw| matches!(
+            draw,
+            poietra_scene_ir::RenderDrawV1::Path {
+                entity_id: target,
+                fill: Some(fill),
+                opacity,
+                ..
+            } if target == entity_id
+                && (fill.color.green - 197.0 / 255.0).abs() < 1e-12
+                && *opacity > 0.0
+                && *opacity < 1.0
+        )));
+
+        for unsupported in [
+            studio_created_appearance_edit_input(
+                0.5,
+                entity_id,
+                "math-tex-stroke",
+                StudioCreationOperationKind::StrokeColor {
+                    color: Some("#22c55e".to_owned()),
+                },
+            ),
+            studio_created_appearance_edit_input(
+                0.75,
+                entity_id,
+                "math-tex-late-fill",
+                StudioCreationOperationKind::FillColor {
+                    color: Some("#22c55e".to_owned()),
+                },
+            ),
+        ] {
+            let mut command = base_math_tex_command.clone();
+            command.programs.push(unsupported);
+            assert!(matches!(
+                project_studio_creation_edits(bundle.scene.duration, &command.programs),
+                Err(ProjectStudioCreationEditError::Unsupported)
+            ));
+        }
     }
 
     #[test]

@@ -1743,13 +1743,13 @@ export function App({
       const owner = previewAppliedEdits.find(({ program }) =>
         program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
       );
-      const hasExternalFillOrMaterial = previewAppliedEdits.some(({ program }) =>
+      const hasExternalMaterialAnimation = previewAppliedEdits.some(({ program }) =>
         program.operations.some(
           (operation) =>
             "entityId" in operation &&
             operation.entityId === entityId &&
-            ((operation.kind === "SetProperty" && operation.key === "fillColor") ||
-              (operation.kind === "AnimateProperty" && operation.materialParameter !== undefined)),
+            operation.kind === "AnimateProperty" &&
+            operation.materialParameter !== undefined,
         ),
       );
       const reason = !owner
@@ -1760,8 +1760,8 @@ export function App({
             ? "Write currently supports only ungrouped root objects."
             : activeSceneFragmentMaterials.assignments[entityId]
               ? "Remove the object's fragment material before adding Write."
-              : hasExternalFillOrMaterial
-                ? "Remove the object's fill or material animation before adding Write."
+              : hasExternalMaterialAnimation
+                ? "Remove the object's material animation before adding Write."
                 : writeInUnavailableReason(owner.program, entityId);
       return [entityId, reason] as const;
     }),
@@ -7522,7 +7522,7 @@ export function App({
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     const colorableTypes =
       property === "fillColor"
-        ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Text", "Triangle"]
+        ? ["Circle", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Sector", "Text", "Triangle"]
         : [
             "Arc",
             "Arrow",
@@ -9377,6 +9377,7 @@ export function App({
                   "DataPlot",
                   "Ellipse",
                   "Line",
+                  "MathTex",
                   "NumberLine",
                   "NumberPlane",
                   "Rectangle",

@@ -766,6 +766,19 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     const equationWrapper = page.locator(`[data-studio-entity-wrapper="${equationId}"]`);
     await expect(page.getByRole("checkbox", { name: "Select E = mc^2" })).toHaveCount(1);
 
+    const equationFill = page.getByLabel("Fill color E = mc^2");
+    await expect(page.getByLabel("Stroke color E = mc^2")).toHaveCount(0);
+    await equationFill.fill("#22c55e");
+    await equationFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(equationFill).toHaveValue("#22c55e");
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select E = mc^2" }).check();
+    await expect(equationFill).toHaveValue("#ffffff");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select E = mc^2" }).check();
+    await expect(equationFill).toHaveValue("#22c55e");
+
     await page.getByRole("button", { name: "Add Write entrance for E = mc^2" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
@@ -810,8 +823,25 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await page.getByRole("button", { name: "Undo" }).click();
     await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.50s · linear");
 
+    await page.getByRole("button", { name: "Export settings" }).click();
+    const sourceExport = page.locator("[data-studio-manim-source-export-state]");
+    await expect(sourceExport).toHaveAttribute("data-studio-manim-source-export-state", "ready");
+    const sourceDownloadPromise = page.waitForEvent("download");
+    await sourceExport.getByRole("button", { name: "Download .py" }).click();
+    const sourceDownload = await sourceDownloadPromise;
+    const sourcePath = await sourceDownload.path();
+    if (!sourcePath) throw new Error("The MathTex Python download was not persisted by Playwright.");
+    const source = await readFile(sourcePath, "utf8");
+    const constructorIndex = source.indexOf('MathTex("E = mc^2")');
+    const fillIndex = source.indexOf('.set_fill("#22c55e", opacity=1)', constructorIndex);
+    const writeIndex = source.indexOf("Write(", fillIndex);
+    expect(constructorIndex).toBeGreaterThanOrEqual(0);
+    expect(fillIndex).toBeGreaterThan(constructorIndex);
+    expect(writeIndex).toBeGreaterThan(fillIndex);
+    await page.getByRole("button", { name: "Close" }).click();
+
     const mp4 = await exportLocalMp4(page);
-    const exportedInkPixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6]);
+    const exportedInkPixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6], "green-dominant");
     expect(exportedInkPixels[1] ?? 0).toBeGreaterThan((exportedInkPixels[0] ?? 0) + 20);
     expect(exportedInkPixels[2] ?? 0).toBeGreaterThan(exportedInkPixels[1] ?? 0);
 
@@ -852,6 +882,7 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     writeClip = page.getByRole("button", { name: "Edit F = ma Write entrance" });
     await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.50s · linear");
     await expect(page.getByRole("checkbox", { name: "Select F = ma" })).toHaveCount(1);
+    await expect(page.getByLabel("Fill color F = ma")).toHaveValue("#22c55e");
     await expect(page.locator('[aria-label*="fragment-"]')).toHaveCount(0);
 
     await page.getByRole("button", { name: /Insert circle/ }).click();
@@ -883,6 +914,12 @@ test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", asyn
     await canvas.click({ position: { x: 400, y: 220 } });
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const equationFill = page.getByLabel("Fill color E = mc^2");
+    await equationFill.fill("#22c55e");
+    await equationFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(equationFill).toHaveValue("#22c55e");
 
     const root = page.getByRole("button", { name: "Move E = mc^2", exact: true });
     const rootId = await root.getAttribute("data-studio-entity");
@@ -958,6 +995,7 @@ test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", asyn
     await scrubEntranceClip(page, secondClip, 1);
     const restoredRoot = page.getByRole("button", { name: "Move E = mc^2", exact: true });
     await expect(restoredRoot).toHaveAttribute("data-studio-entity", rootId);
+    await expect(page.getByLabel("Fill color E = mc^2")).toHaveValue("#22c55e");
 
     const sampleTimes = await Promise.all([
       entranceClipTime(page, firstClip, 0),
@@ -967,7 +1005,7 @@ test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", asyn
       entranceClipTime(page, secondClip, 1),
     ]);
     const mp4 = await exportLocalMp4(page);
-    const pixels = await decodedBrightPixelCounts(page, mp4, sampleTimes);
+    const pixels = await decodedBrightPixelCounts(page, mp4, sampleTimes, "green-dominant");
     expect(Math.max(...pixels) - Math.min(...pixels)).toBeGreaterThan(20);
     expect(Math.abs((pixels[1] ?? 0) - (pixels[0] ?? 0))).toBeGreaterThan(10);
     expect(Math.abs((pixels[3] ?? 0) - (pixels[4] ?? 0))).toBeGreaterThan(10);

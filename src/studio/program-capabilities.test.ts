@@ -90,7 +90,7 @@ describe("EditProgram execution capabilities", () => {
     });
   });
 
-  it("keeps WriteIn on the client-side Rust authoring authority", () => {
+  it("keeps WriteIn on the Rust authoring authority with truthful Manim lowering", () => {
     const operation: CanonicalEditOperation = {
       dependsOn: ["tx:write/operation:create"],
       easing: "linear",
@@ -114,7 +114,7 @@ describe("EditProgram execution capabilities", () => {
     expect(operationExecutionCapabilities(operation)).toEqual({
       apply: "supported",
       applyBlocker: null,
-      lowering: "unsupported",
+      lowering: "supported",
     });
   });
 
