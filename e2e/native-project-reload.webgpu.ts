@@ -694,11 +694,41 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
     await page.getByRole("button", { name: "Move CubicBezier", exact: true }).click();
     await expect(page.getByLabel("Fill color CubicBezier")).toHaveValue("#f97316");
-    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    const penMaterial = page.getByRole("combobox", { name: "Assigned fragment material" });
+    await expect(penMaterial).not.toHaveValue("");
     await expect(page.locator(`[data-studio-entity="${penId}"]`)).toBeVisible();
+    await penMaterial.selectOption("");
+    await expect(penMaterial).toHaveValue("");
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("1.8");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1.8, 1);
+    await page.getByRole("button", { name: "Add fill color keyframe for CubicBezier" }).click();
+    await expect(page.locator("[data-paint-color-keyframe]")).toHaveCount(2);
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const penFillEnd = page.getByRole("button", { name: /Fill color keyframe 2 at/u });
+    await penFillEnd.click();
+    await page.getByLabel("Fill color keyframe value").fill("#3b82f6");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByLabel("Fill color CubicBezier")).toBeDisabled();
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open SVG path fixture workspace" }).click();
+    await page.getByRole("button", { name: "Move CubicBezier", exact: true }).click();
+    const restoredPenFillStart = page.getByRole("button", { name: /Fill color keyframe 1 at/u });
+    const restoredPenFillEnd = page.getByRole("button", { name: /Fill color keyframe 2 at/u });
+    await expect(restoredPenFillEnd).toBeVisible();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveValue("#f97316");
+    await expect(page.getByLabel("Fill color CubicBezier")).toBeDisabled();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const penFillStartTime = await propertyKeyframeTime(restoredPenFillStart);
+    const penFillEndTime = await propertyKeyframeTime(restoredPenFillEnd);
     const mp4 = await exportLocalMp4(page);
-    const [paintedPixels = 0] = await decodedBrightPixelCounts(page, mp4, [1]);
+    const [paintedPixels = 0] = await decodedBrightPixelCounts(page, mp4, [penFillStartTime]);
+    const [orangePixels = 0] = await decodedBrightPixelCounts(page, mp4, [penFillStartTime], "red-dominant");
+    const [bluePixels = 0] = await decodedBrightPixelCounts(page, mp4, [penFillEndTime + 0.05], "blue-dominant");
     expect(paintedPixels).toBeGreaterThan(100);
+    expect(orangePixels).toBeGreaterThan(0);
+    expect(bluePixels).toBeGreaterThan(0);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

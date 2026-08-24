@@ -532,11 +532,20 @@ export function studioEntityTypeSupportsStrokeCap(type: string) {
   return ["Arc", "Axes", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(type);
 }
 
-export function studioPaintColorTrackProperty(type: string): "fillColor" | "strokeColor" | null {
+export function studioPaintColorTrackProperty(
+  type: string,
+  cubicBezier?: Readonly<{ closed?: boolean; fillColor?: string }>,
+): "fillColor" | "strokeColor" | null {
+  if (type === "CubicBezier") {
+    if (cubicBezier?.closed === true) {
+      return isCanonicalRgbHex(cubicBezier.fillColor) ? "fillColor" : null;
+    }
+    return "strokeColor";
+  }
   if (["Circle", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Text", "Triangle"].includes(type)) {
     return "fillColor";
   }
-  if (["Arc", "Axes", "CubicBezier", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(type)) {
+  if (["Arc", "Axes", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(type)) {
     return "strokeColor";
   }
   return null;

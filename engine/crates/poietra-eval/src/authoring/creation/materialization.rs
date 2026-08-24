@@ -194,47 +194,67 @@ pub(super) fn create_entity_write_is_valid(entity: &CreateSceneEntity) -> bool {
     })
 }
 
+fn create_entity_paint_color_baseline(
+    entity: &CreateSceneEntity,
+    property: StudioPaintColorProperty,
+) -> Option<RgbaColorV1> {
+    let SceneAppearanceV1::Vector { fill, stroke, .. } =
+        created_geometry_and_appearance(entity.geometry.clone()).1
+    else {
+        return None;
+    };
+    match property {
+        StudioPaintColorProperty::FillColor
+            if matches!(
+                entity.geometry,
+                CreateSceneEntityGeometry::CubicBezier { .. }
+            ) =>
+        {
+            fill.map(|fill| fill.color)
+        }
+        StudioPaintColorProperty::FillColor
+            if matches!(
+                entity.geometry,
+                CreateSceneEntityGeometry::Circle { .. }
+                    | CreateSceneEntityGeometry::CubicOutline { .. }
+                    | CreateSceneEntityGeometry::Rectangle { .. }
+                    | CreateSceneEntityGeometry::ShapeOutline { .. }
+                    | CreateSceneEntityGeometry::TextOutline { .. }
+            ) =>
+        {
+            entity.fill_color.clone()
+        }
+        StudioPaintColorProperty::StrokeColor
+            if matches!(
+                entity.geometry,
+                CreateSceneEntityGeometry::CubicBezier { .. }
+            ) && fill.is_none() =>
+        {
+            stroke.map(|stroke| stroke.color)
+        }
+        StudioPaintColorProperty::StrokeColor
+            if matches!(
+                entity.geometry,
+                CreateSceneEntityGeometry::Line | CreateSceneEntityGeometry::ShapeOutline { .. }
+            ) =>
+        {
+            entity
+                .stroke_color
+                .clone()
+                .or_else(|| stroke.map(|stroke| stroke.color))
+        }
+        StudioPaintColorProperty::FillColor | StudioPaintColorProperty::StrokeColor => None,
+    }
+}
+
 fn create_entity_paint_color_keyframes_are_valid(entity: &CreateSceneEntity) -> bool {
     entity.paint_color_track.as_ref().is_none_or(|track| {
-        let base_appearance = created_geometry_and_appearance(entity.geometry.clone()).1;
-        let baseline = match track.property {
-            StudioPaintColorProperty::FillColor
-                if matches!(
-                    entity.geometry,
-                    CreateSceneEntityGeometry::Circle { .. }
-                        | CreateSceneEntityGeometry::CubicOutline { .. }
-                        | CreateSceneEntityGeometry::Rectangle { .. }
-                        | CreateSceneEntityGeometry::ShapeOutline { .. }
-                        | CreateSceneEntityGeometry::TextOutline { .. }
-                ) =>
-            {
-                entity.fill_color.as_ref()
-            }
-            StudioPaintColorProperty::StrokeColor
-                if matches!(
-                    entity.geometry,
-                    CreateSceneEntityGeometry::CubicBezier { .. }
-                        | CreateSceneEntityGeometry::Line
-                        | CreateSceneEntityGeometry::ShapeOutline { .. }
-                ) =>
-            {
-                entity.stroke_color.as_ref().or(match &base_appearance {
-                    SceneAppearanceV1::Vector {
-                        stroke: Some(stroke),
-                        ..
-                    } => Some(&stroke.color),
-                    SceneAppearanceV1::Group { .. }
-                    | SceneAppearanceV1::Image { .. }
-                    | SceneAppearanceV1::Vector { stroke: None, .. } => None,
-                })
-            }
-            StudioPaintColorProperty::FillColor | StudioPaintColorProperty::StrokeColor => None,
-        };
+        let baseline = create_entity_paint_color_baseline(entity, track.property);
         let first_matches_baseline =
             track
                 .keyframes
                 .first()
-                .zip(baseline)
+                .zip(baseline.as_ref())
                 .is_some_and(|(first, baseline)| {
                     first.value.red.to_bits() == baseline.red.to_bits()
                         && first.value.green.to_bits() == baseline.green.to_bits()

@@ -73,6 +73,59 @@ describe("solid paint color keyframe editing", () => {
     expect(paintColorKeyframeTrackFromProgram(removed.program, 0)).toBeNull();
   });
 
+  it("uses the fill baseline for a closed filled Pen path and rejects the wrong path paint", () => {
+    const cubicBezier = {
+      arrowEnd: false,
+      closed: true,
+      control1: { x: -1, y: 1 },
+      control2: { x: 1, y: -1 },
+      end: { x: 2, y: 0 },
+      fillColor: "#38bdf8",
+      start: { x: -2, y: 0 },
+      strokeCap: "round" as const,
+      strokeWidth: 0.04,
+    };
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        {
+          cubicBezier,
+          dimensions: { height: 2, width: 4 },
+          position: { x: 320, y: 180 },
+          type: "CubicBezier",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "closed-pen-fill-track",
+    });
+    const entityId = creation.entityIds[0]!;
+    const keyframes = [
+      { easing: "linear" as const, time: 2, value: "#38bdf8" },
+      { easing: "smooth" as const, time: 4, value: "#f97316" },
+    ];
+
+    const tracked = replacePaintColorKeyframeProgram({
+      baseProgram: creation.validation.program,
+      baseline: "#38bdf8",
+      entityId,
+      keyframes,
+      property: "fillColor",
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(tracked.kind, JSON.stringify(tracked.issues)).toBe("valid");
+    expect(paintColorKeyframeTrackFromProgram(tracked.program, 0)?.property).toBe("fillColor");
+    expect(() =>
+      replacePaintColorKeyframeProgram({
+        baseProgram: creation.validation.program,
+        baseline: "#ffffff",
+        entityId,
+        keyframes: keyframes.map((keyframe) => ({ ...keyframe, value: "#ffffff" })),
+        property: "strokeColor",
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/does not support/i);
+  });
+
   it("uses a two-marker first add and preserves the canonical baseline", () => {
     expect(initialPaintColorKeyframes({ baseline: "#ffffff", entranceEnd: 1, playhead: 3 })).toEqual([
       { easing: "smooth", time: 1.001, value: "#ffffff" },
@@ -228,9 +281,12 @@ describe("solid paint color keyframe editing", () => {
     for (const type of ["Circle", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Text", "Triangle"]) {
       expect(studioPaintColorTrackProperty(type)).toBe("fillColor");
     }
-    for (const type of ["Arc", "Axes", "CubicBezier", "DataPlot", "Line", "NumberLine", "NumberPlane"]) {
+    for (const type of ["Arc", "Axes", "DataPlot", "Line", "NumberLine", "NumberPlane"]) {
       expect(studioPaintColorTrackProperty(type)).toBe("strokeColor");
     }
+    expect(studioPaintColorTrackProperty("CubicBezier")).toBe("strokeColor");
+    expect(studioPaintColorTrackProperty("CubicBezier", { closed: true, fillColor: "#38bdf8" })).toBe("fillColor");
+    expect(studioPaintColorTrackProperty("CubicBezier", { closed: true })).toBeNull();
     for (const type of ["Arrow", "Sector", "SvgPath"]) {
       expect(studioPaintColorTrackProperty(type)).toBeNull();
     }

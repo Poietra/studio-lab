@@ -2122,7 +2122,7 @@ export function App({
         (operation) => operation.kind === "CreateEntity" && operation.entity.id === projectedEntity.entityId,
       );
       if (!owner || !targetCreate || targetCreate.kind !== "CreateEntity") return [];
-      const property = studioPaintColorTrackProperty(targetCreate.entity.type);
+      const property = studioPaintColorTrackProperty(targetCreate.entity.type, targetCreate.entity.cubicBezier);
       if (!property || projectedEntity[property] === undefined) return [];
       const existingTrack = paintColorKeyframeTrackFromProgram(owner.program, 0);
       const draftAllowsOwner =

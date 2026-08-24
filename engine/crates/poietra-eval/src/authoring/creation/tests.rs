@@ -5232,9 +5232,10 @@ fn normalized_cubic_bezier_creation_keeps_connected_segments_arrow_and_draw() {
     );
 }
 
-#[test]
-fn normalized_closed_cubic_bezier_keeps_fill_and_rejects_draw() {
-    let bundle = static_imported_bundle();
+fn studio_closed_cubic_bezier_creation_command(
+    bundle: &SceneIrBundleV1,
+    draw: bool,
+) -> ApplyStudioCreationEditCommand {
     let inspection =
         crate::authoring::inspect_studio_cubic_bezier(&StudioCreationCubicBezierSpec {
             arrow_end: false,
@@ -5249,31 +5250,39 @@ fn normalized_closed_cubic_bezier_keeps_fill_and_rejects_draw() {
             stroke_width: 0.04,
         })
         .unwrap();
-    let mut command = studio_draw_creation_command(&bundle);
-    {
-        let program = &mut command.programs[0];
-        let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
-            unreachable!();
-        };
-        entity.kind = StudioAuthoringEntityKind::CubicBezier;
-        entity.dimensions = inspection.dimensions;
-        entity.cubic_bezier = Some(inspection.cubic_bezier);
+    let mut command = studio_draw_creation_command(bundle);
+    let program = &mut command.programs[0];
+    let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
+        unreachable!();
+    };
+    entity.kind = StudioAuthoringEntityKind::CubicBezier;
+    entity.dimensions = inspection.dimensions;
+    entity.cubic_bezier = Some(inspection.cubic_bezier);
+    if !draw {
+        let entrance = program
+            .operations
+            .iter_mut()
+            .find(|operation| matches!(operation.kind, StudioCreationOperationKind::DrawIn { .. }))
+            .unwrap();
+        entrance.kind = StudioCreationOperationKind::FadeIn { persistent: true };
     }
+    command
+}
+
+#[test]
+fn normalized_closed_cubic_bezier_keeps_fill_and_rejects_draw() {
+    let bundle = static_imported_bundle();
+    let draw_command = studio_closed_cubic_bezier_creation_command(&bundle, true);
 
     let mut draw_session = EngineSessionV1::new(bundle.clone()).unwrap();
     assert!(matches!(
-        draw_session.apply_studio_creation_edit(command.clone()),
+        draw_session.apply_studio_creation_edit(draw_command),
         Err(ApplyStudioCreationEditError::Create(
             CreateSceneEntitiesError::InvalidAppearanceEdit
         ))
     ));
 
-    let draw = command.programs[0]
-        .operations
-        .iter_mut()
-        .find(|operation| matches!(operation.kind, StudioCreationOperationKind::DrawIn { .. }))
-        .unwrap();
-    draw.kind = StudioCreationOperationKind::FadeIn { persistent: true };
+    let command = studio_closed_cubic_bezier_creation_command(&bundle, false);
     let mut session = EngineSessionV1::new(bundle).unwrap();
     let result = session.apply_studio_creation_edit(command).unwrap();
     assert_eq!(
@@ -5289,7 +5298,6 @@ fn normalized_closed_cubic_bezier_keeps_fill_and_rejects_draw() {
         .iter()
         .find(|entity| entity.id == "tx:create/entity:circle")
         .unwrap();
-
     assert!(matches!(
         &created.geometry,
         SceneGeometryV1::CubicPath { path }
@@ -5310,6 +5318,74 @@ fn normalized_closed_cubic_bezier_keeps_fill_and_rejects_draw() {
             && (*green - 197.0 / 255.0).abs() < 1.0e-12
             && (*blue - 94.0 / 255.0).abs() < 1.0e-12
     ));
+}
+
+#[test]
+fn closed_cubic_bezier_fill_track_uses_the_canonical_baseline_and_appearance_channel() {
+    let bundle = static_imported_bundle();
+    let mut command = studio_closed_cubic_bezier_creation_command(&bundle, false);
+
+    for (property, baseline) in [
+        (StudioPaintColorProperty::StrokeColor, "#ffffff"),
+        (StudioPaintColorProperty::FillColor, "#ffffff"),
+    ] {
+        let mut rejected = command.clone();
+        add_creation_paint_color_segment(
+            &mut rejected.programs[0],
+            "tx:create/entity:circle",
+            property,
+            baseline,
+            "#0000ff",
+            1.5,
+            2.0,
+        );
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &rejected.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+    }
+
+    add_creation_paint_color_segment(
+        &mut command.programs[0],
+        "tx:create/entity:circle",
+        StudioPaintColorProperty::FillColor,
+        "#22c55e",
+        "#0000ff",
+        1.5,
+        2.0,
+    );
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    let appearance_keyframes = result
+        .bundle
+        .scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::VectorAppearance {
+                entity_id,
+                keyframes,
+                ..
+            } if entity_id == "tx:create/entity:circle" => Some(keyframes),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        appearance_keyframes
+            .iter()
+            .zip([(34.0 / 255.0, 197.0 / 255.0, 94.0 / 255.0), (0.0, 0.0, 1.0),])
+            .all(|(keyframe, (red, green, blue))| matches!(
+                &keyframe.value,
+                VectorAppearanceValueV1 {
+                    fill: Some(fill),
+                    stroke: Some(stroke),
+                } if (fill.color.red - red).abs() < 1.0e-12
+                    && (fill.color.green - green).abs() < 1.0e-12
+                    && (fill.color.blue - blue).abs() < 1.0e-12
+                    && (stroke.width_world - 0.04).abs() < 1.0e-12
+                    && stroke.cap == poietra_scene_ir::StrokeCapV1::Round
+            ))
+    );
 }
 
 #[test]
