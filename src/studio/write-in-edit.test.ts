@@ -32,7 +32,7 @@ describe("Write entrance editing", () => {
     });
 
     expect(written.kind, JSON.stringify(written.issues)).toBe("valid");
-    expect(written.program.loweringStatus).toBe("unsupported");
+    expect(written.program.loweringStatus).toBe("supported");
     expect(written.program.operations.some((operation) => operation.kind === "ChangePresence")).toBe(false);
     expect(insertedProgramDuration(written.program)).toBe(1.5);
     expect(writeInClipFromProgram(written.program)).toMatchObject({

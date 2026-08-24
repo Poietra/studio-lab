@@ -428,6 +428,90 @@ describe("Canonical EditProgram source lowering", () => {
       null,
     );
     expect(withoutFill.insertedCode).not.toContain(".set_fill(");
+
+    const mathTexEntityId = "tx:created-mathtex/entity:equation";
+    const mathTexCreateId = "create-mathtex";
+    const mathTexCreate = canonicalProgram(
+      [
+        {
+          ...operationBase(mathTexCreateId, 7),
+          entity: {
+            content: { displayLines: ["E = mc^2"], texParts: ["E", "=", "m", "c^2"] },
+            id: mathTexEntityId,
+            lifetime: { end: null, start: 7 },
+            type: "MathTex",
+          },
+          kind: "CreateEntity",
+        },
+        {
+          ...operationBase("write-mathtex", 7, 8),
+          dependsOn: [mathTexCreateId],
+          easing: "linear",
+          entityId: mathTexEntityId,
+          kind: "WriteIn",
+        },
+      ],
+      "created-mathtex",
+    );
+    const mathTexFill = canonicalProgram(
+      [
+        {
+          ...operationBase("created-mathtex-fill/operation", 7),
+          entityId: mathTexEntityId,
+          key: "fillColor",
+          kind: "SetProperty",
+          value: "#22c55e",
+        },
+      ],
+      "created-mathtex-fill",
+    );
+    const firstTargetId = "tx:created-mathtex-transform-a/entity:target";
+    const secondTargetId = "tx:created-mathtex-transform-b/entity:target";
+    const firstTransform = canonicalProgram(
+      [
+        transformOperation("created-mathtex-transform-a/operation", 8, mathTexEntityId, firstTargetId, [
+          "F",
+          "=",
+          "m",
+          "a",
+        ]),
+      ],
+      "created-mathtex-transform-a",
+    );
+    const secondTransform = canonicalProgram(
+      [
+        transformOperation("created-mathtex-transform-b/operation", 9, firstTargetId, secondTargetId, [
+          "E",
+          "=",
+          "m",
+          "c^2",
+        ]),
+      ],
+      "created-mathtex-transform-b",
+    );
+    const mathTexLowered = lowerCanonicalProgramBatchSource(
+      source,
+      request(mathTexCreate, []),
+      [mathTexCreate, mathTexFill, firstTransform, secondTransform].map((program) => ({
+        program,
+        sourceAnchor: 7,
+      })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+
+    const fillSource = '.set_fill("#22c55e", opacity=1)';
+    expect(mathTexLowered.insertedCode.match(/\.set_fill\("#22c55e", opacity=1\)/gu)).toHaveLength(3);
+    expect(mathTexLowered.insertedCode.indexOf(fillSource)).toBeLessThan(mathTexLowered.insertedCode.indexOf("Write("));
+    for (const transactionId of ["created-mathtex-transform-a", "created-mathtex-transform-b"]) {
+      const variable = `poietra_${transactionId.replaceAll("-", "_")}_1`;
+      expect(mathTexLowered.insertedCode.indexOf(`${variable} = MathTex(`)).toBeLessThan(
+        mathTexLowered.insertedCode.indexOf(`${variable}${fillSource}`),
+      );
+      expect(mathTexLowered.insertedCode.indexOf(`${variable}${fillSource}`)).toBeLessThan(
+        mathTexLowered.insertedCode.indexOf("TransformMatchingTex(", mathTexLowered.insertedCode.indexOf(variable)),
+      );
+    }
   });
 
   it.each(["こんにちは", "two\nlines"])(

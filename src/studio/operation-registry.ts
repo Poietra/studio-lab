@@ -658,7 +658,7 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
     }
     const colorableTypes =
       operation.key === "fillColor"
-        ? ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Sector", "Text", "Triangle"]
+        ? ["Circle", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Sector", "Text", "Triangle"]
         : [
             "Arc",
             "Arrow",
@@ -829,7 +829,7 @@ export const OPERATION_REGISTRY = {
         { channel: "appearance", entityId: operation.entityId },
       ],
     }),
-    execution: () => CLIENT_ONLY_EXECUTION,
+    execution: () => SUPPORTED_EXECUTION,
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
       const entity = scene.objectGraph.entities[operation.entityId];

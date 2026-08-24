@@ -132,12 +132,13 @@ export type LoweredProgramBatchSource = Readonly<{
 
 type ProgramSourceLoweringOptions = Readonly<{
   entityAliases?: ReadonlyMap<string, ReadonlySet<string>>;
+  entityFillColorStates?: Map<string, string>;
   entityOpacityStates?: Map<string, number>;
   entityScaleStates?: Map<string, SourceScaleState>;
   finiteCreatedLifetimesHandled?: boolean;
   generatedEntityIds?: ReadonlySet<string>;
-  hoistedInitialTextFillOperationIds?: ReadonlySet<string>;
-  initialGeneratedTextFillColors?: ReadonlyMap<string, string>;
+  hoistedInitialGeneratedFillOperationIds?: ReadonlySet<string>;
+  initialGeneratedFillColors?: ReadonlyMap<string, string>;
   reservedSourceVariables?: ReadonlySet<string>;
   sourceAnchor?: number;
   snapshotAuthorizedSourceBoundRotation?: boolean;
@@ -817,6 +818,7 @@ function referencedBaseEntityIds(operations: readonly SceneEditOperation[]) {
       operation.kind === "SetProperty" ||
       operation.kind === "AnimateProperty" ||
       operation.kind === "ChangePresence" ||
+      operation.kind === "WriteIn" ||
       operation.kind === "ResizeEntity"
     ) {
       return [operation.entityId];
@@ -877,7 +879,7 @@ function contentReplacementExpression(variable: string, target: NonNullable<Retu
 type LoweredAnimationOperation = Extract<
   SceneEditOperation,
   {
-    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent";
+    kind: "AnimateProperty" | "ChangePresence" | "CreateMotion" | "ResizeEntity" | "TransformContent" | "WriteIn";
   }
 >;
 
@@ -887,6 +889,7 @@ function animationOperation(operation: SceneEditOperation): operation is Lowered
     operation.kind === "CreateMotion" ||
     operation.kind === "ResizeEntity" ||
     operation.kind === "TransformContent" ||
+    operation.kind === "WriteIn" ||
     (operation.kind === "AnimateProperty" && operation.key === "scale")
   );
 }
@@ -894,6 +897,7 @@ function animationOperation(operation: SceneEditOperation): operation is Lowered
 function animationEasing(operation: LoweredAnimationOperation): MotionEasing {
   if (operation.kind === "CreateMotion") return operation.easing;
   if (operation.kind === "TransformContent") return operation.easing ?? "smooth";
+  if (operation.kind === "WriteIn") return operation.easing;
   if (operation.kind !== "AnimateProperty") return "smooth";
   if (isMotionEasing(operation.easing)) return operation.easing;
   throw new ProgramLoweringError(
@@ -977,7 +981,11 @@ function resizeMarkerEntry(
   } as const;
 }
 
-function assertLoweringSupported(operation: SceneEditOperation, options: ProgramSourceLoweringOptions) {
+function assertLoweringSupported(
+  operation: SceneEditOperation,
+  options: ProgramSourceLoweringOptions,
+  currentGeneratedMathTexLifetimes: ReadonlyMap<string, Readonly<{ end: number | null; start: number }>>,
+) {
   if (operation.kind === "CreateEntity") {
     if (
       operation.entity.lifetime.end !== null &&
@@ -1055,6 +1063,23 @@ function assertLoweringSupported(operation: SceneEditOperation, options: Program
     throw new ProgramLoweringError(
       "operation-unsupported",
       "Relative rotation requires the Runtime Trace source lowerer.",
+    );
+  }
+  if (operation.kind === "WriteIn") {
+    const lifetime = currentGeneratedMathTexLifetimes.get(operation.entityId);
+    if (
+      lifetime &&
+      operation.easing === "linear" &&
+      Number.isFinite(operation.interval.start) &&
+      Number.isFinite(operation.interval.end) &&
+      Math.abs(operation.interval.start - lifetime.start) < EPSILON &&
+      operation.interval.end > operation.interval.start &&
+      (lifetime.end === null || operation.interval.end <= lifetime.end + EPSILON)
+    )
+      return;
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Write currently supports only a MathTex entity created in the same Studio Program.",
     );
   }
   if (operation.kind === "CreateMotion" && operation.orientToPath === true) {
@@ -1445,7 +1470,16 @@ export function lowerCanonicalProgramSource(
   }
   const request = singleProgramRequest(inputRequest, programs[0], inputRequest.sourceBindings);
   const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
-  request.program.operations.forEach((operation) => assertLoweringSupported(operation, options));
+  const currentGeneratedMathTexLifetimes = new Map(
+    request.program.operations.flatMap((operation) =>
+      operation.kind === "CreateEntity" && operation.entity.type === "MathTex"
+        ? ([[operation.entity.id, operation.entity.lifetime]] as const)
+        : [],
+    ),
+  );
+  request.program.operations.forEach((operation) =>
+    assertLoweringSupported(operation, options, currentGeneratedMathTexLifetimes),
+  );
   const execution = programExecutionCapabilities(request.program);
   if (execution.lowering !== "supported") {
     throw new ProgramLoweringError(
@@ -1588,9 +1622,10 @@ export function lowerCanonicalProgramSource(
           output.push(`# poietra:entity ${JSON.stringify({ id: operation.entity.id, variable })}`);
         }
         output.push(`${variable} = ${entityConstructor(operation)}`);
-        const initialTextFill = options.initialGeneratedTextFillColors?.get(operation.entity.id);
-        if (initialTextFill) {
-          output.push(`${variable}.set_fill(${JSON.stringify(initialTextFill)}, opacity=1)`);
+        const initialFill = options.initialGeneratedFillColors?.get(operation.entity.id);
+        if (initialFill) {
+          output.push(`${variable}.set_fill(${JSON.stringify(initialFill)}, opacity=1)`);
+          options.entityFillColorStates?.set(operation.entity.id, initialFill);
         }
         options.entityOpacityStates?.set(operation.entity.id, 1);
       } else if (operation.kind === "TransformContent") {
@@ -1602,7 +1637,12 @@ export function lowerCanonicalProgramSource(
               })
             : `MathTex(${(operation.replacement.texParts ?? operation.replacement.displayLines).map((part) => JSON.stringify(part)).join(", ")})`;
         output.push(`# poietra:entity ${JSON.stringify({ id: operation.targetEntityId, variable: targetVariable })}`);
+        const inheritedFill = options.entityFillColorStates?.get(operation.sourceEntityId);
         output.push(`${targetVariable} = ${target}`);
+        if (operation.targetType === "MathTex" && inheritedFill) {
+          output.push(`${targetVariable}.set_fill(${JSON.stringify(inheritedFill)}, opacity=1)`);
+          options.entityFillColorStates?.set(operation.targetEntityId, inheritedFill);
+        }
       }
     }
     for (const operation of bucket) {
@@ -1717,10 +1757,11 @@ export function lowerCanonicalProgramSource(
         operation.kind === "SetProperty" &&
         operation.key === "fillColor" &&
         isCanonicalRgbHex(operation.value) &&
-        !options.hoistedInitialTextFillOperationIds?.has(operation.id)
+        !options.hoistedInitialGeneratedFillOperationIds?.has(operation.id)
       ) {
         const opacity = options.entityOpacityStates?.get(operation.entityId) ?? 1;
         output.push(`${variable}.set_fill(${JSON.stringify(operation.value)}, opacity=${formatAmount(opacity)})`);
+        options.entityFillColorStates?.set(operation.entityId, operation.value);
       } else if (
         variable &&
         operation.kind === "SetProperty" &&
@@ -1880,6 +1921,8 @@ export function lowerCanonicalProgramSource(
           actions.push(`${variable}.animate.scale(0.00125)`);
           postludes.push(`self.remove(${variable})`);
         }
+      } else if (operation.kind === "WriteIn") {
+        actions.push(`Write(${requireVariable(variableByEntity, operation.entityId)})`);
       } else if (operation.kind === "AnimateProperty" && operation.key === "scale") {
         const variable = requireVariable(variableByEntity, operation.entityId);
         const change = resolvedScaleChanges.get(operation.id) ?? scaleChange(operation);
@@ -3139,6 +3182,7 @@ export function lowerCanonicalProgramBatchSource(
   const generatedEntityIds = new Set<string>();
   const generatedSourceVariables = new Set<string>();
   const entityOpacityStates = new Map<string, number>();
+  const entityFillColorStates = new Map<string, string>();
   const entityScaleStates = new Map<string, SourceScaleState>();
   const entityAliases = new Map<string, ReadonlySet<string>>(
     [...sourceBindings].map(([entityId, sourceVariable]) => [entityId, new Set([sourceVariable])]),
@@ -3152,8 +3196,8 @@ export function lowerCanonicalProgramBatchSource(
     .sort((left, right) => left.sourceAnchor - right.sourceAnchor || left.inputIndex - right.inputIndex);
   const normalizedEntries = applySceneDurationProjection(orderedEntries, timelineTransforms);
 
-  const initialGeneratedTextFillColors = new Map<string, string>();
-  const hoistedInitialTextFillOperationIds = new Set<string>();
+  const initialGeneratedFillColors = new Map<string, string>();
+  const hoistedInitialGeneratedFillOperationIds = new Set<string>();
   for (let start = 0; start < normalizedEntries.length; ) {
     let end = start + 1;
     while (
@@ -3163,22 +3207,26 @@ export function lowerCanonicalProgramBatchSource(
       end += 1;
     }
     const group = normalizedEntries.slice(start, end);
-    const initialTextLifetimeStarts = new Map<string, number>();
+    const initialGlyphLifetimeStarts = new Map<string, number>();
     for (const { program, sourceAnchor } of group) {
       for (const operation of program.operations) {
-        if (operation.kind !== "CreateEntity" || operation.entity.type !== "Text") continue;
+        if (
+          operation.kind !== "CreateEntity" ||
+          (operation.entity.type !== "MathTex" && operation.entity.type !== "Text")
+        )
+          continue;
         const lifetimeStart = operation.entity.lifetime.start;
-        const fade = program.operations.find(
+        const entrance = program.operations.find(
           (candidate) =>
-            candidate.kind === "ChangePresence" &&
+            "entityId" in candidate &&
             candidate.entityId === operation.entity.id &&
-            candidate.effect === "fade-in" &&
-            candidate.persistent &&
             candidate.interval.end > candidate.interval.start &&
-            Math.abs(candidate.interval.start - lifetimeStart) < EPSILON,
+            Math.abs(candidate.interval.start - lifetimeStart) < EPSILON &&
+            ((candidate.kind === "ChangePresence" && candidate.effect === "fade-in" && candidate.persistent) ||
+              (operation.entity.type === "MathTex" && candidate.kind === "WriteIn")),
         );
-        if (fade && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
-          initialTextLifetimeStarts.set(operation.entity.id, lifetimeStart);
+        if (entrance && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
+          initialGlyphLifetimeStarts.set(operation.entity.id, lifetimeStart);
         }
       }
     }
@@ -3188,14 +3236,14 @@ export function lowerCanonicalProgramBatchSource(
       if (operation.kind !== "SetProperty" || operation.key !== "fillColor" || !isCanonicalRgbHex(operation.value)) {
         continue;
       }
-      const lifetimeStart = initialTextLifetimeStarts.get(operation.entityId);
+      const lifetimeStart = initialGlyphLifetimeStarts.get(operation.entityId);
       if (
         lifetimeStart !== undefined &&
         Math.abs(operation.interval.start - lifetimeStart) < EPSILON &&
         Math.abs(operation.interval.end - lifetimeStart) < EPSILON
       ) {
-        initialGeneratedTextFillColors.set(operation.entityId, operation.value);
-        hoistedInitialTextFillOperationIds.add(operation.id);
+        initialGeneratedFillColors.set(operation.entityId, operation.value);
+        hoistedInitialGeneratedFillOperationIds.add(operation.id);
       }
     }
     start = end;
@@ -3229,12 +3277,13 @@ export function lowerCanonicalProgramBatchSource(
       incoming,
       {
         entityAliases,
+        entityFillColorStates,
         entityOpacityStates,
         entityScaleStates,
         finiteCreatedLifetimesHandled: true,
         generatedEntityIds,
-        hoistedInitialTextFillOperationIds,
-        initialGeneratedTextFillColors,
+        hoistedInitialGeneratedFillOperationIds,
+        initialGeneratedFillColors,
         reservedSourceVariables: generatedSourceVariables,
         sourceAnchor: entry.sourceAnchor,
         snapshotAuthorizedSourceBoundRotation: authorization.snapshotAuthorizedSourceBoundRotation,

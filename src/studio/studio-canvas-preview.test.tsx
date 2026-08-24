@@ -88,6 +88,13 @@ const TEXT_ENTITY: ProjectedEntity = {
   type: "Text",
 };
 
+const MATH_TEX_ENTITY: ProjectedEntity = {
+  ...TEXT_ENTITY,
+  id: "entity:math-tex",
+  transactionId: "create-math-tex",
+  type: "MathTex",
+};
+
 function lineJointsTriangle(sourceName: "t1" | "t2" | "t3", x: number): ProjectedEntity {
   const runtimeOwned = (field: string) => ({ kind: "unknown" as const, reason: `VGroup owns runtime ${field}.` });
   return {
@@ -1923,6 +1930,7 @@ describe("StudioCanvas retained preview layer", () => {
       "#abcdef",
     );
     const text = renderSelectedInspector(TEXT_ENTITY, null, null, false, false, null, true, "#22c55e", null);
+    const mathTex = renderSelectedInspector(MATH_TEX_ENTITY, null, null, false, false, null, true, "#0ea5e9", null);
     const fill = /<input aria-label="Fill color circle_1"[^>]*>/u;
     const stroke = /<input aria-label="Stroke color circle_1"[^>]*>/u;
     const polygonFill = /<input aria-label="Fill color regular-polygon"[^>]*>/u;
@@ -1937,6 +1945,8 @@ describe("StudioCanvas retained preview layer", () => {
     expect(polygon).toContain("6 sides");
     expect(text).toMatch(/<input aria-label="Fill color text"[^>]*value="#22c55e"[^>]*>/u);
     expect(text).not.toContain('aria-label="Stroke color text"');
+    expect(mathTex).toMatch(/<input aria-label="Fill color math-tex"[^>]*value="#0ea5e9"[^>]*>/u);
+    expect(mathTex).not.toContain('aria-label="Stroke color math-tex"');
   });
 
   it("exposes stroke but not fill color for Studio-created open paths", () => {

@@ -1300,6 +1300,7 @@ export function StudioInspector({
       "DataPlot",
       "Ellipse",
       "Line",
+      "MathTex",
       "NumberLine",
       "NumberPlane",
       "Rectangle",
@@ -1308,7 +1309,7 @@ export function StudioInspector({
       "Text",
       "Triangle",
     ].includes(selectedEntity.type)
-      ? selectedEntity.type === "Text"
+      ? selectedEntity.type === "Text" || selectedEntity.type === "MathTex"
         ? [["Fill", "fillColor", fillColorValue]]
         : ["Arc", "Arrow", "Axes", "CubicBezier", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(
               selectedEntity.type,
