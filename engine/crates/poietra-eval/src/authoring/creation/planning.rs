@@ -2760,8 +2760,10 @@ pub(super) fn plan_studio_creation_edits(
                     state.kind,
                     StudioAuthoringEntityKind::Circle
                         | StudioAuthoringEntityKind::Ellipse
+                        | StudioAuthoringEntityKind::MathTex
                         | StudioAuthoringEntityKind::Rectangle
                         | StudioAuthoringEntityKind::RegularPolygon
+                        | StudioAuthoringEntityKind::Text
                 ) =>
             {
                 state.fill_color_override.as_deref()

@@ -55,6 +55,14 @@ export function writeInUnavailableReason(program: SceneEdit, entityId: string): 
   const create = createdEntity(program, entityId);
   if (!create || create.kind !== "CreateEntity") return "Write supports only Studio-created objects.";
   if (create.entity.type !== "MathTex") return "Write currently supports Studio-created MathTex objects.";
+  const hasPaintColorTrack = program.operations.some(
+    (operation) =>
+      operation.kind === "AnimateProperty" &&
+      operation.entityId === entityId &&
+      (operation.key === "fillColor" || operation.key === "strokeColor") &&
+      operation.timelineTrack === true,
+  );
+  if (hasPaintColorTrack) return "Remove the object's paint color track before adding Write.";
   const otherWrite = program.operations.find(
     (operation) => operation.kind === "WriteIn" && operation.entityId !== entityId,
   );

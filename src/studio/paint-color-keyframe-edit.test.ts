@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { createStudioEntitiesProgram } from "./authoring-commands";
+import { createStudioEntitiesProgram, replaceStudioCreatedContentProgram } from "./authoring-commands";
+import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { replaceMaterialParameterKeyframeProgram } from "./material-parameter-keyframe-edit";
 import {
@@ -104,6 +105,42 @@ describe("solid paint color keyframe editing", () => {
     ).toThrow(/after the final marker/i);
   });
 
+  it("preserves a Text color track when its creation content is replaced", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ content: { displayLines: ["Before"], text: "Before" }, position: { x: 320, y: 180 }, type: "Text" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "text-color-content",
+    });
+    const entityId = creation.entityIds[0]!;
+    const tracked = replacePaintColorKeyframeProgram({
+      baseProgram: creation.validation.program,
+      baseline: "#ffffff",
+      entityId,
+      keyframes: [
+        { easing: "linear", time: 2, value: "#ffffff" },
+        { easing: "smooth", time: 3, value: "#22c55e" },
+      ],
+      property: "fillColor",
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    const replaced = replaceStudioCreatedContentProgram({
+      content: { displayLines: ["After"], text: "After" },
+      entityId,
+      owner: programRecord(tracked.program, tracked),
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(replaced.kind, JSON.stringify(replaced.issues)).toBe("valid");
+    expect(paintColorKeyframeTrackFromProgram(replaced.program, 0)?.entityId).toBe(entityId);
+    expect(replaced.program.operations).toContainEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({ content: expect.objectContaining({ text: "After" }) }),
+      }),
+    );
+  });
+
   it("rejects the wrong target, a changed first color, malformed continuity, and material conflicts", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
@@ -188,11 +225,11 @@ describe("solid paint color keyframe editing", () => {
   });
 
   it("keeps the first slice target table narrow", () => {
-    for (const type of ["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Triangle"]) {
+    for (const type of ["Circle", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Text", "Triangle"]) {
       expect(studioPaintColorTrackProperty(type)).toBe("fillColor");
     }
     expect(studioPaintColorTrackProperty("Line")).toBe("strokeColor");
-    for (const type of ["Arc", "Arrow", "MathTex", "Sector", "Text"]) {
+    for (const type of ["Arc", "Arrow", "Sector"]) {
       expect(studioPaintColorTrackProperty(type)).toBeNull();
     }
   });

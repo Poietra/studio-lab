@@ -6800,6 +6800,118 @@ fn creation_triangle_fill_color_track_uses_one_vector_appearance_channel() {
     );
 }
 
+fn studio_glyph_fill_color_track_command(
+    bundle: &SceneIrBundleV1,
+    kind: StudioAuthoringEntityKind,
+) -> ApplyStudioCreationEditCommand {
+    let entity_id = "tx:create/entity:circle";
+    let mut command = studio_text_creation_command(bundle, "E = mc^2");
+    command.programs.truncate(1);
+    if kind == StudioAuthoringEntityKind::MathTex {
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.kind = kind;
+        entity.text = None;
+        entity.tex_parts = Some(vec!["E = mc^2".to_owned()]);
+        command.text_outlines.clear();
+        command.math_tex_outlines = [
+            (entity_id, vec!["E = mc^2".to_owned()]),
+            ("tx:math-transform/entity:formula", vec!["x^2".to_owned()]),
+        ]
+        .into_iter()
+        .map(|(entity_id, tex_parts)| StudioCreationMathTexOutline {
+            entity_id: entity_id.to_owned(),
+            path: mathtex_fixture_path(),
+            tex_parts,
+        })
+        .collect();
+    }
+    let program = &mut command.programs[0];
+    add_creation_paint_color_segment(
+        program,
+        entity_id,
+        StudioPaintColorProperty::FillColor,
+        "#ff0000",
+        "#0000ff",
+        1.2,
+        1.6,
+    );
+    program.schedule_edge_count = 2 * (program.operations.len() - 1);
+    command.programs.push(studio_created_appearance_edit_input(
+        0.5,
+        entity_id,
+        "initial-fill-color",
+        StudioCreationOperationKind::FillColor {
+            color: Some("#ff0000".to_owned()),
+        },
+    ));
+    if kind == StudioAuthoringEntityKind::MathTex {
+        command.programs.push(studio_math_tex_transform_program(
+            "math-transform",
+            "math-transform",
+            entity_id,
+            entity_id,
+            "tx:math-transform/entity:formula",
+            StudioMathTexContent {
+                display_lines: vec!["x^2".to_owned()],
+                label: None,
+                tex_parts: vec!["x^2".to_owned()],
+            },
+        ));
+    }
+    command
+}
+
+#[test]
+fn creation_text_and_math_tex_fill_color_tracks_keep_canonical_outline_channels() {
+    let bundle = static_imported_bundle();
+    let entity_id = "tx:create/entity:circle";
+    for kind in [
+        StudioAuthoringEntityKind::Text,
+        StudioAuthoringEntityKind::MathTex,
+    ] {
+        let command = studio_glyph_fill_color_track_command(&bundle, kind);
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert_eq!(
+            result.creation_projection.as_ref().unwrap().entities[0]
+                .fill_color
+                .as_deref(),
+            Some("#ff0000")
+        );
+        assert_eq!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .filter(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::VectorAppearance { entity_id: candidate, .. }
+                        if candidate == entity_id
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::PathMorph { entity_id: candidate, .. }
+                        if candidate == entity_id
+                )),
+            kind == StudioAuthoringEntityKind::MathTex
+        );
+    }
+}
+
 #[test]
 fn creation_line_stroke_color_track_preserves_draw_width_and_cap() {
     let bundle = static_imported_bundle();
@@ -6947,6 +7059,30 @@ fn creation_paint_color_track_rejects_missing_baselines_and_conflicts() {
         ));
     assert!(matches!(
         project_studio_creation_edits(bundle.scene.duration, &conflicting.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+
+    let mut write = studio_math_tex_write_creation_command(&bundle);
+    let write_entity_id = "tx:create/entity:circle";
+    add_creation_paint_color_segment(
+        &mut write.programs[0],
+        write_entity_id,
+        StudioPaintColorProperty::FillColor,
+        "#ff0000",
+        "#0000ff",
+        1.75,
+        2.0,
+    );
+    write.programs.push(studio_created_appearance_edit_input(
+        0.5,
+        write_entity_id,
+        "initial-fill-color",
+        StudioCreationOperationKind::FillColor {
+            color: Some("#ff0000".to_owned()),
+        },
+    ));
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &write.programs),
         Err(ProjectStudioCreationEditError::Unsupported)
     ));
 }
