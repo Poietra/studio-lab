@@ -5,7 +5,7 @@ import {
   isExactStudioMotionProgramBatch,
   studioMotionProjectionBatchKind,
 } from "./scene-authoring-wire";
-import type { SceneEdit } from "./scene-edit-contract";
+import { type SceneEdit, sceneEditOperationSchema } from "./scene-edit-contract";
 
 function creationProgram(type: string): SceneEdit {
   return {
@@ -760,6 +760,38 @@ describe("Studio creation wire", () => {
       from: 0,
       kind: "rotation-keyframes",
       to: Math.PI,
+    });
+  });
+
+  it("normalizes canonical solid paint color tracks without evaluating colors in TypeScript", () => {
+    const operation = {
+      dependsOn: [],
+      easing: "smooth" as const,
+      entityId: "entity:Circle",
+      from: "#0ea5e9",
+      id: "fill-color-track:Circle",
+      interval: { end: 2, start: 1 },
+      key: "fillColor" as const,
+      kind: "AnimateProperty" as const,
+      provenance: { evidence: [], origin: "direct-manipulation" as const },
+      timelineTrack: true as const,
+      to: "#f97316",
+    };
+
+    expect(sceneEditOperationSchema.safeParse(operation).success).toBe(true);
+    expect(sceneEditOperationSchema.safeParse({ ...operation, to: "#F97316" }).success).toBe(false);
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 3,
+      programs: [creationProgram("Circle"), followupProgram("fill-color-track:Circle", operation)],
+    });
+
+    expect(command.programs[1]?.operations[0]).toMatchObject({
+      easing: "smooth",
+      entityId: "entity:Circle",
+      from: "#0ea5e9",
+      kind: "paint-color-keyframes",
+      property: "fill-color",
+      to: "#f97316",
     });
   });
 

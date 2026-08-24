@@ -27,19 +27,49 @@ async function clipTime(page: Page, clip: Locator, progress: number) {
 }
 
 async function scrubClip(page: Page, clip: Locator, progress: number) {
+  return scrubTime(page, await clipTime(page, clip, progress));
+}
+
+async function scrubTime(page: Page, time: number) {
   const canvas = page.locator("[data-studio-canvas]");
   const previousPacket = await canvas.getAttribute("data-preview-packet-id");
   const previousTime = Number(await canvas.getAttribute("data-preview-sample-time"));
-  const time = await clipTime(page, clip, progress);
   await page.getByRole("slider", { name: "Scene playhead" }).fill(String(time));
   await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(time, 1);
   if (Math.abs(previousTime - time) > 0.001) {
     await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(previousPacket);
   }
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
   return time;
 }
 
-async function exportDecodedBrightPixelCounts(page: Page, sampleTimes: readonly number[]) {
+async function propertyKeyframeTime(marker: Locator) {
+  const label = await marker.getAttribute("aria-label");
+  const match = label?.match(/ at ([0-9]+(?:[.][0-9]+)?) seconds$/u);
+  if (!match?.[1]) throw new Error(`The property keyframe did not expose a canonical time: ${label ?? "missing"}`);
+  return Number(match[1]);
+}
+
+async function waitForNewPresentedRevision(page: Page, previousRevision: string | null) {
+  const canvas = page.locator("[data-studio-canvas]");
+  await expect
+    .poll(async () => {
+      const [phase, revision] = await Promise.all([
+        canvas.getAttribute("data-preview-renderer"),
+        canvas.getAttribute("data-preview-revision"),
+      ]);
+      return phase === "presented" && revision && revision !== previousRevision ? revision : null;
+    })
+    .not.toBeNull();
+  return canvas.getAttribute("data-preview-revision");
+}
+
+async function exportDecodedFrameEvidence(page: Page, sampleTimes: readonly number[]) {
   await page.getByRole("button", { name: "Export settings" }).click();
   const control = page.locator("[data-studio-export-mp4-state]");
   const downloadPromise = page.waitForEvent("download", { timeout: 90_000 }).catch(() => null);
@@ -78,7 +108,7 @@ async function exportDecodedBrightPixelCounts(page: Page, sampleTimes: readonly 
         canvas.height = video.videoHeight;
         const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
         if (!context) throw new Error("The decoded shape Transform frame canvas is unavailable.");
-        const counts: number[] = [];
+        const evidence: Array<Readonly<{ blueDominant: number; bright: number; redDominant: number }>> = [];
         for (const sampleTime of sampleTimes) {
           await new Promise<void>((resolve) => {
             video.addEventListener("seeked", () => resolve(), { once: true });
@@ -86,13 +116,20 @@ async function exportDecodedBrightPixelCounts(page: Page, sampleTimes: readonly 
           });
           context.drawImage(video, 0, 0);
           const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
+          let blueDominant = 0;
           let bright = 0;
+          let redDominant = 0;
           for (let offset = 0; offset < rgba.length; offset += 4) {
-            if ((rgba[offset] ?? 0) + (rgba[offset + 1] ?? 0) + (rgba[offset + 2] ?? 0) > 90) bright += 1;
+            const red = rgba[offset] ?? 0;
+            const green = rgba[offset + 1] ?? 0;
+            const blue = rgba[offset + 2] ?? 0;
+            if (red + green + blue > 90) bright += 1;
+            if (red > 50 && red > green * 1.3 && red > blue * 1.3) redDominant += 1;
+            if (blue > 50 && blue > green * 1.3 && blue > red * 1.3) blueDominant += 1;
           }
-          counts.push(bright);
+          evidence.push({ blueDominant, bright, redDominant });
         }
-        return counts;
+        return evidence;
       } finally {
         URL.revokeObjectURL(url);
       }
@@ -138,8 +175,36 @@ test("morphs one closed primitive through the full shape family, reload, and dec
     await page.getByRole("button", { name: "Redo" }).click();
     await page.getByRole("checkbox", { name: "Select Rectangle" }).check();
     await expect(rectangleStrokeWidth).toHaveValue("0.12");
+
+    const fillColor = page.getByLabel("Fill color Rectangle");
+    await fillColor.fill("#ef4444");
+    await fillColor.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(fillColor).toHaveValue("#ef4444");
     await playhead.fill("1");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1, 1);
+
+    await page.getByRole("button", { name: "Add fill color keyframe for Rectangle" }).click();
+    await expect(page.locator("[data-paint-color-keyframe]")).toHaveCount(2);
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const secondColorMarker = page.getByRole("button", { name: "Fill color keyframe 2 at 1.00 seconds" });
+    await secondColorMarker.click();
+    const keyframeColor = page.getByLabel("Fill color keyframe value");
+    const redTrackRevision = await canvas.getAttribute("data-preview-revision");
+    await keyframeColor.fill("#3b82f6");
+    const blueDraftRevision = await waitForNewPresentedRevision(page, redTrackRevision);
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForNewPresentedRevision(page, blueDraftRevision);
+    await secondColorMarker.click();
+    await expect(page.getByLabel("Fill color keyframe value")).toHaveValue("#3b82f6");
+    await expect(fillColor).toBeDisabled();
+
+    const colorStartTime = await propertyKeyframeTime(page.getByRole("button", { name: /Fill color keyframe 1 at/u }));
+    const colorEndTime = await propertyKeyframeTime(secondColorMarker);
+    const colorSampleTimes = [colorStartTime, (colorStartTime + colorEndTime) / 2, colorEndTime];
+    for (const time of colorSampleTimes) {
+      await scrubTime(page, time);
+    }
 
     await page.getByRole("combobox", { name: "Shape transform target of Rectangle" }).selectOption("Circle");
     await page.getByRole("spinbutton", { name: "Shape transform duration of Rectangle" }).fill("1");
@@ -235,8 +300,12 @@ test("morphs one closed primitive through the full shape family, reload, and dec
         .locator("xpath=following-sibling::dd[1]"),
     ).toHaveText("Circle");
     await expect(page.getByRole("spinbutton", { name: "Stroke width Rectangle" })).toHaveValue("0.12");
+    await expect(page.getByLabel("Fill color Rectangle")).toHaveValue("#ef4444");
+    await expect(page.locator("[data-paint-color-keyframe]")).toHaveCount(2);
+    await expect(page.getByRole("button", { name: "Fill color keyframe 2 at 1.00 seconds" })).toBeVisible();
 
     const sampleTimes = await Promise.all([
+      ...colorSampleTimes,
       clipTime(page, clips.nth(0), 0),
       clipTime(page, clips.nth(0), 0.5),
       clipTime(page, clips.nth(0), 1),
@@ -248,7 +317,12 @@ test("morphs one closed primitive through the full shape family, reload, and dec
       clipTime(page, clips.nth(5), 1),
       clipTime(page, clips.nth(6), 1),
     ]);
-    const counts = await exportDecodedBrightPixelCounts(page, sampleTimes);
+    const decodedFrames = await exportDecodedFrameEvidence(page, sampleTimes);
+    const colorStart = decodedFrames[0]!;
+    const colorEnd = decodedFrames[2]!;
+    expect(colorStart.redDominant - colorStart.blueDominant).toBeGreaterThan(100);
+    expect(colorEnd.blueDominant - colorEnd.redDominant).toBeGreaterThan(100);
+    const counts = decodedFrames.slice(colorSampleTimes.length).map(({ bright }) => bright);
     expect(Math.max(...counts) - Math.min(...counts)).toBeGreaterThan(20);
     expect(Math.abs((counts[1] ?? 0) - (counts[0] ?? 0))).toBeGreaterThan(10);
     expect(Math.abs((counts[3] ?? 0) - (counts[4] ?? 0))).toBeGreaterThan(10);

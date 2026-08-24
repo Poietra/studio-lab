@@ -201,7 +201,16 @@ import {
   replaceOpacityKeyframeProgram,
 } from "./studio/opacity-keyframe-edit";
 import { programExecutionCapabilities } from "./studio/operation-registry";
-import { isSceneDurationOperation, type OperationOrigin } from "./studio/operations";
+import { initialAppearanceEnd, isSceneDurationOperation, type OperationOrigin } from "./studio/operations";
+import {
+  appendPaintColorKeyframe,
+  initialPaintColorKeyframes,
+  type PaintColorKeyframe,
+  type PaintColorProperty,
+  paintColorKeyframeTrackFromProgram,
+  replacePaintColorKeyframe,
+  replacePaintColorKeyframeProgram,
+} from "./studio/paint-color-keyframe-edit";
 import { PoietraBrand } from "./studio/poietra-brand";
 import type {
   StudioNativePreviewEditingContextV1,
@@ -245,6 +254,7 @@ import {
   type SceneEdit,
   shapeTransformChangesShape,
   studioEntityTypeSupportsStrokeWidth,
+  studioPaintColorTrackProperty,
 } from "./studio/scene-edit-contract";
 import {
   isSelectionLayoutCommand,
@@ -329,6 +339,7 @@ import type {
   StudioMathTexTransformClipChange,
   StudioMathTexTransformTimelineClip,
   StudioOpacityTimelineTrack,
+  StudioPaintColorTimelineTrack,
   StudioRotationTimelineTrack,
   StudioScaleTimelineTrack,
   StudioShapeTransformClipChange,
@@ -2070,6 +2081,98 @@ export function App({
       },
     ];
   });
+  const paintColorTrackEligibleProperties = new Map<string, PaintColorProperty>(
+    workspaceCreationProjection?.entities.flatMap((projectedEntity) => {
+      const owner = previewAppliedEdits.find(({ program }) =>
+        program.operations.some(
+          (operation) => operation.kind === "CreateEntity" && operation.entity.id === projectedEntity.entityId,
+        ),
+      );
+      const targetCreate = owner?.program.operations.find(
+        (operation) => operation.kind === "CreateEntity" && operation.entity.id === projectedEntity.entityId,
+      );
+      if (!owner || !targetCreate || targetCreate.kind !== "CreateEntity") return [];
+      const property = studioPaintColorTrackProperty(targetCreate.entity.type);
+      if (!property || projectedEntity[property] === undefined) return [];
+      const existingTrack = paintColorKeyframeTrackFromProgram(owner.program, 0);
+      const draftAllowsOwner =
+        !draftEdit || editingAppliedProgram?.original.program.transactionId === projectedEntity.transactionId;
+      const hasMaterialOrEntranceConflict =
+        activeSceneFragmentMaterials.assignments[projectedEntity.entityId] !== undefined ||
+        previewAppliedEdits.some(({ program }) =>
+          program.operations.some(
+            (operation) =>
+              "entityId" in operation &&
+              operation.entityId === projectedEntity.entityId &&
+              ((operation.kind === "AnimateProperty" && operation.materialParameter !== undefined) ||
+                operation.kind === "WriteIn" ||
+                (property === "fillColor" && operation.kind === "DrawIn") ||
+                (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent)),
+          ),
+        );
+      const sharedProgramAllowsEntity =
+        !existingTrack || (existingTrack.entityId === projectedEntity.entityId && existingTrack.property === property);
+      return draftAllowsOwner &&
+        !hasMaterialOrEntranceConflict &&
+        sharedProgramAllowsEntity &&
+        !canonicalGroupedChildIds.has(projectedEntity.entityId)
+        ? ([[projectedEntity.entityId, property]] as const)
+        : [];
+    }) ?? [],
+  );
+  const paintColorTracks: readonly StudioPaintColorTimelineTrack[] = previewAppliedEdits.flatMap(
+    (record, programIndex) => {
+      const track = paintColorKeyframeTrackFromProgram(record.program, programIndex);
+      if (!track || !workspaceCreationProjection) return [];
+      const operations = record.program.operations.filter(
+        (operation) =>
+          operation.kind === "AnimateProperty" &&
+          operation.key === track.property &&
+          operation.timelineTrack === true &&
+          operation.entityId === track.entityId,
+      );
+      const projectedProperty = track.property === "fillColor" ? "fill-color" : "stroke-color";
+      const mutations = operations.map((operation) =>
+        workspaceCreationProjection.mutations.find(
+          (mutation) =>
+            mutation.kind === "paint-color-keyframes" &&
+            mutation.property === projectedProperty &&
+            mutation.operationId === operation.id,
+        ),
+      );
+      if (mutations.some((mutation) => !mutation)) return [];
+      const projectedMutations = mutations as readonly Extract<
+        (typeof workspaceCreationProjection.mutations)[number],
+        { kind: "paint-color-keyframes" }
+      >[];
+      const first = projectedMutations[0];
+      if (!first) return [];
+      const workingTimes = [first.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
+      if (workingTimes.length !== track.keyframes.length) return [];
+      const label =
+        workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === track.entityId)
+          ?.label ?? track.entityId;
+      const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
+      return [
+        {
+          entityId: track.entityId,
+          keyframes: track.keyframes.map((keyframe, index) => ({
+            ...keyframe,
+            sourceTime: keyframe.time,
+            time: workingTimes[index]!,
+          })),
+          label,
+          programIndex,
+          property: track.property,
+          readOnlyReason:
+            draftEdit && !activeDraftIsThisTrack
+              ? "Apply or discard the current draft before editing paint color."
+              : null,
+          transactionId: track.transactionId,
+        },
+      ];
+    },
+  );
   const scaleTrackEligibleIds = new Set(
     workspaceCreationProjection?.entities.flatMap(({ entityId, transactionId }) => {
       const owner = previewAppliedEdits.find(({ program }) =>
@@ -4415,9 +4518,8 @@ export function App({
   }
 
   function duplicateStudioPropertyKeyframe<
-    TKeyframe extends Readonly<{ easing: StudioPropertyKeyframeEasing; time: number; value: number }>,
     TSourceTrack extends Readonly<{
-      keyframes: readonly TKeyframe[];
+      keyframes: readonly Readonly<{ easing: StudioPropertyKeyframeEasing; time: number; value: unknown }>[];
       transactionId: string;
     }>,
   >(input: {
@@ -4428,7 +4530,7 @@ export function App({
     owner: ReturnType<typeof studioCreationProgramOwner>;
     sourceTrack: TSourceTrack | null;
     stage: (
-      keyframes: readonly TKeyframe[],
+      keyframes: readonly TSourceTrack["keyframes"][number][],
       owner: NonNullable<ReturnType<typeof studioCreationProgramOwner>>,
       sourceTrack: TSourceTrack,
     ) => boolean;
@@ -4577,6 +4679,171 @@ export function App({
       owner.programIndex,
       owner.record.program,
       sourceTrack.keyframes.filter((_, candidate) => candidate !== index),
+    );
+  }
+
+  function paintColorBaseline(entityId: string, property: PaintColorProperty) {
+    const entity = workspaceCreationProjection?.entities.find((candidate) => candidate.entityId === entityId);
+    return entity?.[property] ?? null;
+  }
+
+  function stagePaintColorKeyframes(
+    entityId: string,
+    programIndex: number,
+    baseProgram: SceneEdit,
+    property: PaintColorProperty,
+    keyframes: readonly PaintColorKeyframe[],
+  ) {
+    if (!projectedEditorScene) return false;
+    const original = appliedEdits[programIndex];
+    const baseline = paintColorBaseline(entityId, property);
+    if (!original || original.program.transactionId !== baseProgram.transactionId || baseline === null) {
+      setDraftError("The paint color track no longer matches the applied Studio-created object.");
+      return false;
+    }
+    try {
+      const validation = replacePaintColorKeyframeProgram({
+        baseProgram,
+        baseline,
+        entityId,
+        keyframes,
+        property,
+        scene: projectedEditorScene.runtimeSceneState,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return stageDraft({
+        appliedEdit: { index: programIndex, original },
+        clearSuggestion: true,
+        currentTime,
+        operation: null,
+        record: validated.record,
+        selectedObjectIds: [entityId],
+        stopPlayback: true,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The paint color keyframe could not be edited.");
+      setIsPlaying(false);
+      return false;
+    }
+  }
+
+  function addPaintColorKeyframe(entityId: string) {
+    const owner = studioCreationProgramOwner(entityId);
+    if (!owner) {
+      setDraftError("Paint color keyframes currently support only Studio-created objects.");
+      return;
+    }
+    try {
+      const sourceTime = workingTimeToSourceTime(previewAppliedSceneEdits, currentTime);
+      const track = paintColorKeyframeTrackFromProgram(owner.record.program, owner.programIndex);
+      const property = track?.property ?? paintColorTrackEligibleProperties.get(entityId) ?? null;
+      if (!property || !paintColorTrackEligibleProperties.has(entityId)) {
+        throw new Error(
+          "Paint color keyframes require a supported solid color without a material, Write, Draw, group, or removal conflict.",
+        );
+      }
+      const baseline = paintColorBaseline(entityId, property);
+      if (baseline === null) throw new Error("Set a canonical static color before adding paint color keyframes.");
+      if (track && (track.entityId !== entityId || track.property !== property)) {
+        throw new Error("This shared creation Program already owns another paint color track.");
+      }
+      const targetCreate = owner.record.program.operations.find(
+        (operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId,
+      );
+      if (!targetCreate || targetCreate.kind !== "CreateEntity") {
+        throw new Error("The Studio-created object's creation operation is unavailable.");
+      }
+      const keyframes = track
+        ? appendPaintColorKeyframe(track.keyframes, sourceTime)
+        : initialPaintColorKeyframes({
+            baseline,
+            entranceEnd: initialAppearanceEnd(
+              owner.record.program.operations,
+              entityId,
+              targetCreate.entity.lifetime.start,
+            ),
+            playhead: sourceTime,
+          });
+      stagePaintColorKeyframes(entityId, owner.programIndex, owner.record.program, property, keyframes);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The paint color keyframe could not be added.");
+    }
+  }
+
+  function duplicatePaintColorKeyframe(track: StudioPaintColorTimelineTrack, index: number) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? paintColorKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    return duplicateStudioPropertyKeyframe({
+      conflictReason: paintColorTrackEligibleProperties.has(track.entityId)
+        ? null
+        : "Paint color keyframes cannot overlap this object's material, entrance, group, or removal edit.",
+      index,
+      label: "paint color",
+      mismatchMessage: "The paint color track no longer matches the Studio-created object.",
+      owner,
+      sourceTrack,
+      stage: (keyframes, canonicalOwner, canonicalTrack) =>
+        stagePaintColorKeyframes(
+          track.entityId,
+          canonicalOwner.programIndex,
+          canonicalOwner.record.program,
+          canonicalTrack.property,
+          keyframes,
+        ),
+      track,
+    });
+  }
+
+  function changePaintColorKeyframe(
+    track: StudioPaintColorTimelineTrack,
+    index: number,
+    patch: Partial<Pick<StudioPaintColorTimelineTrack["keyframes"][number], "easing" | "time" | "value">>,
+  ) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? paintColorKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The paint color track no longer matches the Studio-created object.");
+      return;
+    }
+    try {
+      if (index === 0 && patch.value !== undefined) {
+        throw new Error("The first paint color keyframe preserves the object's canonical static color.");
+      }
+      const sourcePatch: Partial<PaintColorKeyframe> = {
+        ...(patch.easing === undefined ? {} : { easing: patch.easing }),
+        ...(patch.time === undefined ? {} : { time: workingTimeToSourceTime(previewAppliedSceneEdits, patch.time) }),
+        ...(patch.value === undefined ? {} : { value: patch.value.toLowerCase() }),
+      };
+      stagePaintColorKeyframes(
+        track.entityId,
+        owner.programIndex,
+        owner.record.program,
+        sourceTrack.property,
+        replacePaintColorKeyframe(sourceTrack.keyframes, index, sourcePatch),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The paint color keyframe could not be changed.");
+    }
+  }
+
+  function deletePaintColorKeyframe(track: StudioPaintColorTimelineTrack, index: number) {
+    const owner = studioCreationProgramOwner(track.entityId);
+    const sourceTrack = owner ? paintColorKeyframeTrackFromProgram(owner.record.program, owner.programIndex) : null;
+    if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+      setDraftError("The paint color track no longer matches the Studio-created object.");
+      return;
+    }
+    if (index === 0) {
+      setDraftError("Delete the later paint color keyframes before removing the fixed baseline marker.");
+      return;
+    }
+    stagePaintColorKeyframes(
+      track.entityId,
+      owner.programIndex,
+      owner.record.program,
+      sourceTrack.property,
+      sourceTrack.keyframes.length === 2 ? [] : sourceTrack.keyframes.filter((_, candidate) => candidate !== index),
     );
   }
 
@@ -7562,6 +7829,10 @@ export function App({
       setDraftError(`This object does not support a ${property === "fillColor" ? "fill" : "stroke"} color.`);
       return false;
     }
+    if (paintColorTracks.some((track) => track.entityId === entityId)) {
+      setDraftError("Remove the paint color track before changing the object's static color.");
+      return false;
+    }
     if (property === "fillColor" && sceneProgramsHaveDrawIn(previewAppliedSceneEdits, entityId)) {
       setDraftError("Remove Draw before adding a fill to this object.");
       return false;
@@ -8189,6 +8460,9 @@ export function App({
     ? (activeSceneFragmentMaterials.assignments[selectedFragmentMaterialEntity.id] ?? null)
     : null;
   const selectedFragmentMaterialAssigned = selectedFragmentMaterialAssignment !== null;
+  const selectedFragmentMaterialPaintColorTrack = selectedFragmentMaterialEntity
+    ? (paintColorTracks.find((track) => track.entityId === selectedFragmentMaterialEntity.id) ?? null)
+    : null;
   const selectedSvgPathHasFill = selectedFragmentMaterialEntity
     ? (previewAppliedEdits
         .map(({ program }) => studioSvgPathFillState(program, selectedFragmentMaterialEntity.id))
@@ -8205,6 +8479,7 @@ export function App({
     previewMutationAvailable &&
     !selectedEntityLocked &&
     selectedFragmentMaterialEntity !== null &&
+    selectedFragmentMaterialPaintColorTrack === null &&
     selectedFragmentMaterialEntity.geometry.style.kind === "known" &&
     ((selectedFragmentMaterialEntity.geometry.style.value.fillColor !== undefined &&
       selectedFragmentMaterialEntity.geometry.style.value.fillColor !== null) ||
@@ -8510,13 +8785,14 @@ export function App({
   }
 
   function assignSelectedFragmentMaterial(shaderId: string | null) {
-    if (
-      !activeEditorScene ||
-      !selectedFragmentMaterialEntity ||
-      (shaderId !== null && !selectedFragmentMaterialAvailable)
-    ) {
+    if (!activeEditorScene || !selectedFragmentMaterialEntity) {
       return;
     }
+    if (shaderId !== null && selectedFragmentMaterialPaintColorTrack) {
+      setDraftError("Remove the paint color track before assigning a fragment material to this object.");
+      return;
+    }
+    if (shaderId !== null && !selectedFragmentMaterialAvailable) return;
     if (rejectLockedEntityMutation(selectedFragmentMaterialEntity.id)) return;
     try {
       if (shaderId !== null && selectedEntranceMaterialBlocker) throw new Error(selectedEntranceMaterialBlocker);
@@ -9263,6 +9539,8 @@ export function App({
               motionPaths={motionPaths}
               opacityTrackEligibleIds={opacityTrackEligibleIds}
               opacityTracks={opacityTracks}
+              paintColorTrackEligibleProperties={paintColorTrackEligibleProperties}
+              paintColorTracks={paintColorTracks}
               rotationTrackEligibleIds={rotationTrackEligibleIds}
               rotationTracks={rotationTracks}
               resizeUnavailableIds={studioResizeUnavailableIds}
@@ -9364,6 +9642,10 @@ export function App({
               onOpacityKeyframeChange={changeOpacityKeyframe}
               onOpacityKeyframeDelete={deleteOpacityKeyframe}
               onOpacityKeyframeDuplicate={duplicateOpacityKeyframe}
+              onPaintColorKeyframeAdd={addPaintColorKeyframe}
+              onPaintColorKeyframeChange={changePaintColorKeyframe}
+              onPaintColorKeyframeDelete={deletePaintColorKeyframe}
+              onPaintColorKeyframeDuplicate={duplicatePaintColorKeyframe}
               onRotationKeyframeAdd={addRotationKeyframe}
               onRotationKeyframeChange={changeRotationKeyframe}
               onRotationKeyframeDelete={deleteRotationKeyframe}
@@ -9481,6 +9763,7 @@ export function App({
               colorAvailable={
                 selectedStudioCreationAppearanceAtAnchor &&
                 selectedEntity !== null &&
+                !paintColorTracks.some((track) => track.entityId === selectedEntity.id) &&
                 [
                   "Arc",
                   "Arrow",

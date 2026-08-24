@@ -1879,6 +1879,27 @@ describe("Studio workspace projection", () => {
       schedule: { edges: [], mode: "parallel", order: ["fill-color/circle"] },
       transactionId: "fill-color",
     };
+    const fillTrackProgram: CanonicalEditProgram = {
+      ...colorProgram,
+      loweringStatus: "unsupported",
+      operations: [
+        {
+          dependsOn: [],
+          easing: "smooth",
+          entityId: circleEntityId,
+          from: "#22c55e",
+          id: "fill-color-track/circle",
+          interval: { end: 0.75, start: 0.25 },
+          key: "fillColor",
+          kind: "AnimateProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          timelineTrack: true,
+          to: "#f97316",
+        },
+      ],
+      schedule: { edges: [], mode: "parallel", order: ["fill-color-track/circle"] },
+      transactionId: "fill-color-track",
+    };
     const widthProgram: CanonicalEditProgram = {
       ...colorProgram,
       operations: [
@@ -1936,6 +1957,7 @@ describe("Studio workspace projection", () => {
         {
           createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
           entityId,
+          strokeColor: "#12abef",
           initialDimensions: {},
           initialRotation: 0,
           initialScale: 1,
@@ -1946,6 +1968,7 @@ describe("Studio workspace projection", () => {
         {
           createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
           entityId: circleEntityId,
+          fillColor: "#22c55e",
           initialDimensions: { radius: 1 },
           initialRotation: 0,
           initialScale: 1,
@@ -1972,6 +1995,17 @@ describe("Studio workspace projection", () => {
           operationId: "stroke-color/line",
           transactionId: "stroke-color",
           value: "#12abef",
+        },
+        {
+          easing: { kind: "manim-smooth" },
+          entityId: circleEntityId,
+          from: "#22c55e",
+          interval: { end: 0.75, start: 0.25 },
+          kind: "paint-color-keyframes",
+          operationId: "fill-color-track/circle",
+          property: "fill-color",
+          to: "#f97316",
+          transactionId: "fill-color-track",
         },
         {
           entityId,
@@ -2010,6 +2044,7 @@ describe("Studio workspace projection", () => {
         programRecord(circleCreationProgram, { issues: [], kind: "valid" }),
         programRecord(colorProgram, { issues: [], kind: "valid" }),
         programRecord(fillProgram, { issues: [], kind: "valid" }),
+        programRecord(fillTrackProgram, { issues: [], kind: "valid" }),
         programRecord(capProgram, { issues: [], kind: "valid" }),
         programRecord(widthProgram, { issues: [], kind: "valid" }),
         programRecord(orderingProgram, { issues: [], kind: "valid" }),
@@ -2028,6 +2063,12 @@ describe("Studio workspace projection", () => {
     expect(projected.proposedState.evaluatedScene.propertyChannels[`${circleEntityId}/fillColor`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: "#22c55e" }),
     ]);
+    expect(projected.proposedState.evaluatedScene.eventTrack.events).toContainEqual(
+      expect.objectContaining({
+        interval: { end: 0.75, start: 0.25 },
+        operationId: "fill-color-track/circle",
+      }),
+    );
     expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/strokeWidth`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: 0.08 }),
     ]);

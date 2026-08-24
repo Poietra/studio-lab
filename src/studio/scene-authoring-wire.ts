@@ -350,6 +350,17 @@ function normalizedStudioCreationOperation(
       to: typeof operation.to === "number" ? operation.to : null,
     };
   }
+  if (operation.kind === "AnimateProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
+    return {
+      ...common,
+      easing: operation.easing,
+      entityId: operation.entityId,
+      from: isCanonicalRgbHex(operation.from) ? operation.from : null,
+      kind: "paint-color-keyframes",
+      property: operation.key === "fillColor" ? "fill-color" : "stroke-color",
+      to: isCanonicalRgbHex(operation.to) ? operation.to : null,
+    };
+  }
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {
     return { ...common, entityId: operation.entityId, kind: "fade-in", persistent: operation.persistent };
   }

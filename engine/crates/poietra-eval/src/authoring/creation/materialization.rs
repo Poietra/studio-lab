@@ -18,15 +18,16 @@ use super::{
     StudioCreationMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
     StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationShapeState,
-    StudioPersistentRemoveProjection, TIMELINE_ANCHOR_EPSILON, VectorAppearanceValueV1,
-    align_cubic_path_morph_chain, append_planned_scene_motions, apply_persistent_scene_removals,
-    apply_world_rotation, authored_motion_easing, canonical_studio_hex_color,
-    close_transform_baseline_value, created_geometry_and_appearance, insert_scene_time,
-    manim_stroke_width_to_scene_world, plan_studio_creation_edits, rotation_is_noop,
-    scale_cubic_path, set_vector_paint_alpha, studio_arc_parameters, studio_arc_path,
-    studio_authoring_shape_size, studio_authoring_size_is_positive, studio_camera_aspects_match,
-    studio_camera_view_is_bounded, studio_camera_view_is_within_zoom_bounds,
-    studio_camera_views_match, studio_coordinate_system_parameters, studio_coordinate_system_path,
+    StudioPaintColorProperty, StudioPersistentRemoveProjection, TIMELINE_ANCHOR_EPSILON,
+    VectorAppearanceValueV1, align_cubic_path_morph_chain, append_planned_scene_motions,
+    apply_persistent_scene_removals, apply_world_rotation, authored_motion_easing,
+    canonical_studio_hex_color, close_transform_baseline_value, created_geometry_and_appearance,
+    insert_scene_time, manim_stroke_width_to_scene_world, plan_studio_creation_edits,
+    rotation_is_noop, scale_cubic_path, set_vector_paint_alpha, studio_arc_parameters,
+    studio_arc_path, studio_authoring_shape_size, studio_authoring_size_is_positive,
+    studio_camera_aspects_match, studio_camera_view_is_bounded,
+    studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
+    studio_coordinate_system_parameters, studio_coordinate_system_path,
     studio_creation_supports_stroke_width, studio_cubic_bezier_appearance, studio_data_plot_path,
     studio_ellipse_parameters, studio_ellipse_path, studio_math_tex_appearance,
     studio_point_to_scene_point, studio_regular_polygon_parameters, studio_regular_polygon_path,
@@ -185,6 +186,84 @@ pub(super) fn create_entity_write_is_valid(entity: &CreateSceneEntity) -> bool {
     })
 }
 
+fn create_entity_paint_color_keyframes_are_valid(entity: &CreateSceneEntity) -> bool {
+    entity.paint_color_track.as_ref().is_none_or(|track| {
+        let base_appearance = created_geometry_and_appearance(entity.geometry.clone()).1;
+        let baseline = match track.property {
+            StudioPaintColorProperty::FillColor
+                if matches!(
+                    entity.geometry,
+                    CreateSceneEntityGeometry::Circle { .. }
+                        | CreateSceneEntityGeometry::Rectangle { .. }
+                        | CreateSceneEntityGeometry::ShapeOutline { .. }
+                ) =>
+            {
+                entity.fill_color.as_ref()
+            }
+            StudioPaintColorProperty::StrokeColor
+                if matches!(entity.geometry, CreateSceneEntityGeometry::Line) =>
+            {
+                entity.stroke_color.as_ref().or(match &base_appearance {
+                    SceneAppearanceV1::Vector {
+                        stroke: Some(stroke),
+                        ..
+                    } => Some(&stroke.color),
+                    SceneAppearanceV1::Group { .. }
+                    | SceneAppearanceV1::Image { .. }
+                    | SceneAppearanceV1::Vector { stroke: None, .. } => None,
+                })
+            }
+            StudioPaintColorProperty::FillColor | StudioPaintColorProperty::StrokeColor => None,
+        };
+        let first_matches_baseline =
+            track
+                .keyframes
+                .first()
+                .zip(baseline)
+                .is_some_and(|(first, baseline)| {
+                    first.value.red.to_bits() == baseline.red.to_bits()
+                        && first.value.green.to_bits() == baseline.green.to_bits()
+                        && first.value.blue.to_bits() == baseline.blue.to_bits()
+                });
+        (2..=32).contains(&track.keyframes.len())
+            && first_matches_baseline
+            && entity.material_parameter_keyframes.is_empty()
+            && entity.write_in.is_none()
+            && track.keyframes.iter().enumerate().all(|(index, keyframe)| {
+                keyframe.at.is_finite()
+                    && keyframe.at >= entity.lifetime.start
+                    && keyframe.at <= entity.lifetime.end
+                    && [
+                        keyframe.value.red,
+                        keyframe.value.green,
+                        keyframe.value.blue,
+                        keyframe.value.alpha,
+                    ]
+                    .into_iter()
+                    .all(|component| component.is_finite() && (0.0..=1.0).contains(&component))
+                    && close_transform_baseline_value(keyframe.value.alpha, 1.0)
+                    && if index + 1 == track.keyframes.len() {
+                        keyframe.easing_to_next.is_none()
+                    } else {
+                        matches!(
+                            keyframe.easing_to_next,
+                            Some(EasingV1::Linear {} | EasingV1::ManimSmooth {})
+                        )
+                    }
+            })
+            && track
+                .keyframes
+                .windows(2)
+                .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
+            && create_entity_initial_appearance_end(entity).is_none_or(|appearance_end| {
+                track
+                    .keyframes
+                    .first()
+                    .is_none_or(|keyframe| keyframe.at > appearance_end + TIMELINE_ANCHOR_EPSILON)
+            })
+    })
+}
+
 pub(super) fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> bool {
     let opacity_is_valid = entity.opacity_keyframes.iter().all(|keyframe| {
         keyframe.at.is_finite()
@@ -263,6 +342,7 @@ pub(super) fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEnt
         });
     opacity_is_valid
         && material_is_valid
+        && create_entity_paint_color_keyframes_are_valid(entity)
         && rotation_is_valid
         && scale_is_valid
         && starts_after_initial_appearance
@@ -795,6 +875,7 @@ pub(super) fn append_created_entity(
     let math_tex_morph = entity.math_tex_morph.clone();
     let shape_morph = entity.shape_morph.clone();
     let solid_fill_color = entity.fill_color.clone();
+    let paint_color_track = entity.paint_color_track.clone();
     let has_initial_solid_glyph_fill = create_entity_has_initial_solid_glyph_fill(&entity);
     let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
     let is_logical_group = matches!(&geometry, SceneGeometryV1::Group {});
@@ -976,6 +1057,79 @@ pub(super) fn append_created_entity(
                 });
         }
     }
+    if let Some(track) = &paint_color_track {
+        let mut settled_appearance = appearance.clone();
+        let SceneAppearanceV1::Vector { fill, stroke, .. } = &mut settled_appearance else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        };
+        if let Some(color) = &entity.fill_color {
+            if let Some(fill) = fill {
+                fill.color = color.clone();
+            } else {
+                *fill = Some(FillStyleV1 {
+                    color: color.clone(),
+                    fragment_material: None,
+                    rule: FillRuleV1::NonZero,
+                });
+            }
+        }
+        if let Some(color) = &entity.stroke_color {
+            let stroke = stroke
+                .as_mut()
+                .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?;
+            stroke.color = color.clone();
+        }
+        set_vector_paint_alpha(&mut settled_appearance, entity.paint_opacity)
+            .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?;
+        let SceneAppearanceV1::Vector { fill, stroke, .. } = settled_appearance else {
+            unreachable!("the matched appearance remains vector-valued");
+        };
+        let settled_value = VectorAppearanceValueV1 { fill, stroke };
+        let mut keyframes =
+            Vec::with_capacity(track.keyframes.len() + usize::from(entity.appearance_at.is_some()));
+        if let Some(at) = entity.appearance_at
+            && track
+                .keyframes
+                .first()
+                .is_some_and(|keyframe| keyframe.at > at + TIMELINE_ANCHOR_EPSILON)
+        {
+            keyframes.push(KeyframeV1 {
+                at,
+                easing_to_next: Some(EasingV1::Linear {}),
+                value: settled_value.clone(),
+            });
+        }
+        for keyframe in &track.keyframes {
+            let mut value = settled_value.clone();
+            let paint = match track.property {
+                StudioPaintColorProperty::FillColor => {
+                    value.fill.as_mut().map(|fill| &mut fill.color)
+                }
+                StudioPaintColorProperty::StrokeColor => {
+                    value.stroke.as_mut().map(|stroke| &mut stroke.color)
+                }
+            }
+            .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?;
+            paint.red = keyframe.value.red;
+            paint.green = keyframe.value.green;
+            paint.blue = keyframe.value.blue;
+            keyframes.push(KeyframeV1 {
+                at: keyframe.at,
+                easing_to_next: keyframe.easing_to_next.clone(),
+                value,
+            });
+        }
+        capabilities.insert(SceneCapabilityV1::VectorAppearanceAnimation);
+        let channel_id = unused_channel_id(scene, &format!("studio-paint-color-{scene_order}"));
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::VectorAppearance {
+                entity_id: created_id.clone(),
+                id: channel_id,
+                keyframes,
+                provenance_id: provenance_id.to_owned(),
+            });
+    }
     if entity.uniform_scale_keyframes.len() >= 2 {
         let keyframes = entity
             .uniform_scale_keyframes
@@ -1016,7 +1170,8 @@ pub(super) fn append_created_entity(
         });
     }
     if let Some(at) = entity.appearance_at {
-        if !has_material_parameter_keyframes
+        if paint_color_track.is_none()
+            && !has_material_parameter_keyframes
             && (!close_transform_baseline_value(entity.paint_opacity, 1.0)
                 || entity.fill_color.is_some()
                 || entity.stroke_color.is_some())
@@ -2051,6 +2206,7 @@ impl EngineSessionV1 {
                 material_parameter_keyframes: state.material_parameter_keyframes.clone(),
                 math_tex_morph,
                 opacity_keyframes: state.opacity_keyframes.clone(),
+                paint_color_track: state.paint_color_track.clone(),
                 paint_opacity: state.current_opacity,
                 position: studio_point_to_scene_point(
                     &state.initial_position,

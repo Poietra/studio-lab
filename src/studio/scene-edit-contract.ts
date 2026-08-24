@@ -155,8 +155,8 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     control: pointSchema.optional(),
     easing: studioPropertyKeyframeEasingSchema,
     entityId: z.string(),
-    from: z.union([pointSchema, z.number()]).optional(),
-    key: z.enum(["appearance", "position", "rotation", "scale"]),
+    from: z.union([pointSchema, z.number(), z.string()]).optional(),
+    key: z.enum(["appearance", "fillColor", "position", "rotation", "scale", "strokeColor"]),
     kind: z.literal("AnimateProperty"),
     materialParameter: z
       .object({
@@ -169,7 +169,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     relativeDelta: z.number().optional(),
     relativeFactor: z.number().positive().optional(),
     timelineTrack: z.literal(true).optional(),
-    to: z.union([pointSchema, z.number()]),
+    to: z.union([pointSchema, z.number(), z.string()]),
   }),
   operationBaseSchema.extend({
     entityId: z.string(),
@@ -311,6 +311,36 @@ export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superR
       message: `${operation.key} must be a lowercase canonical #rrggbb color.`,
       path: ["value"],
     });
+  }
+  if (operation.kind === "AnimateProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
+    if (!isCanonicalRgbHex(operation.from)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${operation.key} from must be a lowercase canonical #rrggbb color.`,
+        path: ["from"],
+      });
+    }
+    if (!isCanonicalRgbHex(operation.to)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${operation.key} to must be a lowercase canonical #rrggbb color.`,
+        path: ["to"],
+      });
+    }
+    if (operation.timelineTrack !== true) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${operation.key} animation must be an explicit Timeline track.`,
+        path: ["timelineTrack"],
+      });
+    }
+    if (operation.easing !== "linear" && operation.easing !== "smooth") {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `${operation.key} animation supports only linear or smooth easing.`,
+        path: ["easing"],
+      });
+    }
   }
   if (
     operation.kind === "SetProperty" &&
@@ -487,4 +517,9 @@ export function studioEntityTypeSupportsStrokeWidth(type: string) {
     type === "Triangle" ||
     type === "RegularPolygon"
   );
+}
+
+export function studioPaintColorTrackProperty(type: string): "fillColor" | "strokeColor" | null {
+  if (["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Triangle"].includes(type)) return "fillColor";
+  return type === "Line" ? "strokeColor" : null;
 }
