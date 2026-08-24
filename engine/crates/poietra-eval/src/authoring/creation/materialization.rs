@@ -426,7 +426,10 @@ pub(super) fn validate_create_scene_entities_command(
         }
         duration += insertion.duration;
     }
-    if command.entities.is_empty() && command.camera_animation.is_none() {
+    if command.entities.is_empty()
+        && command.camera_animation.is_none()
+        && command.scene_background.is_none()
+    {
         return Err(CreateSceneEntitiesError::EmptyBatch);
     }
     validate_studio_camera_animation_command(session, command.camera_animation.as_ref(), duration)?;
@@ -1606,12 +1609,15 @@ pub(super) fn creates_browser_outline(entities: &[CreateSceneEntity]) -> bool {
 
 impl EngineSessionV1 {
     /// Authorizes normalized Studio duration edits and applies them atomically.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one atomic Studio materialization keeps candidate construction and commit together"
+    )]
     pub(super) fn create_scene_entities(
         &mut self,
         command: CreateSceneEntitiesCommand,
     ) -> Result<StudioAuthoringEditResult, CreateSceneEntitiesError> {
         validate_create_scene_entities_command(self, &command)?;
-
         let mut candidate = SceneIrBundleV1 {
             assets: self.assets().clone(),
             scene: self.scene().clone(),
@@ -1676,6 +1682,9 @@ impl EngineSessionV1 {
             &command.provenance.id,
             &mut capabilities,
         );
+        candidate.scene.camera.background = command
+            .scene_background
+            .unwrap_or(candidate.scene.camera.background);
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
         candidate.scene.provenance.push(command.provenance.clone());
         append_planned_scene_motions(
@@ -1779,6 +1788,17 @@ impl EngineSessionV1 {
             Some(&base_scene_paint_order),
         )
         .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
+        if plan.scene_background.is_some()
+            && (!matches!(
+                &self.scene().source,
+                SceneSourceV1::StudioEditProgram { .. }
+            ) || !self.scene().provenance.iter().any(|record| {
+                record.id == "studio-native-document"
+                    && record.origin == ProvenanceOriginV1::StudioEditProgram
+            }))
+        {
+            return Err(ApplyStudioCreationEditError::Unsupported);
+        }
         if plan.camera_animation.as_ref().is_some_and(|animation| {
             !studio_camera_views_match(&animation.initial_view, &self.scene().camera.view)
                 || self
@@ -2278,6 +2298,7 @@ impl EngineSessionV1 {
                 id: format!("studio-create:{next_revision}"),
                 origin: ProvenanceOriginV1::StudioEditProgram,
             },
+            scene_background: plan.scene_background,
             timeline_insertions: plan.timeline_insertions,
         })?;
         result.creation_projection = Some(creation_projection);

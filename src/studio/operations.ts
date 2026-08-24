@@ -55,6 +55,7 @@ export type SceneDurationWaitOperation = InsertTimelineEventOperation &
 export type SceneDurationOperation = SceneDurationWaitOperation | TrimSceneDurationOperation;
 
 export type InsertSceneBoundaryOperation = Extract<SceneEditOperation, { kind: "InsertSceneBoundary" }>;
+export type SetSceneBackgroundOperation = Extract<SceneEditOperation, { kind: "SetSceneBackground" }>;
 export type AnimateCameraOperation = Extract<SceneEditOperation, { kind: "AnimateCamera" }>;
 export type CanonicalEditOperation = SceneEditOperation;
 
@@ -66,6 +67,12 @@ export function isSceneDurationOperation(operation: SceneEditOperation): operati
       operation.purpose === "scene-duration" &&
       operation.provenance.origin === "studio-default")
   );
+}
+
+export function isStudioNativeAuthoringBatchOperation(
+  operation: SceneEditOperation,
+): operation is Extract<SceneEditOperation, { kind: "CreateEntity" | "SetSceneBackground" }> {
+  return operation.kind === "CreateEntity" || operation.kind === "SetSceneBackground";
 }
 
 export function isStaticRootTransformOperation(operation: SceneEditOperation) {

@@ -233,6 +233,7 @@ export function WorkspaceSidebar({
   onImportImageFiles,
   onImportSvgFiles,
   onDurationChange,
+  onSceneBackgroundChange,
   onAddImageAsset,
   onAddSvgAsset,
   onEditAppliedProgram,
@@ -251,6 +252,9 @@ export function WorkspaceSidebar({
   onToggleEntity,
   onUndo,
   redoCount,
+  sceneBackgroundAvailable = false,
+  sceneBackgroundColor = "#000000",
+  sceneBackgroundUnavailableReason = null,
   selectedIds,
   selectedGroupId = null,
   sourceImportOutcomes,
@@ -286,6 +290,7 @@ export function WorkspaceSidebar({
   onImportImageFiles?: (files: readonly File[]) => void;
   onImportSvgFiles?: (files: readonly File[]) => void;
   onDurationChange: (duration: number) => void;
+  onSceneBackgroundChange?: (color: string) => void;
   onAddImageAsset?: (asset: StudioNativeImageAssetV1) => void;
   onAddSvgAsset?: (asset: StudioSvgPathAsset) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
@@ -304,6 +309,9 @@ export function WorkspaceSidebar({
   onToggleEntity: (entityId: string, selected: boolean) => void;
   onUndo: () => void;
   redoCount: number;
+  sceneBackgroundAvailable?: boolean;
+  sceneBackgroundColor?: string;
+  sceneBackgroundUnavailableReason?: string | null;
   selectedIds: ReadonlySet<string>;
   selectedGroupId?: string | null;
   sourceImportOutcomes: readonly ManimSourceImportOutcome[];
@@ -1025,6 +1033,36 @@ export function WorkspaceSidebar({
                 {durationError}
               </p>
             ) : null}
+          </dd>
+          <dt className="text-zinc-600">Background</dt>
+          <dd>
+            <form
+              className="flex items-center gap-1"
+              onSubmit={(event) => {
+                event.preventDefault();
+                const color = new FormData(event.currentTarget).get("background");
+                if (typeof color === "string") onSceneBackgroundChange?.(color);
+              }}
+            >
+              <input
+                aria-label="Scene background color"
+                className="size-7 border border-zinc-700 bg-zinc-950 p-0.5 outline-none focus:border-sky-500 disabled:opacity-50"
+                defaultValue={sceneBackgroundColor}
+                disabled={!authoringAvailable || !sceneBackgroundAvailable || !onSceneBackgroundChange}
+                key={`${activeScene.sceneId}/${sceneBackgroundColor}`}
+                name="background"
+                title={sceneBackgroundUnavailableReason ?? undefined}
+                type="color"
+              />
+              <button
+                className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+                disabled={!authoringAvailable || !sceneBackgroundAvailable || !onSceneBackgroundChange}
+                title={sceneBackgroundUnavailableReason ?? undefined}
+                type="submit"
+              >
+                Update
+              </button>
+            </form>
           </dd>
           <dt className="text-zinc-600">Anchors</dt>
           <dd className="tabular-nums text-zinc-400">

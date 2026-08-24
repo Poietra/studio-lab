@@ -7,12 +7,14 @@ import {
   createStudioEntitiesProgram,
   createStudioGroupLifetimeTrimProgram,
   createStudioGroupProgram,
+  createStudioSceneBackgroundProgram,
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioCreatedContentProgram,
   replaceStudioCreatedCubicBezierProgram,
   replaceStudioCreatedDataSeriesProgram,
   replaceStudioEntityLifetimeProgram,
+  replaceStudioSceneBackgroundProgram,
 } from "./authoring-commands";
 import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import { programRecord, projectProposedState } from "./evaluator";
@@ -83,6 +85,48 @@ describe("manual Studio authoring commands", () => {
       waitOperationIds: [waitOperationId],
     } as const;
   }
+
+  it("creates and replaces one preview-only opaque Scene background Program", () => {
+    const created = createStudioSceneBackgroundProgram({
+      color: "#123456",
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "scene-background",
+    });
+    expect(created.kind, JSON.stringify(created.issues)).toBe("valid");
+    expect(created.program).toMatchObject({
+      anchor: { capturedPlayhead: 0, resolvedSeconds: 0 },
+      loweringStatus: "unsupported",
+      operations: [
+        {
+          color: "#123456",
+          interval: { end: 0, start: 0 },
+          kind: "SetSceneBackground",
+          provenance: { origin: "studio-default" },
+        },
+      ],
+    });
+    expect(programExecutionCapabilities(created.program)).toMatchObject({
+      apply: "supported",
+      lowering: "unsupported",
+    });
+
+    const owner = programRecord(created.program, created);
+    const replaced = replaceStudioSceneBackgroundProgram({
+      color: "#654321",
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(replaced.kind, JSON.stringify(replaced.issues)).toBe("valid");
+    expect(replaced.program.transactionId).toBe("scene-background");
+    expect(replaced.program.operations[0]).toMatchObject({ color: "#654321", kind: "SetSceneBackground" });
+    expect(() =>
+      createStudioSceneBackgroundProgram({
+        color: "#123456ff",
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "scene-background-alpha",
+      }),
+    ).toThrow(/#rrggbb/u);
+  });
 
   it("projects Inspector position and content edits from one canonical program", () => {
     const validation = createInspectorEntityEditProgram({

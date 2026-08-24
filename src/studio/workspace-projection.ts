@@ -30,6 +30,7 @@ import {
   isExactStaticRootProjectionProgramBatch,
   isSceneDurationOperation,
   isStaticRootTransformOperation,
+  isStudioNativeAuthoringBatchOperation,
 } from "./operations";
 import { normalizeContentSamples } from "./property-sampling";
 import {
@@ -370,6 +371,7 @@ function sameCreationDataSeries(
 }
 
 function creationMutationKind(operation: SceneEditOperation): StudioCreationProjectionMutationV1["kind"] | null {
+  if (operation.kind === "SetSceneBackground") return "scene-background";
   if (operation.kind === "SetProperty" && operation.key === "position") return "position";
   if (operation.kind === "SetProperty" && operation.key === "appearance") return "opacity";
   if (operation.kind === "AnimateProperty" && operation.key === "appearance") {
@@ -409,8 +411,8 @@ function correlateCreationProjection(
     program.operations.map((operation) => ({ operation, program }) as const),
   );
   const createCount = operations.filter(({ operation }) => operation.kind === "CreateEntity").length;
-  if (createCount === 0) return null;
-  if (!projection) throw new TypeError("A Rust creation projection is required to project CreateEntity Programs.");
+  if (!operations.some(({ operation }) => isStudioNativeAuthoringBatchOperation(operation))) return null;
+  if (!projection) throw new TypeError("A Rust creation projection is required to project Studio-native Programs.");
   const operationById = new Map(operations.map((entry) => [entry.operation.id, entry] as const));
   const mathTexTransformRoots = studioCreationMathTexTransformRoots(programs);
   const transactionIds = new Set(programs.map(({ transactionId }) => transactionId));
@@ -605,6 +607,12 @@ function correlateCreationProjection(
       mutation.easing.kind === (operation.easing === "smooth" ? "manim-smooth" : "linear") &&
       mutation.from === operation.from &&
       mutation.to === operation.to;
+    const isCorrelatedSceneBackground =
+      operation?.kind === "SetSceneBackground" &&
+      mutation.kind === "scene-background" &&
+      mutation.value === operation.color &&
+      sameProjectionNumber(mutation.interval.start, 0) &&
+      sameProjectionNumber(mutation.interval.end, 0);
     const expectedMathTexContent =
       operation?.kind === "TransformContent" ? canonicalEditableContent(operation.replacement, "MathTex") : null;
     const mathTexTransformInsertion = expected
@@ -665,6 +673,7 @@ function correlateCreationProjection(
       operation?.kind !== "TransformContent" &&
       operation?.kind !== "TransformShape" &&
       operation?.kind !== "AnimateCamera" &&
+      operation?.kind !== "SetSceneBackground" &&
       operation?.kind !== "DrawIn" &&
       operation?.kind !== "WriteIn" &&
       !(operation?.kind === "AnimateProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) &&
@@ -683,6 +692,7 @@ function correlateCreationProjection(
         !isCorrelatedSpin &&
         !isCorrelatedDraw &&
         !isCorrelatedWrite &&
+        !isCorrelatedSceneBackground &&
         !isCorrelatedPaintColorTrack)
     ) {
       throw new TypeError(`Creation mutation ${mutation.operationId} is not correlated with the Rust projection.`);
@@ -1204,6 +1214,11 @@ function appendProjectedMutation(
     // camera. Adding a TypeScript camera channel would transform overlays twice.
     return;
   }
+  if (mutation.kind === "scene-background") {
+    // Rust has already materialized the camera clear color. The workspace
+    // object graph has no duplicate Scene-level color channel to evaluate.
+    return;
+  }
   const entityId = "studioEntityId" in mutation ? mutation.studioEntityId : mutation.entityId;
   const metadata = {
     operationId: mutation.operationId,
@@ -1646,7 +1661,11 @@ function projectCreationWorkingState(
 
   const recordedMotionOperationIds = new Set<string>();
   for (const { mutation, operation, program } of correlated.mutations) {
-    if (mutation.kind !== "animate-camera" && !draft.entities[mutation.entityId]) {
+    if (
+      mutation.kind !== "animate-camera" &&
+      mutation.kind !== "scene-background" &&
+      !draft.entities[mutation.entityId]
+    ) {
       throw new TypeError(`Creation mutation ${mutation.operationId} targets a missing projected entity.`);
     }
     appendProjectedOperationRecord(draft, operation, program, mutation.interval);
@@ -1881,19 +1900,21 @@ export function projectStudioWorkspace(
     stagedEdits: input.draftEdit ? [input.draftEdit] : [],
   });
   const programs = [...workingState.appliedEdits, ...workingState.stagedEdits].map((record) => record.program);
-  const hasCreation = programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"));
+  const hasStudioNativeAuthoring = programs.some((program) =>
+    program.operations.some(isStudioNativeAuthoringBatchOperation),
+  );
   const hasMotion = programs.some((program) => program.operations.some(({ kind }) => kind === "CreateMotion"));
   const hasMathTexTransform = programs.some((program) =>
     program.operations.some(({ kind }) => kind === "TransformContent"),
   );
   const motionBatchKind =
-    hasMotion && !hasCreation && !hasMathTexTransform ? studioMotionProjectionBatchKind(programs) : null;
+    hasMotion && !hasStudioNativeAuthoring && !hasMathTexTransform ? studioMotionProjectionBatchKind(programs) : null;
   const containsSceneDurationOperation = programs.some((program) => program.operations.some(isSceneDurationOperation));
-  const persistentRemoveProjection = hasCreation
+  const persistentRemoveProjection = hasStudioNativeAuthoring
     ? null
     : selectPersistentRemoveProjection(programs, input.persistentRemoveProjection ?? null);
   let proposedState: ProposedState;
-  if (containsSceneDurationOperation && !hasCreation) {
+  if (containsSceneDurationOperation && !hasStudioNativeAuthoring) {
     if (persistentRemoveProjection) {
       throw new TypeError("Scene duration and persistent remove Programs cannot share one workspace projection.");
     }
@@ -1914,12 +1935,12 @@ export function projectStudioWorkspace(
       throw new TypeError("A Rust bound-entity projection is required for a source-bound endpoint Program.");
     }
     proposedState = projectBoundEntityWorkingState(workingState, input.boundEntityProjection);
-  } else if (hasCreation) {
+  } else if (hasStudioNativeAuthoring) {
     if (input.editAuthority !== "rust-authorized-batch") {
-      throw new TypeError("CreateEntity requires one Rust-authorized creation batch.");
+      throw new TypeError("Studio-native authoring requires one Rust-authorized batch.");
     }
     if (!input.creationProjection) {
-      throw new TypeError("A Rust creation projection is required to project CreateEntity Programs.");
+      throw new TypeError("A Rust creation projection is required to project Studio-native Programs.");
     }
     proposedState = projectCreationWorkingState(workingState, input.creationProjection);
   } else if (

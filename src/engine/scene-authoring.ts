@@ -704,6 +704,15 @@ const studioCreationProjectionV1Schema = z
       z.discriminatedUnion("kind", [
         z
           .object({
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("scene-background"),
+            operationId: z.string().min(1),
+            transactionId: z.string().min(1),
+            value: canonicalRgbHexSchema,
+          })
+          .strict(),
+        z
+          .object({
             easing: easingV1Schema,
             entityId: z.string().min(1),
             from: canonicalRgbHexSchema,
@@ -1129,6 +1138,7 @@ type StudioCreationOperationV1 = Readonly<{
         }>;
         kind: "create";
       }>
+    | Readonly<{ color: string | null; kind: "scene-background" }>
     | Readonly<{ entityId: string; kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
     | Readonly<{ color: string | null; entityId: string; kind: "fill-color" | "stroke-color" }>
     | Readonly<{

@@ -23,7 +23,7 @@ import type {
 } from "./model";
 import { EDIT_OPERATION_VERSION, type OperationOrigin, operationId, provisionalEntityId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
-import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "./scene-edit-contract";
 import { STUDIO_STYLE_PROFILE, type StyleProfileRef, styleProfileRef } from "./style-profile";
 import { resolveTimeAnchorOnce } from "./time";
 import type { SceneDurationTrimAvailability } from "./timeline-projection";
@@ -109,6 +109,7 @@ function authoringProgram(
   operations: readonly SceneEditOperation[],
   input: Readonly<{
     capturedPlayhead: number;
+    loweringStatus?: SceneEdit["loweringStatus"];
     origin: OperationOrigin;
     programEvidence?: readonly string[];
     styleProfileRef?: StyleProfileRef;
@@ -133,7 +134,7 @@ function authoringProgram(
   const program: SceneEdit = {
     anchor: resolution.anchor,
     intentCount: 1,
-    loweringStatus: "supported",
+    loweringStatus: input.loweringStatus ?? "supported",
     operations,
     provenance: {
       ...provenance(input.origin, ["manual Studio authoring", ...(input.programEvidence ?? [])]),
@@ -149,6 +150,65 @@ function authoringProgram(
     version: EDIT_OPERATION_VERSION,
   };
   return validateAndScheduleProgram(program, input.scene);
+}
+
+export function createStudioSceneBackgroundProgram(
+  input: Readonly<{
+    color: string;
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  if (!isCanonicalRgbHex(input.color)) {
+    throw new TypeError("Scene background color must be a lowercase canonical #rrggbb color.");
+  }
+  return authoringProgram(
+    [
+      {
+        color: input.color,
+        dependsOn: [],
+        id: operationId(input.transactionId, "set-scene-background"),
+        interval: { end: 0, start: 0 },
+        kind: "SetSceneBackground",
+        provenance: provenance("studio-default", ["Scene graph background color"]),
+      },
+    ],
+    {
+      capturedPlayhead: 0,
+      loweringStatus: "unsupported",
+      origin: "studio-default",
+      programEvidence: ["opaque solid Scene background"],
+      scene: input.scene,
+      transactionId: input.transactionId,
+    },
+  );
+}
+
+export function replaceStudioSceneBackgroundProgram(
+  input: Readonly<{
+    color: string;
+    owner: ProgramRecord;
+    scene: RuntimeSceneState;
+  }>,
+): SceneEditValidationResult {
+  if (!isCanonicalRgbHex(input.color)) {
+    throw new TypeError("Scene background color must be a lowercase canonical #rrggbb color.");
+  }
+  const operation = input.owner.program.operations[0];
+  if (
+    input.owner.program.operations.length !== 1 ||
+    operation?.kind !== "SetSceneBackground" ||
+    input.owner.program.loweringStatus !== "unsupported"
+  ) {
+    throw new TypeError("Only one canonical Scene background Program can be replaced.");
+  }
+  return validateAndScheduleProgram(
+    {
+      ...input.owner.program,
+      operations: [{ ...operation, color: input.color }],
+    },
+    input.scene,
+  );
 }
 
 function appearanceEnd(scene: RuntimeSceneState, start: number) {

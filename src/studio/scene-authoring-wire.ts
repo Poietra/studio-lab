@@ -266,6 +266,13 @@ function normalizedStudioCreationOperation(
       kind: "create",
     };
   }
+  if (operation.kind === "SetSceneBackground") {
+    return {
+      ...common,
+      color: isCanonicalRgbHex(operation.color) ? operation.color : null,
+      kind: "scene-background",
+    };
+  }
   if (operation.kind === "SetProperty" && operation.key === "position") {
     return {
       ...common,
