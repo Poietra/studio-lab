@@ -156,11 +156,28 @@ fn manim_stroke_width_to_scene_world(width: f64) -> f64 {
 fn studio_creation_supports_stroke_width(kind: StudioAuthoringEntityKind) -> bool {
     matches!(
         kind,
-        StudioAuthoringEntityKind::Circle
+        StudioAuthoringEntityKind::Arc
+            | StudioAuthoringEntityKind::Axes
+            | StudioAuthoringEntityKind::Circle
+            | StudioAuthoringEntityKind::DataPlot
             | StudioAuthoringEntityKind::Ellipse
             | StudioAuthoringEntityKind::Line
+            | StudioAuthoringEntityKind::NumberLine
+            | StudioAuthoringEntityKind::NumberPlane
             | StudioAuthoringEntityKind::Rectangle
             | StudioAuthoringEntityKind::RegularPolygon
+    )
+}
+
+fn studio_creation_supports_stroke_cap(kind: StudioAuthoringEntityKind) -> bool {
+    matches!(
+        kind,
+        StudioAuthoringEntityKind::Arc
+            | StudioAuthoringEntityKind::Axes
+            | StudioAuthoringEntityKind::DataPlot
+            | StudioAuthoringEntityKind::Line
+            | StudioAuthoringEntityKind::NumberLine
+            | StudioAuthoringEntityKind::NumberPlane
     )
 }
 

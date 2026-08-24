@@ -1207,7 +1207,7 @@ export function createDirectManipulationStrokeCapProgram(
   }>,
 ): SceneEditValidationResult {
   if (input.strokeCap !== "butt" && input.strokeCap !== "round" && input.strokeCap !== "square") {
-    throw new Error("Line stroke cap must be butt, round, or square.");
+    throw new Error("Stroke cap must be butt, round, or square.");
   }
   const sourceAnchor =
     Math.abs(input.start - input.capturedPlayhead) < 0.001
@@ -1225,7 +1225,7 @@ export function createDirectManipulationStrokeCapProgram(
     interval: { end: input.start, start: input.start },
     key: "strokeCap",
     kind: "SetProperty",
-    provenance: provenance("direct-manipulation", ["stroke cap control", "absolute Line cap"]),
+    provenance: provenance("direct-manipulation", ["stroke cap control", "absolute path cap"]),
     value: input.strokeCap,
   };
   return validateAndScheduleProgram(
@@ -1234,7 +1234,7 @@ export function createDirectManipulationStrokeCapProgram(
       intentCount: 1,
       loweringStatus: "supported",
       operations: [operation],
-      provenance: provenance("direct-manipulation", ["absolute static Line stroke cap constraint"]),
+      provenance: provenance("direct-manipulation", ["absolute static path stroke cap constraint"]),
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
       transactionId: input.transactionId,

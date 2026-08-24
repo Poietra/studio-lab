@@ -260,6 +260,7 @@ import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-author
 import {
   type SceneEdit,
   shapeTransformChangesShape,
+  studioEntityTypeSupportsStrokeCap,
   studioEntityTypeSupportsStrokeWidth,
   studioPaintColorTrackProperty,
 } from "./studio/scene-edit-contract";
@@ -7990,8 +7991,8 @@ export function App({
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
     const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
-    if (!createdAuthority || entity?.type !== "Line") {
-      setDraftError("Stroke cap is available only for a Studio-created Line.");
+    if (!createdAuthority || !entity || !studioEntityTypeSupportsStrokeCap(entity.type)) {
+      setDraftError("Stroke cap is available only for a supported Studio-created open path.");
       return false;
     }
     const currentCap =
@@ -8004,7 +8005,7 @@ export function App({
       gestureContext.sourcePrograms,
     );
     const anchor = manualAuthoringAnchor({
-      action: "Line stroke cap edit",
+      action: "stroke cap edit",
       allowSyntheticPreviewAnchor: true,
       requireAlignedPlayhead: true,
       scene: sourceScene,
@@ -8023,7 +8024,7 @@ export function App({
       });
       return acceptDirectManipulationDraft(validation, gestureContext, createdAuthority.sourceAnchor);
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : "The Line stroke cap could not be changed.");
+      setDraftError(error instanceof Error ? error.message : "The path stroke cap could not be changed.");
       return false;
     }
   }
@@ -9908,9 +9909,13 @@ export function App({
                     (selectedStudioCreationAppearanceAuthority ? "#ffffff" : null))
                   : null
               }
-              strokeCapAvailable={selectedStudioCreationAppearanceAtAnchor && selectedEntity?.type === "Line"}
+              strokeCapAvailable={
+                selectedStudioCreationAppearanceAtAnchor &&
+                studioEntityTypeSupportsStrokeCap(selectedEntity?.type ?? "")
+              }
               strokeCapValue={
-                selectedEntity?.geometry.style.kind === "known" && selectedEntity.type === "Line"
+                selectedEntity?.geometry.style.kind === "known" &&
+                studioEntityTypeSupportsStrokeCap(selectedEntity.type)
                   ? (selectedEntity.geometry.style.value.strokeCap ?? "butt")
                   : null
               }

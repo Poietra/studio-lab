@@ -1328,6 +1328,27 @@ test("authors Ellipse, Arc, and Sector through Draw, reload, and MP4 export", as
     await expect(arc).toBeVisible();
     await expect(page.getByText("r 1.5 · start 45° · sweep 180°", { exact: true })).toBeVisible();
 
+    const arcStrokeWidth = page.getByRole("spinbutton", { name: "Stroke width Arc" });
+    await expect(arcStrokeWidth).toHaveValue("0.04");
+    await arcStrokeWidth.fill("0.08");
+    await arcStrokeWidth.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(arcStrokeWidth).toHaveValue("0.08");
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Arc" }).check();
+    await expect(arcStrokeWidth).toHaveValue("0.04");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select Arc" }).check();
+    await expect(arcStrokeWidth).toHaveValue("0.08");
+
+    const arcStrokeCap = page.getByRole("combobox", { name: "Stroke cap Arc" });
+    await expect(arcStrokeCap).toHaveValue("butt");
+    await arcStrokeCap.selectOption("round");
+    await arcStrokeCap.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(arcStrokeCap).toHaveValue("round");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
     await page.getByRole("button", { name: "Add Draw entrance for Arc" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     let drawClip = page.getByRole("button", { name: "Edit Arc Draw entrance" });
@@ -1355,6 +1376,9 @@ test("authors Ellipse, Arc, and Sector through Draw, reload, and MP4 export", as
     await expect(page.getByRole("button", { name: "Move Ellipse", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Move Arc", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Move Sector", exact: true })).toBeVisible();
+    await page.getByRole("checkbox", { name: "Select Arc" }).check();
+    await expect(page.getByRole("spinbutton", { name: "Stroke width Arc" })).toHaveValue("0.08");
+    await expect(page.getByRole("combobox", { name: "Stroke cap Arc" })).toHaveValue("round");
     drawClip = page.getByRole("button", { name: "Edit Arc Draw entrance" });
     await expect(drawClip).toBeVisible();
 

@@ -80,6 +80,13 @@ const ARROW_ENTITY: ProjectedEntity = {
   type: "Arrow",
 };
 
+const ARC_ENTITY: ProjectedEntity = {
+  ...CUBIC_BEZIER_ENTITY,
+  id: "entity:arc",
+  transactionId: "create-arc",
+  type: "Arc",
+};
+
 const TEXT_ENTITY: ProjectedEntity = {
   ...CIRCLE_ENTITY,
   id: "entity:text",
@@ -1960,8 +1967,8 @@ describe("StudioCanvas retained preview layer", () => {
   });
 
   it("exposes stroke but not fill color for Studio-created open paths", () => {
-    for (const entity of [CUBIC_BEZIER_ENTITY, LINE_ENTITY, ARROW_ENTITY]) {
-      const line = entity.type === "Line";
+    for (const entity of [CUBIC_BEZIER_ENTITY, LINE_ENTITY, ARROW_ENTITY, ARC_ENTITY]) {
+      const supportsStrokeStyle = entity.type === "Line" || entity.type === "Arc";
       const markup = renderSelectedInspector(
         entity,
         null,
@@ -1974,10 +1981,10 @@ describe("StudioCanvas retained preview layer", () => {
         "#abcdef",
         false,
         null,
-        line,
-        line ? 0.08 : null,
-        line,
-        line ? "round" : null,
+        supportsStrokeStyle,
+        supportsStrokeStyle ? 0.08 : null,
+        supportsStrokeStyle,
+        supportsStrokeStyle ? "round" : null,
       );
       const name = entity.id.slice("entity:".length);
       const stroke = new RegExp(`<input aria-label="Stroke color ${name}"[^>]*>`);
@@ -1985,12 +1992,12 @@ describe("StudioCanvas retained preview layer", () => {
       expect(markup).not.toContain(`aria-label="Fill color ${name}"`);
       expect(markup.match(stroke)?.[0]).not.toContain('disabled=""');
       expect(markup.match(stroke)?.[0]).toContain('value="#abcdef"');
-      if (line) {
-        const cap = markup.match(/<select aria-label="Stroke cap line"[^>]*>/u)?.[0];
+      if (supportsStrokeStyle) {
+        const cap = markup.match(new RegExp(`<select aria-label="Stroke cap ${name}"[^>]*>`))?.[0];
         expect(cap).toBeDefined();
         expect(cap).not.toContain('disabled=""');
         expect(markup).toContain('<option value="round" selected="">Round</option>');
-        const width = markup.match(/<input aria-label="Stroke width line"[^>]*>/u)?.[0];
+        const width = markup.match(new RegExp(`<input aria-label="Stroke width ${name}"[^>]*>`))?.[0];
         expect(width).toBeDefined();
         expect(width).not.toContain('disabled=""');
         expect(width).toContain('value="0.08"');
@@ -1998,10 +2005,10 @@ describe("StudioCanvas retained preview layer", () => {
         expect(width).toContain('max="0.5"');
         expect(width).toContain('step="0.005"');
         expect(renderSelectedInspector(entity, null)).toMatch(
-          /<input aria-label="Stroke width line"[^>]*disabled=""[^>]*>/u,
+          new RegExp(`<input aria-label="Stroke width ${name}"[^>]*disabled=""[^>]*>`),
         );
         expect(renderSelectedInspector(entity, null)).toMatch(
-          /<select aria-label="Stroke cap line"[^>]*disabled=""[^>]*>/u,
+          new RegExp(`<select aria-label="Stroke cap ${name}"[^>]*disabled=""[^>]*>`),
         );
       } else {
         expect(markup).not.toContain(`aria-label="Stroke cap ${name}"`);
