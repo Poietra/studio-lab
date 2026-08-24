@@ -520,6 +520,8 @@ export function studioEntityTypeSupportsStrokeWidth(type: string) {
 }
 
 export function studioPaintColorTrackProperty(type: string): "fillColor" | "strokeColor" | null {
-  if (["Circle", "Ellipse", "Rectangle", "RegularPolygon", "Triangle"].includes(type)) return "fillColor";
+  if (["Circle", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Text", "Triangle"].includes(type)) {
+    return "fillColor";
+  }
   return type === "Line" ? "strokeColor" : null;
 }

@@ -194,8 +194,10 @@ fn create_entity_paint_color_keyframes_are_valid(entity: &CreateSceneEntity) -> 
                 if matches!(
                     entity.geometry,
                     CreateSceneEntityGeometry::Circle { .. }
+                        | CreateSceneEntityGeometry::CubicOutline { .. }
                         | CreateSceneEntityGeometry::Rectangle { .. }
                         | CreateSceneEntityGeometry::ShapeOutline { .. }
+                        | CreateSceneEntityGeometry::TextOutline { .. }
                 ) =>
             {
                 entity.fill_color.as_ref()

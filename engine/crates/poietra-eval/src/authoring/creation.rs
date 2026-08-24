@@ -1425,8 +1425,10 @@ impl StudioCreationPlan {
                         state.kind,
                         StudioAuthoringEntityKind::Circle
                             | StudioAuthoringEntityKind::Ellipse
+                            | StudioAuthoringEntityKind::MathTex
                             | StudioAuthoringEntityKind::Rectangle
                             | StudioAuthoringEntityKind::RegularPolygon
+                            | StudioAuthoringEntityKind::Text
                     )
                     .then(|| state.fill_color_override.clone())
                     .flatten(),

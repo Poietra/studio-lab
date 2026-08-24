@@ -75,6 +75,13 @@ async function entranceClipTime(page: Page, clip: Locator, progress: number) {
   return Number(((sceneDuration * (placement.left + placement.width * progress)) / 100).toFixed(2));
 }
 
+async function propertyKeyframeTime(marker: Locator) {
+  const label = await marker.getAttribute("aria-label");
+  const match = / at ([0-9]+(?:[.][0-9]+)?) seconds$/u.exec(label ?? "");
+  if (!match?.[1]) throw new Error("The property keyframe did not expose its timeline time.");
+  return Number(match[1]);
+}
+
 async function scrubEntranceClip(page: Page, clip: Locator, progress: number) {
   const slider = page.getByRole("slider", { name: "Scene playhead" });
   const time = await entranceClipTime(page, clip, progress);
@@ -121,7 +128,7 @@ async function decodedBrightPixelCounts(
   page: Page,
   mp4Base64: string,
   sampleTimes: readonly number[],
-  mode: "bright" | "green-dominant" = "bright",
+  mode: "blue-dominant" | "bright" | "green-dominant" | "red-dominant" = "bright",
 ) {
   return page.evaluate(
     async ({ mode, mp4Base64, sampleTimes }) => {
@@ -183,7 +190,13 @@ async function decodedBrightPixelCounts(
             const green = pixels[offset + 1] ?? 0;
             const blue = pixels[offset + 2] ?? 0;
             const matches =
-              mode === "green-dominant" ? green > 32 && green > red * 2 && green > blue * 1.5 : red + green + blue > 90;
+              mode === "green-dominant"
+                ? green > 32 && green > red * 2 && green > blue * 1.5
+                : mode === "blue-dominant"
+                  ? blue > 32 && blue > red * 1.5 && blue > green * 1.5
+                  : mode === "red-dominant"
+                    ? red > 32 && red > green * 1.5 && red > blue * 1.5
+                    : red + green + blue > 90;
             if (matches) bright += 1;
           }
           counts.push(bright);
@@ -371,6 +384,19 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     await page.getByRole("checkbox", { name: "Select Poietra" }).check();
     await expect(textFill).toHaveValue("#22c55e");
 
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("1.8");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1.8, 1);
+    await page.getByRole("button", { name: "Add fill color keyframe for Poietra" }).click();
+    await expect(page.locator("[data-paint-color-keyframe]")).toHaveCount(2);
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const textColorEnd = page.getByRole("button", { name: /Fill color keyframe 2 at/u });
+    await textColorEnd.click();
+    await page.getByLabel("Fill color keyframe value").fill("#3b82f6");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(textFill).toBeDisabled();
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("1");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1, 1);
+
     await page.getByRole("button", { name: "Create animation" }).click();
     await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
     await dragBy(page, rectangle, { x: 90, y: -35 }, true);
@@ -439,6 +465,10 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     await expect(page.getByRole("button", { name: "Move Rectangle", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Move Poietra", exact: true }).click();
     await expect(page.getByLabel("Fill color Poietra")).toHaveValue("#22c55e");
+    await expect(page.getByLabel("Fill color Poietra")).toBeDisabled();
+    const restoredTextColorStart = page.getByRole("button", { name: /Fill color keyframe 1 at/u });
+    const restoredTextColorEnd = page.getByRole("button", { name: /Fill color keyframe 2 at/u });
+    await expect(restoredTextColorEnd).toBeVisible();
     const restoredSpinningRectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
     const restoredSpinClip = page.getByRole("button", { name: "Edit Rectangle motion clip" });
     const restoredSpinningRectangleId = await restoredSpinningRectangle.getAttribute("data-studio-entity");
@@ -451,10 +481,13 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     expect(restoredTurningDimensions.height).toBeGreaterThan(restoredTurningDimensions.width);
     await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
 
+    const textColorStartTime = await propertyKeyframeTime(restoredTextColorStart);
+    const textColorEndTime = await propertyKeyframeTime(restoredTextColorEnd);
     const mp4 = await exportLocalMp4(page);
-    // Text fades in from 0.4–0.8s; imported images do not exist until 2s.
-    const [greenPixels] = await decodedBrightPixelCounts(page, mp4, [0.6], "green-dominant");
+    const [greenPixels] = await decodedBrightPixelCounts(page, mp4, [textColorStartTime], "green-dominant");
+    const [bluePixels] = await decodedBrightPixelCounts(page, mp4, [textColorEndTime + 0.05], "blue-dominant");
     expect(greenPixels).toBeGreaterThan(0);
+    expect(bluePixels).toBeGreaterThan(0);
 
     const deletedProjectId = projectId;
     await page.getByRole("button", { name: "Back to workspaces" }).click();
@@ -956,10 +989,10 @@ test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", asyn
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     const equationFill = page.getByLabel("Fill color E = mc^2");
-    await equationFill.fill("#22c55e");
+    await equationFill.fill("#ef4444");
     await equationFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
-    await expect(equationFill).toHaveValue("#22c55e");
+    await expect(equationFill).toHaveValue("#ef4444");
 
     const root = page.getByRole("button", { name: "Move E = mc^2", exact: true });
     const rootId = await root.getAttribute("data-studio-entity");
@@ -967,6 +1000,18 @@ test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", asyn
     const rootWrapper = page.locator(`[data-studio-entity-wrapper="${rootId}"]`);
     await playhead.fill("1");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1, 1);
+
+    await page.getByRole("button", { name: "Add fill color keyframe for E = mc^2" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const mathTexColorEnd = page.getByRole("button", { name: "Fill color keyframe 2 at 1.00 seconds" });
+    await mathTexColorEnd.click();
+    await page.getByLabel("Fill color keyframe value").fill("#22c55e");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(equationFill).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Add Write entrance for E = mc^2" })).toHaveAttribute(
+      "aria-disabled",
+      "true",
+    );
 
     const target = page.getByRole("textbox", { name: /MathTex transform target of/ });
     const transformDuration = page.getByRole("spinbutton", { name: /MathTex transform duration of/ });
@@ -1008,12 +1053,26 @@ test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", asyn
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     secondClip = page.locator("[data-mathtex-transform-clip]").nth(1);
-    await expect(secondClip).toHaveAttribute("title", /–2[.]80s · smooth$/u);
+    await expect(secondClip).toHaveAttribute("title", / · smooth$/u);
+    expect((await entranceClipTime(page, secondClip, 1)) - (await entranceClipTime(page, secondClip, 0))).toBeCloseTo(
+      0.8,
+      1,
+    );
 
     await page.getByRole("button", { name: "Undo" }).click();
-    await expect(page.locator("[data-mathtex-transform-clip]").nth(1)).toHaveAttribute("title", /–3[.]00s · linear$/u);
+    secondClip = page.locator("[data-mathtex-transform-clip]").nth(1);
+    await expect(secondClip).toHaveAttribute("title", / · linear$/u);
+    expect((await entranceClipTime(page, secondClip, 1)) - (await entranceClipTime(page, secondClip, 0))).toBeCloseTo(
+      1,
+      1,
+    );
     await page.getByRole("button", { name: "Redo" }).click();
-    await expect(page.locator("[data-mathtex-transform-clip]").nth(1)).toHaveAttribute("title", /–2[.]80s · smooth$/u);
+    secondClip = page.locator("[data-mathtex-transform-clip]").nth(1);
+    await expect(secondClip).toHaveAttribute("title", / · smooth$/u);
+    expect((await entranceClipTime(page, secondClip, 1)) - (await entranceClipTime(page, secondClip, 0))).toBeCloseTo(
+      0.8,
+      1,
+    );
     await page.getByRole("button", { name: "Undo" }).click();
 
     secondClip = page.locator("[data-mathtex-transform-clip]").nth(1);
@@ -1035,7 +1094,11 @@ test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", asyn
     await scrubEntranceClip(page, secondClip, 1);
     const restoredRoot = page.getByRole("button", { name: "Move E = mc^2", exact: true });
     await expect(restoredRoot).toHaveAttribute("data-studio-entity", rootId);
-    await expect(page.getByLabel("Fill color E = mc^2")).toHaveValue("#22c55e");
+    await expect(page.getByLabel("Fill color E = mc^2")).toHaveValue("#ef4444");
+    await expect(page.getByLabel("Fill color E = mc^2")).toBeDisabled();
+    const restoredMathTexColorStart = page.getByRole("button", { name: /Fill color keyframe 1 at/u });
+    const restoredMathTexColorEnd = page.getByRole("button", { name: /Fill color keyframe 2 at/u });
+    await expect(restoredMathTexColorEnd).toBeVisible();
 
     const sampleTimes = await Promise.all([
       entranceClipTime(page, firstClip, 0),
@@ -1044,8 +1107,14 @@ test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", asyn
       entranceClipTime(page, secondClip, 0.5),
       entranceClipTime(page, secondClip, 1),
     ]);
+    const mathTexColorStartTime = await propertyKeyframeTime(restoredMathTexColorStart);
+    const mathTexColorEndTime = await propertyKeyframeTime(restoredMathTexColorEnd);
     const mp4 = await exportLocalMp4(page);
-    const pixels = await decodedBrightPixelCounts(page, mp4, sampleTimes, "green-dominant");
+    const pixels = await decodedBrightPixelCounts(page, mp4, sampleTimes);
+    const [redPixels] = await decodedBrightPixelCounts(page, mp4, [mathTexColorStartTime], "red-dominant");
+    const [greenPixels] = await decodedBrightPixelCounts(page, mp4, [mathTexColorEndTime + 0.05], "green-dominant");
+    expect(redPixels).toBeGreaterThan(0);
+    expect(greenPixels).toBeGreaterThan(0);
     expect(Math.max(...pixels) - Math.min(...pixels)).toBeGreaterThan(20);
     expect(Math.abs((pixels[1] ?? 0) - (pixels[0] ?? 0))).toBeGreaterThan(10);
     expect(Math.abs((pixels[3] ?? 0) - (pixels[4] ?? 0))).toBeGreaterThan(10);

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createStudioEntitiesProgram } from "./authoring-commands";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
+import { replacePaintColorKeyframeProgram } from "./paint-color-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
 import { replaceWriteInProgram, writeInClipFromProgram } from "./write-in-edit";
 
@@ -67,5 +68,30 @@ describe("Write entrance editing", () => {
         write: { easing: "linear", end: 2 },
       }),
     ).toThrow(/MathTex/);
+  });
+
+  it("rejects Write after a paint color track is present", () => {
+    const creation = mathTexCreation();
+    const entityId = creation.entityIds[0]!;
+    const tracked = replacePaintColorKeyframeProgram({
+      baseProgram: creation.validation.program,
+      baseline: "#ffffff",
+      entityId,
+      keyframes: [
+        { easing: "linear", time: 2, value: "#ffffff" },
+        { easing: "smooth", time: 3, value: "#22c55e" },
+      ],
+      property: "fillColor",
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(() =>
+      replaceWriteInProgram({
+        baseProgram: tracked.program,
+        entityId,
+        scene: STUDIO_FIXTURE_SCENE,
+        write: { easing: "linear", end: 2.5 },
+      }),
+    ).toThrow(/paint color track/i);
   });
 });
