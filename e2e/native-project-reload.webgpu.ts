@@ -651,6 +651,21 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await page.getByRole("checkbox", { name: "Select Line" }).check();
     await expect(lineStrokeWidth).toHaveValue("0.08");
 
+    const buttMp4 = await exportLocalMp4(page);
+    const [buttStrokePixels = 0] = await decodedBrightPixelCounts(page, buttMp4, [1.6], "green-dominant");
+    const lineStrokeCap = page.getByRole("combobox", { name: "Stroke cap Line" });
+    await expect(lineStrokeCap).toHaveValue("butt");
+    await lineStrokeCap.selectOption("round");
+    await lineStrokeCap.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(lineStrokeCap).toHaveValue("round");
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(lineStrokeCap).toHaveValue("butt");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(lineStrokeCap).toHaveValue("round");
+
     await page.getByRole("button", { name: "Add Draw entrance for Line" }).click();
     await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
     await page.getByRole("button", { name: "Replace program" }).click();
@@ -667,8 +682,11 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     if (!sourcePath) throw new Error("The Line Python download was not persisted by Playwright.");
     const exportedSource = await readFile(sourcePath, "utf8");
     const strokeStyle = '.set_stroke("#22c55e", width=8)';
+    const strokeCapStyle = ".set_cap_style(CapStyleType.ROUND)";
     expect(exportedSource).toContain(strokeStyle);
+    expect(exportedSource).toContain(strokeCapStyle);
     expect(exportedSource.indexOf(strokeStyle)).toBeLessThan(exportedSource.indexOf("Create("));
+    expect(exportedSource.indexOf(strokeCapStyle)).toBeLessThan(exportedSource.indexOf("Create("));
     await page.getByRole("button", { name: "Close" }).click();
 
     await page.getByRole("button", { name: /Insert circle/ }).click();
@@ -754,12 +772,14 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await expect(page.getByRole("combobox", { name: "Draw easing for Line" })).toHaveValue("linear");
     await page.getByRole("button", { name: "Discard" }).click();
     await expect(page.getByLabel("Stroke color Line")).toHaveValue("#22c55e");
+    await expect(page.getByRole("combobox", { name: "Stroke cap Line" })).toHaveValue("round");
     await expect(page.getByRole("spinbutton", { name: "Stroke width Line" })).toHaveValue("0.08");
 
     const mp4 = await exportLocalMp4(page);
     const exportedStrokePixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6], "green-dominant");
     expect(exportedStrokePixels[1] ?? 0).toBeGreaterThan((exportedStrokePixels[0] ?? 0) + 20);
     expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan((exportedStrokePixels[1] ?? 0) * 1.25);
+    expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan(buttStrokePixels + 10);
     expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan(thinStrokePixels * 1.5);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });

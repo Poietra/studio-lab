@@ -53,6 +53,7 @@ const geometrySchema = z
             .object({
               color: z.string().optional(),
               fillColor: z.string().optional(),
+              strokeCap: z.enum(["butt", "round", "square"]).optional(),
               strokeColor: z.string().optional(),
               strokeWidth: finiteNumber.positive().optional(),
             })
@@ -109,6 +110,7 @@ const propertyChannelSchema = z
       "presence",
       "rotation",
       "scale",
+      "strokeCap",
       "strokeColor",
       "strokeWidth",
     ]),

@@ -51,6 +51,10 @@ function isStudioLineStrokeWidthWorld(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0.005 && value <= 0.5;
 }
 
+function isStudioLineStrokeCap(value: unknown): value is "butt" | "round" | "square" {
+  return value === "butt" || value === "round" || value === "square";
+}
+
 function isStudioCreationProgramBatch(programs: readonly SceneEdit[], sceneDuration: number) {
   const operations = programs.flatMap((program) => program.operations);
   const createdEntities = new Map(
@@ -84,13 +88,25 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[], sceneDurat
   });
   if (!glyphFillProgramsAreClosed) return false;
   const lineStrokeStyleProgramsAreClosed = programs.every((program) => {
-    const lineStrokeStyleCount = program.operations.filter(
+    const lineStrokeStyleOperations = program.operations.filter(
       (operation) =>
         operation.kind === "SetProperty" &&
-        (operation.key === "strokeColor" || operation.key === "strokeWidth") &&
+        (operation.key === "strokeCap" || operation.key === "strokeColor" || operation.key === "strokeWidth") &&
         generatedEntityTypes.get(operation.entityId) === "Line",
-    ).length;
-    return lineStrokeStyleCount === 0 || (lineStrokeStyleCount === 1 && program.operations.length === 1);
+    );
+    if (lineStrokeStyleOperations.length === 0) return true;
+    if (lineStrokeStyleOperations.length !== 1 || program.operations.length !== 1) return false;
+    const operation = lineStrokeStyleOperations[0]!;
+    if (operation.kind !== "SetProperty") return false;
+    if (operation.key !== "strokeCap") return true;
+    const lifetimeStart = createdEntities.get(operation.entityId)?.lifetime.start;
+    return (
+      isStudioLineStrokeCap(operation.value) &&
+      lifetimeStart !== undefined &&
+      Math.abs(program.anchor.resolvedSeconds - lifetimeStart) < 0.0005 &&
+      Math.abs(operation.interval.start - lifetimeStart) < 0.0005 &&
+      Math.abs(operation.interval.end - lifetimeStart) < 0.0005
+    );
   });
   if (!lineStrokeStyleProgramsAreClosed) return false;
   const lineDrawProgramsAreClosed = programs.every((program) =>
@@ -194,6 +210,9 @@ function isStudioCreationProgramBatch(programs: readonly SceneEdit[], sceneDurat
     if (operation.kind === "WriteIn") return generatedEntityTypes.get(operation.entityId) === "MathTex";
     if (operation.kind === "SetProperty" && operation.key === "strokeWidth") {
       return generatedEntityTypes.get(operation.entityId) === "Line" && isStudioLineStrokeWidthWorld(operation.value);
+    }
+    if (operation.kind === "SetProperty" && operation.key === "strokeCap") {
+      return generatedEntityTypes.get(operation.entityId) === "Line" && isStudioLineStrokeCap(operation.value);
     }
     if (operation.kind === "SetProperty" && (operation.key === "fillColor" || operation.key === "strokeColor")) {
       const type = generatedEntityTypes.get(operation.entityId);

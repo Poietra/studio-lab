@@ -143,6 +143,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
       "presence",
       "rotation",
       "scale",
+      "strokeCap",
       "strokeColor",
       "strokeWidth",
       "visibility",
@@ -308,6 +309,19 @@ export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superR
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: `${operation.key} must be a lowercase canonical #rrggbb color.`,
+      path: ["value"],
+    });
+  }
+  if (
+    operation.kind === "SetProperty" &&
+    operation.key === "strokeCap" &&
+    operation.value !== "butt" &&
+    operation.value !== "round" &&
+    operation.value !== "square"
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "strokeCap must be butt, round, or square.",
       path: ["value"],
     });
   }

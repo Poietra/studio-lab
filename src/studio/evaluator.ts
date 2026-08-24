@@ -135,6 +135,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const fillColor = channelAt(proposedState.evaluatedScene, entity.id, "fillColor", time);
       const scale = channelAt(proposedState.evaluatedScene, entity.id, "scale", time);
       const shape = channelAt(proposedState.evaluatedScene, entity.id, "shape", time);
+      const strokeCap = channelAt(proposedState.evaluatedScene, entity.id, "strokeCap", time);
       const strokeColor = channelAt(proposedState.evaluatedScene, entity.id, "strokeColor", time);
       const strokeWidth = channelAt(proposedState.evaluatedScene, entity.id, "strokeWidth", time);
       const positionValue = isPointValue(position) ? position : undefined;
@@ -168,11 +169,17 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const sampledStyle = {
         ...baseStyle,
         ...(typeof fillColor === "string" ? { fillColor } : {}),
+        ...(strokeCap === "butt" || strokeCap === "round" || strokeCap === "square" ? { strokeCap } : {}),
         ...(typeof strokeColor === "string" ? { strokeColor } : {}),
         ...(typeof strokeWidth === "number" ? { strokeWidth } : {}),
       };
       const hasSampledStyle =
-        typeof fillColor === "string" || typeof strokeColor === "string" || typeof strokeWidth === "number";
+        typeof fillColor === "string" ||
+        strokeCap === "butt" ||
+        strokeCap === "round" ||
+        strokeCap === "square" ||
+        typeof strokeColor === "string" ||
+        typeof strokeWidth === "number";
       return {
         content: content === UNKNOWN_EDITABLE_CONTENT ? undefined : isContent(content) ? content : entity.content,
         geometry: {

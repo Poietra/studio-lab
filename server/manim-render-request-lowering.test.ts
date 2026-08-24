@@ -1023,7 +1023,11 @@ describe("Manim render request lowering", () => {
       operations: lineOperations,
       schedule: { ...lineBase.schedule, order: lineOperations.map(({ id }) => id) },
     };
-    const lineStyle = (transactionId: string, key: "strokeColor" | "strokeWidth", value: string | number) => {
+    const lineStyle = (
+      transactionId: string,
+      key: "strokeCap" | "strokeColor" | "strokeWidth",
+      value: string | number,
+    ) => {
       const operation: CanonicalEditOperation = {
         dependsOn: [],
         entityId: lineEntityId,
@@ -1043,19 +1047,23 @@ describe("Manim render request lowering", () => {
     };
     const lineStroke = lineStyle("created-line-stroke", "strokeColor", "#fedcba");
     const lineWidth = lineStyle("created-line-width", "strokeWidth", 0.08);
+    const lineCap = lineStyle("created-line-cap", "strokeCap", "round");
     const lineAuthorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
     const lineResult = await lower(
-      { ...request(lineCreation), programs: [lineCreation, lineStroke, lineWidth] },
+      { ...request(lineCreation), programs: [lineCreation, lineStroke, lineWidth, lineCap] },
       sceneSource,
       async (input) => {
         lineAuthorizations.push(input);
       },
     );
 
-    expect(lineAuthorizations[0]?.programs).toEqual([lineCreation, lineStroke, lineWidth]);
+    expect(lineAuthorizations[0]?.programs).toEqual([lineCreation, lineStroke, lineWidth, lineCap]);
     const initialStroke = '.set_stroke("#fedcba", width=8)';
+    const initialCap = ".set_cap_style(CapStyleType.ROUND)";
     expect(lineResult.lowered.source).toContain(initialStroke);
+    expect(lineResult.lowered.source).toContain(initialCap);
     expect(lineResult.lowered.source.indexOf(initialStroke)).toBeLessThan(lineResult.lowered.source.indexOf("Create("));
+    expect(lineResult.lowered.source.indexOf(initialCap)).toBeLessThan(lineResult.lowered.source.indexOf("Create("));
 
     const invalidLineWidth = lineStyle("invalid-line-width", "strokeWidth", 0.501);
     let invalidLineAuthorizerCalls = 0;
@@ -1065,6 +1073,32 @@ describe("Manim render request lowering", () => {
       }),
     ).rejects.toMatchObject(unsupportedProgramBatchError);
     expect(invalidLineAuthorizerCalls).toBe(0);
+
+    const invalidLineCap = lineStyle("invalid-line-cap", "strokeCap", "projecting");
+    let invalidLineCapAuthorizerCalls = 0;
+    await expect(
+      lower({ ...request(lineCreation), programs: [lineCreation, invalidLineCap] }, sceneSource, async () => {
+        invalidLineCapAuthorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
+    expect(invalidLineCapAuthorizerCalls).toBe(0);
+
+    const lateLineCap: CanonicalEditProgram = {
+      ...lineStyle("late-line-cap", "strokeCap", "square"),
+      operations: [
+        {
+          ...lineStyle("late-line-cap", "strokeCap", "square").operations[0]!,
+          interval: { end: 6, start: 6 },
+        },
+      ],
+    };
+    let lateLineCapAuthorizerCalls = 0;
+    await expect(
+      lower({ ...request(lineCreation), programs: [lineCreation, lateLineCap] }, sceneSource, async () => {
+        lateLineCapAuthorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
+    expect(lateLineCapAuthorizerCalls).toBe(0);
   });
 
   it("rejects a created entity plus an imported transform as an unsupported mixed family", async () => {

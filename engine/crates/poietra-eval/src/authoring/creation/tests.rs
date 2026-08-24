@@ -259,6 +259,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 source_z_index: None,
                 shape_morph: None,
                 stroke_color: None,
+                stroke_cap: None,
                 stroke_width_world: None,
                 instant_transform: None,
                 visible: true,
@@ -291,6 +292,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 source_z_index: None,
                 shape_morph: None,
                 stroke_color: None,
+                stroke_cap: None,
                 stroke_width_world: None,
                 instant_transform: Some(CreateSceneEntityInstantTransform {
                     at: 1.25,
@@ -328,6 +330,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 source_z_index: None,
                 shape_morph: None,
                 stroke_color: None,
+                stroke_cap: None,
                 stroke_width_world: None,
                 instant_transform: None,
                 visible: true,
@@ -4306,6 +4309,13 @@ fn normalized_creation_limits_shape_paint_to_closed_fill_and_vector_stroke() {
                 },
                 kind == StudioAuthoringEntityKind::Line,
             ),
+            (
+                "stroke-cap",
+                StudioCreationOperationKind::StrokeCap {
+                    cap: Some(poietra_scene_ir::StrokeCapV1::Round),
+                },
+                kind == StudioAuthoringEntityKind::Line,
+            ),
         ] {
             let mut command =
                 studio_path_creation_command(&bundle, "shape", kind, dimensions(kind));
@@ -4350,6 +4360,14 @@ fn normalized_creation_projects_and_applies_a_line() {
             width_world: Some(0.08),
         },
     ));
+    command.programs.push(studio_created_appearance_edit_input(
+        0.5,
+        "tx:create/entity:line",
+        "line-stroke-cap",
+        StudioCreationOperationKind::StrokeCap {
+            cap: Some(poietra_scene_ir::StrokeCapV1::Round),
+        },
+    ));
 
     let projection =
         project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
@@ -4363,6 +4381,16 @@ fn normalized_creation_projects_and_applies_a_line() {
         } if (*start - 0.5).abs() < 1e-12
             && (*end - 0.5).abs() < 1e-12
             && (*value - 0.08).abs() < 1e-12
+    )));
+    assert!(projection.mutations.iter().any(|mutation| matches!(
+        mutation,
+        StudioCreationProjectedMutation {
+            interval: IntervalV1 { start, end },
+            kind: StudioCreationProjectedMutationKind::StrokeCap {
+                value: poietra_scene_ir::StrokeCapV1::Round,
+            },
+            ..
+        } if (*start - 0.5).abs() < 1e-12 && (*end - 0.5).abs() < 1e-12
     )));
 
     let mut session = EngineSessionV1::new(bundle).unwrap();
@@ -4389,6 +4417,7 @@ fn normalized_creation_projects_and_applies_a_line() {
             stroke: Some(stroke),
             ..
         } if (stroke.width_world - 0.08).abs() < 1e-12
+            && stroke.cap == poietra_scene_ir::StrokeCapV1::Round
     ));
     assert!(
         result
@@ -4402,6 +4431,27 @@ fn normalized_creation_projects_and_applies_a_line() {
                     if entity_id == "tx:create/entity:line"
             ))
     );
+    let packet = session
+        .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+            evidence: &[],
+            packet_id: "line-stroke-style",
+            sample_time: 0.75,
+            viewport: poietra_scene_ir::ViewportV1 {
+                height_px: 900,
+                width_px: 1600,
+            },
+        })
+        .unwrap();
+    assert!(packet.draws.iter().any(|draw| matches!(
+        draw,
+        poietra_scene_ir::RenderDrawV1::Path {
+            entity_id,
+            stroke: Some(stroke),
+            ..
+        } if entity_id == "tx:create/entity:line"
+            && (stroke.width_world - 0.08).abs() < 1e-12
+            && stroke.cap == poietra_scene_ir::StrokeCapV1::Round
+    )));
 
     for width_world in [0.004, 0.501, f64::NAN] {
         let mut invalid = studio_path_creation_command(
@@ -4463,6 +4513,51 @@ fn normalized_creation_projects_and_applies_a_line() {
         project_studio_creation_edits(0.5, &animated.programs),
         Err(ProjectStudioCreationEditError::Unsupported)
     ));
+
+    let invalid_cap_cases = [
+        (
+            "missing-line-stroke-cap",
+            StudioCreationOperationKind::StrokeCap { cap: None },
+            0.5,
+            0.5,
+        ),
+        (
+            "late-line-stroke-cap",
+            StudioCreationOperationKind::StrokeCap {
+                cap: Some(poietra_scene_ir::StrokeCapV1::Square),
+            },
+            0.75,
+            0.75,
+        ),
+        (
+            "animated-line-stroke-cap",
+            StudioCreationOperationKind::StrokeCap {
+                cap: Some(poietra_scene_ir::StrokeCapV1::Square),
+            },
+            0.5,
+            0.75,
+        ),
+    ];
+    for (operation_id, operation, start, end) in invalid_cap_cases {
+        let mut invalid = studio_path_creation_command(
+            &static_imported_bundle(),
+            "line",
+            StudioAuthoringEntityKind::Line,
+            StudioAuthoringDimensions::default(),
+        );
+        let mut edit = studio_created_appearance_edit_input(
+            start,
+            "tx:create/entity:line",
+            operation_id,
+            operation,
+        );
+        edit.operations[0].interval.end = end;
+        invalid.programs.push(edit);
+        assert!(matches!(
+            project_studio_creation_edits(0.5, &invalid.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+    }
 }
 
 #[test]

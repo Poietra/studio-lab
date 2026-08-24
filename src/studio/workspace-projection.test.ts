@@ -1896,6 +1896,23 @@ describe("Studio workspace projection", () => {
       schedule: { edges: [], mode: "parallel", order: ["stroke-width/line"] },
       transactionId: "stroke-width",
     };
+    const capProgram: CanonicalEditProgram = {
+      ...colorProgram,
+      operations: [
+        {
+          dependsOn: [],
+          entityId,
+          id: "stroke-cap/line",
+          interval: { end: 0, start: 0 },
+          key: "strokeCap",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          value: "round",
+        },
+      ],
+      schedule: { edges: [], mode: "parallel", order: ["stroke-cap/line"] },
+      transactionId: "stroke-cap",
+    };
     const orderingProgram: CanonicalEditProgram = {
       ...colorProgram,
       operations: [
@@ -1959,6 +1976,14 @@ describe("Studio workspace projection", () => {
         {
           entityId,
           interval: { end: 0, start: 0 },
+          kind: "stroke-cap",
+          operationId: "stroke-cap/line",
+          transactionId: "stroke-cap",
+          value: "round",
+        },
+        {
+          entityId,
+          interval: { end: 0, start: 0 },
           kind: "stroke-width",
           operationId: "stroke-width/line",
           transactionId: "stroke-width",
@@ -1985,6 +2010,7 @@ describe("Studio workspace projection", () => {
         programRecord(circleCreationProgram, { issues: [], kind: "valid" }),
         programRecord(colorProgram, { issues: [], kind: "valid" }),
         programRecord(fillProgram, { issues: [], kind: "valid" }),
+        programRecord(capProgram, { issues: [], kind: "valid" }),
         programRecord(widthProgram, { issues: [], kind: "valid" }),
         programRecord(orderingProgram, { issues: [], kind: "valid" }),
       ],
@@ -2005,12 +2031,15 @@ describe("Studio workspace projection", () => {
     expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/strokeWidth`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: 0.08 }),
     ]);
+    expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/strokeCap`]?.samples).toEqual([
+      expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: "round" }),
+    ]);
     expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/sourceZIndex`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: -2.5 }),
     ]);
     expect(projected.projection.inspector.entities.find((entity) => entity.id === entityId)?.geometry.style).toEqual({
       kind: "known",
-      value: { strokeColor: "#12abef", strokeWidth: 0.08 },
+      value: { strokeCap: "round", strokeColor: "#12abef", strokeWidth: 0.08 },
     });
     expect(
       projected.projection.inspector.entities.find((entity) => entity.id === circleEntityId)?.geometry.style,

@@ -737,7 +737,7 @@ describe("Studio creation wire", () => {
     });
   });
 
-  it("normalizes created-shape colors and Line width without accepting non-canonical values", () => {
+  it("normalizes created-shape colors and Line stroke style without accepting non-canonical values", () => {
     const entityId = "entity:Circle";
     const common = {
       dependsOn: [] as string[],
@@ -768,6 +768,13 @@ describe("Studio creation wire", () => {
         key: "strokeWidth",
         value: 0.08,
       }),
+      followupProgram("cap:Line", {
+        ...common,
+        entityId: "entity:Line",
+        id: "cap:Line",
+        key: "strokeCap",
+        value: "round",
+      }),
     ];
 
     const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs });
@@ -782,6 +789,11 @@ describe("Studio creation wire", () => {
       entityId: "entity:Line",
       kind: "stroke-width",
       widthWorld: 0.08,
+    });
+    expect(command.programs[5]?.operations[0]).toMatchObject({
+      cap: "round",
+      entityId: "entity:Line",
+      kind: "stroke-cap",
     });
   });
 

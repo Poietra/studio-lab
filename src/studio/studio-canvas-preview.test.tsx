@@ -225,6 +225,8 @@ function renderSelectedInspector(
   opacityUnavailableReason: string | null = null,
   strokeWidthAvailable = false,
   strokeWidthValue: number | null = null,
+  strokeCapAvailable = false,
+  strokeCapValue: "butt" | "round" | "square" | null = null,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
@@ -244,6 +246,7 @@ function renderSelectedInspector(
       onEntityOpacityChange={vi.fn()}
       onEntityRotate={vi.fn()}
       onEntityScaleChange={vi.fn()}
+      onEntityStrokeCapChange={vi.fn()}
       onEntityStrokeWidthChange={vi.fn()}
       onInspectorFocusRestored={vi.fn()}
       onRenderSessionChange={vi.fn()}
@@ -262,6 +265,8 @@ function renderSelectedInspector(
       selectedEntityLocked={selectedEntityLocked}
       sourceExport={null}
       strokeColorValue={strokeColorValue}
+      strokeCapAvailable={strokeCapAvailable}
+      strokeCapValue={strokeCapValue}
       strokeWidthAvailable={strokeWidthAvailable}
       strokeWidthValue={strokeWidthValue}
       suggestion={null}
@@ -1971,6 +1976,8 @@ describe("StudioCanvas retained preview layer", () => {
         null,
         line,
         line ? 0.08 : null,
+        line,
+        line ? "round" : null,
       );
       const name = entity.id.slice("entity:".length);
       const stroke = new RegExp(`<input aria-label="Stroke color ${name}"[^>]*>`);
@@ -1979,6 +1986,10 @@ describe("StudioCanvas retained preview layer", () => {
       expect(markup.match(stroke)?.[0]).not.toContain('disabled=""');
       expect(markup.match(stroke)?.[0]).toContain('value="#abcdef"');
       if (line) {
+        const cap = markup.match(/<select aria-label="Stroke cap line"[^>]*>/u)?.[0];
+        expect(cap).toBeDefined();
+        expect(cap).not.toContain('disabled=""');
+        expect(markup).toContain('<option value="round" selected="">Round</option>');
         const width = markup.match(/<input aria-label="Stroke width line"[^>]*>/u)?.[0];
         expect(width).toBeDefined();
         expect(width).not.toContain('disabled=""');
@@ -1989,7 +2000,11 @@ describe("StudioCanvas retained preview layer", () => {
         expect(renderSelectedInspector(entity, null)).toMatch(
           /<input aria-label="Stroke width line"[^>]*disabled=""[^>]*>/u,
         );
+        expect(renderSelectedInspector(entity, null)).toMatch(
+          /<select aria-label="Stroke cap line"[^>]*disabled=""[^>]*>/u,
+        );
       } else {
+        expect(markup).not.toContain(`aria-label="Stroke cap ${name}"`);
         expect(markup).not.toContain(`aria-label="Stroke width ${name}"`);
       }
     }

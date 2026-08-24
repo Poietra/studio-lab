@@ -1196,6 +1196,54 @@ export function createDirectManipulationStrokeWidthProgram(
   );
 }
 
+export function createDirectManipulationStrokeCapProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityId: string;
+    scene: RuntimeSceneState;
+    start: number;
+    strokeCap: "butt" | "round" | "square";
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  if (input.strokeCap !== "butt" && input.strokeCap !== "round" && input.strokeCap !== "square") {
+    throw new Error("Line stroke cap must be butt, round, or square.");
+  }
+  const sourceAnchor =
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute" as const, seconds: input.start };
+  const resolution = resolveTimeAnchorOnce(sourceAnchor, {
+    capturedPlayhead: input.capturedPlayhead,
+    sceneDuration: input.scene.duration,
+  });
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: SceneEditOperation = {
+    dependsOn: [],
+    entityId: input.entityId,
+    id: operationId(input.transactionId, "set-stroke-cap"),
+    interval: { end: input.start, start: input.start },
+    key: "strokeCap",
+    kind: "SetProperty",
+    provenance: provenance("direct-manipulation", ["stroke cap control", "absolute Line cap"]),
+    value: input.strokeCap,
+  };
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["absolute static Line stroke cap constraint"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
+}
+
 export function createDirectManipulationScaleProgram(
   input: Readonly<{
     capturedPlayhead: number;

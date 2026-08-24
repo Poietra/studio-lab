@@ -19,6 +19,7 @@ export type PropertyChannelKey =
   | "rotation"
   | "scale"
   | "shape"
+  | "strokeCap"
   | "strokeColor"
   | "strokeWidth"
   | "visibility";

@@ -102,6 +102,11 @@ function setPropertyExecution(
   if ((operation.key === "fillColor" || operation.key === "strokeColor") && isCanonicalRgbHex(operation.value))
     return SUPPORTED_EXECUTION;
   if (
+    operation.key === "strokeCap" &&
+    (operation.value === "butt" || operation.value === "round" || operation.value === "square")
+  )
+    return SUPPORTED_EXECUTION;
+  if (
     operation.key === "strokeWidth" &&
     typeof operation.value === "number" &&
     Number.isFinite(operation.value) &&
@@ -728,6 +733,27 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
         code: "schema-invalid" as const,
         field: "entityId",
         message: "Stroke width is available only for a Studio-created Line.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+  }
+  if (operation.key === "strokeCap") {
+    const entity = scene.objectGraph.entities[operation.entityId];
+    if (operation.value !== "butt" && operation.value !== "round" && operation.value !== "square") {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "value",
+        message: "Line stroke cap must be butt, round, or square.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+    if (!entity?.transactionId || entity.type !== "Line") {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "entityId",
+        message: "Stroke cap is available only for a Studio-created Line.",
         operationId: operation.id,
         severity: "error" as const,
       });

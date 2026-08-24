@@ -413,6 +413,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Visibility { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
+                | StudioCreationOperationKind::StrokeCap { .. }
                 | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
@@ -467,6 +468,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Visibility { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
+                | StudioCreationOperationKind::StrokeCap { .. }
                 | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
@@ -1062,6 +1064,7 @@ pub(super) fn plan_studio_creation_edits(
             draw_easing,
             draw_interval,
             stroke_color_override: None,
+            stroke_cap_override: None,
             stroke_width_world_override: None,
             fade_interval,
             has_position_or_resize_instant: false,
@@ -2289,6 +2292,40 @@ pub(super) fn plan_studio_creation_edits(
                         },
                     ));
                 }
+                StudioCreationOperationKind::StrokeCap { cap: Some(cap) }
+                    if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                        && state.kind == StudioAuthoringEntityKind::Line
+                        && state.stroke_cap_override != Some(*cap)
+                        && studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        && studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
+                        && studio_timeline_semantic_values_match(
+                            program.anchor_resolved_seconds,
+                            state.spec.lifetime_start,
+                        )
+                        && state.persistent_removal.is_none() =>
+                {
+                    state.stroke_cap_override = Some(*cap);
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: IntervalV1 {
+                                start: state.lifetime.start,
+                                end: state.lifetime.start,
+                            },
+                            kind: StudioCreationProjectedMutationKind::StrokeCap { value: *cap },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
                 StudioCreationOperationKind::TransformShape {
                     easing,
                     from_dimensions,
@@ -2529,6 +2566,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::RotationKeyframes { .. }
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
+                | StudioCreationOperationKind::StrokeCap { .. }
                 | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }

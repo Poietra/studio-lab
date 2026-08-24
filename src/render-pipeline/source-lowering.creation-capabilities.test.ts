@@ -604,7 +604,7 @@ describe("Canonical EditProgram source lowering", () => {
     );
     const propertyProgram = (
       transactionId: string,
-      key: "appearance" | "fillColor" | "strokeColor" | "strokeWidth",
+      key: "appearance" | "fillColor" | "strokeCap" | "strokeColor" | "strokeWidth",
       value: number | string,
       targetEntityId = entityId,
     ) =>
@@ -672,17 +672,49 @@ describe("Canonical EditProgram source lowering", () => {
     );
     const lineStroke = propertyProgram("created-line-stroke", "strokeColor", "#fedcba", lineEntityId);
     const lineWidth = propertyProgram("created-line-width", "strokeWidth", 0.08, lineEntityId);
+    const lineCap = propertyProgram("created-line-cap", "strokeCap", "round", lineEntityId);
     const loweredLine = lowerCanonicalProgramBatchSource(
       source,
       request(createLine, []),
-      [createLine, lineStroke, lineWidth].map((program) => ({ program, sourceAnchor: 7 })),
+      [createLine, lineStroke, lineWidth, lineCap].map((program) => ({ program, sourceAnchor: 7 })),
       { height: 8, width: 14.222 },
       null,
     );
     const initialStroke = 'poietra_created_line_style_1.set_stroke("#fedcba", width=8)';
+    const initialCap = "poietra_created_line_style_1.set_cap_style(CapStyleType.ROUND)";
     expect(loweredLine.insertedCode).toContain(initialStroke);
+    expect(loweredLine.insertedCode).toContain(initialCap);
     expect(loweredLine.insertedCode.indexOf(initialStroke)).toBeLessThan(loweredLine.insertedCode.indexOf("Create("));
+    expect(loweredLine.insertedCode.indexOf(initialCap)).toBeLessThan(loweredLine.insertedCode.indexOf("Create("));
     expect(loweredLine.insertedCode.match(/\.set_stroke\(/gu)).toHaveLength(1);
+    expect(loweredLine.insertedCode.match(/\.set_cap_style\(/gu)).toHaveLength(1);
+
+    const createLineWithoutDraw = canonicalProgram(
+      [
+        createLine.operations[0]!,
+        {
+          ...operationBase("tx:created-line-without-draw/operation:fade", 7, 7.5),
+          dependsOn: [createLineId],
+          effect: "fade-in",
+          entityId: lineEntityId,
+          kind: "ChangePresence",
+          persistent: true,
+        },
+      ],
+      "created-line-without-draw",
+    );
+    const capWithoutDraw = propertyProgram("created-line-cap-without-draw", "strokeCap", "square", lineEntityId);
+    const loweredLineWithoutDraw = lowerCanonicalProgramBatchSource(
+      source,
+      request(createLineWithoutDraw, []),
+      [createLineWithoutDraw, capWithoutDraw].map((program) => ({ program, sourceAnchor: 7 })),
+      { height: 8, width: 14.222 },
+      null,
+    );
+    expect(loweredLineWithoutDraw.insertedCode).toContain(".set_cap_style(CapStyleType.SQUARE)");
+    expect(loweredLineWithoutDraw.insertedCode.indexOf(".set_cap_style(")).toBeLessThan(
+      loweredLineWithoutDraw.insertedCode.indexOf("FadeIn("),
+    );
 
     const invalidLineWidth = propertyProgram("invalid-line-width", "strokeWidth", 0.501, lineEntityId);
     expect(() =>
@@ -694,6 +726,39 @@ describe("Canonical EditProgram source lowering", () => {
         null,
       ),
     ).toThrow(/between 0\.005 and 0\.5 world units/i);
+
+    const invalidLineCap = propertyProgram("invalid-line-cap", "strokeCap", "projecting", lineEntityId);
+    expect(() =>
+      lowerCanonicalProgramBatchSource(
+        source,
+        request(createLine, []),
+        [createLine, invalidLineCap].map((program) => ({ program, sourceAnchor: 7 })),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/stroke cap must be butt, round, or square/i);
+
+    const lateLineCap = canonicalProgram(
+      [
+        {
+          ...operationBase("late-line-cap/operation", 8),
+          entityId: lineEntityId,
+          key: "strokeCap",
+          kind: "SetProperty",
+          value: "square",
+        },
+      ],
+      "late-line-cap",
+    );
+    expect(() =>
+      lowerCanonicalProgramBatchSource(
+        source,
+        request(createLine, []),
+        [createLine, lateLineCap].map((program) => ({ program, sourceAnchor: 7 })),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/creation anchor/i);
   });
 
   it("rejects shape colors for imported entities", () => {
@@ -722,6 +787,19 @@ describe("Canonical EditProgram source lowering", () => {
     ]);
     expect(() =>
       lowerCanonicalProgramSource(source, request(importedStrokeWidth), { height: 8, width: 14.222 }, null),
+    ).toThrow(/only authorized Studio-created Line entities/i);
+
+    const importedStrokeCap = canonicalProgram([
+      {
+        ...operationBase("imported-stroke-cap", 7),
+        entityId: "equation_1",
+        key: "strokeCap",
+        kind: "SetProperty",
+        value: "round",
+      },
+    ]);
+    expect(() =>
+      lowerCanonicalProgramSource(source, request(importedStrokeCap), { height: 8, width: 14.222 }, null),
     ).toThrow(/only authorized Studio-created Line entities/i);
   });
 

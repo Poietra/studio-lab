@@ -18,6 +18,7 @@ import {
   createDirectManipulationResizeProgram,
   createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
+  createDirectManipulationStrokeCapProgram,
   createDirectManipulationStrokeWidthProgram,
   createDirectManipulationVisibilityProgram,
 } from "./suggestion-program";
@@ -889,6 +890,23 @@ describe("Studio draft validation boundary", () => {
       apply: "supported",
       lowering: "supported",
     });
+    const lineCap = createDirectManipulationStrokeCapProgram({
+      capturedPlayhead: 0,
+      entityId: lineEntityId,
+      scene: lineScene,
+      start: 0,
+      strokeCap: "round",
+      transactionId: "line-cap",
+    });
+    expect(lineCap).toMatchObject({
+      issues: [],
+      kind: "valid",
+      program: { operations: [{ entityId: lineEntityId, key: "strokeCap", value: "round" }] },
+    });
+    expect(programExecutionCapabilities(lineCap.program)).toMatchObject({
+      apply: "supported",
+      lowering: "supported",
+    });
     expect(
       createDirectManipulationStrokeWidthProgram({
         capturedPlayhead: 0,
@@ -897,6 +915,16 @@ describe("Studio draft validation boundary", () => {
         start: 0,
         strokeWidth: 0.08,
         transactionId: "circle-width",
+      }),
+    ).toMatchObject({ kind: "invalid" });
+    expect(
+      createDirectManipulationStrokeCapProgram({
+        capturedPlayhead: 0,
+        entityId,
+        scene,
+        start: 0,
+        strokeCap: "round",
+        transactionId: "circle-cap",
       }),
     ).toMatchObject({ kind: "invalid" });
     expect(
@@ -919,6 +947,16 @@ describe("Studio draft validation boundary", () => {
         transactionId: "invalid-line-width",
       }),
     ).toThrow(/0\.005 to 0\.5/u);
+    expect(() =>
+      createDirectManipulationStrokeCapProgram({
+        capturedPlayhead: 0,
+        entityId: lineEntityId,
+        scene: lineScene,
+        start: 0,
+        strokeCap: "flat" as never,
+        transactionId: "invalid-line-cap",
+      }),
+    ).toThrow(/butt, round, or square/u);
   });
 
   it("samples projected shape colors only from their edit time", () => {
