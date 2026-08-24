@@ -1564,6 +1564,12 @@ test("authors one cubic Bezier through direct controls, Draw, reload, and MP4 ex
     await page.getByRole("checkbox", { name: "Arrow end" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     await waitForPresentedPreview();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    const strokeColor = page.getByLabel("Stroke color CubicBezier");
+    await strokeColor.fill("#ef4444");
+    await strokeColor.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await waitForPresentedPreview();
 
     await page.getByRole("button", { name: "Set position" }).click();
     await dragBy(page, curve, { x: 25, y: -15 });
@@ -1582,17 +1588,41 @@ test("authors one cubic Bezier through direct controls, Draw, reload, and MP4 ex
     let drawClip = page.getByRole("button", { name: "Edit CubicBezier Draw entrance" });
     await expect(drawClip).toBeVisible();
 
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("1.8");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1.8, 1);
+    await page.getByRole("button", { name: "Add stroke color keyframe for CubicBezier" }).click();
+    await expect(page.locator("[data-paint-color-keyframe]")).toHaveCount(2);
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const strokeColorEnd = page.getByRole("button", { name: /Stroke color keyframe 2 at/u });
+    await strokeColorEnd.click();
+    await page.getByLabel("Stroke color keyframe value").fill("#3b82f6");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(strokeColor).toBeDisabled();
+
     await page.reload();
     await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
     await page.getByRole("button", { name: "Open Cubic Bezier fixture workspace" }).click();
-    await expect(page.getByRole("button", { name: "Move CubicBezier", exact: true })).toBeVisible();
+    const restoredCurve = page.getByRole("button", { name: "Move CubicBezier", exact: true });
+    await expect(restoredCurve).toBeVisible();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
     drawClip = page.getByRole("button", { name: "Edit CubicBezier Draw entrance" });
     await expect(drawClip).toBeVisible();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await expect(page.getByLabel("Stroke color CubicBezier")).toHaveValue("#ef4444");
+    await expect(page.getByLabel("Stroke color CubicBezier")).toBeDisabled();
+    const restoredStrokeColorStart = page.getByRole("button", { name: /Stroke color keyframe 1 at/u });
+    const restoredStrokeColorEnd = page.getByRole("button", { name: /Stroke color keyframe 2 at/u });
+    await expect(restoredStrokeColorEnd).toBeVisible();
 
     const mp4 = await exportLocalMp4(page);
     const [brightPixels = 0] = await decodedBrightPixelCounts(page, mp4, [1]);
+    const strokeColorStartTime = await propertyKeyframeTime(restoredStrokeColorStart);
+    const strokeColorEndTime = await propertyKeyframeTime(restoredStrokeColorEnd);
+    const [redPixels = 0] = await decodedBrightPixelCounts(page, mp4, [strokeColorStartTime], "red-dominant");
+    const [bluePixels = 0] = await decodedBrightPixelCounts(page, mp4, [strokeColorEndTime + 0.05], "blue-dominant");
     expect(brightPixels).toBeGreaterThan(50);
+    expect(redPixels).toBeGreaterThan(0);
+    expect(bluePixels).toBeGreaterThan(0);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

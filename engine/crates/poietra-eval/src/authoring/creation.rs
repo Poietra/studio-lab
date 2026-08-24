@@ -164,6 +164,19 @@ fn studio_creation_supports_stroke_width(kind: StudioAuthoringEntityKind) -> boo
     )
 }
 
+fn studio_creation_supports_stroke_color_track(kind: StudioAuthoringEntityKind) -> bool {
+    matches!(
+        kind,
+        StudioAuthoringEntityKind::Arc
+            | StudioAuthoringEntityKind::Axes
+            | StudioAuthoringEntityKind::CubicBezier
+            | StudioAuthoringEntityKind::DataPlot
+            | StudioAuthoringEntityKind::Line
+            | StudioAuthoringEntityKind::NumberLine
+            | StudioAuthoringEntityKind::NumberPlane
+    )
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum StudioPaintColorProperty {
@@ -1441,12 +1454,14 @@ impl StudioCreationPlan {
                         (content.layout != StudioTextLayout::default()).then_some(content.layout)
                     }),
                     operation_id: state.create_operation_id.clone(),
-                    stroke_color: (state.kind == StudioAuthoringEntityKind::Line).then(|| {
-                        state
-                            .stroke_color_override
-                            .clone()
-                            .unwrap_or_else(|| "#ffffff".to_owned())
-                    }),
+                    stroke_color: studio_creation_supports_stroke_color_track(state.kind).then(
+                        || {
+                            state
+                                .stroke_color_override
+                                .clone()
+                                .unwrap_or_else(|| "#ffffff".to_owned())
+                        },
+                    ),
                     text: initial_text.map(|content| content.text),
                     tex_parts: state.spec.tex_parts.clone(),
                     transaction_id: state.creation_transaction_id.clone(),

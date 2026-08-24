@@ -1002,7 +1002,7 @@ export const OPERATION_REGISTRY = {
               message:
                 operation.key === "fillColor"
                   ? "Fill color keyframes support only Studio-created closed primitives."
-                  : "Stroke color keyframes support only Studio-created Line objects.",
+                  : "Stroke color keyframes support only Studio-created stroke-only paths.",
               operationId: operation.id,
               severity: "error",
             });

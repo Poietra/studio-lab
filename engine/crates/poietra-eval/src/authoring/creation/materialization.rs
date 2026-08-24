@@ -203,7 +203,12 @@ fn create_entity_paint_color_keyframes_are_valid(entity: &CreateSceneEntity) -> 
                 entity.fill_color.as_ref()
             }
             StudioPaintColorProperty::StrokeColor
-                if matches!(entity.geometry, CreateSceneEntityGeometry::Line) =>
+                if matches!(
+                    entity.geometry,
+                    CreateSceneEntityGeometry::CubicBezier { .. }
+                        | CreateSceneEntityGeometry::Line
+                        | CreateSceneEntityGeometry::ShapeOutline { .. }
+                ) =>
             {
                 entity.stroke_color.as_ref().or(match &base_appearance {
                     SceneAppearanceV1::Vector {

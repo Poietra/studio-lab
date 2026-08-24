@@ -228,8 +228,10 @@ describe("solid paint color keyframe editing", () => {
     for (const type of ["Circle", "Ellipse", "MathTex", "Rectangle", "RegularPolygon", "Text", "Triangle"]) {
       expect(studioPaintColorTrackProperty(type)).toBe("fillColor");
     }
-    expect(studioPaintColorTrackProperty("Line")).toBe("strokeColor");
-    for (const type of ["Arc", "Arrow", "Sector"]) {
+    for (const type of ["Arc", "Axes", "CubicBezier", "DataPlot", "Line", "NumberLine", "NumberPlane"]) {
+      expect(studioPaintColorTrackProperty(type)).toBe("strokeColor");
+    }
+    for (const type of ["Arrow", "Sector", "SvgPath"]) {
       expect(studioPaintColorTrackProperty(type)).toBeNull();
     }
   });
