@@ -146,11 +146,22 @@ const SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES: usize = 256;
 const SEGMENTED_MATH_TEX_PHASE_BOUNDARY: f64 = 0.5;
 const SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH: f64 = 2.0;
 const MANIM_STROKE_WIDTH_TO_SCENE_WORLD: f64 = 0.01;
-const MIN_STUDIO_LINE_STROKE_WIDTH_WORLD: f64 = 0.005;
-const MAX_STUDIO_LINE_STROKE_WIDTH_WORLD: f64 = 0.5;
+const MIN_STUDIO_STROKE_WIDTH_WORLD: f64 = 0.005;
+const MAX_STUDIO_STROKE_WIDTH_WORLD: f64 = 0.5;
 
 fn manim_stroke_width_to_scene_world(width: f64) -> f64 {
     width * MANIM_STROKE_WIDTH_TO_SCENE_WORLD
+}
+
+fn studio_creation_supports_stroke_width(kind: StudioAuthoringEntityKind) -> bool {
+    matches!(
+        kind,
+        StudioAuthoringEntityKind::Circle
+            | StudioAuthoringEntityKind::Ellipse
+            | StudioAuthoringEntityKind::Line
+            | StudioAuthoringEntityKind::Rectangle
+            | StudioAuthoringEntityKind::RegularPolygon
+    )
 }
 
 #[derive(Clone, Debug, PartialEq)]

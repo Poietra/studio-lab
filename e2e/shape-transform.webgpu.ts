@@ -121,6 +121,23 @@ test("morphs one closed primitive through the full shape family, reload, and dec
       .getAttribute("data-studio-entity");
     if (!rootId) throw new Error("The Studio Rectangle did not expose its logical root id.");
     const logicalRoot = page.locator(`[data-studio-entity="${rootId}"]`);
+
+    const rectangleStrokeWidth = page.getByRole("spinbutton", { name: "Stroke width Rectangle" });
+    await expect(rectangleStrokeWidth).toHaveValue("0.04");
+    const thinStrokeFrame = await canvas.screenshot();
+    const thinStrokePacket = await canvas.getAttribute("data-preview-packet-id");
+    await rectangleStrokeWidth.fill("0.12");
+    await rectangleStrokeWidth.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(rectangleStrokeWidth).toHaveValue("0.12");
+    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(thinStrokePacket);
+    expect((await canvas.screenshot()).equals(thinStrokeFrame)).toBe(false);
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Rectangle" }).check();
+    await expect(rectangleStrokeWidth).toHaveValue("0.04");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select Rectangle" }).check();
+    await expect(rectangleStrokeWidth).toHaveValue("0.12");
     await playhead.fill("1");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1, 1);
 
@@ -217,6 +234,7 @@ test("morphs one closed primitive through the full shape family, reload, and dec
         .filter({ hasText: /^Type$/u })
         .locator("xpath=following-sibling::dd[1]"),
     ).toHaveText("Circle");
+    await expect(page.getByRole("spinbutton", { name: "Stroke width Rectangle" })).toHaveValue("0.12");
 
     const sampleTimes = await Promise.all([
       clipTime(page, clips.nth(0), 0),

@@ -15,6 +15,7 @@ import {
   type SceneEditOperation,
   sceneEditOperationSchema,
   shapeTransformChangesShape,
+  studioEntityTypeSupportsStrokeWidth,
 } from "./scene-edit-contract";
 
 export { sceneEditOperationSchema as canonicalOperationSchema } from "./scene-edit-contract";
@@ -724,16 +725,16 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
       issues.push({
         code: "schema-invalid" as const,
         field: "value",
-        message: "Line stroke width must be from 0.005 to 0.5 scene units.",
+        message: "Stroke width must be from 0.005 to 0.5 scene units.",
         operationId: operation.id,
         severity: "error" as const,
       });
     }
-    if (!entity?.transactionId || entity.type !== "Line") {
+    if (!entity?.transactionId || !studioEntityTypeSupportsStrokeWidth(entity.type)) {
       issues.push({
         code: "schema-invalid" as const,
         field: "entityId",
-        message: "Stroke width is available only for a Studio-created Line.",
+        message: "Stroke width is available only for a supported Studio-created object.",
         operationId: operation.id,
         severity: "error" as const,
       });

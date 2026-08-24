@@ -13,7 +13,12 @@ import { operationExecutionCapabilities, programExecutionCapabilities } from "..
 import { type CreateEntityOperation, EDIT_OPERATION_VERSION } from "../studio/operations";
 import { insertedProgramDuration } from "../studio/program-composition";
 import { samplePropertyKnowledge, samplePropertyValue } from "../studio/property-sampling";
-import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "../studio/scene-edit-contract";
+import {
+  isCanonicalRgbHex,
+  type SceneEdit,
+  type SceneEditOperation,
+  studioEntityTypeSupportsStrokeWidth,
+} from "../studio/scene-edit-contract";
 import { scaleTransformViolation, sceneBoundaryViolation } from "../studio/source-lowering-invariants";
 import { type ProgramRenderRequest, renderRequestPrograms, type SingleProgramRenderRequest } from "./contracts";
 import {
@@ -1075,18 +1080,18 @@ function assertLoweringSupported(
     );
   }
   if (operation.kind === "SetProperty" && operation.key === "strokeWidth") {
-    if (!isStudioLineStrokeWidthWorld(operation.value)) {
+    if (!isStudioStrokeWidthWorld(operation.value)) {
       throw new ProgramLoweringError(
         "operation-unsupported",
-        `Line stroke width must be between ${MIN_STUDIO_LINE_STROKE_WIDTH_WORLD} and ${MAX_STUDIO_LINE_STROKE_WIDTH_WORLD} world units.`,
+        `Stroke width must be between ${MIN_STUDIO_STROKE_WIDTH_WORLD} and ${MAX_STUDIO_STROKE_WIDTH_WORLD} world units.`,
       );
     }
     const type =
       currentGeneratedEntityTypes.get(operation.entityId) ?? options.generatedEntityTypes?.get(operation.entityId);
-    if (type === "Line") return;
+    if (type && studioEntityTypeSupportsStrokeWidth(type)) return;
     throw new ProgramLoweringError(
       "operation-unsupported",
-      "Stroke width currently supports only authorized Studio-created Line entities.",
+      "Stroke width currently supports only authorized Studio-created Line or closed primitive entities.",
     );
   }
   if (operation.kind === "SetProperty" && operation.key === "strokeCap") {
@@ -1870,7 +1875,7 @@ export function lowerCanonicalProgramSource(
         variable &&
         operation.kind === "SetProperty" &&
         operation.key === "strokeWidth" &&
-        isStudioLineStrokeWidthWorld(operation.value) &&
+        isStudioStrokeWidthWorld(operation.value) &&
         !options.hoistedInitialGeneratedStrokeOperationIds?.has(operation.id)
       ) {
         output.push(`${variable}.set_stroke(width=${manimStrokeWidth(operation.value)})`);
@@ -2155,17 +2160,17 @@ type MutableBatchGroup = {
   sourceAnchor: number;
 };
 
-const MIN_STUDIO_LINE_STROKE_WIDTH_WORLD = 0.005;
-const MAX_STUDIO_LINE_STROKE_WIDTH_WORLD = 0.5;
+const MIN_STUDIO_STROKE_WIDTH_WORLD = 0.005;
+const MAX_STUDIO_STROKE_WIDTH_WORLD = 0.5;
 const MANIM_STROKE_WIDTH_WORLD_UNIT = 0.01;
 type StudioLineStrokeCap = "butt" | "round" | "square";
 
-function isStudioLineStrokeWidthWorld(value: unknown): value is number {
+function isStudioStrokeWidthWorld(value: unknown): value is number {
   return (
     typeof value === "number" &&
     Number.isFinite(value) &&
-    value >= MIN_STUDIO_LINE_STROKE_WIDTH_WORLD &&
-    value <= MAX_STUDIO_LINE_STROKE_WIDTH_WORLD
+    value >= MIN_STUDIO_STROKE_WIDTH_WORLD &&
+    value <= MAX_STUDIO_STROKE_WIDTH_WORLD
   );
 }
 
@@ -3395,7 +3400,7 @@ export function lowerCanonicalProgramBatchSource(
         } else if (operation.key === "strokeColor" && isCanonicalRgbHex(operation.value)) {
           initialGeneratedStrokeColors.set(operation.entityId, operation.value);
           hoistedInitialGeneratedStrokeOperationIds.add(operation.id);
-        } else if (operation.key === "strokeWidth" && isStudioLineStrokeWidthWorld(operation.value)) {
+        } else if (operation.key === "strokeWidth" && isStudioStrokeWidthWorld(operation.value)) {
           initialGeneratedStrokeWidths.set(operation.entityId, operation.value);
           hoistedInitialGeneratedStrokeOperationIds.add(operation.id);
         }

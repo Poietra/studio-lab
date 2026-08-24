@@ -7,8 +7,8 @@ use super::{
     CreateSceneEntityDrawIn, CreateSceneEntityFadeIn, CreateSceneEntityGeometry,
     CreateSceneEntityInstantTransform, CreateSceneEntityMathTexMorph, CreateSceneEntityShapeMorph,
     CreateSceneEntityWriteIn, CubicPathV1, EasingV1, EngineSessionV1, FidelityV1, FillRuleV1,
-    FillStyleV1, IntervalV1, KeyframeV1, MAX_STUDIO_LINE_STROKE_WIDTH_WORLD,
-    MIN_STUDIO_LINE_STROKE_WIDTH_WORLD, PathTrimParameterizationV1, PlannedSceneMotion,
+    FillStyleV1, IntervalV1, KeyframeV1, MAX_STUDIO_STROKE_WIDTH_WORLD,
+    MIN_STUDIO_STROKE_WIDTH_WORLD, PathTrimParameterizationV1, PlannedSceneMotion,
     PlannedStudioCameraAnimation, PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PointV1,
     ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS,
     SEGMENTED_MATH_TEX_MAX_FRAGMENTS, SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES,
@@ -27,10 +27,10 @@ use super::{
     studio_authoring_shape_size, studio_authoring_size_is_positive, studio_camera_aspects_match,
     studio_camera_view_is_bounded, studio_camera_view_is_within_zoom_bounds,
     studio_camera_views_match, studio_coordinate_system_parameters, studio_coordinate_system_path,
-    studio_cubic_bezier_appearance, studio_data_plot_path, studio_ellipse_parameters,
-    studio_ellipse_path, studio_math_tex_appearance, studio_point_to_scene_point,
-    studio_regular_polygon_parameters, studio_regular_polygon_path, studio_sector_path,
-    studio_shape_transform_path, studio_timeline_semantic_values_match,
+    studio_creation_supports_stroke_width, studio_cubic_bezier_appearance, studio_data_plot_path,
+    studio_ellipse_parameters, studio_ellipse_path, studio_math_tex_appearance,
+    studio_point_to_scene_point, studio_regular_polygon_parameters, studio_regular_polygon_path,
+    studio_sector_path, studio_shape_transform_path, studio_timeline_semantic_values_match,
     studio_vector_to_scene_vector, unused_channel_id,
 };
 
@@ -402,9 +402,14 @@ pub(super) fn validate_create_scene_entities_command(
         let has_color_override = entity.fill_color.is_some() || entity.stroke_color.is_some();
         let stroke_width_is_valid = entity.stroke_width_world.is_none_or(|width| {
             width.is_finite()
-                && (MIN_STUDIO_LINE_STROKE_WIDTH_WORLD..=MAX_STUDIO_LINE_STROKE_WIDTH_WORLD)
-                    .contains(&width)
-                && matches!(entity.geometry, CreateSceneEntityGeometry::Line)
+                && (MIN_STUDIO_STROKE_WIDTH_WORLD..=MAX_STUDIO_STROKE_WIDTH_WORLD).contains(&width)
+                && matches!(
+                    entity.geometry,
+                    CreateSceneEntityGeometry::Circle { .. }
+                        | CreateSceneEntityGeometry::Line
+                        | CreateSceneEntityGeometry::Rectangle { .. }
+                        | CreateSceneEntityGeometry::ShapeOutline { .. }
+                )
         });
         let stroke_cap_is_valid = entity
             .stroke_cap
@@ -1992,6 +1997,9 @@ impl EngineSessionV1 {
                 .map(color_with_opacity)
                 .transpose()?;
             let stroke_width_world = state.stroke_width_world_override;
+            if stroke_width_world.is_some() && !studio_creation_supports_stroke_width(state.kind) {
+                return Err(ApplyStudioCreationEditError::Unsupported);
+            }
             let stroke_cap = state.stroke_cap_override;
             let write_in = match (&state.write_interval, &state.write_easing) {
                 (Some(interval), Some(easing)) => {

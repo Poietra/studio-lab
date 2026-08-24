@@ -241,7 +241,11 @@ import {
   scaleKeyframeTransformConflictEntity,
 } from "./studio/scale-keyframe-edit";
 import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-authoring-wire";
-import { type SceneEdit, shapeTransformChangesShape } from "./studio/scene-edit-contract";
+import {
+  type SceneEdit,
+  shapeTransformChangesShape,
+  studioEntityTypeSupportsStrokeWidth,
+} from "./studio/scene-edit-contract";
 import {
   isSelectionLayoutCommand,
   planSelectionLayout,
@@ -7608,12 +7612,12 @@ export function App({
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
     const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
-    if (!createdAuthority || entity?.type !== "Line") {
-      setDraftError("Stroke width is available only for a Studio-created Line.");
+    if (!createdAuthority || !entity || !studioEntityTypeSupportsStrokeWidth(entity.type)) {
+      setDraftError("Stroke width is available only for a supported Studio-created object.");
       return false;
     }
     if (!Number.isFinite(strokeWidth) || strokeWidth < 0.005 || strokeWidth > 0.5) {
-      setDraftError("Line stroke width must be from 0.005 to 0.5 scene units.");
+      setDraftError("Stroke width must be from 0.005 to 0.5 scene units.");
       return false;
     }
     const currentWidth =
@@ -7626,7 +7630,7 @@ export function App({
       gestureContext.sourcePrograms,
     );
     const anchor = manualAuthoringAnchor({
-      action: "Line stroke width edit",
+      action: "stroke width edit",
       allowSyntheticPreviewAnchor: true,
       requireAlignedPlayhead: true,
       scene: sourceScene,
@@ -7645,7 +7649,7 @@ export function App({
       });
       return acceptDirectManipulationDraft(validation, gestureContext, createdAuthority.sourceAnchor);
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : "The Line stroke width could not be changed.");
+      setDraftError(error instanceof Error ? error.message : "The object stroke width could not be changed.");
       return false;
     }
   }
@@ -9556,9 +9560,13 @@ export function App({
                   ? (selectedEntity.geometry.style.value.strokeCap ?? "butt")
                   : null
               }
-              strokeWidthAvailable={selectedStudioCreationAppearanceAtAnchor && selectedEntity?.type === "Line"}
+              strokeWidthAvailable={
+                selectedStudioCreationAppearanceAtAnchor &&
+                studioEntityTypeSupportsStrokeWidth(selectedEntity?.type ?? "")
+              }
               strokeWidthValue={
-                selectedEntity?.geometry.style.kind === "known" && selectedEntity.type === "Line"
+                selectedEntity?.geometry.style.kind === "known" &&
+                studioEntityTypeSupportsStrokeWidth(selectedEntity.type)
                   ? (selectedEntity.geometry.style.value.strokeWidth ?? 0.04)
                   : null
               }

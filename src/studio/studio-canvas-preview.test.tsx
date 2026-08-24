@@ -2010,6 +2010,42 @@ describe("StudioCanvas retained preview layer", () => {
     }
   });
 
+  it("exposes stroke width but keeps endpoint caps off closed primitives", () => {
+    for (const type of ["Circle", "Rectangle", "Ellipse", "Triangle", "RegularPolygon"] as const) {
+      const name = type.toLowerCase();
+      const entity = {
+        ...REGULAR_POLYGON_ENTITY,
+        id: `entity:${name}`,
+        transactionId: `create-${name}`,
+        type,
+      } satisfies ProjectedEntity;
+      const enabled = renderSelectedInspector(
+        entity,
+        null,
+        null,
+        false,
+        false,
+        null,
+        true,
+        "#123456",
+        "#abcdef",
+        false,
+        null,
+        true,
+        0.08,
+      );
+      const width = enabled.match(new RegExp(`<input aria-label="Stroke width ${name}"[^>]*>`))?.[0];
+
+      expect(width).toBeDefined();
+      expect(width).not.toContain('disabled=""');
+      expect(width).toContain('value="0.08"');
+      expect(enabled).not.toContain(`aria-label="Stroke cap ${name}"`);
+      expect(renderSelectedInspector(entity, null)).toMatch(
+        new RegExp(`<input aria-label="Stroke width ${name}"[^>]*disabled=""[^>]*>`),
+      );
+    }
+  });
+
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {
     const state = {
       frame: {
