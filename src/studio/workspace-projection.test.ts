@@ -1795,6 +1795,7 @@ describe("Studio workspace projection", () => {
     const imported = workspaceScene("First", null);
     const entityId = "tx:create-style/entity:line";
     const circleEntityId = "tx:create-style/entity:circle";
+    const penEntityId = "tx:create-style/entity:pen";
     const creationProgram: CanonicalEditProgram = {
       anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
       intentCount: 1,
@@ -1839,6 +1840,37 @@ describe("Studio workspace projection", () => {
       ],
       schedule: { edges: [], mode: "parallel", order: ["create-style/circle"] },
       transactionId: "create-circle-style",
+    };
+    const penSpec = {
+      arrowEnd: false,
+      control1: { x: -1, y: 1 },
+      control2: { x: 1, y: -1 },
+      continuationSegments: [{ control1: { x: 2.5, y: 1 }, control2: { x: 3.5, y: 1 }, end: { x: 4, y: 0 } }],
+      end: { x: 2, y: 0 },
+      start: { x: -2, y: 0 },
+      strokeCap: "round" as const,
+      strokeWidth: 0.04,
+    };
+    const penCreationProgram: CanonicalEditProgram = {
+      ...creationProgram,
+      operations: [
+        {
+          dependsOn: [],
+          entity: {
+            cubicBezier: penSpec,
+            dimensions: { height: 2, width: 6 },
+            id: penEntityId,
+            lifetime: { end: null, start: 0 },
+            type: "CubicBezier",
+          },
+          id: "create-style/pen",
+          interval: { end: 0, start: 0 },
+          kind: "CreateEntity",
+          provenance: { evidence: [], origin: "studio-default" },
+        },
+      ],
+      schedule: { edges: [], mode: "parallel", order: ["create-style/pen"] },
+      transactionId: "create-pen-style",
     };
     const colorProgram: CanonicalEditProgram = {
       anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
@@ -1951,6 +1983,23 @@ describe("Studio workspace projection", () => {
       schedule: { edges: [], mode: "parallel", order: ["stroke-dash/line"] },
       transactionId: "stroke-dash",
     };
+    const joinProgram: CanonicalEditProgram = {
+      ...colorProgram,
+      operations: [
+        {
+          dependsOn: [],
+          entityId: penEntityId,
+          id: "stroke-join/pen",
+          interval: { end: 0, start: 0 },
+          key: "strokeJoin",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          value: "bevel",
+        },
+      ],
+      schedule: { edges: [], mode: "parallel", order: ["stroke-join/pen"] },
+      transactionId: "stroke-join",
+    };
     const orderingProgram: CanonicalEditProgram = {
       ...colorProgram,
       operations: [
@@ -1992,6 +2041,17 @@ describe("Studio workspace projection", () => {
           kind: "circle",
           operationId: "create-style/circle",
           transactionId: "create-circle-style",
+        },
+        {
+          createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
+          cubicBezier: penSpec,
+          entityId: penEntityId,
+          initialDimensions: { height: 2, width: 6 },
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "cubic-bezier",
+          operationId: "create-style/pen",
+          transactionId: "create-pen-style",
         },
       ],
       insertions: [],
@@ -2049,6 +2109,14 @@ describe("Studio workspace projection", () => {
           value: { dashLength: 0.25, gapLength: 0.15 },
         },
         {
+          entityId: penEntityId,
+          interval: { end: 0, start: 0 },
+          kind: "stroke-join",
+          operationId: "stroke-join/pen",
+          transactionId: "stroke-join",
+          value: "bevel",
+        },
+        {
           entityId,
           interval: { end: 0, start: 0 },
           kind: "source-z-index",
@@ -2067,11 +2135,13 @@ describe("Studio workspace projection", () => {
       appliedEdits: [
         programRecord(creationProgram, { issues: [], kind: "valid" }),
         programRecord(circleCreationProgram, { issues: [], kind: "valid" }),
+        programRecord(penCreationProgram, { issues: [], kind: "valid" }),
         programRecord(colorProgram, { issues: [], kind: "valid" }),
         programRecord(fillProgram, { issues: [], kind: "valid" }),
         programRecord(fillTrackProgram, { issues: [], kind: "valid" }),
         programRecord(capProgram, { issues: [], kind: "valid" }),
         programRecord(dashProgram, { issues: [], kind: "valid" }),
+        programRecord(joinProgram, { issues: [], kind: "valid" }),
         programRecord(widthProgram, { issues: [], kind: "valid" }),
         programRecord(orderingProgram, { issues: [], kind: "valid" }),
       ],
@@ -2107,6 +2177,9 @@ describe("Studio workspace projection", () => {
         value: { dashLength: 0.25, gapLength: 0.15 },
       }),
     ]);
+    expect(projected.proposedState.evaluatedScene.propertyChannels[`${penEntityId}/strokeJoin`]?.samples).toEqual([
+      expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: "bevel" }),
+    ]);
     expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/sourceZIndex`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: -2.5 }),
     ]);
@@ -2122,6 +2195,9 @@ describe("Studio workspace projection", () => {
     expect(
       projected.projection.inspector.entities.find((entity) => entity.id === circleEntityId)?.geometry.style,
     ).toEqual({ kind: "known", value: { fillColor: "#22c55e" } });
+    expect(projected.projection.inspector.entities.find((entity) => entity.id === penEntityId)?.geometry.style).toEqual(
+      { kind: "known", value: { strokeJoin: "bevel" } },
+    );
   });
 
   it("waits for exact Rust authority for non-timeline Program batches", () => {

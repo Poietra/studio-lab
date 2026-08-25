@@ -32,11 +32,11 @@ use super::{
     studio_coordinate_system_parameters, studio_creation_initial_appearance_end,
     studio_creation_motion_is_compatible, studio_creation_spec_text_content,
     studio_creation_supports_stroke_cap, studio_creation_supports_stroke_color_track,
-    studio_creation_supports_stroke_width, studio_cubic_bezier_dimensions_are_canonical,
-    studio_cubic_bezier_is_canonical, studio_data_series_is_valid, studio_ellipse_parameters,
-    studio_math_tex_content_is_canonical, studio_regular_polygon_parameters,
-    studio_shape_transform_path, studio_text_content_is_canonical,
-    studio_timeline_semantic_values_match,
+    studio_creation_supports_stroke_join, studio_creation_supports_stroke_width,
+    studio_cubic_bezier_dimensions_are_canonical, studio_cubic_bezier_is_canonical,
+    studio_data_series_is_valid, studio_ellipse_parameters, studio_math_tex_content_is_canonical,
+    studio_regular_polygon_parameters, studio_shape_transform_path,
+    studio_text_content_is_canonical, studio_timeline_semantic_values_match,
 };
 
 fn studio_shape_transform_pair_is_supported(
@@ -228,6 +228,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::StrokeCap { .. }
                 | StudioCreationOperationKind::StrokeDash { .. }
+                | StudioCreationOperationKind::StrokeJoin { .. }
                 | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
@@ -288,6 +289,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::StrokeCap { .. }
                 | StudioCreationOperationKind::StrokeDash { .. }
+                | StudioCreationOperationKind::StrokeJoin { .. }
                 | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
@@ -939,6 +941,7 @@ pub(super) fn plan_studio_creation_edits(
             stroke_color_override: None,
             stroke_cap_override: None,
             stroke_dash_override: None,
+            stroke_join_override: None,
             stroke_width_world_override: None,
             fade_interval,
             has_position_or_resize_instant: false,
@@ -2221,6 +2224,40 @@ pub(super) fn plan_studio_creation_edits(
                         },
                     ));
                 }
+                StudioCreationOperationKind::StrokeJoin { join }
+                    if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                        && studio_creation_supports_stroke_join(state)
+                        && state.stroke_join_override != Some(*join)
+                        && studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        && studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
+                        && studio_timeline_semantic_values_match(
+                            program.anchor_resolved_seconds,
+                            state.spec.lifetime_start,
+                        )
+                        && state.persistent_removal.is_none() =>
+                {
+                    state.stroke_join_override = Some(*join);
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: IntervalV1 {
+                                start: state.lifetime.start,
+                                end: state.lifetime.start,
+                            },
+                            kind: StudioCreationProjectedMutationKind::StrokeJoin { value: *join },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
                 StudioCreationOperationKind::StrokeDash {
                     dash_length_world,
                     gap_length_world,
@@ -2570,6 +2607,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::StrokeCap { .. }
+                | StudioCreationOperationKind::StrokeJoin { .. }
                 | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }

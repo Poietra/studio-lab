@@ -28,11 +28,11 @@ use super::{
     studio_camera_aspects_match, studio_camera_view_is_bounded,
     studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
     studio_coordinate_system_parameters, studio_coordinate_system_path,
-    studio_creation_supports_stroke_cap, studio_creation_supports_stroke_width,
-    studio_cubic_bezier_appearance, studio_data_plot_path, studio_ellipse_parameters,
-    studio_ellipse_path, studio_math_tex_appearance, studio_point_to_scene_point,
-    studio_regular_polygon_parameters, studio_regular_polygon_path, studio_sector_path,
-    studio_shape_transform_path, studio_timeline_semantic_values_match,
+    studio_creation_supports_stroke_cap, studio_creation_supports_stroke_join,
+    studio_creation_supports_stroke_width, studio_cubic_bezier_appearance, studio_data_plot_path,
+    studio_ellipse_parameters, studio_ellipse_path, studio_math_tex_appearance,
+    studio_point_to_scene_point, studio_regular_polygon_parameters, studio_regular_polygon_path,
+    studio_sector_path, studio_shape_transform_path, studio_timeline_semantic_values_match,
     studio_vector_to_scene_vector, unused_channel_id,
 };
 
@@ -577,6 +577,13 @@ pub(super) fn validate_create_scene_entities_command(
                     _ => false,
                 }
         });
+        let stroke_join_is_valid = entity.stroke_join.is_none_or(|_| {
+            matches!(
+                &entity.geometry,
+                CreateSceneEntityGeometry::CubicBezier { path, .. }
+                    if path.subpaths.first().is_some_and(|subpath| subpath.segments.len() >= 2)
+            )
+        });
         let has_initial_draw_stroke = entity.draw_in.is_some()
             && entity.fill_color.is_none()
             && entity.stroke_color.is_some()
@@ -611,6 +618,7 @@ pub(super) fn validate_create_scene_entities_command(
             || !stroke_width_is_valid
             || !stroke_cap_is_valid
             || !stroke_dash_is_valid
+            || !stroke_join_is_valid
             || unsupported_image_paint
             || unsupported_color_override
             || (entity.animated_resize.is_some()
@@ -1074,6 +1082,17 @@ pub(super) fn append_created_entity(
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
         stroke.cap = cap;
+    }
+    if let Some(join) = entity.stroke_join {
+        let SceneAppearanceV1::Vector {
+            stroke: Some(stroke),
+            ..
+        } = &mut appearance
+        else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        };
+        stroke.join = join;
+        stroke.miter_limit = 10.0;
     }
     if let Some(dash) = entity.stroke_dash {
         let SceneAppearanceV1::Vector {
@@ -2364,6 +2383,10 @@ impl EngineSessionV1 {
                 return Err(ApplyStudioCreationEditError::Unsupported);
             }
             let stroke_dash = state.stroke_dash_override;
+            let stroke_join = state.stroke_join_override;
+            if stroke_join.is_some() && !studio_creation_supports_stroke_join(state) {
+                return Err(ApplyStudioCreationEditError::Unsupported);
+            }
             let write_in = match (&state.write_interval, &state.write_easing) {
                 (Some(interval), Some(easing)) => {
                     let source = state
@@ -2432,6 +2455,7 @@ impl EngineSessionV1 {
                 stroke_color,
                 stroke_cap,
                 stroke_dash,
+                stroke_join,
                 stroke_width_world,
                 visible: state.visible,
                 write_in,

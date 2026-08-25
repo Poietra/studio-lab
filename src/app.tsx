@@ -190,6 +190,7 @@ import type {
   ProposedState,
   RuntimeSceneState,
   StrokeDash,
+  StrokeJoin,
 } from "./studio/model";
 import {
   adjustAppliedMotionClipControl,
@@ -387,6 +388,7 @@ import {
   createDirectManipulationScaleProgram,
   createDirectManipulationStrokeCapProgram,
   createDirectManipulationStrokeDashProgram,
+  createDirectManipulationStrokeJoinProgram,
   createDirectManipulationStrokeWidthProgram,
   createDirectManipulationVisibilityProgram,
 } from "./studio/suggestion-program";
@@ -8473,6 +8475,68 @@ export function App({
     }
   }
 
+  function strokeJoinUnavailableReasonFor(entityId: string) {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!entity || entity.type !== "CubicBezier") return "Select a Pen path to edit its stroke join.";
+    if (previewSelectionOnly) return "This verified snapshot is selection-only and cannot accept stroke-join edits.";
+    if (boundedRuntimeMutationIsLocked(entityId)) {
+      return "Only the runtime-proven source edit target can be changed in this preview.";
+    }
+    const owned = studioCubicBezierCreation(entityId);
+    if (!owned) return "Imported or unsupported Pen paths are read-only for stroke-join editing.";
+    if ((owned.creation.entity.cubicBezier?.continuationSegments?.length ?? 0) === 0) {
+      return "Extend the Pen path to edit its stroke join.";
+    }
+    const authority = studioCreationAppearanceAuthorityFor(entityId);
+    if (!authority) return "The Studio creation authority for this Pen path is unavailable.";
+    if (Math.abs(sourceCurrentTime - authority.sourceAnchor) >= 0.0005) {
+      return "Move the playhead to the object's creation time to edit its stroke join.";
+    }
+    return null;
+  }
+
+  function setEntityStrokeJoinFromInspector(entityId: string, strokeJoin: StrokeJoin) {
+    const unavailableReason = strokeJoinUnavailableReasonFor(entityId);
+    if (unavailableReason) {
+      setDraftError(unavailableReason);
+      return false;
+    }
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    const currentJoin =
+      entity?.geometry.style.kind === "known" ? (entity.geometry.style.value.strokeJoin ?? "round") : null;
+    if (currentJoin === strokeJoin) return false;
+    const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
+    const gestureContext = directGestureContext();
+    if (!createdAuthority || !gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "stroke join edit",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor || Math.abs(anchor.sourceTime - createdAuthority.sourceAnchor) >= 0.0005) return false;
+    try {
+      const validation = createDirectManipulationStrokeJoinProgram({
+        capturedPlayhead: createdAuthority.sourceAnchor,
+        entityId,
+        scene: sourceScene,
+        start: createdAuthority.sourceAnchor,
+        strokeJoin,
+        transactionId: `studio-stroke-join-input-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, createdAuthority.sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The stroke join could not be changed.");
+      return false;
+    }
+  }
+
   function strokeDashUnavailableReasonFor(entityId: string) {
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return "Select a visible Line or open Pen path to edit its dashed stroke.";
@@ -10408,6 +10472,9 @@ export function App({
               onEntityStrokeDashChange={(entityId, strokeDash) =>
                 void setEntityStrokeDashFromInspector(entityId, strokeDash)
               }
+              onEntityStrokeJoinChange={(entityId, strokeJoin) =>
+                void setEntityStrokeJoinFromInspector(entityId, strokeJoin)
+              }
               onEntityStrokeWidthChange={(entityId, strokeWidth) =>
                 void setEntityStrokeWidthFromInspector(entityId, strokeWidth)
               }
@@ -10523,6 +10590,15 @@ export function App({
                   : null
               }
               strokeDashVisible={selectedEntity !== null && studioEntityTypeMayExposeStrokeDash(selectedEntity.type)}
+              strokeJoinUnavailableReason={
+                selectedEntity?.type === "CubicBezier" ? strokeJoinUnavailableReasonFor(selectedEntity.id) : null
+              }
+              strokeJoinValue={
+                selectedEntity?.geometry.style.kind === "known" && selectedEntity.type === "CubicBezier"
+                  ? (selectedEntity.geometry.style.value.strokeJoin ?? "round")
+                  : null
+              }
+              strokeJoinVisible={selectedEntity?.type === "CubicBezier"}
               strokeWidthAvailable={
                 selectedStudioCreationAppearanceAtAnchor &&
                 studioEntityTypeSupportsStrokeWidth(selectedEntity?.type ?? "")

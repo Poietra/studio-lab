@@ -904,7 +904,7 @@ describe("Studio creation wire", () => {
     });
   });
 
-  it("normalizes created-shape colors and Line stroke style without accepting non-canonical values", () => {
+  it("normalizes created-shape colors and static stroke style without accepting non-canonical values", () => {
     const entityId = "entity:Circle";
     const common = {
       dependsOn: [] as string[],
@@ -956,6 +956,21 @@ describe("Studio creation wire", () => {
         key: "strokeDash",
         value: null,
       }),
+      creationProgram("CubicBezier"),
+      followupProgram("join:CubicBezier", {
+        ...common,
+        entityId: "entity:CubicBezier",
+        id: "join:CubicBezier",
+        key: "strokeJoin",
+        value: "bevel",
+      }),
+      followupProgram("invalid-join:CubicBezier", {
+        ...common,
+        entityId: "entity:CubicBezier",
+        id: "invalid-join:CubicBezier",
+        key: "strokeJoin",
+        value: "sharp" as never,
+      }),
     ];
 
     const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs });
@@ -988,6 +1003,12 @@ describe("Studio creation wire", () => {
       gapLengthWorld: null,
       kind: "stroke-dash",
     });
+    expect(command.programs[9]?.operations[0]).toMatchObject({
+      entityId: "entity:CubicBezier",
+      join: "bevel",
+      kind: "stroke-join",
+    });
+    expect(command.programs[10]?.operations[0]).toMatchObject({ kind: "unsupported" });
   });
 
   it("normalizes one complete Camera view transition without a synthetic entity", () => {

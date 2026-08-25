@@ -154,6 +154,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
       "strokeCap",
       "strokeColor",
       "strokeDash",
+      "strokeJoin",
       "strokeWidth",
       "visibility",
     ]),
@@ -391,6 +392,19 @@ export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superR
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: "strokeCap must be butt, round, or square.",
+      path: ["value"],
+    });
+  }
+  if (
+    operation.kind === "SetProperty" &&
+    operation.key === "strokeJoin" &&
+    operation.value !== "bevel" &&
+    operation.value !== "miter" &&
+    operation.value !== "round"
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "strokeJoin must be bevel, miter, or round.",
       path: ["value"],
     });
   }

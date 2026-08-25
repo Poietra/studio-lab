@@ -408,6 +408,7 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "SetProperty" && operation.key === "strokeColor") return "stroke-color";
   if (operation.kind === "SetProperty" && operation.key === "strokeCap") return "stroke-cap";
   if (operation.kind === "SetProperty" && operation.key === "strokeDash") return "stroke-dash";
+  if (operation.kind === "SetProperty" && operation.key === "strokeJoin") return "stroke-join";
   if (operation.kind === "SetProperty" && operation.key === "strokeWidth") return "stroke-width";
   if (operation.kind === "SetProperty" && operation.key === "sourceZIndex") return "source-z-index";
   if (operation.kind === "SetProperty" && operation.key === "visibility") return "visibility";
@@ -1334,6 +1335,13 @@ function appendProjectedMutation(
     });
   } else if (mutation.kind === "stroke-dash") {
     appendProjectedSample(draft.propertyChannels, entityId, "strokeDash", {
+      ...metadata,
+      interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.start },
+      kind: "exact",
+      value: mutation.value,
+    });
+  } else if (mutation.kind === "stroke-join") {
+    appendProjectedSample(draft.propertyChannels, entityId, "strokeJoin", {
       ...metadata,
       interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.start },
       kind: "exact",

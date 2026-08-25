@@ -47,6 +47,7 @@ export type EntityStyle = Readonly<{
   strokeCap?: "butt" | "round" | "square";
   strokeColor?: string;
   strokeDash?: StrokeDash;
+  strokeJoin?: StrokeJoin;
   strokeWidth?: number;
 }>;
 
@@ -54,6 +55,8 @@ export type StrokeDash = Readonly<{
   dashLength: number;
   gapLength: number;
 }>;
+
+export type StrokeJoin = "bevel" | "miter" | "round";
 
 export type TextLayout = Readonly<{
   alignment: "center" | "left" | "right";
@@ -174,6 +177,7 @@ export type PropertyChannel = Readonly<{
     | "strokeCap"
     | "strokeColor"
     | "strokeDash"
+    | "strokeJoin"
     | "strokeWidth"
     | "visibility";
   samples: readonly PropertyChannelSample[];

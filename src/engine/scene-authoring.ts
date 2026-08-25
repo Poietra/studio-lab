@@ -781,6 +781,16 @@ const studioCreationProjectionV1Schema = z
           .object({
             entityId: z.string().min(1),
             interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("stroke-join"),
+            operationId: z.string().min(1),
+            transactionId: z.string().min(1),
+            value: z.enum(["bevel", "miter", "round"]),
+          })
+          .strict(),
+        z
+          .object({
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("stroke-dash"),
             operationId: z.string().min(1),
             transactionId: z.string().min(1),
@@ -1183,6 +1193,7 @@ type StudioCreationOperationV1 = Readonly<{
         to: string | null;
       }>
     | Readonly<{ cap: "butt" | "round" | "square" | null; entityId: string; kind: "stroke-cap" }>
+    | Readonly<{ entityId: string; join: "bevel" | "miter" | "round"; kind: "stroke-join" }>
     | Readonly<{
         dashLengthWorld: number | null;
         entityId: string;
