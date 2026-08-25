@@ -20,6 +20,7 @@ import {
   createDirectManipulationScaleProgram,
   createDirectManipulationStrokeCapProgram,
   createDirectManipulationStrokeDashProgram,
+  createDirectManipulationStrokeJoinProgram,
   createDirectManipulationStrokeWidthProgram,
   createDirectManipulationVisibilityProgram,
 } from "./suggestion-program";
@@ -927,6 +928,48 @@ describe("Studio draft validation boundary", () => {
       apply: "supported",
       lowering: "supported",
     });
+    const penEntityId = "tx:shape/entity:pen-join";
+    const penScene = {
+      ...scene,
+      objectGraph: {
+        ...scene.objectGraph,
+        entities: {
+          ...scene.objectGraph.entities,
+          [penEntityId]: {
+            ...scene.objectGraph.entities[entityId],
+            id: penEntityId,
+            type: "CubicBezier",
+          },
+        },
+      },
+    };
+    const penJoin = createDirectManipulationStrokeJoinProgram({
+      capturedPlayhead: 0,
+      entityId: penEntityId,
+      scene: penScene,
+      start: 0,
+      strokeJoin: "bevel",
+      transactionId: "pen-join",
+    });
+    expect(penJoin).toMatchObject({
+      issues: [],
+      kind: "valid",
+      program: { operations: [{ entityId: penEntityId, key: "strokeJoin", value: "bevel" }] },
+    });
+    expect(programExecutionCapabilities(penJoin.program)).toMatchObject({
+      apply: "supported",
+      lowering: "supported",
+    });
+    expect(
+      createDirectManipulationStrokeJoinProgram({
+        capturedPlayhead: 0,
+        entityId: lineEntityId,
+        scene: lineScene,
+        start: 0,
+        strokeJoin: "round",
+        transactionId: "line-join",
+      }),
+    ).toMatchObject({ kind: "invalid" });
     for (const type of ["Arc", "Axes", "DataPlot", "NumberLine", "NumberPlane"] as const) {
       const pathEntityId = `tx:shape/entity:${type.toLowerCase()}`;
       const pathScene = {
@@ -1063,6 +1106,16 @@ describe("Studio draft validation boundary", () => {
         transactionId: "invalid-line-dash",
       }),
     ).toThrow(/0\.02 to 2/u);
+    expect(() =>
+      createDirectManipulationStrokeJoinProgram({
+        capturedPlayhead: 0,
+        entityId: penEntityId,
+        scene: penScene,
+        start: 0,
+        strokeJoin: "sharp" as never,
+        transactionId: "invalid-pen-join",
+      }),
+    ).toThrow(/bevel, miter, or round/u);
     expect(
       canonicalOperationSchema.safeParse({
         ...lineDash.program.operations[0],

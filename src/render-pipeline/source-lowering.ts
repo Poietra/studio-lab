@@ -8,7 +8,13 @@ import {
   STUDIO_TEXT_DEFAULT_LAYOUT,
 } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
-import { type EntityContent, isMotionEasing, type MotionEasing, type StrokeDash } from "../studio/model";
+import {
+  type EntityContent,
+  isMotionEasing,
+  type MotionEasing,
+  type StrokeDash,
+  type StrokeJoin,
+} from "../studio/model";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
 import { type CreateEntityOperation, EDIT_OPERATION_VERSION } from "../studio/operations";
 import { insertedProgramDuration } from "../studio/program-composition";
@@ -150,6 +156,7 @@ type ProgramSourceLoweringOptions = Readonly<{
   initialGeneratedStrokeCaps?: ReadonlyMap<string, StudioLineStrokeCap>;
   initialGeneratedStrokeColors?: ReadonlyMap<string, string>;
   initialGeneratedStrokeDashes?: ReadonlyMap<string, StrokeDash | null>;
+  initialGeneratedStrokeJoins?: ReadonlyMap<string, StrokeJoin>;
   initialGeneratedStrokeWidths?: ReadonlyMap<string, number>;
   reservedSourceVariables?: ReadonlySet<string>;
   sourceAnchor?: number;
@@ -778,7 +785,11 @@ function localPointExpression(point: Readonly<{ x: number; y: number }>) {
   return `(${formatPointCoordinate(point.x)}, ${formatPointCoordinate(point.y)}, 0)`;
 }
 
-function cubicBezierConstructor(operation: CreateEntityOperation, strokeCap?: StudioLineStrokeCap) {
+function cubicBezierConstructor(
+  operation: CreateEntityOperation,
+  strokeCap?: StudioLineStrokeCap,
+  strokeJoin?: StrokeJoin,
+) {
   const cubicBezier = operation.entity.cubicBezier;
   if (!cubicBezier) {
     throw new ProgramLoweringError("operation-unsupported", "Pen source export requires one canonical cubic path.");
@@ -790,8 +801,9 @@ function cubicBezierConstructor(operation: CreateEntityOperation, strokeCap?: St
     );
   }
   const cap = strokeCap ?? cubicBezier.strokeCap;
+  const jointType = strokeJoin ? `, joint_type=${manimStrokeJoin(strokeJoin)}` : "";
   return [
-    `CubicBezier(${localPointExpression(cubicBezier.start)}, ${localPointExpression(cubicBezier.control1)}, ${localPointExpression(cubicBezier.control2)}, ${localPointExpression(cubicBezier.end)}, cap_style=${manimStrokeCap(cap)}, stroke_width=${manimStrokeWidth(cubicBezier.strokeWidth)})`,
+    `CubicBezier(${localPointExpression(cubicBezier.start)}, ${localPointExpression(cubicBezier.control1)}, ${localPointExpression(cubicBezier.control2)}, ${localPointExpression(cubicBezier.end)}, cap_style=${manimStrokeCap(cap)}, stroke_width=${manimStrokeWidth(cubicBezier.strokeWidth)}${jointType})`,
     ...(cubicBezier.continuationSegments ?? []).map(
       (segment) =>
         `.add_cubic_bezier_curve_to(${localPointExpression(segment.control1)}, ${localPointExpression(segment.control2)}, ${localPointExpression(segment.end)})`,
@@ -799,7 +811,7 @@ function cubicBezierConstructor(operation: CreateEntityOperation, strokeCap?: St
   ].join("");
 }
 
-function entityConstructor(operation: CreateEntityOperation, strokeCap?: StudioLineStrokeCap) {
+function entityConstructor(operation: CreateEntityOperation, strokeCap?: StudioLineStrokeCap, strokeJoin?: StrokeJoin) {
   const { content, dimensions, type } = operation.entity;
   if (type === "MathTex") {
     const parts = content?.texParts?.length ? content.texParts : content?.displayLines;
@@ -815,7 +827,7 @@ function entityConstructor(operation: CreateEntityOperation, strokeCap?: StudioL
     const text = content?.text ?? content?.displayLines.join(" ") ?? "";
     return manimTextConstructor(text, { layout: content?.textLayout, unitHeight: true });
   }
-  if (type === "CubicBezier") return cubicBezierConstructor(operation, strokeCap);
+  if (type === "CubicBezier") return cubicBezierConstructor(operation, strokeCap, strokeJoin);
   const shapeConstructor = {
     Arrow: "Arrow(LEFT, RIGHT, buff=0)",
     Circle: `Circle(radius=${formatAmount(dimensions?.radius ?? 1)})`,
@@ -1141,6 +1153,24 @@ function assertLoweringSupported(
     throw new ProgramLoweringError(
       "operation-unsupported",
       "Dashed stroke must be one static operation at the Studio-created path creation anchor.",
+    );
+  }
+  if (operation.kind === "SetProperty" && operation.key === "strokeJoin") {
+    if (!isStudioStrokeJoin(operation.value)) {
+      throw new ProgramLoweringError("operation-unsupported", "Stroke join must be miter, round, or bevel.");
+    }
+    const type =
+      currentGeneratedEntityTypes.get(operation.entityId) ?? options.generatedEntityTypes?.get(operation.entityId);
+    if (type !== "CubicBezier") {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "Stroke join source export supports only an authorized Studio-created open Pen path.",
+      );
+    }
+    if (options.hoistedInitialGeneratedStrokeOperationIds?.has(operation.id)) return;
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Stroke join must be one static operation at the Studio-created Pen creation anchor.",
     );
   }
   if (operation.kind === "SetProperty" && operation.key === "strokeCap") {
@@ -1760,7 +1790,8 @@ export function lowerCanonicalProgramSource(
         }
         const initialStrokeCap = options.initialGeneratedStrokeCaps?.get(operation.entity.id);
         const initialStrokeDash = options.initialGeneratedStrokeDashes?.get(operation.entity.id) ?? null;
-        output.push(`${variable} = ${entityConstructor(operation, initialStrokeCap)}`);
+        const initialStrokeJoin = options.initialGeneratedStrokeJoins?.get(operation.entity.id);
+        output.push(`${variable} = ${entityConstructor(operation, initialStrokeCap, initialStrokeJoin)}`);
         if (operation.entity.type === "Line" && initialStrokeDash) {
           output.push(`${variable}.become(${manimDashedLineConstructor(initialStrokeDash, initialStrokeCap)})`);
         }
@@ -2248,6 +2279,14 @@ function isStudioLineStrokeCap(value: unknown): value is StudioLineStrokeCap {
 
 function manimStrokeCap(cap: StudioLineStrokeCap) {
   return `CapStyleType.${cap.toUpperCase()}`;
+}
+
+function isStudioStrokeJoin(value: unknown): value is StrokeJoin {
+  return value === "bevel" || value === "miter" || value === "round";
+}
+
+function manimStrokeJoin(join: StrokeJoin) {
+  return `LineJointType.${join.toUpperCase()}`;
 }
 
 function isStudioStrokeDash(value: unknown): value is StrokeDash {
@@ -3431,6 +3470,7 @@ export function lowerCanonicalProgramBatchSource(
   const initialGeneratedStrokeCaps = new Map<string, StudioLineStrokeCap>();
   const initialGeneratedStrokeColors = new Map<string, string>();
   const initialGeneratedStrokeDashes = new Map<string, StrokeDash | null>();
+  const initialGeneratedStrokeJoins = new Map<string, StrokeJoin>();
   const initialGeneratedStrokeWidths = new Map<string, number>();
   const hoistedInitialGeneratedFillOperationIds = new Set<string>();
   const hoistedInitialGeneratedStrokeOperationIds = new Set<string>();
@@ -3443,7 +3483,8 @@ export function lowerCanonicalProgramBatchSource(
       end += 1;
     }
     const group = normalizedEntries.slice(start, end);
-    const initialDashedStrokeLifetimeStarts = new Map<string, number>();
+    const initialPathStrokeLifetimeStarts = new Map<string, number>();
+    const initialCubicBezierLifetimeStarts = new Map<string, number>();
     const initialGlyphLifetimeStarts = new Map<string, number>();
     const initialLineLifetimeStarts = new Map<string, number>();
     for (const { program, sourceAnchor } of group) {
@@ -3467,7 +3508,10 @@ export function lowerCanonicalProgramBatchSource(
           (operation.entity.type === "Line" || operation.entity.type === "CubicBezier") &&
           Math.abs(sourceAnchor - lifetimeStart) < EPSILON
         ) {
-          initialDashedStrokeLifetimeStarts.set(operation.entity.id, lifetimeStart);
+          initialPathStrokeLifetimeStarts.set(operation.entity.id, lifetimeStart);
+        }
+        if (operation.entity.type === "CubicBezier" && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
+          initialCubicBezierLifetimeStarts.set(operation.entity.id, lifetimeStart);
         }
         if (entrance && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
           if (operation.entity.type === "MathTex" || operation.entity.type === "Text") {
@@ -3480,7 +3524,7 @@ export function lowerCanonicalProgramBatchSource(
       if (program.operations.length !== 1) continue;
       const operation = program.operations[0]!;
       if (operation.kind === "SetProperty" && operation.key === "strokeDash") {
-        const lifetimeStart = initialDashedStrokeLifetimeStarts.get(operation.entityId);
+        const lifetimeStart = initialPathStrokeLifetimeStarts.get(operation.entityId);
         if (
           lifetimeStart !== undefined &&
           Math.abs(operation.interval.start - lifetimeStart) < EPSILON &&
@@ -3488,6 +3532,19 @@ export function lowerCanonicalProgramBatchSource(
           (operation.value === null || isStudioStrokeDash(operation.value))
         ) {
           initialGeneratedStrokeDashes.set(operation.entityId, operation.value);
+          hoistedInitialGeneratedStrokeOperationIds.add(operation.id);
+        }
+        continue;
+      }
+      if (operation.kind === "SetProperty" && operation.key === "strokeJoin") {
+        const lifetimeStart = initialCubicBezierLifetimeStarts.get(operation.entityId);
+        if (
+          lifetimeStart !== undefined &&
+          Math.abs(operation.interval.start - lifetimeStart) < EPSILON &&
+          Math.abs(operation.interval.end - lifetimeStart) < EPSILON &&
+          isStudioStrokeJoin(operation.value)
+        ) {
+          initialGeneratedStrokeJoins.set(operation.entityId, operation.value);
           hoistedInitialGeneratedStrokeOperationIds.add(operation.id);
         }
         continue;
@@ -3572,6 +3629,7 @@ export function lowerCanonicalProgramBatchSource(
         initialGeneratedStrokeCaps,
         initialGeneratedStrokeColors,
         initialGeneratedStrokeDashes,
+        initialGeneratedStrokeJoins,
         initialGeneratedStrokeWidths,
         reservedSourceVariables: generatedSourceVariables,
         sourceAnchor: entry.sourceAnchor,

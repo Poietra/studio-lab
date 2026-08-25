@@ -26,12 +26,13 @@ function createPathProgram(type: "CubicBezier" | "Line", transactionId: string, 
 
 function strokePropertyProgram(
   entityId: string,
-  key: "strokeCap" | "strokeColor" | "strokeDash" | "strokeWidth",
+  key: "strokeCap" | "strokeColor" | "strokeDash" | "strokeJoin" | "strokeWidth",
   value: "butt" | "round" | "square" | StrokeDash | number | string | null,
   transactionId: string,
+  at = 7,
 ) {
   const operation: CanonicalEditOperation = {
-    ...operationBase(`tx:${transactionId}/operation:set`, 7),
+    ...operationBase(`tx:${transactionId}/operation:set`, at),
     entityId,
     key,
     kind: "SetProperty",
@@ -52,7 +53,7 @@ function lower(programs: readonly CanonicalEditProgram[]) {
   );
 }
 
-describe("Studio dashed-stroke Manim source lowering", () => {
+describe("Studio path stroke Manim source lowering", () => {
   it("constructs a bounded DashedLine while preserving its initial stroke style", () => {
     const created = createPathProgram("Line", "dashed-line");
     const dashed = strokePropertyProgram(
@@ -112,6 +113,62 @@ describe("Studio dashed-stroke Manim source lowering", () => {
       "poietra_solid_pen_1 = CubicBezier((-1.25, -0.5, 0), (-0.75, 1.25, 0), (0.5, -1.5, 0), (1.75, 0.25, 0), cap_style=CapStyleType.SQUARE, stroke_width=6)",
     );
     expect(lowered.insertedCode).not.toContain("DashedVMobject(");
+    expect(lowered.insertedCode).not.toContain("joint_type=");
+  });
+
+  it.each([
+    ["miter", "MITER"],
+    ["round", "ROUND"],
+    ["bevel", "BEVEL"],
+  ] as const)("hoists a static %s join into the open Pen constructor", (strokeJoin, manimJoin) => {
+    const created = createPathProgram("CubicBezier", `joined-pen-${strokeJoin}`, {
+      arrowEnd: false,
+      control1: { x: -1, y: 1 },
+      control2: { x: 1, y: -1 },
+      continuationSegments: [
+        {
+          control1: { x: 2.5, y: 1.5 },
+          control2: { x: 3.5, y: 1 },
+          end: { x: 4, y: 0 },
+        },
+      ],
+      end: { x: 2, y: 0 },
+      start: { x: -2, y: 0 },
+      strokeCap: "round",
+      strokeWidth: 0.04,
+    });
+    const joined = strokePropertyProgram(created.entityId, "strokeJoin", strokeJoin, `joined-pen-${strokeJoin}-style`);
+
+    const lowered = lower([created.program, joined]);
+
+    expect(lowered.insertedCode).toContain(`joint_type=LineJointType.${manimJoin}`);
+    expect(lowered.insertedCode).toContain(".add_cubic_bezier_curve_to(");
+    expect(
+      importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation", FRAME)?.runtimeSceneState
+        .objectGraph.entities[created.entityId]?.type,
+    ).toBe("CubicBezier");
+  });
+
+  it("rejects a Pen join outside the creation anchor", () => {
+    const created = createPathProgram("CubicBezier", "late-joined-pen", {
+      arrowEnd: false,
+      control1: { x: -1, y: 1 },
+      control2: { x: 1, y: -1 },
+      continuationSegments: [
+        {
+          control1: { x: 2.5, y: 1.5 },
+          control2: { x: 3.5, y: 1 },
+          end: { x: 4, y: 0 },
+        },
+      ],
+      end: { x: 2, y: 0 },
+      start: { x: -2, y: 0 },
+      strokeCap: "round",
+      strokeWidth: 0.04,
+    });
+    const joined = strokePropertyProgram(created.entityId, "strokeJoin", "round", "late-join", 7.5);
+
+    expect(() => lower([created.program, joined])).toThrow(/creation anchor/i);
   });
 
   it("builds the exact open Pen cubics before wrapping them in DashedVMobject", () => {

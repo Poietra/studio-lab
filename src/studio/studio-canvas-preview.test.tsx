@@ -238,6 +238,9 @@ function renderSelectedInspector(
   strokeDashVisible = false,
   strokeDashValue: Readonly<{ dashLength: number; gapLength: number }> | null = null,
   strokeDashUnavailableReason: string | null = null,
+  strokeJoinVisible = false,
+  strokeJoinValue: "bevel" | "miter" | "round" | null = null,
+  strokeJoinUnavailableReason: string | null = null,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
@@ -260,6 +263,7 @@ function renderSelectedInspector(
       onEntityScaleChange={vi.fn()}
       onEntityStrokeCapChange={vi.fn()}
       onEntityStrokeDashChange={vi.fn()}
+      onEntityStrokeJoinChange={vi.fn()}
       onEntityStrokeWidthChange={vi.fn()}
       onInspectorFocusRestored={vi.fn()}
       onRenderSessionChange={vi.fn()}
@@ -283,6 +287,9 @@ function renderSelectedInspector(
       strokeDashUnavailableReason={strokeDashUnavailableReason}
       strokeDashValue={strokeDashValue}
       strokeDashVisible={strokeDashVisible}
+      strokeJoinUnavailableReason={strokeJoinUnavailableReason}
+      strokeJoinValue={strokeJoinValue}
+      strokeJoinVisible={strokeJoinVisible}
       strokeWidthAvailable={strokeWidthAvailable}
       strokeWidthValue={strokeWidthValue}
       suggestion={null}
@@ -313,6 +320,37 @@ function renderDashInspector(
     false,
     null,
     false,
+    true,
+    value,
+    unavailableReason,
+  );
+}
+
+function renderJoinInspector(
+  entity: ProjectedEntity,
+  value: "bevel" | "miter" | "round",
+  unavailableReason: string | null,
+) {
+  return renderSelectedInspector(
+    entity,
+    null,
+    null,
+    false,
+    false,
+    null,
+    false,
+    null,
+    null,
+    false,
+    null,
+    false,
+    null,
+    false,
+    null,
+    false,
+    false,
+    null,
+    null,
     true,
     value,
     unavailableReason,
@@ -2133,6 +2171,20 @@ describe("StudioCanvas retained preview layer", () => {
     expect(dashed).toContain('aria-label="Use solid stroke"');
     expect(disabled).toContain("Arrow dashed strokes are not supported yet.");
     expect(disabled).toMatch(/<input aria-label="Dash length arrow"[^>]*disabled=""[^>]*>/u);
+  });
+
+  it("shows the Pen stroke join selector and its Rust-admission blocker", () => {
+    const enabled = renderJoinInspector(CUBIC_BEZIER_ENTITY, "bevel", null);
+    const disabled = renderJoinInspector(CUBIC_BEZIER_ENTITY, "miter", "Extend the Pen path to edit its stroke join.");
+    const select = /<select aria-label="Stroke join Pen"[^>]*>/u;
+
+    expect(enabled.match(select)?.[0]).not.toContain('disabled=""');
+    expect(enabled).toContain('<option value="bevel" selected="">Bevel</option>');
+    expect(enabled).toMatch(/<button[^>]*type="submit"[^>]*>Set<\/button>/u);
+    expect(disabled.match(select)?.[0]).toContain('disabled=""');
+    expect(disabled).toContain("Extend the Pen path to edit its stroke join.");
+    expect(renderSelectedInspector(LINE_ENTITY, null)).not.toContain('aria-label="Stroke join Pen"');
+    expect(renderSelectedInspector(ARROW_ENTITY, null)).not.toContain('aria-label="Stroke join Pen"');
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

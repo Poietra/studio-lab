@@ -29,7 +29,7 @@ import type {
 import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragment-material-editor";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
-import type { ProgramRecord, ProjectedEntity, StrokeDash } from "./model";
+import type { ProgramRecord, ProjectedEntity, StrokeDash, StrokeJoin } from "./model";
 import { studioEntityTypeSupportsStrokeCap, studioEntityTypeSupportsStrokeWidth } from "./scene-edit-contract";
 import {
   STUDIO_IMAGE_ASSET_DRAG_TYPE,
@@ -1223,6 +1223,7 @@ export function StudioInspector({
   onEntityScaleChange,
   onEntityStrokeCapChange,
   onEntityStrokeDashChange,
+  onEntityStrokeJoinChange,
   onEntityStrokeWidthChange,
   onInspectorFocusRestored,
   onRenderSessionChange,
@@ -1249,6 +1250,9 @@ export function StudioInspector({
   strokeDashUnavailableReason,
   strokeDashValue,
   strokeDashVisible,
+  strokeJoinUnavailableReason,
+  strokeJoinValue,
+  strokeJoinVisible,
   strokeWidthAvailable,
   strokeWidthValue,
   suggestion,
@@ -1305,6 +1309,7 @@ export function StudioInspector({
   onEntityScaleChange: (entityId: string, scale: number) => void;
   onEntityStrokeCapChange: (entityId: string, strokeCap: "butt" | "round" | "square") => void;
   onEntityStrokeDashChange: (entityId: string, strokeDash: StrokeDash | null) => void;
+  onEntityStrokeJoinChange: (entityId: string, strokeJoin: StrokeJoin) => void;
   onEntityStrokeWidthChange: (entityId: string, strokeWidth: number) => void;
   onInspectorFocusRestored: () => void;
   onRenderSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
@@ -1331,6 +1336,9 @@ export function StudioInspector({
   strokeDashUnavailableReason: string | null;
   strokeDashValue: StrokeDash | null;
   strokeDashVisible: boolean;
+  strokeJoinUnavailableReason: string | null;
+  strokeJoinValue: StrokeJoin | null;
+  strokeJoinVisible: boolean;
   strokeWidthAvailable: boolean;
   strokeWidthValue: number | null;
   suggestion: EditSuggestion | null;
@@ -1524,6 +1532,49 @@ export function StudioInspector({
                         >
                           Set
                         </button>
+                      </form>
+                    </dd>
+                  </div>
+                ) : null}
+                {strokeJoinVisible ? (
+                  <div className="contents">
+                    <dt className="self-center text-zinc-600">Stroke join</dt>
+                    <dd>
+                      <form
+                        className="flex flex-wrap items-center gap-1"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const join = new FormData(event.currentTarget).get("strokeJoin");
+                          if (join === "bevel" || join === "miter" || join === "round") {
+                            onEntityStrokeJoinChange(selectedEntity.id, join);
+                          }
+                        }}
+                      >
+                        <select
+                          aria-label="Stroke join Pen"
+                          className="h-7 min-w-0 flex-1 border border-zinc-700 bg-zinc-950 px-1.5 text-xs text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700"
+                          defaultValue={strokeJoinValue ?? "round"}
+                          disabled={strokeJoinUnavailableReason !== null}
+                          key={`${selectedEntity.id}/strokeJoin/${strokeJoinValue ?? "round"}`}
+                          name="strokeJoin"
+                          title={strokeJoinUnavailableReason ?? "Set the Pen segment join style"}
+                        >
+                          <option value="miter">Miter</option>
+                          <option value="round">Round</option>
+                          <option value="bevel">Bevel</option>
+                        </select>
+                        <button
+                          className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                          disabled={strokeJoinUnavailableReason !== null}
+                          type="submit"
+                        >
+                          Set
+                        </button>
+                        {strokeJoinUnavailableReason ? (
+                          <p className="basis-full text-[10px] leading-4 text-amber-500/80">
+                            {strokeJoinUnavailableReason}
+                          </p>
+                        ) : null}
                       </form>
                     </dd>
                   </div>

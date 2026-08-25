@@ -308,6 +308,17 @@ function normalizedStudioCreationOperation(
       kind: "stroke-cap",
     };
   }
+  if (operation.kind === "SetProperty" && operation.key === "strokeJoin") {
+    if (operation.value !== "bevel" && operation.value !== "miter" && operation.value !== "round") {
+      return { ...common, kind: "unsupported" };
+    }
+    return {
+      ...common,
+      entityId: operation.entityId,
+      join: operation.value,
+      kind: "stroke-join",
+    };
+  }
   if (operation.kind === "SetProperty" && operation.key === "strokeDash") {
     const parsed = strokeDashSchema.safeParse(operation.value);
     return {

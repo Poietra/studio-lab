@@ -147,6 +147,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const strokeCap = channelAt(proposedState.evaluatedScene, entity.id, "strokeCap", time);
       const strokeColor = channelAt(proposedState.evaluatedScene, entity.id, "strokeColor", time);
       const strokeDash = channelAt(proposedState.evaluatedScene, entity.id, "strokeDash", time);
+      const strokeJoin = channelAt(proposedState.evaluatedScene, entity.id, "strokeJoin", time);
       const strokeWidth = channelAt(proposedState.evaluatedScene, entity.id, "strokeWidth", time);
       const positionValue = isPointValue(position) ? position : undefined;
       const dimensionsValue = isEntityDimensionsValue(dimensions) ? dimensions : undefined;
@@ -189,6 +190,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
           : strokeDash === null
             ? { strokeDash: undefined }
             : {}),
+        ...(strokeJoin === "bevel" || strokeJoin === "miter" || strokeJoin === "round" ? { strokeJoin } : {}),
         ...(typeof strokeWidth === "number" ? { strokeWidth } : {}),
       };
       const hasSampledStyle =
@@ -198,6 +200,9 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         strokeCap === "square" ||
         typeof strokeColor === "string" ||
         strokeDash !== undefined ||
+        strokeJoin === "bevel" ||
+        strokeJoin === "miter" ||
+        strokeJoin === "round" ||
         typeof strokeWidth === "number";
       return {
         content: content === UNKNOWN_EDITABLE_CONTENT ? undefined : isContent(content) ? content : entity.content,

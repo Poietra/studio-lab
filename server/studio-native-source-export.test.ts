@@ -129,6 +129,13 @@ function pathCreationProgram(transactionId: string, entityId: string, type: "Cub
                 arrowEnd: false,
                 control1: { x: -1, y: 1 },
                 control2: { x: 1, y: -1 },
+                continuationSegments: [
+                  {
+                    control1: { x: 2.5, y: 1.5 },
+                    control2: { x: 3.5, y: 1 },
+                    end: { x: 4, y: 0 },
+                  },
+                ],
                 end: { x: 2, y: 0 },
                 start: { x: -2, y: 0 },
                 strokeCap: "round" as const,
@@ -162,6 +169,18 @@ function dashedStrokeProgram(transactionId: string, entityId: string) {
       key: "strokeDash",
       kind: "SetProperty",
       value: { dashLength: 0.2, gapLength: 0.1 },
+    },
+  ]);
+}
+
+function strokeJoinProgram(transactionId: string, entityId: string, value: "bevel" | "miter" | "round") {
+  return program(transactionId, 0, [
+    {
+      ...operationBase(`${transactionId}/join`, 0),
+      entityId,
+      key: "strokeJoin",
+      kind: "SetProperty",
+      value,
     },
   ]);
 }
@@ -271,6 +290,26 @@ describe("Studio-native Manim source export", () => {
     const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
 
     expect(exported.source).toContain(".become(DashedVMobject(");
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.type).toBe("CubicBezier");
+  });
+
+  it("exports an open Pen stroke join while retaining its canonical identity on source reimport", () => {
+    const entityId = "native:joined-pen";
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 1,
+      duration: 1.4,
+      frame,
+      programs: [
+        pathCreationProgram("create-joined-pen", entityId, "CubicBezier"),
+        strokeJoinProgram("join-pen", entityId, "round"),
+      ],
+      timelineTransforms: [],
+      viewport,
+    });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
+
+    expect(exported.source).toContain("joint_type=LineJointType.ROUND");
+    expect(exported.source).toContain(".add_cubic_bezier_curve_to(");
     expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.type).toBe("CubicBezier");
   });
 

@@ -62,6 +62,7 @@ const geometrySchema = z
               strokeCap: z.enum(["butt", "round", "square"]).optional(),
               strokeColor: z.string().optional(),
               strokeDash: strokeDashSchema.optional(),
+              strokeJoin: z.enum(["bevel", "miter", "round"]).optional(),
               strokeWidth: finiteNumber.positive().optional(),
             })
             .strict(),
@@ -122,6 +123,7 @@ const propertyChannelSchema = z
       "strokeCap",
       "strokeColor",
       "strokeDash",
+      "strokeJoin",
       "strokeWidth",
     ]),
     samples: z.array(propertyChannelSampleSchema),

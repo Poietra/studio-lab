@@ -8,7 +8,7 @@ use poietra_scene_ir::{
     MAX_STROKE_DASH_WORLD_V1, MIN_STROKE_DASH_WORLD_V1, PathTrimParameterizationV1, PointV1,
     ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
     SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StrokeCapV1,
-    VectorAppearanceValueV1,
+    StrokeJoinV1, VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
@@ -179,6 +179,14 @@ fn studio_creation_supports_stroke_cap(kind: StudioAuthoringEntityKind) -> bool 
     )
 }
 
+fn studio_creation_supports_stroke_join(state: &PlannedStudioCreationEntity) -> bool {
+    state.kind == StudioAuthoringEntityKind::CubicBezier
+        && state
+            .cubic_bezier
+            .as_ref()
+            .is_some_and(|curve| !curve.spec.continuation_segments.is_empty())
+}
+
 fn studio_creation_supports_stroke_color_track(kind: StudioAuthoringEntityKind) -> bool {
     matches!(
         kind,
@@ -247,6 +255,7 @@ struct CreateSceneEntity {
     stroke_color: Option<RgbaColorV1>,
     stroke_cap: Option<StrokeCapV1>,
     stroke_dash: Option<StudioStrokeDash>,
+    stroke_join: Option<StrokeJoinV1>,
     stroke_width_world: Option<f64>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
     visible: bool,
@@ -434,6 +443,9 @@ pub enum StudioCreationProjectedMutationKind {
     },
     StrokeDash {
         value: Option<StudioStrokeDash>,
+    },
+    StrokeJoin {
+        value: StrokeJoinV1,
     },
     StrokeWidth {
         value: f64,
@@ -649,6 +661,9 @@ pub enum StudioCreationOperationKind {
         dash_length_world: Option<f64>,
         gap_length_world: Option<f64>,
     },
+    StrokeJoin {
+        join: StrokeJoinV1,
+    },
     StrokeWidth {
         width_world: Option<f64>,
     },
@@ -826,6 +841,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::PaintColorKeyframes { .. }
             | StudioCreationOperationKind::StrokeCap { .. }
             | StudioCreationOperationKind::StrokeDash { .. }
+            | StudioCreationOperationKind::StrokeJoin { .. }
             | StudioCreationOperationKind::StrokeWidth { .. }
             | StudioCreationOperationKind::Resize { .. }
             | StudioCreationOperationKind::PersistentRemove { .. }
@@ -969,6 +985,7 @@ struct PlannedStudioCreationEntity {
     stroke_color_override: Option<String>,
     stroke_cap_override: Option<StrokeCapV1>,
     stroke_dash_override: Option<StudioStrokeDash>,
+    stroke_join_override: Option<StrokeJoinV1>,
     stroke_width_world_override: Option<f64>,
     fade_interval: Option<IntervalV1>,
     initial_dimensions: StudioAuthoringDimensions,

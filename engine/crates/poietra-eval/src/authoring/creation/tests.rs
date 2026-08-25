@@ -512,6 +512,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 stroke_color: None,
                 stroke_cap: None,
                 stroke_dash: None,
+                stroke_join: None,
                 stroke_width_world: None,
                 instant_transform: None,
                 visible: true,
@@ -548,6 +549,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 stroke_color: None,
                 stroke_cap: None,
                 stroke_dash: None,
+                stroke_join: None,
                 stroke_width_world: None,
                 instant_transform: Some(CreateSceneEntityInstantTransform {
                     at: 1.25,
@@ -589,6 +591,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 stroke_color: None,
                 stroke_cap: None,
                 stroke_dash: None,
+                stroke_join: None,
                 stroke_width_world: None,
                 instant_transform: None,
                 visible: true,
@@ -5384,6 +5387,112 @@ fn studio_closed_cubic_bezier_creation_command(
         entrance.kind = StudioCreationOperationKind::FadeIn { persistent: true };
     }
     command
+}
+
+#[test]
+fn multisegment_pen_applies_static_stroke_join_only_at_creation_anchor() {
+    let bundle = static_imported_bundle();
+    let mut base = studio_closed_cubic_bezier_creation_command(&bundle, false);
+    let StudioCreationOperationKind::Create { entity } = &mut base.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    let mut spec = entity.cubic_bezier.take().unwrap();
+    spec.continuation_segments
+        .push(poietra_scene_ir::CubicSegmentV1 {
+            control1: PointV1 { x: 2.5, y: -1.0 },
+            control2: PointV1 { x: 3.5, y: 1.0 },
+            end: PointV1 { x: 4.0, y: -0.5 },
+        });
+    let inspection = crate::authoring::inspect_studio_cubic_bezier(&spec).unwrap();
+    entity.dimensions = inspection.dimensions;
+    entity.cubic_bezier = Some(inspection.cubic_bezier);
+
+    let mut command = base.clone();
+    command.programs.push(studio_created_appearance_edit_input(
+        0.5,
+        "tx:create/entity:circle",
+        "pen-stroke-join",
+        StudioCreationOperationKind::StrokeJoin {
+            join: poietra_scene_ir::StrokeJoinV1::Bevel,
+        },
+    ));
+    let projection =
+        project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+    assert!(projection.mutations.iter().any(|mutation| matches!(
+        mutation.kind,
+        StudioCreationProjectedMutationKind::StrokeJoin {
+            value: poietra_scene_ir::StrokeJoinV1::Bevel,
+        }
+    )));
+
+    let result = EngineSessionV1::new(bundle.clone())
+        .unwrap()
+        .apply_studio_creation_edit(command)
+        .unwrap();
+    let created = result
+        .bundle
+        .scene
+        .entities
+        .iter()
+        .find(|entity| entity.id == "tx:create/entity:circle")
+        .unwrap();
+    assert!(matches!(
+        &created.appearance,
+        SceneAppearanceV1::Vector {
+            stroke: Some(stroke),
+            ..
+        } if stroke.join == poietra_scene_ir::StrokeJoinV1::Bevel
+            && (stroke.miter_limit - 10.0).abs() < 1.0e-12
+    ));
+
+    let mut single_segment = studio_closed_cubic_bezier_creation_command(&bundle, false);
+    single_segment
+        .programs
+        .push(studio_created_appearance_edit_input(
+            0.5,
+            "tx:create/entity:circle",
+            "single-pen-stroke-join",
+            StudioCreationOperationKind::StrokeJoin {
+                join: poietra_scene_ir::StrokeJoinV1::Bevel,
+            },
+        ));
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &single_segment.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+
+    let mut line = studio_path_creation_command(
+        &bundle,
+        "line",
+        StudioAuthoringEntityKind::Line,
+        StudioAuthoringDimensions::default(),
+    );
+    line.programs.push(studio_created_appearance_edit_input(
+        0.5,
+        "tx:create/entity:line",
+        "line-stroke-join",
+        StudioCreationOperationKind::StrokeJoin {
+            join: poietra_scene_ir::StrokeJoinV1::Bevel,
+        },
+    ));
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &line.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+
+    base.programs.push(studio_created_appearance_edit_input(
+        0.75,
+        "tx:create/entity:circle",
+        "late-pen-stroke-join",
+        StudioCreationOperationKind::StrokeJoin {
+            join: poietra_scene_ir::StrokeJoinV1::Miter,
+        },
+    ));
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &base.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
 }
 
 fn studio_path_morph_program(

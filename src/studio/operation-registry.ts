@@ -118,6 +118,11 @@ function setPropertyExecution(
   )
     return SUPPORTED_EXECUTION;
   if (
+    operation.key === "strokeJoin" &&
+    (operation.value === "bevel" || operation.value === "miter" || operation.value === "round")
+  )
+    return SUPPORTED_EXECUTION;
+  if (
     operation.key === "strokeWidth" &&
     typeof operation.value === "number" &&
     Number.isFinite(operation.value) &&
@@ -801,6 +806,27 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
         code: "schema-invalid" as const,
         field: "entityId",
         message: "Dashed stroke is available only for a supported Studio-created Line or open Pen path.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+  }
+  if (operation.key === "strokeJoin") {
+    const entity = scene.objectGraph.entities[operation.entityId];
+    if (operation.value !== "bevel" && operation.value !== "miter" && operation.value !== "round") {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "value",
+        message: "Stroke join must be bevel, miter, or round.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+    if (!entity?.transactionId || entity.type !== "CubicBezier") {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "entityId",
+        message: "Stroke join is available only for a supported Studio-created Pen path.",
         operationId: operation.id,
         severity: "error" as const,
       });
