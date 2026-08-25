@@ -2077,9 +2077,17 @@ fn sampled_material_parameter(session: &EngineSessionV1, entity_id: &str, sample
         .find_map(|draw| match draw {
             poietra_scene_ir::RenderDrawV1::Path {
                 entity_id: candidate,
-                fill: Some(fill),
+                fill,
+                stroke,
                 ..
-            } if candidate == entity_id => fill.fragment_material.as_ref(),
+            } if candidate == entity_id => fill
+                .as_ref()
+                .and_then(|fill| fill.fragment_material.as_ref())
+                .or_else(|| {
+                    stroke
+                        .as_ref()
+                        .and_then(|stroke| stroke.fragment_material.as_ref())
+                }),
             _ => None,
         })
         .unwrap()
@@ -8071,6 +8079,71 @@ fn creation_material_parameter_track_rejects_a_fill_less_shape_without_panicking
             CreateSceneEntitiesError::InvalidAppearanceEdit
         ))
     ));
+}
+
+#[test]
+fn creation_material_parameter_track_targets_a_fillless_line_stroke() {
+    let mut bundle = static_imported_bundle();
+    bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+    let entity_id = "tx:create/entity:line";
+    let mut command = studio_creation_command(&bundle);
+    command.programs.truncate(1);
+    for operation in &mut command.programs[0].operations {
+        if operation.entity_id.as_deref() == Some("tx:create/entity:circle") {
+            operation.entity_id = Some(entity_id.to_owned());
+        }
+    }
+    let StudioCreationOperationKind::Create { entity } =
+        &mut command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    entity.id = entity_id.to_owned();
+    entity.kind = StudioAuthoringEntityKind::Line;
+    entity.dimensions = StudioAuthoringDimensions::default();
+    add_creation_material_parameter_segment(&mut command.programs[0], entity_id, 1.0, 1.4);
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    let created = result
+        .bundle
+        .scene
+        .entities
+        .iter()
+        .find(|entity| entity.id == entity_id)
+        .unwrap();
+    assert!(matches!(
+        &created.appearance,
+        SceneAppearanceV1::Vector {
+            fill: None,
+            stroke: Some(stroke),
+            ..
+        } if stroke.fragment_material.is_some()
+    ));
+    let keyframes = result
+        .bundle
+        .scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::VectorAppearance {
+                entity_id: candidate,
+                keyframes,
+                ..
+            } if candidate == entity_id => Some(keyframes),
+            _ => None,
+        })
+        .unwrap();
+    assert!(keyframes.iter().all(|keyframe| {
+        keyframe.value.fill.is_none()
+            && keyframe
+                .value
+                .stroke
+                .as_ref()
+                .and_then(|stroke| stroke.fragment_material.as_ref())
+                .is_some()
+    }));
+    assert!((sampled_material_parameter(&session, entity_id, 1.6) - 0.60).abs() < 1e-12);
 }
 
 #[test]

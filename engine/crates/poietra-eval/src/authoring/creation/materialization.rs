@@ -299,6 +299,34 @@ fn create_entity_paint_color_keyframes_are_valid(entity: &CreateSceneEntity) -> 
     })
 }
 
+fn create_entity_fragment_material_targets_fill(
+    geometry: &CreateSceneEntityGeometry,
+) -> Option<bool> {
+    let (scene_geometry, appearance, _) = created_geometry_and_appearance(geometry.clone());
+    match (&scene_geometry, &appearance) {
+        (_, SceneAppearanceV1::Vector { fill: Some(_), .. }) => Some(true),
+        (
+            SceneGeometryV1::Line { .. },
+            SceneAppearanceV1::Vector {
+                fill: None,
+                stroke: Some(_),
+                ..
+            },
+        ) => Some(false),
+        (
+            SceneGeometryV1::CubicPath { path },
+            SceneAppearanceV1::Vector {
+                fill: None,
+                stroke: Some(_),
+                ..
+            },
+        ) if !path.subpaths.is_empty() && path.subpaths.iter().all(|subpath| !subpath.closed) => {
+            Some(false)
+        }
+        _ => None,
+    }
+}
+
 pub(super) fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> bool {
     let opacity_is_valid = entity.opacity_keyframes.iter().all(|keyframe| {
         keyframe.at.is_finite()
@@ -310,10 +338,8 @@ pub(super) fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEnt
         .opacity_keyframes
         .windows(2)
         .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON);
-    let base_has_fill = matches!(
-        created_geometry_and_appearance(entity.geometry.clone()).1,
-        SceneAppearanceV1::Vector { fill: Some(_), .. }
-    );
+    let base_has_material_paint =
+        create_entity_fragment_material_targets_fill(&entity.geometry).is_some();
     let material_is_valid = entity.material_parameter_keyframes.iter().all(|keyframe| {
         keyframe.at.is_finite()
             && keyframe.at >= entity.lifetime.start
@@ -328,7 +354,7 @@ pub(super) fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEnt
         .material_parameter_keyframes
         .windows(2)
         .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
-        && (entity.material_parameter_keyframes.is_empty() || base_has_fill);
+        && (entity.material_parameter_keyframes.is_empty() || base_has_material_paint);
     let scale_is_valid = entity.uniform_scale_keyframes.iter().all(|keyframe| {
         keyframe.at.is_finite()
             && keyframe.at >= entity.lifetime.start
@@ -664,6 +690,7 @@ pub(super) fn append_created_write_fragments(
         let stroke = poietra_scene_ir::StrokeStyleV1 {
             cap: poietra_scene_ir::StrokeCapV1::Butt,
             color: paint.clone(),
+            fragment_material: None,
             join: poietra_scene_ir::StrokeJoinV1::Miter,
             miter_limit: 10.0,
             width_world: outline_stroke_width,
@@ -918,9 +945,17 @@ pub(super) fn append_created_entity(
     let solid_fill_color = entity.fill_color.clone();
     let paint_color_track = entity.paint_color_track.clone();
     let has_initial_solid_glyph_fill = create_entity_has_initial_solid_glyph_fill(&entity);
+    let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
+    let material_targets_fill = if has_material_parameter_keyframes {
+        Some(
+            create_entity_fragment_material_targets_fill(&entity.geometry)
+                .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?,
+        )
+    } else {
+        None
+    };
     let (geometry, mut appearance, capability) = created_geometry_and_appearance(entity.geometry);
     let is_logical_group = matches!(&geometry, SceneGeometryV1::Group {});
-    let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
     if let Some(color) = &entity.fill_color {
         if let SceneAppearanceV1::Vector { fill, .. } = &mut appearance {
             let mut base_color = color.clone();
@@ -969,13 +1004,19 @@ pub(super) fn append_created_entity(
         stroke.cap = cap;
     }
     if let Some(first) = entity.material_parameter_keyframes.first() {
-        let SceneAppearanceV1::Vector {
-            fill: Some(fill), ..
-        } = &mut appearance
-        else {
+        let SceneAppearanceV1::Vector { fill, stroke, .. } = &mut appearance else {
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
-        fill.fragment_material = Some(first.value.clone());
+        if material_targets_fill == Some(true) {
+            let Some(fill) = fill else {
+                return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+            };
+            fill.fragment_material = Some(first.value.clone());
+        } else if let Some(stroke) = stroke {
+            stroke.fragment_material = Some(first.value.clone());
+        } else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        }
         set_vector_paint_alpha(&mut appearance, entity.paint_opacity)
             .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?;
     }
@@ -1057,9 +1098,9 @@ pub(super) fn append_created_entity(
         let SceneAppearanceV1::Vector { fill, stroke, .. } = appearance.clone() else {
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
-        let Some(fill) = fill else {
+        if fill.is_none() && stroke.is_none() {
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
-        };
+        }
         capabilities.insert(SceneCapabilityV1::FragmentMaterial);
         if entity
             .material_parameter_keyframes
@@ -1074,14 +1115,21 @@ pub(super) fn append_created_entity(
                 .into_iter()
                 .map(|keyframe| {
                     let mut fill = fill.clone();
-                    fill.fragment_material = Some(keyframe.value);
+                    let mut stroke = stroke.clone();
+                    if material_targets_fill == Some(true) {
+                        fill.as_mut()
+                            .expect("fill target was checked")
+                            .fragment_material = Some(keyframe.value);
+                    } else {
+                        stroke
+                            .as_mut()
+                            .expect("stroke target was checked")
+                            .fragment_material = Some(keyframe.value);
+                    }
                     KeyframeV1 {
                         at: keyframe.at,
                         easing_to_next: keyframe.easing_to_next,
-                        value: VectorAppearanceValueV1 {
-                            fill: Some(fill),
-                            stroke: stroke.clone(),
-                        },
+                        value: VectorAppearanceValueV1 { fill, stroke },
                     }
                 })
                 .collect();

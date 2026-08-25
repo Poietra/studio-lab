@@ -137,6 +137,7 @@ export const strokeStyleV1Schema = z
   .object({
     cap: z.enum(["butt", "round", "square"]),
     color: rgbaColorV1Schema,
+    fragmentMaterial: fragmentMaterialV1Schema.optional(),
     join: z.enum(["bevel", "miter", "round"]),
     miterLimit: finiteNumberV1Schema.min(1).max(1_000),
     widthWorld: finiteNumberV1Schema.positive().max(MAX_COORDINATE),

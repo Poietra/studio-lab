@@ -370,13 +370,36 @@ fn interpolate_vector_appearance(
     };
     let stroke = match (&left.stroke, &right.stroke) {
         (None, None) => None,
-        (Some(left), Some(right)) => Some(StrokeStyleV1 {
-            cap: left.cap,
-            color: interpolate_color(&left.color, &right.color, progress),
-            join: left.join,
-            miter_limit: left.miter_limit,
-            width_world: left.width_world + (right.width_world - left.width_world) * progress,
-        }),
+        (Some(left), Some(right)) => {
+            let fragment_material = match (&left.fragment_material, &right.fragment_material) {
+                (None, None) => None,
+                (Some(left), Some(right))
+                    if left.shader_id == right.shader_id
+                        && left.revision == right.revision
+                        && left.texture == right.texture
+                        && left.parameters.len() == right.parameters.len() =>
+                {
+                    let mut material = left.clone();
+                    for (value, right) in material.parameters.iter_mut().zip(&right.parameters) {
+                        *value += (*right - *value) * progress;
+                    }
+                    Some(material)
+                }
+                (None | Some(_), Some(_)) | (Some(_), None) => {
+                    return Err(EvaluationError::MalformedScene(
+                        "vector-appearance stroke fragment material identity changed after validation",
+                    ));
+                }
+            };
+            Some(StrokeStyleV1 {
+                cap: left.cap,
+                color: interpolate_color(&left.color, &right.color, progress),
+                fragment_material,
+                join: left.join,
+                miter_limit: left.miter_limit,
+                width_world: left.width_world + (right.width_world - left.width_world) * progress,
+            })
+        }
         (None, Some(_)) | (Some(_), None) => {
             return Err(EvaluationError::MalformedScene(
                 "vector-appearance stroke presence changed after validation",
@@ -680,14 +703,21 @@ fn render_capabilities(draws: &[RenderDrawV1]) -> Vec<RenderCapabilityV1> {
                 if fill
                     .as_ref()
                     .is_some_and(|fill| fill.fragment_material.is_some())
+                    || stroke
+                        .as_ref()
+                        .is_some_and(|stroke| stroke.fragment_material.is_some())
                 {
                     capabilities.insert(RenderCapabilityV1::FragmentMaterial);
                 }
-                if fill.as_ref().is_some_and(|fill| {
-                    fill.fragment_material
+                if fill
+                    .as_ref()
+                    .and_then(|fill| fill.fragment_material.as_ref())
+                    .is_some_and(|material| material.texture.is_some())
+                    || stroke
                         .as_ref()
+                        .and_then(|stroke| stroke.fragment_material.as_ref())
                         .is_some_and(|material| material.texture.is_some())
-                }) {
+                {
                     capabilities.insert(RenderCapabilityV1::PngImage);
                 }
                 if stroke.is_some() {
@@ -1446,6 +1476,7 @@ mod tests {
             stroke: Some(StrokeStyleV1 {
                 cap: StrokeCapV1::Round,
                 color: color(1.0, 0.0, 0.0, 1.0),
+                fragment_material: None,
                 join: StrokeJoinV1::Round,
                 miter_limit: 4.0,
                 width_world: 0.1,
@@ -1662,6 +1693,7 @@ mod tests {
             stroke: Some(StrokeStyleV1 {
                 cap: StrokeCapV1::Butt,
                 color: color(1.0, 0.0, 0.0, 1.0),
+                fragment_material: None,
                 join: StrokeJoinV1::Miter,
                 miter_limit: 4.0,
                 width_world: 0.1,

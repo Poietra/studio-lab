@@ -120,7 +120,7 @@ async function exportLocalMp4(page: Page) {
   if (!path) throw new Error("The native MP4 download was not persisted by Playwright.");
   const bytes = await readFile(path);
   expect(bytes.byteLength).toBeGreaterThan(0);
-  await page.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("button", { exact: true, name: "Close" }).click();
   return bytes.toString("base64");
 }
 
@@ -643,18 +643,37 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
     await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
-    await page.getByRole("button", { name: "Redo" }).click();
-    await expect(page.getByRole("alert")).toContainText(
-      "Unassign the fragment material before reopening or undoing this Pen path.",
-    );
-    await expect(page.getByRole("button", { name: "Reopen path" })).toBeVisible();
-    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await page.getByRole("button", { name: "Reopen path" }).click();
-    await expect(page.getByRole("alert")).toContainText(
-      "Unassign the fragment material before reopening or undoing this Pen path.",
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
+    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    const materializedPenDraw = page.getByRole("button", { name: "Add Draw entrance for CubicBezier" });
+    await expect(materializedPenDraw).toHaveAttribute("aria-disabled", "true");
+    await expect(materializedPenDraw).toHaveAttribute(
+      "title",
+      "Remove the object's fragment material before adding Draw.",
     );
-    await expect(page.getByRole("button", { name: "Reopen path" })).toBeVisible();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open SVG path fixture workspace" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
+    const penMaterial = page.getByRole("combobox", { name: "Assigned fragment material" });
+    await expect(penMaterial).not.toHaveValue("");
+    const openPenMp4 = await exportLocalMp4(page);
+    const [openPenPixels = 0] = await decodedBrightPixelCounts(page, openPenMp4, [1.6]);
+    expect(openPenPixels).toBeGreaterThan(100);
+    await page.getByRole("button", { name: "Close path" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    const restoredPenFill = page.getByLabel("Fill color CubicBezier");
+    await expect(restoredPenFill).toHaveValue("#ffffff");
+    await restoredPenFill.fill("#f97316");
+    await restoredPenFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
 
     await svgInput.setInputFiles({
       buffer: Buffer.from(
@@ -694,7 +713,6 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
     await page.getByRole("button", { name: "Move CubicBezier", exact: true }).click();
     await expect(page.getByLabel("Fill color CubicBezier")).toHaveValue("#f97316");
-    const penMaterial = page.getByRole("combobox", { name: "Assigned fragment material" });
     await expect(penMaterial).not.toHaveValue("");
     await expect(page.locator(`[data-studio-entity="${penId}"]`)).toBeVisible();
     await penMaterial.selectOption("");

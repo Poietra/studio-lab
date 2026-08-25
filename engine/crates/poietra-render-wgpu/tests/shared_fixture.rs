@@ -518,6 +518,7 @@ fn combined_paint_phases_do_not_hide_numeric_failure() {
     *stroke = Some(poietra_scene_ir::StrokeStyleV1 {
         cap: StrokeCapV1::Butt,
         color,
+        fragment_material: None,
         join: StrokeJoinV1::Miter,
         miter_limit: 4.0,
         width_world: 0.1,
@@ -551,6 +552,7 @@ fn fill_and_stroke_are_distinct_ordered_paint_phases() {
     *stroke = Some(poietra_scene_ir::StrokeStyleV1 {
         cap: poietra_scene_ir::StrokeCapV1::Butt,
         color,
+        fragment_material: None,
         join: poietra_scene_ir::StrokeJoinV1::Miter,
         miter_limit: 4.0,
         width_world: 0.1,

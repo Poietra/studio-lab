@@ -421,6 +421,7 @@ pub fn straight_stroke_packet(cap: StrokeCapV1) -> poietra_scene_ir::RenderPacke
             green: 1.0,
             red: 0.0,
         },
+        fragment_material: None,
         join: StrokeJoinV1::Miter,
         miter_limit: 4.0,
         width_world: 1.0,

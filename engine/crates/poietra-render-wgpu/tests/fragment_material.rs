@@ -11,9 +11,53 @@ use poietra_render_wgpu::{
 };
 use poietra_scene_ir::{
     AssetReferenceV1, FragmentMaterialTextureV1, FragmentMaterialV1, ImageSamplerV1,
-    RenderCapabilityV1, RenderDrawV1,
+    RenderCapabilityV1, RenderDrawV1, StrokeCapV1,
 };
-use support::{time_gradient_paint_order_packet, verified_rgba_png};
+use support::{straight_stroke_packet, time_gradient_paint_order_packet, verified_rgba_png};
+
+#[test]
+fn applies_fragment_material_to_fillless_stroke_without_changing_geometry() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Round);
+    let RenderDrawV1::Path {
+        stroke: Some(stroke),
+        ..
+    } = &mut packet.draws[0]
+    else {
+        unreachable!()
+    };
+    stroke.fragment_material = Some(FragmentMaterialV1 {
+        parameters: vec![0.25],
+        revision: TIME_GRADIENT_SHADER_REVISION_V1,
+        shader_id: TIME_GRADIENT_SHADER_ID_V1.to_owned(),
+        texture: None,
+    });
+    packet
+        .required_capabilities
+        .push(RenderCapabilityV1::FragmentMaterial);
+
+    let prepared = prepare_frame_v1(&packet).expect("fill-less stroke material must prepare");
+    assert_eq!(
+        prepared.render_commands(),
+        &[PreparedRenderCommandV1::FragmentMaterial { draw_index: 0 }]
+    );
+    assert!(
+        prepared.material_plan().materials()[0]
+            .fragment_material()
+            .is_some()
+    );
+
+    let RenderDrawV1::Path {
+        stroke: Some(stroke),
+        ..
+    } = &mut packet.draws[0]
+    else {
+        unreachable!()
+    };
+    stroke.fragment_material = None;
+    packet.required_capabilities = vec![RenderCapabilityV1::CubicPathStroke];
+    let solid = prepare_frame_v1(&packet).expect("equivalent solid stroke must prepare");
+    assert_eq!(prepared.geometry_plan(), solid.geometry_plan());
+}
 
 #[test]
 fn reuses_fill_geometry_and_splits_solid_fragment_solid_paint_order() {

@@ -1789,7 +1789,7 @@ export async function compileStudioPreviewSceneV1(
     const entityId = resolveFragmentMaterialSceneEntityIdV1(studioEntityId, result.scene, input.workingState);
     if (!entityId || resolvedIds.has(entityId)) {
       return {
-        error: `Fragment material target ${studioEntityId} is not one unique rendered fill.`,
+        error: `Fragment material target ${studioEntityId} is not one unique rendered vector paint.`,
         kind: "unsupported",
       };
     }
