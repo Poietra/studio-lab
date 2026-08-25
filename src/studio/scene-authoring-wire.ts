@@ -14,7 +14,7 @@ import {
 } from "./editable-content";
 import type { RuntimeSceneState } from "./model";
 import { isPointValue } from "./property-sampling";
-import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "./scene-edit-contract";
+import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation, strokeDashSchema } from "./scene-edit-contract";
 
 type StaticRootTransformCommandInput = Omit<
   ApplyStaticRootTransformEditWireCommandV1,
@@ -306,6 +306,16 @@ function normalizedStudioCreationOperation(
           : null,
       entityId: operation.entityId,
       kind: "stroke-cap",
+    };
+  }
+  if (operation.kind === "SetProperty" && operation.key === "strokeDash") {
+    const parsed = strokeDashSchema.safeParse(operation.value);
+    return {
+      ...common,
+      dashLengthWorld: parsed.success ? parsed.data.dashLength : null,
+      entityId: operation.entityId,
+      gapLengthWorld: parsed.success ? parsed.data.gapLength : null,
+      kind: "stroke-dash",
     };
   }
   if (operation.kind === "SetProperty" && operation.key === "appearance") {

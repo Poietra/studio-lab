@@ -189,6 +189,7 @@ import type {
   ProjectedEntity,
   ProposedState,
   RuntimeSceneState,
+  StrokeDash,
 } from "./studio/model";
 import {
   adjustAppliedMotionClipControl,
@@ -270,6 +271,7 @@ import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-author
 import {
   type SceneEdit,
   shapeTransformChangesShape,
+  studioEntityTypeMayExposeStrokeDash,
   studioEntityTypeSupportsStrokeCap,
   studioEntityTypeSupportsStrokeWidth,
   studioPaintColorTrackProperty,
@@ -384,6 +386,7 @@ import {
   createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
   createDirectManipulationStrokeCapProgram,
+  createDirectManipulationStrokeDashProgram,
   createDirectManipulationStrokeWidthProgram,
   createDirectManipulationVisibilityProgram,
 } from "./studio/suggestion-program";
@@ -8470,6 +8473,101 @@ export function App({
     }
   }
 
+  function strokeDashUnavailableReasonFor(entityId: string) {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!entity) return "Select a visible Line or open Pen path to edit its dashed stroke.";
+    if (previewSelectionOnly) return "This verified snapshot is selection-only and cannot accept dashed-stroke edits.";
+    if (boundedRuntimeMutationIsLocked(entityId)) {
+      return "Only the runtime-proven source edit target can be changed in this preview.";
+    }
+    if (entity.type === "Arrow") return "Arrow dashed strokes are not supported yet.";
+    if (entity.type === "CubicBezier") {
+      const owned = studioCubicBezierCreation(entityId);
+      if (!owned) return "Imported or unsupported cubic paths are read-only for dashed-stroke editing.";
+      if (owned.creation.entity.cubicBezier?.arrowEnd) return "Arrow-ended Pen paths cannot use dashed strokes yet.";
+      if (owned.creation.entity.cubicBezier?.closed === true) return "Closed Pen paths cannot use dashed strokes yet.";
+    } else if (entity.type === "Line") {
+      const owner = studioCreationProgramOwner(entityId);
+      const creations =
+        owner?.record.program.operations.filter(
+          (operation) =>
+            operation.kind === "CreateEntity" && operation.entity.id === entityId && operation.entity.type === "Line",
+        ) ?? [];
+      if (creations.length !== 1) return "Imported Lines are read-only for dashed-stroke editing.";
+    } else {
+      return "Dashed stroke is available only for a Studio-created Line or open Pen path.";
+    }
+    const authority = studioCreationAppearanceAuthorityFor(entityId);
+    if (!authority) return "The Studio creation authority for this path is unavailable.";
+    if (Math.abs(sourceCurrentTime - authority.sourceAnchor) >= 0.0005) {
+      return "Move the playhead to the object's creation time to edit its dashed stroke.";
+    }
+    return null;
+  }
+
+  function setEntityStrokeDashFromInspector(entityId: string, strokeDash: StrokeDash | null) {
+    const unavailableReason = strokeDashUnavailableReasonFor(entityId);
+    if (unavailableReason) {
+      setDraftError(unavailableReason);
+      return false;
+    }
+    if (
+      strokeDash !== null &&
+      (!Number.isFinite(strokeDash.dashLength) ||
+        strokeDash.dashLength < 0.02 ||
+        strokeDash.dashLength > 2 ||
+        !Number.isFinite(strokeDash.gapLength) ||
+        strokeDash.gapLength < 0.02 ||
+        strokeDash.gapLength > 2)
+    ) {
+      setDraftError("Dash and gap lengths must each be from 0.02 to 2 scene units.");
+      return false;
+    }
+    const createdAuthority = studioCreationAppearanceAuthorityFor(entityId);
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!createdAuthority || !entity) return false;
+    const currentDash =
+      entity.geometry.style.kind === "known" ? (entity.geometry.style.value.strokeDash ?? null) : null;
+    if (
+      (currentDash === null && strokeDash === null) ||
+      (currentDash !== null &&
+        strokeDash !== null &&
+        currentDash.dashLength === strokeDash.dashLength &&
+        currentDash.gapLength === strokeDash.gapLength)
+    ) {
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "dashed stroke edit",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor || Math.abs(anchor.sourceTime - createdAuthority.sourceAnchor) >= 0.0005) return false;
+    try {
+      const validation = createDirectManipulationStrokeDashProgram({
+        capturedPlayhead: createdAuthority.sourceAnchor,
+        entityId,
+        scene: sourceScene,
+        start: createdAuthority.sourceAnchor,
+        strokeDash,
+        transactionId: `studio-stroke-dash-input-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, createdAuthority.sourceAnchor);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The dashed stroke could not be changed.");
+      return false;
+    }
+  }
+
   function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     if (previewSelectionOnly) {
       setDraftError("This verified snapshot is selection-only because it has no safe .py source edit anchor.");
@@ -10307,6 +10405,9 @@ export function App({
               onEntityStrokeCapChange={(entityId, strokeCap) =>
                 void setEntityStrokeCapFromInspector(entityId, strokeCap)
               }
+              onEntityStrokeDashChange={(entityId, strokeDash) =>
+                void setEntityStrokeDashFromInspector(entityId, strokeDash)
+              }
               onEntityStrokeWidthChange={(entityId, strokeWidth) =>
                 void setEntityStrokeWidthFromInspector(entityId, strokeWidth)
               }
@@ -10411,6 +10512,17 @@ export function App({
                   ? (selectedEntity.geometry.style.value.strokeCap ?? "butt")
                   : null
               }
+              strokeDashUnavailableReason={
+                selectedEntity && studioEntityTypeMayExposeStrokeDash(selectedEntity.type)
+                  ? strokeDashUnavailableReasonFor(selectedEntity.id)
+                  : null
+              }
+              strokeDashValue={
+                selectedEntity?.geometry.style.kind === "known"
+                  ? (selectedEntity.geometry.style.value.strokeDash ?? null)
+                  : null
+              }
+              strokeDashVisible={selectedEntity !== null && studioEntityTypeMayExposeStrokeDash(selectedEntity.type)}
               strokeWidthAvailable={
                 selectedStudioCreationAppearanceAtAnchor &&
                 studioEntityTypeSupportsStrokeWidth(selectedEntity?.type ?? "")

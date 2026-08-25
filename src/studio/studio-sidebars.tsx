@@ -29,7 +29,7 @@ import type {
 import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragment-material-editor";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
-import type { ProgramRecord, ProjectedEntity } from "./model";
+import type { ProgramRecord, ProjectedEntity, StrokeDash } from "./model";
 import { studioEntityTypeSupportsStrokeCap, studioEntityTypeSupportsStrokeWidth } from "./scene-edit-contract";
 import {
   STUDIO_IMAGE_ASSET_DRAG_TYPE,
@@ -1222,6 +1222,7 @@ export function StudioInspector({
   onEntityRotate,
   onEntityScaleChange,
   onEntityStrokeCapChange,
+  onEntityStrokeDashChange,
   onEntityStrokeWidthChange,
   onInspectorFocusRestored,
   onRenderSessionChange,
@@ -1245,6 +1246,9 @@ export function StudioInspector({
   strokeColorValue,
   strokeCapAvailable,
   strokeCapValue,
+  strokeDashUnavailableReason,
+  strokeDashValue,
+  strokeDashVisible,
   strokeWidthAvailable,
   strokeWidthValue,
   suggestion,
@@ -1300,6 +1304,7 @@ export function StudioInspector({
   onEntityRotate: (entityId: string, angleRadians: number) => void;
   onEntityScaleChange: (entityId: string, scale: number) => void;
   onEntityStrokeCapChange: (entityId: string, strokeCap: "butt" | "round" | "square") => void;
+  onEntityStrokeDashChange: (entityId: string, strokeDash: StrokeDash | null) => void;
   onEntityStrokeWidthChange: (entityId: string, strokeWidth: number) => void;
   onInspectorFocusRestored: () => void;
   onRenderSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
@@ -1323,6 +1328,9 @@ export function StudioInspector({
   strokeColorValue: string | null;
   strokeCapAvailable: boolean;
   strokeCapValue: "butt" | "round" | "square" | null;
+  strokeDashUnavailableReason: string | null;
+  strokeDashValue: StrokeDash | null;
+  strokeDashVisible: boolean;
   strokeWidthAvailable: boolean;
   strokeWidthValue: number | null;
   suggestion: EditSuggestion | null;
@@ -1556,6 +1564,78 @@ export function StudioInspector({
                         >
                           Set
                         </button>
+                      </form>
+                    </dd>
+                  </div>
+                ) : null}
+                {strokeDashVisible ? (
+                  <div className="contents">
+                    <dt className="self-center text-zinc-600">Dash pattern</dt>
+                    <dd>
+                      <form
+                        className="grid grid-cols-2 gap-1"
+                        key={`${selectedEntity.id}/strokeDash/${strokeDashValue?.dashLength ?? "solid"}/${strokeDashValue?.gapLength ?? "solid"}`}
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const data = new FormData(event.currentTarget);
+                          onEntityStrokeDashChange(selectedEntity.id, {
+                            dashLength: Number(data.get("dashLength")),
+                            gapLength: Number(data.get("gapLength")),
+                          });
+                        }}
+                      >
+                        <input
+                          aria-label={`Dash length ${entityLabel(selectedEntity)}`}
+                          className="h-7 min-w-0 border border-zinc-700 bg-zinc-950 px-1.5 font-mono text-xs text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700"
+                          defaultValue={strokeDashValue?.dashLength ?? 0.25}
+                          disabled={strokeDashUnavailableReason !== null}
+                          max="2"
+                          min="0.02"
+                          name="dashLength"
+                          required
+                          step="0.01"
+                          title={strokeDashUnavailableReason ?? "Set the dash length in scene units"}
+                          type="number"
+                        />
+                        <input
+                          aria-label={`Gap length ${entityLabel(selectedEntity)}`}
+                          className="h-7 min-w-0 border border-zinc-700 bg-zinc-950 px-1.5 font-mono text-xs text-zinc-200 disabled:cursor-not-allowed disabled:text-zinc-700"
+                          defaultValue={strokeDashValue?.gapLength ?? 0.15}
+                          disabled={strokeDashUnavailableReason !== null}
+                          max="2"
+                          min="0.02"
+                          name="gapLength"
+                          required
+                          step="0.01"
+                          title={strokeDashUnavailableReason ?? "Set the gap length in scene units"}
+                          type="number"
+                        />
+                        <button
+                          aria-label="Set dashed stroke"
+                          className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                          disabled={strokeDashUnavailableReason !== null}
+                          title={strokeDashUnavailableReason ?? "Apply this dash pattern"}
+                          type="submit"
+                        >
+                          Set dashed
+                        </button>
+                        {strokeDashValue ? (
+                          <button
+                            aria-label="Use solid stroke"
+                            className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                            disabled={strokeDashUnavailableReason !== null}
+                            onClick={() => onEntityStrokeDashChange(selectedEntity.id, null)}
+                            title={strokeDashUnavailableReason ?? "Remove the dash pattern"}
+                            type="button"
+                          >
+                            Use solid
+                          </button>
+                        ) : null}
+                        {strokeDashUnavailableReason ? (
+                          <p className="col-span-2 text-[10px] leading-4 text-amber-500/80">
+                            {strokeDashUnavailableReason}
+                          </p>
+                        ) : null}
                       </form>
                     </dd>
                   </div>

@@ -146,6 +146,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
       const shape = channelAt(proposedState.evaluatedScene, entity.id, "shape", time);
       const strokeCap = channelAt(proposedState.evaluatedScene, entity.id, "strokeCap", time);
       const strokeColor = channelAt(proposedState.evaluatedScene, entity.id, "strokeColor", time);
+      const strokeDash = channelAt(proposedState.evaluatedScene, entity.id, "strokeDash", time);
       const strokeWidth = channelAt(proposedState.evaluatedScene, entity.id, "strokeWidth", time);
       const positionValue = isPointValue(position) ? position : undefined;
       const dimensionsValue = isEntityDimensionsValue(dimensions) ? dimensions : undefined;
@@ -180,6 +181,14 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         ...(typeof fillColor === "string" ? { fillColor } : {}),
         ...(strokeCap === "butt" || strokeCap === "round" || strokeCap === "square" ? { strokeCap } : {}),
         ...(typeof strokeColor === "string" ? { strokeColor } : {}),
+        ...(typeof strokeDash === "object" &&
+        strokeDash !== null &&
+        "dashLength" in strokeDash &&
+        "gapLength" in strokeDash
+          ? { strokeDash }
+          : strokeDash === null
+            ? { strokeDash: undefined }
+            : {}),
         ...(typeof strokeWidth === "number" ? { strokeWidth } : {}),
       };
       const hasSampledStyle =
@@ -188,6 +197,7 @@ export function sampleProposedState(proposedState: ProposedState, time: number):
         strokeCap === "round" ||
         strokeCap === "square" ||
         typeof strokeColor === "string" ||
+        strokeDash !== undefined ||
         typeof strokeWidth === "number";
       return {
         content: content === UNKNOWN_EDITABLE_CONTENT ? undefined : isContent(content) ? content : entity.content,

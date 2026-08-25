@@ -82,7 +82,9 @@ enum PreparedGeometrySignatureV1 {
     Stroke {
         camera: PreparedCameraSignatureV1,
         cap: StrokeCapV1,
+        dash_length_world: Option<f64>,
         flatten_tolerance_bits: u64,
+        gap_length_world: Option<f64>,
         join: StrokeJoinV1,
         miter_limit: f64,
         path: CubicPathV1,
@@ -281,7 +283,9 @@ impl PreparedGeometryCacheV1 {
             PreparedGeometrySignatureV1::Stroke {
                 camera: cached_camera,
                 cap,
+                dash_length_world,
                 flatten_tolerance_bits,
+                gap_length_world,
                 join,
                 miter_limit,
                 path: cached_path,
@@ -290,7 +294,9 @@ impl PreparedGeometryCacheV1 {
                 width_world,
             } if *cached_camera == PreparedCameraSignatureV1::from(input.camera)
                 && *cap == stroke.cap
+                && *dash_length_world == stroke.dash_length_world
                 && *flatten_tolerance_bits == FLATTEN_TOLERANCE_PIXELS_V1.to_bits()
+                && *gap_length_world == stroke.gap_length_world
                 && *join == stroke.join
                 && miter_limit.to_bits() == stroke.miter_limit.to_bits()
                 && cached_path == input.path
@@ -341,7 +347,9 @@ impl PreparedGeometryCacheV1 {
             PreparedGeometrySignatureV1::Stroke {
                 camera: PreparedCameraSignatureV1::from(input.camera),
                 cap: stroke.cap,
+                dash_length_world: stroke.dash_length_world,
                 flatten_tolerance_bits: FLATTEN_TOLERANCE_PIXELS_V1.to_bits(),
+                gap_length_world: stroke.gap_length_world,
                 join: stroke.join,
                 miter_limit: stroke.miter_limit,
                 path: input.path.clone(),

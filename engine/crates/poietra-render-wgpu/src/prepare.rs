@@ -55,6 +55,8 @@ pub enum UnsupportedDrawReasonV1 {
     DegenerateFill,
     #[error("the stroked path contains a degenerate cubic segment")]
     DegenerateStroke,
+    #[error("dashed strokes currently require open path subpaths")]
+    DashedClosedStroke,
 }
 
 /// A `RenderPacketV1` cannot be prepared without inventing or dropping pixels.
@@ -1960,6 +1962,163 @@ struct PreparedStrokeSubpathV1 {
     start: LyonPoint,
 }
 
+fn straight_stroke_cubic(start: LyonPoint, end: LyonPoint) -> PreparedStrokeCubicV1 {
+    PreparedStrokeCubicV1 {
+        control1: start,
+        control2: end,
+        end,
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn sample_prepared_stroke_cubic(
+    start: LyonPoint,
+    curve: PreparedStrokeCubicV1,
+    index: usize,
+    segment_count: usize,
+) -> LyonPoint {
+    let progress = index as f32 / segment_count as f32;
+    let inverse = 1.0 - progress;
+    lyon_point(
+        inverse.powi(3) * start.x
+            + 3.0 * inverse.powi(2) * progress * curve.control1.x
+            + 3.0 * inverse * progress.powi(2) * curve.control2.x
+            + progress.powi(3) * curve.end.x,
+        inverse.powi(3) * start.y
+            + 3.0 * inverse.powi(2) * progress * curve.control1.y
+            + 3.0 * inverse * progress.powi(2) * curve.control2.y
+            + progress.powi(3) * curve.end.y,
+    )
+}
+
+fn finish_dash_subpath(
+    active: &mut Option<PreparedStrokeSubpathV1>,
+    output: &mut Vec<PreparedStrokeSubpathV1>,
+) {
+    if let Some(dash) = active.take()
+        && !dash.segments.is_empty()
+    {
+        output.push(dash);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_dashed_line_segment(
+    start: LyonPoint,
+    end: LyonPoint,
+    dash_pixels: f64,
+    gap_pixels: f64,
+    drawing: &mut bool,
+    pattern_remaining: &mut f64,
+    active: &mut Option<PreparedStrokeSubpathV1>,
+    output: &mut Vec<PreparedStrokeSubpathV1>,
+    generated_segments: &mut usize,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let delta_x = f64::from(end.x) - f64::from(start.x);
+    let delta_y = f64::from(end.y) - f64::from(start.y);
+    let mut line_remaining = delta_x.hypot(delta_y);
+    if line_remaining == 0.0 {
+        return Ok(());
+    }
+    let mut cursor = start;
+    while line_remaining > 0.0 {
+        *generated_segments = generated_segments.saturating_add(1);
+        if *generated_segments > MAX_STROKE_FLATTENED_SEGMENTS_PER_DRAW_V1 {
+            return Err(PrepareFrameErrorV1::StrokeFlatteningLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_segments: MAX_STROKE_FLATTENED_SEGMENTS_PER_DRAW_V1,
+            });
+        }
+        let consumes_line = line_remaining <= *pattern_remaining;
+        let step = line_remaining.min(*pattern_remaining);
+        let next = if consumes_line {
+            end
+        } else {
+            let progress = step / line_remaining;
+            lyon_point(
+                checked_f32(
+                    f64::from(cursor.x) + (f64::from(end.x) - f64::from(cursor.x)) * progress,
+                    Some(draw_id),
+                    "stroke dash boundary x",
+                )?,
+                checked_f32(
+                    f64::from(cursor.y) + (f64::from(end.y) - f64::from(cursor.y)) * progress,
+                    Some(draw_id),
+                    "stroke dash boundary y",
+                )?,
+            )
+        };
+        if *drawing && next != cursor {
+            let dash = active.get_or_insert_with(|| PreparedStrokeSubpathV1 {
+                closed: false,
+                segments: Vec::new(),
+                start: cursor,
+            });
+            dash.segments.push(straight_stroke_cubic(cursor, next));
+        }
+        cursor = next;
+        line_remaining -= step;
+        *pattern_remaining -= step;
+        if *pattern_remaining == 0.0 {
+            if *drawing {
+                finish_dash_subpath(active, output);
+            }
+            *drawing = !*drawing;
+            *pattern_remaining = if *drawing { dash_pixels } else { gap_pixels };
+        }
+    }
+    Ok(())
+}
+
+fn dash_stroke_path(
+    path: &[PreparedStrokeSubpathV1],
+    options: &StrokeOptions,
+    dash_pixels: f64,
+    gap_pixels: f64,
+    draw_id: &str,
+) -> Result<Vec<PreparedStrokeSubpathV1>, PrepareFrameErrorV1> {
+    let mut output = Vec::new();
+    let mut generated_segments = 0usize;
+    for subpath in path {
+        if subpath.closed {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: draw_id.to_owned(),
+                reason: UnsupportedDrawReasonV1::DashedClosedStroke,
+            });
+        }
+        let mut drawing = true;
+        let mut pattern_remaining = dash_pixels;
+        let mut active = None;
+        let mut start = subpath.start;
+        for curve in &subpath.segments {
+            let segment_count =
+                stroke_cubic_flattened_segments(start, *curve, options.tolerance, draw_id)?;
+            let mut flattened_start = start;
+            for index in 1..=segment_count {
+                let flattened_end =
+                    sample_prepared_stroke_cubic(start, *curve, index, segment_count);
+                append_dashed_line_segment(
+                    flattened_start,
+                    flattened_end,
+                    dash_pixels,
+                    gap_pixels,
+                    &mut drawing,
+                    &mut pattern_remaining,
+                    &mut active,
+                    &mut output,
+                    &mut generated_segments,
+                    draw_id,
+                )?;
+                flattened_start = flattened_end;
+            }
+            start = curve.end;
+        }
+        finish_dash_subpath(&mut active, &mut output);
+    }
+    Ok(output)
+}
+
 fn maximum_stroke_input_ulp(stroke: &StrokeStyleV1) -> f64 {
     let amplification = if matches!(stroke.join, StrokeJoinV1::Miter) {
         stroke.miter_limit
@@ -2273,8 +2432,39 @@ fn prepare_stroke_geometry(
     validate_round_stroke_complexity(&options, context.draw_id)?;
     let prepared_path =
         prepare_stroke_path_input(path, transform, stroke, &options, pixels_per_world, context)?;
+    let dashed_path;
+    let prepared_path = match (stroke.dash_length_world, stroke.gap_length_world) {
+        (None, None) => prepared_path.as_slice(),
+        (Some(dash_length), Some(gap_length)) => {
+            let dash_pixels = f64::from(stroke_scalar_to_f32(
+                dash_length * pixels_per_world,
+                1.0,
+                context.draw_id,
+                "stroke dash length in pixel-normalized space",
+            )?);
+            let gap_pixels = f64::from(stroke_scalar_to_f32(
+                gap_length * pixels_per_world,
+                1.0,
+                context.draw_id,
+                "stroke gap length in pixel-normalized space",
+            )?);
+            dashed_path = dash_stroke_path(
+                &prepared_path,
+                &options,
+                dash_pixels,
+                gap_pixels,
+                context.draw_id,
+            )?;
+            dashed_path.as_slice()
+        }
+        (None, Some(_)) | (Some(_), None) => {
+            return Err(PrepareFrameErrorV1::InvalidPacket(
+                "stroke dash and gap must both be present".to_owned(),
+            ));
+        }
+    };
     let mut output = tessellate_stroke_path(
-        &prepared_path,
+        prepared_path,
         &options,
         maximum_output_vertices,
         reported_output_limit,
@@ -3343,6 +3533,45 @@ mod tests {
     }
 
     #[test]
+    fn supplied_open_curve_is_split_into_visible_dash_subpaths() {
+        let path = vec![PreparedStrokeSubpathV1 {
+            closed: false,
+            segments: vec![PreparedStrokeCubicV1 {
+                control1: lyon_point(20.0, 60.0),
+                control2: lyon_point(80.0, 60.0),
+                end: lyon_point(100.0, 0.0),
+            }],
+            start: lyon_point(0.0, 0.0),
+        }];
+        let options = StrokeOptions::default().with_tolerance(0.25);
+        let dashed = dash_stroke_path(&path, &options, 18.0, 9.0, "draw:trimmed-curve")
+            .expect("a bounded supplied open curve must dash deterministically");
+
+        assert!(dashed.len() >= 3);
+        assert_eq!(dashed[0].start, path[0].start);
+        for pair in dashed.windows(2) {
+            let previous_end = pair[0].segments.last().unwrap().end;
+            let next_start = pair[1].start;
+            assert!(
+                f64::from(next_start.x - previous_end.x)
+                    .hypot(f64::from(next_start.y - previous_end.y))
+                    > 1.0,
+                "each emitted dash must retain a visible gap"
+            );
+        }
+
+        let mut closed = path;
+        closed[0].closed = true;
+        assert!(matches!(
+            dash_stroke_path(&closed, &options, 18.0, 9.0, "draw:closed"),
+            Err(PrepareFrameErrorV1::Unsupported {
+                reason: UnsupportedDrawReasonV1::DashedClosedStroke,
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn stroke_pixel_domain_uses_the_denser_viewport_axis() {
         let camera = RenderCameraV1 {
             bottom: -8.0,
@@ -3784,7 +4013,9 @@ mod tests {
                         green: 1.0,
                         red: 1.0,
                     },
+                    dash_length_world: None,
                     fragment_material: Some(material.clone()),
+                    gap_length_world: None,
                     join,
                     miter_limit: 6.0,
                     width_world: 0.8,

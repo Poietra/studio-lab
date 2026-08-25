@@ -46,7 +46,13 @@ export type EntityStyle = Readonly<{
   fillColor?: string;
   strokeCap?: "butt" | "round" | "square";
   strokeColor?: string;
+  strokeDash?: StrokeDash;
   strokeWidth?: number;
+}>;
+
+export type StrokeDash = Readonly<{
+  dashLength: number;
+  gapLength: number;
 }>;
 
 export type TextLayout = Readonly<{
@@ -126,7 +132,16 @@ export type ObjectGraph = Readonly<{
   lineage: readonly IdentityLineage[];
 }>;
 
-export type PropertyValue = boolean | number | string | Point | EntityDimensions | EntityContent | readonly string[];
+export type PropertyValue =
+  | boolean
+  | number
+  | string
+  | Point
+  | EntityDimensions
+  | EntityContent
+  | StrokeDash
+  | readonly string[]
+  | null;
 
 export type PropertyChannelSample = Readonly<{
   control?: Point;
@@ -158,6 +173,7 @@ export type PropertyChannel = Readonly<{
     | "shape"
     | "strokeCap"
     | "strokeColor"
+    | "strokeDash"
     | "strokeWidth"
     | "visibility";
   samples: readonly PropertyChannelSample[];

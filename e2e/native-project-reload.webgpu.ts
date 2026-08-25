@@ -812,6 +812,33 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await page.getByRole("checkbox", { name: "Select Line" }).check();
     await expect(lineStrokeCap).toHaveValue("round");
 
+    const lineDashLength = page.getByRole("spinbutton", { name: "Dash length Line" });
+    const lineGapLength = page.getByRole("spinbutton", { name: "Gap length Line" });
+    await lineDashLength.fill("0.3");
+    await lineGapLength.fill("0.2");
+    await page.getByRole("button", { name: "Set dashed stroke" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("button", { name: "Use solid stroke" })).toBeVisible();
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(page.getByRole("button", { name: "Use solid stroke" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(lineDashLength).toHaveValue("0.3");
+    await expect(lineGapLength).toHaveValue("0.2");
+    await page.getByRole("button", { name: "Use solid stroke" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByRole("button", { name: "Use solid stroke" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(page.getByRole("button", { name: "Use solid stroke" })).toBeVisible();
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(page.getByRole("button", { name: "Use solid stroke" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Line" }).check();
+    await expect(page.getByRole("button", { name: "Use solid stroke" })).toBeVisible();
+
     await page.getByRole("button", { name: "Add Draw entrance for Line" }).click();
     await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
     await page.getByRole("button", { name: "Replace program" }).click();
@@ -827,6 +854,7 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     const sourcePath = await sourceDownload.path();
     if (!sourcePath) throw new Error("The Line Python download was not persisted by Playwright.");
     const exportedSource = await readFile(sourcePath, "utf8");
+    expect(exportedSource).toContain("DashedLine(");
     const strokeStyle = '.set_stroke("#22c55e", width=8)';
     const strokeCapStyle = ".set_cap_style(CapStyleType.ROUND)";
     expect(exportedSource).toContain(strokeStyle);
@@ -920,13 +948,16 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await expect(page.getByLabel("Stroke color Line")).toHaveValue("#22c55e");
     await expect(page.getByRole("combobox", { name: "Stroke cap Line" })).toHaveValue("round");
     await expect(page.getByRole("spinbutton", { name: "Stroke width Line" })).toHaveValue("0.08");
+    await expect(page.getByRole("spinbutton", { name: "Dash length Line" })).toHaveValue("0.3");
+    await expect(page.getByRole("spinbutton", { name: "Gap length Line" })).toHaveValue("0.2");
+    await expect(page.getByRole("button", { name: "Use solid stroke" })).toBeVisible();
 
     const mp4 = await exportLocalMp4(page);
     const exportedStrokePixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6], "green-dominant");
     expect(exportedStrokePixels[1] ?? 0).toBeGreaterThan((exportedStrokePixels[0] ?? 0) + 20);
     expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan((exportedStrokePixels[1] ?? 0) * 1.25);
-    expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan(buttStrokePixels + 10);
-    expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan(thinStrokePixels * 1.5);
+    expect(exportedStrokePixels[2] ?? 0).toBeGreaterThan(thinStrokePixels * 0.75);
+    expect(exportedStrokePixels[2] ?? 0).toBeLessThan(buttStrokePixels * 0.9);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

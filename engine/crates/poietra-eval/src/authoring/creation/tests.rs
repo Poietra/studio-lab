@@ -511,6 +511,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 shape_morph: None,
                 stroke_color: None,
                 stroke_cap: None,
+                stroke_dash: None,
                 stroke_width_world: None,
                 instant_transform: None,
                 visible: true,
@@ -546,6 +547,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 shape_morph: None,
                 stroke_color: None,
                 stroke_cap: None,
+                stroke_dash: None,
                 stroke_width_world: None,
                 instant_transform: Some(CreateSceneEntityInstantTransform {
                     at: 1.25,
@@ -586,6 +588,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 shape_morph: None,
                 stroke_color: None,
                 stroke_cap: None,
+                stroke_dash: None,
                 stroke_width_world: None,
                 instant_transform: None,
                 visible: true,
@@ -4817,6 +4820,15 @@ fn normalized_creation_projects_and_applies_a_line() {
             cap: Some(poietra_scene_ir::StrokeCapV1::Round),
         },
     ));
+    command.programs.push(studio_created_appearance_edit_input(
+        0.5,
+        "tx:create/entity:line",
+        "line-stroke-dash",
+        StudioCreationOperationKind::StrokeDash {
+            dash_length_world: Some(0.4),
+            gap_length_world: Some(0.2),
+        },
+    ));
 
     let projection =
         project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
@@ -4830,6 +4842,22 @@ fn normalized_creation_projects_and_applies_a_line() {
         } if (*start - 0.5).abs() < 1e-12
             && (*end - 0.5).abs() < 1e-12
             && (*value - 0.08).abs() < 1e-12
+    )));
+    assert!(projection.mutations.iter().any(|mutation| matches!(
+        mutation,
+        StudioCreationProjectedMutation {
+            interval: IntervalV1 { start, end },
+            kind: StudioCreationProjectedMutationKind::StrokeDash {
+                value: Some(StudioStrokeDash {
+                    dash_length,
+                    gap_length,
+                }),
+            },
+            ..
+        } if (*start - 0.5).abs() < 1e-12
+            && (*end - 0.5).abs() < 1e-12
+            && (*dash_length - 0.4).abs() < 1e-12
+            && (*gap_length - 0.2).abs() < 1e-12
     )));
     assert!(projection.mutations.iter().any(|mutation| matches!(
         mutation,
@@ -4867,6 +4895,8 @@ fn normalized_creation_projects_and_applies_a_line() {
             ..
         } if (stroke.width_world - 0.08).abs() < 1e-12
             && stroke.cap == poietra_scene_ir::StrokeCapV1::Round
+            && stroke.dash_length_world == Some(0.4)
+            && stroke.gap_length_world == Some(0.2)
     ));
     assert!(
         result
@@ -4900,6 +4930,8 @@ fn normalized_creation_projects_and_applies_a_line() {
         } if entity_id == "tx:create/entity:line"
             && (stroke.width_world - 0.08).abs() < 1e-12
             && stroke.cap == poietra_scene_ir::StrokeCapV1::Round
+            && stroke.dash_length_world == Some(0.4)
+            && stroke.gap_length_world == Some(0.2)
     )));
 
     for width_world in [0.004, 0.501, f64::NAN] {
@@ -5216,6 +5248,23 @@ fn normalized_cubic_bezier_creation_keeps_connected_segments_arrow_and_draw() {
         &renormalized
     ));
     assert_eq!(inspection.dimensions, renormalized.dimensions);
+
+    let mut dashed_arrow = command.clone();
+    dashed_arrow
+        .programs
+        .push(studio_created_appearance_edit_input(
+            0.5,
+            "tx:create/entity:circle",
+            "arrow-stroke-dash",
+            StudioCreationOperationKind::StrokeDash {
+                dash_length_world: Some(0.4),
+                gap_length_world: Some(0.2),
+            },
+        ));
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &dashed_arrow.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
 
     let mut without_draw = command.clone();
     let plain = without_draw.programs[0]

@@ -978,7 +978,9 @@ fn studio_shape_appearance() -> SceneAppearanceV1 {
         stroke: Some(StrokeStyleV1 {
             cap: StrokeCapV1::Butt,
             color: studio_white(),
+            dash_length_world: None,
             fragment_material: None,
+            gap_length_world: None,
             join: StrokeJoinV1::Miter,
             miter_limit: 10.0,
             width_world: 0.04,
@@ -997,7 +999,9 @@ fn studio_arrow_appearance() -> SceneAppearanceV1 {
         stroke: Some(StrokeStyleV1 {
             cap: StrokeCapV1::Butt,
             color: studio_white(),
+            dash_length_world: None,
             fragment_material: None,
+            gap_length_world: None,
             join: StrokeJoinV1::Miter,
             miter_limit: 10.0,
             width_world: 0.04,

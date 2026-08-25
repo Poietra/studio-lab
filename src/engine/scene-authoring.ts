@@ -10,6 +10,12 @@ import { loadPoietraWasmModule } from "./poietra-wasm-module";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
+const studioStrokeDashSchema = z
+  .object({
+    dashLength: z.number().finite().min(0.02).max(2),
+    gapLength: z.number().finite().min(0.02).max(2),
+  })
+  .strict();
 
 export const STUDIO_PROPERTY_KEYFRAME_EASINGS = ["linear", "smooth", "ease-in", "ease-out", "ease-in-out"] as const;
 export type StudioPropertyKeyframeEasing = (typeof STUDIO_PROPERTY_KEYFRAME_EASINGS)[number];
@@ -775,6 +781,16 @@ const studioCreationProjectionV1Schema = z
           .object({
             entityId: z.string().min(1),
             interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("stroke-dash"),
+            operationId: z.string().min(1),
+            transactionId: z.string().min(1),
+            value: studioStrokeDashSchema.nullable(),
+          })
+          .strict(),
+        z
+          .object({
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("stroke-width"),
             operationId: z.string().min(1),
             transactionId: z.string().min(1),
@@ -1167,6 +1183,12 @@ type StudioCreationOperationV1 = Readonly<{
         to: string | null;
       }>
     | Readonly<{ cap: "butt" | "round" | "square" | null; entityId: string; kind: "stroke-cap" }>
+    | Readonly<{
+        dashLengthWorld: number | null;
+        entityId: string;
+        gapLengthWorld: number | null;
+        kind: "stroke-dash";
+      }>
     | Readonly<{ entityId: string; kind: "stroke-width"; widthWorld: number | null }>
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
     | Readonly<{ easing: "linear" | "smooth"; entityId: string; from: 0; kind: "draw-in"; to: 1 }>

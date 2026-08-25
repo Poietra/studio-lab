@@ -4,6 +4,12 @@ import { easingV1Schema } from "../engine/scene-ir";
 
 const finiteNumber = z.number().finite();
 const pointSchema = z.object({ x: finiteNumber, y: finiteNumber }).strict();
+const strokeDashSchema = z
+  .object({
+    dashLength: finiteNumber.min(0.02).max(2),
+    gapLength: finiteNumber.min(0.02).max(2),
+  })
+  .strict();
 const anglePairSchema = z.object({ start: finiteNumber, sweep: finiteNumber }).strict();
 const coordinateAxisSchema = z
   .object({ maximum: finiteNumber, minimum: finiteNumber, step: finiteNumber.positive() })
@@ -55,6 +61,7 @@ const geometrySchema = z
               fillColor: z.string().optional(),
               strokeCap: z.enum(["butt", "round", "square"]).optional(),
               strokeColor: z.string().optional(),
+              strokeDash: strokeDashSchema.optional(),
               strokeWidth: finiteNumber.positive().optional(),
             })
             .strict(),
@@ -79,7 +86,9 @@ const propertyValueSchema = z.union([
   pointSchema,
   dimensionsSchema,
   contentSchema,
+  strokeDashSchema,
   z.array(z.string()),
+  z.null(),
 ]);
 const propertyChannelSampleSchema = z
   .object({
@@ -112,6 +121,7 @@ const propertyChannelSchema = z
       "scale",
       "strokeCap",
       "strokeColor",
+      "strokeDash",
       "strokeWidth",
     ]),
     samples: z.array(propertyChannelSampleSchema),

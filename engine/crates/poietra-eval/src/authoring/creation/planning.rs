@@ -8,17 +8,18 @@ use admission::{
 
 use super::{
     BTreeMap, BTreeSet, CubicSubpathV1, IntervalV1, KeyframeV1, MAX_COORDINATE_V1,
-    MAX_STUDIO_CUBIC_BEZIER_SEGMENTS, MAX_STUDIO_STROKE_WIDTH_WORLD, MIN_STUDIO_STROKE_WIDTH_WORLD,
-    PersistentSceneRemoval, PlannedStudioAnimatedResize, PlannedStudioCameraClip,
-    PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PlannedStudioMathTexTransform,
-    PlannedStudioMotion, PlannedStudioPathMorph, PlannedStudioShapeTransform,
-    ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1, SceneEditExecution,
-    SceneEditScheduleMode, StudioAuthoringDimensions, StudioAuthoringEntityKind,
-    StudioAuthoringOrigin, StudioCreationEditInput, StudioCreationOperationKind,
-    StudioCreationPlan, StudioCreationProjectedMutation, StudioCreationProjectedMutationKind,
-    StudioCreationShapeState, StudioMathTexTransformStrategy, StudioMotionPlan,
-    StudioMotionProjectionTarget, StudioPaintColorProperty, StudioPaintColorTrack,
-    StudioPropertyEasing, TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value,
+    MAX_STROKE_DASH_WORLD_V1, MAX_STUDIO_CUBIC_BEZIER_SEGMENTS, MAX_STUDIO_STROKE_WIDTH_WORLD,
+    MIN_STROKE_DASH_WORLD_V1, MIN_STUDIO_STROKE_WIDTH_WORLD, PersistentSceneRemoval,
+    PlannedStudioAnimatedResize, PlannedStudioCameraClip, PlannedStudioCreationEntity,
+    PlannedStudioLogicalGroup, PlannedStudioMathTexTransform, PlannedStudioMotion,
+    PlannedStudioPathMorph, PlannedStudioShapeTransform, ProjectStudioCreationEditError,
+    RgbaColorV1, SceneAppearanceV1, SceneEditExecution, SceneEditScheduleMode,
+    StudioAuthoringDimensions, StudioAuthoringEntityKind, StudioAuthoringOrigin,
+    StudioCreationEditInput, StudioCreationOperationKind, StudioCreationPlan,
+    StudioCreationProjectedMutation, StudioCreationProjectedMutationKind, StudioCreationShapeState,
+    StudioMathTexTransformStrategy, StudioMotionPlan, StudioMotionProjectionTarget,
+    StudioPaintColorProperty, StudioPaintColorTrack, StudioPropertyEasing, StudioStrokeDash,
+    TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value,
     closed_studio_creation_motion_operations, closed_studio_group_layer_order,
     closed_studio_group_rotation, closed_studio_material_parameter_track,
     closed_studio_opacity_track, closed_studio_rotation_track, closed_studio_uniform_scale_track,
@@ -76,6 +77,15 @@ fn studio_path_morph_pair_is_supported(
         && studio_path_morph_endpoint_is_valid(to_path)
         && from_path.closed == to_path.closed
         && from_path.segments.len() == to_path.segments.len()
+}
+
+fn studio_creation_supports_stroke_dash(state: &PlannedStudioCreationEntity) -> bool {
+    state.kind == StudioAuthoringEntityKind::Line
+        || (state.kind == StudioAuthoringEntityKind::CubicBezier
+            && state
+                .cubic_bezier
+                .as_ref()
+                .is_some_and(|curve| !curve.spec.closed && !curve.spec.arrow_end))
 }
 
 #[allow(
@@ -217,6 +227,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::StrokeCap { .. }
+                | StudioCreationOperationKind::StrokeDash { .. }
                 | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
@@ -276,6 +287,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::FillColor { .. }
                 | StudioCreationOperationKind::StrokeColor { .. }
                 | StudioCreationOperationKind::StrokeCap { .. }
+                | StudioCreationOperationKind::StrokeDash { .. }
                 | StudioCreationOperationKind::StrokeWidth { .. }
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
@@ -926,6 +938,7 @@ pub(super) fn plan_studio_creation_edits(
             draw_interval,
             stroke_color_override: None,
             stroke_cap_override: None,
+            stroke_dash_override: None,
             stroke_width_world_override: None,
             fade_interval,
             has_position_or_resize_instant: false,
@@ -2203,6 +2216,62 @@ pub(super) fn plan_studio_creation_edits(
                                 end: state.lifetime.start,
                             },
                             kind: StudioCreationProjectedMutationKind::StrokeCap { value: *cap },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
+                StudioCreationOperationKind::StrokeDash {
+                    dash_length_world,
+                    gap_length_world,
+                } => {
+                    let value = match (*dash_length_world, *gap_length_world) {
+                        (None, None) => None,
+                        (Some(dash_length), Some(gap_length))
+                            if (MIN_STROKE_DASH_WORLD_V1..=MAX_STROKE_DASH_WORLD_V1)
+                                .contains(&dash_length)
+                                && (MIN_STROKE_DASH_WORLD_V1..=MAX_STROKE_DASH_WORLD_V1)
+                                    .contains(&gap_length) =>
+                        {
+                            Some(StudioStrokeDash {
+                                dash_length,
+                                gap_length,
+                            })
+                        }
+                        _ => {
+                            return Err(ProjectStudioCreationEditError::Unsupported);
+                        }
+                    };
+                    if operation.origin != StudioAuthoringOrigin::DirectManipulation
+                        || !studio_creation_supports_stroke_dash(state)
+                        || state.stroke_dash_override == value
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
+                        || !studio_timeline_semantic_values_match(
+                            program.anchor_resolved_seconds,
+                            state.spec.lifetime_start,
+                        )
+                        || state.persistent_removal.is_some()
+                    {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                    state.stroke_dash_override = value;
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: IntervalV1 {
+                                start: state.lifetime.start,
+                                end: state.lifetime.start,
+                            },
+                            kind: StudioCreationProjectedMutationKind::StrokeDash { value },
                             operation_id: operation.id.clone(),
                             transaction_id: program.transaction_id.clone(),
                         },

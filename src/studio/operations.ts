@@ -22,6 +22,7 @@ export type PropertyChannelKey =
   | "shape"
   | "strokeCap"
   | "strokeColor"
+  | "strokeDash"
   | "strokeWidth"
   | "visibility";
 

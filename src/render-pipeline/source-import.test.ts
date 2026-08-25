@@ -441,6 +441,23 @@ class AliasedComposites(Scene):
     });
   });
 
+  it("does not promote an unmarked Manim CubicBezier path into a Studio entity", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class MotionPath(Scene):
+    def construct(self):
+        path = CubicBezier(LEFT, UP, DOWN, RIGHT)
+        self.add(path)
+        self.wait(1)
+`,
+      "scene.py",
+      "MotionPath",
+    );
+
+    expect(imported?.runtimeSceneState.objectGraph.entities).toEqual({});
+  });
+
   it("keeps a direct marker attached to its canonical multiline assignment", () => {
     const imported = importManimScene(
       `from manim import *

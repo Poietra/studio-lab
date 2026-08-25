@@ -13,6 +13,8 @@ use crate::model::{
 };
 
 pub const MAX_COORDINATE_V1: f64 = 1_000_000_000.0;
+pub const MAX_STROKE_DASH_WORLD_V1: f64 = 2.0;
+pub const MIN_STROKE_DASH_WORLD_V1: f64 = 0.02;
 pub const MAX_TOTAL_PATH_SEGMENTS_V1: usize = 100_000;
 pub const MAX_ASSETS_V1: usize = 4_096;
 pub const MAX_ENCODED_ASSET_BYTES_V1: u64 = 268_435_456;
@@ -357,6 +359,32 @@ fn validate_stroke_inner(
     validator: &mut Validator,
 ) {
     validate_color(&stroke.color, &format!("{path}.color"), validator);
+    match (stroke.dash_length_world, stroke.gap_length_world) {
+        (None, None) => {}
+        (Some(dash_length), Some(gap_length)) => {
+            for (name, length) in [
+                ("dashLengthWorld", dash_length),
+                ("gapLengthWorld", gap_length),
+            ] {
+                let length_path = format!("{path}.{name}");
+                validate_finite(length, &length_path, validator);
+                if length.is_finite()
+                    && !(MIN_STROKE_DASH_WORLD_V1..=MAX_STROKE_DASH_WORLD_V1).contains(&length)
+                {
+                    validator.issue(
+                        length_path,
+                        format!(
+                            "must be between {MIN_STROKE_DASH_WORLD_V1} and {MAX_STROKE_DASH_WORLD_V1} inclusive"
+                        ),
+                    );
+                }
+            }
+        }
+        (None, Some(_)) | (Some(_), None) => validator.issue(
+            path,
+            "dashLengthWorld and gapLengthWorld must either both be present or both be absent",
+        ),
+    }
     if let Some(material) = &stroke.fragment_material {
         validate_fragment_material(material, &format!("{path}.fragmentMaterial"), validator);
     }
@@ -1445,6 +1473,8 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                         ),
                         (Some(base_stroke), Some(stroke))
                             if base_stroke.cap != stroke.cap
+                                || base_stroke.dash_length_world != stroke.dash_length_world
+                                || base_stroke.gap_length_world != stroke.gap_length_world
                                 || base_stroke.join != stroke.join
                                 || base_stroke.miter_limit.to_bits()
                                     != stroke.miter_limit.to_bits()
@@ -1452,7 +1482,7 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                         {
                             validator.issue(
                                 format!("{path}.keyframes[0].value.stroke"),
-                                "vector-appearance cannot transition between stroke cap, join, or miter-limit styles or fragment materials",
+                                "vector-appearance cannot transition between stroke cap, dash, join, or miter-limit styles or fragment materials",
                             );
                         }
                         (None, None | Some(_)) | (Some(_), Some(_)) => {}
@@ -1521,8 +1551,10 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                                 );
                             } else if let (Some(stroke), Some(first_stroke)) =
                                 (&value.stroke, &first.stroke)
-                                && (stroke.miter_limit.to_bits()
-                                    != first_stroke.miter_limit.to_bits()
+                                && (stroke.dash_length_world != first_stroke.dash_length_world
+                                    || stroke.gap_length_world != first_stroke.gap_length_world
+                                    || stroke.miter_limit.to_bits()
+                                        != first_stroke.miter_limit.to_bits()
                                     || !fragment_materials_share_animation_identity(
                                         stroke.fragment_material.as_ref(),
                                         first_stroke.fragment_material.as_ref(),
@@ -1530,7 +1562,7 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                             {
                                 validator.issue(
                                     format!("{value_path}.stroke"),
-                                    "vector-appearance cannot transition between stroke miter-limit styles or fragment materials",
+                                    "vector-appearance cannot transition between stroke dash or miter-limit styles or fragment materials",
                                 );
                             }
                         }

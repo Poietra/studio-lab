@@ -355,6 +355,18 @@ fn retained_geometry_cache_invalidates_only_geometry_affecting_phases() {
     style.width_world *= 1.25;
     assert_cache_invalidation(&stroke, &wider_stroke, 1);
 
+    let mut dashed_stroke = stroke.clone();
+    let RenderDrawV1::Path {
+        stroke: Some(style),
+        ..
+    } = &mut dashed_stroke.draws[0]
+    else {
+        panic!("stroke fixture must contain a stroke");
+    };
+    style.dash_length_world = Some(0.5);
+    style.gap_length_world = Some(0.25);
+    assert_cache_invalidation(&stroke, &dashed_stroke, 1);
+
     let trim_start = generic_stroke_packet_with_initial_trim(0.25);
     let trim_end = generic_stroke_packet_with_initial_trim(0.75);
     assert_cache_invalidation(&trim_start, &trim_end, 1);
@@ -518,7 +530,9 @@ fn combined_paint_phases_do_not_hide_numeric_failure() {
     *stroke = Some(poietra_scene_ir::StrokeStyleV1 {
         cap: StrokeCapV1::Butt,
         color,
+        dash_length_world: None,
         fragment_material: None,
+        gap_length_world: None,
         join: StrokeJoinV1::Miter,
         miter_limit: 4.0,
         width_world: 0.1,
@@ -552,7 +566,9 @@ fn fill_and_stroke_are_distinct_ordered_paint_phases() {
     *stroke = Some(poietra_scene_ir::StrokeStyleV1 {
         cap: poietra_scene_ir::StrokeCapV1::Butt,
         color,
+        dash_length_world: None,
         fragment_material: None,
+        gap_length_world: None,
         join: poietra_scene_ir::StrokeJoinV1::Miter,
         miter_limit: 4.0,
         width_world: 0.1,

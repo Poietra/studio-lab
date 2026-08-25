@@ -137,12 +137,17 @@ export const strokeStyleV1Schema = z
   .object({
     cap: z.enum(["butt", "round", "square"]),
     color: rgbaColorV1Schema,
+    dashLengthWorld: finiteNumberV1Schema.min(0.02).max(2).optional(),
     fragmentMaterial: fragmentMaterialV1Schema.optional(),
+    gapLengthWorld: finiteNumberV1Schema.min(0.02).max(2).optional(),
     join: z.enum(["bevel", "miter", "round"]),
     miterLimit: finiteNumberV1Schema.min(1).max(1_000),
     widthWorld: finiteNumberV1Schema.positive().max(MAX_COORDINATE),
   })
-  .strict();
+  .strict()
+  .refine((stroke) => (stroke.dashLengthWorld === undefined) === (stroke.gapLengthWorld === undefined), {
+    message: "dashLengthWorld and gapLengthWorld must either both be present or both be absent.",
+  });
 
 export function reportDuplicateIds(
   values: readonly Readonly<{ id: string }>[],

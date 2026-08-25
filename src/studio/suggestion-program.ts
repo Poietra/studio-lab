@@ -17,7 +17,7 @@ import {
   MAX_ENTITY_SCALE,
   MIN_ENTITY_SCALE,
 } from "./magic-edit-capabilities";
-import type { EntityDimensions, Point, RuntimeSceneState } from "./model";
+import type { EntityDimensions, Point, RuntimeSceneState, StrokeDash } from "./model";
 import { EDIT_OPERATION_VERSION, type OperationOrigin, operationId, provisionalEntityId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
 import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "./scene-edit-contract";
@@ -1235,6 +1235,62 @@ export function createDirectManipulationStrokeCapProgram(
       loweringStatus: "supported",
       operations: [operation],
       provenance: provenance("direct-manipulation", ["absolute static path stroke cap constraint"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
+}
+
+export function createDirectManipulationStrokeDashProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityId: string;
+    scene: RuntimeSceneState;
+    start: number;
+    strokeDash: StrokeDash | null;
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  if (
+    input.strokeDash !== null &&
+    (!Number.isFinite(input.strokeDash.dashLength) ||
+      input.strokeDash.dashLength < 0.02 ||
+      input.strokeDash.dashLength > 2 ||
+      !Number.isFinite(input.strokeDash.gapLength) ||
+      input.strokeDash.gapLength < 0.02 ||
+      input.strokeDash.gapLength > 2)
+  ) {
+    throw new Error("Dash and gap lengths must each be from 0.02 to 2 scene units.");
+  }
+  const sourceAnchor =
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute" as const, seconds: input.start };
+  const resolution = resolveTimeAnchorOnce(sourceAnchor, {
+    capturedPlayhead: input.capturedPlayhead,
+    sceneDuration: input.scene.duration,
+  });
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: SceneEditOperation = {
+    dependsOn: [],
+    entityId: input.entityId,
+    id: operationId(input.transactionId, "set-stroke-dash"),
+    interval: { end: input.start, start: input.start },
+    key: "strokeDash",
+    kind: "SetProperty",
+    provenance: provenance("direct-manipulation", ["dashed stroke control", "absolute dash and gap lengths"]),
+    value: input.strokeDash,
+  };
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["absolute static dashed stroke constraint"]),
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
       transactionId: input.transactionId,

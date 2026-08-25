@@ -219,6 +219,15 @@ test("morphs one material Pen path through target handles, reload, decoded MP4, 
     await waitForPresentedPreview();
     await expect(material).not.toHaveValue("");
 
+    const dashLength = page.getByRole("spinbutton", { name: "Dash length CubicBezier" });
+    const gapLength = page.getByRole("spinbutton", { name: "Gap length CubicBezier" });
+    await dashLength.fill("0.24");
+    await gapLength.fill("0.16");
+    await page.getByRole("button", { name: "Set dashed stroke" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await waitForPresentedPreview();
+    await expect(material).not.toHaveValue("");
+
     const packetBeforeMorphDraft = await canvas.getAttribute("data-preview-packet-id");
     await page.getByRole("button", { exact: true, name: "+ Path Morph" }).click();
     await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(packetBeforeMorphDraft);
@@ -265,6 +274,9 @@ test("morphs one material Pen path through target handles, reload, decoded MP4, 
     expect((await clipTime(page, clip, 1)) - (await clipTime(page, clip, 0))).toBeCloseTo(editedDuration, 1);
     await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    await expect(page.getByRole("spinbutton", { name: "Dash length CubicBezier" })).toHaveValue("0.24");
+    await expect(page.getByRole("spinbutton", { name: "Gap length CubicBezier" })).toHaveValue("0.16");
+    await expect(page.getByRole("button", { name: "Use solid stroke" })).toBeVisible();
 
     const sceneDuration = Number(await page.getByRole("slider", { name: "Scene playhead" }).getAttribute("max"));
     const clipStart = await clipTime(page, clip, 0);

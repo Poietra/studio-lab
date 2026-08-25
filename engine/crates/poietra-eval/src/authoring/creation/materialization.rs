@@ -7,16 +7,16 @@ use super::{
     CreateSceneEntityDrawIn, CreateSceneEntityFadeIn, CreateSceneEntityGeometry,
     CreateSceneEntityInstantTransform, CreateSceneEntityMathTexMorph, CreateSceneEntityPathMorph,
     CreateSceneEntityWriteIn, CubicPathV1, EasingV1, EngineSessionV1, FidelityV1, FillRuleV1,
-    FillStyleV1, IntervalV1, KeyframeV1, MAX_STUDIO_STROKE_WIDTH_WORLD,
-    MIN_STUDIO_STROKE_WIDTH_WORLD, PathTrimParameterizationV1, PlannedSceneMotion,
-    PlannedStudioCameraAnimation, PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PointV1,
-    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS,
-    SEGMENTED_MATH_TEX_MAX_FRAGMENTS, SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES,
-    SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH, SEGMENTED_MATH_TEX_PHASE_BOUNDARY, SceneAppearanceV1,
-    SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
-    SceneSourceV1, StudioAuthoringDimensions, StudioAuthoringEditResult, StudioAuthoringEntityKind,
-    StudioCreationMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
-    StudioCreationSegmentedMathTexSourceCorrelation,
+    FillStyleV1, IntervalV1, KeyframeV1, MAX_STROKE_DASH_WORLD_V1, MAX_STUDIO_STROKE_WIDTH_WORLD,
+    MIN_STROKE_DASH_WORLD_V1, MIN_STUDIO_STROKE_WIDTH_WORLD, PathTrimParameterizationV1,
+    PlannedSceneMotion, PlannedStudioCameraAnimation, PlannedStudioCreationEntity,
+    PlannedStudioLogicalGroup, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
+    SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS, SEGMENTED_MATH_TEX_MAX_FRAGMENTS,
+    SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES, SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH,
+    SEGMENTED_MATH_TEX_PHASE_BOUNDARY, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1,
+    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StudioAuthoringDimensions,
+    StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioCreationMathTexOutline,
+    StudioCreationSegmentedMathTexRepresentation, StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationShapeState,
     StudioPaintColorProperty, StudioPersistentRemoveProjection, TIMELINE_ANCHOR_EPSILON,
     VectorAppearanceValueV1, align_cubic_path_morph_chain, append_planned_scene_motions,
@@ -561,6 +561,22 @@ pub(super) fn validate_create_scene_entities_command(
                 CreateSceneEntityGeometry::Line | CreateSceneEntityGeometry::ShapeOutline { .. }
             )
         });
+        let stroke_dash_is_valid = entity.stroke_dash.is_none_or(|dash| {
+            [dash.dash_length, dash.gap_length]
+                .into_iter()
+                .all(|length| {
+                    length.is_finite()
+                        && (MIN_STROKE_DASH_WORLD_V1..=MAX_STROKE_DASH_WORLD_V1).contains(&length)
+                })
+                && match &entity.geometry {
+                    CreateSceneEntityGeometry::Line => true,
+                    CreateSceneEntityGeometry::CubicBezier {
+                        appearance: SceneAppearanceV1::Vector { fill, .. },
+                        path,
+                    } => fill.is_none() && path.subpaths.iter().all(|subpath| !subpath.closed),
+                    _ => false,
+                }
+        });
         let has_initial_draw_stroke = entity.draw_in.is_some()
             && entity.fill_color.is_none()
             && entity.stroke_color.is_some()
@@ -594,6 +610,7 @@ pub(super) fn validate_create_scene_entities_command(
             || !colors_are_valid
             || !stroke_width_is_valid
             || !stroke_cap_is_valid
+            || !stroke_dash_is_valid
             || unsupported_image_paint
             || unsupported_color_override
             || (entity.animated_resize.is_some()
@@ -690,7 +707,9 @@ pub(super) fn append_created_write_fragments(
         let stroke = poietra_scene_ir::StrokeStyleV1 {
             cap: poietra_scene_ir::StrokeCapV1::Butt,
             color: paint.clone(),
+            dash_length_world: None,
             fragment_material: None,
+            gap_length_world: None,
             join: poietra_scene_ir::StrokeJoinV1::Miter,
             miter_limit: 10.0,
             width_world: outline_stroke_width,
@@ -1055,6 +1074,17 @@ pub(super) fn append_created_entity(
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
         stroke.cap = cap;
+    }
+    if let Some(dash) = entity.stroke_dash {
+        let SceneAppearanceV1::Vector {
+            stroke: Some(stroke),
+            ..
+        } = &mut appearance
+        else {
+            return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+        };
+        stroke.dash_length_world = Some(dash.dash_length);
+        stroke.gap_length_world = Some(dash.gap_length);
     }
     if let Some(first) = entity.material_parameter_keyframes.first() {
         let SceneAppearanceV1::Vector { fill, stroke, .. } = &mut appearance else {
@@ -2333,6 +2363,7 @@ impl EngineSessionV1 {
             if stroke_cap.is_some() && !studio_creation_supports_stroke_cap(state.kind) {
                 return Err(ApplyStudioCreationEditError::Unsupported);
             }
+            let stroke_dash = state.stroke_dash_override;
             let write_in = match (&state.write_interval, &state.write_easing) {
                 (Some(interval), Some(easing)) => {
                     let source = state
@@ -2400,6 +2431,7 @@ impl EngineSessionV1 {
                 shape_morph,
                 stroke_color,
                 stroke_cap,
+                stroke_dash,
                 stroke_width_world,
                 visible: state.visible,
                 write_in,

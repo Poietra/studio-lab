@@ -200,6 +200,27 @@ describe("Poietra Engine v1 contracts", () => {
       }).success,
     ).toBe(true);
     expect(
+      strokeStyleV1Schema.safeParse({
+        cap: "round",
+        color: white,
+        dashLengthWorld: 0.25,
+        gapLengthWorld: 0.15,
+        join: "round",
+        miterLimit: 4,
+        widthWorld: 0.1,
+      }).success,
+    ).toBe(true);
+    expect(
+      strokeStyleV1Schema.safeParse({
+        cap: "round",
+        color: white,
+        dashLengthWorld: 0.25,
+        join: "round",
+        miterLimit: 4,
+        widthWorld: 0.1,
+      }).success,
+    ).toBe(false);
+    expect(
       fillStyleV1Schema.safeParse({
         ...valid,
         fragmentMaterial: { ...valid.fragmentMaterial, parameters: [...valid.fragmentMaterial.parameters, 8] },

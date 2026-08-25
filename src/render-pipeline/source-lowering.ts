@@ -8,7 +8,7 @@ import {
   STUDIO_TEXT_DEFAULT_LAYOUT,
 } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
-import { type EntityContent, isMotionEasing, type MotionEasing } from "../studio/model";
+import { type EntityContent, isMotionEasing, type MotionEasing, type StrokeDash } from "../studio/model";
 import { operationExecutionCapabilities, programExecutionCapabilities } from "../studio/operation-registry";
 import { type CreateEntityOperation, EDIT_OPERATION_VERSION } from "../studio/operations";
 import { insertedProgramDuration } from "../studio/program-composition";
@@ -17,6 +17,7 @@ import {
   isCanonicalRgbHex,
   type SceneEdit,
   type SceneEditOperation,
+  strokeDashSchema,
   studioEntityTypeSupportsStrokeWidth,
 } from "../studio/scene-edit-contract";
 import { scaleTransformViolation, sceneBoundaryViolation } from "../studio/source-lowering-invariants";
@@ -148,6 +149,7 @@ type ProgramSourceLoweringOptions = Readonly<{
   initialGeneratedFillColors?: ReadonlyMap<string, string>;
   initialGeneratedStrokeCaps?: ReadonlyMap<string, StudioLineStrokeCap>;
   initialGeneratedStrokeColors?: ReadonlyMap<string, string>;
+  initialGeneratedStrokeDashes?: ReadonlyMap<string, StrokeDash | null>;
   initialGeneratedStrokeWidths?: ReadonlyMap<string, number>;
   reservedSourceVariables?: ReadonlySet<string>;
   sourceAnchor?: number;
@@ -772,7 +774,32 @@ function manimTextConstructor(
   return `Text(${JSON.stringify(text)}, font=${JSON.stringify(fontName)}${weightArgument}, disable_ligatures=True).scale_to_fit_height(${formatAmount(layout.fontSize)})`;
 }
 
-function entityConstructor(operation: CreateEntityOperation) {
+function localPointExpression(point: Readonly<{ x: number; y: number }>) {
+  return `(${formatPointCoordinate(point.x)}, ${formatPointCoordinate(point.y)}, 0)`;
+}
+
+function cubicBezierConstructor(operation: CreateEntityOperation, strokeCap?: StudioLineStrokeCap) {
+  const cubicBezier = operation.entity.cubicBezier;
+  if (!cubicBezier) {
+    throw new ProgramLoweringError("operation-unsupported", "Pen source export requires one canonical cubic path.");
+  }
+  if (cubicBezier.closed === true || cubicBezier.arrowEnd) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Manim source export currently supports only an open Pen path without an arrow end.",
+    );
+  }
+  const cap = strokeCap ?? cubicBezier.strokeCap;
+  return [
+    `CubicBezier(${localPointExpression(cubicBezier.start)}, ${localPointExpression(cubicBezier.control1)}, ${localPointExpression(cubicBezier.control2)}, ${localPointExpression(cubicBezier.end)}, cap_style=${manimStrokeCap(cap)}, stroke_width=${manimStrokeWidth(cubicBezier.strokeWidth)})`,
+    ...(cubicBezier.continuationSegments ?? []).map(
+      (segment) =>
+        `.add_cubic_bezier_curve_to(${localPointExpression(segment.control1)}, ${localPointExpression(segment.control2)}, ${localPointExpression(segment.end)})`,
+    ),
+  ].join("");
+}
+
+function entityConstructor(operation: CreateEntityOperation, strokeCap?: StudioLineStrokeCap) {
   const { content, dimensions, type } = operation.entity;
   if (type === "MathTex") {
     const parts = content?.texParts?.length ? content.texParts : content?.displayLines;
@@ -788,6 +815,7 @@ function entityConstructor(operation: CreateEntityOperation) {
     const text = content?.text ?? content?.displayLines.join(" ") ?? "";
     return manimTextConstructor(text, { layout: content?.textLayout, unitHeight: true });
   }
+  if (type === "CubicBezier") return cubicBezierConstructor(operation, strokeCap);
   const shapeConstructor = {
     Arrow: "Arrow(LEFT, RIGHT, buff=0)",
     Circle: `Circle(radius=${formatAmount(dimensions?.radius ?? 1)})`,
@@ -1092,6 +1120,27 @@ function assertLoweringSupported(
     throw new ProgramLoweringError(
       "operation-unsupported",
       "Stroke width currently supports only authorized Studio-created Line or closed primitive entities.",
+    );
+  }
+  if (operation.kind === "SetProperty" && operation.key === "strokeDash") {
+    if (operation.value !== null && !isStudioStrokeDash(operation.value)) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "Dash and gap lengths must each be from 0.02 to 2 world units, or null for a solid stroke.",
+      );
+    }
+    const type =
+      currentGeneratedEntityTypes.get(operation.entityId) ?? options.generatedEntityTypes?.get(operation.entityId);
+    if (type !== "Line" && type !== "CubicBezier") {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "Dashed-stroke source export supports only an authorized Studio-created Line or open Pen path.",
+      );
+    }
+    if (options.hoistedInitialGeneratedStrokeOperationIds?.has(operation.id)) return;
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Dashed stroke must be one static operation at the Studio-created path creation anchor.",
     );
   }
   if (operation.kind === "SetProperty" && operation.key === "strokeCap") {
@@ -1709,7 +1758,23 @@ export function lowerCanonicalProgramSource(
         if (!operation.entity.type.startsWith("TransitionOverlay:")) {
           output.push(`# poietra:entity ${JSON.stringify({ id: operation.entity.id, variable })}`);
         }
-        output.push(`${variable} = ${entityConstructor(operation)}`);
+        const initialStrokeCap = options.initialGeneratedStrokeCaps?.get(operation.entity.id);
+        const initialStrokeDash = options.initialGeneratedStrokeDashes?.get(operation.entity.id) ?? null;
+        output.push(`${variable} = ${entityConstructor(operation, initialStrokeCap)}`);
+        if (operation.entity.type === "Line" && initialStrokeDash) {
+          output.push(`${variable}.become(${manimDashedLineConstructor(initialStrokeDash, initialStrokeCap)})`);
+        }
+        if (operation.entity.type === "CubicBezier" && initialStrokeDash) {
+          output.push(`${variable}.become(${manimDashedVmobjectExpression(variable, initialStrokeDash)})`);
+          const cubicBezier = operation.entity.cubicBezier;
+          if (!cubicBezier) {
+            throw new ProgramLoweringError(
+              "operation-unsupported",
+              "Pen source export requires one canonical cubic path.",
+            );
+          }
+          output.push(`${variable}.set_stroke(width=${manimStrokeWidth(cubicBezier.strokeWidth)})`);
+        }
         const initialFill = options.initialGeneratedFillColors?.get(operation.entity.id);
         if (initialFill) {
           output.push(`${variable}.set_fill(${JSON.stringify(initialFill)}, opacity=1)`);
@@ -1724,7 +1789,6 @@ export function lowerCanonicalProgramSource(
           ];
           output.push(`${variable}.set_stroke(${arguments_.join(", ")})`);
         }
-        const initialStrokeCap = options.initialGeneratedStrokeCaps?.get(operation.entity.id);
         if (initialStrokeCap) {
           output.push(`${variable}.set_cap_style(${manimStrokeCap(initialStrokeCap)})`);
         }
@@ -2184,6 +2248,34 @@ function isStudioLineStrokeCap(value: unknown): value is StudioLineStrokeCap {
 
 function manimStrokeCap(cap: StudioLineStrokeCap) {
   return `CapStyleType.${cap.toUpperCase()}`;
+}
+
+function isStudioStrokeDash(value: unknown): value is StrokeDash {
+  return strokeDashSchema.safeParse(value).success;
+}
+
+function manimStrokeDashRatio(strokeDash: StrokeDash) {
+  const ratio = strokeDash.dashLength / (strokeDash.dashLength + strokeDash.gapLength);
+  if (!Number.isFinite(ratio) || ratio <= 0 || ratio >= 1) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "A dashed stroke requires positive finite dash and gap lengths.",
+    );
+  }
+  return formatAmount(ratio);
+}
+
+function manimDashedLineConstructor(strokeDash: StrokeDash, strokeCap?: StudioLineStrokeCap) {
+  const cap = strokeCap ? `, cap_style=${manimStrokeCap(strokeCap)}` : "";
+  return `DashedLine(LEFT, RIGHT, dash_length=${formatAmount(strokeDash.dashLength)}, dashed_ratio=${manimStrokeDashRatio(strokeDash)}${cap})`;
+}
+
+function manimDashedVmobjectExpression(variable: string, strokeDash: StrokeDash) {
+  const period = strokeDash.dashLength + strokeDash.gapLength;
+  if (!Number.isFinite(period) || period <= 0) {
+    throw new ProgramLoweringError("operation-unsupported", "A dashed stroke requires a positive finite period.");
+  }
+  return `DashedVMobject(${variable}, num_dashes=max(2, int(-(-${variable}.get_arc_length() // ${formatAmount(period)}))), dashed_ratio=${manimStrokeDashRatio(strokeDash)})`;
 }
 
 function applySceneDurationProjection(
@@ -3338,6 +3430,7 @@ export function lowerCanonicalProgramBatchSource(
   const initialGeneratedFillColors = new Map<string, string>();
   const initialGeneratedStrokeCaps = new Map<string, StudioLineStrokeCap>();
   const initialGeneratedStrokeColors = new Map<string, string>();
+  const initialGeneratedStrokeDashes = new Map<string, StrokeDash | null>();
   const initialGeneratedStrokeWidths = new Map<string, number>();
   const hoistedInitialGeneratedFillOperationIds = new Set<string>();
   const hoistedInitialGeneratedStrokeOperationIds = new Set<string>();
@@ -3350,6 +3443,7 @@ export function lowerCanonicalProgramBatchSource(
       end += 1;
     }
     const group = normalizedEntries.slice(start, end);
+    const initialDashedStrokeLifetimeStarts = new Map<string, number>();
     const initialGlyphLifetimeStarts = new Map<string, number>();
     const initialLineLifetimeStarts = new Map<string, number>();
     for (const { program, sourceAnchor } of group) {
@@ -3369,6 +3463,12 @@ export function lowerCanonicalProgramBatchSource(
         if (operation.entity.type === "Line" && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
           initialLineLifetimeStarts.set(operation.entity.id, lifetimeStart);
         }
+        if (
+          (operation.entity.type === "Line" || operation.entity.type === "CubicBezier") &&
+          Math.abs(sourceAnchor - lifetimeStart) < EPSILON
+        ) {
+          initialDashedStrokeLifetimeStarts.set(operation.entity.id, lifetimeStart);
+        }
         if (entrance && Math.abs(sourceAnchor - lifetimeStart) < EPSILON) {
           if (operation.entity.type === "MathTex" || operation.entity.type === "Text") {
             initialGlyphLifetimeStarts.set(operation.entity.id, lifetimeStart);
@@ -3379,6 +3479,19 @@ export function lowerCanonicalProgramBatchSource(
     for (const { program } of group) {
       if (program.operations.length !== 1) continue;
       const operation = program.operations[0]!;
+      if (operation.kind === "SetProperty" && operation.key === "strokeDash") {
+        const lifetimeStart = initialDashedStrokeLifetimeStarts.get(operation.entityId);
+        if (
+          lifetimeStart !== undefined &&
+          Math.abs(operation.interval.start - lifetimeStart) < EPSILON &&
+          Math.abs(operation.interval.end - lifetimeStart) < EPSILON &&
+          (operation.value === null || isStudioStrokeDash(operation.value))
+        ) {
+          initialGeneratedStrokeDashes.set(operation.entityId, operation.value);
+          hoistedInitialGeneratedStrokeOperationIds.add(operation.id);
+        }
+        continue;
+      }
       if (operation.kind !== "SetProperty" || operation.key !== "fillColor" || !isCanonicalRgbHex(operation.value)) {
         if (
           operation.kind !== "SetProperty" ||
@@ -3458,6 +3571,7 @@ export function lowerCanonicalProgramBatchSource(
         initialGeneratedFillColors,
         initialGeneratedStrokeCaps,
         initialGeneratedStrokeColors,
+        initialGeneratedStrokeDashes,
         initialGeneratedStrokeWidths,
         reservedSourceVariables: generatedSourceVariables,
         sourceAnchor: entry.sourceAnchor,

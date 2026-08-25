@@ -394,7 +394,9 @@ fn interpolate_vector_appearance(
             Some(StrokeStyleV1 {
                 cap: left.cap,
                 color: interpolate_color(&left.color, &right.color, progress),
+                dash_length_world: left.dash_length_world,
                 fragment_material,
+                gap_length_world: left.gap_length_world,
                 join: left.join,
                 miter_limit: left.miter_limit,
                 width_world: left.width_world + (right.width_world - left.width_world) * progress,
@@ -1476,7 +1478,9 @@ mod tests {
             stroke: Some(StrokeStyleV1 {
                 cap: StrokeCapV1::Round,
                 color: color(1.0, 0.0, 0.0, 1.0),
+                dash_length_world: None,
                 fragment_material: None,
+                gap_length_world: None,
                 join: StrokeJoinV1::Round,
                 miter_limit: 4.0,
                 width_world: 0.1,
@@ -1693,7 +1697,9 @@ mod tests {
             stroke: Some(StrokeStyleV1 {
                 cap: StrokeCapV1::Butt,
                 color: color(1.0, 0.0, 0.0, 1.0),
+                dash_length_world: None,
                 fragment_material: None,
+                gap_length_world: None,
                 join: StrokeJoinV1::Miter,
                 miter_limit: 4.0,
                 width_world: 0.1,
