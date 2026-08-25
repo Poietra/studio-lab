@@ -3,11 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use poietra_geometry::align_cubic_path_morph_chain;
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetReferenceV1, ContractVersionV1, CubicPathV1,
-    EasingV1, FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1, ImageLocalRectV1,
-    ImageSamplerV1, IntervalV1, KeyframeV1, MAX_COORDINATE_V1, PathTrimParameterizationV1, PointV1,
-    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
-    SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StrokeCapV1,
-    VectorAppearanceValueV1,
+    CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1,
+    ImageLocalRectV1, ImageSamplerV1, IntervalV1, KeyframeV1, MAX_COORDINATE_V1,
+    PathTrimParameterizationV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
+    SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1,
+    SceneIrBundleV1, SceneSourceV1, StrokeCapV1, VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
@@ -18,23 +18,10 @@ mod geometry;
 mod materialization;
 mod planning;
 
-#[cfg(test)]
-use geometry::straight_cubic_segment;
-use geometry::{
-    created_geometry_and_appearance, scale_cubic_path, studio_arc_parameters, studio_arc_path,
-    studio_coordinate_system_parameters, studio_coordinate_system_path,
-    studio_cubic_bezier_appearance, studio_data_plot_path, studio_data_series_is_valid,
-    studio_ellipse_parameters, studio_ellipse_path, studio_regular_polygon_parameters,
-    studio_regular_polygon_path, studio_sector_path, studio_shape_transform_path,
-};
-use planning::{canonical_studio_hex_color, plan_studio_creation_edits};
-#[cfg(test)]
-use poietra_scene_ir::CubicSubpathV1;
-
 use super::cubic_bezier::{
-    NormalizedStudioCubicBezier, StudioCreationCubicBezierSpec, StudioCubicBezierStrokeCap,
-    normalize_studio_cubic_bezier, studio_cubic_bezier_dimensions_are_canonical,
-    studio_cubic_bezier_is_canonical,
+    MAX_STUDIO_CUBIC_BEZIER_SEGMENTS, NormalizedStudioCubicBezier, StudioCreationCubicBezierSpec,
+    StudioCubicBezierStrokeCap, normalize_studio_cubic_bezier,
+    studio_cubic_bezier_dimensions_are_canonical, studio_cubic_bezier_is_canonical,
 };
 use super::motion::{
     ApplyStudioMotionEditError, PlannedSceneMotion, PlannedStudioMotion, StudioMotionEasing,
@@ -70,6 +57,16 @@ use super::{
     studio_math_tex_content_is_canonical, studio_point_to_scene_point, studio_shape_appearance,
     studio_timeline_semantic_values_match, studio_vector_to_scene_vector, unused_channel_id,
 };
+#[cfg(test)]
+use geometry::straight_cubic_segment;
+use geometry::{
+    created_geometry_and_appearance, scale_cubic_path, studio_arc_parameters, studio_arc_path,
+    studio_coordinate_system_parameters, studio_coordinate_system_path,
+    studio_cubic_bezier_appearance, studio_data_plot_path, studio_data_series_is_valid,
+    studio_ellipse_parameters, studio_ellipse_path, studio_regular_polygon_parameters,
+    studio_regular_polygon_path, studio_sector_path, studio_shape_transform_path,
+};
+use planning::{canonical_studio_hex_color, plan_studio_creation_edits};
 
 #[derive(Clone, Debug, PartialEq)]
 enum CreateSceneEntityGeometry {
@@ -135,7 +132,7 @@ struct CreateSceneEntityMathTexMorph {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct CreateSceneEntityShapeMorph {
+struct CreateSceneEntityPathMorph {
     initial_path: CubicPathV1,
     keyframes: Vec<KeyframeV1<CubicPathV1>>,
 }
@@ -244,7 +241,8 @@ struct CreateSceneEntity {
     scale: f64,
     uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
-    shape_morph: Option<CreateSceneEntityShapeMorph>,
+    shape_morph: Option<CreateSceneEntityPathMorph>,
+    path_morph: Option<CreateSceneEntityPathMorph>,
     stroke_color: Option<RgbaColorV1>,
     stroke_cap: Option<StrokeCapV1>,
     stroke_width_world: Option<f64>,
@@ -372,6 +370,11 @@ pub enum StudioCreationProjectedMutationKind {
         from_shape: StudioAuthoringEntityKind,
         to_dimensions: StudioAuthoringDimensions,
         to_shape: StudioAuthoringEntityKind,
+    },
+    PathMorph {
+        easing: EasingV1,
+        from_path: CubicSubpathV1,
+        to_path: CubicSubpathV1,
     },
     UniformScale {
         from: f64,
@@ -556,6 +559,11 @@ pub enum StudioCreationOperationKind {
         from_shape: StudioAuthoringEntityKind,
         to_dimensions: StudioAuthoringDimensions,
         to_shape: StudioAuthoringEntityKind,
+    },
+    PathMorph {
+        easing: StudioPropertyEasing,
+        from_path: CubicSubpathV1,
+        to_path: CubicSubpathV1,
     },
     AnimateCamera {
         easing: StudioPropertyEasing,
@@ -786,6 +794,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::WriteIn { .. }
             | StudioCreationOperationKind::TransformContent { .. }
             | StudioCreationOperationKind::TransformShape { .. }
+            | StudioCreationOperationKind::PathMorph { .. }
             | StudioCreationOperationKind::AnimateCamera { .. }
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Rotation { .. }
@@ -931,6 +940,7 @@ struct PlannedStudioCreationEntity {
     creation_transaction_id: String,
     creation_program_rank: usize,
     cubic_bezier: Option<NormalizedStudioCubicBezier>,
+    current_cubic_bezier_path: Option<CubicSubpathV1>,
     current_dimensions: StudioAuthoringDimensions,
     current_shape: Option<StudioCreationShapeState>,
     current_text_content: Option<StudioTextContent>,
@@ -960,6 +970,7 @@ struct PlannedStudioCreationEntity {
     scale: f64,
     shape_path_dimensions: Option<StudioAuthoringDimensions>,
     shape_transforms: Vec<PlannedStudioShapeTransform>,
+    path_morphs: Vec<PlannedStudioPathMorph>,
     uniform_scale_keyframes: Vec<KeyframeV1<f64>>,
     source_z_index: Option<f64>,
     spec: StudioCreationEntitySpec,
@@ -998,6 +1009,14 @@ struct PlannedStudioShapeTransform {
     operation_id: String,
     to: StudioCreationShapeState,
     transaction_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedStudioPathMorph {
+    easing: EasingV1,
+    from_path: CubicSubpathV1,
+    interval: IntervalV1,
+    to_path: CubicSubpathV1,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1143,6 +1162,7 @@ fn studio_creation_insertion_duration(program: &StudioCreationEditInput) -> f64 
                     StudioCreationOperationKind::CreateMotion { .. }
                         | StudioCreationOperationKind::TransformContent { .. }
                         | StudioCreationOperationKind::TransformShape { .. }
+                        | StudioCreationOperationKind::PathMorph { .. }
                         | StudioCreationOperationKind::AnimateCamera { .. }
                 )
             }

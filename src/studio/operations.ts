@@ -12,6 +12,7 @@ export type PropertyChannelKey =
   | "fillColor"
   | "identity"
   | `materialParameter:${string}:${number}`
+  | "path"
   | "pathTrim"
   | "sourceZIndex"
   | "position"
@@ -39,6 +40,7 @@ export type SetPropertyOperation = Extract<SceneEditOperation, { kind: "SetPrope
 export type AnimatePropertyOperation = Extract<SceneEditOperation, { kind: "AnimateProperty" }>;
 export type CreateMotionOperation = Extract<SceneEditOperation, { kind: "CreateMotion" }>;
 export type TransformContentOperation = Extract<SceneEditOperation, { kind: "TransformContent" }>;
+export type TransformPathOperation = Extract<SceneEditOperation, { kind: "TransformPath" }>;
 export type TransformShapeOperation = Extract<SceneEditOperation, { kind: "TransformShape" }>;
 export type SetRelationOperation = Extract<SceneEditOperation, { kind: "SetRelation" }>;
 export type ChangePresenceOperation = Extract<SceneEditOperation, { kind: "ChangePresence" }>;

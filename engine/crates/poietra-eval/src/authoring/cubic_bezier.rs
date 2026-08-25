@@ -8,7 +8,7 @@ const MIN_STROKE_WIDTH_WORLD: f64 = 0.005;
 const MAX_STROKE_WIDTH_WORLD: f64 = 0.5;
 const MIN_CURVE_SPAN: f64 = 1.0e-6;
 const CANONICAL_EPSILON: f64 = 1.0e-9;
-const MAX_STUDIO_CUBIC_BEZIER_SEGMENTS: usize = 8;
+pub(super) const MAX_STUDIO_CUBIC_BEZIER_SEGMENTS: usize = 8;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]

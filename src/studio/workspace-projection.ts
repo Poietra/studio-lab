@@ -370,6 +370,30 @@ function sameCreationDataSeries(
   );
 }
 
+function sameCubicBezierPath(
+  projected: Extract<StudioCreationProjectionMutationV1, { kind: "path-morph" }>["fromPath"],
+  expected: Extract<SceneEditOperation, { kind: "TransformPath" }>["from"],
+) {
+  return (
+    projected.closed === expected.closed &&
+    projected.segments.length === expected.segments.length &&
+    sameProjectionNumber(projected.start.x, expected.start.x) &&
+    sameProjectionNumber(projected.start.y, expected.start.y) &&
+    projected.segments.every((segment, index) => {
+      const expectedSegment = expected.segments[index];
+      return (
+        expectedSegment !== undefined &&
+        sameProjectionNumber(segment.control1.x, expectedSegment.control1.x) &&
+        sameProjectionNumber(segment.control1.y, expectedSegment.control1.y) &&
+        sameProjectionNumber(segment.control2.x, expectedSegment.control2.x) &&
+        sameProjectionNumber(segment.control2.y, expectedSegment.control2.y) &&
+        sameProjectionNumber(segment.end.x, expectedSegment.end.x) &&
+        sameProjectionNumber(segment.end.y, expectedSegment.end.y)
+      );
+    })
+  );
+}
+
 function creationMutationKind(operation: SceneEditOperation): StudioCreationProjectionMutationV1["kind"] | null {
   if (operation.kind === "SetSceneBackground") return "scene-background";
   if (operation.kind === "SetProperty" && operation.key === "position") return "position";
@@ -390,6 +414,7 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "DrawIn") return "draw-in";
   if (operation.kind === "WriteIn") return "write-in";
   if (operation.kind === "TransformContent") return "math-tex-transform";
+  if (operation.kind === "TransformPath") return "path-morph";
   if (operation.kind === "TransformShape") return "shape-transform";
   if (operation.kind === "AnimateCamera") return "animate-camera";
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") return "rotation";
@@ -655,6 +680,21 @@ function correlateCreationProjection(
         operation.interval.end - operation.interval.start,
       ) &&
       sameProjectionNumber(shapeTransformInsertion.duration, operation.interval.end - operation.interval.start);
+    const pathMorphInsertion = expected ? insertionsByTransaction.get(expected.program.transactionId) : undefined;
+    const isCorrelatedPathMorph =
+      operation?.kind === "TransformPath" &&
+      pathMorphInsertion !== undefined &&
+      mutation.kind === "path-morph" &&
+      mutation.entityId === operation.entityId &&
+      mutation.easing.kind === (operation.easing === "smooth" ? "manim-smooth" : "linear") &&
+      sameCubicBezierPath(mutation.fromPath, operation.from) &&
+      sameCubicBezierPath(mutation.toPath, operation.to) &&
+      sameProjectionNumber(mutation.interval.start, pathMorphInsertion.at) &&
+      sameProjectionNumber(
+        mutation.interval.end - mutation.interval.start,
+        operation.interval.end - operation.interval.start,
+      ) &&
+      sameProjectionNumber(pathMorphInsertion.duration, operation.interval.end - operation.interval.start);
     const cameraInsertion = expected ? insertionsByTransaction.get(expected.program.transactionId) : undefined;
     const isCorrelatedCamera =
       operation?.kind === "AnimateCamera" &&
@@ -671,6 +711,7 @@ function correlateCreationProjection(
       sameProjectionNumber(cameraInsertion.duration, operation.interval.end - operation.interval.start);
     const isCorrelatedMutation =
       operation?.kind !== "TransformContent" &&
+      operation?.kind !== "TransformPath" &&
       operation?.kind !== "TransformShape" &&
       operation?.kind !== "AnimateCamera" &&
       operation?.kind !== "SetSceneBackground" &&
@@ -687,6 +728,7 @@ function correlateCreationProjection(
       mutation.transactionId !== expected.program.transactionId ||
       (!isCorrelatedMutation &&
         !isCorrelatedMathTexTransform &&
+        !isCorrelatedPathMorph &&
         !isCorrelatedShapeTransform &&
         !isCorrelatedCamera &&
         !isCorrelatedSpin &&
@@ -1256,6 +1298,9 @@ function appendProjectedMutation(
   } else if (mutation.kind === "paint-color-keyframes") {
     // Rust owns color interpolation in the canonical VectorAppearance channel.
     // This mutation only correlates the Timeline marker interval with its Program.
+  } else if (mutation.kind === "path-morph") {
+    // Rust owns cubic-path interpolation and the WebGPU interaction projection.
+    // This mutation only correlates the editable Timeline clip with its Program.
   } else if (mutation.kind === "draw-in" || mutation.kind === "write-in") {
     // Rust evaluates the canonical entrance channels. This projection only
     // correlates the Studio timeline clip with those authoritative channels.

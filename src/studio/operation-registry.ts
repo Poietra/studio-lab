@@ -1371,6 +1371,42 @@ export const OPERATION_REGISTRY = {
       return issues;
     },
   } satisfies Capability<"TransformShape">,
+  TransformPath: {
+    access: (operation) => ({
+      reads: [{ channel: "path", entityId: operation.entityId }],
+      writes: [{ channel: "path", entityId: operation.entityId }],
+    }),
+    execution: () => CLIENT_ONLY_EXECUTION,
+    validate: (operation, scene) => {
+      const issues = entityIssues([operation.entityId], operation, scene);
+      const target = scene.objectGraph.entities[operation.entityId];
+      if (
+        target &&
+        (target.type !== "CubicBezier" || target.sourceIdentity.kind !== "unknown" || !target.transactionId)
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "entityId",
+          message: "Path Morph supports only Studio-created Pen paths.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      const sameTopology =
+        operation.from.closed === operation.to.closed &&
+        operation.from.segments.length === operation.to.segments.length;
+      if (!sameTopology || operation.interval.end <= operation.interval.start) {
+        issues.push({
+          code: "schema-invalid",
+          field: "path",
+          message: "Path Morph requires positive-duration paths with matching open/closed cubic topology.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"TransformPath">,
   TransformContent: {
     access: (operation) => ({
       reads: [

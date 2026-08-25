@@ -783,6 +783,7 @@ function operationTargetsEntity(operation: SceneEditOperation, entityId: string)
     operation.kind === "ChangePresence" ||
     operation.kind === "DrawIn" ||
     operation.kind === "WriteIn" ||
+    operation.kind === "TransformPath" ||
     operation.kind === "TransformShape"
   )
     return operation.entityId === entityId;

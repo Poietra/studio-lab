@@ -90,6 +90,7 @@ describe("StudioToolbar selection layout", () => {
           cubicBezierStyle: {
             arrowEnd: false,
             closed: false,
+            creationEditable: true,
             entityId: "curve",
             extensionActive: false,
             segmentCount: 1,
@@ -109,6 +110,7 @@ describe("StudioToolbar selection layout", () => {
           cubicBezierStyle: {
             arrowEnd: false,
             closed: false,
+            creationEditable: true,
             entityId: "curve",
             extensionActive: true,
             segmentCount: 8,
@@ -138,6 +140,7 @@ describe("StudioToolbar selection layout", () => {
           cubicBezierStyle: {
             arrowEnd: false,
             closed: true,
+            creationEditable: true,
             entityId: "curve",
             extensionActive: false,
             segmentCount: 3,
@@ -156,6 +159,34 @@ describe("StudioToolbar selection layout", () => {
     expect(closed.match(/<button[^>]*>Remove last<\/button>/u)?.[0]).not.toContain('disabled=""');
     expect(closed.match(/<button[^>]*>Reopen path<\/button>/u)?.[0]).not.toContain('disabled=""');
     expect(closed.match(/<input[^>]*type="checkbox"[^>]*>/u)?.[0]).toContain('disabled=""');
+  });
+
+  it("keeps Path Morph available after the creation Program stops owning static path edits", () => {
+    const markup = renderToStaticMarkup(
+      <StudioToolbar
+        {...props({
+          cubicBezierStyle: {
+            arrowEnd: false,
+            closed: false,
+            creationEditable: false,
+            entityId: "curve",
+            extensionActive: false,
+            segmentCount: 2,
+            strokeCap: "round",
+            strokeWidth: 0.04,
+          },
+          onCubicBezierExtensionToggle: vi.fn(),
+          onCubicBezierClosedToggle: vi.fn(),
+          onCubicBezierRemoveLastSegment: vi.fn(),
+          onCubicBezierStyleChange: vi.fn(),
+          onPathMorphAdd: vi.fn(),
+          pathMorphUnavailableReason: null,
+        })}
+      />,
+    );
+
+    expect(markup.match(/<button[^>]*>\+ Extend path<\/button>/u)?.[0]).toContain('disabled=""');
+    expect(markup.match(/<button[^>]*>\+ Path Morph<\/button>/u)?.[0]).not.toContain('disabled=""');
   });
 
   it("offers alignment for two selected objects and requires three for distribution", () => {

@@ -14,6 +14,7 @@ import type { MathTexTransformEasing } from "./mathtex-transform-clip-edit";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
 import type { PaintColorKeyframeEasing, PaintColorProperty } from "./paint-color-keyframe-edit";
+import type { PathMorphEasing } from "./path-morph-clip-edit";
 import {
   type ShapeTransformEasing,
   type ShapeTransformKind,
@@ -57,6 +58,7 @@ export type StudioTimelineProps = Readonly<{
   opacityTracks: readonly StudioOpacityTimelineTrack[];
   paintColorTrackEligibleProperties?: ReadonlyMap<string, PaintColorProperty>;
   paintColorTracks?: readonly StudioPaintColorTimelineTrack[];
+  pathMorphClips?: readonly StudioPathMorphTimelineClip[];
   rotationTrackEligibleIds: ReadonlySet<string>;
   rotationTracks: readonly StudioRotationTimelineTrack[];
   scaleTrackEligibleIds: ReadonlySet<string>;
@@ -106,6 +108,9 @@ export type StudioTimelineProps = Readonly<{
   ) => void;
   onPaintColorKeyframeDelete?: (track: StudioPaintColorTimelineTrack, index: number) => void;
   onPaintColorKeyframeDuplicate?: (track: StudioPaintColorTimelineTrack, index: number) => number | null;
+  onPathMorphClipChange?: (clip: StudioPathMorphTimelineClip, change: StudioPathMorphClipChange) => void;
+  onPathMorphClipDelete?: (clip: StudioPathMorphTimelineClip) => void;
+  onPathMorphClipSelect?: (clip: StudioPathMorphTimelineClip) => void;
   onRotationKeyframeAdd: (entityId: string) => void;
   onRotationKeyframeChange: (
     track: StudioRotationTimelineTrack,
@@ -202,6 +207,22 @@ export type StudioShapeTransformClipChange = Readonly<{
   easing?: ShapeTransformEasing;
 }>;
 
+export type StudioPathMorphTimelineClip = Readonly<{
+  easing: PathMorphEasing;
+  entityId: string;
+  interval: Interval;
+  label: string;
+  maximumDuration: number;
+  operationId: string;
+  readOnlyReason: string | null;
+  transactionId: string;
+}>;
+
+export type StudioPathMorphClipChange = Readonly<{
+  duration?: number;
+  easing?: PathMorphEasing;
+}>;
+
 export type StudioCameraTimelineClip = Readonly<{
   easing: CameraClipEasing;
   from: CameraView;
@@ -261,7 +282,7 @@ function EntranceDurationInput({
     | StudioMathTexTransformTimelineClip
     | StudioShapeTransformTimelineClip
     | StudioWriteInTimelineClip;
-  kind: "Draw" | "Shape Transform" | "Transform" | "Write";
+  kind: "Draw" | "Path Morph" | "Shape Transform" | "Transform" | "Write";
   onCommit: (duration: number) => void;
 }>) {
   const duration = Math.max(0.1, clip.interval.end - clip.interval.start);
@@ -939,6 +960,7 @@ export function StudioTimeline({
   opacityTracks,
   paintColorTrackEligibleProperties = new Map(),
   paintColorTracks = [],
+  pathMorphClips = [],
   rotationTrackEligibleIds,
   rotationTracks,
   scaleTrackEligibleIds,
@@ -973,6 +995,9 @@ export function StudioTimeline({
   onPaintColorKeyframeChange,
   onPaintColorKeyframeDelete,
   onPaintColorKeyframeDuplicate,
+  onPathMorphClipChange,
+  onPathMorphClipDelete,
+  onPathMorphClipSelect,
   onRotationKeyframeAdd,
   onRotationKeyframeChange,
   onRotationKeyframeDelete,
@@ -1081,6 +1106,20 @@ export function StudioTimeline({
             ? LOCKED_ENTITY_MUTATION_MESSAGE
             : (selectedShapeTransformClip.readOnlyReason ??
               (!onShapeTransformClipChange ? "Shape Transform clip editing is unavailable." : null)),
+      }
+    : null;
+  const selectedPathMorphClip = editingAppliedTransactionId
+    ? (pathMorphClips.find((clip) => clip.transactionId === editingAppliedTransactionId) ?? null)
+    : null;
+  const editingPathMorphClip = selectedPathMorphClip
+    ? {
+        ...selectedPathMorphClip,
+        readOnlyReason: readOnly
+          ? "The timeline is read-only."
+          : lockedEntityIds.has(selectedPathMorphClip.entityId)
+            ? LOCKED_ENTITY_MUTATION_MESSAGE
+            : (selectedPathMorphClip.readOnlyReason ??
+              (!onPathMorphClipChange ? "Path Morph clip editing is unavailable." : null)),
       }
     : null;
   const displayedTimelineAnchors = editingMotionClip?.anchors ?? anchors;
@@ -1383,6 +1422,53 @@ export function StudioTimeline({
             <span className="text-amber-500">{editingShapeTransformClip.readOnlyReason}</span>
           ) : (
             <span className="text-zinc-600">Apply or discard the Program replacement when finished.</span>
+          )}
+        </div>
+      ) : null}
+      {editingPathMorphClip ? (
+        <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <span className="max-w-64 truncate text-violet-300" title={editingPathMorphClip.label}>
+            Path Morph · {editingPathMorphClip.label}
+          </span>
+          <div className="flex items-center gap-1 text-zinc-500">
+            Duration
+            <EntranceDurationInput
+              clip={editingPathMorphClip}
+              key={`${editingPathMorphClip.transactionId}/${editingPathMorphClip.interval.start}/${editingPathMorphClip.interval.end}/${editingPathMorphClip.maximumDuration}`}
+              kind="Path Morph"
+              onCommit={(duration) => onPathMorphClipChange?.(editingPathMorphClip, { duration })}
+            />
+            s
+          </div>
+          <label className="flex items-center gap-1 text-zinc-500">
+            Easing
+            <select
+              aria-label={`Path Morph easing for ${editingPathMorphClip.label}`}
+              className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-violet-500"
+              disabled={editingPathMorphClip.readOnlyReason !== null}
+              onChange={(event) =>
+                onPathMorphClipChange?.(editingPathMorphClip, {
+                  easing: event.currentTarget.value as PathMorphEasing,
+                })
+              }
+              value={editingPathMorphClip.easing}
+            >
+              <option value="linear">Linear</option>
+              <option value="smooth">Smooth</option>
+            </select>
+          </label>
+          <button
+            className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
+            disabled={editingPathMorphClip.readOnlyReason !== null || !onPathMorphClipDelete}
+            onClick={() => onPathMorphClipDelete?.(editingPathMorphClip)}
+            type="button"
+          >
+            Remove Path Morph
+          </button>
+          {editingPathMorphClip.readOnlyReason ? (
+            <span className="text-amber-500">{editingPathMorphClip.readOnlyReason}</span>
+          ) : (
+            <span className="text-zinc-600">Drag the violet target handles, then apply the replacement.</span>
           )}
         </div>
       ) : null}
@@ -2082,6 +2168,7 @@ export function StudioTimeline({
             const trackMotionClips = appliedMotionClips.filter((clip) => clip.entityId === track.entityId);
             const trackDrawInClips = drawInClips.filter((clip) => clip.entityId === track.entityId);
             const trackMathTexTransformClips = mathTexTransformClips.filter((clip) => clip.entityId === track.entityId);
+            const trackPathMorphClips = pathMorphClips.filter((clip) => clip.entityId === track.entityId);
             const trackShapeTransformClips = shapeTransformClips.filter((clip) => clip.entityId === track.entityId);
             const trackWriteInClips = writeInClips.filter((clip) => clip.entityId === track.entityId);
             const drawInUnavailableReason = drawInAvailability.has(track.entityId)
@@ -2094,6 +2181,7 @@ export function StudioTimeline({
               ...trackMotionClips.map((clip) => clip.operationId),
               ...trackDrawInClips.map((clip) => clip.operationId),
               ...trackMathTexTransformClips.map((clip) => clip.operationId),
+              ...trackPathMorphClips.map((clip) => clip.operationId),
               ...trackShapeTransformClips.map((clip) => clip.operationId),
               ...trackWriteInClips.map((clip) => clip.operationId),
             ]);
@@ -2568,6 +2656,37 @@ export function StudioTimeline({
                         type="button"
                       >
                         <span className="block truncate">Shape</span>
+                      </button>
+                    );
+                  })}
+                  {trackPathMorphClips.map((clip) => {
+                    const readOnlyReason = selectionLocked
+                      ? "The timeline is read-only."
+                      : authoringLocked
+                        ? LOCKED_ENTITY_MUTATION_MESSAGE
+                        : (clip.readOnlyReason ??
+                          (!onPathMorphClipSelect ? "Path Morph clip editing is unavailable." : null));
+                    const displayedClip = { ...clip, readOnlyReason };
+                    return (
+                      <button
+                        aria-label={`Edit ${clip.label} Path Morph`}
+                        className={cn(
+                          "absolute top-1 z-10 h-5 min-w-2 border border-violet-500 bg-violet-950/90 px-1 text-left text-[9px] leading-4 text-violet-200 hover:bg-violet-900",
+                          editingAppliedTransactionId === clip.transactionId && "ring-1 ring-violet-300",
+                          readOnlyReason && "cursor-not-allowed border-zinc-700 bg-zinc-900 text-zinc-600",
+                        )}
+                        disabled={readOnlyReason !== null}
+                        data-path-morph-clip={clip.operationId}
+                        key={clip.operationId}
+                        onClick={() => onPathMorphClipSelect?.(displayedClip)}
+                        style={timelineIntervalStyle(clip.interval, duration)}
+                        title={
+                          readOnlyReason ??
+                          `Path Morph · ${clip.interval.start.toFixed(2)}–${clip.interval.end.toFixed(2)}s · ${clip.easing}`
+                        }
+                        type="button"
+                      >
+                        <span className="block truncate">Path</span>
                       </button>
                     );
                   })}

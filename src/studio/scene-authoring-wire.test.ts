@@ -198,6 +198,52 @@ describe("Studio creation wire", () => {
     });
   });
 
+  it("normalizes one Pen Path Morph without moving path evaluation into TypeScript", () => {
+    const fromPath = {
+      closed: false,
+      segments: [
+        {
+          control1: { x: -1, y: 1 },
+          control2: { x: 1, y: -1 },
+          end: { x: 2, y: 0 },
+        },
+      ],
+      start: { x: -2, y: 0 },
+    } as const;
+    const transform = followupProgram("path-morph:CubicBezier", {
+      dependsOn: [],
+      easing: "smooth",
+      entityId: "entity:CubicBezier",
+      from: fromPath,
+      id: "path-morph:CubicBezier/operation",
+      interval: { end: 2, start: 1 },
+      kind: "TransformPath",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      to: {
+        ...fromPath,
+        segments: [
+          {
+            control1: { x: -1, y: 2 },
+            control2: { x: 1, y: -2 },
+            end: { x: 2, y: 1 },
+          },
+        ],
+      },
+    });
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 3,
+      programs: [creationProgram("CubicBezier"), transform],
+    });
+
+    expect(command.programs[1]?.operations[0]).toMatchObject({
+      easing: "smooth",
+      entityId: "entity:CubicBezier",
+      fromPath,
+      kind: "path-morph",
+      toPath: transform.operations[0]?.kind === "TransformPath" ? transform.operations[0].to : undefined,
+    });
+  });
+
   it("maps native curve primitives to their Rust creation kinds", () => {
     const command = buildStudioCreationProjectionCommand({
       baseDuration: 2,

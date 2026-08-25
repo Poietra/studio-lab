@@ -5,7 +5,7 @@ use super::{
     ApplyStudioCreationEditError, BTreeSet, ContractVersionV1, CreateSceneEntitiesCommand,
     CreateSceneEntitiesError, CreateSceneEntity, CreateSceneEntityAnimatedResize,
     CreateSceneEntityDrawIn, CreateSceneEntityFadeIn, CreateSceneEntityGeometry,
-    CreateSceneEntityInstantTransform, CreateSceneEntityMathTexMorph, CreateSceneEntityShapeMorph,
+    CreateSceneEntityInstantTransform, CreateSceneEntityMathTexMorph, CreateSceneEntityPathMorph,
     CreateSceneEntityWriteIn, CubicPathV1, EasingV1, EngineSessionV1, FidelityV1, FillRuleV1,
     FillStyleV1, IntervalV1, KeyframeV1, MAX_STUDIO_STROKE_WIDTH_WORLD,
     MIN_STUDIO_STROKE_WIDTH_WORLD, PathTrimParameterizationV1, PlannedSceneMotion,
@@ -881,7 +881,7 @@ pub(super) fn studio_creation_shape_path(
 
 pub(super) fn planned_shape_morph(
     state: &PlannedStudioCreationEntity,
-) -> Result<Option<CreateSceneEntityShapeMorph>, ApplyStudioCreationEditError> {
+) -> Result<Option<CreateSceneEntityPathMorph>, ApplyStudioCreationEditError> {
     let Some(first) = state.shape_transforms.first() else {
         return Ok(None);
     };
@@ -921,7 +921,59 @@ pub(super) fn planned_shape_morph(
             value: aligned[index + 1].clone(),
         });
     }
-    Ok(Some(CreateSceneEntityShapeMorph {
+    Ok(Some(CreateSceneEntityPathMorph {
+        initial_path: aligned[0].clone(),
+        keyframes,
+    }))
+}
+
+pub(super) fn planned_cubic_bezier_path_morph(
+    state: &PlannedStudioCreationEntity,
+) -> Result<Option<CreateSceneEntityPathMorph>, ApplyStudioCreationEditError> {
+    let Some(first) = state.path_morphs.first() else {
+        return Ok(None);
+    };
+    let mut paths = Vec::with_capacity(state.path_morphs.len() + 1);
+    paths.push(CubicPathV1 {
+        subpaths: vec![first.from_path.clone()],
+    });
+    for morph in &state.path_morphs {
+        paths.push(CubicPathV1 {
+            subpaths: vec![morph.to_path.clone()],
+        });
+    }
+    let aligned = align_cubic_path_morph_chain(&paths)
+        .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
+    let mut keyframes = Vec::with_capacity(state.path_morphs.len() * 2 + 1);
+    for (index, morph) in state.path_morphs.iter().enumerate() {
+        if index == 0 {
+            keyframes.push(KeyframeV1 {
+                at: morph.interval.start,
+                easing_to_next: Some(morph.easing.clone()),
+                value: aligned[0].clone(),
+            });
+        } else {
+            let previous = keyframes
+                .last_mut()
+                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+            if morph.interval.start > previous.at + TIMELINE_ANCHOR_EPSILON {
+                previous.easing_to_next = Some(EasingV1::Linear {});
+                keyframes.push(KeyframeV1 {
+                    at: morph.interval.start,
+                    easing_to_next: Some(morph.easing.clone()),
+                    value: aligned[index].clone(),
+                });
+            } else {
+                previous.easing_to_next = Some(morph.easing.clone());
+            }
+        }
+        keyframes.push(KeyframeV1 {
+            at: morph.interval.end,
+            easing_to_next: None,
+            value: aligned[index + 1].clone(),
+        });
+    }
+    Ok(Some(CreateSceneEntityPathMorph {
         initial_path: aligned[0].clone(),
         keyframes,
     }))
@@ -941,6 +993,7 @@ pub(super) fn append_created_entity(
 ) -> Result<u32, CreateSceneEntitiesError> {
     let write_in = entity.write_in.clone();
     let math_tex_morph = entity.math_tex_morph.clone();
+    let path_morph = entity.path_morph.clone();
     let shape_morph = entity.shape_morph.clone();
     let solid_fill_color = entity.fill_color.clone();
     let paint_color_track = entity.paint_color_track.clone();
@@ -1501,6 +1554,18 @@ pub(super) fn append_created_entity(
         scene
             .animation_channels
             .push(AnimationChannelV1::PathMorph {
+                entity_id: created_id.clone(),
+                id: channel_id,
+                keyframes: morph.keyframes,
+                provenance_id: provenance_id.to_owned(),
+            });
+    }
+    if let Some(morph) = path_morph {
+        capabilities.insert(SceneCapabilityV1::PathMorphAnimation);
+        let channel_id = unused_channel_id(scene, &format!("studio-path-morph-{scene_order}"));
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::PathMorph {
                 entity_id: created_id,
                 id: channel_id,
                 keyframes: morph.keyframes,
@@ -1971,6 +2036,7 @@ impl EngineSessionV1 {
         let mut persistent_removals = Vec::new();
         for state in &plan.entities {
             let math_tex_morph = planned_math_tex_morph(state, &math_tex_outlines)?;
+            let path_morph = planned_cubic_bezier_path_morph(state)?;
             let shape_morph = planned_shape_morph(state)?;
             let geometry = match state.kind {
                 StudioAuthoringEntityKind::Arc => {
@@ -2023,7 +2089,9 @@ impl EngineSessionV1 {
                         .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                     CreateSceneEntityGeometry::CubicBezier {
                         appearance: studio_cubic_bezier_appearance(&curve.spec),
-                        path: curve.path.clone(),
+                        path: path_morph
+                            .as_ref()
+                            .map_or_else(|| curve.path.clone(), |morph| morph.initial_path.clone()),
                     }
                 }
                 StudioAuthoringEntityKind::Ellipse => {
@@ -2328,6 +2396,7 @@ impl EngineSessionV1 {
                 scale: 1.0,
                 uniform_scale_keyframes: state.uniform_scale_keyframes.clone(),
                 source_z_index: state.source_z_index,
+                path_morph,
                 shape_morph,
                 stroke_color,
                 stroke_cap,

@@ -14,6 +14,14 @@ export const studioCubicBezierContinuationSegmentSchema = z
   })
   .strict();
 
+export const studioCubicBezierPathSchema = z
+  .object({
+    closed: z.boolean(),
+    segments: z.array(studioCubicBezierContinuationSegmentSchema).min(1).max(8),
+    start: pointSchema,
+  })
+  .strict();
+
 export const studioCubicBezierSpecSchema = z
   .object({
     arrowEnd: z.boolean(),
@@ -64,6 +72,11 @@ export type StudioCubicBezierContinuationSegment = Readonly<{
   control1: StudioCubicBezierPoint;
   control2: StudioCubicBezierPoint;
   end: StudioCubicBezierPoint;
+}>;
+export type StudioCubicBezierPath = Readonly<{
+  closed: boolean;
+  segments: readonly StudioCubicBezierContinuationSegment[];
+  start: StudioCubicBezierPoint;
 }>;
 export type StudioCubicBezierSpec = Readonly<{
   arrowEnd: boolean;
