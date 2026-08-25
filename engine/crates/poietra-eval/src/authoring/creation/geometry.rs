@@ -648,6 +648,7 @@ pub(super) fn studio_cubic_bezier_appearance(
                 green: 1.0,
                 red: 1.0,
             },
+            fragment_material: None,
             join: poietra_scene_ir::StrokeJoinV1::Round,
             miter_limit: 10.0,
             width_world: spec.stroke_width,

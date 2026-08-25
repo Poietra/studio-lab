@@ -343,6 +343,12 @@ pub enum StrokeJoinV1 {
 pub struct StrokeStyleV1 {
     pub cap: StrokeCapV1,
     pub color: RgbaColorV1,
+    #[serde(
+        default,
+        rename = "fragmentMaterial",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub fragment_material: Option<FragmentMaterialV1>,
     pub join: StrokeJoinV1,
     pub miter_limit: f64,
     pub width_world: f64,
@@ -473,6 +479,9 @@ pub enum ImageSamplerV1 {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
+// Vector appearance is the common case; boxing it would spread allocation
+// through every evaluated frame only to shrink the uncommon variants.
+#[allow(clippy::large_enum_variant)]
 pub enum SceneAppearanceV1 {
     #[serde(rename = "group")]
     Group { opacity: f64 },

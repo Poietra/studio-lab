@@ -539,6 +539,7 @@ pub(crate) fn normalize_studio_svg_path_asset(
         (stroke_width > 0.0).then_some(StrokeStyleV1 {
             cap: stroke_cap,
             color,
+            fragment_material: None,
             join: stroke_join,
             miter_limit,
             width_world: stroke_width * scale,

@@ -173,7 +173,7 @@ struct FragmentInput {
     @location(0) base_color: vec4<f32>,
     // Normalized screen coordinates, top-left origin.
     @location(1) screen_position: vec2<f32>,
-    // Normalized local control-hull coordinates, top-left origin.
+    // Normalized object-local paint bounds, top-left origin.
     @location(2) object_uv: vec2<f32>,
 };
 

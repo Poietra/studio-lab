@@ -35,7 +35,7 @@ import {
 } from "./fragment-material-authoring";
 
 describe("project-local fragment material authoring", () => {
-  it("blocks history from reopening a Pen path while its fill material remains assigned", () => {
+  it("keeps a Pen material valid across fill/stroke retargeting and rejects a closed path without fill", () => {
     const assignment = {
       parameters: [0.35, 8],
       revision: 1,
@@ -55,7 +55,8 @@ describe("project-local fragment material authoring", () => {
     });
 
     expect(cubicBezierFragmentMaterialTransitionBlocker({ curve: assignment }, [program(true, "#ffffff")])).toBeNull();
-    expect(cubicBezierFragmentMaterialTransitionBlocker({ curve: assignment }, [program(false)])).toBe(
+    expect(cubicBezierFragmentMaterialTransitionBlocker({ curve: assignment }, [program(false)])).toBeNull();
+    expect(cubicBezierFragmentMaterialTransitionBlocker({ curve: assignment }, [program(true)])).toBe(
       CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER,
     );
     expect(cubicBezierFragmentMaterialTransitionBlocker({}, [program(false)])).toBeNull();

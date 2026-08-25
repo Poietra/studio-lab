@@ -357,6 +357,9 @@ fn validate_stroke_inner(
     validator: &mut Validator,
 ) {
     validate_color(&stroke.color, &format!("{path}.color"), validator);
+    if let Some(material) = &stroke.fragment_material {
+        validate_fragment_material(material, &format!("{path}.fragmentMaterial"), validator);
+    }
     validate_finite(stroke.miter_limit, &format!("{path}.miterLimit"), validator);
     if stroke.miter_limit.is_finite() && !(1.0..=1_000.0).contains(&stroke.miter_limit) {
         validator.issue(
@@ -740,28 +743,17 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
         });
         if matches!(
             &entity.appearance,
-            SceneAppearanceV1::Vector {
-                fill: Some(FillStyleV1 {
-                    fragment_material: Some(_),
-                    ..
-                }),
-                ..
-            }
+            SceneAppearanceV1::Vector { fill, stroke, .. }
+                if fill.as_ref().is_some_and(|fill| fill.fragment_material.is_some())
+                    || stroke.as_ref().is_some_and(|stroke| stroke.fragment_material.is_some())
         ) {
             capabilities.insert(SceneCapabilityV1::FragmentMaterial);
         }
         if matches!(
             &entity.appearance,
-            SceneAppearanceV1::Vector {
-                fill: Some(FillStyleV1 {
-                    fragment_material: Some(FragmentMaterialV1 {
-                        texture: Some(_),
-                        ..
-                    }),
-                    ..
-                }),
-                ..
-            }
+            SceneAppearanceV1::Vector { fill, stroke, .. }
+                if fill.as_ref().and_then(|fill| fill.fragment_material.as_ref()).is_some_and(|material| material.texture.is_some())
+                    || stroke.as_ref().and_then(|stroke| stroke.fragment_material.as_ref()).is_some_and(|material| material.texture.is_some())
         ) {
             capabilities.insert(SceneCapabilityV1::PngImage);
         }
@@ -787,17 +779,29 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
                     .fill
                     .as_ref()
                     .is_some_and(|fill| fill.fragment_material.is_some())
+                    || keyframe
+                        .value
+                        .stroke
+                        .as_ref()
+                        .is_some_and(|stroke| stroke.fragment_material.is_some())
             })
         {
             capabilities.insert(SceneCapabilityV1::FragmentMaterial);
         }
         if let AnimationChannelV1::VectorAppearance { keyframes, .. } = channel
             && keyframes.iter().any(|keyframe| {
-                keyframe.value.fill.as_ref().is_some_and(|fill| {
-                    fill.fragment_material
+                keyframe
+                    .value
+                    .fill
+                    .as_ref()
+                    .and_then(|fill| fill.fragment_material.as_ref())
+                    .is_some_and(|material| material.texture.is_some())
+                    || keyframe
+                        .value
+                        .stroke
                         .as_ref()
+                        .and_then(|stroke| stroke.fragment_material.as_ref())
                         .is_some_and(|material| material.texture.is_some())
-                })
             })
         {
             capabilities.insert(SceneCapabilityV1::PngImage);
@@ -1050,18 +1054,27 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
         if scene.compositing == RenderCompositingV1::ManimCairoSrgb
             && matches!(
                 &entity.appearance,
-                SceneAppearanceV1::Vector {
-                    fill: Some(FillStyleV1 {
-                        fragment_material: Some(_),
-                        ..
-                    }),
-                    ..
-                }
+                SceneAppearanceV1::Vector { fill, stroke, .. }
+                    if fill.as_ref().is_some_and(|fill| fill.fragment_material.is_some())
+                        || stroke.as_ref().is_some_and(|stroke| stroke.fragment_material.is_some())
             )
         {
             validator.issue(
-                format!("{path}.appearance.fill.fragmentMaterial"),
+                format!("{path}.appearance"),
                 "fragment materials require linear-light compositing",
+            );
+        }
+        if let SceneAppearanceV1::Vector {
+            fill: Some(fill),
+            stroke: Some(stroke),
+            ..
+        } = &entity.appearance
+            && fill.fragment_material.is_some()
+            && stroke.fragment_material.is_some()
+        {
+            validator.issue(
+                format!("{path}.appearance"),
+                "a vector entity accepts one fragment material",
             );
         }
         let appearance_matches_geometry = matches!(
@@ -1434,11 +1447,12 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                             if base_stroke.cap != stroke.cap
                                 || base_stroke.join != stroke.join
                                 || base_stroke.miter_limit.to_bits()
-                                    != stroke.miter_limit.to_bits() =>
+                                    != stroke.miter_limit.to_bits()
+                                || base_stroke.fragment_material != stroke.fragment_material =>
                         {
                             validator.issue(
                                 format!("{path}.keyframes[0].value.stroke"),
-                                "vector-appearance cannot transition between stroke cap, join, or miter-limit styles",
+                                "vector-appearance cannot transition between stroke cap, join, or miter-limit styles or fragment materials",
                             );
                         }
                         (None, None | Some(_)) | (Some(_), Some(_)) => {}
@@ -1467,6 +1481,20 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                                 validator,
                             );
                         }
+                        if value
+                            .fill
+                            .as_ref()
+                            .is_some_and(|fill| fill.fragment_material.is_some())
+                            && value
+                                .stroke
+                                .as_ref()
+                                .is_some_and(|stroke| stroke.fragment_material.is_some())
+                        {
+                            validator.issue(
+                                value_path,
+                                "a vector keyframe accepts one fragment material",
+                            );
+                        }
                         if let Some(first) = first {
                             if value.fill.is_some() != first.fill.is_some() {
                                 validator.issue(
@@ -1493,12 +1521,16 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                                 );
                             } else if let (Some(stroke), Some(first_stroke)) =
                                 (&value.stroke, &first.stroke)
-                                && stroke.miter_limit.to_bits()
+                                && (stroke.miter_limit.to_bits()
                                     != first_stroke.miter_limit.to_bits()
+                                    || !fragment_materials_share_animation_identity(
+                                        stroke.fragment_material.as_ref(),
+                                        first_stroke.fragment_material.as_ref(),
+                                    ))
                             {
                                 validator.issue(
-                                    format!("{value_path}.stroke.miterLimit"),
-                                    "vector-appearance cannot transition between stroke miter-limit styles",
+                                    format!("{value_path}.stroke"),
+                                    "vector-appearance cannot transition between stroke miter-limit styles or fragment materials",
                                 );
                             }
                         }
@@ -1588,14 +1620,21 @@ fn required_render_capabilities(packet: &RenderPacketV1) -> Vec<RenderCapability
                 if fill
                     .as_ref()
                     .is_some_and(|fill| fill.fragment_material.is_some())
+                    || stroke
+                        .as_ref()
+                        .is_some_and(|stroke| stroke.fragment_material.is_some())
                 {
                     capabilities.insert(RenderCapabilityV1::FragmentMaterial);
                 }
-                if fill.as_ref().is_some_and(|fill| {
-                    fill.fragment_material
+                if fill
+                    .as_ref()
+                    .and_then(|fill| fill.fragment_material.as_ref())
+                    .is_some_and(|material| material.texture.is_some())
+                    || stroke
                         .as_ref()
+                        .and_then(|stroke| stroke.fragment_material.as_ref())
                         .is_some_and(|material| material.texture.is_some())
-                }) {
+                {
                     capabilities.insert(RenderCapabilityV1::PngImage);
                 }
                 if stroke.is_some() {
@@ -1756,6 +1795,23 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
                 }
                 if let Some(stroke) = stroke {
                     validate_stroke(stroke, &format!("{path}.stroke"), &mut validator);
+                    if packet.compositing == RenderCompositingV1::ManimCairoSrgb
+                        && stroke.fragment_material.is_some()
+                    {
+                        validator.issue(
+                            format!("{path}.stroke.fragmentMaterial"),
+                            "fragment materials require linear-light compositing",
+                        );
+                    }
+                }
+                if fill
+                    .as_ref()
+                    .is_some_and(|fill| fill.fragment_material.is_some())
+                    && stroke
+                        .as_ref()
+                        .is_some_and(|stroke| stroke.fragment_material.is_some())
+                {
+                    validator.issue(path.clone(), "a path draw accepts one fragment material");
                 }
                 if fill.is_none() && stroke.is_none() {
                     validator.issue(path, "path draws require a fill or stroke");

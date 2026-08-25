@@ -178,7 +178,7 @@ export function FragmentMaterialEditor({
         <p className="mt-1 text-pretty text-[10px] leading-4 text-zinc-600">
           {objectEditingDisabled
             ? "Unlock this object in Layers before changing its material."
-            : "Select a filled vector object with no pending edit to assign a material."}
+            : "Select a filled vector or a fill-less Line/Pen stroke with no pending edit to assign a material."}
         </p>
       ) : null}
 

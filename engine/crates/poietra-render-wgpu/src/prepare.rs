@@ -880,17 +880,33 @@ fn object_uv_from_screen(
             reason: UnsupportedDrawReasonV1::DegenerateFill,
         });
     };
+    object_uv_from_local_bounds(
+        [left, bottom, right, top],
+        transform,
+        camera,
+        draw_id,
+        UnsupportedDrawReasonV1::DegenerateFill,
+    )
+}
+
+fn object_uv_from_local_bounds(
+    [left, bottom, right, top]: [f64; 4],
+    transform: &AffineTransformV1,
+    camera: &RenderCameraV1,
+    draw_id: &str,
+    degenerate_reason: UnsupportedDrawReasonV1,
+) -> Result<[f32; 8], PrepareFrameErrorV1> {
     if right <= left || top <= bottom {
         return Err(PrepareFrameErrorV1::Unsupported {
             draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::DegenerateFill,
+            reason: degenerate_reason,
         });
     }
     let transform_determinant = transform.m11 * transform.m22 - transform.m12 * transform.m21;
     if !transform_determinant.is_finite() || transform_determinant == 0.0 {
         return Err(PrepareFrameErrorV1::Unsupported {
             draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::DegenerateFill,
+            reason: degenerate_reason,
         });
     }
 
@@ -925,7 +941,7 @@ fn object_uv_from_screen(
     if !determinant.is_finite() || determinant == 0.0 {
         return Err(PrepareFrameErrorV1::Unsupported {
             draw_id: draw_id.to_owned(),
-            reason: UnsupportedDrawReasonV1::DegenerateFill,
+            reason: degenerate_reason,
         });
     }
 
@@ -944,6 +960,67 @@ fn object_uv_from_screen(
         prepared[index] = checked_f32(value, Some(draw_id), "object UV affine")?;
     }
     Ok(prepared)
+}
+
+fn stroke_object_uv_from_indexed_geometry(
+    vertices: &[PreparedGeometryVertexV1],
+    indices: &[u32],
+    transform: &AffineTransformV1,
+    camera: &RenderCameraV1,
+    draw_id: &str,
+) -> Result<[f32; 8], PrepareFrameErrorV1> {
+    let transform_determinant = transform.m11 * transform.m22 - transform.m12 * transform.m21;
+    if !transform_determinant.is_finite() || transform_determinant == 0.0 {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::DegenerateStroke,
+        });
+    }
+    let camera_width = camera.right - camera.left;
+    let camera_height = camera.top - camera.bottom;
+    let camera_center_x = camera.left + camera_width * 0.5;
+    let camera_center_y = camera.bottom + camera_height * 0.5;
+    let mut bounds = None;
+    for index in indices {
+        let vertex = vertices
+            .get(usize::try_from(*index).map_err(|_| PrepareFrameErrorV1::IndexRange)?)
+            .ok_or(PrepareFrameErrorV1::IndexRange)?;
+        let world_x = camera_center_x + f64::from(vertex.position[0]) * camera_width * 0.5;
+        let world_y = camera_center_y + f64::from(vertex.position[1]) * camera_height * 0.5;
+        let relative_x = world_x - transform.tx;
+        let relative_y = world_y - transform.ty;
+        let local = [
+            (transform.m22 * relative_x - transform.m12 * relative_y) / transform_determinant,
+            (-transform.m21 * relative_x + transform.m11 * relative_y) / transform_determinant,
+        ];
+        if !local[0].is_finite() || !local[1].is_finite() {
+            return Err(numeric_error(Some(draw_id), "stroke material UV bounds"));
+        }
+        bounds = Some(bounds.map_or(
+            [local[0], local[1], local[0], local[1]],
+            |[left, bottom, right, top]: [f64; 4]| {
+                [
+                    left.min(local[0]),
+                    bottom.min(local[1]),
+                    right.max(local[0]),
+                    top.max(local[1]),
+                ]
+            },
+        ));
+    }
+    let Some(bounds) = bounds else {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw_id.to_owned(),
+            reason: UnsupportedDrawReasonV1::DegenerateStroke,
+        });
+    };
+    object_uv_from_local_bounds(
+        bounds,
+        transform,
+        camera,
+        draw_id,
+        UnsupportedDrawReasonV1::DegenerateStroke,
+    )
 }
 
 fn point_key(point: PointF64) -> (u64, u64) {
@@ -2487,6 +2564,23 @@ struct PreparedPaintPhaseInputV1<'a> {
     fragment_material: Option<&'a FragmentMaterialV1>,
     object_uv_from_screen: Option<[f32; 8]>,
     opacity: f64,
+    stroke_object_uv_space: Option<(&'a AffineTransformV1, &'a RenderCameraV1)>,
+}
+
+fn prepared_paint_object_uv(
+    paint: PreparedPaintPhaseInputV1<'_>,
+    vertices: &[PreparedGeometryVertexV1],
+    indices: &[u32],
+    draw_id: &str,
+) -> Result<Option<[f32; 8]>, PrepareFrameErrorV1> {
+    if let Some(object_uv) = paint.object_uv_from_screen {
+        return Ok(Some(object_uv));
+    }
+    let Some((transform, camera)) = paint.fragment_material.and(paint.stroke_object_uv_space)
+    else {
+        return Ok(None);
+    };
+    stroke_object_uv_from_indexed_geometry(vertices, indices, transform, camera, draw_id).map(Some)
 }
 
 impl<'resources> PreparedFrameAccumulatorV1<'resources> {
@@ -2537,6 +2631,19 @@ impl<'resources> PreparedFrameAccumulatorV1<'resources> {
             self.indices.truncate(index_start_len);
             return Err(error);
         }
+        let object_uv_from_screen = match prepared_paint_object_uv(
+            paint,
+            &self.vertices,
+            &self.indices[index_start_len..],
+            draw_id,
+        ) {
+            Ok(object_uv) => object_uv,
+            Err(error) => {
+                self.vertices.truncate(vertex_start_len);
+                self.indices.truncate(index_start_len);
+                return Err(error);
+            }
+        };
         let material_index =
             u32::try_from(self.materials.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
         let uses_fragment_material = material.fragment_material.is_some();
@@ -2550,7 +2657,7 @@ impl<'resources> PreparedFrameAccumulatorV1<'resources> {
             entity_id: entity_id.to_owned(),
             index_range: index_start..index_end,
             material_index,
-            object_uv_from_screen: paint.object_uv_from_screen,
+            object_uv_from_screen,
             vertex_range: vertex_start..vertex_end,
         });
         let draw_index =
@@ -2605,6 +2712,8 @@ impl<'resources> PreparedFrameAccumulatorV1<'resources> {
                 maximum_vertices: MAX_PREPARED_VERTICES_V1,
             });
         }
+        let object_uv_from_screen =
+            prepared_paint_object_uv(paint, geometry.vertices(), geometry.indices(), draw_id)?;
         let material = prepare_material(
             paint.color,
             paint.fragment_material,
@@ -2640,7 +2749,7 @@ impl<'resources> PreparedFrameAccumulatorV1<'resources> {
             index_range: index_start
                 ..u32::try_from(self.indices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
             material_index,
-            object_uv_from_screen: paint.object_uv_from_screen,
+            object_uv_from_screen,
             vertex_range: vertex_start
                 ..u32::try_from(vertex_end_len).map_err(|_| PrepareFrameErrorV1::IndexRange)?,
         });
@@ -2727,6 +2836,7 @@ fn append_fill_phase_v1(
         fragment_material: fill.fragment_material.as_ref(),
         object_uv_from_screen,
         opacity: input.opacity,
+        stroke_object_uv_space: None,
     };
     if let Some(cached) = cache
         .as_deref_mut()
@@ -2784,9 +2894,11 @@ fn append_stroke_phase_v1(
     }
     let paint = PreparedPaintPhaseInputV1 {
         color: &stroke.color,
-        fragment_material: None,
+        fragment_material: stroke.fragment_material.as_ref(),
+        // Stroke object UVs come from the actual tessellated cap/join mesh.
         object_uv_from_screen: None,
         opacity: input.opacity,
+        stroke_object_uv_space: Some((input.cache.transform, input.cache.camera)),
     };
     if let Some(cached) = cache
         .as_deref_mut()
@@ -2985,17 +3097,18 @@ pub fn tessellate_validated_frame_with_cache_assets_and_fragment_materials_v1(
 fn validate_fragment_material_frame_v1(packet: &RenderPacketV1) -> Result<(), PrepareFrameErrorV1> {
     let mut material_draws = 0usize;
     for draw in &packet.draws {
-        let RenderDrawV1::Path {
-            fill:
-                Some(FillStyleV1 {
-                    fragment_material: Some(_),
-                    ..
-                }),
-            ..
-        } = draw
-        else {
+        let RenderDrawV1::Path { fill, stroke, .. } = draw else {
             continue;
         };
+        let has_material = fill
+            .as_ref()
+            .is_some_and(|fill| fill.fragment_material.is_some())
+            || stroke
+                .as_ref()
+                .is_some_and(|stroke| stroke.fragment_material.is_some());
+        if !has_material {
+            continue;
+        }
         if packet.compositing == RenderCompositingV1::ManimCairoSrgb {
             return Err(PrepareFrameErrorV1::Unsupported {
                 draw_id: draw.draw_id().to_owned(),
@@ -3448,6 +3561,7 @@ mod tests {
                 fragment_material: None,
                 object_uv_from_screen: None,
                 opacity: 1.0,
+                stroke_object_uv_space: None,
             },
             |vertices, indices| {
                 vertices.push(PreparedGeometryVertexV1 {
@@ -3597,6 +3711,156 @@ mod tests {
                         "{actual} != {expected}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn stroke_material_uv_matches_tessellated_cap_and_join_bounds() {
+        let path = poietra_scene_ir::CubicPathV1 {
+            subpaths: vec![CubicSubpathV1 {
+                closed: false,
+                segments: vec![
+                    CubicSegmentV1 {
+                        control1: PointV1 { x: -2.5, y: 2.5 },
+                        control2: PointV1 { x: -1.0, y: 2.0 },
+                        end: PointV1 { x: 0.0, y: 1.0 },
+                    },
+                    CubicSegmentV1 {
+                        control1: PointV1 { x: 0.0, y: 0.0 },
+                        control2: PointV1 { x: 2.0, y: -2.5 },
+                        end: PointV1 { x: 3.0, y: 1.0 },
+                    },
+                ],
+                start: PointV1 { x: -3.0, y: -1.0 },
+            }],
+        };
+        let camera = RenderCameraV1 {
+            bottom: -5.0,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            kind: poietra_scene_ir::RenderCameraKindV1::Orthographic2d,
+            left: -8.0,
+            right: 8.0,
+            top: 5.0,
+        };
+        let viewport = ViewportV1 {
+            height_px: 100,
+            width_px: 160,
+        };
+        let transforms = [
+            AffineTransformV1::identity(),
+            AffineTransformV1 {
+                m11: 0.35,
+                m12: -1.1,
+                m21: 1.4,
+                m22: 0.45,
+                tx: 1.25,
+                ty: -0.75,
+            },
+        ];
+        let material = FragmentMaterialV1 {
+            parameters: vec![0.25],
+            revision: TIME_GRADIENT_SHADER_REVISION_V1,
+            shader_id: TIME_GRADIENT_SHADER_ID_V1.to_owned(),
+            texture: None,
+        };
+
+        for (transform_index, transform) in transforms.iter().enumerate() {
+            for (cap, join) in [
+                (StrokeCapV1::Butt, StrokeJoinV1::Bevel),
+                (StrokeCapV1::Square, StrokeJoinV1::Round),
+                (StrokeCapV1::Round, StrokeJoinV1::Miter),
+            ] {
+                let stroke = StrokeStyleV1 {
+                    cap,
+                    color: RgbaColorV1 {
+                        alpha: 1.0,
+                        blue: 1.0,
+                        green: 1.0,
+                        red: 1.0,
+                    },
+                    fragment_material: Some(material.clone()),
+                    join,
+                    miter_limit: 6.0,
+                    width_world: 0.8,
+                };
+                let input = PreparedPathDrawInputV1 {
+                    cache: PreparedGeometryCacheInputV1 {
+                        camera: &camera,
+                        draw_id: "draw:stroke-uv",
+                        path: &path,
+                        transform,
+                        viewport: &viewport,
+                    },
+                    compositing: RenderCompositingV1::LinearLight,
+                    entity_id: "entity:stroke-uv",
+                    fill: None,
+                    opacity: 1.0,
+                    stroke: Some(&stroke),
+                };
+                let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(
+                    1,
+                    None,
+                    &BuiltinFragmentMaterialSupportV1,
+                );
+                let mut cache = None;
+                append_stroke_phase_v1(&mut prepared, &mut cache, input)
+                    .expect("supported cap and join must prepare one material stroke");
+                let draw = &prepared.draws[0];
+                let affine = draw
+                    .object_uv_from_screen
+                    .expect("material stroke must carry its tessellated-bounds UV affine");
+                let mut uv_bounds = [
+                    f32::INFINITY,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::NEG_INFINITY,
+                ];
+                for index in &prepared.indices[usize::try_from(draw.index_range.start).unwrap()
+                    ..usize::try_from(draw.index_range.end).unwrap()]
+                {
+                    let [clip_x, clip_y] =
+                        prepared.vertices[usize::try_from(*index).unwrap()].position;
+                    let screen = [clip_x * 0.5 + 0.5, 0.5 - clip_y * 0.5];
+                    let uv = [
+                        affine[0] * screen[0] + affine[1] * screen[1] + affine[2],
+                        affine[4] * screen[0] + affine[5] * screen[1] + affine[6],
+                    ];
+                    assert!((-2.0e-5..=1.0 + 2.0e-5).contains(&uv[0]));
+                    assert!((-2.0e-5..=1.0 + 2.0e-5).contains(&uv[1]));
+                    uv_bounds = [
+                        uv_bounds[0].min(uv[0]),
+                        uv_bounds[1].min(uv[1]),
+                        uv_bounds[2].max(uv[0]),
+                        uv_bounds[3].max(uv[1]),
+                    ];
+                }
+                for (actual, expected) in uv_bounds.into_iter().zip([0.0, 0.0, 1.0, 1.0]) {
+                    assert!(
+                        (actual - expected).abs() <= 2.0e-5,
+                        "transform {transform_index}, {cap:?}/{join:?}: {actual} != {expected}"
+                    );
+                }
+
+                let local_x_screen = [
+                    transform.m11 / (camera.right - camera.left),
+                    -transform.m21 / (camera.top - camera.bottom),
+                ];
+                let local_y_screen = [
+                    transform.m12 / (camera.right - camera.left),
+                    -transform.m22 / (camera.top - camera.bottom),
+                ];
+                let u_change_along_local_y = f64::from(affine[0]) * local_y_screen[0]
+                    + f64::from(affine[1]) * local_y_screen[1];
+                let v_change_along_local_x = f64::from(affine[4]) * local_x_screen[0]
+                    + f64::from(affine[5]) * local_x_screen[1];
+                assert!(u_change_along_local_y.abs() <= 2.0e-6);
+                assert!(v_change_along_local_x.abs() <= 2.0e-6);
             }
         }
     }

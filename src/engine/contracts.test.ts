@@ -14,6 +14,7 @@ import {
   sceneCapabilityV1Schema,
   sceneIrBundleV1Schema,
   sceneIrV1Schema,
+  strokeStyleV1Schema,
 } from "./contracts";
 
 const ZERO_HASH = "0".repeat(64);
@@ -188,6 +189,16 @@ describe("Poietra Engine v1 contracts", () => {
     };
 
     expect(fillStyleV1Schema.safeParse(valid).success).toBe(true);
+    expect(
+      strokeStyleV1Schema.safeParse({
+        cap: "round",
+        color: white,
+        fragmentMaterial: valid.fragmentMaterial,
+        join: "round",
+        miterLimit: 4,
+        widthWorld: 0.1,
+      }).success,
+    ).toBe(true);
     expect(
       fillStyleV1Schema.safeParse({
         ...valid,

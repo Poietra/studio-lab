@@ -75,7 +75,7 @@ export type StudioFragmentMaterialParameterSchemaV1 = readonly StudioFragmentMat
 export type StudioFragmentMaterialParameterValueV1 = number | StudioFragmentMaterialRgbV1;
 
 export const CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER =
-  "Unassign the fragment material before reopening or undoing this Pen path.";
+  "A closed Pen path with a fragment material requires a fill.";
 
 type StudioCreationProgramLike = Readonly<{
   operations: readonly Readonly<{
@@ -88,7 +88,7 @@ type StudioCreationProgramLike = Readonly<{
   }>[];
 }>;
 
-/** Keeps material assignments from outliving the filled Pen geometry they target. */
+/** Keeps material assignments on either a filled closed path or a fill-less open stroke. */
 export function cubicBezierFragmentMaterialTransitionBlocker(
   assignments: SceneFragmentMaterialStateV1["assignments"],
   programs: readonly StudioCreationProgramLike[],
@@ -97,7 +97,7 @@ export function cubicBezierFragmentMaterialTransitionBlocker(
     for (const operation of program.operations) {
       const entity = operation.kind === "CreateEntity" ? operation.entity : undefined;
       if (!entity || entity.type !== "CubicBezier" || assignments[entity.id] === undefined) continue;
-      if (entity.cubicBezier?.closed !== true || entity.cubicBezier.fillColor === undefined) {
+      if (entity.cubicBezier?.closed === true && entity.cubicBezier.fillColor === undefined) {
         return CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER;
       }
     }

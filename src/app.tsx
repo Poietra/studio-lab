@@ -98,7 +98,6 @@ import type { ShapeTransformInspectorInput } from "./studio/entity-inspector";
 import { LOCKED_ENTITY_MUTATION_MESSAGE, lockedEntityMutationTargets, toggleEntityLock } from "./studio/entity-lock";
 import {
   assignStudioFragmentMaterialV1,
-  CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER,
   createStudioFragmentMaterialV1,
   createStudioGradientFragmentMaterialPresetV1,
   createStudioPulseFragmentMaterialPresetV1,
@@ -5625,10 +5624,6 @@ export function App({
     if (!owned || !cubicBezier) return false;
     setCubicBezierExtensionEntityId(null);
     if (cubicBezier.closed) {
-      if (activeSceneFragmentMaterials.assignments[entityId] !== undefined) {
-        setDraftError(CUBIC_BEZIER_FRAGMENT_MATERIAL_FILL_BLOCKER);
-        return false;
-      }
       void normalizeAndStageCubicBezier(entityId, {
         ...cubicBezier,
         closed: false,
@@ -8702,7 +8697,12 @@ export function App({
     selectedFragmentMaterialEntity.geometry.style.kind === "known" &&
     ((selectedFragmentMaterialEntity.geometry.style.value.fillColor !== undefined &&
       selectedFragmentMaterialEntity.geometry.style.value.fillColor !== null) ||
-      selectedSvgPathHasFill === true);
+      selectedSvgPathHasFill === true ||
+      ((selectedFragmentMaterialEntity.type === "Line" ||
+        (selectedFragmentMaterialEntity.type === "CubicBezier" &&
+          studioCreationProjectionEntityFor(selectedFragmentMaterialEntity.id)?.cubicBezier?.closed === false)) &&
+        selectedFragmentMaterialEntity.geometry.style.value.fillColor == null &&
+        selectedFragmentMaterialEntity.geometry.style.value.strokeColor != null));
   const activeSceneHasFragmentMaterialAssignments = sceneHasFragmentMaterialAssignmentsV1(activeSceneFragmentMaterials);
   const activeSceneFragmentMaterialCompileError = studioFragmentMaterialCompileErrorV1(
     activeSceneFragmentMaterials,
