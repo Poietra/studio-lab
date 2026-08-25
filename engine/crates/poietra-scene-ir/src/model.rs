@@ -343,12 +343,16 @@ pub enum StrokeJoinV1 {
 pub struct StrokeStyleV1 {
     pub cap: StrokeCapV1,
     pub color: RgbaColorV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dash_length_world: Option<f64>,
     #[serde(
         default,
         rename = "fragmentMaterial",
         skip_serializing_if = "Option::is_none"
     )]
     pub fragment_material: Option<FragmentMaterialV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gap_length_world: Option<f64>,
     pub join: StrokeJoinV1,
     pub miter_limit: f64,
     pub width_world: f64,

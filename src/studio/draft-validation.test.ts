@@ -19,6 +19,7 @@ import {
   createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
   createDirectManipulationStrokeCapProgram,
+  createDirectManipulationStrokeDashProgram,
   createDirectManipulationStrokeWidthProgram,
   createDirectManipulationVisibilityProgram,
 } from "./suggestion-program";
@@ -907,6 +908,25 @@ describe("Studio draft validation boundary", () => {
       apply: "supported",
       lowering: "supported",
     });
+    const lineDash = createDirectManipulationStrokeDashProgram({
+      capturedPlayhead: 0,
+      entityId: lineEntityId,
+      scene: lineScene,
+      start: 0,
+      strokeDash: { dashLength: 0.25, gapLength: 0.15 },
+      transactionId: "line-dash",
+    });
+    expect(lineDash).toMatchObject({
+      issues: [],
+      kind: "valid",
+      program: {
+        operations: [{ entityId: lineEntityId, key: "strokeDash", value: { dashLength: 0.25, gapLength: 0.15 } }],
+      },
+    });
+    expect(programExecutionCapabilities(lineDash.program)).toMatchObject({
+      apply: "supported",
+      lowering: "supported",
+    });
     for (const type of ["Arc", "Axes", "DataPlot", "NumberLine", "NumberPlane"] as const) {
       const pathEntityId = `tx:shape/entity:${type.toLowerCase()}`;
       const pathScene = {
@@ -1033,6 +1053,23 @@ describe("Studio draft validation boundary", () => {
         transactionId: "invalid-line-cap",
       }),
     ).toThrow(/butt, round, or square/u);
+    expect(() =>
+      createDirectManipulationStrokeDashProgram({
+        capturedPlayhead: 0,
+        entityId: lineEntityId,
+        scene: lineScene,
+        start: 0,
+        strokeDash: { dashLength: 0.01, gapLength: 0.15 },
+        transactionId: "invalid-line-dash",
+      }),
+    ).toThrow(/0\.02 to 2/u);
+    expect(
+      canonicalOperationSchema.safeParse({
+        ...lineDash.program.operations[0],
+        key: "strokeWidth",
+        value: null,
+      }).success,
+    ).toBe(false);
   });
 
   it("samples projected shape colors only from their edit time", () => {

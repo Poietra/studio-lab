@@ -117,6 +117,55 @@ function contentCreationProgram(
   ]);
 }
 
+function pathCreationProgram(transactionId: string, entityId: string, type: "CubicBezier" | "Line") {
+  const createId = `${transactionId}/create`;
+  return program(transactionId, 0, [
+    {
+      ...operationBase(createId, 0),
+      entity: {
+        ...(type === "CubicBezier"
+          ? {
+              cubicBezier: {
+                arrowEnd: false,
+                control1: { x: -1, y: 1 },
+                control2: { x: 1, y: -1 },
+                end: { x: 2, y: 0 },
+                start: { x: -2, y: 0 },
+                strokeCap: "round" as const,
+                strokeWidth: 0.04,
+              },
+              dimensions: { height: 2, width: 4 },
+            }
+          : {}),
+        id: entityId,
+        lifetime: { end: null, start: 0 },
+        type,
+      },
+      kind: "CreateEntity",
+    },
+    {
+      ...operationBase(`${transactionId}/draw`, 0, 0.4),
+      dependsOn: [createId],
+      effect: "fade-in",
+      entityId,
+      kind: "ChangePresence",
+      persistent: true,
+    },
+  ]);
+}
+
+function dashedStrokeProgram(transactionId: string, entityId: string) {
+  return program(transactionId, 0, [
+    {
+      ...operationBase(`${transactionId}/dash`, 0),
+      entityId,
+      key: "strokeDash",
+      kind: "SetProperty",
+      value: { dashLength: 0.2, gapLength: 0.1 },
+    },
+  ]);
+}
+
 describe("Studio-native Manim source export", () => {
   it("exports an empty canonical Scene without fabricating imported source identity", () => {
     const exported = exportStudioNativeManimSource({
@@ -185,6 +234,44 @@ describe("Studio-native Manim source export", () => {
         }),
       ]),
     );
+  });
+
+  it("exports a dashed Line while retaining its canonical identity on source reimport", () => {
+    const entityId = "native:dashed-line";
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 1,
+      duration: 1.4,
+      frame,
+      programs: [
+        pathCreationProgram("create-dashed-line", entityId, "Line"),
+        dashedStrokeProgram("dash-line", entityId),
+      ],
+      timelineTransforms: [],
+      viewport,
+    });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
+
+    expect(exported.source).toContain(".become(DashedLine(");
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.type).toBe("Line");
+  });
+
+  it("exports a dashed open Pen while retaining its canonical identity on source reimport", () => {
+    const entityId = "native:dashed-pen";
+    const exported = exportStudioNativeManimSource({
+      baseDuration: 1,
+      duration: 1.4,
+      frame,
+      programs: [
+        pathCreationProgram("create-dashed-pen", entityId, "CubicBezier"),
+        dashedStrokeProgram("dash-pen", entityId),
+      ],
+      timelineTransforms: [],
+      viewport,
+    });
+    const imported = importManimScene(exported.source, "poietra_scene.py", exported.sceneName, frame);
+
+    expect(exported.source).toContain(".become(DashedVMobject(");
+    expect(imported?.runtimeSceneState.objectGraph.entities[entityId]?.type).toBe("CubicBezier");
   });
 
   it("serializes Programs appended at the same source anchor in canonical input order", () => {

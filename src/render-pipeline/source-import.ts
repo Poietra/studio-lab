@@ -114,6 +114,7 @@ const SUPPORTED_TYPES = new Set([
   "Arrow",
   "Axes",
   "Circle",
+  "CubicBezier",
   "Dot",
   "Group",
   "ImageMobject",
@@ -1078,7 +1079,7 @@ function initialPositionFrom(type: string, suffix: string, approximate: Point) {
       value: approximate,
     };
   }
-  if (["Arrow", "Group", "Line", "SurroundingRectangle", "VGroup"].includes(type)) {
+  if (["Arrow", "CubicBezier", "Group", "Line", "SurroundingRectangle", "VGroup"].includes(type)) {
     return {
       knowledge: unknown<Point>(`${type} position depends on other runtime geometry.`, [`${type}(...)`]),
       value: approximate,
@@ -2063,6 +2064,7 @@ export function importManimScene(
       return;
     }
     const markedIdentity = markerIdentity(statements, index, sourceVariable);
+    if (type === "CubicBezier" && !markedIdentity) return;
     if (sourceVariable.startsWith("poietra_") && !markedIdentity) return;
     const approximatePosition = defaultPosition(mutableEntities.length);
     const initialPosition = initialPositionFrom(type, suffix, approximatePosition);

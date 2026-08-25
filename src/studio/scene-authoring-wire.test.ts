@@ -942,6 +942,20 @@ describe("Studio creation wire", () => {
         key: "strokeCap",
         value: "round",
       }),
+      followupProgram("dash:Line", {
+        ...common,
+        entityId: "entity:Line",
+        id: "dash:Line",
+        key: "strokeDash",
+        value: { dashLength: 0.25, gapLength: 0.15 },
+      }),
+      followupProgram("solid:Line", {
+        ...common,
+        entityId: "entity:Line",
+        id: "solid:Line",
+        key: "strokeDash",
+        value: null,
+      }),
     ];
 
     const command = buildStudioCreationProjectionCommand({ baseDuration: 1, programs });
@@ -961,6 +975,18 @@ describe("Studio creation wire", () => {
       cap: "round",
       entityId: "entity:Line",
       kind: "stroke-cap",
+    });
+    expect(command.programs[6]?.operations[0]).toMatchObject({
+      dashLengthWorld: 0.25,
+      entityId: "entity:Line",
+      gapLengthWorld: 0.15,
+      kind: "stroke-dash",
+    });
+    expect(command.programs[7]?.operations[0]).toMatchObject({
+      dashLengthWorld: null,
+      entityId: "entity:Line",
+      gapLengthWorld: null,
+      kind: "stroke-dash",
     });
   });
 

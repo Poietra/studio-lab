@@ -5,9 +5,10 @@ use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetReferenceV1, ContractVersionV1, CubicPathV1,
     CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1,
     ImageLocalRectV1, ImageSamplerV1, IntervalV1, KeyframeV1, MAX_COORDINATE_V1,
-    PathTrimParameterizationV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
-    SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1,
-    SceneIrBundleV1, SceneSourceV1, StrokeCapV1, VectorAppearanceValueV1,
+    MAX_STROKE_DASH_WORLD_V1, MIN_STROKE_DASH_WORLD_V1, PathTrimParameterizationV1, PointV1,
+    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
+    SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StrokeCapV1,
+    VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
@@ -245,6 +246,7 @@ struct CreateSceneEntity {
     path_morph: Option<CreateSceneEntityPathMorph>,
     stroke_color: Option<RgbaColorV1>,
     stroke_cap: Option<StrokeCapV1>,
+    stroke_dash: Option<StudioStrokeDash>,
     stroke_width_world: Option<f64>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
     visible: bool,
@@ -430,6 +432,9 @@ pub enum StudioCreationProjectedMutationKind {
     StrokeCap {
         value: StrokeCapV1,
     },
+    StrokeDash {
+        value: Option<StudioStrokeDash>,
+    },
     StrokeWidth {
         value: f64,
     },
@@ -439,6 +444,13 @@ pub enum StudioCreationProjectedMutationKind {
         to_dimensions: StudioAuthoringDimensions,
         to_position: PointV1,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioStrokeDash {
+    pub dash_length: f64,
+    pub gap_length: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -633,6 +645,10 @@ pub enum StudioCreationOperationKind {
     StrokeCap {
         cap: Option<StrokeCapV1>,
     },
+    StrokeDash {
+        dash_length_world: Option<f64>,
+        gap_length_world: Option<f64>,
+    },
     StrokeWidth {
         width_world: Option<f64>,
     },
@@ -809,6 +825,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::StrokeColor { .. }
             | StudioCreationOperationKind::PaintColorKeyframes { .. }
             | StudioCreationOperationKind::StrokeCap { .. }
+            | StudioCreationOperationKind::StrokeDash { .. }
             | StudioCreationOperationKind::StrokeWidth { .. }
             | StudioCreationOperationKind::Resize { .. }
             | StudioCreationOperationKind::PersistentRemove { .. }
@@ -951,6 +968,7 @@ struct PlannedStudioCreationEntity {
     draw_interval: Option<IntervalV1>,
     stroke_color_override: Option<String>,
     stroke_cap_override: Option<StrokeCapV1>,
+    stroke_dash_override: Option<StudioStrokeDash>,
     stroke_width_world_override: Option<f64>,
     fade_interval: Option<IntervalV1>,
     initial_dimensions: StudioAuthoringDimensions,

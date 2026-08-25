@@ -407,6 +407,7 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "SetProperty" && operation.key === "fillColor") return "fill-color";
   if (operation.kind === "SetProperty" && operation.key === "strokeColor") return "stroke-color";
   if (operation.kind === "SetProperty" && operation.key === "strokeCap") return "stroke-cap";
+  if (operation.kind === "SetProperty" && operation.key === "strokeDash") return "stroke-dash";
   if (operation.kind === "SetProperty" && operation.key === "strokeWidth") return "stroke-width";
   if (operation.kind === "SetProperty" && operation.key === "sourceZIndex") return "source-z-index";
   if (operation.kind === "SetProperty" && operation.key === "visibility") return "visibility";
@@ -1181,6 +1182,7 @@ function boundEntityProjectionPayloadMatches(operation: SceneEditOperation, proj
       operation.kind === "SetProperty" &&
       operation.key === "position" &&
       typeof operation.value === "object" &&
+      operation.value !== null &&
       "x" in operation.value &&
       "y" in operation.value &&
       sameProjectionNumber(operation.value.x, projection.value.x) &&
@@ -1325,6 +1327,13 @@ function appendProjectedMutation(
     });
   } else if (mutation.kind === "stroke-cap") {
     appendProjectedSample(draft.propertyChannels, entityId, "strokeCap", {
+      ...metadata,
+      interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.start },
+      kind: "exact",
+      value: mutation.value,
+    });
+  } else if (mutation.kind === "stroke-dash") {
+    appendProjectedSample(draft.propertyChannels, entityId, "strokeDash", {
       ...metadata,
       interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.start },
       kind: "exact",

@@ -15,6 +15,7 @@ import {
   type SceneEditOperation,
   sceneEditOperationSchema,
   shapeTransformChangesShape,
+  strokeDashSchema,
   studioEntityTypeSupportsStrokeCap,
   studioEntityTypeSupportsStrokeWidth,
   studioPaintColorTrackProperty,
@@ -81,11 +82,17 @@ function createEntityExecution(
     type === "MathTex" && ((content?.texParts?.length ?? 0) > 0 || (content?.displayLines?.length ?? 0) > 0);
   const hasTextContent = type === "Text" && studioCreationText(content) !== null;
   const hasNativeCubicBezier = type === "CubicBezier" && operation.entity.cubicBezier !== undefined;
+  const hasSourceLowerableOpenCubicBezier =
+    type === "CubicBezier" &&
+    operation.entity.cubicBezier !== undefined &&
+    operation.entity.cubicBezier.closed !== true &&
+    !operation.entity.cubicBezier.arrowEnd;
   const hasNativeImage = type === "ImageMobject" && operation.entity.image !== undefined;
   const hasNativeSvgPath = type === "SvgPath" && operation.entity.svg !== undefined;
   const isNativePath = ["Arc", "Axes", "DataPlot", "Ellipse", "NumberLine", "NumberPlane", "Sector"].includes(type);
   const isBuiltIn = ["Arrow", "Circle", "Line", "Rectangle", "RegularPolygon", "Square", "Triangle"].includes(type);
   const isTransitionOverlay = /^TransitionOverlay:(circle|diamond|hexagon):(black|sky|white)$/.test(type);
+  if (hasSourceLowerableOpenCubicBezier) return SUPPORTED_EXECUTION;
   if (hasNativeCubicBezier || hasNativeImage || hasNativeSvgPath || isNativePath) return CLIENT_ONLY_EXECUTION;
   if (hasMathTexContent || hasTextContent || isBuiltIn || isTransitionOverlay) return SUPPORTED_EXECUTION;
   return previewOnlyExecution(`CreateEntity type ${type} can be previewed, but it has no safe Manim source lowering.`);
@@ -118,6 +125,12 @@ function setPropertyExecution(
     operation.value <= 0.5
   )
     return SUPPORTED_EXECUTION;
+  if (
+    operation.key === "strokeDash" &&
+    (operation.value === null || strokeDashSchema.safeParse(operation.value).success)
+  ) {
+    return SUPPORTED_EXECUTION;
+  }
   if (operation.key === "sourceZIndex" && typeof operation.value === "number" && Number.isFinite(operation.value)) {
     return operation.documentStatic ? CLIENT_ONLY_EXECUTION : SUPPORTED_EXECUTION;
   }
@@ -767,6 +780,27 @@ function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetPr
         code: "schema-invalid" as const,
         field: "entityId",
         message: "Stroke cap is available only for a supported Studio-created open path.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+  }
+  if (operation.key === "strokeDash") {
+    const entity = scene.objectGraph.entities[operation.entityId];
+    if (operation.value !== null && !strokeDashSchema.safeParse(operation.value).success) {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "value",
+        message: "Dash and gap lengths must each be from 0.02 to 2 scene units.",
+        operationId: operation.id,
+        severity: "error" as const,
+      });
+    }
+    if (!entity?.transactionId || (entity.type !== "Line" && entity.type !== "CubicBezier")) {
+      issues.push({
+        code: "schema-invalid" as const,
+        field: "entityId",
+        message: "Dashed stroke is available only for a supported Studio-created Line or open Pen path.",
         operationId: operation.id,
         severity: "error" as const,
       });

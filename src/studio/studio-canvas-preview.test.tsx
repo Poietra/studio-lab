@@ -235,6 +235,9 @@ function renderSelectedInspector(
   strokeCapAvailable = false,
   strokeCapValue: "butt" | "round" | "square" | null = null,
   cubicBezierClosed = false,
+  strokeDashVisible = false,
+  strokeDashValue: Readonly<{ dashLength: number; gapLength: number }> | null = null,
+  strokeDashUnavailableReason: string | null = null,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
@@ -256,6 +259,7 @@ function renderSelectedInspector(
       onEntityRotate={vi.fn()}
       onEntityScaleChange={vi.fn()}
       onEntityStrokeCapChange={vi.fn()}
+      onEntityStrokeDashChange={vi.fn()}
       onEntityStrokeWidthChange={vi.fn()}
       onInspectorFocusRestored={vi.fn()}
       onRenderSessionChange={vi.fn()}
@@ -276,11 +280,42 @@ function renderSelectedInspector(
       strokeColorValue={strokeColorValue}
       strokeCapAvailable={strokeCapAvailable}
       strokeCapValue={strokeCapValue}
+      strokeDashUnavailableReason={strokeDashUnavailableReason}
+      strokeDashValue={strokeDashValue}
+      strokeDashVisible={strokeDashVisible}
       strokeWidthAvailable={strokeWidthAvailable}
       strokeWidthValue={strokeWidthValue}
       suggestion={null}
       workspace={null}
     />,
+  );
+}
+
+function renderDashInspector(
+  entity: ProjectedEntity,
+  value: Readonly<{ dashLength: number; gapLength: number }> | null,
+  unavailableReason: string | null,
+) {
+  return renderSelectedInspector(
+    entity,
+    null,
+    null,
+    false,
+    false,
+    null,
+    false,
+    null,
+    null,
+    false,
+    null,
+    false,
+    null,
+    false,
+    null,
+    false,
+    true,
+    value,
+    unavailableReason,
   );
 }
 
@@ -2083,6 +2118,21 @@ describe("StudioCanvas retained preview layer", () => {
         new RegExp(`<input aria-label="Stroke width ${name}"[^>]*disabled=""[^>]*>`),
       );
     }
+  });
+
+  it("exposes one bounded dashed-stroke form and a solid reset only when a pattern exists", () => {
+    const solid = renderDashInspector(LINE_ENTITY, null, null);
+    const dashed = renderDashInspector(LINE_ENTITY, { dashLength: 0.25, gapLength: 0.15 }, null);
+    const disabled = renderDashInspector(ARROW_ENTITY, null, "Arrow dashed strokes are not supported yet.");
+
+    expect(solid).toMatch(/<input aria-label="Dash length line"[^>]*value="0.25"[^>]*>/u);
+    expect(solid).toMatch(/<input aria-label="Gap length line"[^>]*value="0.15"[^>]*>/u);
+    expect(solid).toContain('aria-label="Set dashed stroke"');
+    expect(solid).not.toContain('aria-label="Use solid stroke"');
+    expect(dashed).toMatch(/<input aria-label="Dash length line"[^>]*value="0.25"[^>]*>/u);
+    expect(dashed).toContain('aria-label="Use solid stroke"');
+    expect(disabled).toContain("Arrow dashed strokes are not supported yet.");
+    expect(disabled).toMatch(/<input aria-label="Dash length arrow"[^>]*disabled=""[^>]*>/u);
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

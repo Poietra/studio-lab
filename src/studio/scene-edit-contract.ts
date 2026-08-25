@@ -12,6 +12,12 @@ export function isCanonicalRgbHex(value: unknown): value is string {
 }
 
 const pointSchema = z.object({ x: z.number(), y: z.number() });
+export const strokeDashSchema = z
+  .object({
+    dashLength: z.number().finite().min(0.02).max(2),
+    gapLength: z.number().finite().min(0.02).max(2),
+  })
+  .strict();
 const dataSeriesSchema = z
   .object({
     interpolation: z.enum(["linear", "smooth"]),
@@ -132,7 +138,9 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   operationBaseSchema.extend({
     documentStatic: z.boolean().optional(),
     entityId: z.string(),
-    from: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]).optional(),
+    from: z
+      .union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema, strokeDashSchema, z.null()])
+      .optional(),
     key: z.enum([
       "appearance",
       "camera",
@@ -145,11 +153,12 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
       "scale",
       "strokeCap",
       "strokeColor",
+      "strokeDash",
       "strokeWidth",
       "visibility",
     ]),
     kind: z.literal("SetProperty"),
-    value: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]),
+    value: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema, strokeDashSchema, z.null()]),
   }),
   operationBaseSchema.extend({
     control: pointSchema.optional(),
@@ -291,6 +300,13 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superRefine((operation, context) => {
+  if (operation.kind === "SetProperty" && operation.value === null && operation.key !== "strokeDash") {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Only strokeDash accepts null to restore a solid stroke.",
+      path: ["value"],
+    });
+  }
   if (operation.kind === "SetProperty" && operation.documentStatic && operation.key !== "sourceZIndex") {
     context.addIssue({
       code: "custom",
@@ -320,6 +336,18 @@ export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superR
     context.addIssue({
       code: z.ZodIssueCode.custom,
       message: `${operation.key} must be a lowercase canonical #rrggbb color.`,
+      path: ["value"],
+    });
+  }
+  if (
+    operation.kind === "SetProperty" &&
+    operation.key === "strokeDash" &&
+    operation.value !== null &&
+    !strokeDashSchema.safeParse(operation.value).success
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "strokeDash lengths must each be finite values from 0.02 to 2 scene units, or null for solid.",
       path: ["value"],
     });
   }
@@ -537,6 +565,10 @@ export function studioEntityTypeSupportsStrokeWidth(type: string) {
 
 export function studioEntityTypeSupportsStrokeCap(type: string) {
   return ["Arc", "Axes", "DataPlot", "Line", "NumberLine", "NumberPlane"].includes(type);
+}
+
+export function studioEntityTypeMayExposeStrokeDash(type: string) {
+  return type === "Line" || type === "CubicBezier" || type === "Arrow" || studioEntityTypeSupportsStrokeWidth(type);
 }
 
 export function studioPaintColorTrackProperty(

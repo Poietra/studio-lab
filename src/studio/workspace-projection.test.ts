@@ -1934,6 +1934,23 @@ describe("Studio workspace projection", () => {
       schedule: { edges: [], mode: "parallel", order: ["stroke-cap/line"] },
       transactionId: "stroke-cap",
     };
+    const dashProgram: CanonicalEditProgram = {
+      ...colorProgram,
+      operations: [
+        {
+          dependsOn: [],
+          entityId,
+          id: "stroke-dash/line",
+          interval: { end: 0, start: 0 },
+          key: "strokeDash",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          value: { dashLength: 0.25, gapLength: 0.15 },
+        },
+      ],
+      schedule: { edges: [], mode: "parallel", order: ["stroke-dash/line"] },
+      transactionId: "stroke-dash",
+    };
     const orderingProgram: CanonicalEditProgram = {
       ...colorProgram,
       operations: [
@@ -2026,6 +2043,14 @@ describe("Studio workspace projection", () => {
         {
           entityId,
           interval: { end: 0, start: 0 },
+          kind: "stroke-dash",
+          operationId: "stroke-dash/line",
+          transactionId: "stroke-dash",
+          value: { dashLength: 0.25, gapLength: 0.15 },
+        },
+        {
+          entityId,
+          interval: { end: 0, start: 0 },
           kind: "source-z-index",
           operationId: "ordering/line",
           sourceZIndex: -2.5,
@@ -2046,6 +2071,7 @@ describe("Studio workspace projection", () => {
         programRecord(fillProgram, { issues: [], kind: "valid" }),
         programRecord(fillTrackProgram, { issues: [], kind: "valid" }),
         programRecord(capProgram, { issues: [], kind: "valid" }),
+        programRecord(dashProgram, { issues: [], kind: "valid" }),
         programRecord(widthProgram, { issues: [], kind: "valid" }),
         programRecord(orderingProgram, { issues: [], kind: "valid" }),
       ],
@@ -2075,12 +2101,23 @@ describe("Studio workspace projection", () => {
     expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/strokeCap`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: "round" }),
     ]);
+    expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/strokeDash`]?.samples).toEqual([
+      expect.objectContaining({
+        interval: { end: projection.projectedDuration, start: 0 },
+        value: { dashLength: 0.25, gapLength: 0.15 },
+      }),
+    ]);
     expect(projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/sourceZIndex`]?.samples).toEqual([
       expect.objectContaining({ interval: { end: projection.projectedDuration, start: 0 }, value: -2.5 }),
     ]);
     expect(projected.projection.inspector.entities.find((entity) => entity.id === entityId)?.geometry.style).toEqual({
       kind: "known",
-      value: { strokeCap: "round", strokeColor: "#12abef", strokeWidth: 0.08 },
+      value: {
+        strokeCap: "round",
+        strokeColor: "#12abef",
+        strokeDash: { dashLength: 0.25, gapLength: 0.15 },
+        strokeWidth: 0.08,
+      },
     });
     expect(
       projected.projection.inspector.entities.find((entity) => entity.id === circleEntityId)?.geometry.style,

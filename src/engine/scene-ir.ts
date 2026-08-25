@@ -231,7 +231,7 @@ const pathMorphChannelV1Schema = z
   })
   .strict();
 
-const vectorAppearanceStrokeStyleV1Schema = strokeStyleV1Schema.extend({
+const vectorAppearanceStrokeStyleV1Schema = strokeStyleV1Schema.safeExtend({
   widthWorld: finiteNumberV1Schema.nonnegative().max(MAX_COORDINATE),
 });
 

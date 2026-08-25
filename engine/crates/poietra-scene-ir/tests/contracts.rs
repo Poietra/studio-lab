@@ -216,6 +216,52 @@ fn path_trim_parameterization_is_optional_and_fail_closed() {
 }
 
 #[test]
+fn stroke_dash_pair_is_optional_bounded_and_backward_compatible() {
+    let old_wire = json!({
+        "cap": "round",
+        "color": { "alpha": 1, "blue": 0, "green": 0, "red": 1 },
+        "join": "miter",
+        "miterLimit": 4,
+        "widthWorld": 0.1
+    });
+    let solid: StrokeStyleV1 = serde_json::from_value(old_wire).unwrap();
+    assert_eq!(solid.dash_length_world, None);
+    assert_eq!(solid.gap_length_world, None);
+    let solid_wire = serde_json::to_value(&solid).unwrap();
+    assert!(solid_wire.get("dashLengthWorld").is_none());
+    assert!(solid_wire.get("gapLengthWorld").is_none());
+
+    let packet_with = |dash_length_world, gap_length_world| {
+        let mut packet = empty_packet();
+        let mut draw = filled_path_draw(0);
+        let RenderDrawV1::Path { fill, stroke, .. } = &mut draw else {
+            unreachable!()
+        };
+        *fill = None;
+        *stroke = Some(StrokeStyleV1 {
+            dash_length_world,
+            gap_length_world,
+            ..solid.clone()
+        });
+        packet.draws.push(draw);
+        packet.required_capabilities = vec![RenderCapabilityV1::CubicPathStroke];
+        packet
+    };
+
+    for length in [MIN_STROKE_DASH_WORLD_V1, MAX_STROKE_DASH_WORLD_V1] {
+        validate_render_packet_v1(&packet_with(Some(length), Some(length))).unwrap();
+    }
+    for invalid in [
+        packet_with(Some(0.1), None),
+        packet_with(None, Some(0.1)),
+        packet_with(Some(MIN_STROKE_DASH_WORLD_V1 / 2.0), Some(0.1)),
+        packet_with(Some(0.1), Some(MAX_STROKE_DASH_WORLD_V1 * 2.0)),
+    ] {
+        assert!(validate_render_packet_v1(&invalid).is_err());
+    }
+}
+
+#[test]
 fn motion_path_parameterization_is_optional_and_fail_closed() {
     let mut channel = json!({
         "entityId": "mover",

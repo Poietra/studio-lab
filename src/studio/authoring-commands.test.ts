@@ -611,6 +611,10 @@ describe("manual Studio authoring commands", () => {
       transactionId: "insert-cubic-bezier",
     });
     expect(created.validation.kind).toBe("valid");
+    expect(programExecutionCapabilities(created.validation.program)).toMatchObject({
+      apply: "supported",
+      lowering: "supported",
+    });
     const entityId = created.entityIds[0]!;
     expect(created.validation.program.operations[0]).toEqual(
       expect.objectContaining({

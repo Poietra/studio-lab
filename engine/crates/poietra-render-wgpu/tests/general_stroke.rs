@@ -6,11 +6,14 @@ use poietra_render_wgpu::{
     prepare_frame_with_cache_v1,
 };
 use poietra_scene_ir::{
-    CubicPathV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, PointV1,
-    RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RgbaColorV1, StrokeCapV1, StrokeJoinV1,
+    CubicPathV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, FragmentMaterialV1,
+    PointV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RgbaColorV1, StrokeCapV1,
+    StrokeJoinV1,
 };
 
-use support::{generic_stroke_fixture, straight_stroke_packet};
+use support::{
+    generic_stroke_fixture, generic_stroke_packet_with_initial_trim, straight_stroke_packet,
+};
 
 fn point(x: f64, y: f64) -> PointV1 {
     PointV1 { x, y }
@@ -418,6 +421,89 @@ fn shared_fixture_samples_trim_morph_and_motion_before_general_stroke_paint() {
         assert_eq!(phases[0].index_range().end, phases[1].index_range().start);
         assert_eq!(phases[0].vertex_range().end, phases[1].vertex_range().start);
     }
+}
+
+#[test]
+fn dashed_stroke_uses_the_evaluated_trimmed_curve() {
+    let mut packet = generic_stroke_packet_with_initial_trim(0.55);
+    let solid = prepare_frame_v1(&packet).expect("the evaluated trimmed curve must prepare solid");
+    let RenderDrawV1::Path {
+        path,
+        stroke: Some(stroke),
+        ..
+    } = packet
+        .draws
+        .iter_mut()
+        .find(|draw| matches!(draw, RenderDrawV1::Path { entity_id, .. } if entity_id == "curve"))
+        .expect("the evaluated fixture must retain its open curve draw")
+    else {
+        unreachable!()
+    };
+    assert!(!path.subpaths[0].closed);
+    assert_ne!(
+        path.subpaths[0].segments[0].end,
+        point(-2.0, -2.0),
+        "the renderer must receive the already-trimmed path"
+    );
+    stroke.dash_length_world = Some(0.4);
+    stroke.gap_length_world = Some(0.2);
+
+    let dashed =
+        prepare_frame_v1(&packet).expect("the evaluated trimmed curve must prepare dashed");
+    assert_ne!(solid.geometry_plan(), dashed.geometry_plan());
+    assert!(dashed.geometry_plan().vertices().len() > solid.geometry_plan().vertices().len());
+}
+
+#[test]
+fn dashed_material_stroke_matches_cached_and_uncached_geometry() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Round);
+    let RenderDrawV1::Path {
+        stroke: Some(stroke),
+        ..
+    } = &mut packet.draws[0]
+    else {
+        unreachable!()
+    };
+    stroke.dash_length_world = Some(0.5);
+    stroke.gap_length_world = Some(0.25);
+    stroke.fragment_material = Some(FragmentMaterialV1 {
+        parameters: vec![0.25],
+        revision: poietra_render_wgpu::TIME_GRADIENT_SHADER_REVISION_V1,
+        shader_id: poietra_render_wgpu::TIME_GRADIENT_SHADER_ID_V1.to_owned(),
+        texture: None,
+    });
+    packet
+        .required_capabilities
+        .push(RenderCapabilityV1::FragmentMaterial);
+    packet.required_capabilities.sort_unstable();
+
+    let direct = prepare_frame_v1(&packet).expect("dashed material stroke must prepare");
+    let mut cache = PreparedGeometryCacheV1::default();
+    let cold = prepare_frame_with_cache_v1(&packet, &mut cache).expect("cold dash must prepare");
+    let warm = prepare_frame_with_cache_v1(&packet, &mut cache).expect("warm dash must prepare");
+
+    assert_eq!(
+        direct.geometry_plan().indices(),
+        cold.geometry_plan().indices()
+    );
+    assert_eq!(
+        direct.geometry_plan().vertices(),
+        cold.geometry_plan().vertices()
+    );
+    assert_eq!(
+        direct.geometry_plan().indices(),
+        warm.geometry_plan().indices()
+    );
+    assert_eq!(
+        direct.geometry_plan().vertices(),
+        warm.geometry_plan().vertices()
+    );
+    assert_eq!(warm.tessellation_calls(), 0);
+    assert!(
+        direct.material_plan().materials()[0]
+            .fragment_material()
+            .is_some()
+    );
 }
 
 #[test]
