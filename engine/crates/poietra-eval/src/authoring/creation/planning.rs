@@ -7,10 +7,11 @@ use admission::{
 };
 
 use super::{
-    BTreeMap, BTreeSet, IntervalV1, KeyframeV1, MAX_STUDIO_STROKE_WIDTH_WORLD,
-    MIN_STUDIO_STROKE_WIDTH_WORLD, PersistentSceneRemoval, PlannedStudioAnimatedResize,
-    PlannedStudioCameraClip, PlannedStudioCreationEntity, PlannedStudioLogicalGroup,
-    PlannedStudioMathTexTransform, PlannedStudioMotion, PlannedStudioShapeTransform,
+    BTreeMap, BTreeSet, CubicSubpathV1, IntervalV1, KeyframeV1, MAX_COORDINATE_V1,
+    MAX_STUDIO_CUBIC_BEZIER_SEGMENTS, MAX_STUDIO_STROKE_WIDTH_WORLD, MIN_STUDIO_STROKE_WIDTH_WORLD,
+    PersistentSceneRemoval, PlannedStudioAnimatedResize, PlannedStudioCameraClip,
+    PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PlannedStudioMathTexTransform,
+    PlannedStudioMotion, PlannedStudioPathMorph, PlannedStudioShapeTransform,
     ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1, SceneEditExecution,
     SceneEditScheduleMode, StudioAuthoringDimensions, StudioAuthoringEntityKind,
     StudioAuthoringOrigin, StudioCreationEditInput, StudioCreationOperationKind,
@@ -49,6 +50,32 @@ fn studio_shape_transform_pair_is_supported(
     from.kind != to.kind
         || (from.kind == StudioAuthoringEntityKind::RegularPolygon
             && from.dimensions.sides != to.dimensions.sides)
+}
+
+fn studio_path_morph_endpoint_is_valid(path: &CubicSubpathV1) -> bool {
+    (1..=MAX_STUDIO_CUBIC_BEZIER_SEGMENTS).contains(&path.segments.len())
+        && std::iter::once(&path.start)
+            .chain(
+                path.segments
+                    .iter()
+                    .flat_map(|segment| [&segment.control1, &segment.control2, &segment.end]),
+            )
+            .all(|point| {
+                point.x.is_finite()
+                    && point.y.is_finite()
+                    && point.x.abs() <= MAX_COORDINATE_V1
+                    && point.y.abs() <= MAX_COORDINATE_V1
+            })
+}
+
+fn studio_path_morph_pair_is_supported(
+    from_path: &CubicSubpathV1,
+    to_path: &CubicSubpathV1,
+) -> bool {
+    studio_path_morph_endpoint_is_valid(from_path)
+        && studio_path_morph_endpoint_is_valid(to_path)
+        && from_path.closed == to_path.closed
+        && from_path.segments.len() == to_path.segments.len()
 }
 
 #[allow(
@@ -180,6 +207,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::DrawIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::TransformShape { .. }
+                | StudioCreationOperationKind::PathMorph { .. }
                 | StudioCreationOperationKind::AnimateCamera { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }
@@ -233,6 +261,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::TransformShape { .. }
+                | StudioCreationOperationKind::PathMorph { .. }
                 | StudioCreationOperationKind::AnimateCamera { .. }
                 | StudioCreationOperationKind::OpacityKeyframes { .. }
                 | StudioCreationOperationKind::MaterialParameterKeyframes { .. }
@@ -501,6 +530,9 @@ pub(super) fn plan_studio_creation_edits(
         } else {
             None
         };
+        let current_cubic_bezier_path = cubic_bezier.as_ref().and_then(|curve| {
+            (curve.path.subpaths.len() == 1).then(|| curve.path.subpaths[0].clone())
+        });
         let svg_path = if spec.kind == StudioAuthoringEntityKind::SvgPath {
             let svg = spec
                 .svg
@@ -873,6 +905,7 @@ pub(super) fn plan_studio_creation_edits(
             creation_program_rank: program_rank,
             cubic_bezier,
             creation_transaction_id: program.transaction_id.clone(),
+            current_cubic_bezier_path,
             current_dimensions: spec.dimensions,
             current_shape: matches!(
                 spec.kind,
@@ -919,6 +952,7 @@ pub(super) fn plan_studio_creation_edits(
             )
             .then_some(spec.dimensions),
             shape_transforms: Vec::new(),
+            path_morphs: Vec::new(),
             uniform_scale_keyframes: Vec::new(),
             source_z_index: None,
             spec: spec.clone(),
@@ -1659,6 +1693,23 @@ pub(super) fn plan_studio_creation_edits(
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
+        let contains_path_morph = program.operations.iter().any(|operation| {
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::PathMorph { .. }
+            )
+        });
+        if contains_path_morph
+            && (program.origin != StudioAuthoringOrigin::DirectManipulation
+                || program.requested_execution != SceneEditExecution::Sequence
+                || program.schedule_mode != SceneEditScheduleMode::Sequence
+                || program.schedule_edge_count != 0
+                || program.intent_count != 1
+                || program.operations.len() != 1
+                || program.schedule_order != [program.operations[0].id.clone()])
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
         for (schedule_index, operation_id) in program.schedule_order.iter().enumerate() {
             let operation = program
                 .operations
@@ -2241,6 +2292,57 @@ pub(super) fn plan_studio_creation_edits(
                         },
                     ));
                 }
+                StudioCreationOperationKind::PathMorph {
+                    easing,
+                    from_path,
+                    to_path,
+                } if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                    && state.kind == StudioAuthoringEntityKind::CubicBezier
+                    && state.current_cubic_bezier_path.as_ref() == Some(from_path)
+                    && studio_path_morph_pair_is_supported(from_path, to_path)
+                    && operation.interval.end.is_finite()
+                    && operation.interval.end
+                        > operation.interval.start + TIMELINE_ANCHOR_EPSILON
+                    && state.persistent_removal.is_none() =>
+                {
+                    let interval = IntervalV1 {
+                        end: operation.interval.end + timeline.offsets[program_index],
+                        start: operation.interval.start + timeline.offsets[program_index],
+                    };
+                    if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                        || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+                        || studio_creation_initial_appearance_end(state)
+                            .is_some_and(|end| interval.start < end - TIMELINE_ANCHOR_EPSILON)
+                        || state.path_morphs.last().is_some_and(|prior| {
+                            interval.start < prior.interval.end - TIMELINE_ANCHOR_EPSILON
+                        })
+                    {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                    let easing = property_easing(*easing);
+                    state.path_morphs.push(PlannedStudioPathMorph {
+                        easing: easing.clone(),
+                        from_path: from_path.clone(),
+                        interval: interval.clone(),
+                        to_path: to_path.clone(),
+                    });
+                    state.current_cubic_bezier_path = Some(to_path.clone());
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval,
+                            kind: StudioCreationProjectedMutationKind::PathMorph {
+                                easing,
+                                from_path: from_path.clone(),
+                                to_path: to_path.clone(),
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
                 StudioCreationOperationKind::Resize {
                     from_dimensions,
                     from_position,
@@ -2384,6 +2486,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::WriteIn { .. }
                 | StudioCreationOperationKind::TransformContent { .. }
                 | StudioCreationOperationKind::TransformShape { .. }
+                | StudioCreationOperationKind::PathMorph { .. }
                 | StudioCreationOperationKind::AnimateCamera { .. }
                 | StudioCreationOperationKind::UniformScale { .. }
                 | StudioCreationOperationKind::Rotation { .. }

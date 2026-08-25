@@ -256,6 +256,7 @@ function ownerDuration(owner: StudioLifetimeOwner, entityId: string, source: Int
       operation.kind === "DrawIn" ||
       operation.kind === "WriteIn" ||
       operation.kind === "TransformContent" ||
+      operation.kind === "TransformPath" ||
       operation.kind === "TransformShape" ||
       (operation.kind === "AnimateProperty" && operation.key === "scale" && operation.timelineTrack !== true);
     if (!inserted) return [];

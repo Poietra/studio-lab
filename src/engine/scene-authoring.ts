@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { easingV1Schema, type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
-import { type StudioCubicBezierSpec, studioCubicBezierSpecSchema } from "./cubic-bezier-authoring";
+import {
+  type StudioCubicBezierPath,
+  type StudioCubicBezierSpec,
+  studioCubicBezierPathSchema,
+  studioCubicBezierSpecSchema,
+} from "./cubic-bezier-authoring";
 import { loadPoietraWasmModule } from "./poietra-wasm-module";
 
 const encoder = new TextEncoder();
@@ -726,6 +731,18 @@ const studioCreationProjectionV1Schema = z
           .strict(),
         z
           .object({
+            easing: easingV1Schema,
+            entityId: z.string().min(1),
+            fromPath: studioCubicBezierPathSchema,
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("path-morph"),
+            operationId: z.string().min(1),
+            toPath: studioCubicBezierPathSchema,
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
             entityId: z.string().min(1),
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("fill-color"),
@@ -1247,6 +1264,13 @@ type StudioCreationOperationV1 = Readonly<{
         kind: "shape-transform";
         toDimensions: StudioCreationDimensionsV1;
         toShape: "circle" | "ellipse" | "rectangle" | "regular-polygon";
+      }>
+    | Readonly<{
+        easing: "linear" | "smooth";
+        entityId: string;
+        fromPath: StudioCubicBezierPath;
+        kind: "path-morph";
+        toPath: StudioCubicBezierPath;
       }>
     | Readonly<{
         easing: "linear" | "smooth";

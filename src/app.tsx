@@ -28,6 +28,7 @@ import {
 import {
   extendStudioCubicBezier,
   inspectStudioCubicBezier,
+  type StudioCubicBezierPath,
   type StudioCubicBezierPointRef,
   type StudioCubicBezierSpec,
 } from "./engine/cubic-bezier-authoring";
@@ -220,6 +221,13 @@ import {
   replacePaintColorKeyframe,
   replacePaintColorKeyframeProgram,
 } from "./studio/paint-color-keyframe-edit";
+import {
+  createPathMorphProgram,
+  cubicBezierPathFromSpec,
+  pathMorphClipFromProgram,
+  replacePathMorphPoint,
+  replacePathMorphProgram,
+} from "./studio/path-morph-clip-edit";
 import { PoietraBrand } from "./studio/poietra-brand";
 import type {
   StudioNativePreviewEditingContextV1,
@@ -350,6 +358,8 @@ import type {
   StudioMathTexTransformTimelineClip,
   StudioOpacityTimelineTrack,
   StudioPaintColorTimelineTrack,
+  StudioPathMorphClipChange,
+  StudioPathMorphTimelineClip,
   StudioRotationTimelineTrack,
   StudioScaleTimelineTrack,
   StudioShapeTransformClipChange,
@@ -1998,6 +2008,56 @@ export function App({
                 ? LOCKED_ENTITY_MUTATION_MESSAGE
                 : null,
         targetShape: sourceClip.to.shape,
+        transactionId: sourceClip.transactionId,
+      },
+    ];
+  });
+  const pathMorphClips: readonly StudioPathMorphTimelineClip[] = previewAppliedEdits.flatMap((record) => {
+    if (!workspaceCreationProjection) return [];
+    const sourceClip = pathMorphClipFromProgram(record.program);
+    if (!sourceClip) return [];
+    const mutation = workspaceCreationProjection.mutations.find(
+      (candidate) => candidate.kind === "path-morph" && candidate.operationId === sourceClip.operationId,
+    );
+    if (!mutation || mutation.kind !== "path-morph") return [];
+    const createOperation = previewAppliedEdits
+      .flatMap(({ program }) => program.operations)
+      .find((candidate) => candidate.kind === "CreateEntity" && candidate.entity.id === mutation.entityId);
+    const sourceLifetimeEnd =
+      createOperation?.kind === "CreateEntity"
+        ? (createOperation.entity.lifetime.end ?? projectedEditorScene?.runtimeSceneState.duration)
+        : projectedEditorScene?.runtimeSceneState.duration;
+    const nextMorphStart = previewAppliedEdits
+      .flatMap(({ program }) => {
+        const candidate = pathMorphClipFromProgram(program);
+        return candidate?.entityId === mutation.entityId &&
+          candidate.interval.start > sourceClip.interval.start + 0.0005
+          ? [candidate.interval.start]
+          : [];
+      })
+      .reduce((earliest, start) => Math.min(earliest, start), Number.POSITIVE_INFINITY);
+    const maximumEnd = Math.min(sourceLifetimeEnd ?? sourceClip.interval.end, nextMorphStart);
+    const activeDraftIsThisClip = editingAppliedProgram?.original.program.transactionId === sourceClip.transactionId;
+    return [
+      {
+        easing: sourceClip.easing,
+        entityId: mutation.entityId,
+        interval: mutation.interval,
+        label:
+          workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === mutation.entityId)
+            ?.label ?? mutation.entityId,
+        maximumDuration: Math.max(0.1, maximumEnd - sourceClip.interval.start),
+        operationId: sourceClip.operationId,
+        readOnlyReason:
+          previewRenderer?.state.phase !== "presented"
+            ? "Wait for the canonical WebGPU preview before editing Path Morph."
+            : draftEdit && !activeDraftIsThisClip
+              ? "Apply or discard the current draft before editing Path Morph."
+              : lockedEntityIdSet.has(mutation.entityId)
+                ? LOCKED_ENTITY_MUTATION_MESSAGE
+                : Number.isFinite(nextMorphStart)
+                  ? "Delete later Path Morph clips before editing this one."
+                  : pathMorphTransformBlocker(mutation.entityId),
         transactionId: sourceClip.transactionId,
       },
     ];
@@ -4354,6 +4414,242 @@ export function App({
     return undoProgramCommitFirst();
   }
 
+  function pathMorphMutationsForRoot(entityId: string) {
+    return (workspaceCreationProjection?.mutations ?? [])
+      .filter(
+        (mutation): mutation is Extract<StudioCreationProjectionMutationV1, { kind: "path-morph" }> =>
+          mutation.kind === "path-morph" && mutation.entityId === entityId,
+      )
+      .sort((left, right) => left.interval.end - right.interval.end);
+  }
+
+  function currentPathMorphPath(entityId: string): StudioCubicBezierPath | null {
+    const latest = pathMorphMutationsForRoot(entityId).at(-1);
+    if (latest) return latest.toPath;
+    const creation = studioCubicBezierCreation(entityId)?.creation.entity.cubicBezier;
+    return creation ? cubicBezierPathFromSpec(creation) : null;
+  }
+
+  function pathMorphTransformBlocker(entityId: string) {
+    const creationTransactionId = studioCubicBezierCreation(entityId)?.owner.record.program.transactionId;
+    if (previewAppliedEdits.some(({ program }) => program.operations.some(({ kind }) => kind === "AnimateCamera"))) {
+      return "Path Morph handles are unavailable after a Camera animation.";
+    }
+    const hasTransform = previewAppliedEdits.some(({ program }) =>
+      program.operations.some(
+        (operation) =>
+          (operation.kind === "SetProperty" &&
+            operation.entityId === entityId &&
+            (operation.key === "position" || operation.key === "rotation" || operation.key === "scale") &&
+            !(program.transactionId === creationTransactionId && operation.key === "position")) ||
+          (operation.kind === "AnimateProperty" &&
+            operation.entityId === entityId &&
+            (operation.key === "position" || operation.key === "rotation" || operation.key === "scale")) ||
+          (operation.kind === "ResizeEntity" && operation.entityId === entityId) ||
+          (operation.kind === "CreateMotion" && operation.targetEntityIds.includes(entityId)),
+      ),
+    );
+    return hasTransform
+      ? "Path Morph handles are unavailable after moving, scaling, rotating, or animating this Pen."
+      : null;
+  }
+
+  function pathMorphUnavailableReason(entityId: string) {
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    const creation = studioCubicBezierCreation(entityId);
+    if (
+      !entity ||
+      entity.type !== "CubicBezier" ||
+      entity.sourceIdentity.kind !== "unknown" ||
+      !entity.transactionId ||
+      !creation
+    ) {
+      return "Path Morph supports only Studio-created Pen paths.";
+    }
+    if (creation.creation.entity.cubicBezier?.arrowEnd) {
+      return "Remove the Pen arrow end before creating Path Morph.";
+    }
+    const transformBlocker = pathMorphTransformBlocker(entityId);
+    if (transformBlocker) return transformBlocker;
+    if (previewRenderer?.state.phase !== "presented" || !workspaceCreationProjection || !workspaceProjection) {
+      return "Wait for the canonical WebGPU preview before creating Path Morph.";
+    }
+    const entranceEnd = workspaceCreationProjection.mutations.reduce((latest, mutation) => {
+      if (mutation.kind !== "fade-in" && mutation.kind !== "draw-in" && mutation.kind !== "write-in") return latest;
+      return mutation.entityId === entityId ? Math.max(latest, mutation.interval.end) : latest;
+    }, 0);
+    if (currentTime < entranceEnd - 0.0005) {
+      return "Move the playhead to the end of the Pen entrance before creating Path Morph.";
+    }
+    if (lockedEntityIdSet.has(entityId)) return LOCKED_ENTITY_MUTATION_MESSAGE;
+    if (canonicalGroupedChildIds.has(entityId)) return "Path Morph currently supports only ungrouped root objects.";
+    if (draftEdit) return "Apply or discard the current draft before creating Path Morph.";
+    const latest = pathMorphMutationsForRoot(entityId).at(-1);
+    if (latest && currentTime < latest.interval.end - 0.0005) {
+      return "Move the playhead to the end of the latest Path Morph before appending another one.";
+    }
+    return currentPathMorphPath(entityId) ? null : "The Pen path topology is unavailable.";
+  }
+
+  function addPathMorph(entityId: string) {
+    const unavailable = pathMorphUnavailableReason(entityId);
+    if (unavailable) {
+      setDraftError(unavailable);
+      return false;
+    }
+    const from = currentPathMorphPath(entityId);
+    const gestureContext = directGestureContext();
+    if (!from || !gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "creating a Path Morph",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor) return false;
+    const remainingDuration = sourceScene.duration - anchor.sourceTime;
+    if (remainingDuration < 0.1 - 0.0005) {
+      setDraftError("Move the playhead at least 0.1 seconds before the end of the Scene.");
+      return false;
+    }
+    const duration = Math.min(1, remainingDuration);
+    try {
+      const validation = createPathMorphProgram({
+        capturedPlayhead: anchor.sourceTime,
+        easing: "smooth",
+        end: anchor.sourceTime + duration,
+        entityId,
+        from,
+        scene: sourceScene,
+        start: anchor.sourceTime,
+        to: from,
+        transactionId: `studio-path-morph-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(
+        validated.record,
+        [entityId],
+        gestureContext.sourcePrograms,
+        null,
+        null,
+        anchor.workingTime + duration,
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Path Morph could not be created.");
+      return false;
+    }
+  }
+
+  function stagePathMorph(clip: StudioPathMorphTimelineClip, change: StudioPathMorphClipChange = {}) {
+    if (clip.readOnlyReason) {
+      setDraftError(clip.readOnlyReason);
+      return false;
+    }
+    const programIndex = appliedEdits.findIndex(({ program }) => program.transactionId === clip.transactionId);
+    const original = appliedEdits[programIndex];
+    const base = previewAppliedEdits[programIndex];
+    if (!original || !base || base.program.transactionId !== clip.transactionId) {
+      setDraftError("The Path Morph no longer matches the applied Program history.");
+      return false;
+    }
+    try {
+      const preceding = sourceSceneBeforeAppliedProgram(programIndex);
+      const validation = replacePathMorphProgram({
+        baseProgram: base.program,
+        duration: change.duration,
+        easing: change.easing,
+        scene: preceding.scene,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      const workingEnd = clip.interval.start + (change.duration ?? clip.interval.end - clip.interval.start);
+      return installCanonicalDraft(
+        validated.record,
+        [clip.entityId],
+        preceding.canonical,
+        null,
+        {
+          index: programIndex,
+          original,
+        },
+        workingEnd,
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Path Morph could not be edited.");
+      return false;
+    }
+  }
+
+  function changePathMorphTarget(pointRef: StudioCubicBezierPointRef, viewportPoint: Point) {
+    const program = draftEdit?.program;
+    const clip = program ? pathMorphClipFromProgram(program) : null;
+    const creation = clip ? studioCubicBezierCreation(clip.entityId) : null;
+    if (!program || !clip || !creation || !draftSourceScene) return false;
+    const frame = workspace?.frame ?? { height: 8, width: 14.222 };
+    const localPoint = sceneOffsetFromViewport(viewportPoint, creation.position, frame);
+    try {
+      const validation = replacePathMorphProgram({
+        baseProgram: program,
+        scene: draftSourceScene,
+        to: replacePathMorphPoint(clip.to, pointRef, localPoint),
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(
+        validated.record,
+        [clip.entityId],
+        draftPrecedingSceneEdits,
+        null,
+        editingAppliedProgram ? { index: editingAppliedProgram.index, original: editingAppliedProgram.original } : null,
+        currentTime,
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Path Morph target could not be changed.");
+      return false;
+    }
+  }
+
+  function deletePathMorph(clip: StudioPathMorphTimelineClip) {
+    const latest = appliedEdits.at(-1);
+    const mutation = programUndoEntries.at(-1);
+    if (
+      !latest ||
+      latest.program.transactionId !== clip.transactionId ||
+      !mutation ||
+      mutation.kind !== "append" ||
+      mutation.value.program.transactionId !== clip.transactionId
+    ) {
+      setDraftError("Undo later edits and Path Morph changes before deleting this clip.");
+      return false;
+    }
+    if (draftEdit) {
+      if (editingAppliedProgram?.original.program.transactionId !== clip.transactionId) {
+        setDraftError("Apply or discard the current draft before deleting Path Morph.");
+        return false;
+      }
+      const planned = undoEditorProgramTransition(discardEditorDraftTransition(editorState));
+      if (!editorDocumentAuthority.enabled) {
+        installAcceptedState(planned);
+        return true;
+      }
+      const lifecycleBlocker = readDurationBlocker();
+      if (lifecycleBlocker || !editorDocumentAuthority.canAuthor()) {
+        setDraftError(lifecycleBlocker ?? editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
+        return false;
+      }
+      void commitEditorProgramMutation(collaborationMutationForUndoV1(mutation), planned);
+      return true;
+    }
+    return undoProgramCommitFirst();
+  }
+
   function shapeTransformMutationsForRoot(entityId: string) {
     return (workspaceCreationProjection?.mutations ?? [])
       .filter(
@@ -5456,9 +5752,9 @@ export function App({
     return owner && creations.length === 1 && creation?.kind === "CreateEntity" ? { creation, owner } : null;
   }
 
-  function cubicBezierOwnedCreation(entityId: string) {
+  function studioCubicBezierCreation(entityId: string) {
     const owned = studioOwnedCreation(entityId, "CubicBezier");
-    if (!owned?.creation.entity.cubicBezier || owned.owner.programIndex !== appliedEdits.length - 1) return null;
+    if (!owned?.creation.entity.cubicBezier) return null;
     const positions = owned.owner.record.program.operations.filter(
       (operation) =>
         operation.kind === "SetProperty" && operation.entityId === entityId && operation.key === "position",
@@ -5476,6 +5772,11 @@ export function App({
     )
       return null;
     return { ...owned, position: { x: position.x, y: position.y } };
+  }
+
+  function cubicBezierOwnedCreation(entityId: string) {
+    const owned = studioCubicBezierCreation(entityId);
+    return owned && owned.owner.programIndex === appliedEdits.length - 1 ? owned : null;
   }
 
   async function normalizeAndStageCubicBezier(
@@ -8604,38 +8905,44 @@ export function App({
       : null;
 
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
+  const activePathMorphDraft = draftEdit ? pathMorphClipFromProgram(draftEdit.program) : null;
+  const activePathMorphCreation = activePathMorphDraft
+    ? studioCubicBezierCreation(activePathMorphDraft.entityId)
+    : null;
   const selectedCubicBezierCreation =
     selectedEntity?.type === "CubicBezier" && !draftEdit && !editingAppliedProgram
-      ? cubicBezierOwnedCreation(selectedEntity.id)
+      ? studioCubicBezierCreation(selectedEntity.id)
       : null;
+  const selectedCubicBezierCreationEditable =
+    selectedCubicBezierCreation?.owner.programIndex === appliedEdits.length - 1;
   const selectedCubicBezierControls = (() => {
-    const cubicBezier = selectedCubicBezierCreation?.creation.entity.cubicBezier;
-    if (!selectedCubicBezierCreation || !cubicBezier) return null;
+    const owner = activePathMorphCreation ?? (selectedCubicBezierCreationEditable ? selectedCubicBezierCreation : null);
+    const cubicBezier = owner?.creation.entity.cubicBezier;
+    const path = activePathMorphDraft?.to ?? (cubicBezier ? cubicBezierPathFromSpec(cubicBezier) : null);
+    if (!owner || !path) return null;
     const frame = workspace?.frame ?? { height: 8, width: 14.222 };
     const toViewport = (point: Point) => {
       const offset = viewportOffsetFromScene(point, frame);
       return {
-        x: selectedCubicBezierCreation.position.x + offset.x,
-        y: selectedCubicBezierCreation.position.y + offset.y,
+        x: owner.position.x + offset.x,
+        y: owner.position.y + offset.y,
       };
     };
     return {
-      entityId: selectedCubicBezierCreation.creation.entity.id,
-      segments: [
-        { control1: cubicBezier.control1, control2: cubicBezier.control2, end: cubicBezier.end },
-        ...(cubicBezier.continuationSegments ?? []),
-      ].map((segment) => ({
+      entityId: owner.creation.entity.id,
+      segments: path.segments.map((segment) => ({
         control1: toViewport(segment.control1),
         control2: toViewport(segment.control2),
         end: toViewport(segment.end),
       })),
-      start: toViewport(cubicBezier.start),
+      start: toViewport(path.start),
     } as const;
   })();
   const selectedCubicBezierStyle = selectedCubicBezierCreation?.creation.entity.cubicBezier
     ? {
         arrowEnd: selectedCubicBezierCreation.creation.entity.cubicBezier.arrowEnd,
         closed: selectedCubicBezierCreation.creation.entity.cubicBezier.closed ?? false,
+        creationEditable: selectedCubicBezierCreationEditable,
         entityId: selectedCubicBezierCreation.creation.entity.id,
         extensionActive: cubicBezierExtensionEntityId === selectedCubicBezierCreation.creation.entity.id,
         segmentCount: 1 + (selectedCubicBezierCreation.creation.entity.cubicBezier.continuationSegments?.length ?? 0),
@@ -8688,21 +8995,21 @@ export function App({
         ? "Remove Write before assigning a fragment material to this object."
         : null
     : null;
+  const selectedFragmentMaterialPaintAvailable =
+    selectedFragmentMaterialEntity !== null &&
+    ((selectedFragmentMaterialEntity.geometry.style.kind === "known" &&
+      selectedFragmentMaterialEntity.geometry.style.value.fillColor != null) ||
+      selectedSvgPathHasFill === true ||
+      selectedFragmentMaterialEntity.type === "Line" ||
+      (selectedFragmentMaterialEntity.type === "CubicBezier" &&
+        selectedCubicBezierCreation?.creation.entity.id === selectedFragmentMaterialEntity.id &&
+        selectedCubicBezierCreation.creation.entity.cubicBezier?.closed !== true));
   const selectedFragmentMaterialAvailable =
     previewMutationAvailable &&
     draftEdit === null &&
     !selectedEntityLocked &&
-    selectedFragmentMaterialEntity !== null &&
     selectedFragmentMaterialPaintColorTrack === null &&
-    selectedFragmentMaterialEntity.geometry.style.kind === "known" &&
-    ((selectedFragmentMaterialEntity.geometry.style.value.fillColor !== undefined &&
-      selectedFragmentMaterialEntity.geometry.style.value.fillColor !== null) ||
-      selectedSvgPathHasFill === true ||
-      ((selectedFragmentMaterialEntity.type === "Line" ||
-        (selectedFragmentMaterialEntity.type === "CubicBezier" &&
-          studioCreationProjectionEntityFor(selectedFragmentMaterialEntity.id)?.cubicBezier?.closed === false)) &&
-        selectedFragmentMaterialEntity.geometry.style.value.fillColor == null &&
-        selectedFragmentMaterialEntity.geometry.style.value.strokeColor != null));
+    selectedFragmentMaterialPaintAvailable;
   const activeSceneHasFragmentMaterialAssignments = sceneHasFragmentMaterialAssignmentsV1(activeSceneFragmentMaterials);
   const activeSceneFragmentMaterialCompileError = studioFragmentMaterialCompileErrorV1(
     activeSceneFragmentMaterials,
@@ -9770,12 +10077,16 @@ export function App({
               opacityTracks={opacityTracks}
               paintColorTrackEligibleProperties={paintColorTrackEligibleProperties}
               paintColorTracks={paintColorTracks}
+              pathMorphClips={pathMorphClips}
               rotationTrackEligibleIds={rotationTrackEligibleIds}
               rotationTracks={rotationTracks}
               resizeUnavailableIds={studioResizeUnavailableIds}
               scaleTrackEligibleIds={scaleTrackEligibleIds}
               scaleTracks={scaleTracks}
               shapeTransformClips={shapeTransformClips}
+              pathMorphUnavailableReason={
+                selectedCubicBezierStyle ? pathMorphUnavailableReason(selectedCubicBezierStyle.entityId) : null
+              }
               writeInClips={writeInClips}
               writeInAvailability={writeInAvailability}
               uniformScaleResizeOnlyIds={studioUniformScaleResizeOnlyIds}
@@ -9800,7 +10111,9 @@ export function App({
                 else void insertEntitiesAt(point);
               }}
               onCubicBezierControlChange={(name, point) => {
-                if (selectedCubicBezierControls) {
+                if (activePathMorphDraft) {
+                  changePathMorphTarget(name, point);
+                } else if (selectedCubicBezierControls) {
                   changeCubicBezierControl(selectedCubicBezierControls.entityId, name, point);
                 }
               }}
@@ -9845,6 +10158,9 @@ export function App({
               onCubicBezierStyleChange={(change) => {
                 if (selectedCubicBezierStyle) changeCubicBezierStyle(selectedCubicBezierStyle.entityId, change);
               }}
+              onPathMorphAdd={() => {
+                if (selectedCubicBezierStyle) addPathMorph(selectedCubicBezierStyle.entityId);
+              }}
               onCurveInsertSettingsChange={setCurveInsertSettings}
               onInsertAtCenter={() => void insertEntitiesAt({ x: 320, y: 180 })}
               onImageAssetDrop={
@@ -9886,6 +10202,9 @@ export function App({
               onPaintColorKeyframeChange={changePaintColorKeyframe}
               onPaintColorKeyframeDelete={deletePaintColorKeyframe}
               onPaintColorKeyframeDuplicate={duplicatePaintColorKeyframe}
+              onPathMorphClipChange={stagePathMorph}
+              onPathMorphClipDelete={deletePathMorph}
+              onPathMorphClipSelect={(clip) => void stagePathMorph(clip)}
               onRotationKeyframeAdd={addRotationKeyframe}
               onRotationKeyframeChange={changeRotationKeyframe}
               onRotationKeyframeDelete={deleteRotationKeyframe}

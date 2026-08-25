@@ -102,6 +102,63 @@ fn shape_transform_wire_uses_the_bounded_flat_contract() {
 }
 
 #[test]
+fn path_morph_wire_keeps_geometry_separate_from_appearance() {
+    let operation: StudioCreationOperationKind = serde_json::from_value(serde_json::json!({
+        "kind": "path-morph",
+        "easing": "smooth",
+        "fromPath": {
+            "closed": false,
+            "start": { "x": -1.0, "y": 0.0 },
+            "segments": [{
+                "control1": { "x": -0.5, "y": 1.0 },
+                "control2": { "x": 0.5, "y": 1.0 },
+                "end": { "x": 1.0, "y": 0.0 }
+            }]
+        },
+        "toPath": {
+            "closed": false,
+            "start": { "x": -1.0, "y": 0.0 },
+            "segments": [{
+                "control1": { "x": -0.5, "y": -1.0 },
+                "control2": { "x": 0.5, "y": -1.0 },
+                "end": { "x": 1.0, "y": 0.0 }
+            }]
+        }
+    }))
+    .unwrap();
+    let StudioCreationOperationKind::PathMorph {
+        easing,
+        from_path,
+        to_path,
+    } = operation
+    else {
+        panic!("path-morph must deserialize to the canonical operation");
+    };
+    assert_eq!(easing, StudioPropertyEasing::Smooth);
+    assert!(!from_path.closed);
+    assert_eq!(from_path.segments.len(), 1);
+
+    let projection = StudioCreationProjectedMutationKind::PathMorph {
+        easing: EasingV1::ManimSmooth {},
+        from_path,
+        to_path,
+    };
+    let serialized = serde_json::to_value(projection).unwrap();
+    assert_eq!(serialized["kind"], "path-morph");
+    assert_eq!(serialized["easing"]["kind"], "manim-smooth");
+    assert!(serialized.get("fillColor").is_none());
+    assert!(serialized.get("strokeWidth").is_none());
+    assert_eq!(
+        serialized["fromPath"]["segments"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        serialized["toPath"]["segments"].as_array().unwrap().len(),
+        1
+    );
+}
+
+#[test]
 fn paint_color_keyframe_wire_uses_one_property_discriminant() {
     let operation: StudioCreationOperationKind = serde_json::from_value(serde_json::json!({
         "kind": "paint-color-keyframes",
@@ -450,6 +507,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 scale: 1.25,
                 uniform_scale_keyframes: vec![],
                 source_z_index: None,
+                path_morph: None,
                 shape_morph: None,
                 stroke_color: None,
                 stroke_cap: None,
@@ -484,6 +542,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 scale: 0.5,
                 uniform_scale_keyframes: vec![],
                 source_z_index: None,
+                path_morph: None,
                 shape_morph: None,
                 stroke_color: None,
                 stroke_cap: None,
@@ -523,6 +582,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 scale: 2.0,
                 uniform_scale_keyframes: vec![],
                 source_z_index: None,
+                path_morph: None,
                 shape_morph: None,
                 stroke_color: None,
                 stroke_cap: None,
@@ -5277,6 +5337,44 @@ fn studio_closed_cubic_bezier_creation_command(
     command
 }
 
+fn studio_path_morph_program(
+    entity_id: &str,
+    from_path: CubicSubpathV1,
+    to_path: CubicSubpathV1,
+) -> StudioCreationEditInput {
+    let operation_id = "morph-pen-path";
+    StudioCreationEditInput {
+        anchor_captured_playhead: 1.5,
+        anchor_resolved_seconds: 1.5,
+        anchor_source: SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(1.5),
+        },
+        intent_count: 1,
+        lowering_supported: false,
+        operations: vec![StudioCreationOperation {
+            depends_on: Vec::new(),
+            entity_id: Some(entity_id.to_owned()),
+            id: operation_id.to_owned(),
+            interval: IntervalV1 {
+                end: 2.0,
+                start: 1.5,
+            },
+            kind: StudioCreationOperationKind::PathMorph {
+                easing: StudioPropertyEasing::Smooth,
+                from_path,
+                to_path,
+            },
+            origin: StudioAuthoringOrigin::DirectManipulation,
+        }],
+        origin: StudioAuthoringOrigin::DirectManipulation,
+        requested_execution: SceneEditExecution::Sequence,
+        schedule_edge_count: 0,
+        schedule_mode: SceneEditScheduleMode::Sequence,
+        schedule_order: vec![operation_id.to_owned()],
+        transaction_id: "morph-pen-path".to_owned(),
+    }
+}
+
 #[test]
 fn normalized_closed_cubic_bezier_keeps_fill_and_rejects_draw() {
     let bundle = static_imported_bundle();
@@ -5326,6 +5424,249 @@ fn normalized_closed_cubic_bezier_keeps_fill_and_rejects_draw() {
             && (*green - 197.0 / 255.0).abs() < 1.0e-12
             && (*blue - 94.0 / 255.0).abs() < 1.0e-12
     ));
+}
+
+#[test]
+fn normalized_pen_path_morph_uses_the_existing_channel_and_preserves_appearance() {
+    let bundle = static_imported_bundle();
+    let mut command = studio_closed_cubic_bezier_creation_command(&bundle, false);
+    let StudioCreationOperationKind::Create { entity } = &command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    let entity_id = entity.id.clone();
+    let curve = normalize_studio_cubic_bezier(entity.cubic_bezier.as_ref().unwrap()).unwrap();
+    let from_path = curve.path.subpaths[0].clone();
+    let mut to_path = from_path.clone();
+    to_path.segments[0].control1.y -= 0.75;
+    to_path.segments[0].control2.x -= 0.5;
+    command.programs.push(studio_path_morph_program(
+        &entity_id,
+        from_path.clone(),
+        to_path.clone(),
+    ));
+
+    let projection =
+        project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+    let projected = projection
+        .mutations
+        .iter()
+        .find(|mutation| {
+            matches!(
+                mutation.kind,
+                StudioCreationProjectedMutationKind::PathMorph { .. }
+            )
+        })
+        .unwrap();
+    assert!(matches!(
+        &projected.kind,
+        StudioCreationProjectedMutationKind::PathMorph {
+            easing: EasingV1::ManimSmooth {},
+            from_path: projected_from,
+            to_path: projected_to,
+        } if projected_from == &from_path && projected_to == &to_path
+    ));
+
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    let created = result
+        .bundle
+        .scene
+        .entities
+        .iter()
+        .find(|candidate| candidate.id == entity_id)
+        .unwrap();
+    assert!(matches!(
+        &created.geometry,
+        SceneGeometryV1::CubicPath { path } if path.subpaths == [from_path.clone()]
+    ));
+    assert!(matches!(
+        &created.appearance,
+        SceneAppearanceV1::Vector {
+            fill: Some(FillStyleV1 {
+                color: RgbaColorV1 { alpha, blue, green, red },
+                rule: FillRuleV1::NonZero,
+                ..
+            }),
+            stroke: Some(_),
+            ..
+        } if (*alpha - 1.0).abs() < 1.0e-12
+            && (*red - 34.0 / 255.0).abs() < 1.0e-12
+            && (*green - 197.0 / 255.0).abs() < 1.0e-12
+            && (*blue - 94.0 / 255.0).abs() < 1.0e-12
+    ));
+    let keyframes = result
+        .bundle
+        .scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::PathMorph {
+                entity_id: target_id,
+                keyframes,
+                ..
+            } if target_id == &entity_id => Some(keyframes),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(keyframes.len(), 2);
+    assert_eq!(keyframes[0].value.subpaths, [from_path]);
+    assert_eq!(keyframes[1].value.subpaths, [to_path]);
+    assert!(
+        result
+            .bundle
+            .scene
+            .required_capabilities
+            .contains(&SceneCapabilityV1::PathMorphAnimation)
+    );
+
+    let sample_path = |sample_time| {
+        session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "studio-pen-path-morph",
+                sample_time,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap()
+            .draws
+            .into_iter()
+            .find_map(|draw| match draw {
+                poietra_scene_ir::RenderDrawV1::Path {
+                    entity_id: target_id,
+                    path,
+                    ..
+                } if target_id == entity_id => Some(path),
+                _ => None,
+            })
+            .unwrap()
+    };
+    let start = sample_path(keyframes[0].at);
+    let midpoint = sample_path(f64::midpoint(keyframes[0].at, keyframes[1].at));
+    let end = sample_path(keyframes[1].at);
+    assert_ne!(start, midpoint);
+    assert_ne!(midpoint, end);
+    assert_ne!(start, end);
+}
+
+#[test]
+fn normalized_pen_path_morph_accepts_an_editable_noop_target() {
+    let bundle = static_imported_bundle();
+    let mut command = studio_closed_cubic_bezier_creation_command(&bundle, false);
+    let StudioCreationOperationKind::Create { entity } = &command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    let entity_id = entity.id.clone();
+    let path = normalize_studio_cubic_bezier(entity.cubic_bezier.as_ref().unwrap())
+        .unwrap()
+        .path
+        .subpaths
+        .remove(0);
+    command
+        .programs
+        .push(studio_path_morph_program(&entity_id, path.clone(), path));
+
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    let keyframes = result
+        .bundle
+        .scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::PathMorph {
+                entity_id: target_id,
+                keyframes,
+                ..
+            } if target_id == &entity_id => Some(keyframes),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(keyframes.len(), 2);
+    assert_eq!(keyframes[0].value, keyframes[1].value);
+
+    let packet = session
+        .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+            evidence: &[],
+            packet_id: "studio-pen-noop-path-morph",
+            sample_time: f64::midpoint(keyframes[0].at, keyframes[1].at),
+            viewport: poietra_scene_ir::ViewportV1 {
+                height_px: 900,
+                width_px: 1600,
+            },
+        })
+        .unwrap();
+    assert!(packet.draws.iter().any(|draw| matches!(
+        draw,
+        poietra_scene_ir::RenderDrawV1::Path {
+            entity_id: target_id,
+            ..
+        } if target_id == &entity_id
+    )));
+}
+
+#[test]
+fn normalized_pen_path_morph_rejects_stale_or_mismatched_topology() {
+    let bundle = static_imported_bundle();
+    let mut command = studio_closed_cubic_bezier_creation_command(&bundle, false);
+    let StudioCreationOperationKind::Create { entity } = &command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    let curve = normalize_studio_cubic_bezier(entity.cubic_bezier.as_ref().unwrap()).unwrap();
+    let from_path = curve.path.subpaths[0].clone();
+    let mut to_path = from_path.clone();
+    to_path.segments[0].control1.y -= 0.75;
+    command
+        .programs
+        .push(studio_path_morph_program(&entity.id, from_path, to_path));
+
+    let rejects = |candidate: &ApplyStudioCreationEditCommand| {
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &candidate.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+    };
+
+    let mut stale = command.clone();
+    let StudioCreationOperationKind::PathMorph { from_path, .. } =
+        &mut stale.programs[1].operations[0].kind
+    else {
+        unreachable!();
+    };
+    from_path.start.x += 0.25;
+    rejects(&stale);
+
+    let mut changed_closure = command.clone();
+    let StudioCreationOperationKind::PathMorph { to_path, .. } =
+        &mut changed_closure.programs[1].operations[0].kind
+    else {
+        unreachable!();
+    };
+    to_path.closed = !to_path.closed;
+    rejects(&changed_closure);
+
+    let mut changed_segment_count = command.clone();
+    let StudioCreationOperationKind::PathMorph { to_path, .. } =
+        &mut changed_segment_count.programs[1].operations[0].kind
+    else {
+        unreachable!();
+    };
+    to_path.segments.clear();
+    rejects(&changed_segment_count);
+
+    let mut non_finite = command;
+    let StudioCreationOperationKind::PathMorph { to_path, .. } =
+        &mut non_finite.programs[1].operations[0].kind
+    else {
+        unreachable!();
+    };
+    to_path.segments[0].control1.x = f64::NAN;
+    rejects(&non_finite);
 }
 
 #[test]

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { studioCubicBezierSpecSchema } from "../engine/cubic-bezier-authoring";
+import { studioCubicBezierPathSchema, studioCubicBezierSpecSchema } from "../engine/cubic-bezier-authoring";
 import { assetReferenceV1Schema, fragmentMaterialV1Schema } from "../engine/primitives";
 import { studioPropertyKeyframeEasingSchema } from "../engine/scene-authoring";
 import { styleProfileRefSchema } from "./style-profile";
@@ -208,6 +208,13 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
         shape: z.enum(["circle", "ellipse", "rectangle", "regular-polygon", "triangle"]),
       })
       .strict(),
+  }),
+  operationBaseSchema.extend({
+    easing: z.enum(["linear", "smooth"]),
+    entityId: z.string(),
+    from: studioCubicBezierPathSchema,
+    kind: z.literal("TransformPath"),
+    to: studioCubicBezierPathSchema,
   }),
   operationBaseSchema.extend({
     easing: z.enum(["linear", "smooth"]).optional(),

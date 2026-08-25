@@ -58,6 +58,7 @@ export type StudioToolbarProps = Readonly<{
   onCubicBezierExtensionToggle?: () => void;
   onCubicBezierRemoveLastSegment?: () => void;
   onCubicBezierStyleChange?: (change: CubicBezierStyleChange) => void;
+  onPathMorphAdd?: () => void;
   onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
   onInsertAtCenter: () => void;
   onInsertValueChange: (value: string) => void;
@@ -65,6 +66,7 @@ export type StudioToolbarProps = Readonly<{
   onSelectionLayout: (command: SelectionLayoutCommand) => void;
   onToolChange: (tool: StudioTool) => void;
   polygonSides: number;
+  pathMorphUnavailableReason?: string | null;
   selectionCount: number;
   selectionLayoutUnavailableReason: string | null;
   tool: StudioTool;
@@ -73,6 +75,7 @@ export type StudioToolbarProps = Readonly<{
 export type CubicBezierStyleSettings = Readonly<{
   arrowEnd: boolean;
   closed: boolean;
+  creationEditable: boolean;
   entityId: string;
   extensionActive: boolean;
   segmentCount: number;
@@ -115,6 +118,7 @@ export function StudioToolbar({
   onCubicBezierExtensionToggle,
   onCubicBezierRemoveLastSegment,
   onCubicBezierStyleChange,
+  onPathMorphAdd,
   onCurveInsertSettingsChange,
   onInsertAtCenter,
   onInsertValueChange,
@@ -122,6 +126,7 @@ export function StudioToolbar({
   onSelectionLayout,
   onToolChange,
   polygonSides,
+  pathMorphUnavailableReason = null,
   selectionCount,
   selectionLayoutUnavailableReason,
   tool,
@@ -225,6 +230,7 @@ export function StudioToolbar({
               className="h-8 border border-zinc-700 px-2 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
               disabled={
                 !authoringAvailable ||
+                !cubicBezierStyle.creationEditable ||
                 cubicBezierStyle.closed ||
                 cubicBezierStyle.segmentCount >= 8 ||
                 !onCubicBezierExtensionToggle
@@ -237,7 +243,12 @@ export function StudioToolbar({
             </button>
             <button
               className="h-8 border border-zinc-700 px-2 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
-              disabled={!authoringAvailable || cubicBezierStyle.segmentCount <= 1 || !onCubicBezierRemoveLastSegment}
+              disabled={
+                !authoringAvailable ||
+                !cubicBezierStyle.creationEditable ||
+                cubicBezierStyle.segmentCount <= 1 ||
+                !onCubicBezierRemoveLastSegment
+              }
               onClick={onCubicBezierRemoveLastSegment}
               title="Remove the last path segment"
               type="button"
@@ -247,12 +258,21 @@ export function StudioToolbar({
             <button
               aria-pressed={cubicBezierStyle.closed}
               className="h-8 border border-zinc-700 px-2 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
-              disabled={!authoringAvailable || !onCubicBezierClosedToggle}
+              disabled={!authoringAvailable || !cubicBezierStyle.creationEditable || !onCubicBezierClosedToggle}
               onClick={onCubicBezierClosedToggle}
               title={cubicBezierStyle.closed ? "Reopen this path" : "Close and fill this path"}
               type="button"
             >
               {cubicBezierStyle.closed ? "Reopen path" : "Close path"}
+            </button>
+            <button
+              className="h-8 border border-zinc-700 px-2 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-600"
+              disabled={!authoringAvailable || pathMorphUnavailableReason !== null || !onPathMorphAdd}
+              onClick={onPathMorphAdd}
+              title={pathMorphUnavailableReason ?? "Animate this Pen path by editing target handles"}
+              type="button"
+            >
+              + Path Morph
             </button>
           </div>
           <label className="w-28 text-[10px] text-zinc-500">
@@ -260,7 +280,7 @@ export function StudioToolbar({
             <select
               aria-label="Cubic Bézier stroke cap"
               className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-100 outline-none focus:border-sky-500"
-              disabled={!authoringAvailable}
+              disabled={!authoringAvailable || !cubicBezierStyle.creationEditable}
               onChange={(event) =>
                 onCubicBezierStyleChange({
                   strokeCap: event.currentTarget.value as CubicBezierStyleSettings["strokeCap"],
@@ -279,7 +299,7 @@ export function StudioToolbar({
               aria-label="Cubic Bézier stroke width"
               className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs tabular-nums text-zinc-100 outline-none focus:border-sky-500"
               defaultValue={cubicBezierStyle.strokeWidth}
-              disabled={!authoringAvailable}
+              disabled={!authoringAvailable || !cubicBezierStyle.creationEditable}
               key={`${cubicBezierStyle.entityId}:${cubicBezierStyle.strokeWidth}`}
               max={0.5}
               min={0.005}
@@ -296,7 +316,7 @@ export function StudioToolbar({
           <label className="flex h-8 items-center gap-2 border border-zinc-700 px-2 text-xs text-zinc-300">
             <input
               checked={cubicBezierStyle.arrowEnd}
-              disabled={!authoringAvailable || cubicBezierStyle.closed}
+              disabled={!authoringAvailable || !cubicBezierStyle.creationEditable || cubicBezierStyle.closed}
               onChange={(event) => onCubicBezierStyleChange({ arrowEnd: event.currentTarget.checked })}
               title={cubicBezierStyle.closed ? "Reopen the path before adding an arrow end" : undefined}
               type="checkbox"

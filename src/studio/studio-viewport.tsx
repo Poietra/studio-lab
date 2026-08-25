@@ -74,6 +74,7 @@ export type StudioViewportProps = Readonly<
       onCubicBezierExtensionToggle?: () => void;
       onCubicBezierRemoveLastSegment?: () => void;
       onCubicBezierStyleChange?: (change: CubicBezierStyleChange) => void;
+      onPathMorphAdd?: () => void;
       onCurveInsertSettingsChange: (settings: CurveInsertSettings) => void;
       onInsertAtCenter: () => void;
       onInsertToolChange: (tool: StudioTool) => void;
@@ -81,6 +82,7 @@ export type StudioViewportProps = Readonly<
       onPolygonSidesChange: (sides: number) => void;
       onSelectionLayout: (command: SelectionLayoutCommand) => void;
       polygonSides: number;
+      pathMorphUnavailableReason?: string | null;
       projection: ProposedStateProjection;
       readOnly?: boolean;
       selectionLayoutUnavailableReason: string | null;
@@ -131,6 +133,7 @@ export function StudioViewport({
   opacityTracks,
   paintColorTrackEligibleProperties,
   paintColorTracks,
+  pathMorphClips,
   rotationTrackEligibleIds,
   rotationTracks,
   scaleTrackEligibleIds,
@@ -176,6 +179,7 @@ export function StudioViewport({
   onCubicBezierExtensionToggle,
   onCubicBezierRemoveLastSegment,
   onCubicBezierStyleChange,
+  onPathMorphAdd,
   onCurveInsertSettingsChange,
   onInsertAtCenter,
   onImageAssetDrop,
@@ -200,6 +204,9 @@ export function StudioViewport({
   onPaintColorKeyframeChange,
   onPaintColorKeyframeDelete,
   onPaintColorKeyframeDuplicate,
+  onPathMorphClipChange,
+  onPathMorphClipDelete,
+  onPathMorphClipSelect,
   onRotationKeyframeAdd,
   onRotationKeyframeChange,
   onRotationKeyframeDelete,
@@ -238,6 +245,7 @@ export function StudioViewport({
   projection,
   readOnly = false,
   rotationHandleEntityId,
+  pathMorphUnavailableReason,
   resizeUnavailableIds,
   selectedIds,
   selectionLayoutUnavailableReason,
@@ -257,6 +265,7 @@ export function StudioViewport({
           onCubicBezierExtensionToggle={onCubicBezierExtensionToggle}
           onCubicBezierRemoveLastSegment={onCubicBezierRemoveLastSegment}
           onCubicBezierStyleChange={onCubicBezierStyleChange}
+          onPathMorphAdd={onPathMorphAdd}
           onCurveInsertSettingsChange={onCurveInsertSettingsChange}
           onInsertAtCenter={onInsertAtCenter}
           onInsertValueChange={onInsertValueChange}
@@ -264,6 +273,7 @@ export function StudioViewport({
           onSelectionLayout={onSelectionLayout}
           onToolChange={onInsertToolChange}
           polygonSides={polygonSides}
+          pathMorphUnavailableReason={pathMorphUnavailableReason}
           selectionCount={selectedIds.size}
           selectionLayoutUnavailableReason={selectionLayoutUnavailableReason}
           tool={insertTool}
@@ -362,6 +372,7 @@ export function StudioViewport({
           opacityTracks={opacityTracks}
           paintColorTrackEligibleProperties={paintColorTrackEligibleProperties}
           paintColorTracks={paintColorTracks}
+          pathMorphClips={pathMorphClips}
           rotationTrackEligibleIds={rotationTrackEligibleIds}
           rotationTracks={rotationTracks}
           scaleTrackEligibleIds={scaleTrackEligibleIds}
@@ -396,6 +407,9 @@ export function StudioViewport({
           onPaintColorKeyframeChange={onPaintColorKeyframeChange}
           onPaintColorKeyframeDelete={onPaintColorKeyframeDelete}
           onPaintColorKeyframeDuplicate={onPaintColorKeyframeDuplicate}
+          onPathMorphClipChange={onPathMorphClipChange}
+          onPathMorphClipDelete={onPathMorphClipDelete}
+          onPathMorphClipSelect={onPathMorphClipSelect}
           onRotationKeyframeAdd={onRotationKeyframeAdd}
           onRotationKeyframeChange={onRotationKeyframeChange}
           onRotationKeyframeDelete={onRotationKeyframeDelete}

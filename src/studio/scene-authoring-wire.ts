@@ -459,6 +459,16 @@ function normalizedStudioCreationOperation(
       toShape: canonicalShapeTransformKind(operation.to.shape),
     };
   }
+  if (operation.kind === "TransformPath") {
+    return {
+      ...common,
+      easing: operation.easing,
+      entityId: operation.entityId,
+      fromPath: operation.from,
+      kind: "path-morph",
+      toPath: operation.to,
+    };
+  }
   if (operation.kind === "AnimateCamera") {
     return {
       ...common,
