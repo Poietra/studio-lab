@@ -525,6 +525,15 @@ function normalizedStudioCreationOperation(
       targetEntityIds: operation.targetEntityIds,
     };
   }
+  if (operation.kind === "CreatePathMotion") {
+    return {
+      ...common,
+      easing: operation.easing,
+      kind: "create-path-motion",
+      pathEntityId: operation.pathEntityId,
+      targetEntityId: operation.targetEntityId,
+    };
+  }
   if (operation.kind === "GroupEntities") {
     return {
       ...common,

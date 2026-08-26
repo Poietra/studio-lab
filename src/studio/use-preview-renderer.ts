@@ -634,9 +634,12 @@ type ExactAppliedAuthoringProjections = Readonly<{
 async function projectExactAppliedAuthoringPrefix(
   input: Readonly<{
     baseDuration: number;
+    cameraCenter: Readonly<{ x: number; y: number }>;
+    frame: Readonly<{ height: number; width: number }>;
     full: ExactAppliedAuthoringProjections;
     projectStudioCreationCompiler?: ProjectStudioCreationCompiler;
     projectStudioTimelineCompiler?: ProjectStudioTimelineCompiler;
+    viewport: Readonly<{ height: number; width: number }>;
     workingState: WorkingState;
   }>,
 ): Promise<ExactAppliedAuthoringProjections> {
@@ -649,7 +652,13 @@ async function projectExactAppliedAuthoringPrefix(
   );
   if (hasStudioNativeAuthoring) {
     const projected = await (input.projectStudioCreationCompiler ?? projectStudioCreation)(
-      buildStudioCreationProjectionCommand({ baseDuration: input.baseDuration, programs }),
+      buildStudioCreationProjectionCommand({
+        baseDuration: input.baseDuration,
+        cameraCenter: input.cameraCenter,
+        frame: input.frame,
+        programs,
+        viewport: input.viewport,
+      }),
     );
     const creation = selectCreationProjection(input.baseDuration, programs, projected);
     if (!creation) throw new TypeError("Rust core did not return the exact applied Studio creation projection.");
@@ -1063,9 +1072,12 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
       }
       const appliedProjection = await projectExactAppliedAuthoringPrefix({
         baseDuration: input.snapshot.snapshot.scene.duration,
+        cameraCenter: input.snapshot.snapshot.scene.camera.view.center,
+        frame: input.frame,
         full: { creation: creationProjection, timeline: creationProjection.timelineProjection },
         projectStudioCreationCompiler: input.projectStudioCreationCompiler,
         projectStudioTimelineCompiler: input.projectStudioTimelineCompiler,
+        viewport: STUDIO_VIEWPORT,
         workingState: input.workingState,
       });
       const bundle = result.bundle;
@@ -1473,9 +1485,12 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
       );
       const appliedProjection = await projectExactAppliedAuthoringPrefix({
         baseDuration: input.snapshot.snapshot.scene.duration,
+        cameraCenter: input.snapshot.snapshot.scene.camera.view.center,
+        frame: input.frame,
         full: { creation: null, timeline: timelineProjection },
         projectStudioCreationCompiler: input.projectStudioCreationCompiler,
         projectStudioTimelineCompiler: input.projectStudioTimelineCompiler,
+        viewport: STUDIO_VIEWPORT,
         workingState: input.workingState,
       });
       return {

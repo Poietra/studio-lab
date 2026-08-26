@@ -32,8 +32,9 @@ pub use creation::{
     ProjectStudioCreationEditError, StudioCreationEditInput, StudioCreationEntitySpec,
     StudioCreationImageSpec, StudioCreationOperation, StudioCreationOperationKind,
     StudioCreationProjectedMutation, StudioCreationProjectedMutationKind, StudioCreationProjection,
-    StudioCreationSvgPathSpec, StudioProjectedCreationEntity, StudioPropertyEasing,
-    project_studio_creation_edits,
+    StudioCreationSpatialContext, StudioCreationSvgPathSpec, StudioProjectedCreationEntity,
+    StudioProjectedPathMotion, StudioPropertyEasing, project_studio_creation_edits,
+    project_studio_creation_edits_with_spatial_context,
 };
 pub use cubic_bezier::{
     StudioCreationCubicBezierSpec, StudioCubicBezierError, StudioCubicBezierInspection,

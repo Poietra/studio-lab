@@ -601,6 +601,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
         expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
         groups: vec![],
         motions: vec![],
+        path_motions: vec![],
         next_revision: NEXT_REVISION.to_owned(),
         persistent_removals: vec![],
         provenance: ProvenanceRecordV1 {
@@ -1967,6 +1968,267 @@ fn studio_created_motion_edit_input(target_entity_ids: Vec<String>) -> StudioCre
         schedule_order: vec!["move-created".to_owned()],
         transaction_id: "move-created".to_owned(),
     }
+}
+
+fn studio_pen_path_motion_command(
+    bundle: &SceneIrBundleV1,
+    target_x: f64,
+) -> ApplyStudioCreationEditCommand {
+    let inspection =
+        crate::authoring::inspect_studio_cubic_bezier(&StudioCreationCubicBezierSpec {
+            arrow_end: false,
+            closed: false,
+            control1: PointV1 { x: 1.0, y: 1.0 },
+            control2: PointV1 { x: 2.0, y: 1.0 },
+            continuation_segments: vec![poietra_scene_ir::CubicSegmentV1 {
+                control1: PointV1 { x: 1.0, y: -1.0 },
+                control2: PointV1 { x: -1.0, y: -1.0 },
+                end: PointV1 { x: -2.0, y: 0.0 },
+            }],
+            end: PointV1 { x: 2.0, y: 0.0 },
+            fill_color: None,
+            start: PointV1 { x: 0.0, y: 0.0 },
+            stroke_cap: StudioCubicBezierStrokeCap::Round,
+            stroke_width: 0.04,
+        })
+        .unwrap();
+    assert_eq!(inspection.center_offset, PointV1 { x: 0.0, y: 0.0 });
+
+    let mut command = studio_creation_command(bundle);
+    command.programs.truncate(1);
+    let StudioCreationOperationKind::Position { position } =
+        &mut command.programs[0].operations[1].kind
+    else {
+        unreachable!();
+    };
+    *position = Some(PointV1 {
+        x: target_x,
+        y: 140.0,
+    });
+
+    let path_entity_id = "tx:create-path/entity:guide";
+    let mut create_path = command.programs[0].clone();
+    create_path.transaction_id = "create-path".to_owned();
+    for operation in &mut create_path.operations {
+        operation.id = format!("path-{}", operation.id);
+        operation.depends_on = operation
+            .depends_on
+            .iter()
+            .map(|dependency| format!("path-{dependency}"))
+            .collect();
+        if operation.entity_id.is_some() {
+            operation.entity_id = Some(path_entity_id.to_owned());
+        }
+        match &mut operation.kind {
+            StudioCreationOperationKind::Create { entity } => {
+                entity.id = path_entity_id.to_owned();
+                entity.kind = StudioAuthoringEntityKind::CubicBezier;
+                entity.dimensions = inspection.dimensions;
+                entity.cubic_bezier = Some(inspection.cubic_bezier.clone());
+            }
+            StudioCreationOperationKind::Position { position } => {
+                *position = Some(PointV1 { x: 400.0, y: 140.0 });
+            }
+            StudioCreationOperationKind::FadeIn { .. } => {}
+            _ => unreachable!(),
+        }
+    }
+    create_path.schedule_order = create_path
+        .operations
+        .iter()
+        .map(|operation| operation.id.clone())
+        .collect();
+    command.programs.push(create_path);
+    command.programs.push(StudioCreationEditInput {
+        anchor_captured_playhead: 1.0,
+        anchor_resolved_seconds: 1.0,
+        anchor_source: SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(1.0),
+        },
+        intent_count: 1,
+        lowering_supported: false,
+        operations: vec![StudioCreationOperation {
+            depends_on: vec![],
+            entity_id: None,
+            id: "path-motion".to_owned(),
+            interval: IntervalV1 {
+                end: 2.0,
+                start: 1.0,
+            },
+            kind: StudioCreationOperationKind::CreatePathMotion {
+                easing: StudioMotionEasing::Smooth,
+                path_entity_id: path_entity_id.to_owned(),
+                target_entity_id: "tx:create/entity:circle".to_owned(),
+            },
+            origin: StudioAuthoringOrigin::DirectManipulation,
+        }],
+        origin: StudioAuthoringOrigin::DirectManipulation,
+        requested_execution: SceneEditExecution::Sequence,
+        schedule_edge_count: 0,
+        schedule_mode: SceneEditScheduleMode::Sequence,
+        schedule_order: vec!["path-motion".to_owned()],
+        transaction_id: "path-motion".to_owned(),
+    });
+    command
+}
+
+fn studio_creation_spatial_context(
+    bundle: &SceneIrBundleV1,
+    command: &ApplyStudioCreationEditCommand,
+) -> StudioCreationSpatialContext {
+    StudioCreationSpatialContext {
+        camera_center: bundle.scene.camera.view.center.clone(),
+        frame: command.frame,
+        viewport: command.viewport,
+    }
+}
+
+#[test]
+fn studio_pen_path_motion_projects_and_materializes_the_exact_multisegment_path() {
+    let bundle = static_imported_bundle();
+    // A sub-pixel placement difference is admitted, but the rendered path start
+    // remains the authoritative projection origin.
+    let command = studio_pen_path_motion_command(&bundle, 400.5);
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &command.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+    let projection = project_studio_creation_edits_with_spatial_context(
+        bundle.scene.duration,
+        &command.programs,
+        studio_creation_spatial_context(&bundle, &command),
+    )
+    .unwrap();
+    let [projected] = projection.path_motions.as_slice() else {
+        panic!("one Pen-backed path motion must be projected");
+    };
+    assert_eq!(projected.path.segments.len(), 2);
+    assert_eq!(projected.from, projected.path.start);
+    assert_eq!(projected.from, PointV1 { x: 400.0, y: 140.0 });
+    assert_eq!(projected.to, projected.path.segments.last().unwrap().end);
+
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+    let scene = &result.bundle.scene;
+    let (guide_path, guide_transform) = scene
+        .entities
+        .iter()
+        .find_map(|entity| {
+            if entity.id != "tx:create-path/entity:guide" {
+                return None;
+            }
+            let SceneGeometryV1::CubicPath { path } = &entity.geometry else {
+                return None;
+            };
+            Some((path.clone(), entity.transform.clone()))
+        })
+        .unwrap();
+    let motion_path = scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::MotionPath {
+                entity_id,
+                keyframes,
+                orient_to_path,
+                parameterization,
+                path,
+                ..
+            } if entity_id == "tx:create/entity:circle" => {
+                assert!(!orient_to_path);
+                assert_eq!(
+                    *parameterization,
+                    Some(
+                        poietra_scene_ir::MotionPathParameterizationV1::ManimPointFromProportionV1
+                    )
+                );
+                assert_eq!(keyframes.len(), 2);
+                Some(path)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let expected_world_path = path_motion::path_to_world(&guide_path.subpaths[0], &guide_transform);
+    assert_eq!(motion_path.subpaths, vec![expected_world_path]);
+    assert!(
+        scene
+            .required_capabilities
+            .contains(&SceneCapabilityV1::MotionPathAnimation)
+    );
+}
+
+#[test]
+fn studio_pen_path_motion_rejects_noncanonical_or_conflicting_inputs() {
+    let bundle = static_imported_bundle();
+
+    let too_far = studio_pen_path_motion_command(&bundle, 401.01);
+    assert!(matches!(
+        project_studio_creation_edits_with_spatial_context(
+            bundle.scene.duration,
+            &too_far.programs,
+            studio_creation_spatial_context(&bundle, &too_far),
+        ),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+
+    let mut one_segment = studio_pen_path_motion_command(&bundle, 400.0);
+    let StudioCreationOperationKind::Create { entity } =
+        &mut one_segment.programs[1].operations[0].kind
+    else {
+        unreachable!();
+    };
+    entity
+        .cubic_bezier
+        .as_mut()
+        .unwrap()
+        .continuation_segments
+        .clear();
+    assert!(matches!(
+        project_studio_creation_edits_with_spatial_context(
+            bundle.scene.duration,
+            &one_segment.programs,
+            studio_creation_spatial_context(&bundle, &one_segment),
+        ),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+
+    let mut moving_guide = studio_pen_path_motion_command(&bundle, 400.0);
+    let path_motion = moving_guide.programs.pop().unwrap();
+    moving_guide
+        .programs
+        .push(studio_created_motion_edit_input(vec![
+            "tx:create-path/entity:guide".to_owned(),
+        ]));
+    moving_guide.programs.push(path_motion);
+    assert!(matches!(
+        project_studio_creation_edits_with_spatial_context(
+            bundle.scene.duration,
+            &moving_guide.programs,
+            studio_creation_spatial_context(&bundle, &moving_guide),
+        ),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
+
+    let mut animated_camera = studio_pen_path_motion_command(&bundle, 400.0);
+    let path_motion = animated_camera.programs.pop().unwrap();
+    animated_camera.programs.push(studio_camera_program(
+        "camera-focus-with-path-motion",
+        "camera-focus-with-path-motion",
+        0.25,
+        0.75,
+        bundle.scene.camera.view.clone(),
+        camera_view(2.0, 8.0),
+    ));
+    animated_camera.programs.push(path_motion);
+    assert!(matches!(
+        project_studio_creation_edits_with_spatial_context(
+            bundle.scene.duration,
+            &animated_camera.programs,
+            studio_creation_spatial_context(&bundle, &animated_camera),
+        ),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
 }
 
 fn add_creation_opacity_segment(

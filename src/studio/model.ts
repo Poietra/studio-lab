@@ -1,3 +1,4 @@
+import type { StudioCubicBezierPath } from "../engine/cubic-bezier-authoring";
 import type { EngineEasingV1 } from "../engine/easing";
 import type { SceneEditValidationIssue } from "./operations";
 import type { SceneEdit } from "./scene-edit-contract";
@@ -154,6 +155,10 @@ export type PropertyChannelSample = Readonly<{
   kind: "animated" | "exact";
   knowledge?: Knowledge<EntityDimensions | number | Point>;
   operationId?: string;
+  pathMotion?: Readonly<{
+    path: StudioCubicBezierPath;
+    pathEntityId: string;
+  }>;
   provenanceId: string;
   relative?: boolean;
   sameAnchorOrder?: "before-studio-insertion";

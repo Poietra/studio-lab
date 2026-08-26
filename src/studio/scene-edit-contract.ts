@@ -204,6 +204,12 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   }),
   operationBaseSchema.extend({
     easing: z.enum(["linear", "smooth"]),
+    kind: z.literal("CreatePathMotion"),
+    pathEntityId: z.string().min(1),
+    targetEntityId: z.string().min(1),
+  }),
+  operationBaseSchema.extend({
+    easing: z.enum(["linear", "smooth"]),
     entityId: z.string(),
     from: z
       .object({

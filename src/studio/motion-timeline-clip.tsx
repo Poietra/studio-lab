@@ -13,12 +13,14 @@ export type AppliedMotionClipAnchor = Readonly<{
 
 export type AppliedMotionClip = Readonly<{
   anchors: readonly AppliedMotionClipAnchor[];
+  deleteUnavailableReason?: string | null;
   easing: MotionEasing;
   entityId: string;
   interval: Interval;
   label: string;
   maximumDuration: number;
   operationId: string;
+  penPathMotion?: true;
   programIndex: number;
   readOnlyReason: string | null;
   sourceStart: number;
@@ -27,6 +29,7 @@ export type AppliedMotionClip = Readonly<{
 
 export type AppliedMotionClipChange = Readonly<{
   duration: number;
+  easing?: MotionEasing;
   sourceStart: number;
 }>;
 
@@ -220,7 +223,10 @@ export function TimelineMotionClip({
         onPointerDown={(event) => startDrag("move", event)}
         onPointerMove={moveDrag}
         onPointerUp={finishDrag}
-        title={clip.readOnlyReason ?? `${clip.label} · ${clip.easing} · Drag to a safe source anchor`}
+        title={
+          clip.readOnlyReason ??
+          `${clip.label} · ${clip.easing} · ${(clip.interval.end - clip.interval.start).toFixed(2)}s · Drag to a safe source anchor`
+        }
         type="button"
       >
         <span className="block truncate">Motion</span>

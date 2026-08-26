@@ -63,6 +63,12 @@ export class EditorMotionAdmissionError extends Error {
   }
 }
 
+export type EditorCreationProjectionSpatialContext = Readonly<{
+  cameraCenter: Readonly<{ x: number; y: number }>;
+  frame: Readonly<{ height: number; width: number }>;
+  viewport: Readonly<{ height: number; width: number }>;
+}>;
+
 export function editorProgramsMatchAuthorityV1(
   local: readonly EditorProgramRecord[],
   authoritative: readonly SceneEdit[],
@@ -113,6 +119,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
   mathTexTransformCompiler: ProjectStudioMathTexTransformCompiler = projectStudioMathTexTransform,
   motionCompiler: ProjectStudioMotionCompiler = projectStudioMotion,
   creationCompiler: ProjectStudioCreationCompiler = projectStudioCreation,
+  creationSpatialContext?: EditorCreationProjectionSpatialContext,
 ): Promise<readonly EditorProgramRecord[]> {
   const programs = parseAuthoritativeEditorProgramsV1(programValues);
   const seeds = programs.map((program) => ({
@@ -122,6 +129,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
   const operations = programs.flatMap((program) => program.operations);
   const hasMathTexTransform = operations.some(({ kind }) => kind === "TransformContent");
   const hasMotion = operations.some(({ kind }) => kind === "CreateMotion");
+  const hasPathMotion = operations.some(({ kind }) => kind === "CreatePathMotion");
   const hasStudioNativeAuthoring = operations.some(isStudioNativeAuthoringBatchOperation);
   const hasPersistentRemove = operations.some(isPersistentRemoveOperation);
   const hasClosedValidationPath = isClosedValidationProgramBatch(programs);
@@ -163,9 +171,20 @@ export async function materializeAuthoritativeEditorProgramsV1(
       })
     : null;
   const creationProjection = hasStudioNativeAuthoring
-    ? await creationCompiler(
-        buildStudioCreationProjectionCommand({ baseDuration: scene.runtimeSceneState.duration, programs }),
-      )
+    ? await (async () => {
+        if (hasPathMotion && !creationSpatialContext) {
+          throw new EditorCreationAdmissionError(
+            "The authoritative Editor projection requires the current camera, frame, and viewport for Pen path motion.",
+          );
+        }
+        return creationCompiler(
+          buildStudioCreationProjectionCommand({
+            baseDuration: scene.runtimeSceneState.duration,
+            ...(creationSpatialContext ?? {}),
+            programs,
+          }),
+        );
+      })()
         .then((projection) => {
           const correlated = selectCreationProjection(scene.runtimeSceneState.duration, programs, projection);
           if (!correlated) throw new TypeError("The Rust creation projection is missing.");

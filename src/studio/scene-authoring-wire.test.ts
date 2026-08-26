@@ -580,6 +580,44 @@ describe("Studio creation wire", () => {
     expect(studioMotionProjectionBatchKind([motion])).toBeNull();
   });
 
+  it("normalizes one ID-only Pen path motion with its spatial projection context", () => {
+    const motion = followupProgram("path-motion:Rectangle", {
+      dependsOn: [],
+      easing: "smooth",
+      id: "path-motion:Rectangle",
+      interval: { end: 2, start: 1 },
+      kind: "CreatePathMotion",
+      pathEntityId: "entity:CubicBezier",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      targetEntityId: "entity:Rectangle",
+    });
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 4,
+      cameraCenter: { x: 0, y: 0 },
+      frame: { height: 9, width: 16 },
+      programs: [creationProgram("Rectangle"), creationProgram("CubicBezier"), motion],
+      viewport: { height: 360, width: 640 },
+    });
+
+    expect(command.programs[2]?.operations[0]).toEqual({
+      dependsOn: [],
+      easing: "smooth",
+      id: "path-motion:Rectangle",
+      interval: { end: 2, start: 1 },
+      kind: "create-path-motion",
+      origin: "direct-manipulation",
+      pathEntityId: "entity:CubicBezier",
+      targetEntityId: "entity:Rectangle",
+    });
+    expect(command).toMatchObject({
+      cameraCenter: { x: 0, y: 0 },
+      frame: { height: 9, width: 16 },
+      viewport: { height: 360, width: 640 },
+    });
+    expect(sceneEditOperationSchema.safeParse(motion.operations[0]).success).toBe(true);
+  });
+
   it("normalizes Arrow as a first-class creation kind in apply and projection commands", () => {
     const programs = [creationProgram("Arrow")];
     const apply = buildStudioCreationEditCommand({

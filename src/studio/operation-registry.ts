@@ -1375,6 +1375,59 @@ export const OPERATION_REGISTRY = {
       return issues;
     },
   } satisfies Capability<"CreateMotion">,
+  CreatePathMotion: {
+    access: (operation) => ({
+      reads: [
+        { channel: "path", entityId: operation.pathEntityId },
+        { channel: "position", entityId: operation.pathEntityId },
+        { channel: "position", entityId: operation.targetEntityId },
+      ],
+      writes: [{ channel: "position", entityId: operation.targetEntityId }],
+    }),
+    execution: () => CLIENT_ONLY_EXECUTION,
+    validate: (operation, scene) => {
+      const issues = entityIssues([operation.targetEntityId, operation.pathEntityId], operation, scene);
+      const path = scene.objectGraph.entities[operation.pathEntityId];
+      const target = scene.objectGraph.entities[operation.targetEntityId];
+      if (operation.pathEntityId === operation.targetEntityId) {
+        issues.push({
+          code: "schema-invalid",
+          field: "pathEntityId",
+          message: "A path motion requires distinct path and target objects.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (path && (path.type !== "CubicBezier" || !path.transactionId)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "pathEntityId",
+          message: "Path motion requires one Studio-created Pen path.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (target && !target.transactionId) {
+        issues.push({
+          code: "schema-invalid",
+          field: "targetEntityId",
+          message: "Path motion currently requires one Studio-created target object.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (operation.interval.end <= operation.interval.start) {
+        issues.push({
+          code: "interval-invalid",
+          field: "interval",
+          message: "Path motion requires a positive-duration Timeline interval.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"CreatePathMotion">,
   TransformShape: {
     access: (operation) => ({
       reads: [

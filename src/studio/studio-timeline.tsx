@@ -11,7 +11,7 @@ import {
   type LifetimeEditTarget as StudioLifetimeTarget,
 } from "./lifetime-editing";
 import type { MathTexTransformEasing } from "./mathtex-transform-clip-edit";
-import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
+import type { Interval, MotionEasing, TimelineEvent, TimelineObjectTrack } from "./model";
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
 import type { PaintColorKeyframeEasing, PaintColorProperty } from "./paint-color-keyframe-edit";
 import type { PathMorphEasing } from "./path-morph-clip-edit";
@@ -59,6 +59,7 @@ export type StudioTimelineProps = Readonly<{
   paintColorTrackEligibleProperties?: ReadonlyMap<string, PaintColorProperty>;
   paintColorTracks?: readonly StudioPaintColorTimelineTrack[];
   pathMorphClips?: readonly StudioPathMorphTimelineClip[];
+  pathMotionUnavailableReason?: string | null;
   rotationTrackEligibleIds: ReadonlySet<string>;
   rotationTracks: readonly StudioRotationTimelineTrack[];
   scaleTrackEligibleIds: ReadonlySet<string>;
@@ -67,6 +68,7 @@ export type StudioTimelineProps = Readonly<{
   writeInClips: readonly StudioWriteInTimelineClip[];
   writeInAvailability: ReadonlyMap<string, string | null>;
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
+  onAppliedMotionClipDelete?: (clip: AppliedMotionClip) => void;
   onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
   onCameraClipChange?: (clip: StudioCameraTimelineClip, change: StudioCameraClipChange) => void;
   onCameraClipDelete?: (clip: StudioCameraTimelineClip) => void;
@@ -78,6 +80,7 @@ export type StudioTimelineProps = Readonly<{
   onInteractionModeChange: (mode: InteractionMode) => void;
   onLifetimeChange: (entityId: string, lifetimeStart: number, target: Interval) => void;
   onMotionDurationChange: (duration: number) => void;
+  onPathMotionAdd?: (easing: MotionEasing) => void;
   onMaterialParameterKeyframeAdd: (entityId: string, name: string) => void;
   onMaterialParameterKeyframeChange: (
     track: StudioMaterialParameterTimelineTrack,
@@ -961,6 +964,7 @@ export function StudioTimeline({
   paintColorTrackEligibleProperties = new Map(),
   paintColorTracks = [],
   pathMorphClips = [],
+  pathMotionUnavailableReason = "Select one Studio-created object and one open multi-segment Pen.",
   rotationTrackEligibleIds,
   rotationTracks,
   scaleTrackEligibleIds,
@@ -969,6 +973,7 @@ export function StudioTimeline({
   writeInClips,
   writeInAvailability,
   onAppliedMotionClipChange,
+  onAppliedMotionClipDelete,
   onAppliedMotionClipSelect,
   onCameraClipChange,
   onCameraClipDelete,
@@ -987,6 +992,7 @@ export function StudioTimeline({
   onMathTexTransformClipDelete,
   onMathTexTransformClipSelect,
   onMotionDurationChange,
+  onPathMotionAdd,
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
@@ -1030,6 +1036,7 @@ export function StudioTimeline({
   const [selectedPaintColorKeyframe, setSelectedPaintColorKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedRotationKeyframe, setSelectedRotationKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedScaleKeyframe, setSelectedScaleKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
+  const [pathMotionEasing, setPathMotionEasing] = useState<MotionEasing>("smooth");
   const selectedLifetimeTrack =
     selectedLifetime && selectedIds.has(selectedLifetime.entityId)
       ? objectTracks.find((track) => track.entityId === selectedLifetime.entityId)
@@ -1190,19 +1197,47 @@ export function StudioTimeline({
             : "Adds motion starting at the playhead."}
         </span>
         {interactionMode === "animate" ? (
-          <label className="ml-auto flex items-center gap-2 text-[10px] text-zinc-500">
-            Motion duration
-            <input
-              aria-label="New motion duration in seconds"
-              className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-xs text-zinc-200 outline-none focus:border-sky-500"
-              min="0.1"
-              onChange={(event) => onMotionDurationChange(Math.max(0.1, Number(event.currentTarget.value)))}
-              step="0.1"
-              type="number"
-              value={motionDuration}
-            />
-            <span>s</span>
-          </label>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <label className="flex items-center gap-2 text-[10px] text-zinc-500">
+              Motion duration
+              <input
+                aria-label="New motion duration in seconds"
+                className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-xs text-zinc-200 outline-none focus:border-sky-500"
+                min="0.1"
+                onChange={(event) => onMotionDurationChange(Math.max(0.1, Number(event.currentTarget.value)))}
+                step="0.1"
+                type="number"
+                value={motionDuration}
+              />
+              <span>s</span>
+            </label>
+            <label className="flex items-center gap-1 text-[10px] text-zinc-500">
+              Easing
+              <select
+                aria-label="Pen motion easing"
+                className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-200 outline-none focus:border-sky-500"
+                onChange={(event) => setPathMotionEasing(event.currentTarget.value as MotionEasing)}
+                value={pathMotionEasing}
+              >
+                <option value="smooth">Smooth</option>
+                <option value="linear">Linear</option>
+              </select>
+            </label>
+            <button
+              className="h-7 border border-sky-800 px-2 text-[10px] font-medium text-sky-300 hover:bg-sky-950 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700 disabled:hover:bg-transparent"
+              disabled={readOnly || pathMotionUnavailableReason !== null || onPathMotionAdd === undefined}
+              onClick={() => onPathMotionAdd?.(pathMotionEasing)}
+              title={pathMotionUnavailableReason ?? "Use the selected Pen as the selected object's exact motion path"}
+              type="button"
+            >
+              Use Pen as motion path
+            </button>
+            {pathMotionUnavailableReason ? (
+              <span className="basis-full text-right text-[10px] text-amber-500" role="status">
+                {pathMotionUnavailableReason}
+              </span>
+            ) : null}
+          </div>
         ) : null}
       </div>
       {editingDrawInClip ? (
@@ -2044,10 +2079,45 @@ export function StudioTimeline({
         </div>
       ) : null}
       {editingMotionClip ? (
-        <p className="mt-2 border-t border-zinc-800 pt-2 text-pretty text-[10px] leading-4 text-zinc-500" role="status">
-          Editing {editingMotionClip.label} motion. The body and left edge snap to safe amber source anchors; the right
-          edge changes duration.
-        </p>
+        <div className="mt-2 flex items-center justify-between gap-2 border-t border-zinc-800 pt-2 text-[10px]">
+          <p className="text-pretty leading-4 text-zinc-500" role="status">
+            Editing {editingMotionClip.label} motion. The body and left edge snap to safe amber source anchors; the
+            right edge changes duration. Duration{" "}
+            {(editingMotionClip.interval.end - editingMotionClip.interval.start).toFixed(2)}s.
+          </p>
+          {editingMotionClip.penPathMotion ? (
+            <label className="ml-auto flex shrink-0 items-center gap-1 text-zinc-500">
+              Easing
+              <select
+                aria-label={`Easing for ${editingMotionClip.label} Pen motion`}
+                className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-200 outline-none focus:border-sky-500"
+                onChange={(event) =>
+                  onAppliedMotionClipChange(editingMotionClip, {
+                    duration: editingMotionClip.interval.end - editingMotionClip.interval.start,
+                    easing: event.currentTarget.value as MotionEasing,
+                    sourceStart: editingMotionClip.sourceStart,
+                  })
+                }
+                value={editingMotionClip.easing}
+              >
+                <option value="smooth">Smooth</option>
+                <option value="linear">Linear</option>
+              </select>
+            </label>
+          ) : null}
+          {onAppliedMotionClipDelete && editingMotionClip.penPathMotion ? (
+            <button
+              aria-label={`Delete ${editingMotionClip.label} motion clip`}
+              className="shrink-0 border border-red-950 px-2 py-1 text-red-300 hover:bg-red-950/50 disabled:cursor-not-allowed disabled:text-zinc-700"
+              disabled={editingMotionClip.readOnlyReason !== null || Boolean(editingMotionClip.deleteUnavailableReason)}
+              onClick={() => onAppliedMotionClipDelete(editingMotionClip)}
+              title={editingMotionClip.deleteUnavailableReason ?? editingMotionClip.readOnlyReason ?? undefined}
+              type="button"
+            >
+              Delete clip
+            </button>
+          ) : null}
+        </div>
       ) : motionClipBlockers.length > 0 ? (
         <p
           className="mt-2 border-t border-zinc-800 pt-2 text-pretty text-[10px] leading-4 text-amber-500"

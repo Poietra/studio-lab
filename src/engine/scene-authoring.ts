@@ -314,6 +314,19 @@ export type StudioProjectedMotionV1 = Readonly<{
   transactionId: string;
 }>;
 
+export type StudioProjectedPathMotionV1 = Readonly<{
+  easing: "linear" | "manim-smooth";
+  from: Readonly<{ x: number; y: number }>;
+  interval: Readonly<{ end: number; start: number }>;
+  operationId: string;
+  path: StudioCubicBezierPath;
+  pathEntityId: string;
+  sourceInterval: Readonly<{ end: number; start: number }>;
+  targetEntityId: string;
+  to: Readonly<{ x: number; y: number }>;
+  transactionId: string;
+}>;
+
 export type StudioMotionProjectionV1 = Readonly<{
   insertions: readonly Readonly<{
     at: number;
@@ -610,6 +623,20 @@ const studioProjectedMotionV1Schema = z
     transactionId: z.string().min(1),
   })
   .strict();
+const studioProjectedPathMotionV1Schema = z
+  .object({
+    easing: z.enum(["linear", "manim-smooth"]),
+    from: studioStaticRootPointV1Schema,
+    interval: studioTimelineProjectionIntervalV1Schema,
+    operationId: z.string().min(1),
+    path: studioCubicBezierPathSchema,
+    pathEntityId: z.string().min(1),
+    sourceInterval: studioTimelineProjectionIntervalV1Schema,
+    targetEntityId: z.string().min(1),
+    to: studioStaticRootPointV1Schema,
+    transactionId: z.string().min(1),
+  })
+  .strict();
 const studioMotionProjectionV1Schema = z
   .object({
     insertions: z.array(
@@ -711,6 +738,7 @@ const studioCreationProjectionV1Schema = z
     ),
     insertions: studioMotionProjectionV1Schema.shape.insertions,
     motions: z.array(studioProjectedMotionV1Schema),
+    pathMotions: z.array(studioProjectedPathMotionV1Schema).optional(),
     mutations: z.array(
       z.discriminatedUnion("kind", [
         z
@@ -1328,6 +1356,12 @@ type StudioCreationOperationV1 = Readonly<{
         rotationDeltaRadians?: number;
         targetEntityIds: readonly string[];
       }>
+    | Readonly<{
+        easing: "linear" | "smooth";
+        kind: "create-path-motion";
+        pathEntityId: string;
+        targetEntityId: string;
+      }>
     | Readonly<{ childEntityIds: readonly string[]; groupId: string; kind: "group" }>
     | Readonly<{ groupId: string; kind: "ungroup" }>
     | Readonly<{
@@ -1396,9 +1430,12 @@ export type ApplyStudioCreationEditCompiler = (
 
 export type ProjectStudioCreationEditWireCommandV1 = Readonly<{
   baseDuration: number;
+  cameraCenter?: Readonly<{ x: number; y: number }>;
+  frame?: Readonly<{ height: number; width: number }>;
   programs: readonly StudioAuthoringProgramV1<StudioCreationOperationV1>[];
   schema: "poietra.project-studio-creation-edit";
   version: 1;
+  viewport?: Readonly<{ height: number; width: number }>;
 }>;
 
 export type ProjectStudioCreationCompiler = (

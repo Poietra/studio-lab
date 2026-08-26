@@ -1060,7 +1060,11 @@ export function StudioCanvas({
             </button>
           </div>
         ) : null}
-        <div className="absolute inset-0 origin-center" data-studio-transform-layer style={{ scale: cameraScale }}>
+        <div
+          className={cn("absolute inset-0 origin-center", insertTool !== "select" && "pointer-events-none")}
+          data-studio-transform-layer
+          style={{ scale: cameraScale }}
+        >
           <svg
             aria-hidden="true"
             className={cn("absolute inset-0 size-full", canvasSurfaceVisible ? "opacity-0" : "opacity-10")}

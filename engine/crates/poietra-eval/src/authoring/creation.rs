@@ -17,6 +17,7 @@ use crate::{EngineSessionV1, EvaluationError};
 
 mod geometry;
 mod materialization;
+mod path_motion;
 mod planning;
 
 use super::cubic_bezier::{
@@ -67,6 +68,8 @@ use geometry::{
     studio_ellipse_parameters, studio_ellipse_path, studio_regular_polygon_parameters,
     studio_regular_polygon_path, studio_sector_path, studio_shape_transform_path,
 };
+use path_motion::{CreateScenePathMotion, PlannedStudioPathMotion, project_studio_path_motions};
+pub use path_motion::{StudioCreationSpatialContext, StudioProjectedPathMotion};
 use planning::{canonical_studio_hex_color, plan_studio_creation_edits};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -269,6 +272,7 @@ struct CreateSceneEntitiesCommand {
     expected_base_revision: String,
     groups: Vec<PlannedStudioLogicalGroup>,
     motions: Vec<PlannedSceneMotion>,
+    path_motions: Vec<CreateScenePathMotion>,
     next_revision: String,
     persistent_removals: Vec<PersistentSceneRemoval>,
     provenance: ProvenanceRecordV1,
@@ -487,6 +491,7 @@ pub struct StudioCreationProjection {
     pub entities: Vec<StudioProjectedCreationEntity>,
     pub insertions: Vec<StudioMotionProjectionInsertion>,
     pub motions: Vec<StudioProjectedMotion>,
+    pub path_motions: Vec<StudioProjectedPathMotion>,
     pub mutations: Vec<StudioCreationProjectedMutation>,
     pub projected_duration: f64,
     pub removals: Vec<StudioPersistentRemoveProjectionEntry>,
@@ -688,6 +693,11 @@ pub enum StudioCreationOperationKind {
         rotation_delta_radians: Option<f64>,
         target_entity_ids: Vec<String>,
     },
+    CreatePathMotion {
+        easing: StudioMotionEasing,
+        path_entity_id: String,
+        target_entity_id: String,
+    },
     Group {
         child_entity_ids: Vec<String>,
         group_id: String,
@@ -772,6 +782,8 @@ pub enum CreateSceneEntitiesError {
     InvalidInstantTransform,
     #[error("a created entity appearance edit must be finite, timed, and supported")]
     InvalidAppearanceEdit,
+    #[error("the Studio Pen path motion is invalid or conflicts with existing animation")]
+    InvalidPathMotion,
     #[error(
         "Studio grouping requires visible contiguous Studio-created root leaves without rotation keyframes"
     )]
@@ -846,6 +858,7 @@ fn studio_creation_edit_input_is_closed(program: &StudioCreationEditInput) -> bo
             | StudioCreationOperationKind::Resize { .. }
             | StudioCreationOperationKind::PersistentRemove { .. }
             | StudioCreationOperationKind::CreateMotion { .. }
+            | StudioCreationOperationKind::CreatePathMotion { .. }
             | StudioCreationOperationKind::Group { .. }
             | StudioCreationOperationKind::Ungroup { .. }
             | StudioCreationOperationKind::InsertWait { .. }
@@ -1195,6 +1208,7 @@ fn studio_creation_insertion_duration(program: &StudioCreationEditInput) -> f64 
                 matches!(
                     operation.kind,
                     StudioCreationOperationKind::CreateMotion { .. }
+                        | StudioCreationOperationKind::CreatePathMotion { .. }
                         | StudioCreationOperationKind::TransformContent { .. }
                         | StudioCreationOperationKind::TransformShape { .. }
                         | StudioCreationOperationKind::PathMorph { .. }
@@ -1494,6 +1508,7 @@ struct StudioCreationPlan {
     entities: Vec<PlannedStudioCreationEntity>,
     groups: Vec<PlannedStudioLogicalGroup>,
     motion_projection: StudioMotionProjection,
+    path_motions: Vec<PlannedStudioPathMotion>,
     mutations: Vec<StudioCreationProjectedMutation>,
     scene_background: Option<RgbaColorV1>,
     timeline_insertions: Vec<SceneTimelineInsertion>,
@@ -1508,7 +1523,10 @@ struct PlannedStudioLogicalGroup {
 }
 
 impl StudioCreationPlan {
-    fn projection(&self) -> StudioCreationProjection {
+    fn projection(
+        &self,
+        spatial_context: Option<StudioCreationSpatialContext>,
+    ) -> Result<StudioCreationProjection, ProjectStudioCreationEditError> {
         let entities = self
             .entities
             .iter()
@@ -1576,16 +1594,19 @@ impl StudioCreationPlan {
                 transaction_id: removal.transaction_id.clone(),
             })
             .collect();
-        StudioCreationProjection {
+        let path_motions =
+            project_studio_path_motions(&self.entities, &self.path_motions, spatial_context)?;
+        Ok(StudioCreationProjection {
             duration_trim_barrier_operation_ids: self.duration_trim_barrier_operation_ids.clone(),
             entities,
             insertions: self.motion_projection.insertions.clone(),
             motions: self.motion_projection.motions.clone(),
+            path_motions,
             mutations: self.mutations.clone(),
             projected_duration: self.motion_projection.projected_duration,
             removals,
             timeline_projection: self.timeline_projection.clone(),
-        }
+        })
     }
 }
 
@@ -2425,7 +2446,25 @@ pub fn project_studio_creation_edits(
     base_duration: f64,
     programs: &[StudioCreationEditInput],
 ) -> Result<StudioCreationProjection, ProjectStudioCreationEditError> {
-    Ok(plan_studio_creation_edits(base_duration, programs, None, None)?.projection())
+    plan_studio_creation_edits(base_duration, programs, None, None)?.projection(None)
+}
+
+/// Projects a creation batch that needs exact Studio/world coordinate conversion.
+///
+/// Existing creation batches remain accepted by [`project_studio_creation_edits`];
+/// Pen-backed path motion requires this spatially closed entry point.
+///
+/// # Errors
+///
+/// Returns [`ProjectStudioCreationEditError::Unsupported`] when the Programs or
+/// spatial context do not satisfy the closed Studio creation contract.
+pub fn project_studio_creation_edits_with_spatial_context(
+    base_duration: f64,
+    programs: &[StudioCreationEditInput],
+    spatial_context: StudioCreationSpatialContext,
+) -> Result<StudioCreationProjection, ProjectStudioCreationEditError> {
+    plan_studio_creation_edits(base_duration, programs, None, None)?
+        .projection(Some(spatial_context))
 }
 
 #[cfg(test)]

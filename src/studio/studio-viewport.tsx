@@ -134,6 +134,7 @@ export function StudioViewport({
   paintColorTrackEligibleProperties,
   paintColorTracks,
   pathMorphClips,
+  pathMotionUnavailableReason,
   rotationTrackEligibleIds,
   rotationTracks,
   scaleTrackEligibleIds,
@@ -143,6 +144,7 @@ export function StudioViewport({
   writeInAvailability,
   uniformScaleResizeOnlyIds,
   onAppliedMotionClipChange,
+  onAppliedMotionClipDelete,
   onAppliedMotionClipSelect,
   onCameraClipChange,
   onCameraClipDelete,
@@ -196,6 +198,7 @@ export function StudioViewport({
   onMathTexTransformClipSelect,
   onMotionControlChange,
   onMotionDurationChange,
+  onPathMotionAdd,
   onOpacityKeyframeAdd,
   onOpacityKeyframeChange,
   onOpacityKeyframeDelete,
@@ -373,6 +376,7 @@ export function StudioViewport({
           paintColorTrackEligibleProperties={paintColorTrackEligibleProperties}
           paintColorTracks={paintColorTracks}
           pathMorphClips={pathMorphClips}
+          pathMotionUnavailableReason={pathMotionUnavailableReason}
           rotationTrackEligibleIds={rotationTrackEligibleIds}
           rotationTracks={rotationTracks}
           scaleTrackEligibleIds={scaleTrackEligibleIds}
@@ -381,6 +385,7 @@ export function StudioViewport({
           writeInClips={writeInClips}
           writeInAvailability={writeInAvailability}
           onAppliedMotionClipChange={onAppliedMotionClipChange}
+          onAppliedMotionClipDelete={onAppliedMotionClipDelete}
           onAppliedMotionClipSelect={onAppliedMotionClipSelect}
           onCameraClipChange={onCameraClipChange}
           onCameraClipDelete={onCameraClipDelete}
@@ -399,6 +404,7 @@ export function StudioViewport({
           onMathTexTransformClipDelete={onMathTexTransformClipDelete}
           onMathTexTransformClipSelect={onMathTexTransformClipSelect}
           onMotionDurationChange={onMotionDurationChange}
+          onPathMotionAdd={onPathMotionAdd}
           onOpacityKeyframeAdd={onOpacityKeyframeAdd}
           onOpacityKeyframeChange={onOpacityKeyframeChange}
           onOpacityKeyframeDelete={onOpacityKeyframeDelete}

@@ -6,6 +6,7 @@ import type {
   StudioMotionProjectionV1,
   StudioPersistentRemoveProjectionV1,
   StudioProjectedMotionV1,
+  StudioProjectedPathMotionV1,
   StudioStaticRootMutationV1,
   StudioStaticRootProjectionV1,
   StudioTimelineProjectionV1,
@@ -199,6 +200,12 @@ type CorrelatedProjectedMotion = Readonly<{
   program: SceneEdit;
 }>;
 
+type CorrelatedProjectedPathMotion = Readonly<{
+  motion: StudioProjectedPathMotionV1;
+  operation: Extract<SceneEditOperation, { kind: "CreatePathMotion" }>;
+  program: SceneEdit;
+}>;
+
 function motionProjectionKey(operationId: string, targetEntityId: string) {
   return `${operationId}\u0000${targetEntityId}`;
 }
@@ -294,6 +301,49 @@ function correlateMotionProjection(
     ) {
       throw new TypeError(`Motion operation ${motion.operationId} is not correlated with the Rust projection.`);
     }
+    return { motion, operation, program };
+  });
+}
+
+function correlatePathMotionProjection(
+  programs: readonly SceneEdit[],
+  projection: readonly StudioProjectedPathMotionV1[],
+): readonly CorrelatedProjectedPathMotion[] {
+  const expected = programs.flatMap((program) =>
+    program.operations.flatMap((operation) => (operation.kind === "CreatePathMotion" ? [{ operation, program }] : [])),
+  );
+  const expectedByOperationId = new Map(expected.map((entry) => [entry.operation.id, entry] as const));
+  if (expectedByOperationId.size !== expected.length || projection.length !== expected.length) {
+    throw new TypeError("The Rust path-motion projection does not cover each operation exactly once.");
+  }
+  const projectedOperationIds = new Set<string>();
+  return projection.map((motion) => {
+    const expectedMotion = expectedByOperationId.get(motion.operationId);
+    const operation = expectedMotion?.operation;
+    const program = expectedMotion?.program;
+    const finalSegment = motion.path.segments.at(-1);
+    if (
+      !operation ||
+      !program ||
+      projectedOperationIds.has(motion.operationId) ||
+      motion.transactionId !== program.transactionId ||
+      motion.targetEntityId !== operation.targetEntityId ||
+      motion.pathEntityId !== operation.pathEntityId ||
+      motion.easing !== (operation.easing === "smooth" ? "manim-smooth" : "linear") ||
+      !Number.isFinite(motion.interval.start) ||
+      !Number.isFinite(motion.interval.end) ||
+      motion.interval.end <= motion.interval.start ||
+      !isFiniteProjectionPoint(motion.from) ||
+      !isFiniteProjectionPoint(motion.to) ||
+      !sameProjectionNumber(motion.sourceInterval.start, operation.interval.start) ||
+      !sameProjectionNumber(motion.sourceInterval.end, operation.interval.end) ||
+      !finalSegment ||
+      !sameProjectionNumber(finalSegment.end.x, motion.to.x) ||
+      !sameProjectionNumber(finalSegment.end.y, motion.to.y)
+    ) {
+      throw new TypeError(`Path-motion operation ${motion.operationId} is not correlated with the Rust projection.`);
+    }
+    projectedOperationIds.add(motion.operationId);
     return { motion, operation, program };
   });
 }
@@ -455,6 +505,7 @@ function correlateCreationProjection(
     (count, { operation }) => count + (operation.kind === "CreateMotion" ? operation.targetEntityIds.length : 0),
     0,
   );
+  const expectedPathMotionCount = operations.filter(({ operation }) => operation.kind === "CreatePathMotion").length;
   const expectedRemovalCount = operations.filter(
     ({ operation }) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
   ).length;
@@ -465,6 +516,7 @@ function correlateCreationProjection(
       ({ operation }) =>
         operation.kind !== "CreateEntity" &&
         operation.kind !== "CreateMotion" &&
+        operation.kind !== "CreatePathMotion" &&
         operation.kind !== "GroupEntities" &&
         operation.kind !== "UngroupEntity" &&
         !isSceneDurationOperation(operation) &&
@@ -475,6 +527,7 @@ function correlateCreationProjection(
     projection.entities.length !== createCount ||
     projection.mutations.length !== expectedMutationOperations.length ||
     projection.motions.length !== expectedMotionCount ||
+    (projection.pathMotions ?? []).length !== expectedPathMotionCount ||
     projection.removals.length !== expectedRemovalCount ||
     !Number.isFinite(projection.projectedDuration) ||
     !sameProjectionNumber(
@@ -572,6 +625,7 @@ function correlateCreationProjection(
   if (expectedMotionCount > 0 && !motions) {
     throw new TypeError("The Rust creation projection contains no correlated motion.");
   }
+  const pathMotions = correlatePathMotionProjection(programs, projection.pathMotions ?? []);
   const seenMutationIds = new Set<string>();
   const mutations = projection.mutations.map((mutation) => {
     const expected = operationById.get(mutation.operationId);
@@ -748,7 +802,7 @@ function correlateCreationProjection(
   if (expectedRemovalCount > 0 && !removals) {
     throw new TypeError("The Rust creation projection contains no correlated persistent remove.");
   }
-  return { entities, motions: motions ?? [], mutations, removals: removals ?? { removals: [] } };
+  return { entities, motions: motions ?? [], mutations, pathMotions, removals: removals ?? { removals: [] } };
 }
 
 export function selectCreationProjection(
@@ -909,6 +963,16 @@ export function selectHistoricalCreationProjectionPrefix(
         ...motion,
         interval: restoreInterval(intervalBeforeInsertions(motion.interval, suffixInsertions)),
       })),
+    ...(fullProjection.pathMotions === undefined
+      ? {}
+      : {
+          pathMotions: fullProjection.pathMotions
+            .filter(({ operationId }) => operationIds.has(operationId))
+            .map((motion) => ({
+              ...motion,
+              interval: restoreInterval(intervalBeforeInsertions(motion.interval, suffixInsertions)),
+            })),
+        }),
     mutations: fullProjection.mutations
       .filter(({ operationId }) => operationIds.has(operationId))
       .map((mutation) => ({
@@ -1584,6 +1648,55 @@ function appendCorrelatedMotions(
   }
 }
 
+function appendCorrelatedPathMotions(
+  draft: MotionProjectionDraft,
+  correlated: readonly CorrelatedProjectedPathMotion[],
+  recordedOperationIds = new Set<string>(),
+) {
+  for (const { motion, operation, program } of correlated) {
+    const target = draft.entities[motion.targetEntityId];
+    if (
+      !target ||
+      !target.lifetime.some(
+        (lifetime) =>
+          lifetime.start <= motion.interval.start + MATH_TEX_TRANSFORM_PROJECTION_EPSILON &&
+          lifetime.end + MATH_TEX_TRANSFORM_PROJECTION_EPSILON >= motion.interval.end,
+      )
+    ) {
+      throw new TypeError(`Path motion ${motion.operationId} targets an unavailable projected entity.`);
+    }
+    if (!recordedOperationIds.has(motion.operationId)) {
+      appendProjectedOperationRecord(draft, operation, program, motion.interval);
+      recordedOperationIds.add(motion.operationId);
+    }
+    const metadata = {
+      operationId: motion.operationId,
+      provenanceId: `${motion.operationId}/provenance`,
+    };
+    appendProjectedSample(draft.propertyChannels, motion.targetEntityId, "position", {
+      ...metadata,
+      easing: motion.easing,
+      from: motion.from,
+      interval: motion.interval,
+      kind: "animated",
+      knowledge: {
+        evidence: [motion.operationId],
+        kind: "unknown",
+        reason: "Position inside a Pen path motion is evaluated by the canonical Rust core.",
+      },
+      pathMotion: { path: motion.path, pathEntityId: motion.pathEntityId },
+      value: motion.to,
+    });
+    appendProjectedSample(draft.propertyChannels, motion.targetEntityId, "position", {
+      ...metadata,
+      interval: { end: motion.interval.end, start: motion.interval.end },
+      kind: "exact",
+      knowledge: { kind: "known", value: motion.to },
+      value: motion.to,
+    });
+  }
+}
+
 function appendPersistentRemovals(
   draft: WorkspaceProjectionDraft,
   programs: readonly SceneEdit[],
@@ -1740,6 +1853,7 @@ function projectCreationWorkingState(
     );
   }
   appendCorrelatedMotions(draft, correlated.motions, recordedMotionOperationIds);
+  appendCorrelatedPathMotions(draft, correlated.pathMotions, recordedMotionOperationIds);
   appendPersistentRemovals(draft, programs, correlated.removals);
 
   return projectedWorkingState(workingState, records, draft);

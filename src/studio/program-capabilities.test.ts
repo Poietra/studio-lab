@@ -68,6 +68,33 @@ function resizeWithConcurrentMotion(
 }
 
 describe("EditProgram execution capabilities", () => {
+  it("keeps ID-only Pen path motion client-side and source unsupported", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      easing: "smooth",
+      id: "path-motion",
+      interval: { end: 2, start: 1 },
+      kind: "CreatePathMotion",
+      pathEntityId: "pen",
+      provenance: { evidence: ["Pen motion path"], origin: "direct-manipulation" },
+      targetEntityId: "circle",
+    };
+
+    expect(operationAccess(operation)).toEqual({
+      reads: [
+        { channel: "path", entityId: "pen" },
+        { channel: "position", entityId: "pen" },
+        { channel: "position", entityId: "circle" },
+      ],
+      writes: [{ channel: "position", entityId: "circle" }],
+    });
+    expect(operationExecutionCapabilities(operation)).toEqual({
+      apply: "supported",
+      applyBlocker: null,
+      lowering: "unsupported",
+    });
+  });
+
   it("keeps DrawIn on the client-side path-trim authority", () => {
     const operation: CanonicalEditOperation = {
       dependsOn: ["tx:draw/operation:create"],
