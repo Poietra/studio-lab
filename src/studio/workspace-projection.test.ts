@@ -27,6 +27,7 @@ import {
 import { programRecord } from "./evaluator";
 import { type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
 import type { Interval } from "./model";
+import { projectMotionPaths } from "./motion-paths";
 import type { CanonicalEditProgram } from "./operations";
 import { buildStudioCreationProjectionCommand } from "./scene-authoring-wire";
 import { createStudioNativeBlankScene } from "./studio-native-workspace";
@@ -284,6 +285,215 @@ function mathTexTransformMotionFixture(sourceEntityId: string, splitMotionProgra
 }
 
 describe("Studio workspace projection", () => {
+  it("projects one exact multi-segment Pen path motion without a quadratic fallback", () => {
+    const imported = workspaceScene("First", null);
+    const baseDuration = imported.runtimeSceneState.duration;
+    const projectedDuration = baseDuration + 1;
+    const targetEntityId = "tx:create-target/entity:circle";
+    const pathEntityId = "tx:create-path/entity:pen";
+    const createTarget: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: [],
+        resolvedSeconds: 0,
+        source: { kind: "absolute", seconds: 0 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          entity: {
+            dimensions: { radius: 1 },
+            id: targetEntityId,
+            lifetime: { end: null, start: 0 },
+            type: "Circle",
+          },
+          id: "tx:create-target/operation:create",
+          interval: { end: 0, start: 0 },
+          kind: "CreateEntity",
+          provenance: { evidence: [], origin: "studio-default" },
+        },
+      ],
+      provenance: { evidence: [], origin: "studio-default" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: ["tx:create-target/operation:create"] },
+      transactionId: "tx:create-target",
+      version: 1,
+    };
+    const createPath: CanonicalEditProgram = {
+      ...createTarget,
+      operations: [
+        {
+          dependsOn: [],
+          entity: {
+            cubicBezier: {
+              arrowEnd: false,
+              control1: { x: -1.5, y: -1 },
+              control2: { x: -0.5, y: 1 },
+              continuationSegments: [
+                {
+                  control1: { x: 0.5, y: -1 },
+                  control2: { x: 1.5, y: 1 },
+                  end: { x: 2, y: 0 },
+                },
+              ],
+              end: { x: 0, y: 0 },
+              start: { x: -2, y: 0 },
+              strokeCap: "round",
+              strokeWidth: 0.04,
+            },
+            dimensions: { height: 2, width: 4 },
+            id: pathEntityId,
+            lifetime: { end: null, start: 0 },
+            type: "CubicBezier",
+          },
+          id: "tx:create-path/operation:create",
+          interval: { end: 0, start: 0 },
+          kind: "CreateEntity",
+          provenance: { evidence: [], origin: "studio-default" },
+        },
+      ],
+      schedule: { edges: [], mode: "parallel", order: ["tx:create-path/operation:create"] },
+      transactionId: "tx:create-path",
+    };
+    const pathMotion: CanonicalEditProgram = {
+      ...createTarget,
+      anchor: {
+        capturedPlayhead: 1,
+        evidence: [],
+        resolvedSeconds: 1,
+        source: { kind: "absolute", seconds: 1 },
+      },
+      loweringStatus: "unsupported",
+      operations: [
+        {
+          dependsOn: [],
+          easing: "smooth",
+          id: "tx:path-motion/operation:create",
+          interval: { end: 2, start: 1 },
+          kind: "CreatePathMotion",
+          pathEntityId,
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          targetEntityId,
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      schedule: { edges: [], mode: "parallel", order: ["tx:path-motion/operation:create"] },
+      transactionId: "tx:path-motion",
+    };
+    const path = {
+      closed: false,
+      segments: [
+        {
+          control1: { x: 330, y: 140 },
+          control2: { x: 350, y: 220 },
+          end: { x: 360, y: 180 },
+        },
+        {
+          control1: { x: 370, y: 140 },
+          control2: { x: 390, y: 220 },
+          end: { x: 400, y: 180 },
+        },
+      ],
+      start: { x: 320, y: 180 },
+    } as const;
+    const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
+      entities: [
+        {
+          createdLifetime: { end: projectedDuration, start: 0 },
+          entityId: targetEntityId,
+          initialDimensions: { radius: 1 },
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "circle",
+          operationId: createTarget.operations[0]!.id,
+          transactionId: createTarget.transactionId,
+        },
+        {
+          createdLifetime: { end: projectedDuration, start: 0 },
+          cubicBezier:
+            createPath.operations[0]!.kind === "CreateEntity"
+              ? createPath.operations[0]!.entity.cubicBezier
+              : undefined,
+          entityId: pathEntityId,
+          initialDimensions: { height: 2, width: 4 },
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "cubic-bezier",
+          operationId: createPath.operations[0]!.id,
+          transactionId: createPath.transactionId,
+        },
+      ],
+      insertions: [{ at: 1, duration: 1, transactionId: pathMotion.transactionId }],
+      motions: [],
+      mutations: [],
+      pathMotions: [
+        {
+          easing: "manim-smooth",
+          from: path.start,
+          interval: { end: 2, start: 1 },
+          operationId: pathMotion.operations[0]!.id,
+          path,
+          pathEntityId,
+          sourceInterval: { end: 2, start: 1 },
+          targetEntityId,
+          to: path.segments[1].end,
+          transactionId: pathMotion.transactionId,
+        },
+      ],
+      projectedDuration,
+      removals: [],
+      timelineProjection: emptyCreationTimeline(projectedDuration),
+    };
+    const programs = [createTarget, createPath, pathMotion];
+
+    expect(selectCreationProjection(baseDuration, programs, projection)).toBe(projection);
+    expect(() =>
+      selectCreationProjection(baseDuration, programs, {
+        ...projection,
+        pathMotions: [{ ...projection.pathMotions![0]!, pathEntityId: targetEntityId }],
+      }),
+    ).toThrow(/not correlated/);
+
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedEdits: programs.map((program) => programRecord(program, { issues: [], kind: "valid" })),
+      creationProjection: projection,
+      currentTime: 1.5,
+      draftEdit: null,
+      editAuthority: "rust-authorized-batch",
+      nextScene: null,
+      selectedObjectIds: [targetEntityId],
+    });
+    const positionSamples =
+      projected.proposedState.evaluatedScene.propertyChannels[`${targetEntityId}/position`]?.samples ?? [];
+    expect(positionSamples).toEqual([
+      expect.objectContaining({
+        from: path.start,
+        interval: { end: 2, start: 1 },
+        kind: "animated",
+        operationId: pathMotion.operations[0]!.id,
+        pathMotion: { path, pathEntityId },
+        value: path.segments[1].end,
+      }),
+      expect.objectContaining({
+        interval: { end: 2, start: 2 },
+        kind: "exact",
+        value: path.segments[1].end,
+      }),
+    ]);
+    expect(projectMotionPaths(projected.proposedState.evaluatedScene, new Set([targetEntityId]), 1.5)).toEqual([
+      expect.objectContaining({ kind: "cubic", path, pathEntityId }),
+    ]);
+    expect(
+      projected.projection.timeline.objectTracks
+        .find(({ entityId }) => entityId === targetEntityId)
+        ?.animatedChannels.find(({ operationId }) => operationId === pathMotion.operations[0]!.id),
+    ).toMatchObject({ interval: { end: 2, start: 1 }, key: "position" });
+  });
+
   it("correlates regular-polygon dimensions and keeps them as known Studio geometry", () => {
     const imported = workspaceScene("First", null);
     const authored = createStudioEntitiesProgram({

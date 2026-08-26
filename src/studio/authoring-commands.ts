@@ -788,6 +788,9 @@ function operationTargetsEntity(operation: SceneEditOperation, entityId: string)
   )
     return operation.entityId === entityId;
   if (operation.kind === "CreateMotion") return operation.targetEntityIds.includes(entityId);
+  if (operation.kind === "CreatePathMotion") {
+    return operation.targetEntityId === entityId || operation.pathEntityId === entityId;
+  }
   if (operation.kind === "TransformContent") {
     return operation.sourceEntityId === entityId || operation.targetEntityId === entityId;
   }

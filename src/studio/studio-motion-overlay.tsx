@@ -29,7 +29,7 @@ function MotionControlHandle({
 }: Readonly<{
   onChange: (path: StudioMotionPath, delta: Point) => void;
   onPreviewChange: (path: StudioMotionPath, delta: Point | null) => void;
-  path: StudioMotionPath;
+  path: Extract<StudioMotionPath, { kind: "quadratic" }>;
   previewDelta: Point;
 }>) {
   const drag = useRef<Readonly<{
@@ -43,10 +43,13 @@ function MotionControlHandle({
   };
 
   function deltaFromStart(event: PointerEvent<HTMLButtonElement>, start: Point, scale: Point) {
-    return clientDeltaToViewport({
-      x: event.clientX - start.x,
-      y: event.clientY - start.y,
-    }, scale);
+    return clientDeltaToViewport(
+      {
+        x: event.clientX - start.x,
+        y: event.clientY - start.y,
+      },
+      scale,
+    );
   }
 
   function finish(event: PointerEvent<HTMLButtonElement>) {
@@ -85,7 +88,8 @@ function MotionControlHandle({
       onLostPointerCapture={finish}
       onPointerCancel={cancel}
       onPointerDown={(event) => {
-        const bounds = event.currentTarget.closest<HTMLElement>("[data-studio-transform-layer]")?.getBoundingClientRect() ?? null;
+        const bounds =
+          event.currentTarget.closest<HTMLElement>("[data-studio-transform-layer]")?.getBoundingClientRect() ?? null;
         drag.current = {
           pointerId: event.pointerId,
           scale: viewportScaleForBounds(bounds),
@@ -117,31 +121,37 @@ export function StudioMotionOverlay({
   const [controlPreviews, setControlPreviews] = useState<ReadonlyMap<string, Point>>(() => new Map());
   const previewedMotionPaths = motionPaths.map((path) => {
     const preview = controlPreviews.get(path.motionId);
-    return preview ? {
-      ...path,
-      control: { x: path.control.x + preview.x, y: path.control.y + preview.y },
-    } : path;
+    return path.kind === "quadratic" && preview
+      ? {
+          ...path,
+          control: { x: path.control.x + preview.x, y: path.control.y + preview.y },
+        }
+      : path;
   });
-  const dragPaths = interactionMode === "animate" && dragPreview
-    ? entities.flatMap((entity) => {
-      if (!dragPreview.entityIds.includes(entity.id)) return [];
-      const end = {
-        x: entity.position.x + dragPreview.delta.x,
-        y: entity.position.y + dragPreview.delta.y,
-      };
-      return [{
-        control: {
-          x: (entity.position.x + end.x) / 2,
-          y: (entity.position.y + end.y) / 2,
-        },
-        end,
-        entityId: entity.id,
-        interval: { end: 0, start: 0 },
-        motionId: `${entity.id}/drag-preview`,
-        start: entity.position,
-      } satisfies StudioMotionPath];
-    })
-    : [];
+  const dragPaths =
+    interactionMode === "animate" && dragPreview
+      ? entities.flatMap((entity) => {
+          if (!dragPreview.entityIds.includes(entity.id)) return [];
+          const end = {
+            x: entity.position.x + dragPreview.delta.x,
+            y: entity.position.y + dragPreview.delta.y,
+          };
+          return [
+            {
+              control: {
+                x: (entity.position.x + end.x) / 2,
+                y: (entity.position.y + end.y) / 2,
+              },
+              end,
+              entityId: entity.id,
+              interval: { end: 0, start: 0 },
+              kind: "quadratic" as const,
+              motionId: `${entity.id}/drag-preview`,
+              start: entity.position,
+            } satisfies StudioMotionPath,
+          ];
+        })
+      : [];
   return (
     <>
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 size-full" viewBox="0 0 640 360">
@@ -153,15 +163,28 @@ export function StudioMotionOverlay({
         {previewedMotionPaths.map((path) => (
           <g key={`${path.entityId}/${path.motionId}`}>
             <path
-              d={quadraticPathData(path)}
+              d={
+                path.kind === "quadratic"
+                  ? quadraticPathData(path)
+                  : [
+                      `M ${path.path.start.x} ${path.path.start.y}`,
+                      ...path.path.segments.map(
+                        (segment) =>
+                          `C ${segment.control1.x} ${segment.control1.y} ${segment.control2.x} ${segment.control2.y} ${segment.end.x} ${segment.end.y}`,
+                      ),
+                      ...(path.path.closed ? ["Z"] : []),
+                    ].join(" ")
+              }
               data-motion-path={path.motionId}
+              data-motion-path-kind={path.kind}
+              data-motion-path-source={path.kind === "cubic" ? path.pathEntityId : undefined}
               fill="none"
               markerEnd="url(#studio-motion-arrow)"
               stroke="#38bdf8"
               strokeDasharray="5 4"
               strokeWidth="1.5"
             />
-            {editableMotionIds.has(path.motionId) ? (
+            {path.kind === "quadratic" && editableMotionIds.has(path.motionId) ? (
               <path
                 d={`M ${path.start.x} ${path.start.y} L ${path.control.x} ${path.control.y} L ${path.end.x} ${path.end.y}`}
                 fill="none"
@@ -185,22 +208,27 @@ export function StudioMotionOverlay({
           />
         ))}
       </svg>
-      {motionPaths.filter((path) => editableMotionIds.has(path.motionId)).map((path) => (
-        <MotionControlHandle
-          key={`${path.entityId}/${path.motionId}/control`}
-          onChange={onMotionControlChange}
-          onPreviewChange={(previewPath, delta) => {
-            setControlPreviews((current) => {
-              const next = new Map(current);
-              if (delta) next.set(previewPath.motionId, delta);
-              else next.delete(previewPath.motionId);
-              return next;
-            });
-          }}
-          path={path}
-          previewDelta={controlPreviews.get(path.motionId) ?? ZERO_DELTA}
-        />
-      ))}
+      {motionPaths
+        .filter(
+          (path): path is Extract<StudioMotionPath, { kind: "quadratic" }> =>
+            path.kind === "quadratic" && editableMotionIds.has(path.motionId),
+        )
+        .map((path) => (
+          <MotionControlHandle
+            key={`${path.entityId}/${path.motionId}/control`}
+            onChange={onMotionControlChange}
+            onPreviewChange={(previewPath, delta) => {
+              setControlPreviews((current) => {
+                const next = new Map(current);
+                if (delta) next.set(previewPath.motionId, delta);
+                else next.delete(previewPath.motionId);
+                return next;
+              });
+            }}
+            path={path}
+            previewDelta={controlPreviews.get(path.motionId) ?? ZERO_DELTA}
+          />
+        ))}
     </>
   );
 }

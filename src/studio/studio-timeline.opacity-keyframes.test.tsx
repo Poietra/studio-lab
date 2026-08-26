@@ -349,6 +349,58 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain("Remove track");
   });
 
+  it("keeps the Pen motion action visible with a concrete selection blocker", () => {
+    const reason = "Move the target center onto the Pen path start (within 1 px).";
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...props()}
+        interactionMode="animate"
+        onPathMotionAdd={vi.fn()}
+        pathMotionUnavailableReason={reason}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Pen motion easing"');
+    expect(markup).toMatch(
+      /<button[^>]*disabled=""[^>]*title="Move the target center onto the Pen path start \(within 1 px\)\."[^>]*>Use Pen as motion path/u,
+    );
+    expect(markup).toContain(reason);
+  });
+
+  it("enables Pen motion and exposes editing, easing, and deletion for its canonical clip", () => {
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...props()}
+        appliedMotionClips={[
+          {
+            anchors: [{ maximumDuration: 3, sourceTime: 2, workingTime: 2 }],
+            easing: "smooth",
+            entityId: "circle",
+            interval: { end: 3, start: 2 },
+            label: "Circle",
+            maximumDuration: 3,
+            operationId: "pen-motion",
+            penPathMotion: true,
+            programIndex: 1,
+            readOnlyReason: null,
+            sourceStart: 2,
+            transactionId: "pen-motion-program",
+          },
+        ]}
+        editingAppliedTransactionId="pen-motion-program"
+        interactionMode="animate"
+        onAppliedMotionClipDelete={vi.fn()}
+        onPathMotionAdd={vi.fn()}
+        pathMotionUnavailableReason={null}
+      />,
+    );
+
+    expect(markup).toMatch(/<button(?![^>]*disabled="")[^>]*>Use Pen as motion path/u);
+    expect(markup).toContain('aria-label="Edit Circle motion clip"');
+    expect(markup).toContain('aria-label="Easing for Circle Pen motion"');
+    expect(markup).toContain('aria-label="Delete Circle motion clip"');
+  });
+
   it("keeps a locked object selectable while disabling timeline mutations", () => {
     const markup = renderToStaticMarkup(<StudioTimeline {...props()} lockedEntityIds={new Set(["circle"])} />);
 

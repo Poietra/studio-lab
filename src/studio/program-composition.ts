@@ -13,6 +13,7 @@ export function insertedProgramDuration(program: SceneEdit) {
     (operation) =>
       operation.kind === "ChangePresence" ||
       operation.kind === "CreateMotion" ||
+      operation.kind === "CreatePathMotion" ||
       operation.kind === "DrawIn" ||
       operation.kind === "WriteIn" ||
       operation.kind === "ResizeEntity" ||
@@ -183,6 +184,13 @@ function remapOperation(operation: SceneEditOperation, offset: number, maps: IdM
         ...operation,
         ...base,
         targetEntityIds: operation.targetEntityIds.map((id) => remapEntity(id, maps)),
+      };
+    case "CreatePathMotion":
+      return {
+        ...operation,
+        ...base,
+        pathEntityId: remapEntity(operation.pathEntityId, maps),
+        targetEntityId: remapEntity(operation.targetEntityId, maps),
       };
     case "TransformContent":
       return {

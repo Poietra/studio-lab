@@ -1,31 +1,33 @@
 //! Closed-command validation and atomic Scene IR materialization for Studio creation.
 
+use super::path_motion::append_studio_path_motions;
 use super::{
     AffineTransformV1, AnimationChannelV1, ApplyStudioCreationEditCommand,
     ApplyStudioCreationEditError, BTreeSet, ContractVersionV1, CreateSceneEntitiesCommand,
     CreateSceneEntitiesError, CreateSceneEntity, CreateSceneEntityAnimatedResize,
     CreateSceneEntityDrawIn, CreateSceneEntityFadeIn, CreateSceneEntityGeometry,
     CreateSceneEntityInstantTransform, CreateSceneEntityMathTexMorph, CreateSceneEntityPathMorph,
-    CreateSceneEntityWriteIn, CubicPathV1, EasingV1, EngineSessionV1, FidelityV1, FillRuleV1,
-    FillStyleV1, IntervalV1, KeyframeV1, MAX_STROKE_DASH_WORLD_V1, MAX_STUDIO_STROKE_WIDTH_WORLD,
-    MIN_STROKE_DASH_WORLD_V1, MIN_STUDIO_STROKE_WIDTH_WORLD, PathTrimParameterizationV1,
-    PlannedSceneMotion, PlannedStudioCameraAnimation, PlannedStudioCreationEntity,
-    PlannedStudioLogicalGroup, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
-    SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS, SEGMENTED_MATH_TEX_MAX_FRAGMENTS,
-    SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES, SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH,
-    SEGMENTED_MATH_TEX_PHASE_BOUNDARY, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1,
-    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StudioAuthoringDimensions,
-    StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioCreationMathTexOutline,
-    StudioCreationSegmentedMathTexRepresentation, StudioCreationSegmentedMathTexSourceCorrelation,
+    CreateSceneEntityWriteIn, CreateScenePathMotion, CubicPathV1, EasingV1, EngineSessionV1,
+    FidelityV1, FillRuleV1, FillStyleV1, IntervalV1, KeyframeV1, MAX_STROKE_DASH_WORLD_V1,
+    MAX_STUDIO_STROKE_WIDTH_WORLD, MIN_STROKE_DASH_WORLD_V1, MIN_STUDIO_STROKE_WIDTH_WORLD,
+    PathTrimParameterizationV1, PlannedSceneMotion, PlannedStudioCameraAnimation,
+    PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PointV1, ProvenanceOriginV1,
+    ProvenanceRecordV1, RgbaColorV1, SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS,
+    SEGMENTED_MATH_TEX_MAX_FRAGMENTS, SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES,
+    SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH, SEGMENTED_MATH_TEX_PHASE_BOUNDARY, SceneAppearanceV1,
+    SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
+    SceneSourceV1, StudioAuthoringDimensions, StudioAuthoringEditResult, StudioAuthoringEntityKind,
+    StudioCreationMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
+    StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationShapeState,
-    StudioPaintColorProperty, StudioPersistentRemoveProjection, TIMELINE_ANCHOR_EPSILON,
-    VectorAppearanceValueV1, align_cubic_path_morph_chain, append_planned_scene_motions,
-    apply_persistent_scene_removals, apply_world_rotation, authored_motion_easing,
-    canonical_studio_hex_color, close_transform_baseline_value, created_geometry_and_appearance,
-    insert_scene_time, manim_stroke_width_to_scene_world, plan_studio_creation_edits,
-    rotation_is_noop, scale_cubic_path, set_vector_paint_alpha, studio_arc_parameters,
-    studio_arc_path, studio_authoring_shape_size, studio_authoring_size_is_positive,
-    studio_camera_aspects_match, studio_camera_view_is_bounded,
+    StudioCreationSpatialContext, StudioPaintColorProperty, StudioPersistentRemoveProjection,
+    TIMELINE_ANCHOR_EPSILON, VectorAppearanceValueV1, align_cubic_path_morph_chain,
+    append_planned_scene_motions, apply_persistent_scene_removals, apply_world_rotation,
+    authored_motion_easing, canonical_studio_hex_color, close_transform_baseline_value,
+    created_geometry_and_appearance, insert_scene_time, manim_stroke_width_to_scene_world,
+    plan_studio_creation_edits, rotation_is_noop, scale_cubic_path, set_vector_paint_alpha,
+    studio_arc_parameters, studio_arc_path, studio_authoring_shape_size,
+    studio_authoring_size_is_positive, studio_camera_aspects_match, studio_camera_view_is_bounded,
     studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
     studio_coordinate_system_parameters, studio_coordinate_system_path,
     studio_creation_supports_stroke_cap, studio_creation_supports_stroke_join,
@@ -1885,6 +1887,11 @@ impl EngineSessionV1 {
             &command.motions,
             &command.provenance.id,
         )?;
+        append_studio_path_motions(
+            &mut candidate.scene,
+            &command.path_motions,
+            &command.provenance.id,
+        )?;
         let persistent_remove_projection = if command.persistent_removals.is_empty() {
             StudioPersistentRemoveProjection::default()
         } else {
@@ -2484,17 +2491,39 @@ impl EngineSessionV1 {
                 target_entity_ids: vec![motion.target_entity_id.clone()],
             })
             .collect();
+        let spatial_context = StudioCreationSpatialContext {
+            camera_center: self.scene().camera.view.center.clone(),
+            frame,
+            viewport,
+        };
+        let path_motions = plan
+            .path_motions
+            .iter()
+            .map(|motion| CreateScenePathMotion {
+                easing: motion.easing,
+                interval: motion.interval.clone(),
+                path_entity_id: motion.path_entity_id.clone(),
+                pixel_size_world: PointV1 {
+                    x: frame.width / viewport.width,
+                    y: frame.height / viewport.height,
+                },
+                target_entity_id: motion.target_entity_id.clone(),
+            })
+            .collect();
         let operation_count = programs
             .iter()
             .map(|program| program.operations.len())
             .sum::<usize>();
-        let creation_projection = plan.projection();
+        let creation_projection = plan
+            .projection(Some(spatial_context))
+            .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
         let mut result = self.create_scene_entities(CreateSceneEntitiesCommand {
             camera_animation: plan.camera_animation,
             entities,
             expected_base_revision,
             groups: plan.groups,
             motions,
+            path_motions,
             next_revision: next_revision.clone(),
             persistent_removals,
             provenance: ProvenanceRecordV1 {

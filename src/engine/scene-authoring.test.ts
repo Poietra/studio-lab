@@ -537,6 +537,64 @@ describe("Scene authoring WASM adapter", () => {
     ).resolves.toEqual(response);
   });
 
+  it("accepts one strict projected multi-segment Pen path motion", async () => {
+    const path = {
+      closed: false,
+      segments: [
+        {
+          control1: { x: 120, y: 140 },
+          control2: { x: 180, y: 220 },
+          end: { x: 240, y: 180 },
+        },
+        {
+          control1: { x: 300, y: 140 },
+          control2: { x: 360, y: 260 },
+          end: { x: 420, y: 180 },
+        },
+      ],
+      start: { x: 60, y: 180 },
+    } as const;
+    const response = {
+      durationTrimBarrierOperationIds: [],
+      entities: [],
+      insertions: [{ at: 1, duration: 1, transactionId: "path-motion" }],
+      motions: [],
+      mutations: [],
+      pathMotions: [
+        {
+          easing: "manim-smooth",
+          from: path.start,
+          interval: { end: 2, start: 1 },
+          operationId: "path-motion/operation",
+          path,
+          pathEntityId: "pen",
+          sourceInterval: { end: 2, start: 1 },
+          targetEntityId: "circle",
+          to: path.segments[1].end,
+          transactionId: "path-motion",
+        },
+      ],
+      projectedDuration: 3,
+      removals: [],
+      timelineProjection: { programProjections: [], projectedDuration: 3, transforms: [] },
+    } as const;
+    const compile = createProjectStudioCreationCompiler(async () => ({
+      projectStudioCreationEditV1: () => new TextEncoder().encode(JSON.stringify(response)),
+    }));
+
+    await expect(
+      compile({
+        baseDuration: 2,
+        cameraCenter: { x: 0, y: 0 },
+        frame: { height: 9, width: 16 },
+        programs: [],
+        schema: "poietra.project-studio-creation-edit",
+        version: 1,
+        viewport: { height: 360, width: 640 },
+      }),
+    ).resolves.toEqual(response);
+  });
+
   it("accepts a strict root-owned MathTex transform creation projection", async () => {
     const response = {
       durationTrimBarrierOperationIds: [],

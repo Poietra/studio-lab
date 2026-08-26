@@ -41,6 +41,7 @@ export type ResizeEntityOperation = Extract<SceneEditOperation, { kind: "ResizeE
 export type SetPropertyOperation = Extract<SceneEditOperation, { kind: "SetProperty" }>;
 export type AnimatePropertyOperation = Extract<SceneEditOperation, { kind: "AnimateProperty" }>;
 export type CreateMotionOperation = Extract<SceneEditOperation, { kind: "CreateMotion" }>;
+export type CreatePathMotionOperation = Extract<SceneEditOperation, { kind: "CreatePathMotion" }>;
 export type TransformContentOperation = Extract<SceneEditOperation, { kind: "TransformContent" }>;
 export type TransformPathOperation = Extract<SceneEditOperation, { kind: "TransformPath" }>;
 export type TransformShapeOperation = Extract<SceneEditOperation, { kind: "TransformShape" }>;

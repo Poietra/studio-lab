@@ -10,15 +10,17 @@ use poietra_eval::{
     StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
     StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
     StudioBoundEntityEditInput, StudioCreationCubicBezierSpec, StudioCreationEditInput,
-    StudioCreationMathTexOutline, StudioCreationSegmentedMathTexOutline, StudioCreationTextOutline,
-    StudioCubicBezierError, StudioFragmentMaterialAssignment, StudioMathTexTransformEditInput,
+    StudioCreationMathTexOutline, StudioCreationSegmentedMathTexOutline,
+    StudioCreationSpatialContext, StudioCreationTextOutline, StudioCubicBezierError,
+    StudioFragmentMaterialAssignment, StudioMathTexTransformEditInput,
     StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
     StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
     StudioMotionEditInput, StudioMotionEntityIdentity, StudioMotionProjectionBatch,
     StudioMotionSourceBinding, StudioSvgPathError, StudioTimelineEditInput,
     extend_studio_cubic_bezier, inspect_studio_cubic_bezier, inspect_studio_svg_path_asset,
-    project_studio_creation_edits, project_studio_math_tex_transform_edits,
-    project_studio_motion_edit, project_studio_timeline_edits,
+    project_studio_creation_edits, project_studio_creation_edits_with_spatial_context,
+    project_studio_math_tex_transform_edits, project_studio_motion_edit,
+    project_studio_timeline_edits,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, PointV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -170,11 +172,17 @@ struct ApplyStudioCreationEditCommandJsonV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ProjectStudioCreationEditCommandJsonV1 {
     base_duration: f64,
+    #[serde(default)]
+    camera_center: Option<PointV1>,
+    #[serde(default)]
+    frame: Option<StudioAuthoringSize>,
     programs: Vec<StudioCreationEditInput>,
     #[serde(rename = "schema")]
     _schema: ProjectStudioCreationEditSchemaV1,
     #[serde(rename = "version")]
     _version: ContractVersionV1,
+    #[serde(default)]
+    viewport: Option<StudioAuthoringSize>,
 }
 
 impl From<ApplyStudioCreationEditCommandJsonV1> for ApplyStudioCreationEditCommand {
@@ -524,7 +532,23 @@ fn project_studio_creation_edit_json(
         command_json,
         poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
     )?;
-    let projection = project_studio_creation_edits(command.base_duration, &command.programs)?;
+    let projection = match (command.camera_center, command.frame, command.viewport) {
+        (None, None, None) => {
+            project_studio_creation_edits(command.base_duration, &command.programs)?
+        }
+        (Some(camera_center), Some(frame), Some(viewport)) => {
+            project_studio_creation_edits_with_spatial_context(
+                command.base_duration,
+                &command.programs,
+                StudioCreationSpatialContext {
+                    camera_center,
+                    frame,
+                    viewport,
+                },
+            )?
+        }
+        _ => return Err(ProjectStudioCreationEditError::Unsupported.into()),
+    };
     studio_projection_response(&projection)
 }
 

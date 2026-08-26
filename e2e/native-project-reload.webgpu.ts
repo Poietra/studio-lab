@@ -49,7 +49,7 @@ async function placeOnCanvas(page: Page, fractionX: number, fractionY: number) {
   });
 }
 
-async function scrubMotionClip(page: Page, clip: Locator, progress: number) {
+async function motionClipTime(page: Page, clip: Locator, progress: number) {
   const slider = page.getByRole("slider", { name: "Scene playhead" });
   const duration = Number(await slider.getAttribute("max"));
   const operationId = await clip.getAttribute("data-applied-motion-clip");
@@ -58,7 +58,12 @@ async function scrubMotionClip(page: Page, clip: Locator, progress: number) {
     left: Number.parseFloat((wrapper as HTMLElement).style.left),
     width: Number.parseFloat((wrapper as HTMLElement).style.width),
   }));
-  const time = Number(((duration * (placement.left + placement.width * progress)) / 100).toFixed(2));
+  return Number(((duration * (placement.left + placement.width * progress)) / 100).toFixed(2));
+}
+
+async function scrubMotionClip(page: Page, clip: Locator, progress: number) {
+  const slider = page.getByRole("slider", { name: "Scene playhead" });
+  const time = await motionClipTime(page, clip, progress);
   await slider.fill(String(time));
   await expect
     .poll(async () => Number(await page.locator("[data-studio-canvas]").getAttribute("data-preview-sample-time")))
@@ -124,11 +129,13 @@ async function exportLocalMp4(page: Page) {
   return bytes.toString("base64");
 }
 
-async function decodedBrightPixelCounts(
+type DecodedPixelMode = "blue-dominant" | "bright" | "green-dominant" | "red-dominant";
+
+async function decodedPixelStats(
   page: Page,
   mp4Base64: string,
   sampleTimes: readonly number[],
-  mode: "blue-dominant" | "bright" | "green-dominant" | "red-dominant" = "bright",
+  mode: DecodedPixelMode = "bright",
 ) {
   return page.evaluate(
     async ({ mode, mp4Base64, sampleTimes }) => {
@@ -168,7 +175,7 @@ async function decodedBrightPixelCounts(
         canvas.height = video.videoHeight;
         const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
         if (!context) throw new Error("The decoded Draw frame canvas is unavailable.");
-        const counts: number[] = [];
+        const stats: Readonly<{ count: number; x: number; y: number }>[] = [];
         for (const sampleTime of sampleTimes) {
           await new Promise<void>((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error(`MP4 seek to ${sampleTime}s timed out.`)), 15_000);
@@ -185,6 +192,8 @@ async function decodedBrightPixelCounts(
           context.drawImage(video, 0, 0);
           const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
           let bright = 0;
+          let totalX = 0;
+          let totalY = 0;
           for (let offset = 0; offset < pixels.length; offset += 4) {
             const red = pixels[offset] ?? 0;
             const green = pixels[offset + 1] ?? 0;
@@ -197,17 +206,35 @@ async function decodedBrightPixelCounts(
                   : mode === "red-dominant"
                     ? red > 32 && red > green * 1.5 && red > blue * 1.5
                     : red + green + blue > 90;
-            if (matches) bright += 1;
+            if (matches) {
+              const pixel = offset / 4;
+              bright += 1;
+              totalX += pixel % canvas.width;
+              totalY += Math.floor(pixel / canvas.width);
+            }
           }
-          counts.push(bright);
+          stats.push({
+            count: bright,
+            x: bright === 0 ? Number.NaN : totalX / bright,
+            y: bright === 0 ? Number.NaN : totalY / bright,
+          });
         }
-        return counts;
+        return stats;
       } finally {
         URL.revokeObjectURL(url);
       }
     },
     { mode, mp4Base64, sampleTimes },
   );
+}
+
+async function decodedBrightPixelCounts(
+  page: Page,
+  mp4Base64: string,
+  sampleTimes: readonly number[],
+  mode: DecodedPixelMode = "bright",
+) {
+  return (await decodedPixelStats(page, mp4Base64, sampleTimes, mode)).map(({ count }) => count);
 }
 
 async function createBlankWorkspace(page: Page, name: string) {
@@ -1360,6 +1387,119 @@ test("orients an Arrow along a curved motion path through reload and MP4 export"
     expect(restoredOrientedStart.height).toBeGreaterThan(restoredOrientedStart.width);
 
     await exportLocalMp4(page);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
+test("uses a multi-segment Pen as an exact object motion path through reload and MP4", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Pen motion fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    const waitForPresentedPreview = () => expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.getByRole("button", { name: /Insert circle/ }).click();
+    await canvas.click({ position: { x: 220, y: 230 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const circle = page.getByRole("button", { exact: true, name: "Move Circle" });
+    const circleFill = page.getByLabel("Fill color Circle");
+    await circleFill.fill("#ef4444");
+    await circleFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    await page.getByRole("button", { name: "Pen tool (K)" }).click();
+    for (const position of [
+      { x: 220, y: 230 },
+      { x: 440, y: 150 },
+      { x: 260, y: 80 },
+      { x: 400, y: 300 },
+    ]) {
+      await canvas.click({ position });
+    }
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await page.getByRole("button", { exact: true, name: "Move CubicBezier" }).click();
+    await page.getByRole("button", { name: /Extend path/ }).click();
+    await canvas.click({ position: { x: 520, y: 210 } });
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
+
+    await page.getByRole("checkbox", { name: "Select Circle" }).check();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await page.getByRole("button", { name: "Create animation" }).click();
+    await page.getByRole("spinbutton", { name: "New motion duration in seconds" }).fill("1");
+    await page.getByRole("combobox", { name: "Pen motion easing" }).selectOption("linear");
+    const usePen = page.getByRole("button", { name: "Use Pen as motion path" });
+    await expect(usePen).toBeEnabled();
+    await usePen.click();
+    const exactPath = page.locator('[data-motion-path-kind="cubic"]');
+    await expect(exactPath).toHaveCount(1);
+    expect((await exactPath.getAttribute("d"))?.match(/\bC\b/gu)).toHaveLength(2);
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    const motionClip = page.getByRole("button", { name: "Edit Circle motion clip" });
+    await expect(motionClip).toBeVisible();
+    await scrubMotionClip(page, motionClip, 0);
+    const startBox = await circle.boundingBox();
+    await scrubMotionClip(page, motionClip, 0.5);
+    const middleBox = await circle.boundingBox();
+    await scrubMotionClip(page, motionClip, 1);
+    const endBox = await circle.boundingBox();
+    if (!startBox || !middleBox || !endBox) throw new Error("The Pen-driven Circle was not measurable.");
+    expect(Math.hypot(middleBox.x - startBox.x, middleBox.y - startBox.y)).toBeGreaterThan(40);
+    expect(Math.hypot(endBox.x - middleBox.x, endBox.y - middleBox.y)).toBeGreaterThan(30);
+
+    await motionClip.click();
+    await waitForPresentedPreview();
+    await page.getByRole("button", { name: "Delete Circle motion clip" }).click();
+    await expect(motionClip).toHaveCount(0);
+    await expect(exactPath).toHaveCount(0);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await waitForPresentedPreview();
+    await expect(motionClip).toBeVisible();
+    await expect(exactPath).toHaveCount(1);
+
+    await motionClip.click();
+    await waitForPresentedPreview();
+    await page.getByRole("button", { name: "Adjust Circle motion end" }).press("ArrowRight");
+    await expect(page.getByRole("status").filter({ hasText: "Editing Circle motion" })).toContainText("Duration 1.10s");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await page.getByRole("button", { name: "Undo" }).click();
+    await waitForPresentedPreview();
+    await expect(motionClip).toHaveAttribute("title", /1\.00s/u);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await waitForPresentedPreview();
+    await expect(motionClip).toHaveAttribute("title", /1\.10s/u);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Pen motion fixture workspace" }).click();
+    await page.getByRole("checkbox", { name: "Select Circle" }).check();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    const restoredClip = page.getByRole("button", { name: "Edit Circle motion clip" });
+    await scrubMotionClip(page, restoredClip, 0.5);
+    const restoredPath = page.locator('[data-motion-path-kind="cubic"]');
+    await expect(restoredPath).toHaveCount(1);
+    expect((await restoredPath.getAttribute("d"))?.match(/\bC\b/gu)).toHaveLength(2);
+
+    const sampleTimes = await Promise.all(
+      [0.02, 0.5, 0.98].map((progress) => motionClipTime(page, restoredClip, progress)),
+    );
+    await page.getByRole("button", { name: "Export settings" }).click();
+    const sourceExport = page.locator("[data-studio-manim-source-export-state]");
+    await expect(sourceExport).toHaveAttribute("data-studio-manim-source-export-state", "unavailable");
+    await expect(sourceExport).toContainText(/Pen motion|motion path/u);
+    await page.getByRole("button", { exact: true, name: "Close" }).click();
+
+    const mp4 = await exportLocalMp4(page);
+    const positions = await decodedPixelStats(page, mp4, sampleTimes, "red-dominant");
+    expect(positions.every(({ count }) => count > 20)).toBe(true);
+    const [start, middle, end] = positions;
+    if (!start || !middle || !end) throw new Error("The Pen motion MP4 did not expose three decoded positions.");
+    expect(Math.hypot(middle.x - start.x, middle.y - start.y)).toBeGreaterThan(30);
+    expect(Math.hypot(end.x - middle.x, end.y - middle.y)).toBeGreaterThan(20);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

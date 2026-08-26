@@ -184,7 +184,11 @@ export function samplePropertyValue(
     const duration = sample.interval.end - sample.interval.start;
     const progress =
       duration <= 0 ? 1 : easingProgress(sample, Math.min(1, Math.max(0, (time - sample.interval.start) / duration)));
-    if (isPointValue(sample.from) && isPointValue(sample.value)) {
+    if (sample.pathMotion !== undefined) {
+      // Rust owns arc-length path evaluation. Keep the last exact endpoint in
+      // the semantic projection rather than inventing a quadratic fallback.
+      value = sample.from;
+    } else if (isPointValue(sample.from) && isPointValue(sample.value)) {
       const control = sample.control ?? {
         x: (sample.from.x + sample.value.x) / 2,
         y: (sample.from.y + sample.value.y) / 2,

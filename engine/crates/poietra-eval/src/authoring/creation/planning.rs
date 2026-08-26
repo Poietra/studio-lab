@@ -12,31 +12,32 @@ use super::{
     MIN_STROKE_DASH_WORLD_V1, MIN_STUDIO_STROKE_WIDTH_WORLD, PersistentSceneRemoval,
     PlannedStudioAnimatedResize, PlannedStudioCameraClip, PlannedStudioCreationEntity,
     PlannedStudioLogicalGroup, PlannedStudioMathTexTransform, PlannedStudioMotion,
-    PlannedStudioPathMorph, PlannedStudioShapeTransform, ProjectStudioCreationEditError,
-    RgbaColorV1, SceneAppearanceV1, SceneEditExecution, SceneEditScheduleMode,
-    StudioAuthoringDimensions, StudioAuthoringEntityKind, StudioAuthoringOrigin,
-    StudioCreationEditInput, StudioCreationOperationKind, StudioCreationPlan,
-    StudioCreationProjectedMutation, StudioCreationProjectedMutationKind, StudioCreationShapeState,
-    StudioMathTexTransformStrategy, StudioMotionPlan, StudioMotionProjectionTarget,
-    StudioPaintColorProperty, StudioPaintColorTrack, StudioPropertyEasing, StudioStrokeDash,
-    TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value,
-    closed_studio_creation_motion_operations, closed_studio_group_layer_order,
-    closed_studio_group_rotation, closed_studio_material_parameter_track,
-    closed_studio_opacity_track, closed_studio_rotation_track, closed_studio_uniform_scale_track,
-    interval_is_exact_point, motion_easing, normalize_studio_cubic_bezier,
-    normalize_studio_svg_path_asset, planned_studio_camera_animation, project_studio_motion_plan,
-    property_easing, rotation_is_noop, shift_interval_for_insertion, shift_studio_creation_time,
-    studio_arc_parameters, studio_authoring_point_is_finite, studio_authoring_shape_size,
-    studio_camera_aspects_match, studio_camera_view_is_bounded,
-    studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
-    studio_coordinate_system_parameters, studio_creation_initial_appearance_end,
-    studio_creation_motion_is_compatible, studio_creation_spec_text_content,
-    studio_creation_supports_stroke_cap, studio_creation_supports_stroke_color_track,
-    studio_creation_supports_stroke_join, studio_creation_supports_stroke_width,
-    studio_cubic_bezier_dimensions_are_canonical, studio_cubic_bezier_is_canonical,
-    studio_data_series_is_valid, studio_ellipse_parameters, studio_math_tex_content_is_canonical,
-    studio_regular_polygon_parameters, studio_shape_transform_path,
-    studio_text_content_is_canonical, studio_timeline_semantic_values_match,
+    PlannedStudioPathMorph, PlannedStudioPathMotion, PlannedStudioShapeTransform,
+    ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1, SceneEditExecution,
+    SceneEditScheduleMode, StudioAuthoringDimensions, StudioAuthoringEntityKind,
+    StudioAuthoringOrigin, StudioCreationEditInput, StudioCreationOperationKind,
+    StudioCreationPlan, StudioCreationProjectedMutation, StudioCreationProjectedMutationKind,
+    StudioCreationShapeState, StudioMathTexTransformStrategy, StudioMotionEasing, StudioMotionPlan,
+    StudioMotionProjectionTarget, StudioPaintColorProperty, StudioPaintColorTrack,
+    StudioPropertyEasing, StudioStrokeDash, TIMELINE_ANCHOR_EPSILON,
+    close_transform_baseline_value, closed_studio_creation_motion_operations,
+    closed_studio_group_layer_order, closed_studio_group_rotation,
+    closed_studio_material_parameter_track, closed_studio_opacity_track,
+    closed_studio_rotation_track, closed_studio_uniform_scale_track, interval_is_exact_point,
+    motion_easing, normalize_studio_cubic_bezier, normalize_studio_svg_path_asset,
+    planned_studio_camera_animation, project_studio_motion_plan, property_easing, rotation_is_noop,
+    shift_interval_for_insertion, shift_studio_creation_time, studio_arc_parameters,
+    studio_authoring_point_is_finite, studio_authoring_shape_size, studio_camera_aspects_match,
+    studio_camera_view_is_bounded, studio_camera_view_is_within_zoom_bounds,
+    studio_camera_views_match, studio_coordinate_system_parameters,
+    studio_creation_initial_appearance_end, studio_creation_motion_is_compatible,
+    studio_creation_spec_text_content, studio_creation_supports_stroke_cap,
+    studio_creation_supports_stroke_color_track, studio_creation_supports_stroke_join,
+    studio_creation_supports_stroke_width, studio_cubic_bezier_dimensions_are_canonical,
+    studio_cubic_bezier_is_canonical, studio_data_series_is_valid, studio_ellipse_parameters,
+    studio_math_tex_content_is_canonical, studio_regular_polygon_parameters,
+    studio_shape_transform_path, studio_text_content_is_canonical,
+    studio_timeline_semantic_values_match,
 };
 
 fn studio_shape_transform_pair_is_supported(
@@ -233,6 +234,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::CreatePathMotion { .. }
                 | StudioCreationOperationKind::Group { .. }
                 | StudioCreationOperationKind::Ungroup { .. }
                 | StudioCreationOperationKind::InsertWait { .. }
@@ -294,6 +296,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::CreatePathMotion { .. }
                 | StudioCreationOperationKind::Group { .. }
                 | StudioCreationOperationKind::Ungroup { .. }
                 | StudioCreationOperationKind::InsertWait { .. }
@@ -1509,10 +1512,101 @@ pub(super) fn plan_studio_creation_edits(
     }
 
     let mut planned_motions = Vec::new();
+    let mut planned_path_motions = Vec::new();
     let mut oriented_entity_ids = BTreeSet::new();
     let mut spun_entity_ids = BTreeSet::new();
     for program_index in followup_programs {
         let program = &programs[program_index];
+        let contains_path_motion = program.operations.iter().any(|operation| {
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::CreatePathMotion { .. }
+            )
+        });
+        if contains_path_motion {
+            if program.origin != StudioAuthoringOrigin::DirectManipulation
+                || program.lowering_supported
+                || program.requested_execution != SceneEditExecution::Sequence
+                || program.schedule_mode != SceneEditScheduleMode::Sequence
+                || program.schedule_edge_count != 0
+                || program.intent_count != 1
+                || program.operations.len() != 1
+                || program.schedule_order != [program.operations[0].id.clone()]
+            {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            let operation = &program.operations[0];
+            let StudioCreationOperationKind::CreatePathMotion {
+                easing,
+                path_entity_id,
+                target_entity_id,
+            } = &operation.kind
+            else {
+                unreachable!();
+            };
+            let program_rank = timeline.ranks[program_index];
+            let path_state = entities
+                .iter()
+                .find(|state| state.spec.id == *path_entity_id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let target_state = entities
+                .iter()
+                .find(|state| state.spec.id == *target_entity_id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let path_segment_count = path_state
+                .current_cubic_bezier_path
+                .as_ref()
+                .map_or(0, |path| path.segments.len());
+            if operation.entity_id.is_some()
+                || !operation.depends_on.is_empty()
+                || path_entity_id.is_empty()
+                || target_entity_id.is_empty()
+                || path_entity_id == target_entity_id
+                || !matches!(
+                    easing,
+                    StudioMotionEasing::Linear | StudioMotionEasing::Smooth
+                )
+                || !studio_timeline_semantic_values_match(
+                    operation.interval.start,
+                    program.anchor_resolved_seconds,
+                )
+                || !operation.interval.end.is_finite()
+                || operation.interval.end <= operation.interval.start + TIMELINE_ANCHOR_EPSILON
+                || operation.interval.end > base_duration + TIMELINE_ANCHOR_EPSILON
+                || path_state.creation_program_rank >= program_rank
+                || target_state.creation_program_rank >= program_rank
+                || path_state.kind != StudioAuthoringEntityKind::CubicBezier
+                || path_state
+                    .cubic_bezier
+                    .as_ref()
+                    .is_none_or(|curve| curve.spec.closed || curve.spec.arrow_end)
+                || !(2..=MAX_STUDIO_CUBIC_BEZIER_SEGMENTS).contains(&path_segment_count)
+                || planned_path_motions
+                    .iter()
+                    .any(|prior: &PlannedStudioPathMotion| {
+                        [&prior.target_entity_id, &prior.path_entity_id]
+                            .into_iter()
+                            .any(|prior_id| {
+                                prior_id == target_entity_id || prior_id == path_entity_id
+                            })
+                    })
+            {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            planned_path_motions.push(PlannedStudioPathMotion {
+                easing: *easing,
+                interval: IntervalV1 {
+                    end: operation.interval.end + timeline.offsets[program_index],
+                    start: operation.interval.start + timeline.offsets[program_index],
+                },
+                operation_id: operation.id.clone(),
+                path_entity_id: path_entity_id.clone(),
+                source_interval: operation.interval.clone(),
+                target_entity_id: target_entity_id.clone(),
+                transaction_id: program.transaction_id.clone(),
+            });
+            continue;
+        }
         let contains_motion = program.operations.iter().any(|operation| {
             matches!(
                 operation.kind,
@@ -2612,6 +2706,7 @@ pub(super) fn plan_studio_creation_edits(
                 | StudioCreationOperationKind::Resize { .. }
                 | StudioCreationOperationKind::PersistentRemove { .. }
                 | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::CreatePathMotion { .. }
                 | StudioCreationOperationKind::Group { .. }
                 | StudioCreationOperationKind::Ungroup { .. }
                 | StudioCreationOperationKind::InsertWait { .. }
@@ -2998,6 +3093,60 @@ pub(super) fn plan_studio_creation_edits(
             }
         }
     }
+    for motion in &planned_path_motions {
+        let path_state = entities
+            .iter()
+            .find(|state| state.spec.id == motion.path_entity_id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let target_state = entities
+            .iter()
+            .find(|state| state.spec.id == motion.target_entity_id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let has_group_history = programs.iter().any(|program| {
+            program.operations.iter().any(|operation| {
+                matches!(
+                    &operation.kind,
+                    StudioCreationOperationKind::Group { child_entity_ids, .. }
+                        if child_entity_ids.iter().any(|entity_id| {
+                            entity_id == &motion.path_entity_id
+                                || entity_id == &motion.target_entity_id
+                        })
+                )
+            })
+        });
+        let has_relative_motion_conflict = planned_motions.iter().any(|candidate| {
+            candidate.target_entity_ids.iter().any(|entity_id| {
+                entity_id == &motion.path_entity_id || entity_id == &motion.target_entity_id
+            })
+        });
+        let static_transform = |state: &PlannedStudioCreationEntity| {
+            state.instant_at.is_none()
+                && !state.has_position_or_resize_instant
+                && state.animated_resize.is_none()
+                && rotation_is_noop(state.current_rotation)
+                && close_transform_baseline_value(state.scale, 1.0)
+                && studio_timeline_semantic_values_match(state.position.x, state.initial_position.x)
+                && studio_timeline_semantic_values_match(state.position.y, state.initial_position.y)
+                && state.rotation_keyframes.is_empty()
+                && state.uniform_scale_keyframes.is_empty()
+        };
+        if camera_animation.is_some()
+            || has_group_history
+            || has_relative_motion_conflict
+            || !static_transform(path_state)
+            || !static_transform(target_state)
+            || !path_state.path_morphs.is_empty()
+            || !path_state.shape_transforms.is_empty()
+            || !path_state.math_tex_transforms.is_empty()
+            || !target_state.path_morphs.is_empty()
+            || !target_state.shape_transforms.is_empty()
+            || !target_state.math_tex_transforms.is_empty()
+            || !studio_creation_motion_is_compatible(path_state, &motion.interval)
+            || !studio_creation_motion_is_compatible(target_state, &motion.interval)
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+    }
     let targets = entities
         .iter()
         .map(|state| {
@@ -3027,6 +3176,7 @@ pub(super) fn plan_studio_creation_edits(
         entities,
         groups,
         motion_projection,
+        path_motions: planned_path_motions,
         mutations: ranked_mutations
             .into_iter()
             .map(|(_, _, mutation)| mutation)

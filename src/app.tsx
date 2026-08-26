@@ -184,6 +184,7 @@ import type {
   DataSeries,
   EntityContent,
   EntityDimensions,
+  MotionEasing,
   Point,
   ProgramRecord,
   ProjectedEntity,
@@ -230,6 +231,11 @@ import {
   replacePathMorphPoint,
   replacePathMorphProgram,
 } from "./studio/path-morph-clip-edit";
+import {
+  createPathMotionProgram,
+  pathMotionClipFromProgram,
+  replacePathMotionProgram,
+} from "./studio/path-motion-edit";
 import { PoietraBrand } from "./studio/poietra-brand";
 import type {
   StudioNativePreviewEditingContextV1,
@@ -1033,13 +1039,33 @@ export function App({
     : null;
   const editorDocumentIdentityKeyRef = useRef(editorDocumentIdentityKey);
   editorDocumentIdentityKeyRef.current = editorDocumentIdentityKey;
+  const editorCreationProjectionSpatialContext = useMemo(
+    () =>
+      workspace && activeProjectId && nativeProjectState?.projectId === activeProjectId
+        ? {
+            cameraCenter: nativeProjectState.bundle.scene.camera.view.center,
+            frame: workspace.frame,
+            viewport: STUDIO_VIEWPORT,
+          }
+        : undefined,
+    [activeProjectId, nativeProjectState, workspace],
+  );
   const installEditorDocumentProjection = useCallback(
     async (programs: readonly ProgramRecord["program"][], reason: "open" | "remote") => {
       const projectionIdentityKey = editorDocumentIdentityKey;
       if (!activeScene || projectionIdentityKey === null) {
         throw new TypeError("The authoritative Editor projection has no selected Scene.");
       }
-      const authoritativeEdits = await materializeAuthoritativeEditorProgramsV1(activeScene, appliedEdits, programs);
+      const authoritativeEdits = await materializeAuthoritativeEditorProgramsV1(
+        activeScene,
+        appliedEdits,
+        programs,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        editorCreationProjectionSpatialContext,
+      );
       if (editorDocumentIdentityKeyRef.current !== projectionIdentityKey) return;
       installAcceptedState(
         installAuthoritativeEditorPrograms(
@@ -1051,7 +1077,14 @@ export function App({
         ),
       );
     },
-    [activeScene, appliedEdits, editorDocumentIdentityKey, editorState, installAcceptedState],
+    [
+      activeScene,
+      appliedEdits,
+      editorCreationProjectionSpatialContext,
+      editorDocumentIdentityKey,
+      editorState,
+      installAcceptedState,
+    ],
   );
   const bootstrapEditorDocumentSession = useCallback(
     async (outcome: EditorDocumentAuthorityOpenOutcomeV1) => {
@@ -1068,7 +1101,16 @@ export function App({
       const initialEntities = Object.values(activeScene.runtimeSceneState.objectGraph.entities).filter((entity) =>
         entity.lifetime.some((lifetime) => initialTime >= lifetime.start && initialTime < lifetime.end),
       );
-      const authoritativeEdits = await materializeAuthoritativeEditorProgramsV1(activeScene, [], outcome.programs);
+      const authoritativeEdits = await materializeAuthoritativeEditorProgramsV1(
+        activeScene,
+        [],
+        outcome.programs,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        editorCreationProjectionSpatialContext,
+      );
       if (editorDocumentIdentityKeyRef.current !== bootstrapIdentityKey) {
         throw new DOMException("The selected Editor document changed while opening.", "AbortError");
       }
@@ -1130,6 +1172,7 @@ export function App({
       activeProjectId,
       activeScene,
       clearMigratedLocalSession,
+      editorCreationProjectionSpatialContext,
       editorDocumentIdentityKey,
       installAcceptedState,
       markSessionCloudManaged,
@@ -3124,20 +3167,21 @@ export function App({
         const precedingPrograms = previewAppliedEdits.slice(0, programIndex).map((candidate) => candidate.program);
         const metadata = record.editorMetadata;
         return evaluatedProgram.operations.flatMap((operation) => {
-          if (operation.kind !== "CreateMotion") return [];
+          if (operation.kind !== "CreateMotion" && operation.kind !== "CreatePathMotion") return [];
           const sourceOperation = record.program.operations.find(
-            (candidate) => candidate.kind === "CreateMotion" && candidate.id === operation.id,
+            (candidate) => candidate.kind === operation.kind && candidate.id === operation.id,
           );
-          if (sourceOperation?.kind !== "CreateMotion") return [];
+          if (sourceOperation?.kind !== "CreateMotion" && sourceOperation?.kind !== "CreatePathMotion") return [];
           const workingInterval = workspaceProjection?.proposedState.evaluatedScene.eventTrack.events.find(
             (event) => event.transactionId === record.program.transactionId && event.operationId === operation.id,
           )?.interval;
           if (!workingInterval) return [];
-          const metadataReason = appliedMotionClipReadOnlyReason(
-            record.program,
-            metadata?.operation,
-            sourceOperation.id,
-          );
+          const metadataReason =
+            sourceOperation.kind === "CreatePathMotion"
+              ? pathMotionClipFromProgram(record.program)?.operationId === sourceOperation.id
+                ? null
+                : "This Pen motion clip cannot be matched safely to its canonical Program."
+              : appliedMotionClipReadOnlyReason(record.program, metadata?.operation, sourceOperation.id);
           const busyReason =
             draftEdit && editingAppliedProgram?.original.program.transactionId !== record.program.transactionId
               ? "Apply or discard the current draft before editing this motion clip."
@@ -3149,10 +3193,21 @@ export function App({
               workingTime: sourceTimeToWorkingTime(precedingPrograms, sourceTime),
             }))
             .filter((anchor) => anchor.maximumDuration >= 0.1 - 0.0005);
-          return operation.targetEntityIds.map((entityId) => {
+          const targetEntityIds =
+            operation.kind === "CreatePathMotion" ? [operation.targetEntityId] : operation.targetEntityIds;
+          const latestUndoMutation = programUndoEntries.at(-1);
+          const deleteUnavailableReason =
+            sourceOperation.kind === "CreatePathMotion" &&
+            (programIndex !== appliedEdits.length - 1 ||
+              latestUndoMutation?.kind !== "append" ||
+              latestUndoMutation.value.program.transactionId !== record.program.transactionId)
+              ? "Undo later Pen motion edits before deleting this clip."
+              : null;
+          return targetEntityIds.map((entityId) => {
             const entity = workspaceProjection?.proposedState.evaluatedScene.objectGraph.entities[entityId];
             return {
               anchors,
+              ...(sourceOperation.kind === "CreatePathMotion" ? { deleteUnavailableReason } : {}),
               easing: sourceOperation.easing,
               entityId,
               interval: workingInterval,
@@ -3162,6 +3217,7 @@ export function App({
                 projectedEditorScene.runtimeSceneState.duration - sourceOperation.interval.start,
               ),
               operationId: operation.id,
+              ...(sourceOperation.kind === "CreatePathMotion" ? { penPathMotion: true as const } : {}),
               programIndex,
               readOnlyReason: busyReason ?? metadataReason,
               sourceStart: sourceOperation.interval.start,
@@ -3624,6 +3680,11 @@ export function App({
       setDraftError("The motion clip no longer matches the applied Program history.");
       return;
     }
+    const pathMotion = pathMotionClipFromProgram(record.program);
+    if (pathMotion?.operationId === clip.operationId) {
+      void stagePathMotionClip(clip);
+      return;
+    }
     const operation =
       editingAppliedProgram?.original.program.transactionId === clip.transactionId
         ? draftOperation
@@ -3639,6 +3700,15 @@ export function App({
     const record = appliedEdits[clip.programIndex];
     if (!record || record.program.transactionId !== clip.transactionId) {
       setDraftError("The motion clip no longer matches the applied Program history.");
+      return;
+    }
+    const pathMotion = pathMotionClipFromProgram(
+      editingAppliedProgram?.original.program.transactionId === clip.transactionId && draftEdit
+        ? draftEdit.program
+        : record.program,
+    );
+    if (pathMotion?.operationId === clip.operationId) {
+      void stagePathMotionClip(clip, change);
       return;
     }
     const editingThisClip = editingAppliedProgram?.original.program.transactionId === clip.transactionId;
@@ -3660,6 +3730,82 @@ export function App({
       return;
     }
     installAppliedProgramEdit(record, clip.programIndex, retimed.operation, change.sourceStart);
+  }
+
+  function stagePathMotionClip(clip: AppliedMotionClip, change: Partial<AppliedMotionClipChange> = {}) {
+    if (clip.readOnlyReason) {
+      setDraftError(clip.readOnlyReason);
+      return false;
+    }
+    const original = appliedEdits[clip.programIndex];
+    const base = previewAppliedEdits[clip.programIndex];
+    if (!original || !base || base.program.transactionId !== clip.transactionId) {
+      setDraftError("The Pen motion clip no longer matches the applied Program history.");
+      return false;
+    }
+    const pathMotion = pathMotionClipFromProgram(base.program);
+    if (!pathMotion || pathMotion.operationId !== clip.operationId) {
+      setDraftError("This motion clip is not one canonical Pen motion Program.");
+      return false;
+    }
+    try {
+      const preceding = sourceSceneBeforeAppliedProgram(clip.programIndex);
+      const validation = replacePathMotionProgram({
+        baseProgram: base.program,
+        duration: change.duration,
+        easing: change.easing,
+        scene: preceding.scene,
+        start: change.sourceStart,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(
+        validated.record,
+        [pathMotion.targetEntityId, pathMotion.pathEntityId],
+        preceding.canonical,
+        null,
+        { index: clip.programIndex, original },
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Pen motion clip could not be edited.");
+      return false;
+    }
+  }
+
+  function deleteAppliedMotionClip(clip: AppliedMotionClip) {
+    const latest = appliedEdits.at(-1);
+    const mutation = programUndoEntries.at(-1);
+    const pathMotion = latest ? pathMotionClipFromProgram(latest.program) : null;
+    if (
+      !latest ||
+      latest.program.transactionId !== clip.transactionId ||
+      pathMotion?.operationId !== clip.operationId ||
+      !mutation ||
+      mutation.kind !== "append" ||
+      mutation.value.program.transactionId !== clip.transactionId
+    ) {
+      setDraftError("Undo later edits and Pen motion changes before deleting this clip.");
+      return false;
+    }
+    if (draftEdit) {
+      if (editingAppliedProgram?.original.program.transactionId !== clip.transactionId) {
+        setDraftError("Apply or discard the current draft before deleting Pen motion.");
+        return false;
+      }
+      const planned = undoEditorProgramTransition(discardEditorDraftTransition(editorState));
+      if (!editorDocumentAuthority.enabled) {
+        installAcceptedState(planned);
+        return true;
+      }
+      const lifecycleBlocker = readDurationBlocker();
+      if (lifecycleBlocker || !editorDocumentAuthority.canAuthor()) {
+        setDraftError(lifecycleBlocker ?? editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
+        return false;
+      }
+      void commitEditorProgramMutation(collaborationMutationForUndoV1(mutation), planned);
+      return true;
+    }
+    return undoProgramCommitFirst();
   }
 
   async function applyDraft() {
@@ -4417,6 +4563,169 @@ export function App({
       return true;
     }
     return undoProgramCommitFirst();
+  }
+
+  function selectedPenPathMotionTarget() {
+    const blocked = (reason: string) => ({ kind: "blocked" as const, reason });
+    if (selectedObjectIds.length !== 2) {
+      return blocked("Select exactly one Studio-created object and one open multi-segment Pen.");
+    }
+    if (draftEdit) return blocked("Apply or discard the current draft before creating Pen motion.");
+    if (previewRenderer?.state.phase !== "presented" || !workspaceCreationProjection || !workspaceProjection) {
+      return blocked("Wait for the canonical WebGPU preview before creating Pen motion.");
+    }
+    const selectedEntities = selectedObjectIds.map((entityId) =>
+      editableEntities.find((entity) => entity.id === entityId && entity.present),
+    );
+    if (selectedEntities.some((entity) => !entity)) {
+      return blocked("Both selected objects must be present at the playhead.");
+    }
+    const candidates = selectedEntities.flatMap((entity) => {
+      if (!entity || entity.type !== "CubicBezier") return [];
+      const creation = studioCubicBezierCreation(entity.id);
+      const spec = creation?.creation.entity.cubicBezier;
+      return creation && spec && 1 + (spec.continuationSegments?.length ?? 0) >= 2 ? [{ creation, entity, spec }] : [];
+    });
+    if (candidates.length !== 1) {
+      const selectedPen = selectedEntities.find((entity) => entity?.type === "CubicBezier");
+      return blocked(
+        selectedPen
+          ? candidates.length > 1
+            ? "Select exactly one multi-segment Pen; the other selected object is the motion target."
+            : "Extend the Studio-created Pen to at least two segments before using it as a motion path."
+          : "Select one Studio-created open multi-segment Pen and one target object.",
+      );
+    }
+    const candidate = candidates[0]!;
+    const target = selectedEntities.find((entity) => entity?.id !== candidate.entity.id);
+    if (!target || !target.transactionId || !studioCreationProjectionEntityFor(target.id)) {
+      return blocked("Pen motion currently supports only one other Studio-created target object.");
+    }
+    if (candidate.spec.closed === true) return blocked("Open the Pen path before using it for motion.");
+    if (candidate.spec.arrowEnd) return blocked("Remove the Pen arrow end before using it for motion.");
+    const segmentCount = 1 + (candidate.spec.continuationSegments?.length ?? 0);
+    if (segmentCount > 8) return blocked("Pen motion currently supports paths with at most eight segments.");
+    if (lockedEntityIdSet.has(candidate.entity.id) || lockedEntityIdSet.has(target.id)) {
+      return blocked(LOCKED_ENTITY_MUTATION_MESSAGE);
+    }
+    const selectedIds = new Set([candidate.entity.id, target.id]);
+    if (
+      [...selectedIds].some((entityId) => canonicalGroupedChildIds.has(entityId)) ||
+      previewAppliedEdits.some(({ program }) =>
+        program.operations.some(
+          (operation) =>
+            operation.kind === "GroupEntities" &&
+            operation.childEntityIds.some((entityId) => selectedIds.has(entityId)),
+        ),
+      )
+    ) {
+      return blocked("Pen motion currently supports only objects that have never been grouped.");
+    }
+    const creationTransactions = new Map([
+      [candidate.entity.id, candidate.creation.owner.record.program.transactionId],
+      [target.id, target.transactionId],
+    ]);
+    const hasTransformConflict = previewAppliedEdits.some(({ program }) =>
+      program.operations.some((operation) => {
+        if (operation.kind === "CreateMotion") {
+          return operation.targetEntityIds.some((entityId) => selectedIds.has(entityId));
+        }
+        if (operation.kind === "CreatePathMotion") {
+          return selectedIds.has(operation.pathEntityId) || selectedIds.has(operation.targetEntityId);
+        }
+        if (
+          operation.kind === "ResizeEntity" ||
+          operation.kind === "TransformPath" ||
+          operation.kind === "TransformShape"
+        ) {
+          return selectedIds.has(operation.entityId);
+        }
+        if (
+          (operation.kind === "SetProperty" || operation.kind === "AnimateProperty") &&
+          (operation.key === "position" || operation.key === "rotation" || operation.key === "scale") &&
+          selectedIds.has(operation.entityId)
+        ) {
+          return !(
+            operation.kind === "SetProperty" &&
+            operation.key === "position" &&
+            creationTransactions.get(operation.entityId) === program.transactionId
+          );
+        }
+        return false;
+      }),
+    );
+    if (hasTransformConflict) {
+      return blocked("Remove move, resize, rotate, Path Morph, or existing motion edits from both objects first.");
+    }
+    const frame = workspace?.frame ?? { height: 8, width: 14.222 };
+    const startOffset = viewportOffsetFromScene(candidate.spec.start, frame);
+    const pathStart = {
+      x: candidate.creation.position.x + startOffset.x,
+      y: candidate.creation.position.y + startOffset.y,
+    };
+    if (Math.hypot(target.position.x - pathStart.x, target.position.y - pathStart.y) > 1.0005) {
+      return blocked("Move the target center onto the Pen path start (within 1 px).");
+    }
+    if (
+      !Number.isFinite(motionDuration) ||
+      motionDuration < 0.1 - 0.0005 ||
+      sourceCurrentTime + motionDuration > projectedEditorScene!.runtimeSceneState.duration + 0.0005
+    ) {
+      return blocked("Choose a motion duration of at least 0.1 seconds that stays inside the Scene.");
+    }
+    return {
+      kind: "ready" as const,
+      pathEntityId: candidate.entity.id,
+      targetEntityId: target.id,
+    };
+  }
+
+  function addPenPathMotion(easing: MotionEasing) {
+    const selection = selectedPenPathMotionTarget();
+    if (selection.kind === "blocked") {
+      setDraftError(selection.reason);
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "creating Pen motion",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [selection.targetEntityId, selection.pathEntityId],
+    });
+    if (!anchor) return false;
+    try {
+      const validation = createPathMotionProgram({
+        capturedPlayhead: anchor.sourceTime,
+        easing,
+        end: anchor.sourceTime + motionDuration,
+        pathEntityId: selection.pathEntityId,
+        scene: sourceScene,
+        start: anchor.sourceTime,
+        targetEntityId: selection.targetEntityId,
+        transactionId: `studio-pen-motion-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(
+        validated.record,
+        [selection.targetEntityId, selection.pathEntityId],
+        gestureContext.sourcePrograms,
+        null,
+        null,
+        anchor.workingTime,
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Pen motion could not be created.");
+      return false;
+    }
   }
 
   function pathMorphMutationsForRoot(entityId: string) {
@@ -9067,6 +9376,7 @@ export function App({
       : null;
 
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
+  const penPathMotionTarget = selectedPenPathMotionTarget();
   const activePathMorphDraft = draftEdit ? pathMorphClipFromProgram(draftEdit.program) : null;
   const activePathMorphCreation = activePathMorphDraft
     ? studioCubicBezierCreation(activePathMorphDraft.entityId)
@@ -9180,6 +9490,12 @@ export function App({
   const sourceFragmentMaterialExportBlocker = activeSceneHasFragmentMaterialAssignments
     ? "Manim .py export does not support project-local WGSL fragment materials. Remove them before exporting source."
     : null;
+  const sourcePathMotionExportBlocker = renderPrograms.some((program) =>
+    program.operations.some((operation) => operation.kind === "CreatePathMotion"),
+  )
+    ? "Editable Manim .py round-trip does not support Pen motion paths yet. Delete the Pen motion clip before exporting source."
+    : null;
+  const sourceExportBlocker = sourceFragmentMaterialExportBlocker ?? sourcePathMotionExportBlocker;
   const studioNativeExportLineage =
     studioExportSource?.sourceLineage && "origin" in studioExportSource.sourceLineage
       ? studioExportSource.sourceLineage
@@ -9201,7 +9517,7 @@ export function App({
             ? "Wait for the Studio document to finish loading before exporting source."
             : !studioNativeExportPreviewAligned
               ? "Wait for the canonical preview to present this exact Studio revision before exporting source."
-              : sourceFragmentMaterialExportBlocker,
+              : sourceExportBlocker,
           request:
             studioNativeExportPreviewAligned && studioExportSource && nativePreviewBundle
               ? {
@@ -10240,6 +10556,7 @@ export function App({
               paintColorTrackEligibleProperties={paintColorTrackEligibleProperties}
               paintColorTracks={paintColorTracks}
               pathMorphClips={pathMorphClips}
+              pathMotionUnavailableReason={penPathMotionTarget.kind === "blocked" ? penPathMotionTarget.reason : null}
               rotationTrackEligibleIds={rotationTrackEligibleIds}
               rotationTracks={rotationTracks}
               resizeUnavailableIds={studioResizeUnavailableIds}
@@ -10253,6 +10570,7 @@ export function App({
               writeInAvailability={writeInAvailability}
               uniformScaleResizeOnlyIds={studioUniformScaleResizeOnlyIds}
               onAppliedMotionClipChange={changeAppliedMotionClip}
+              onAppliedMotionClipDelete={deleteAppliedMotionClip}
               onAppliedMotionClipSelect={editAppliedMotionClip}
               onCameraClipChange={stageCameraClip}
               onCameraClipDelete={deleteCameraClip}
@@ -10356,6 +10674,7 @@ export function App({
               onMathTexTransformClipSelect={(clip) => void stageMathTexTransform(clip)}
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}
+              onPathMotionAdd={addPenPathMotion}
               onOpacityKeyframeAdd={addOpacityKeyframe}
               onOpacityKeyframeChange={changeOpacityKeyframe}
               onOpacityKeyframeDelete={deleteOpacityKeyframe}
@@ -10618,7 +10937,7 @@ export function App({
                     }
                   : null
               }
-              sourceExportBlocker={sourceFragmentMaterialExportBlocker}
+              sourceExportBlocker={sourceExportBlocker}
               suggestion={suggestion}
               workspace={workspace}
             />
