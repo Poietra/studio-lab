@@ -21,6 +21,7 @@ assert.equal(typeof engine.applyStudioCreationEditV1, "function");
 assert.equal(typeof engine.applyStudioFragmentMaterialsV1, "function");
 assert.equal(typeof engine.applyStudioScenePostEffectV1, "function");
 assert.equal(typeof engine.validateScenePostEffectSourceV1, "function");
+assert.equal(typeof engine.compileScenePostEffectGlsl, "function");
 assert.equal(typeof engine.projectStudioCreationEditV1, "function");
 assert.equal(typeof engine.applyStudioTimelineEditV1, "function");
 assert.equal(typeof engine.applyStudioMotionEditV1, "function");
