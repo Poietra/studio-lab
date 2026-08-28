@@ -418,14 +418,14 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Apply to Scene" }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
-    await expect(page.getByText("Custom WGSL active", { exact: true })).toBeVisible();
+    await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     const effectRevision = await waitForNewPresentedRevision(plainRevision);
 
     await page.getByRole("button", { name: "Undo" }).click();
     await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
     const undoRevision = await waitForNewPresentedRevision(effectRevision);
     await page.getByRole("button", { name: "Redo" }).click();
-    await expect(page.getByText("Custom WGSL active", { exact: true })).toBeVisible();
+    await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     const redoRevision = await waitForNewPresentedRevision(undoRevision);
 
     await page.getByRole("slider", { name: "Amplitude Scene post-effect parameter" }).fill("20");
@@ -452,7 +452,7 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     await page.reload();
     await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
     await page.getByRole("button", { name: "Open Custom WGSL effect fixture workspace" }).click();
-    await expect(page.getByText("Custom WGSL active", { exact: true })).toBeVisible();
+    await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     await expect(page.getByText("WGSL was rejected", { exact: true })).toBeVisible();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
@@ -465,6 +465,102 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
 
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");
+    await page.getByRole("button", { name: "Remove custom Scene post effect" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
+    await waitForNewPresentedRevision(activeRevision);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
+test("imports Vulkan GLSL 450 as a Scene effect for Preview and local MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Custom GLSL effect fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    const playhead = page.getByRole("slider", { name: "Scene playhead" });
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const waitForNewPresentedRevision = async (previous: string) => {
+      await expect
+        .poll(async () => {
+          if ((await canvas.getAttribute("data-preview-renderer")) !== "presented") return null;
+          const revision = await canvas.getAttribute("data-preview-revision");
+          return revision && revision !== previous ? revision : null;
+        })
+        .not.toBeNull();
+      const revision = await canvas.getAttribute("data-preview-revision");
+      if (!revision) throw new Error("The custom GLSL Scene did not expose its presented revision.");
+      return revision;
+    };
+    const blankRevision = await canvas.getAttribute("data-preview-revision");
+    if (!blankRevision) throw new Error("The blank Scene did not expose its presented revision.");
+
+    await playhead.fill("1");
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const plainRevision = await waitForNewPresentedRevision(blankRevision);
+
+    await page.getByRole("button", { name: "Create starter" }).click();
+    await page.getByRole("combobox", { name: "Scene post-effect source language" }).selectOption("glsl");
+    const source = page.getByRole("textbox", { name: "Scene post-effect GLSL source" });
+    const glsl = `#version 450
+layout(location = 0) out vec4 output_color;
+layout(set = 0, binding = 0, std140) uniform PoietraHost {
+    vec4 viewport_and_time;
+    vec4 parameters_0;
+    vec4 parameters_1;
+} host;
+layout(set = 0, binding = 1) uniform texture2D scene_texture;
+
+void main() {
+    ivec2 coordinate = ivec2(gl_FragCoord.xy);
+    vec4 color = texelFetch(scene_texture, coordinate, 0);
+    float pulse = 0.6 + 0.4 * sin(6.28318530718 * host.viewport_and_time.z * host.parameters_0.z);
+    output_color = vec4(color.rgb * pulse, color.a);
+}`;
+    await source.fill(glsl);
+    await page.getByRole("button", { name: "Compile & accept GLSL" }).click();
+    await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Apply to Scene" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
+    await waitForNewPresentedRevision(plainRevision);
+
+    await playhead.fill("2.25");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.25, 1);
+    const earlyPacket = await canvas.getAttribute("data-preview-packet-id");
+    await playhead.fill("2.75");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.75, 1);
+    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(earlyPacket);
+
+    await source.fill(glsl.replace("void main()", "void main("));
+    await page.getByRole("button", { name: "Compile & accept GLSL" }).click();
+    await expect(page.getByText("GLSL was rejected", { exact: true })).toBeVisible();
+    await expect(page.getByText("Last accepted generation 1 remains active.", { exact: true })).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Custom GLSL effect fixture workspace" }).click();
+    await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
+    await expect(page.getByText("GLSL was rejected", { exact: true })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Scene post-effect source language" })).toHaveValue("glsl");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const mp4 = await exportLocalMp4(page);
+    const stats = await decodedPixelStats(page, mp4, [2.25, 2.75]);
+    expect(stats[0]?.count ?? 0).toBeGreaterThan(100);
+    expect(stats[1]?.count ?? 0).toBeGreaterThan(100);
+    expect(stats[1]?.commonPixelCountFromPrevious ?? 0).toBeGreaterThan(100);
+    expect(stats[1]?.commonColorDifferenceFromPrevious ?? 0).toBeGreaterThan(100);
+
+    const activeRevision = await canvas.getAttribute("data-preview-revision");
+    if (!activeRevision) throw new Error("The exported custom GLSL Scene did not expose its revision.");
+    await playhead.fill("2");
     await page.getByRole("button", { name: "Remove custom Scene post effect" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
