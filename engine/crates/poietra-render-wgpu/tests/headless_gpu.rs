@@ -10,16 +10,18 @@ use std::time::Duration;
 
 use poietra_eval::{EngineSessionV1, SampleEngineSessionOptionsV1};
 use poietra_render_wgpu::{
-    DecodedPngAssetResolverV1, ImageTextureCacheLimitsV1, PreparedFrameV1, RenderFrameErrorV1,
-    WgpuPaintRendererV1, WgpuRenderTargetV1, build_gpu_upload_plan_v1, decode_verified_png_v1,
-    prepare_frame_v1, prepare_frame_with_assets_v1,
+    DecodedPngAssetResolverV1, ImageTextureCacheLimitsV1, PreparedFrameV1, PreparedGeometryCacheV1,
+    RenderFrameErrorV1, ScenePostEffectSourceV1, ScenePostEffectSupportV1, WgpuPaintRendererV1,
+    WgpuRenderTargetV1, build_gpu_upload_plan_v1, decode_verified_png_v1, prepare_frame_v1,
+    prepare_frame_with_assets_v1, prepare_frame_with_cache_assets_and_shader_sources_v1,
 };
 use poietra_scene_ir::{
     AffineTransformV1, CubicSubpathV1, ImageLocalRectV1, ImageSamplerV1,
-    RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCameraKindV1,
-    RenderCameraV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RenderPacketV1,
-    RgbaColorV1, SceneIrBundleV1, ScenePostEffectV1, SceneSourceV1, SnapshotProfileVersionV1,
-    StrokeCapV1, StrokeJoinV1, ViewportV1,
+    PROJECT_SCENE_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_ID,
+    RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1,
+    RenderCompositingV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrBundleV1,
+    ScenePostEffectV1, SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1, StrokeJoinV1,
+    ViewportV1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -830,6 +832,24 @@ fn render_packet(
     render_prepared(device, queue, renderer, &prepared)
 }
 
+fn render_project_scene_post_effect_packet(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut WgpuPaintRendererV1,
+    packet: &RenderPacketV1,
+) -> (wgpu::Texture, wgpu::Extent3d) {
+    let no_assets = |_sha256: &str| None;
+    let prepared = prepare_frame_with_cache_assets_and_shader_sources_v1(
+        packet,
+        &mut PreparedGeometryCacheV1::default(),
+        &no_assets,
+        renderer,
+        renderer,
+    )
+    .expect("packet must resolve the installed project Scene post effect");
+    render_prepared(device, queue, renderer, &prepared)
+}
+
 fn rgb_split_packet(compositing: RenderCompositingV1, enabled: bool) -> RenderPacketV1 {
     let viewport = ViewportV1 {
         height_px: 16,
@@ -1176,6 +1196,80 @@ fn applies_rgb_split_after_linear_and_cairo_compositing_without_stale_disabled_o
         );
     }
 
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated GPU lane runs this proof"]
+fn custom_scene_post_effect_uses_time_and_parameters_for_linear_and_cairo_and_replaces_atomically()
+{
+    const SOURCE: &str = r"
+struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_1: vec4<f32> };
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let source = textureLoad(scene_texture, vec2<i32>(position.xy), 0);
+    let value = clamp(host.parameters_0.x + host.viewport_and_time.z, 0.0, 1.0);
+    return vec4<f32>(value * source.a, 0.0, 0.0, source.a);
+}
+";
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+    let source = ScenePostEffectSourceV1 {
+        revision: 7,
+        shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        source: SOURCE.to_owned(),
+    };
+    pollster::block_on(renderer.replace_scene_post_effect_source(&device, Some(&source)))
+        .expect("valid custom WGSL must install");
+
+    for compositing in [
+        RenderCompositingV1::LinearLight,
+        RenderCompositingV1::ManimCairoSrgb,
+    ] {
+        let mut first = rgb_split_packet(compositing, false);
+        first.sample_time = 0.25;
+        first.post_effect = Some(ScenePostEffectV1 {
+            parameters: vec![0.25],
+            revision: 7,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        });
+        first
+            .required_capabilities
+            .push(RenderCapabilityV1::ScenePostEffect);
+        first.required_capabilities.sort_unstable();
+        let mut later = first.clone();
+        later.sample_time = 0.5;
+
+        let (first_texture, extent) =
+            render_project_scene_post_effect_packet(&device, &queue, &mut renderer, &first);
+        let (_, first_rgba) = readback_texture(&device, &queue, &first_texture, extent);
+        let (later_texture, later_extent) =
+            render_project_scene_post_effect_packet(&device, &queue, &mut renderer, &later);
+        let (_, later_rgba) = readback_texture(&device, &queue, &later_texture, later_extent);
+        let first_pixel = pixel(&first_rgba, extent.width, 8, 8);
+        let later_pixel = pixel(&later_rgba, later_extent.width, 8, 8);
+        assert!(later_pixel[0] > first_pixel[0]);
+        assert_eq!(&first_pixel[1..], &[0, 0, 255]);
+        assert_eq!(&later_pixel[1..], &[0, 0, 255]);
+    }
+
+    let rejected = ScenePostEffectSourceV1 {
+        revision: 8,
+        shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        source: format!("{SOURCE}\n@group(1) @binding(0) var extra: texture_2d<f32>;"),
+    };
+    assert!(
+        pollster::block_on(renderer.replace_scene_post_effect_source(&device, Some(&rejected)))
+            .is_err()
+    );
+    assert!(renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 7));
+    assert!(!renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 8));
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
 }
 

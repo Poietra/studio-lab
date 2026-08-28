@@ -50,8 +50,9 @@ use crate::gpu::{
 };
 use crate::prepare::{
     DecodedPngAssetResolverV1, PrepareFrameErrorV1, PreparedFrameV1,
-    prepare_frame_with_cache_assets_and_fragment_materials_v1,
+    prepare_frame_with_cache_assets_and_shader_sources_v1,
 };
+use crate::{ScenePostEffectRegistryErrorV1, ScenePostEffectSourceV1};
 
 /// RGBA8 bytes per exported pixel.
 const EXPORT_BYTES_PER_PIXEL_V1: u32 = 4;
@@ -152,6 +153,8 @@ where
     Renderer(#[from] CreateRendererErrorV1),
     #[error(transparent)]
     FragmentMaterialRegistry(#[from] FragmentMaterialRegistryErrorV1),
+    #[error(transparent)]
+    ScenePostEffectRegistry(#[from] ScenePostEffectRegistryErrorV1),
     #[error("export frame {frame_index} could not be sampled: {source}")]
     Sample {
         frame_index: u64,
@@ -713,10 +716,47 @@ where
         sample_packet: SamplePacket,
         fragment_materials: &[FragmentMaterialSourceV1],
     ) -> Result<Self, ExportFrameSequenceErrorV1<SampleError>> {
+        Self::new_with_shader_sources(
+            device,
+            queue,
+            scene,
+            params,
+            assets,
+            sample_packet,
+            fragment_materials,
+            None,
+        )
+        .await
+    }
+
+    /// Creates an export session using both project-local shader registries
+    /// shared with the interactive preview renderer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when export setup or either shader source is invalid.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the arguments are the two concrete project shader registries plus existing export inputs"
+    )]
+    pub async fn new_with_shader_sources(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        scene: &SceneIrV1,
+        params: ExportFrameSequenceParamsV1,
+        assets: &'assets dyn DecodedPngAssetResolverV1,
+        sample_packet: SamplePacket,
+        fragment_materials: &[FragmentMaterialSourceV1],
+        scene_post_effect: Option<&ScenePostEffectSourceV1>,
+    ) -> Result<Self, ExportFrameSequenceErrorV1<SampleError>> {
         let mut session = Self::new(device, queue, scene, params, assets, sample_packet)?;
         session
             .renderer
             .replace_fragment_material_sources(device, fragment_materials)
+            .await?;
+        session
+            .renderer
+            .replace_scene_post_effect_source(device, scene_post_effect)
             .await?;
         Ok(session)
     }
@@ -793,10 +833,11 @@ where
                 frame_index,
             });
         }
-        let prepared = prepare_frame_with_cache_assets_and_fragment_materials_v1(
+        let prepared = prepare_frame_with_cache_assets_and_shader_sources_v1(
             &packet,
             &mut self.geometry_cache,
             self.assets,
+            &self.renderer,
             &self.renderer,
         )
         .map_err(|source| ExportFrameSequenceErrorV1::Frame {

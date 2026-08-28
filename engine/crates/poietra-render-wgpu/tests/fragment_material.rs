@@ -4,15 +4,17 @@ mod support;
 use poietra_render_wgpu::{
     DecodedPngAssetResolverV1, FragmentMaterialRegistryErrorV1, FragmentMaterialSourceV1,
     FragmentMaterialSupportV1, MAX_FRAGMENT_MATERIAL_DRAWS_PER_FRAME_V1, PrepareFrameErrorV1,
-    PreparedGeometryCacheV1, PreparedRenderCommandV1, TIME_GRADIENT_SHADER_ID_V1,
-    TIME_GRADIENT_SHADER_REVISION_V1, WgpuFillRendererV1, WgpuRenderTargetV1,
-    compile_fragment_material_glsl, prepare_frame_v1,
+    PreparedGeometryCacheV1, PreparedRenderCommandV1, ScenePostEffectSupportV1,
+    TIME_GRADIENT_SHADER_ID_V1, TIME_GRADIENT_SHADER_REVISION_V1, WgpuFillRendererV1,
+    WgpuRenderTargetV1, compile_fragment_material_glsl, prepare_frame_v1,
     prepare_frame_with_cache_assets_and_fragment_materials_v1,
+    prepare_frame_with_cache_assets_and_shader_sources_v1,
 };
 use poietra_scene_ir::{
     AssetReferenceV1, FragmentMaterialTextureV1, FragmentMaterialV1, ImageSamplerV1,
-    RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCapabilityV1,
-    RenderDrawV1, ScenePostEffectV1, StrokeCapV1,
+    PROJECT_SCENE_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_ID,
+    RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCapabilityV1, RenderDrawV1, ScenePostEffectV1,
+    StrokeCapV1,
 };
 use support::{
     sampled_packet, straight_stroke_packet, time_gradient_paint_order_packet, verified_rgba_png,
@@ -207,6 +209,61 @@ impl DecodedPngAssetResolverV1 for NoAssets {
     ) -> Option<std::sync::Arc<poietra_render_wgpu::DecodedPngAssetV1>> {
         None
     }
+}
+
+struct NoFragmentMaterials;
+
+impl FragmentMaterialSupportV1 for NoFragmentMaterials {
+    fn supports_fragment_material(&self, _shader_id: &str, _revision: u32) -> bool {
+        false
+    }
+}
+
+struct ProjectScenePostEffect;
+
+impl ScenePostEffectSupportV1 for ProjectScenePostEffect {
+    fn supports_scene_post_effect(&self, shader_id: &str, revision: u32) -> bool {
+        shader_id == PROJECT_SCENE_POST_EFFECT_SHADER_ID && revision == 7
+    }
+}
+
+#[test]
+fn resolves_custom_scene_post_effect_against_the_exact_installed_revision() {
+    let mut packet = sampled_packet();
+    packet.post_effect = Some(ScenePostEffectV1 {
+        parameters: vec![3.0],
+        revision: 7,
+        shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+    });
+    packet
+        .required_capabilities
+        .push(RenderCapabilityV1::ScenePostEffect);
+    packet.required_capabilities.sort_unstable();
+    let mut cache = PreparedGeometryCacheV1::default();
+    let prepared = prepare_frame_with_cache_assets_and_shader_sources_v1(
+        &packet,
+        &mut cache,
+        &NoAssets,
+        &NoFragmentMaterials,
+        &ProjectScenePostEffect,
+    )
+    .expect("the exact project Scene post-effect revision must prepare");
+    assert_eq!(
+        prepared.scene_post_effect().unwrap().shader_id(),
+        PROJECT_SCENE_POST_EFFECT_SHADER_ID
+    );
+
+    packet.post_effect.as_mut().unwrap().revision = 8;
+    assert!(matches!(
+        prepare_frame_with_cache_assets_and_shader_sources_v1(
+            &packet,
+            &mut cache,
+            &NoAssets,
+            &NoFragmentMaterials,
+            &ProjectScenePostEffect,
+        ),
+        Err(PrepareFrameErrorV1::UnsupportedScenePostEffect { revision: 8, .. })
+    ));
 }
 
 struct TextureMaterialSupport;
