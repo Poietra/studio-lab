@@ -639,49 +639,33 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     await page.getByRole("button", { name: /Extend path/ }).click();
     await canvas.click({ position: { x: 140, y: 260 } });
     await page.getByRole("button", { name: "Replace program" }).click();
-    await page.getByRole("button", { name: "Close path" }).click();
-    await page.getByRole("button", { name: "Replace program" }).click();
-    await page.getByRole("button", { name: "Undo" }).click();
-    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
-    await expect(page.getByRole("button", { name: "Close path" })).toBeVisible();
-    await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
-    await page.getByRole("button", { name: "Redo" }).click();
-    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
-    await expect(page.getByRole("button", { name: "Reopen path" })).toBeVisible();
-    await page.getByRole("button", { name: "Reopen path" }).click();
-    await page.getByRole("button", { name: "Replace program" }).click();
-    await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
-    await page.getByRole("button", { name: "Undo" }).click();
-    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
-    const penFill = page.getByLabel("Fill color CubicBezier");
-    await expect(penFill).toHaveValue("#ffffff");
-    await penFill.fill("#f97316");
-    await penFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
-    await page.getByRole("button", { name: "Replace program" }).click();
-    await expect(page.getByLabel("Fill color CubicBezier")).toHaveValue("#f97316");
-    await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
-    await page.getByRole("button", { name: "Move playhead to source anchor 0.400 seconds" }).click();
-    await page.getByRole("button", { name: "Reopen path" }).click();
-    await expect(page.getByRole("button", { name: "Replace program" })).toBeVisible();
-    await page.getByRole("button", { name: "Undo" }).click();
-    await expect(page.getByRole("button", { name: "Reopen path" })).toBeVisible();
     const gradientPreset = page.getByText("Gradient preset").locator("xpath=../..");
     await gradientPreset.getByRole("button", { name: "Create & apply" }).click();
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
     await expect(page.locator('[data-cubic-bezier-control="segment-2-end"]')).toBeVisible();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
-    await page.getByRole("button", { name: "Reopen path" }).click();
-    await page.getByRole("button", { name: "Replace program" }).click();
-    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
     await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
     const materializedPenDraw = page.getByRole("button", { name: "Add Draw entrance for CubicBezier" });
-    await expect(materializedPenDraw).toHaveAttribute("aria-disabled", "true");
-    await expect(materializedPenDraw).toHaveAttribute(
-      "title",
-      "Remove the object's fragment material before adding Draw.",
-    );
+    await expect(materializedPenDraw).toHaveAttribute("aria-disabled", "false");
+    await materializedPenDraw.click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    let penDrawClip = page.getByRole("button", { name: "Edit CubicBezier Draw entrance" });
+    await expect(penDrawClip).toBeVisible();
+    const penDrawEditRevision = await canvas.getAttribute("data-preview-revision");
+    await penDrawClip.click();
+    await expect.poll(() => canvas.getAttribute("data-preview-revision")).not.toBe(penDrawEditRevision);
+    const penDrawDuration = page.getByRole("spinbutton", { name: "Draw duration for CubicBezier" });
+    const penDrawRevision = await canvas.getAttribute("data-preview-revision");
+    await penDrawDuration.fill("0.3");
+    await penDrawDuration.blur();
+    await expect.poll(() => canvas.getAttribute("data-preview-revision")).not.toBe(penDrawRevision);
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    penDrawClip = page.getByRole("button", { name: "Edit CubicBezier Draw entrance" });
+    await expect(penDrawClip).toHaveAttribute("title", "Draw 0.40–0.70s · smooth");
 
     await page.reload();
     await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
@@ -690,9 +674,16 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
     const penMaterial = page.getByRole("combobox", { name: "Assigned fragment material" });
     await expect(penMaterial).not.toHaveValue("");
+    penDrawClip = page.getByRole("button", { name: "Edit CubicBezier Draw entrance" });
+    await expect(penDrawClip).toHaveAttribute("title", "Draw 0.40–0.70s · smooth");
     const openPenMp4 = await exportLocalMp4(page);
-    const [openPenPixels = 0] = await decodedBrightPixelCounts(page, openPenMp4, [1.6]);
-    expect(openPenPixels).toBeGreaterThan(100);
+    const openPenPixels = await decodedBrightPixelCounts(page, openPenMp4, [0.35, 0.55, 0.75]);
+    expect(openPenPixels[1] ?? 0).toBeGreaterThan((openPenPixels[0] ?? 0) + 20);
+    expect(openPenPixels[2] ?? 0).toBeGreaterThan((openPenPixels[1] ?? 0) + 20);
+    await penDrawClip.click();
+    await page.getByRole("button", { name: "Remove Draw" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(penDrawClip).toHaveCount(0);
     await page.getByRole("button", { name: "Close path" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
@@ -890,6 +881,11 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     expect(exportedSource.indexOf(strokeCapStyle)).toBeLessThan(exportedSource.indexOf("Create("));
     await page.getByRole("button", { name: "Close" }).click();
 
+    const wavePreset = page.getByText("Wave preset").locator("xpath=../..");
+    await wavePreset.getByRole("button", { name: "Create & apply" }).click();
+    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
     await page.getByRole("button", { name: /Insert circle/ }).click();
     await canvas.click({ position: { x: 560, y: 300 } });
     await page.getByRole("button", { name: "Apply program" }).click();
@@ -978,6 +974,7 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await expect(page.getByRole("spinbutton", { name: "Dash length Line" })).toHaveValue("0.3");
     await expect(page.getByRole("spinbutton", { name: "Gap length Line" })).toHaveValue("0.2");
     await expect(page.getByRole("button", { name: "Use solid stroke" })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
 
     const mp4 = await exportLocalMp4(page);
     const exportedStrokePixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6], "green-dominant");

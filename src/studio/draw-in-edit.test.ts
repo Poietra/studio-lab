@@ -1,10 +1,43 @@
 import { describe, expect, it } from "vitest";
 
-import { createStudioEntitiesProgram, replaceStudioEntityLifetimeProgram } from "./authoring-commands";
-import { drawInClipFromProgram, replaceDrawInProgram } from "./draw-in-edit";
+import {
+  createStudioEntitiesProgram,
+  replaceStudioEntityLifetimeProgram,
+  type StudioEntityInput,
+} from "./authoring-commands";
+import { drawInClipFromProgram, drawInUnavailableReason, replaceDrawInProgram } from "./draw-in-edit";
 import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { insertedProgramDuration } from "./program-composition";
+
+const STATIC_FRAGMENT_MATERIAL = { hasParameterKeyframes: false, texture: false } as const;
+
+function materialDrawCreation(transactionId: string, entity: StudioEntityInput) {
+  return createStudioEntitiesProgram({
+    capturedPlayhead: 1,
+    entities: [entity],
+    scene: STUDIO_FIXTURE_SCENE,
+    transactionId,
+  });
+}
+
+function materialDrawPen(arrowEnd = false, closed = false): StudioEntityInput {
+  return {
+    cubicBezier: {
+      arrowEnd,
+      closed,
+      control1: { x: -1, y: 1 },
+      control2: { x: 1, y: -1 },
+      end: { x: 2, y: 0 },
+      start: { x: -2, y: 0 },
+      strokeCap: "round",
+      strokeWidth: 0.04,
+    },
+    dimensions: { height: 2, width: 4 },
+    position: { x: 320, y: 180 },
+    type: "CubicBezier",
+  };
+}
 
 describe("Draw entrance editing", () => {
   it("replaces the automatic fade, retimes the canonical clip, and removes it", () => {
@@ -171,6 +204,51 @@ describe("Draw entrance editing", () => {
         svgHasFill: true,
       }),
     ).toThrow(/stroke-only SVG paths/);
+  });
+
+  it.each([
+    ["Line", { position: { x: 320, y: 180 }, type: "Line" }],
+    ["open Pen", materialDrawPen()],
+  ] as const)("admits a static material with Draw on a Studio-created %s in either order", (_, entity) => {
+    const creation = materialDrawCreation(`draw-material-${entity.type}`, entity);
+    const entityId = creation.entityIds[0]!;
+
+    expect(
+      drawInUnavailableReason(creation.validation.program, entityId, {
+        fragmentMaterial: STATIC_FRAGMENT_MATERIAL,
+      }),
+    ).toBeNull();
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "smooth", end: 2 },
+      entityId,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
+    expect(drawInUnavailableReason(drawn.program, entityId, { fragmentMaterial: STATIC_FRAGMENT_MATERIAL })).toBeNull();
+  });
+
+  it.each([
+    ["unsupported target", { position: { x: 320, y: 180 }, type: "Circle" }, STATIC_FRAGMENT_MATERIAL, /Line/],
+    ["arrow Pen", materialDrawPen(true), STATIC_FRAGMENT_MATERIAL, /non-arrow/],
+    ["closed Pen", materialDrawPen(false, true), STATIC_FRAGMENT_MATERIAL, /open Pen/],
+    [
+      "texture",
+      { position: { x: 320, y: 180 }, type: "Line" },
+      { ...STATIC_FRAGMENT_MATERIAL, texture: true },
+      /texture/,
+    ],
+    [
+      "parameter keyframes",
+      { position: { x: 320, y: 180 }, type: "Line" },
+      { ...STATIC_FRAGMENT_MATERIAL, hasParameterKeyframes: true },
+      /parameter keyframes/,
+    ],
+  ] as const)("rejects a fragment material and Draw combination with %s", (name, entity, fragmentMaterial, reason) => {
+    const creation = materialDrawCreation(`draw-material-${name.replaceAll(" ", "-")}`, entity);
+    expect(drawInUnavailableReason(creation.validation.program, creation.entityIds[0]!, { fragmentMaterial })).toMatch(
+      reason,
+    );
   });
 
   it("rejects Draw on a closed Pen path", () => {
