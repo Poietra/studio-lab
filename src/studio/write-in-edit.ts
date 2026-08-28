@@ -17,6 +17,10 @@ export type WriteInClip = Readonly<{
   transactionId: string;
 }>;
 
+export type WriteInFragmentMaterialAdmission = Readonly<{
+  texture: boolean;
+}>;
+
 function createdEntity(program: SceneEdit, entityId: string) {
   return program.operations.find((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId);
 }
@@ -51,10 +55,24 @@ export function writeInClipFromProgram(program: SceneEdit): WriteInClip | null {
   };
 }
 
-export function writeInUnavailableReason(program: SceneEdit, entityId: string): string | null {
+export function writeInUnavailableReason(
+  program: SceneEdit,
+  entityId: string,
+  options: Readonly<{ fragmentMaterial?: WriteInFragmentMaterialAdmission | null }> = {},
+): string | null {
   const create = createdEntity(program, entityId);
   if (!create || create.kind !== "CreateEntity") return "Write supports only Studio-created objects.";
   if (create.entity.type !== "MathTex") return "Write currently supports Studio-created MathTex objects.";
+  if (options.fragmentMaterial?.texture) {
+    return "Write does not support texture fragment materials. Choose a texture-free material or remove Write.";
+  }
+  const hasMaterialParameterTrack = program.operations.some(
+    (operation) =>
+      operation.kind === "AnimateProperty" &&
+      operation.entityId === entityId &&
+      operation.materialParameter !== undefined,
+  );
+  if (hasMaterialParameterTrack) return "Remove the object's material animation before adding Write.";
   const hasPaintColorTrack = program.operations.some(
     (operation) =>
       operation.kind === "AnimateProperty" &&
@@ -84,11 +102,14 @@ export function replaceWriteInProgram(
   input: Readonly<{
     baseProgram: SceneEdit;
     entityId: string;
+    fragmentMaterial: WriteInFragmentMaterialAdmission | null;
     scene: RuntimeSceneState;
     write: Readonly<{ easing: WriteInEasing; end: number }> | null;
   }>,
 ): SceneEditValidationResult {
-  const unavailable = writeInUnavailableReason(input.baseProgram, input.entityId);
+  const unavailable = input.write
+    ? writeInUnavailableReason(input.baseProgram, input.entityId, { fragmentMaterial: input.fragmentMaterial })
+    : null;
   if (unavailable) throw new TypeError(unavailable);
   const create = createdEntity(input.baseProgram, input.entityId);
   if (!create || create.kind !== "CreateEntity") throw new TypeError("The Studio creation operation is unavailable.");

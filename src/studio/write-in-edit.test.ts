@@ -4,7 +4,7 @@ import { createStudioEntitiesProgram } from "./authoring-commands";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { replacePaintColorKeyframeProgram } from "./paint-color-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
-import { replaceWriteInProgram, writeInClipFromProgram } from "./write-in-edit";
+import { replaceWriteInProgram, writeInClipFromProgram, writeInUnavailableReason } from "./write-in-edit";
 
 function mathTexCreation() {
   return createStudioEntitiesProgram({
@@ -28,6 +28,7 @@ describe("Write entrance editing", () => {
     const written = replaceWriteInProgram({
       baseProgram: creation.validation.program,
       entityId,
+      fragmentMaterial: null,
       scene: STUDIO_FIXTURE_SCENE,
       write: { easing: "linear", end: 2.5 },
     });
@@ -45,12 +46,57 @@ describe("Write entrance editing", () => {
     const removed = replaceWriteInProgram({
       baseProgram: written.program,
       entityId,
+      fragmentMaterial: null,
       scene: STUDIO_FIXTURE_SCENE,
       write: null,
     });
     expect(removed.kind, JSON.stringify(removed.issues)).toBe("valid");
     expect(removed.program.loweringStatus).toBe("supported");
     expect(writeInClipFromProgram(removed.program)).toBeNull();
+  });
+
+  it("admits a texture-free material with Write in either order and preserves removal as recovery", () => {
+    const creation = mathTexCreation();
+    const entityId = creation.entityIds[0]!;
+    const fragmentMaterial = { texture: false } as const;
+
+    const written = replaceWriteInProgram({
+      baseProgram: creation.validation.program,
+      entityId,
+      fragmentMaterial,
+      scene: STUDIO_FIXTURE_SCENE,
+      write: { easing: "linear", end: 2.5 },
+    });
+    expect(written.kind, JSON.stringify(written.issues)).toBe("valid");
+    expect(writeInUnavailableReason(written.program, entityId, { fragmentMaterial })).toBeNull();
+    expect(() =>
+      replaceWriteInProgram({
+        baseProgram: written.program,
+        entityId,
+        fragmentMaterial,
+        scene: STUDIO_FIXTURE_SCENE,
+        write: { easing: "linear", end: 3 },
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      replaceWriteInProgram({
+        baseProgram: written.program,
+        entityId,
+        fragmentMaterial: { texture: true },
+        scene: STUDIO_FIXTURE_SCENE,
+        write: { easing: "linear", end: 3 },
+      }),
+    ).toThrow(/texture/);
+    const recovered = replaceWriteInProgram({
+      baseProgram: written.program,
+      entityId,
+      fragmentMaterial: { texture: true },
+      scene: STUDIO_FIXTURE_SCENE,
+      write: null,
+    });
+    expect(recovered.kind, JSON.stringify(recovered.issues)).toBe("valid");
+    expect(writeInClipFromProgram(recovered.program)).toBeNull();
   });
 
   it("rejects non-MathTex Studio objects", () => {
@@ -64,6 +110,7 @@ describe("Write entrance editing", () => {
       replaceWriteInProgram({
         baseProgram: line.validation.program,
         entityId: line.entityIds[0]!,
+        fragmentMaterial: null,
         scene: STUDIO_FIXTURE_SCENE,
         write: { easing: "linear", end: 2 },
       }),
@@ -89,6 +136,7 @@ describe("Write entrance editing", () => {
       replaceWriteInProgram({
         baseProgram: tracked.program,
         entityId,
+        fragmentMaterial: null,
         scene: STUDIO_FIXTURE_SCENE,
         write: { easing: "linear", end: 2.5 },
       }),
