@@ -4,8 +4,10 @@ import { type DrawInFragmentMaterialAdmission, drawInUnavailableReason } from ".
 import type { StudioFragmentMaterialReferenceV1 } from "./fragment-material-authoring";
 import type { RuntimeSceneState } from "./model";
 import { initialAppearanceEnd, operationId } from "./operations";
+import { sourceTimeToWorkingTime } from "./program-composition";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import { writeInUnavailableReason } from "./write-in-edit";
 
 const KEYFRAME_EPSILON = 0.0005;
 const MAX_KEYFRAMES = 32;
@@ -122,13 +124,20 @@ export function replaceMaterialParameterKeyframeProgram(
   const hasDraw = input.baseProgram.operations.some(
     (operation) => operation.kind === "DrawIn" && operation.entityId === input.entityId,
   );
-  if (input.keyframes.length > 0 && hasDraw) {
+  const hasWrite = input.baseProgram.operations.some(
+    (operation) => operation.kind === "WriteIn" && operation.entityId === input.entityId,
+  );
+  if (input.keyframes.length > 0 && (hasDraw || hasWrite)) {
     if (!input.fragmentMaterial) {
-      throw new TypeError("Wait for the fragment material metadata before editing keyframes with Draw.");
+      throw new TypeError(
+        `Wait for the fragment material metadata before editing keyframes with ${hasWrite ? "Write" : "Draw"}.`,
+      );
     }
-    const unavailable = drawInUnavailableReason(input.baseProgram, input.entityId, {
-      fragmentMaterial: input.fragmentMaterial,
-    });
+    const unavailable = hasWrite
+      ? writeInUnavailableReason(input.baseProgram, input.entityId, { fragmentMaterial: input.fragmentMaterial })
+      : drawInUnavailableReason(input.baseProgram, input.entityId, {
+          fragmentMaterial: input.fragmentMaterial,
+        });
     if (unavailable) throw new TypeError(unavailable);
   }
   const entranceEnd = initialAppearanceEnd(
@@ -140,7 +149,11 @@ export function replaceMaterialParameterKeyframeProgram(
     input.entityId,
     targetCreate.entity.lifetime.start,
   );
-  if (input.keyframes[0] && input.keyframes[0].time <= entranceEnd + KEYFRAME_EPSILON) {
+  const firstKeyframeTime =
+    input.keyframes[0] && hasWrite
+      ? sourceTimeToWorkingTime([input.baseProgram], input.keyframes[0].time)
+      : input.keyframes[0]?.time;
+  if (firstKeyframeTime !== undefined && firstKeyframeTime <= entranceEnd + KEYFRAME_EPSILON) {
     throw new TypeError("The first material keyframe must be after the object's initial entrance.");
   }
   const existing = materialParameterKeyframeTrackFromProgram(input.baseProgram, 0);

@@ -1864,15 +1864,6 @@ export function App({
             (material) => material.shaderId === assignment.shaderId && material.revision === assignment.revision,
           )
         : null;
-      const hasExternalMaterialAnimation = previewAppliedEdits.some(({ program }) =>
-        program.operations.some(
-          (operation) =>
-            "entityId" in operation &&
-            operation.entityId === entityId &&
-            operation.kind === "AnimateProperty" &&
-            operation.materialParameter !== undefined,
-        ),
-      );
       const reason = !owner
         ? "Write supports only Studio-created objects."
         : draftEdit && editingAppliedProgram?.original.program.transactionId !== owner.program.transactionId
@@ -1881,15 +1872,13 @@ export function App({
             ? "Write currently supports only ungrouped root objects."
             : assignment && !materialSource
               ? "The assigned fragment material is unavailable. Reassign it before adding Write."
-              : hasExternalMaterialAnimation
-                ? "Remove the object's material animation before adding Write."
-                : writeInUnavailableReason(owner.program, entityId, {
-                    fragmentMaterial: assignment
-                      ? {
-                          texture: assignment.texture !== undefined || materialSource?.textureSlot === "texture2d",
-                        }
-                      : null,
-                  });
+              : writeInUnavailableReason(owner.program, entityId, {
+                  fragmentMaterial: assignment
+                    ? {
+                        texture: assignment.texture !== undefined || materialSource?.textureSlot === "texture2d",
+                      }
+                    : null,
+                });
       return [entityId, reason] as const;
     }),
   );
@@ -2492,7 +2481,6 @@ export function App({
   const transformTrackPrograms = previewAppliedEdits.map(({ program }) => program);
   const materialParameterOptions: readonly StudioMaterialParameterTimelineOption[] = workspaceCreationProjection
     ? Object.entries(activeSceneFragmentMaterials.assignments).flatMap(([entityId, assignment]) => {
-        if (sceneProgramsHaveWriteIn(previewAppliedSceneEdits, entityId)) return [];
         const owner = previewAppliedEdits.find(({ program }) =>
           program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
         );
@@ -5904,11 +5892,13 @@ export function App({
       return false;
     }
     try {
-      const hasDraw = sceneProgramsHaveDrawIn([track.program], track.entityId);
+      const hasEntrance =
+        sceneProgramsHaveDrawIn([track.program], track.entityId) ||
+        sceneProgramsHaveWriteIn([track.program], track.entityId);
       const materialSource = activeSceneFragmentMaterials.registry.materials.find(
         (material) => material.shaderId === track.material.shaderId && material.revision === track.material.revision,
       );
-      if (track.keyframes.length > 0 && hasDraw && !materialSource) {
+      if (track.keyframes.length > 0 && hasEntrance && !materialSource) {
         throw new Error("The assigned fragment material is unavailable. Reassign it before editing its keyframes.");
       }
       const validation = replaceMaterialParameterKeyframeProgram({
@@ -5942,10 +5932,6 @@ export function App({
   }
 
   function addMaterialParameterKeyframe(entityId: string, name: string) {
-    if (sceneProgramsHaveWriteIn(previewAppliedSceneEdits, entityId)) {
-      setDraftError("Material parameter keyframes do not support Write. Remove Write before adding this track.");
-      return;
-    }
     const owner = studioCreationProgramOwner(entityId);
     const assignment = activeSceneFragmentMaterials.assignments[entityId];
     const schema = assignment ? activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId] : null;
@@ -5968,17 +5954,6 @@ export function App({
       }
       if (track && JSON.stringify(track.material) !== JSON.stringify(assignment)) {
         throw new Error("The assigned material changed. Restore it or remove the existing track first.");
-      }
-      const fadeEnd = Math.max(
-        owner.record.program.anchor.resolvedSeconds,
-        ...owner.record.program.operations.flatMap((operation) =>
-          operation.kind === "ChangePresence" && operation.effect === "fade-in" && operation.entityId === entityId
-            ? [operation.interval.end]
-            : [],
-        ),
-      );
-      if (!track && sourceTime <= fadeEnd + 0.0005) {
-        throw new Error("Add the first material keyframe after the object's initial fade has finished.");
       }
       if (track?.keyframes.some((keyframe) => Math.abs(keyframe.time - sourceTime) < 0.0005)) {
         throw new Error("A material parameter keyframe already exists at the playhead.");
