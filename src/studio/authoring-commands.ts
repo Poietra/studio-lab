@@ -23,7 +23,13 @@ import type {
 } from "./model";
 import { EDIT_OPERATION_VERSION, type OperationOrigin, operationId, provisionalEntityId } from "./operations";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
-import { isCanonicalRgbHex, type SceneEdit, type SceneEditOperation } from "./scene-edit-contract";
+import {
+  isCanonicalRgbHex,
+  type SceneEdit,
+  type SceneEditOperation,
+  type StudioScenePostEffectV1,
+  studioScenePostEffectV1Schema,
+} from "./scene-edit-contract";
 import { STUDIO_STYLE_PROFILE, type StyleProfileRef, styleProfileRef } from "./style-profile";
 import { resolveTimeAnchorOnce } from "./time";
 import type { SceneDurationTrimAvailability } from "./timeline-projection";
@@ -206,6 +212,66 @@ export function replaceStudioSceneBackgroundProgram(
     {
       ...input.owner.program,
       operations: [{ ...operation, color: input.color }],
+    },
+    input.scene,
+  );
+}
+
+export function createStudioScenePostEffectProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    effect: StudioScenePostEffectV1;
+    scene: RuntimeSceneState;
+    transactionId: string;
+  }>,
+): SceneEditValidationResult {
+  const effect = studioScenePostEffectV1Schema.parse(input.effect);
+  return authoringProgram(
+    [
+      {
+        dependsOn: [],
+        effect,
+        id: operationId(input.transactionId, "set-scene-post-effect"),
+        interval: { end: input.capturedPlayhead, start: input.capturedPlayhead },
+        kind: "SetScenePostEffect",
+        provenance: provenance("studio-default", ["Scene graph RGB split post effect"]),
+      },
+    ],
+    {
+      capturedPlayhead: input.capturedPlayhead,
+      loweringStatus: "unsupported",
+      origin: "studio-default",
+      programEvidence: ["renderer-owned Scene-wide RGB split post effect"],
+      scene: input.scene,
+      transactionId: input.transactionId,
+    },
+  );
+}
+
+export function replaceStudioScenePostEffectProgram(
+  input: Readonly<{
+    effect: StudioScenePostEffectV1 | null;
+    owner: ProgramRecord;
+    scene: RuntimeSceneState;
+  }>,
+): SceneEditValidationResult {
+  const operation = input.owner.program.operations[0];
+  if (
+    input.owner.program.operations.length !== 1 ||
+    operation?.kind !== "SetScenePostEffect" ||
+    input.owner.program.loweringStatus !== "unsupported"
+  ) {
+    throw new TypeError("Only one canonical Scene post-effect Program can be replaced.");
+  }
+  return validateAndScheduleProgram(
+    {
+      ...input.owner.program,
+      operations: [
+        {
+          ...operation,
+          effect: input.effect === null ? null : studioScenePostEffectV1Schema.parse(input.effect),
+        },
+      ],
     },
     input.scene,
   );

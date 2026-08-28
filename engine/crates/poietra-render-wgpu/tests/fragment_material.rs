@@ -11,9 +11,50 @@ use poietra_render_wgpu::{
 };
 use poietra_scene_ir::{
     AssetReferenceV1, FragmentMaterialTextureV1, FragmentMaterialV1, ImageSamplerV1,
-    RenderCapabilityV1, RenderDrawV1, StrokeCapV1,
+    RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCapabilityV1,
+    RenderDrawV1, ScenePostEffectV1, StrokeCapV1,
 };
-use support::{straight_stroke_packet, time_gradient_paint_order_packet, verified_rgba_png};
+use support::{
+    sampled_packet, straight_stroke_packet, time_gradient_paint_order_packet, verified_rgba_png,
+};
+
+#[test]
+fn prepares_only_the_bounded_rgb_split_scene_post_effect() {
+    let mut packet = sampled_packet();
+    packet.post_effect = Some(ScenePostEffectV1 {
+        parameters: vec![4.0, 2.0, 1.5, 0.25],
+        revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+        shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+    });
+    packet
+        .required_capabilities
+        .push(RenderCapabilityV1::ScenePostEffect);
+    packet.required_capabilities.sort_unstable();
+
+    let prepared = prepare_frame_v1(&packet).expect("the built-in RGB split must prepare");
+    let effect = prepared
+        .scene_post_effect()
+        .expect("the prepared frame must retain the scene post effect");
+    assert_eq!(effect.shader_id(), RGB_SPLIT_POST_EFFECT_SHADER_ID);
+    assert_eq!(effect.revision(), RGB_SPLIT_POST_EFFECT_SHADER_REVISION);
+    let expected_parameters = [4.0_f32, 2.0, 1.5, 0.25, 0.0, 0.0, 0.0, 0.0];
+    assert!(
+        effect
+            .parameters()
+            .iter()
+            .zip(expected_parameters)
+            .all(|(actual, expected)| actual.to_bits() == expected.to_bits())
+    );
+
+    packet.post_effect.as_mut().unwrap().revision += 1;
+    assert!(matches!(
+        prepare_frame_v1(&packet),
+        Err(PrepareFrameErrorV1::UnsupportedScenePostEffect {
+            revision: 2,
+            ref shader_id,
+        }) if shader_id == RGB_SPLIT_POST_EFFECT_SHADER_ID
+    ));
+}
 
 #[test]
 fn applies_fragment_material_to_fillless_stroke_without_changing_geometry() {

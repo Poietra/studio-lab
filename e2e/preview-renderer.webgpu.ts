@@ -719,6 +719,14 @@ test("presents exactly correlated WebGPU frames with a paint-free interaction ov
   await expectPresented(page);
   await expectPaintFreeInteractionOverlay(page);
 
+  const selectionOnlyRevision = await canvasRoot.getAttribute("data-preview-revision");
+  if (!selectionOnlyRevision) throw new Error("The selection-only frame did not expose its revision.");
+  await expect(page.getByRole("button", { name: "Enable RGB split" })).toBeEnabled();
+  await page.getByRole("button", { name: "Enable RGB split" }).click();
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByText("RGB split", { exact: true })).toBeVisible();
+  await waitForNewPresentedRevision(page, selectionOnlyRevision);
+
   // The imported entities remain selectors, while creation stays available
   // for an exactly correlated base Scene.
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);

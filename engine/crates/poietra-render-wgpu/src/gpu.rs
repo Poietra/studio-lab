@@ -7,6 +7,7 @@ use crate::image_gpu::{
     ImageFrameGpuV1, ImagePipelineV1, ImageTextureCacheV1, build_image_geometry_upload_plan_v1,
     preflight_image_and_material_resources_v1, upload_image_frame_v1,
 };
+use crate::scene_post_effect_gpu::ScenePostEffectGpu;
 use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
     FragmentMaterialSupportV1, GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1,
@@ -1014,6 +1015,7 @@ pub struct WgpuFillRendererV1 {
     portable_aa_target: Option<PortableAntialiasTargetV1>,
     project_fragment_material_pipelines: BTreeMap<(String, u32), wgpu::RenderPipeline>,
     project_fragment_material_texture_slots: BTreeSet<(String, u32)>,
+    scene_post_effect_gpu: ScenePostEffectGpu,
     target_format: wgpu::TextureFormat,
 }
 
@@ -1035,9 +1037,9 @@ impl FragmentMaterialSupportV1 for WgpuFillRendererV1 {
 /// Exact logical byte counts for GPU resources retained by one renderer.
 ///
 /// These values cover the grow-only vertex/index buffer arena, image textures
-/// retained by the bounded LRU, and the active antialias color attachment. That
-/// attachment is either the Manim/Cairo four-sample target or the linear-light
-/// two-times portable target.
+/// retained by the bounded LRU, the active antialias color attachment, and an
+/// active Scene post-effect input. The antialias attachment is either the
+/// Manim/Cairo four-sample target or the linear-light two-times portable target.
 /// They intentionally exclude backend-owned pipeline/surface allocation
 /// overhead, so they are not a browser-process RSS claim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1053,7 +1055,7 @@ impl RendererMemorySnapshotV1 {
         self.geometry_buffer_arena
     }
 
-    /// Logical bytes retained by the active antialias color attachment.
+    /// Logical bytes retained by active antialias and post-effect color attachments.
     ///
     /// The method keeps its historical name for API compatibility.
     #[must_use]
@@ -1074,7 +1076,7 @@ pub enum RendererMemorySnapshotErrorV1 {
     BufferArena(#[from] GpuBufferArenaErrorV1),
     #[error("retained image texture byte accounting is not representable as u64")]
     ImageTextureByteConversion,
-    #[error("antialias color-target byte accounting overflowed")]
+    #[error("retained color-target byte accounting overflowed")]
     MultisampleColorTargetByteAccounting,
 }
 
@@ -1186,6 +1188,8 @@ impl WgpuFillRendererV1 {
             cairo_target_format,
             paint_sample_count_v1(RenderCompositingV1::ManimCairoSrgb),
         );
+        let scene_post_effect_gpu =
+            ScenePostEffectGpu::new(device, target_format, cairo_target_format);
         Ok(Self {
             arena: GpuBufferArenaV1::default(),
             cairo_pipeline,
@@ -1204,6 +1208,7 @@ impl WgpuFillRendererV1 {
             portable_aa_target: None,
             project_fragment_material_pipelines: BTreeMap::new(),
             project_fragment_material_texture_slots: BTreeSet::new(),
+            scene_post_effect_gpu,
             target_format,
         })
     }
@@ -1297,6 +1302,11 @@ impl WgpuFillRendererV1 {
                         .transpose()?
                         .unwrap_or(0),
                 )
+                .and_then(|bytes| {
+                    self.scene_post_effect_gpu
+                        .accounted_bytes()
+                        .and_then(|post_effect_bytes| bytes.checked_add(post_effect_bytes))
+                })
                 .ok_or(RendererMemorySnapshotErrorV1::MultisampleColorTargetByteAccounting)?,
             retained_image_texture,
         })
@@ -1438,6 +1448,19 @@ impl WgpuFillRendererV1 {
             }
         }
 
+        if let Some(effect) = frame.scene_post_effect() {
+            self.scene_post_effect_gpu.prepare(
+                device,
+                queue,
+                expected_target_format,
+                [target.width_px, target.height_px],
+                frame.sample_time(),
+                effect.parameters(),
+            );
+        } else {
+            self.scene_post_effect_gpu.clear_target();
+        }
+
         let mut evidence = RenderStageEvidenceV1::empty();
         let has_geometry = !frame.indices().is_empty() || !frame.image_draws().is_empty();
         let mut fragment_material_frame = None;
@@ -1560,6 +1583,10 @@ impl WgpuFillRendererV1 {
         });
         {
             let clear = frame.clear_color();
+            let scene_output_view = self
+                .scene_post_effect_gpu
+                .scene_view()
+                .unwrap_or(target.view);
             let (render_view, resolve_target, store) = if uses_multisample_target {
                 let multisample_view = &self
                     .multisample_target
@@ -1568,7 +1595,11 @@ impl WgpuFillRendererV1 {
                         "validated Cairo target extent did not retain a multisample attachment",
                     ))?
                     .view;
-                (multisample_view, Some(target.view), wgpu::StoreOp::Discard)
+                (
+                    multisample_view,
+                    Some(scene_output_view),
+                    wgpu::StoreOp::Discard,
+                )
             } else {
                 let portable_aa_view = &self
                     .portable_aa_target
@@ -1632,8 +1663,12 @@ impl WgpuFillRendererV1 {
                     "validated linear target extent did not retain a portable antialias attachment",
                 ),
             )?;
+            let scene_output_view = self
+                .scene_post_effect_gpu
+                .scene_view()
+                .unwrap_or(target.view);
             let attachments = [Some(wgpu::RenderPassColorAttachment {
-                view: target.view,
+                view: scene_output_view,
                 depth_slice: None,
                 resolve_target: None,
                 ops: wgpu::Operations {
@@ -1652,6 +1687,13 @@ impl WgpuFillRendererV1 {
             pass.set_pipeline(&self.portable_aa_pipeline);
             pass.set_bind_group(0, &portable_aa_target.resolve_binding, &[]);
             pass.draw(0..3, 0..1);
+        }
+        if frame.scene_post_effect().is_some() {
+            self.scene_post_effect_gpu
+                .record(&mut encoder, target.view, frame.compositing())
+                .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                    "prepared Scene post effect has no retained color target",
+                ))?;
         }
         let command_buffer = encoder.finish();
         evidence.draw_record_ms = draw_record_ms;

@@ -12,9 +12,11 @@ use lyon_tessellation::{
 };
 use poietra_scene_ir::{
     AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, FragmentMaterialV1,
-    ImageLocalRectV1, ImageSamplerV1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, PointV1, RenderCameraV1,
+    ImageLocalRectV1, ImageSamplerV1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, PointV1,
+    RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCameraV1,
     RenderCompositingV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneGeometryV1, SceneIrV1,
-    StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1, validate_render_packet_v1,
+    ScenePostEffectV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
+    validate_render_packet_v1,
 };
 
 use crate::DecodedPngAssetV1;
@@ -147,6 +149,8 @@ pub enum PrepareFrameErrorV1 {
         draw_id: String,
         maximum_draws: usize,
     },
+    #[error("Scene post effect {shader_id}@{revision} is unsupported")]
+    UnsupportedScenePostEffect { revision: u32, shader_id: String },
 }
 
 /// Position-only prepared geometry. Material interleaving is deferred to the
@@ -186,6 +190,14 @@ pub struct PreparedFragmentMaterialV1 {
     texture: Option<PreparedFragmentMaterialTextureV1>,
 }
 
+/// Fixed-ABI values for one host-owned fullscreen Scene post effect.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PreparedScenePostEffectV1 {
+    parameters: [f32; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1],
+    revision: u32,
+    shader_id: String,
+}
+
 /// One verified decoded PNG bound to the fixed material texture slot.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedFragmentMaterialTextureV1 {
@@ -212,6 +224,23 @@ impl PreparedFragmentMaterialV1 {
     #[must_use]
     pub const fn texture(&self) -> Option<&PreparedFragmentMaterialTextureV1> {
         self.texture.as_ref()
+    }
+}
+
+impl PreparedScenePostEffectV1 {
+    #[must_use]
+    pub const fn parameters(&self) -> &[f32; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1] {
+        &self.parameters
+    }
+
+    #[must_use]
+    pub const fn revision(&self) -> u32 {
+        self.revision
+    }
+
+    #[must_use]
+    pub fn shader_id(&self) -> &str {
+        &self.shader_id
     }
 }
 
@@ -412,6 +441,7 @@ pub struct PreparedFrameV1 {
     materials: PreparedMaterialPlanV1,
     ordered_draws: OrderedDrawPlanV1,
     sample_time: f32,
+    scene_post_effect: Option<PreparedScenePostEffectV1>,
     scene_revision_hash: String,
     viewport: [u32; 2],
 }
@@ -465,6 +495,11 @@ impl PreparedFrameV1 {
     #[must_use]
     pub const fn sample_time(&self) -> f32 {
         self.sample_time
+    }
+
+    #[must_use]
+    pub const fn scene_post_effect(&self) -> Option<&PreparedScenePostEffectV1> {
+        self.scene_post_effect.as_ref()
     }
 
     #[must_use]
@@ -704,6 +739,7 @@ impl PreparedFrameV1 {
                 image_draws: Vec::new(),
             },
             sample_time: 0.0,
+            scene_post_effect: None,
             scene_revision_hash: "0000000000000000000000000000000000000000000000000000000000000000"
                 .to_owned(),
             viewport: [160, 90],
@@ -1876,6 +1912,40 @@ fn prepare_fragment_material(
         shader_id: material.shader_id.clone(),
         texture,
     })
+}
+
+fn prepare_scene_post_effect(
+    effect: Option<&ScenePostEffectV1>,
+) -> Result<Option<PreparedScenePostEffectV1>, PrepareFrameErrorV1> {
+    let Some(effect) = effect else {
+        return Ok(None);
+    };
+    if effect.shader_id != RGB_SPLIT_POST_EFFECT_SHADER_ID
+        || effect.revision != RGB_SPLIT_POST_EFFECT_SHADER_REVISION
+    {
+        return Err(PrepareFrameErrorV1::UnsupportedScenePostEffect {
+            revision: effect.revision,
+            shader_id: effect.shader_id.clone(),
+        });
+    }
+    let mut parameters = [0.0; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1];
+    for (index, value) in effect.parameters.iter().enumerate() {
+        let parameter = parameters.get_mut(index).ok_or_else(|| {
+            PrepareFrameErrorV1::InvalidPacket(
+                "Scene post effect parameter count escaped packet validation".to_owned(),
+            )
+        })?;
+        *parameter = checked_f32(
+            *value,
+            None,
+            &format!("Scene post effect parameter {index}"),
+        )?;
+    }
+    Ok(Some(PreparedScenePostEffectV1 {
+        parameters,
+        revision: effect.revision,
+        shader_id: effect.shader_id.clone(),
+    }))
 }
 
 #[derive(Clone, Copy)]
@@ -3324,6 +3394,7 @@ fn tessellate_validated_frame_inner_v1(
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     let packet = validated.packet;
     validate_fragment_material_frame_v1(packet)?;
+    let scene_post_effect = prepare_scene_post_effect(packet.post_effect.as_ref())?;
     if packet.compositing == RenderCompositingV1::ManimCairoSrgb
         && let Some(draw) = packet
             .draws
@@ -3401,6 +3472,7 @@ fn tessellate_validated_frame_inner_v1(
             image_draws: prepared.image_draws,
         },
         sample_time: checked_f32(packet.sample_time, None, "sample time")?,
+        scene_post_effect,
         scene_revision_hash: packet.scene_revision_hash.clone(),
         viewport: [packet.viewport.width_px, packet.viewport.height_px],
     })

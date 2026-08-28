@@ -19,6 +19,7 @@ export type PropertyChannelKey =
   | "presence"
   | "rotation"
   | "scale"
+  | "scenePostEffect"
   | "shape"
   | "strokeCap"
   | "strokeColor"
@@ -61,6 +62,7 @@ export type SceneDurationOperation = SceneDurationWaitOperation | TrimSceneDurat
 
 export type InsertSceneBoundaryOperation = Extract<SceneEditOperation, { kind: "InsertSceneBoundary" }>;
 export type SetSceneBackgroundOperation = Extract<SceneEditOperation, { kind: "SetSceneBackground" }>;
+export type SetScenePostEffectOperation = Extract<SceneEditOperation, { kind: "SetScenePostEffect" }>;
 export type AnimateCameraOperation = Extract<SceneEditOperation, { kind: "AnimateCamera" }>;
 export type CanonicalEditOperation = SceneEditOperation;
 

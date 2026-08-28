@@ -337,6 +337,13 @@ fn validate_render_packet_for_scene(
             "packet compositing does not match scene semantics",
         );
     }
+    if packet.post_effect != scene.post_effect {
+        issue(
+            &mut issues,
+            "$.packet.postEffect",
+            "packet Scene post effect does not match scene semantics",
+        );
+    }
 
     let entities: HashMap<&str, &SceneEntityV1> = scene
         .entities

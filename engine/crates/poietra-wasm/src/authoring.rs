@@ -4,8 +4,9 @@ use poietra_eval::{
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError,
     ApplyStudioFragmentMaterialsCommand, ApplyStudioFragmentMaterialsError,
     ApplyStudioMathTexTransformEditCommand, ApplyStudioMathTexTransformEditError,
-    ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand,
-    ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, ProjectStudioCreationEditError,
+    ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioScenePostEffectCommand,
+    ApplyStudioScenePostEffectError, ApplyStudioTimelineEditCommand, ApplyStudioTimelineEditError,
+    EngineSessionV1, EvaluationError, ProjectStudioCreationEditError,
     ProjectStudioMotionEditCommand, ProjectStudioMotionEditError, StaticRootTransformEditInput,
     StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
     StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
@@ -23,7 +24,8 @@ use poietra_eval::{
     project_studio_timeline_edits,
 };
 use poietra_scene_ir::{
-    ContractJsonError, ContractVersionV1, PointV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
+    ContractJsonError, ContractVersionV1, PointV1, SceneIrBundleV1, ScenePostEffectV1,
+    parse_scene_ir_bundle_json_v1,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use wasm_bindgen::prelude::*;
@@ -92,6 +94,12 @@ enum ApplyStudioBoundEntityEditSchemaV1 {
 enum ApplyStudioFragmentMaterialsSchemaV1 {
     #[serde(rename = "poietra.apply-studio-fragment-materials")]
     ApplyStudioFragmentMaterials,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ApplyStudioScenePostEffectSchemaV1 {
+    #[serde(rename = "poietra.apply-studio-scene-post-effect")]
+    ApplyStudioScenePostEffect,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -354,6 +362,28 @@ impl From<ApplyStudioFragmentMaterialsCommandJsonV1> for ApplyStudioFragmentMate
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyStudioScenePostEffectCommandJsonV1 {
+    effect: Option<ScenePostEffectV1>,
+    expected_base_revision: String,
+    next_revision: String,
+    #[serde(rename = "schema")]
+    _schema: ApplyStudioScenePostEffectSchemaV1,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<ApplyStudioScenePostEffectCommandJsonV1> for ApplyStudioScenePostEffectCommand {
+    fn from(value: ApplyStudioScenePostEffectCommandJsonV1) -> Self {
+        Self {
+            effect: value.effect,
+            expected_base_revision: value.expected_base_revision,
+            next_revision: value.next_revision,
+        }
+    }
+}
+
 impl From<ApplyStudioMotionEditCommandJsonV1> for ApplyStudioMotionEditCommand {
     fn from(value: ApplyStudioMotionEditCommandJsonV1) -> Self {
         Self {
@@ -401,6 +431,8 @@ enum SceneAuthoringAdapterError {
     StudioCreationProjection(#[from] ProjectStudioCreationEditError),
     #[error(transparent)]
     StudioFragmentMaterials(#[from] ApplyStudioFragmentMaterialsError),
+    #[error(transparent)]
+    StudioScenePostEffect(#[from] ApplyStudioScenePostEffectError),
     #[error(transparent)]
     StudioTimelineEdit(#[from] ApplyStudioTimelineEditError),
     #[error(transparent)]
@@ -669,6 +701,21 @@ fn apply_studio_fragment_materials_json(
     scene_authoring_response(&result)
 }
 
+fn apply_studio_scene_post_effect_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ApplyStudioScenePostEffectCommandJsonV1 =
+        parse_scene_authoring_command_with_limit(
+            "Studio Scene post effect",
+            command_json,
+            poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+        )?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.apply_studio_scene_post_effect(command.into())?;
+    scene_authoring_response(&result)
+}
+
 /// Applies one complete normalized Studio creation edit through the shared core.
 ///
 /// # Errors
@@ -818,6 +865,20 @@ pub fn apply_studio_fragment_materials_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     apply_studio_fragment_materials_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Applies or removes one bounded Scene-wide post effect through the shared core.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, or effect reference.
+#[wasm_bindgen(js_name = applyStudioScenePostEffectV1)]
+pub fn apply_studio_scene_post_effect_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    apply_studio_scene_post_effect_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -2139,13 +2200,31 @@ mod tests {
         let outline_fixture: serde_json::Value =
             serde_json::from_slice(&static_math_tex_fixture_json()).unwrap();
         let outline_path = outline_fixture["scene"]["entities"][0]["geometry"]["path"].clone();
+        let fragments = ["H", "e", "l", "l", "o"]
+            .into_iter()
+            .enumerate()
+            .map(|(order, key)| {
+                json!({
+                    "order": order,
+                    "path": outline_path.clone(),
+                    "sourceCorrelation": { "key": key, "kind": "nfc-scalar" },
+                })
+            })
+            .collect::<Vec<_>>();
+        let combined_subpaths = fragments
+            .iter()
+            .flat_map(|fragment| {
+                fragment["path"]["subpaths"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
         command["textOutlines"] = json!([{
             "entityId": "tx:create/entity:rectangle",
-            "fragments": [{
-                "order": 0,
-                "path": outline_path,
-            }],
-            "path": outline_path,
+            "fragments": fragments,
+            "path": { "subpaths": combined_subpaths },
             "text": "Hello"
         }]);
 

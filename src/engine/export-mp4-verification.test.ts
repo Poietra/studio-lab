@@ -57,7 +57,7 @@ describe("verifyExportMp4V1", () => {
     expect(result.structure.sampleCount).toBeGreaterThan(0);
     expect(result.structure.audio).toBeUndefined();
     expect(result.provenance).toEqual({
-      engineAbiVersion: 38,
+      engineAbiVersion: 39,
       exportProfileHash: "a".repeat(64),
       sceneId: "fixture-scene",
       sceneRevisionHash: "b".repeat(64),
@@ -112,7 +112,7 @@ describe("verifyExportMp4V1", () => {
 
   it("refuses provenance that claims a different engine ABI", async () => {
     const bytes = new Uint8Array(await readFile(FIXTURE_PATH));
-    const marker = new TextEncoder().encode('"engineAbiVersion":38');
+    const marker = new TextEncoder().encode('"engineAbiVersion":39');
     const markerIndex = bytes.findIndex((_, index) =>
       marker.every((byte, markerOffset) => bytes[index + markerOffset] === byte),
     );

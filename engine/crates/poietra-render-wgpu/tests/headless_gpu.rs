@@ -15,10 +15,11 @@ use poietra_render_wgpu::{
     prepare_frame_v1, prepare_frame_with_assets_v1,
 };
 use poietra_scene_ir::{
-    AffineTransformV1, CubicSubpathV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1,
+    AffineTransformV1, CubicSubpathV1, ImageLocalRectV1, ImageSamplerV1,
+    RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCameraKindV1,
     RenderCameraV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RenderPacketV1,
-    RgbaColorV1, SceneIrBundleV1, SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1,
-    StrokeJoinV1, ViewportV1,
+    RgbaColorV1, SceneIrBundleV1, ScenePostEffectV1, SceneSourceV1, SnapshotProfileVersionV1,
+    StrokeCapV1, StrokeJoinV1, ViewportV1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -829,6 +830,79 @@ fn render_packet(
     render_prepared(device, queue, renderer, &prepared)
 }
 
+fn rgb_split_packet(compositing: RenderCompositingV1, enabled: bool) -> RenderPacketV1 {
+    let viewport = ViewportV1 {
+        height_px: 16,
+        width_px: 32,
+    };
+    let camera = RenderCameraV1 {
+        bottom: -1.0,
+        clear_color: RgbaColorV1 {
+            alpha: 1.0,
+            blue: 0.0,
+            green: 0.0,
+            red: 0.0,
+        },
+        kind: RenderCameraKindV1::Orthographic2d,
+        left: -2.0,
+        right: 2.0,
+        top: 1.0,
+    };
+    let mut packet = empty_render_packet(viewport, camera);
+    packet.compositing = compositing;
+    packet.sample_time = 0.25;
+    packet.draws = vec![
+        solid_rectangle_draw(
+            "draw:post-effect-red",
+            "entity:post-effect-red",
+            &ImageLocalRectV1 {
+                bottom: -1.0,
+                left: -2.0,
+                right: 0.0,
+                top: 1.0,
+            },
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 1.0,
+            },
+            1.0,
+            0,
+        ),
+        solid_rectangle_draw(
+            "draw:post-effect-blue",
+            "entity:post-effect-blue",
+            &ImageLocalRectV1 {
+                bottom: -1.0,
+                left: 0.0,
+                right: 2.0,
+                top: 1.0,
+            },
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 1.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            1.0,
+            1,
+        ),
+    ];
+    packet.required_capabilities = vec![RenderCapabilityV1::CubicPathFill];
+    if enabled {
+        packet.post_effect = Some(ScenePostEffectV1 {
+            parameters: vec![0.0, 4.0, 1.0, 0.0],
+            revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+            shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+        });
+        packet
+            .required_capabilities
+            .push(RenderCapabilityV1::ScenePostEffect);
+    }
+    packet
+}
+
 fn render_packet_with_assets(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -1057,6 +1131,52 @@ fn renders_shared_fixture_with_fallback_adapter() {
         &rgba,
         [extent.width, extent.height],
     );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated GPU lane runs this proof"]
+fn applies_rgb_split_after_linear_and_cairo_compositing_without_stale_disabled_output() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+
+    for compositing in [
+        RenderCompositingV1::LinearLight,
+        RenderCompositingV1::ManimCairoSrgb,
+    ] {
+        let disabled = rgb_split_packet(compositing, false);
+        let enabled = rgb_split_packet(compositing, true);
+
+        let (before_texture, extent) = render_packet(&device, &queue, &mut renderer, &disabled);
+        let (_, before) = readback_texture(&device, &queue, &before_texture, extent);
+        let (effect_texture, effect_extent) =
+            render_packet(&device, &queue, &mut renderer, &enabled);
+        let (_, effected) = readback_texture(&device, &queue, &effect_texture, effect_extent);
+        let (after_texture, after_extent) =
+            render_packet(&device, &queue, &mut renderer, &disabled);
+        let (_, after) = readback_texture(&device, &queue, &after_texture, after_extent);
+
+        assert_eq!(
+            before, after,
+            "disabling the effect must restore exact output"
+        );
+        assert_ne!(
+            before, effected,
+            "RGB split must change the composited frame"
+        );
+        assert_eq!(
+            pixel(&effected, effect_extent.width, 16, 8),
+            [255, 0, 255, 255],
+            "sample time and parameters must produce a four-pixel split across the center seam"
+        );
+    }
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
 }
 
 #[test]

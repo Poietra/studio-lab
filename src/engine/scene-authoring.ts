@@ -124,6 +124,19 @@ export type ApplyStudioFragmentMaterialsCompiler = (
   snapshot: SceneIrBundleV1,
   command: ApplyStudioFragmentMaterialsWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
+
+export type ApplyStudioScenePostEffectWireCommandV1 = Readonly<{
+  effect: Readonly<{ parameters: readonly number[]; revision: number; shaderId: string }> | null;
+  expectedBaseRevision: string;
+  nextRevision: string;
+  schema: "poietra.apply-studio-scene-post-effect";
+  version: 1;
+}>;
+
+export type ApplyStudioScenePostEffectCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: ApplyStudioScenePostEffectWireCommandV1,
+) => Promise<SceneIrBundleV1>;
 type StaticRootTransformEntityKind =
   | "arc"
   | "axes"
@@ -1634,6 +1647,10 @@ type ApplyStudioFragmentMaterialsBindingsV1 = Readonly<{
   applyStudioFragmentMaterialsV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type ApplyStudioScenePostEffectBindingsV1 = Readonly<{
+  applyStudioScenePostEffectV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type ApplyStaticRootTransformEditBindingsV1 = Readonly<{
   applyStaticRootTransformEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -1674,6 +1691,7 @@ type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
   ApplyStudioBoundEntityEditBindingsV1 &
   ApplyStudioCreationEditBindingsV1 &
   ApplyStudioFragmentMaterialsBindingsV1 &
+  ApplyStudioScenePostEffectBindingsV1 &
   ApplyStudioMathTexTransformEditBindingsV1 &
   ApplyStudioMotionEditBindingsV1 &
   ApplyStudioTimelineEditBindingsV1 &
@@ -1693,6 +1711,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.applyStudioBoundEntityEditV1 !== "function" ||
       typeof candidate.applyStudioCreationEditV1 !== "function" ||
       typeof candidate.applyStudioFragmentMaterialsV1 !== "function" ||
+      typeof candidate.applyStudioScenePostEffectV1 !== "function" ||
       typeof candidate.applyStudioMathTexTransformEditV1 !== "function" ||
       typeof candidate.applyStudioMotionEditV1 !== "function" ||
       typeof candidate.applyStudioTimelineEditV1 !== "function" ||
@@ -1712,6 +1731,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
         candidate.applyStudioCreationEditV1 as SceneAuthoringBindingsV1["applyStudioCreationEditV1"],
       applyStudioFragmentMaterialsV1:
         candidate.applyStudioFragmentMaterialsV1 as SceneAuthoringBindingsV1["applyStudioFragmentMaterialsV1"],
+      applyStudioScenePostEffectV1:
+        candidate.applyStudioScenePostEffectV1 as SceneAuthoringBindingsV1["applyStudioScenePostEffectV1"],
       applyStudioMathTexTransformEditV1:
         candidate.applyStudioMathTexTransformEditV1 as SceneAuthoringBindingsV1["applyStudioMathTexTransformEditV1"],
       applyStudioMotionEditV1: candidate.applyStudioMotionEditV1 as SceneAuthoringBindingsV1["applyStudioMotionEditV1"],
@@ -1775,6 +1796,16 @@ export function createApplyStudioFragmentMaterialsCompiler(
   return async (snapshot, command) => {
     const bindings = await getBindings();
     return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStudioFragmentMaterialsV1);
+  };
+}
+
+/** Applies or removes the bounded built-in Scene post effect through the canonical core. */
+export function createApplyStudioScenePostEffectCompiler(
+  getBindings: () => Promise<ApplyStudioScenePostEffectBindingsV1>,
+): ApplyStudioScenePostEffectCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStudioScenePostEffectV1);
   };
 }
 
@@ -1870,6 +1901,7 @@ export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransfor
 export const compileApplyStudioBoundEntityEdit = createApplyStudioBoundEntityEditCompiler(loadBindings);
 export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);
 export const compileApplyStudioFragmentMaterials = createApplyStudioFragmentMaterialsCompiler(loadBindings);
+export const compileApplyStudioScenePostEffect = createApplyStudioScenePostEffectCompiler(loadBindings);
 export const compileApplyStudioMathTexTransformEdit = createApplyStudioMathTexTransformEditCompiler(loadBindings);
 export const compileApplyStudioMotionEdit = createApplyStudioMotionEditCompiler(loadBindings);
 export const compileApplyStudioTimelineEdit = createApplyStudioTimelineEditCompiler(loadBindings);

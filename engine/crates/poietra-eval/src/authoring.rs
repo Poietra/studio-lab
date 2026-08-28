@@ -14,6 +14,7 @@ mod identity;
 mod math_tex_transform;
 mod motion;
 mod presence;
+mod scene_post_effect;
 mod static_root;
 mod svg_path;
 mod timeline;
@@ -70,6 +71,7 @@ pub use presence::{
     ApplyStudioPersistentRemoveError, StudioPersistentRemoveProjection,
     StudioPersistentRemoveProjectionEntry,
 };
+pub use scene_post_effect::{ApplyStudioScenePostEffectCommand, ApplyStudioScenePostEffectError};
 use static_root::static_root_transform_edit_input_is_closed;
 pub use static_root::{
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,

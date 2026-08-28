@@ -40,6 +40,7 @@ import {
   type ApplyStudioMathTexTransformEditCompiler,
   type ApplyStudioMathTexTransformEditWireCommandV1,
   type ApplyStudioMotionEditCompiler,
+  type ApplyStudioScenePostEffectCompiler,
   type ApplyStudioTimelineEditCompiler,
   type ApplyStudioTimelineEditWireCommandV1,
   compileApplyStaticRootTransformEdit,
@@ -47,6 +48,7 @@ import {
   compileApplyStudioFragmentMaterials,
   compileApplyStudioMathTexTransformEdit,
   compileApplyStudioMotionEdit,
+  compileApplyStudioScenePostEffect,
   compileApplyStudioTimelineEdit,
   type ProjectStudioCreationCompiler,
   type ProjectStudioMotionCompiler,
@@ -129,6 +131,7 @@ import {
   studioMotionProjectionBatchKind,
   studioMotionStudioEntities,
 } from "./scene-authoring-wire";
+import { withoutScenePostEffectProgramsV1 } from "./scene-post-effect-authoring";
 import type { StudioPlaybackClock } from "./studio-playback-clock";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import {
@@ -1788,7 +1791,7 @@ async function digestFragmentMaterialSceneRevisionV1(
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-export async function compileStudioPreviewSceneV1(
+async function compileStudioPreviewSceneWithoutPostEffectV1(
   input: Parameters<typeof compileStudioPreviewSceneWithoutFragmentMaterialsV1>[0] &
     Readonly<{
       applyStudioFragmentMaterialsCompiler?: ApplyStudioFragmentMaterialsCompiler;
@@ -1866,6 +1869,65 @@ export async function compileStudioPreviewSceneV1(
       error: `Rust core rejected the fragment material assignment: ${
         error instanceof Error ? error.message : String(error)
       }`,
+      kind: "unsupported",
+    };
+  }
+}
+
+function routeScenePostEffectProgramV1(
+  workingState: WorkingState,
+):
+  | Readonly<{ error: string; kind: "unsupported" }>
+  | Readonly<{ effectOwner: ProgramRecord | null; kind: "routed"; workingState: WorkingState }> {
+  try {
+    const routed = withoutScenePostEffectProgramsV1(workingState);
+    return {
+      effectOwner: routed.effectOwner,
+      kind: "routed",
+      workingState: routed.workingState,
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error), kind: "unsupported" };
+  }
+}
+
+async function digestScenePostEffectRevisionV1(baseRevision: string, effect: unknown) {
+  const bytes = new TextEncoder().encode(canonicalJsonV1(["poietra.studio-scene-post-effect", baseRevision, effect]));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export async function compileStudioPreviewSceneV1(
+  input: Parameters<typeof compileStudioPreviewSceneWithoutPostEffectV1>[0] &
+    Readonly<{ applyStudioScenePostEffectCompiler?: ApplyStudioScenePostEffectCompiler }>,
+): ReturnType<typeof compileStudioPreviewSceneWithoutPostEffectV1> {
+  const route = routeScenePostEffectProgramV1(input.workingState);
+  if (route.kind === "unsupported") return route;
+  const result = await compileStudioPreviewSceneWithoutPostEffectV1({ ...input, workingState: route.workingState });
+  if (result.kind !== "compiled" || route.effectOwner === null) return result;
+  const operation = route.effectOwner.program.operations[0];
+  if (operation?.kind !== "SetScenePostEffect") {
+    return { error: "The Scene post-effect Program is invalid.", kind: "unsupported" };
+  }
+  const nextRevision = await digestScenePostEffectRevisionV1(result.scene.engineRevisionHash, operation.effect);
+  try {
+    const bundle = await (input.applyStudioScenePostEffectCompiler ?? compileApplyStudioScenePostEffect)(
+      result.scene.bundle,
+      {
+        effect: operation.effect,
+        expectedBaseRevision: result.scene.engineRevisionHash,
+        nextRevision,
+        schema: "poietra.apply-studio-scene-post-effect",
+        version: 1,
+      },
+    );
+    return {
+      kind: "compiled",
+      scene: { ...result.scene, bundle, engineRevisionHash: nextRevision },
+    };
+  } catch (error) {
+    return {
+      error: `Rust core rejected the Scene post effect: ${error instanceof Error ? error.message : String(error)}`,
       kind: "unsupported",
     };
   }

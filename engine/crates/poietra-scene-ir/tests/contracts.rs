@@ -58,6 +58,7 @@ fn empty_scene() -> SceneIrV1 {
             origin: ProvenanceOriginV1::Fixture,
         }],
         required_capabilities: Vec::new(),
+        post_effect: None,
         scene_id: "scene:empty".to_owned(),
         schema: SceneIrSchemaV1::SceneIr,
         source: SceneSourceV1::StudioEditProgram {
@@ -88,6 +89,7 @@ fn empty_packet() -> RenderPacketV1 {
         draws: Vec::new(),
         evidence: Vec::new(),
         packet_id: "packet:empty:1".to_owned(),
+        post_effect: None,
         required_capabilities: Vec::new(),
         sample_time: 1.0,
         scene_duration: 2.0,
@@ -101,6 +103,54 @@ fn empty_packet() -> RenderPacketV1 {
             width_px: 160,
         },
     }
+}
+
+#[test]
+fn scene_post_effect_is_bounded_capability_derived_and_packet_correlated() {
+    let effect = ScenePostEffectV1 {
+        parameters: vec![4.0, 2.0, 1.5, 0.25],
+        revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+        shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+    };
+    let mut scene = empty_scene();
+    scene.post_effect = Some(effect.clone());
+    scene.required_capabilities = vec![SceneCapabilityV1::ScenePostEffect];
+    validate_scene_ir_v1(&scene).unwrap();
+
+    let mut packet = empty_packet();
+    packet.post_effect = Some(effect.clone());
+    packet.required_capabilities = vec![RenderCapabilityV1::ScenePostEffect];
+    validate_render_packet_v1(&packet).unwrap();
+    validate_engine_frame_v1(&EngineFrameV1 {
+        assets: empty_manifest(),
+        packet: packet.clone(),
+        scene: scene.clone(),
+    })
+    .unwrap();
+
+    packet.post_effect.as_mut().unwrap().parameters[0] = 5.0;
+    let mismatch = validate_engine_frame_v1(&EngineFrameV1 {
+        assets: empty_manifest(),
+        packet,
+        scene: scene.clone(),
+    })
+    .unwrap_err();
+    assert!(mismatch.contains_message("post effect does not match scene semantics"));
+
+    scene.post_effect.as_mut().unwrap().parameters =
+        vec![0.0; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 + 1];
+    assert!(validate_scene_ir_v1(&scene).is_err());
+    scene.post_effect.as_mut().unwrap().parameters = vec![f64::NAN];
+    assert!(validate_scene_ir_v1(&scene).is_err());
+    scene.post_effect.as_mut().unwrap().parameters = Vec::new();
+    scene.compositing = RenderCompositingV1::ManimCairoSrgb;
+    validate_scene_ir_v1(&scene).unwrap();
+
+    let mut cairo_packet = empty_packet();
+    cairo_packet.compositing = RenderCompositingV1::ManimCairoSrgb;
+    cairo_packet.post_effect = scene.post_effect.clone();
+    cairo_packet.required_capabilities = vec![RenderCapabilityV1::ScenePostEffect];
+    validate_render_packet_v1(&cairo_packet).unwrap();
 }
 
 fn filled_path_draw(paint_order: u32) -> RenderDrawV1 {

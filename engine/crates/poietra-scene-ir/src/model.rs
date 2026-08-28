@@ -299,6 +299,24 @@ pub struct FragmentMaterialV1 {
     pub texture: Option<Box<FragmentMaterialTextureV1>>,
 }
 
+/// One bounded Scene-wide fragment pass applied after the composited frame.
+///
+/// Scene IR carries only the admitted shader identity and uniform values. The
+/// current Scene texture and fullscreen vertex stage are owned by the renderer.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScenePostEffectV1 {
+    pub parameters: Vec<f64>,
+    #[serde(deserialize_with = "deserialize_js_safe_u32")]
+    pub revision: u32,
+    pub shader_id: String,
+}
+
+/// Host-owned Scene post-effect identity shared by authoring and rendering.
+pub const RGB_SPLIT_POST_EFFECT_SHADER_ID: &str = "rgb-split";
+/// Admitted revision of [`RGB_SPLIT_POST_EFFECT_SHADER_ID`].
+pub const RGB_SPLIT_POST_EFFECT_SHADER_REVISION: u32 = 1;
+
 /// The single host-owned 2D texture slot available to a fragment material.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -807,6 +825,8 @@ pub enum SceneCapabilityV1 {
     PngImage,
     #[serde(rename = "shape-primitives")]
     ShapePrimitives,
+    #[serde(rename = "scene-post-effect")]
+    ScenePostEffect,
     #[serde(rename = "vector-appearance-animation")]
     VectorAppearanceAnimation,
 }
@@ -900,6 +920,8 @@ pub struct SceneIrV1 {
     pub fidelity: FidelityV1,
     pub provenance: Vec<ProvenanceRecordV1>,
     pub required_capabilities: Vec<SceneCapabilityV1>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_effect: Option<ScenePostEffectV1>,
     pub scene_id: String,
     pub schema: SceneIrSchemaV1,
     pub source: SceneSourceV1,
@@ -1069,6 +1091,8 @@ pub enum RenderCapabilityV1 {
     FragmentMaterial,
     #[serde(rename = "png-image")]
     PngImage,
+    #[serde(rename = "scene-post-effect")]
+    ScenePostEffect,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -1226,6 +1250,8 @@ pub struct RenderPacketV1 {
     pub draws: Vec<RenderDrawV1>,
     pub evidence: Vec<String>,
     pub packet_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub post_effect: Option<ScenePostEffectV1>,
     pub required_capabilities: Vec<RenderCapabilityV1>,
     pub sample_time: f64,
     pub scene_duration: f64,
