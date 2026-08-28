@@ -88,8 +88,8 @@ function props(): StudioTimelineProps {
 }
 
 describe("StudioTimeline opacity keyframes", () => {
-  it("keeps the Draw control visible with a reason for an unsupported target", () => {
-    const reason = "Draw supports only Studio-created Line, Circle, and Rectangle objects.";
+  it("keeps the Draw control visible with a fragment material blocker", () => {
+    const reason = "Draw does not support texture fragment materials.";
     const markup = renderToStaticMarkup(
       <StudioTimeline {...props()} drawInAvailability={new Map([["circle", reason]])} />,
     );

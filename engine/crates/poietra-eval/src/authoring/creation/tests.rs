@@ -5,6 +5,7 @@ use super::super::{
     StudioTextAlignment, StudioTextFontFamily, StudioTextFontWeight, StudioTextLayout,
 };
 use super::*;
+use crate::authoring::{ApplyStudioFragmentMaterialsCommand, StudioFragmentMaterialAssignment};
 
 #[test]
 fn property_easing_input_names_expand_to_canonical_scene_easing() {
@@ -5303,6 +5304,148 @@ fn normalized_creation_projects_and_applies_a_line() {
             project_studio_creation_edits(0.5, &invalid.programs),
             Err(ProjectStudioCreationEditError::Unsupported)
         ));
+    }
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one two-case vertical slice keeps creation, material assignment, and sampling together"
+)]
+fn created_line_and_open_pen_keep_static_fragment_material_during_draw() {
+    let inspected_pen =
+        crate::authoring::inspect_studio_cubic_bezier(&StudioCreationCubicBezierSpec {
+            arrow_end: false,
+            closed: false,
+            control1: PointV1 { x: -1.0, y: 1.5 },
+            control2: PointV1 { x: 1.0, y: -1.5 },
+            continuation_segments: vec![poietra_scene_ir::CubicSegmentV1 {
+                control1: PointV1 { x: 2.5, y: 1.0 },
+                control2: PointV1 { x: 3.5, y: 1.0 },
+                end: PointV1 { x: 4.0, y: 0.0 },
+            }],
+            end: PointV1 { x: 2.0, y: 0.5 },
+            fill_color: None,
+            start: PointV1 { x: -2.0, y: -0.5 },
+            stroke_cap: StudioCubicBezierStrokeCap::Round,
+            stroke_width: 0.06,
+        })
+        .unwrap();
+    let cases = [
+        (
+            "line",
+            StudioAuthoringEntityKind::Line,
+            StudioAuthoringDimensions::default(),
+            None,
+        ),
+        (
+            "open-pen",
+            StudioAuthoringEntityKind::CubicBezier,
+            inspected_pen.dimensions,
+            Some(inspected_pen.cubic_bezier),
+        ),
+    ];
+
+    for (slug, kind, dimensions, cubic_bezier) in cases {
+        let mut input = static_imported_bundle();
+        input.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+        let entity_id = format!("tx:create/entity:{slug}");
+        let mut command = studio_draw_creation_command(&input);
+        for operation in &mut command.programs[0].operations {
+            if operation.entity_id.as_deref() == Some("tx:create/entity:circle") {
+                operation.entity_id = Some(entity_id.clone());
+            }
+        }
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.id.clone_from(&entity_id);
+        entity.kind = kind;
+        entity.dimensions = dimensions;
+        entity.cubic_bezier = cubic_bezier;
+
+        let projection =
+            project_studio_creation_edits(input.scene.duration, &command.programs).unwrap();
+        assert!(projection.mutations.iter().any(|mutation| matches!(
+            mutation,
+            StudioCreationProjectedMutation {
+                entity_id: candidate,
+                kind: StudioCreationProjectedMutationKind::DrawIn { .. },
+                ..
+            } if candidate == &entity_id
+        )));
+
+        let mut session = EngineSessionV1::new(input).unwrap();
+        let created = session.apply_studio_creation_edit(command).unwrap();
+        let trim_channel = created
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find(|channel| {
+                matches!(
+                    channel,
+                    AnimationChannelV1::PathTrim { entity_id: candidate, .. }
+                        if candidate == &entity_id
+                )
+            })
+            .cloned()
+            .unwrap();
+        let assigned = session
+            .apply_studio_fragment_materials(ApplyStudioFragmentMaterialsCommand {
+                assignments: vec![StudioFragmentMaterialAssignment {
+                    entity_id: entity_id.clone(),
+                    material: Some(FragmentMaterialV1 {
+                        parameters: vec![0.25],
+                        revision: 1,
+                        shader_id: "project-draw-material".to_owned(),
+                        texture: None,
+                    }),
+                }],
+                expected_base_revision: NEXT_REVISION.to_owned(),
+                next_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_owned(),
+            })
+            .unwrap();
+        assert!(assigned.scene.animation_channels.contains(&trim_channel));
+
+        let sample = |time| {
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "draw-material",
+                    sample_time: time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            packet
+                .draws
+                .iter()
+                .find_map(|draw| match draw {
+                    poietra_scene_ir::RenderDrawV1::Path {
+                        entity_id: candidate,
+                        path,
+                        stroke: Some(stroke),
+                        ..
+                    } if candidate == &entity_id => {
+                        Some((path.clone(), stroke.fragment_material.clone()))
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (mid_path, mid_material) = sample(0.75);
+        let (complete_path, complete_material) = sample(1.25);
+        assert_ne!(mid_path, complete_path);
+        assert_eq!(mid_material, complete_material);
+        assert!(mid_material.is_some_and(|material| {
+            material.shader_id == "project-draw-material" && material.texture.is_none()
+        }));
     }
 }
 

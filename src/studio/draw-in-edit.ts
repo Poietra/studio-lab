@@ -17,6 +17,11 @@ export type DrawInClip = Readonly<{
   transactionId: string;
 }>;
 
+export type DrawInFragmentMaterialAdmission = Readonly<{
+  hasParameterKeyframes: boolean;
+  texture: boolean;
+}>;
+
 const DRAWABLE_STUDIO_TYPES = new Set([
   "Arc",
   "Axes",
@@ -70,7 +75,10 @@ export function drawInClipFromProgram(program: SceneEdit): DrawInClip | null {
 export function drawInUnavailableReason(
   program: SceneEdit,
   entityId: string,
-  options: Readonly<{ svgHasFill?: boolean | null }> = {},
+  options: Readonly<{
+    fragmentMaterial?: DrawInFragmentMaterialAdmission | null;
+    svgHasFill?: boolean | null;
+  }> = {},
 ): string | null {
   const create = createdEntity(program, entityId);
   if (!create || create.kind !== "CreateEntity") return "Draw supports only Studio-created objects.";
@@ -84,6 +92,20 @@ export function drawInUnavailableReason(
   }
   if (create.entity.type === "CubicBezier" && create.entity.cubicBezier?.closed) {
     return "Draw currently supports open Pen paths. Reopen the path before adding Draw.";
+  }
+  if (options.fragmentMaterial) {
+    if (create.entity.type !== "Line" && create.entity.type !== "CubicBezier") {
+      return "Draw with a fragment material supports only Studio-created Line and open, non-arrow Pen paths.";
+    }
+    if (create.entity.type === "CubicBezier" && create.entity.cubicBezier?.arrowEnd) {
+      return "Draw with a fragment material supports non-arrow Pen paths. Turn off the arrow before combining them.";
+    }
+    if (options.fragmentMaterial.texture) {
+      return "Draw does not support texture fragment materials. Choose a texture-free material or remove Draw.";
+    }
+    if (options.fragmentMaterial.hasParameterKeyframes) {
+      return "Draw does not support material parameter keyframes. Remove the material track before combining them.";
+    }
   }
   const otherDraw = program.operations.find(
     (operation) => operation.kind === "DrawIn" && operation.entityId !== entityId,

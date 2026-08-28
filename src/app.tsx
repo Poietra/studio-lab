@@ -1817,13 +1817,27 @@ export function App({
       const owner = previewAppliedEdits.find(({ program }) =>
         program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
       );
-      const hasExternalFillOrMaterial = previewAppliedEdits.some(({ program }) =>
+      const assignment = activeSceneFragmentMaterials.assignments[entityId];
+      const materialSource = assignment
+        ? activeSceneFragmentMaterials.registry.materials.find(
+            (material) => material.shaderId === assignment.shaderId && material.revision === assignment.revision,
+          )
+        : null;
+      const hasMaterialParameterKeyframes = previewAppliedEdits.some(({ program }) =>
+        program.operations.some(
+          (operation) =>
+            operation.kind === "AnimateProperty" &&
+            operation.entityId === entityId &&
+            operation.materialParameter !== undefined,
+        ),
+      );
+      const hasExternalFill = previewAppliedEdits.some(({ program }) =>
         program.operations.some(
           (operation) =>
             "entityId" in operation &&
             operation.entityId === entityId &&
-            ((operation.kind === "SetProperty" && operation.key === "fillColor") ||
-              (operation.kind === "AnimateProperty" && operation.materialParameter !== undefined)),
+            operation.kind === "SetProperty" &&
+            operation.key === "fillColor",
         ),
       );
       const reason = !owner
@@ -1832,11 +1846,17 @@ export function App({
           ? "Apply or discard the current draft before adding Draw."
           : canonicalGroupedChildIds.has(entityId)
             ? "Draw currently supports only ungrouped root objects."
-            : activeSceneFragmentMaterials.assignments[entityId]
-              ? "Remove the object's fragment material before adding Draw."
-              : hasExternalFillOrMaterial
-                ? "Remove the object's fill or material animation before adding Draw."
+            : assignment && !materialSource
+              ? "The assigned fragment material is unavailable. Reassign it before adding Draw."
+              : hasExternalFill
+                ? "Remove the object's fill before adding Draw."
                 : drawInUnavailableReason(owner.program, entityId, {
+                    fragmentMaterial: assignment
+                      ? {
+                          hasParameterKeyframes: hasMaterialParameterKeyframes,
+                          texture: assignment.texture !== undefined || materialSource?.textureSlot === "texture2d",
+                        }
+                      : null,
                     svgHasFill: studioSvgPathFillState(owner.program, entityId),
                   });
       return [entityId, reason] as const;
@@ -4028,9 +4048,11 @@ export function App({
       setDraftError("Draw supports only eligible Studio-created path objects.");
       return;
     }
-    const unavailable = drawInUnavailableReason(owner.record.program, entityId, {
-      svgHasFill: studioSvgPathFillState(owner.record.program, entityId),
-    });
+    const unavailable = drawInAvailability.has(entityId)
+      ? (drawInAvailability.get(entityId) ?? null)
+      : drawInUnavailableReason(owner.record.program, entityId, {
+          svgHasFill: studioSvgPathFillState(owner.record.program, entityId),
+        });
     if (unavailable) {
       setDraftError(unavailable);
       return;
@@ -9460,13 +9482,36 @@ export function App({
         .map(({ program }) => studioSvgPathFillState(program, selectedFragmentMaterialEntity.id))
         .find((hasFill) => hasFill !== null) ?? null)
     : null;
-  const selectedEntranceMaterialBlocker = selectedFragmentMaterialEntity
-    ? sceneProgramsHaveDrawIn(previewAppliedSceneEdits, selectedFragmentMaterialEntity.id)
-      ? "Remove Draw before assigning a fragment material to this object."
-      : sceneProgramsHaveWriteIn(previewAppliedSceneEdits, selectedFragmentMaterialEntity.id)
-        ? "Remove Write before assigning a fragment material to this object."
-        : null
-    : null;
+  const selectedFragmentMaterialEntranceBlocker = (
+    material: Readonly<{ textureSlot?: "texture2d" }>,
+  ): string | null => {
+    if (!selectedFragmentMaterialEntity) return null;
+    if (sceneProgramsHaveWriteIn(previewAppliedSceneEdits, selectedFragmentMaterialEntity.id)) {
+      return "Remove Write before assigning a fragment material to this object.";
+    }
+    if (!sceneProgramsHaveDrawIn(previewAppliedSceneEdits, selectedFragmentMaterialEntity.id)) return null;
+    const owner = previewAppliedEdits.find(({ program }) =>
+      program.operations.some(
+        (operation) => operation.kind === "CreateEntity" && operation.entity.id === selectedFragmentMaterialEntity.id,
+      ),
+    );
+    if (!owner) return "Draw supports only Studio-created objects.";
+    const hasParameterKeyframes = previewAppliedSceneEdits.some((program) =>
+      program.operations.some(
+        (operation) =>
+          operation.kind === "AnimateProperty" &&
+          operation.entityId === selectedFragmentMaterialEntity.id &&
+          operation.materialParameter !== undefined,
+      ),
+    );
+    return drawInUnavailableReason(owner.program, selectedFragmentMaterialEntity.id, {
+      fragmentMaterial: {
+        hasParameterKeyframes,
+        texture: material.textureSlot === "texture2d",
+      },
+      svgHasFill: studioSvgPathFillState(owner.program, selectedFragmentMaterialEntity.id),
+    });
+  };
   const selectedFragmentMaterialPaintAvailable =
     selectedFragmentMaterialEntity !== null &&
     ((selectedFragmentMaterialEntity.geometry.style.kind === "known" &&
@@ -9608,7 +9653,6 @@ export function App({
   function createFragmentMaterialPreset(preset: StudioFragmentMaterialPresetId) {
     try {
       if (activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
-        if (selectedEntranceMaterialBlocker) throw new Error(selectedEntranceMaterialBlocker);
         const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
           entityId: selectedFragmentMaterialEntity.id,
         });
@@ -9620,6 +9664,12 @@ export function App({
           : preset === "pulse"
             ? createStudioPulseFragmentMaterialPresetV1(activeProjectFragmentMaterials)
             : createStudioWaveFragmentMaterialPresetV1(activeProjectFragmentMaterials);
+      const createdMaterial = created.state.registry.materials.find(({ shaderId }) => shaderId === created.shaderId);
+      if (!createdMaterial) throw new Error("The created material is unavailable.");
+      if (activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
+        const blocker = selectedFragmentMaterialEntranceBlocker(createdMaterial);
+        if (blocker) throw new Error(blocker);
+      }
       const next =
         activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable
           ? assignStudioFragmentMaterialV1(created.state, {
@@ -9638,13 +9688,18 @@ export function App({
   function createTextureFragmentMaterialPreset() {
     try {
       if (activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
-        if (selectedEntranceMaterialBlocker) throw new Error(selectedEntranceMaterialBlocker);
         const blocker = materialParameterIdentityEditBlocker(latestPreviewEditPrograms.current, {
           entityId: selectedFragmentMaterialEntity.id,
         });
         if (blocker) throw new Error(blocker);
       }
       const created = createStudioTextureFragmentMaterialPresetV1(activeProjectFragmentMaterials);
+      const createdMaterial = created.state.registry.materials.find(({ shaderId }) => shaderId === created.shaderId);
+      if (!createdMaterial) throw new Error("The created material is unavailable.");
+      if (activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable) {
+        const blocker = selectedFragmentMaterialEntranceBlocker(createdMaterial);
+        if (blocker) throw new Error(blocker);
+      }
       const asset = activeFragmentMaterialTextureAssets[0];
       const next =
         activeEditorScene && selectedFragmentMaterialEntity && selectedFragmentMaterialAvailable && asset
@@ -9799,10 +9854,14 @@ export function App({
     if (shaderId !== null && !selectedFragmentMaterialAvailable) return;
     if (rejectLockedEntityMutation(selectedFragmentMaterialEntity.id)) return;
     try {
-      if (shaderId !== null && selectedEntranceMaterialBlocker) throw new Error(selectedEntranceMaterialBlocker);
       const material = shaderId
         ? activeProjectFragmentMaterials.registry.materials.find((candidate) => candidate.shaderId === shaderId)
         : null;
+      if (shaderId !== null && !material) throw new Error("The material no longer exists.");
+      if (material) {
+        const entranceBlocker = selectedFragmentMaterialEntranceBlocker(material);
+        if (entranceBlocker) throw new Error(entranceBlocker);
+      }
       const previousTexture = selectedFragmentMaterialAssignment?.texture;
       const selectedTextureAsset = material?.textureSlot
         ? (activeFragmentMaterialTextureAssets.find(

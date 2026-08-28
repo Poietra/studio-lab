@@ -2,8 +2,9 @@
 mod support;
 
 use poietra_render_wgpu::{
-    PrepareFrameErrorV1, PreparedGeometryCacheV1, UnsupportedDrawReasonV1, prepare_frame_v1,
-    prepare_frame_with_cache_v1,
+    PrepareFrameErrorV1, PreparedGeometryCacheV1, PreparedRenderCommandV1,
+    TIME_GRADIENT_SHADER_ID_V1, TIME_GRADIENT_SHADER_REVISION_V1, UnsupportedDrawReasonV1,
+    prepare_frame_v1, prepare_frame_with_cache_v1,
 };
 use poietra_scene_ir::{
     CubicPathV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, FragmentMaterialV1,
@@ -452,6 +453,56 @@ fn dashed_stroke_uses_the_evaluated_trimmed_curve() {
         prepare_frame_v1(&packet).expect("the evaluated trimmed curve must prepare dashed");
     assert_ne!(solid.geometry_plan(), dashed.geometry_plan());
     assert!(dashed.geometry_plan().vertices().len() > solid.geometry_plan().vertices().len());
+}
+
+#[test]
+fn fragment_material_stroke_prepares_the_evaluated_trimmed_curve() {
+    let mut packet = generic_stroke_packet_with_initial_trim(0.55);
+    let solid = prepare_frame_v1(&packet).expect("the evaluated trimmed curve must prepare solid");
+    let draw_index = packet
+        .draws
+        .iter()
+        .position(
+            |draw| matches!(draw, RenderDrawV1::Path { entity_id, .. } if entity_id == "curve"),
+        )
+        .unwrap();
+    let RenderDrawV1::Path {
+        path,
+        stroke: Some(stroke),
+        ..
+    } = &mut packet.draws[draw_index]
+    else {
+        unreachable!()
+    };
+    assert!(!path.subpaths[0].closed);
+    stroke.fragment_material = Some(FragmentMaterialV1 {
+        parameters: vec![0.25],
+        revision: TIME_GRADIENT_SHADER_REVISION_V1,
+        shader_id: TIME_GRADIENT_SHADER_ID_V1.to_owned(),
+        texture: None,
+    });
+    packet
+        .required_capabilities
+        .push(RenderCapabilityV1::FragmentMaterial);
+    packet.required_capabilities.sort_unstable();
+    packet.required_capabilities.dedup();
+
+    let material = prepare_frame_v1(&packet)
+        .expect("the evaluated trimmed curve with a static material must prepare");
+    assert_eq!(material.geometry_plan(), solid.geometry_plan());
+    let prepared_draw_index = u32::try_from(draw_index).unwrap();
+    assert!(
+        material
+            .render_commands()
+            .contains(&PreparedRenderCommandV1::FragmentMaterial {
+                draw_index: prepared_draw_index,
+            })
+    );
+    assert!(
+        material.material_plan().materials()[draw_index]
+            .fragment_material()
+            .is_some_and(|material| material.texture().is_none())
+    );
 }
 
 #[test]
