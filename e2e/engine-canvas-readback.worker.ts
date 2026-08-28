@@ -58,6 +58,7 @@ type WasmBindingsV1 = {
       assetBytes: Uint8Array[],
       canvas: OffscreenCanvas,
       fragmentMaterialRegistryJson: Uint8Array,
+      scenePostEffectRegistryJson: Uint8Array,
     ) => Promise<{
       render: (requestJson: Uint8Array) => Promise<Uint8Array>;
       renderWithTelemetry: (requestJson: Uint8Array) => Promise<Uint8Array>;
@@ -112,6 +113,9 @@ const EMPTY_ASSET_METADATA_JSON = new TextEncoder().encode("[]");
 const EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON = new TextEncoder().encode(
   '{"materials":[],"schema":"poietra.fragment-material-registry","version":1}',
 );
+const EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON = new TextEncoder().encode(
+  '{"effect":null,"schema":"poietra.scene-post-effect-registry","version":1}',
+);
 const MAX_RETAINED_FRAME_SEQUENCE_COUNT = 32;
 
 function createCanvasEngine(
@@ -127,6 +131,7 @@ function createCanvasEngine(
     assetBytes.map((bytes) => new Uint8Array(bytes)),
     canvas,
     EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON,
+    EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON,
   );
 }
 
