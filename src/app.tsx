@@ -47,6 +47,7 @@ import {
   createStudioGroupLifetimeTrimProgram,
   createStudioGroupProgram,
   createStudioSceneBackgroundProgram,
+  createStudioScenePostEffectProgram,
   createStudioUngroupProgram,
   defaultEntityContent,
   duplicateEntityInput,
@@ -55,6 +56,7 @@ import {
   replaceStudioCreatedDataSeriesProgram,
   replaceStudioEntityLifetimeProgram,
   replaceStudioSceneBackgroundProgram,
+  replaceStudioScenePostEffectProgram,
   type StudioEntityInput,
 } from "./studio/authoring-commands";
 import {
@@ -277,12 +279,20 @@ import {
 import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-authoring-wire";
 import {
   type SceneEdit,
+  type StudioScenePostEffectV1,
   shapeTransformChangesShape,
   studioEntityTypeMayExposeStrokeDash,
   studioEntityTypeSupportsStrokeCap,
   studioEntityTypeSupportsStrokeWidth,
   studioPaintColorTrackProperty,
+  studioScenePostEffectV1Schema,
 } from "./studio/scene-edit-contract";
+import {
+  isScenePostEffectProgramV1,
+  programsWithoutScenePostEffectV1,
+  recordsWithoutScenePostEffectProgramsV1,
+  scenePostEffectProgramOwnerV1,
+} from "./studio/scene-post-effect-authoring";
 import {
   isSelectionLayoutCommand,
   planSelectionLayout,
@@ -1533,9 +1543,12 @@ export function App({
     return left.length === right.length && left.every((program, index) => program === right[index]);
   }
   function exactTimelineProjectionForPrograms(programs: readonly SceneEdit[]) {
-    const fullPrograms = previewEditRecords.map((record) => record.program);
+    programs = programsWithoutScenePostEffectV1(programs);
+    const fullPrograms = programsWithoutScenePostEffectV1(previewEditRecords.map((record) => record.program));
     if (programBatchIsExact(programs, fullPrograms)) return previewRenderer?.timelineProjection;
-    const appliedPrograms = previewProjectionAppliedEdits.map((record) => record.program);
+    const appliedPrograms = programsWithoutScenePostEffectV1(
+      previewProjectionAppliedEdits.map((record) => record.program),
+    );
     if (programBatchIsExact(programs, appliedPrograms)) return previewRenderer?.appliedTimelineProjection;
     // Historical Program editing still starts synchronously before an exact
     // applied-prefix preview can be requested. Use the correlated full Rust
@@ -1543,6 +1556,7 @@ export function App({
     return previewRenderer?.timelineProjection;
   }
   function timelineProjectionForPrograms(programs: readonly SceneEdit[]) {
+    programs = programsWithoutScenePostEffectV1(programs);
     const durationPrograms = programs.filter((program) => program.operations.some(isSceneDurationOperation));
     if (durationPrograms.length === 0) return null;
     if (!projectedEditorScene) return undefined;
@@ -1566,11 +1580,14 @@ export function App({
     }
   }
   function creationProjectionForPrograms(programs: readonly SceneEdit[]) {
+    programs = programsWithoutScenePostEffectV1(programs);
     if (!programs.some((program) => program.operations.some(isStudioNativeAuthoringBatchOperation))) return null;
     if (!projectedEditorScene || !previewRenderer) return undefined;
     try {
-      const fullPrograms = previewEditRecords.map((record) => record.program);
-      const appliedPrograms = previewProjectionAppliedEdits.map((record) => record.program);
+      const fullPrograms = programsWithoutScenePostEffectV1(previewEditRecords.map((record) => record.program));
+      const appliedPrograms = programsWithoutScenePostEffectV1(
+        previewProjectionAppliedEdits.map((record) => record.program),
+      );
       if (programBatchIsExact(programs, fullPrograms)) {
         return selectCreationProjection(
           projectedEditorScene.runtimeSceneState.duration,
@@ -1596,6 +1613,7 @@ export function App({
     }
   }
   function timelineTransformsForPrograms(programs: readonly SceneEdit[]) {
+    programs = programsWithoutScenePostEffectV1(programs);
     const creationProjection = creationProjectionForPrograms(programs);
     if (creationProjection === undefined) return undefined;
     if (creationProjection) {
@@ -1609,9 +1627,12 @@ export function App({
     return timelineProjection === undefined ? undefined : (timelineProjection?.transforms ?? null);
   }
   function timelineProjectionForRecords(records: readonly ProgramRecord[]) {
-    return timelineProjectionForPrograms(records.map((record) => record.program));
+    return timelineProjectionForPrograms(
+      recordsWithoutScenePostEffectProgramsV1(records).map((record) => record.program),
+    );
   }
   function persistentRemoveProjectionForPrograms(programs: readonly SceneEdit[]) {
+    programs = programsWithoutScenePostEffectV1(programs);
     if (programs.some((program) => program.operations.some(isStudioNativeAuthoringBatchOperation))) return null;
     const containsPersistentRemove = programs.some((program) =>
       program.operations.some(
@@ -1627,10 +1648,12 @@ export function App({
     }
   }
   function persistentRemoveProjectionForRecords(records: readonly ProgramRecord[]) {
-    return persistentRemoveProjectionForPrograms(records.map((record) => record.program));
+    return persistentRemoveProjectionForPrograms(
+      recordsWithoutScenePostEffectProgramsV1(records).map((record) => record.program),
+    );
   }
   function mathTexTransformProjectionForRecords(records: readonly ProgramRecord[]) {
-    const programs = records.map((record) => record.program);
+    const programs = recordsWithoutScenePostEffectProgramsV1(records).map((record) => record.program);
     if (!isExactStudioMathTexTransformProgramBatch(programs)) return null;
     const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
@@ -1647,7 +1670,7 @@ export function App({
     }
   }
   function creationProjectionForRecords(records: readonly ProgramRecord[]) {
-    const programs = records.map((record) => record.program);
+    const programs = recordsWithoutScenePostEffectProgramsV1(records).map((record) => record.program);
     if (!programs.some((program) => program.operations.some(isStudioNativeAuthoringBatchOperation))) return null;
     const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
@@ -1655,7 +1678,7 @@ export function App({
     return creationProjectionForPrograms(programs);
   }
   function motionProjectionForRecords(records: readonly ProgramRecord[]) {
-    const programs = records.map((record) => record.program);
+    const programs = recordsWithoutScenePostEffectProgramsV1(records).map((record) => record.program);
     if (programs.some((program) => program.operations.some(isStudioNativeAuthoringBatchOperation))) return null;
     if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateMotion"))) return null;
     const authority = workspaceEditAuthorityForRecords(records);
@@ -1673,6 +1696,7 @@ export function App({
     }
   }
   function sourceTimeToWorkingTime(programs: readonly SceneEdit[], sourceTime: number) {
+    programs = programsWithoutScenePostEffectV1(programs);
     const transforms = timelineTransformsForPrograms(programs);
     if (transforms === undefined) {
       throw new Error("Wait for the Rust timeline projection before resolving this source timestamp.");
@@ -1682,6 +1706,7 @@ export function App({
       : sourceTimeToWorkingTimeWithoutTimeline(programs, sourceTime);
   }
   function workingTimeToSourceTime(programs: readonly SceneEdit[], workingTime: number) {
+    programs = programsWithoutScenePostEffectV1(programs);
     const transforms = timelineTransformsForPrograms(programs);
     if (transforms === undefined) {
       throw new Error("Wait for the Rust timeline projection before resolving this working timestamp.");
@@ -1691,6 +1716,7 @@ export function App({
       : workingTimeToSourceTimeWithoutTimeline(programs, workingTime);
   }
   function projectRuntimeSceneToSourceTimeline(scene: RuntimeSceneState, programs: readonly SceneEdit[]) {
+    programs = programsWithoutScenePostEffectV1(programs);
     const transforms = timelineTransformsForPrograms(programs);
     if (transforms === undefined) {
       throw new Error("Wait for the Rust timeline projection before mapping this Scene to source time.");
@@ -1714,7 +1740,7 @@ export function App({
     if (!previewRenderer?.boundEntityProjection) return undefined;
     try {
       return selectBoundEntityProjection(
-        records.map((record) => record.program),
+        recordsWithoutScenePostEffectProgramsV1(records).map((record) => record.program),
         previewRenderer.boundEntityProjection,
       );
     } catch {
@@ -1722,7 +1748,7 @@ export function App({
     }
   }
   function staticRootProjectionForRecords(records: readonly ProgramRecord[]) {
-    const programs = records.map((record) => record.program);
+    const programs = recordsWithoutScenePostEffectProgramsV1(records).map((record) => record.program);
     const authority = workspaceEditAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "static-imported-root") return null;
@@ -1745,6 +1771,18 @@ export function App({
           mutation.kind === "scene-background",
       )
       .at(-1)?.value ?? "#000000";
+  const scenePostEffectOperation = (() => {
+    try {
+      return scenePostEffectProgramOwnerV1(previewEditRecords)?.operation ?? null;
+    } catch {
+      return null;
+    }
+  })();
+  const scenePostEffect = useMemo(
+    () =>
+      scenePostEffectOperation?.effect ? studioScenePostEffectV1Schema.parse(scenePostEffectOperation.effect) : null,
+    [scenePostEffectOperation?.effect],
+  );
   const workspaceEntityCreationProjection = workspaceCreationProjection
     ? {
         ...workspaceCreationProjection,
@@ -2661,7 +2699,10 @@ export function App({
   const previewPaintAvailable = previewRenderer?.state.phase === "presented";
   const previewMutationAvailable = previewPaintAvailable && !previewSelectionOnly;
   const previewDraftMutationAvailable =
-    previewMutationAvailable || (previewPaintAvailable && draftEdit !== null && isStudioEntityInsertion(draftEdit));
+    previewMutationAvailable ||
+    (previewPaintAvailable &&
+      draftEdit !== null &&
+      (isStudioEntityInsertion(draftEdit) || isScenePostEffectProgramV1(draftEdit)));
   const canvasInteractionLocked = studioAuthoringLocked || isPlaying || !previewPaintAvailable;
   const sourceDurationSessionKey = editorRevision.sessionKey;
   function startPreviewRenderer(action: () => boolean) {
@@ -2730,10 +2771,12 @@ export function App({
       setIsPlaying(false);
       return false;
     }
-    const selectionOnlyInsertion =
-      isStudioEntityInsertion(input.record) &&
-      (!input.preserveAppliedProgram || isStudioEntityInsertion(input.preserveAppliedProgram));
-    if (!selectionOnlyInsertion && rejectSelectionOnlyPreviewMutation()) return false;
+    const selectionOnlyAuthoringAllowed =
+      (isStudioEntityInsertion(input.record) &&
+        (!input.preserveAppliedProgram || isStudioEntityInsertion(input.preserveAppliedProgram))) ||
+      (isScenePostEffectProgramV1(input.record) &&
+        (!input.preserveAppliedProgram || isScenePostEffectProgramV1(input.preserveAppliedProgram)));
+    if (!selectionOnlyAuthoringAllowed && rejectSelectionOnlyPreviewMutation()) return false;
     if (editorDocumentAuthority.enabled && !editorDocumentAuthority.canAuthor()) {
       setDraftError(editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
       setIsPlaying(false);
@@ -3836,7 +3879,12 @@ export function App({
     }
     // A draft may predate preview activation; the correlated Rust compilation
     // below remains the final source-export boundary.
-    if (!isStudioEntityInsertion(draftEdit) && rejectSelectionOnlyPreviewMutation()) return;
+    if (
+      !isStudioEntityInsertion(draftEdit) &&
+      !isScenePostEffectProgramV1(draftEdit) &&
+      rejectSelectionOnlyPreviewMutation()
+    )
+      return;
     const draftExecution = programExecutionCapabilities(draftEdit.program);
     if (draftExecution.apply !== "supported") {
       setDraftError(draftExecution.applyBlocker ?? "The draft cannot be applied safely.");
@@ -6734,6 +6782,50 @@ export function App({
       return installCanonicalDraft(validated.record);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The Scene background could not be changed.");
+      return false;
+    }
+  }
+
+  function changeScenePostEffect(effect: StudioScenePostEffectV1 | null) {
+    if (!draftBaseState) {
+      setDraftError("Wait for the editable Scene before changing its post effect.");
+      return false;
+    }
+    if (draftEdit || editingAppliedProgram) {
+      setDraftError("Apply or discard the current draft before changing the Scene post effect.");
+      return false;
+    }
+    try {
+      const owner = scenePostEffectProgramOwnerV1(appliedEdits);
+      if (owner) {
+        if (JSON.stringify(owner.operation.effect) === JSON.stringify(effect)) return true;
+        const preceding = sourceSceneBeforeAppliedProgram(owner.index);
+        const editorOwner = appliedEdits[owner.index];
+        if (!editorOwner) throw new Error("The Scene post-effect Program no longer exists.");
+        const validation = replaceStudioScenePostEffectProgram({
+          effect,
+          owner: editorOwner,
+          scene: preceding.scene,
+        });
+        const validated = validatedProgramRecord(validation);
+        if (validated.kind === "invalid") throw new Error(validated.message);
+        return installCanonicalDraft(validated.record, [], preceding.canonical, null, {
+          index: owner.index,
+          original: editorOwner,
+        });
+      }
+      if (effect === null) return true;
+      const validation = createStudioScenePostEffectProgram({
+        capturedPlayhead: appliedEdits.at(-1)?.program.anchor.resolvedSeconds ?? 0,
+        effect,
+        scene: draftBaseState.evaluatedScene,
+        transactionId: `studio-scene-post-effect-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Scene post effect could not be changed.");
       return false;
     }
   }
@@ -10567,6 +10659,7 @@ export function App({
               onImportSvgFiles={nativeSceneActive ? (files) => void importNativeProjectSvgFiles(files) : undefined}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onSceneBackgroundChange={(color) => void changeSceneBackground(color)}
+              onScenePostEffectChange={(effect) => void changeScenePostEffect(effect)}
               onAddImageAsset={(asset) => {
                 setIsPlaying(false);
                 void insertEntitiesAt({ x: 320, y: 180 }, [
@@ -10614,6 +10707,19 @@ export function App({
                     ? "Apply or discard the current draft before changing the Scene background."
                     : null
                   : "Scene background editing is available only in a Studio-native workspace."
+              }
+              scenePostEffect={scenePostEffect}
+              scenePostEffectAvailable={
+                !studioAuthoringLocked &&
+                !isPlaying &&
+                previewPaintAvailable &&
+                draftEdit === null &&
+                editingAppliedProgram === null
+              }
+              scenePostEffectUnavailableReason={
+                draftEdit || editingAppliedProgram
+                  ? "Apply or discard the current draft before changing the Scene post effect."
+                  : null
               }
               selectedIds={selectedSet}
               selectedGroupId={selectedLayerGroup?.groupId ?? null}

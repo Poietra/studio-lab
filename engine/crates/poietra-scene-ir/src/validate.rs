@@ -9,7 +9,7 @@ use crate::model::{
     ImageLocalRectV1, IntervalV1, KeyframeV1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, PointV1,
     RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketV1,
     RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneGeometryV1,
-    SceneIrV1, SceneSourceV1, StrokeStyleV1,
+    SceneIrV1, ScenePostEffectV1, SceneSourceV1, StrokeStyleV1,
 };
 
 pub const MAX_COORDINATE_V1: f64 = 1_000_000_000.0;
@@ -333,6 +333,28 @@ fn validate_fragment_material(
     }
     if let Some(texture) = &material.texture {
         validate_asset_reference(&texture.asset, &format!("{path}.texture.asset"), validator);
+    }
+}
+
+fn validate_scene_post_effect(effect: &ScenePostEffectV1, path: &str, validator: &mut Validator) {
+    validate_opaque_id(&effect.shader_id, &format!("{path}.shaderId"), validator);
+    if effect.revision == 0 {
+        validator.issue(format!("{path}.revision"), "must be positive");
+    }
+    if effect.parameters.len() > MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 {
+        validator.issue(
+            format!("{path}.parameters"),
+            format!("accepts at most {MAX_FRAGMENT_MATERIAL_PARAMETERS_V1} scalar parameters"),
+        );
+    }
+    for (index, parameter) in effect.parameters.iter().enumerate() {
+        let parameter_path = format!("{path}.parameters[{index}]");
+        validate_finite(*parameter, &parameter_path, validator);
+        if parameter.is_finite()
+            && (*parameter < f64::from(f32::MIN) || *parameter > f64::from(f32::MAX))
+        {
+            validator.issue(parameter_path, "must fit the finite f32 range");
+        }
     }
 }
 
@@ -762,6 +784,9 @@ fn validate_scene_source(source: &SceneSourceV1, path: &str, validator: &mut Val
 
 fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
     let mut capabilities = BTreeSet::new();
+    if scene.post_effect.is_some() {
+        capabilities.insert(SceneCapabilityV1::ScenePostEffect);
+    }
     for entity in &scene.entities {
         capabilities.insert(match entity.geometry {
             SceneGeometryV1::Group {} => SceneCapabilityV1::LogicalGroup,
@@ -961,6 +986,9 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
     );
     validate_camera_view(&scene.camera.view, "$.camera.view", &mut validator);
     validate_scene_source(&scene.source, "$.source", &mut validator);
+    if let Some(effect) = &scene.post_effect {
+        validate_scene_post_effect(effect, "$.postEffect", &mut validator);
+    }
 
     match &scene.fidelity {
         FidelityV1::Exact {} => {}
@@ -1642,6 +1670,9 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
 
 fn required_render_capabilities(packet: &RenderPacketV1) -> Vec<RenderCapabilityV1> {
     let mut capabilities = BTreeSet::new();
+    if packet.post_effect.is_some() {
+        capabilities.insert(RenderCapabilityV1::ScenePostEffect);
+    }
     for draw in &packet.draws {
         match draw {
             RenderDrawV1::Empty { .. } => {}
@@ -1710,6 +1741,9 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
     }
     for (index, evidence) in packet.evidence.iter().enumerate() {
         validate_evidence(evidence, &format!("$.evidence[{index}]"), &mut validator);
+    }
+    if let Some(effect) = &packet.post_effect {
+        validate_scene_post_effect(effect, "$.postEffect", &mut validator);
     }
 
     validate_coordinate(packet.camera.bottom, "$.camera.bottom", &mut validator);

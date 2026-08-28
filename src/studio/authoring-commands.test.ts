@@ -8,6 +8,7 @@ import {
   createStudioGroupLifetimeTrimProgram,
   createStudioGroupProgram,
   createStudioSceneBackgroundProgram,
+  createStudioScenePostEffectProgram,
   defaultEntityContent,
   duplicateEntityInput,
   replaceStudioCreatedContentProgram,
@@ -15,6 +16,7 @@ import {
   replaceStudioCreatedDataSeriesProgram,
   replaceStudioEntityLifetimeProgram,
   replaceStudioSceneBackgroundProgram,
+  replaceStudioScenePostEffectProgram,
 } from "./authoring-commands";
 import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import { programRecord, projectProposedState } from "./evaluator";
@@ -126,6 +128,46 @@ describe("manual Studio authoring commands", () => {
         transactionId: "scene-background-alpha",
       }),
     ).toThrow(/#rrggbb/u);
+  });
+
+  it("creates, updates, and disables one built-in Scene post-effect Program", () => {
+    const created = createStudioScenePostEffectProgram({
+      capturedPlayhead: 3,
+      effect: { parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" },
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "scene-post-effect",
+    });
+    expect(created.kind, JSON.stringify(created.issues)).toBe("valid");
+    expect(created.program).toMatchObject({
+      anchor: { capturedPlayhead: 3, resolvedSeconds: 3 },
+      loweringStatus: "unsupported",
+      operations: [
+        {
+          effect: { parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" },
+          interval: { end: 3, start: 3 },
+          kind: "SetScenePostEffect",
+        },
+      ],
+    });
+    expect(programExecutionCapabilities(created.program)).toMatchObject({
+      apply: "supported",
+      lowering: "unsupported",
+    });
+
+    const owner = programRecord(created.program, created);
+    const updated = replaceStudioScenePostEffectProgram({
+      effect: { parameters: [8, 1, 0.5, Math.PI], revision: 1, shaderId: "rgb-split" },
+      owner,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(updated.kind, JSON.stringify(updated.issues)).toBe("valid");
+    expect(updated.program.operations[0]).toMatchObject({
+      effect: { parameters: [8, 1, 0.5, Math.PI] },
+      kind: "SetScenePostEffect",
+    });
+    expect(
+      replaceStudioScenePostEffectProgram({ effect: null, owner, scene: STUDIO_FIXTURE_SCENE }).program.operations[0],
+    ).toMatchObject({ effect: null, kind: "SetScenePostEffect" });
   });
 
   it("projects Inspector position and content edits from one canonical program", () => {

@@ -29,6 +29,7 @@ mod fragment_material_wgsl;
 mod gpu;
 mod image_gpu;
 mod prepare;
+mod scene_post_effect_gpu;
 mod thumbnail;
 mod upload;
 
@@ -61,9 +62,9 @@ pub use prepare::{
     PrepareFrameErrorV1, PreparedDrawV1, PreparedFragmentMaterialTextureV1,
     PreparedFragmentMaterialV1, PreparedFrameV1, PreparedGeometryPlanV1, PreparedGeometryVertexV1,
     PreparedImageDrawV1, PreparedImageVertexV1, PreparedMaterialPlanV1, PreparedMaterialV1,
-    PreparedRenderCommandV1, TIME_GRADIENT_SHADER_ID_V1, TIME_GRADIENT_SHADER_REVISION_V1,
-    UnsupportedDrawReasonV1, ValidatedRenderPacketV1, prepare_frame_v1,
-    prepare_frame_with_assets_v1, prepare_frame_with_cache_and_assets_v1,
+    PreparedRenderCommandV1, PreparedScenePostEffectV1, TIME_GRADIENT_SHADER_ID_V1,
+    TIME_GRADIENT_SHADER_REVISION_V1, UnsupportedDrawReasonV1, ValidatedRenderPacketV1,
+    prepare_frame_v1, prepare_frame_with_assets_v1, prepare_frame_with_cache_and_assets_v1,
     prepare_frame_with_cache_assets_and_fragment_materials_v1, prepare_frame_with_cache_v1,
     tessellate_validated_frame_v1, tessellate_validated_frame_with_assets_v1,
     tessellate_validated_frame_with_cache_and_assets_v1,

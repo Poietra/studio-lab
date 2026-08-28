@@ -219,6 +219,7 @@ function remapOperation(operation: SceneEditOperation, offset: number, maps: IdM
       return { ...operation, ...base, at: operation.at + offset };
     case "InsertTimelineEvent":
     case "SetSceneBackground":
+    case "SetScenePostEffect":
     case "AnimateCamera":
       return { ...operation, ...base };
     case "TrimSceneDuration":

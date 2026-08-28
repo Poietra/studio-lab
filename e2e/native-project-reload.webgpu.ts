@@ -286,6 +286,93 @@ async function createBlankWorkspace(page: Page, name: string) {
   return ((await createResponse.json()) as { project: { id: string } }).project.id;
 }
 
+test("applies one Scene-wide RGB split through scrub, history, reload, and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Scene post effect fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    const previewCanvas = canvas.locator("canvas[data-studio-preview-canvas]");
+    const playhead = page.getByRole("slider", { name: "Scene playhead" });
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const waitForNewPresentedRevision = async (previous: string) => {
+      await expect
+        .poll(async () => {
+          if ((await canvas.getAttribute("data-preview-renderer")) !== "presented") return null;
+          const revision = await canvas.getAttribute("data-preview-revision");
+          return revision && revision !== previous ? revision : null;
+        })
+        .not.toBeNull();
+      const revision = await canvas.getAttribute("data-preview-revision");
+      if (!revision) throw new Error("The Scene did not expose its presented revision.");
+      return revision;
+    };
+    const blankRevision = await canvas.getAttribute("data-preview-revision");
+    if (!blankRevision) throw new Error("The blank Scene did not expose its presented revision.");
+
+    await playhead.fill("1");
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const plainRevision = await waitForNewPresentedRevision(blankRevision);
+    await playhead.fill("2");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
+    const plainFrame = await previewCanvas.screenshot();
+
+    await page.getByRole("button", { name: "Enable RGB split" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByText("RGB split", { exact: true })).toBeVisible();
+    const effectRevision = await waitForNewPresentedRevision(plainRevision);
+    const effectFrame = await previewCanvas.screenshot();
+    expect(effectFrame.equals(plainFrame)).toBe(false);
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByRole("button", { name: "Enable RGB split" })).toBeVisible();
+    const undoRevision = await waitForNewPresentedRevision(effectRevision);
+    await playhead.fill("2");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(page.getByText("RGB split", { exact: true })).toBeVisible();
+    await waitForNewPresentedRevision(undoRevision);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Scene post effect fixture workspace" }).click();
+    await expect(page.getByText("RGB split", { exact: true })).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const reloadedEffectRevision = await canvas.getAttribute("data-preview-revision");
+    if (!reloadedEffectRevision) throw new Error("The reloaded RGB split Scene did not expose its revision.");
+
+    await page.getByRole("slider", { name: "RGB split Base offset" }).fill("8");
+    await page.getByRole("slider", { name: "RGB split Amplitude" }).fill("12");
+    await page
+      .getByRole("slider", { name: "RGB split Base offset" })
+      .locator("xpath=ancestor::form")
+      .getByRole("button", { name: "Update" })
+      .click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const updatedEffectRevision = await waitForNewPresentedRevision(reloadedEffectRevision);
+    await playhead.fill("2.25");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.25, 1);
+    await playhead.fill("2.75");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.75, 1);
+
+    const mp4 = await exportLocalMp4(page);
+    const stats = await decodedPixelStats(page, mp4, [2.25, 2.75]);
+    expect(stats[1]?.commonPixelCountFromPrevious ?? 0).toBeGreaterThan(100);
+    expect(stats[1]?.commonColorDifferenceFromPrevious ?? 0).toBeGreaterThan(100);
+
+    await playhead.fill("2");
+    await page.getByRole("button", { name: "Remove" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("button", { name: "Enable RGB split" })).toBeVisible();
+    await waitForNewPresentedRevision(updatedEffectRevision);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("downloads a bounded Manim Scene from Studio-native authoring", async ({ page }) => {
   page.setDefaultTimeout(15_000);
   let projectId: string | null = null;

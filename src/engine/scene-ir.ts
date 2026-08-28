@@ -15,6 +15,7 @@ import {
   normalizedNumberV1Schema,
   POIETRA_ENGINE_CONTRACT_VERSION,
   rgbaColorV1Schema,
+  scenePostEffectV1Schema,
   sha256V1Schema,
   sourceIdentityV1Schema,
   strokeStyleV1Schema,
@@ -370,6 +371,7 @@ export const sceneCapabilityV1Schema = z.enum([
   "path-trim-animation",
   "png-image",
   "shape-primitives",
+  "scene-post-effect",
   "vector-appearance-animation",
 ]);
 
@@ -378,6 +380,7 @@ export const renderCapabilityV1Schema = z.enum([
   "cubic-path-stroke",
   "fragment-material",
   "png-image",
+  "scene-post-effect",
 ]);
 
 const sceneStateSamplingV1Schema = z
@@ -412,6 +415,7 @@ export const sceneIrV1Schema = z
       .min(1)
       .max(MAX_ENTITIES + MAX_CHANNELS),
     requiredCapabilities: z.array(sceneCapabilityV1Schema).max(sceneCapabilityV1Schema.options.length),
+    postEffect: scenePostEffectV1Schema.optional(),
     sceneId: sourceIdentityV1Schema,
     schema: z.literal("poietra.scene-ir"),
     source: sceneSourceV1Schema,

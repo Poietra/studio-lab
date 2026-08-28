@@ -693,8 +693,14 @@ fn sample_camera(
     )
 }
 
-fn render_capabilities(draws: &[RenderDrawV1]) -> Vec<RenderCapabilityV1> {
+fn render_capabilities(
+    draws: &[RenderDrawV1],
+    has_scene_post_effect: bool,
+) -> Vec<RenderCapabilityV1> {
     let mut capabilities = BTreeSet::new();
+    if has_scene_post_effect {
+        capabilities.insert(RenderCapabilityV1::ScenePostEffect);
+    }
     for draw in draws {
         match draw {
             RenderDrawV1::Empty { .. } => {}
@@ -901,7 +907,7 @@ fn compile_render_packet_with_camera_fit_v1(
         },
         compositing: options.scene.compositing,
         coordinate_space: options.scene.coordinate_space.clone(),
-        required_capabilities: render_capabilities(&draws),
+        required_capabilities: render_capabilities(&draws, options.scene.post_effect.is_some()),
         draws,
         evidence: if options.evidence.is_empty() {
             vec!["Poietra reference evaluator v1".to_owned()]
@@ -909,6 +915,7 @@ fn compile_render_packet_with_camera_fit_v1(
             options.evidence.to_vec()
         },
         packet_id: options.packet_id.to_owned(),
+        post_effect: options.scene.post_effect.clone(),
         sample_time: options.sample_time,
         scene_contract_version: ContractVersionV1,
         scene_duration: options.scene.duration,
@@ -1064,6 +1071,7 @@ mod tests {
                 SceneCapabilityV1::OpacityAnimation,
                 SceneCapabilityV1::ShapePrimitives,
             ],
+            post_effect: None,
             scene_id: "scene".to_owned(),
             schema: SceneIrSchemaV1::SceneIr,
             source: SceneSourceV1::StudioEditProgram {
@@ -1110,6 +1118,43 @@ mod tests {
         };
         assert!((*opacity - 0.5).abs() < 1.0e-12);
         assert_eq!(path.subpaths[0].segments.len(), 4);
+    }
+
+    #[test]
+    fn carries_one_scene_post_effect_into_the_sampled_packet() {
+        let (assets, mut scene) = fixture();
+        let effect = poietra_scene_ir::ScenePostEffectV1 {
+            parameters: vec![4.0, 2.0, 1.5, 0.25],
+            revision: poietra_scene_ir::RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+            shader_id: poietra_scene_ir::RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+        };
+        scene.post_effect = Some(effect.clone());
+        scene
+            .required_capabilities
+            .push(SceneCapabilityV1::ScenePostEffect);
+        scene.required_capabilities.sort_unstable();
+
+        let frame = compile_engine_frame_v1(CompileEngineFrameOptionsV1 {
+            assets: &assets,
+            evidence: &[],
+            packet_id: "packet:post-effect",
+            sample_time: 0.75,
+            scene: &scene,
+            viewport: ViewportV1 {
+                height_px: 900,
+                width_px: 1600,
+            },
+        })
+        .unwrap();
+
+        assert_eq!(frame.packet.post_effect, Some(effect));
+        assert_eq!(
+            frame.packet.required_capabilities,
+            vec![
+                RenderCapabilityV1::CubicPathFill,
+                RenderCapabilityV1::ScenePostEffect,
+            ]
+        );
     }
 
     #[test]

@@ -5,8 +5,11 @@ export const MAX_COORDINATE = 1_000_000_000;
 export const MAX_FINITE_F32 = 3.402_823_466_385_288_6e38;
 export const MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 = 8;
 export const MAX_TOTAL_PATH_SEGMENTS = 100_000;
+export const RGB_SPLIT_POST_EFFECT_SHADER_ID = "rgb-split" as const;
+export const RGB_SPLIT_POST_EFFECT_SHADER_REVISION = 1 as const;
 
 export const finiteNumberV1Schema = z.number().finite();
+export const finiteF32V1Schema = finiteNumberV1Schema.min(-MAX_FINITE_F32).max(MAX_FINITE_F32);
 export const coordinateV1Schema = finiteNumberV1Schema.min(-MAX_COORDINATE).max(MAX_COORDINATE);
 export const normalizedNumberV1Schema = finiteNumberV1Schema.min(0).max(1);
 
@@ -110,9 +113,7 @@ export const assetManifestReferenceV1Schema = z
 
 export const fragmentMaterialV1Schema = z
   .object({
-    parameters: z
-      .array(finiteNumberV1Schema.min(-MAX_FINITE_F32).max(MAX_FINITE_F32))
-      .max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1),
+    parameters: z.array(finiteF32V1Schema).max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1),
     revision: z.number().int().positive().max(0xffff_ffff),
     shaderId: opaqueIdV1Schema,
     texture: z
@@ -124,6 +125,16 @@ export const fragmentMaterialV1Schema = z
       .optional(),
   })
   .strict();
+
+export const scenePostEffectV1Schema = z
+  .object({
+    parameters: z.array(finiteF32V1Schema).max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1),
+    revision: z.number().int().positive().max(0xffff_ffff),
+    shaderId: opaqueIdV1Schema,
+  })
+  .strict();
+
+export type ScenePostEffectV1 = z.infer<typeof scenePostEffectV1Schema>;
 
 export const fillStyleV1Schema = z
   .object({

@@ -8,12 +8,14 @@ import {
   type ApplyStudioCreationEditWireCommandV1,
   type ApplyStudioMathTexTransformEditWireCommandV1,
   type ApplyStudioMotionEditWireCommandV1,
+  type ApplyStudioScenePostEffectWireCommandV1,
   type ApplyStudioTimelineEditWireCommandV1,
   createApplyStaticRootTransformEditCompiler,
   createApplyStudioBoundEntityEditCompiler,
   createApplyStudioCreationEditCompiler,
   createApplyStudioMathTexTransformEditCompiler,
   createApplyStudioMotionEditCompiler,
+  createApplyStudioScenePostEffectCompiler,
   createApplyStudioTimelineEditCompiler,
   createProjectStudioCreationCompiler,
   createProjectStudioMathTexTransformCompiler,
@@ -481,6 +483,31 @@ describe("Scene authoring WASM adapter", () => {
     const result = await compile(bundle, creationEditCommand);
     expect(result).toEqual(response);
     expect(calls[1]).toEqual(creationEditCommand);
+  });
+
+  it("forwards the exact built-in Scene post-effect assignment", async () => {
+    const bundle = await fixtureBundle();
+    const command: ApplyStudioScenePostEffectWireCommandV1 = {
+      effect: { parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" },
+      expectedBaseRevision: "a".repeat(64),
+      nextRevision: "b".repeat(64),
+      schema: "poietra.apply-studio-scene-post-effect",
+      version: 1,
+    };
+    const calls: unknown[] = [];
+    const compile = createApplyStudioScenePostEffectCompiler(async () => ({
+      applyStudioScenePostEffectV1: (snapshotJson, commandJson) => {
+        calls.push(JSON.parse(new TextDecoder().decode(commandJson)));
+        const snapshot = JSON.parse(new TextDecoder().decode(snapshotJson));
+        snapshot.scene.postEffect = command.effect;
+        snapshot.scene.requiredCapabilities = [...snapshot.scene.requiredCapabilities, "scene-post-effect"];
+        snapshot.scene.source = { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: "b".repeat(64) };
+        return new TextEncoder().encode(JSON.stringify(snapshot));
+      },
+    }));
+
+    await expect(compile(bundle, command)).resolves.toMatchObject({ scene: { postEffect: command.effect } });
+    expect(calls).toEqual([command]);
   });
 
   it("accepts Arrow in a Studio creation projection", async () => {

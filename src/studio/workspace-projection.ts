@@ -40,6 +40,10 @@ import {
   studioMotionProjectionBatchKind,
 } from "./scene-authoring-wire";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import {
+  recordsWithoutScenePostEffectProgramsV1,
+  withoutScenePostEffectProgramsV1,
+} from "./scene-post-effect-authoring";
 import { type AuthorableWorkspaceScene, studioWorkspaceWorkingState } from "./studio-native-workspace";
 import {
   correlateTimelineProgramBatch,
@@ -90,10 +94,12 @@ export function selectStudioWorkspaceEditAuthority(
   previewRecords: readonly ProgramRecord[],
   authority: StudioEditProjectionAuthority | null,
 ) {
-  if (records.length === 0) return null;
-  if (isSceneDurationProgramBatch(records.map(({ program }) => program))) return null;
-  if (!authority || records.length > previewRecords.length) return undefined;
-  return records.every((record, index) => record === previewRecords[index]) ? authority : undefined;
+  const semanticRecords = recordsWithoutScenePostEffectProgramsV1(records);
+  const semanticPreviewRecords = recordsWithoutScenePostEffectProgramsV1(previewRecords);
+  if (semanticRecords.length === 0) return null;
+  if (isSceneDurationProgramBatch(semanticRecords.map(({ program }) => program))) return null;
+  if (!authority || semanticRecords.length > semanticPreviewRecords.length) return undefined;
+  return semanticRecords.every((record, index) => record === semanticPreviewRecords[index]) ? authority : undefined;
 }
 
 export function selectPersistentRemoveProjection(
@@ -2109,12 +2115,14 @@ export function projectStudioWorkspace(
     timelineProjection?: StudioTimelineProjectionV1 | null;
   }>,
 ) {
-  const workingState = studioWorkspaceWorkingState(input.activeScene, {
+  const editorWorkingState = studioWorkspaceWorkingState(input.activeScene, {
     appliedEdits: input.appliedEdits,
     playhead: input.currentTime,
     selection: input.selectedObjectIds,
     stagedEdits: input.draftEdit ? [input.draftEdit] : [],
   });
+  const records = [...editorWorkingState.appliedEdits, ...editorWorkingState.stagedEdits];
+  const { workingState } = withoutScenePostEffectProgramsV1(editorWorkingState);
   const programs = [...workingState.appliedEdits, ...workingState.stagedEdits].map((record) => record.program);
   const hasStudioNativeAuthoring = programs.some((program) =>
     program.operations.some(isStudioNativeAuthoringBatchOperation),
@@ -2204,6 +2212,11 @@ export function projectStudioWorkspace(
       "The Program batch has no supported Rust workspace projection and cannot be evaluated in TypeScript.",
     );
   }
+  proposedState = {
+    ...proposedState,
+    base: editorWorkingState,
+    programs: records.map((record) => ({ ...record, validation: { issues: [], status: "valid" } })),
+  };
   const projection = projectProposedState(proposedState, input.currentTime);
   const boundary =
     projection.timeline.events

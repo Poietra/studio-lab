@@ -30,7 +30,12 @@ import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragm
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity, StrokeDash, StrokeJoin } from "./model";
-import { studioEntityTypeSupportsStrokeCap, studioEntityTypeSupportsStrokeWidth } from "./scene-edit-contract";
+import {
+  type StudioScenePostEffectV1,
+  studioEntityTypeSupportsStrokeCap,
+  studioEntityTypeSupportsStrokeWidth,
+} from "./scene-edit-contract";
+import { DEFAULT_RGB_SPLIT_POST_EFFECT_V1 } from "./scene-post-effect-authoring";
 import {
   STUDIO_IMAGE_ASSET_DRAG_TYPE,
   type StudioNativeImageAssetV1,
@@ -88,6 +93,106 @@ function NativeImageThumbnail({ asset }: Readonly<{ asset: StudioNativeImageAsse
     <div className="flex size-11 shrink-0 items-center justify-center overflow-hidden border border-zinc-800 bg-zinc-900">
       <img alt={asset.label} className="size-full object-contain" draggable={false} src={source ?? undefined} />
     </div>
+  );
+}
+
+const RGB_SPLIT_PARAMETER_CONTROLS = [
+  { label: "Base offset", max: 32, min: 0, step: 0.5, unit: "px" },
+  { label: "Amplitude", max: 32, min: 0, step: 0.5, unit: "px" },
+  { label: "Speed", max: 5, min: 0, step: 0.1, unit: "Hz" },
+  { label: "Phase", max: Math.PI * 2, min: -Math.PI * 2, step: 0.1, unit: "rad" },
+] as const;
+
+function ScenePostEffectControls({
+  available,
+  effect,
+  onChange,
+  unavailableReason,
+}: Readonly<{
+  available: boolean;
+  effect: StudioScenePostEffectV1 | null;
+  onChange?: (effect: StudioScenePostEffectV1 | null) => void;
+  unavailableReason: string | null;
+}>) {
+  const [parameters, setParameters] = useState<[number, number, number, number]>([
+    ...(effect?.parameters ?? DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters),
+  ] as [number, number, number, number]);
+  useEffect(() => {
+    setParameters([...(effect?.parameters ?? DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters)] as [
+      number,
+      number,
+      number,
+      number,
+    ]);
+  }, [effect]);
+  const disabled = !available || !onChange;
+  if (!effect) {
+    return (
+      <button
+        className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+        disabled={disabled}
+        onClick={() => onChange?.(DEFAULT_RGB_SPLIT_POST_EFFECT_V1)}
+        title={unavailableReason ?? undefined}
+        type="button"
+      >
+        Enable RGB split
+      </button>
+    );
+  }
+  return (
+    <form
+      className="space-y-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onChange?.({ ...effect, parameters });
+      }}
+    >
+      <p className="text-[10px] text-sky-400">RGB split</p>
+      {RGB_SPLIT_PARAMETER_CONTROLS.map((control, index) => (
+        <label className="block" key={control.label}>
+          <span className="flex justify-between gap-2 text-[10px] text-zinc-500">
+            <span>{control.label}</span>
+            <span className="tabular-nums">
+              {parameters[index].toFixed(1)} {control.unit}
+            </span>
+          </span>
+          <input
+            aria-label={`RGB split ${control.label}`}
+            className="mt-1 block w-full accent-sky-500 disabled:opacity-50"
+            disabled={disabled}
+            max={control.max}
+            min={control.min}
+            onChange={(event) => {
+              const next = [...parameters] as [number, number, number, number];
+              next[index] = event.currentTarget.valueAsNumber;
+              setParameters(next);
+            }}
+            step={control.step}
+            type="range"
+            value={parameters[index]}
+          />
+        </label>
+      ))}
+      <div className="flex gap-1">
+        <button
+          className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+          disabled={disabled}
+          title={unavailableReason ?? undefined}
+          type="submit"
+        >
+          Update
+        </button>
+        <button
+          className="h-7 border border-zinc-800 px-1.5 text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+          disabled={disabled}
+          onClick={() => onChange?.(null)}
+          title={unavailableReason ?? undefined}
+          type="button"
+        >
+          Remove
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -234,6 +339,7 @@ export function WorkspaceSidebar({
   onImportSvgFiles,
   onDurationChange,
   onSceneBackgroundChange,
+  onScenePostEffectChange,
   onAddImageAsset,
   onAddSvgAsset,
   onEditAppliedProgram,
@@ -255,6 +361,9 @@ export function WorkspaceSidebar({
   sceneBackgroundAvailable = false,
   sceneBackgroundColor = "#000000",
   sceneBackgroundUnavailableReason = null,
+  scenePostEffect = null,
+  scenePostEffectAvailable = false,
+  scenePostEffectUnavailableReason = null,
   selectedIds,
   selectedGroupId = null,
   sourceImportOutcomes,
@@ -291,6 +400,7 @@ export function WorkspaceSidebar({
   onImportSvgFiles?: (files: readonly File[]) => void;
   onDurationChange: (duration: number) => void;
   onSceneBackgroundChange?: (color: string) => void;
+  onScenePostEffectChange?: (effect: StudioScenePostEffectV1 | null) => void;
   onAddImageAsset?: (asset: StudioNativeImageAssetV1) => void;
   onAddSvgAsset?: (asset: StudioSvgPathAsset) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
@@ -312,6 +422,9 @@ export function WorkspaceSidebar({
   sceneBackgroundAvailable?: boolean;
   sceneBackgroundColor?: string;
   sceneBackgroundUnavailableReason?: string | null;
+  scenePostEffect?: StudioScenePostEffectV1 | null;
+  scenePostEffectAvailable?: boolean;
+  scenePostEffectUnavailableReason?: string | null;
   selectedIds: ReadonlySet<string>;
   selectedGroupId?: string | null;
   sourceImportOutcomes: readonly ManimSourceImportOutcome[];
@@ -1063,6 +1176,15 @@ export function WorkspaceSidebar({
                 Update
               </button>
             </form>
+          </dd>
+          <dt className="text-zinc-600">Post effect</dt>
+          <dd>
+            <ScenePostEffectControls
+              available={scenePostEffectAvailable}
+              effect={scenePostEffect}
+              onChange={onScenePostEffectChange}
+              unavailableReason={scenePostEffectUnavailableReason}
+            />
           </dd>
           <dt className="text-zinc-600">Anchors</dt>
           <dd className="tabular-nums text-zinc-400">

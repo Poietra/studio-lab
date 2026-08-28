@@ -1,11 +1,25 @@
 import { z } from "zod";
 import { studioCubicBezierPathSchema, studioCubicBezierSpecSchema } from "../engine/cubic-bezier-authoring";
-import { assetReferenceV1Schema, fragmentMaterialV1Schema } from "../engine/primitives";
+import {
+  assetReferenceV1Schema,
+  finiteF32V1Schema,
+  fragmentMaterialV1Schema,
+  RGB_SPLIT_POST_EFFECT_SHADER_ID,
+  RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+} from "../engine/primitives";
 import { studioPropertyKeyframeEasingSchema } from "../engine/scene-authoring";
 import { styleProfileRefSchema } from "./style-profile";
 
 export const SCENE_EDIT_VERSION = 1 as const;
 export const canonicalRgbHexSchema = z.string().regex(/^#[0-9a-f]{6}$/u);
+export const studioScenePostEffectV1Schema = z
+  .object({
+    parameters: z.tuple([finiteF32V1Schema, finiteF32V1Schema, finiteF32V1Schema, finiteF32V1Schema]),
+    revision: z.literal(RGB_SPLIT_POST_EFFECT_SHADER_REVISION),
+    shaderId: z.literal(RGB_SPLIT_POST_EFFECT_SHADER_ID),
+  })
+  .strict();
+export type StudioScenePostEffectV1 = z.infer<typeof studioScenePostEffectV1Schema>;
 
 export function isCanonicalRgbHex(value: unknown): value is string {
   return canonicalRgbHexSchema.safeParse(value).success;
@@ -285,6 +299,10 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   operationBaseSchema.extend({
     color: canonicalRgbHexSchema,
     kind: z.literal("SetSceneBackground"),
+  }),
+  operationBaseSchema.extend({
+    effect: studioScenePostEffectV1Schema.nullable(),
+    kind: z.literal("SetScenePostEffect"),
   }),
   operationBaseSchema.extend({
     easing: z.enum(["linear", "smooth"]),

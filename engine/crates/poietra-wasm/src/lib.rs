@@ -43,10 +43,10 @@ pub use authoring::{
     apply_static_root_transform_edit_v1, apply_studio_bound_entity_edit_v1,
     apply_studio_creation_edit_v1, apply_studio_fragment_materials_v1,
     apply_studio_math_tex_transform_edit_v1, apply_studio_motion_edit_v1,
-    apply_studio_timeline_edit_v1, inspect_studio_cubic_bezier_v1,
-    inspect_studio_svg_path_asset_v1, project_studio_creation_edit_v1,
-    project_studio_math_tex_transform_v1, project_studio_motion_edit_v1,
-    project_studio_timeline_v1,
+    apply_studio_scene_post_effect_v1, apply_studio_timeline_edit_v1,
+    inspect_studio_cubic_bezier_v1, inspect_studio_svg_path_asset_v1,
+    project_studio_creation_edit_v1, project_studio_math_tex_transform_v1,
+    project_studio_motion_edit_v1, project_studio_timeline_v1,
 };
 
 pub use browser_export_protocol::MAX_BROWSER_EXPORT_PROGRESS_JSON_BYTES_V1;
@@ -75,9 +75,9 @@ pub use canvas::PoietraCanvasEngineV1;
 pub use export_encoder::{PoietraExportEncoderSessionV1, probe_export_encoder_h264_v1};
 
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
-pub const POIETRA_ENGINE_ABI_VERSION: u32 = 38;
+pub const POIETRA_ENGINE_ABI_VERSION: u32 = 39;
 /// `OffscreenCanvas` render ABI version, independent of worker packet sampling.
-pub const POIETRA_CANVAS_ABI_VERSION: u32 = 8;
+pub const POIETRA_CANVAS_ABI_VERSION: u32 = 9;
 
 /// Returns the worker ABI version before a session is constructed.
 #[must_use]
@@ -186,8 +186,8 @@ mod tests {
 
     #[test]
     fn exported_abi_versions_are_explicit() {
-        assert_eq!(poietra_engine_abi_version(), 38);
-        assert_eq!(poietra_canvas_abi_version(), 8);
+        assert_eq!(poietra_engine_abi_version(), 39);
+        assert_eq!(poietra_canvas_abi_version(), 9);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
         assert_eq!(poietra_export_encoder_abi_version(), 1);
         assert_eq!(poietra_export_verify_abi_version(), 1);

@@ -16,6 +16,7 @@ pub use authoring::{
     ApplyStudioFragmentMaterialsCommand, ApplyStudioFragmentMaterialsError,
     ApplyStudioMathTexTransformEditCommand, ApplyStudioMathTexTransformEditError,
     ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioPersistentRemoveError,
+    ApplyStudioScenePostEffectCommand, ApplyStudioScenePostEffectError,
     ApplyStudioTimelineEditCommand, ApplyStudioTimelineEditError, CreateSceneEntitiesError,
     MAX_STUDIO_SVG_SOURCE_BYTES, ProjectStudioCreationEditError, ProjectStudioMotionEditCommand,
     ProjectStudioMotionEditError, SceneEditAnchorSource, SceneEditExecution, SceneEditScheduleMode,

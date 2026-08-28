@@ -1741,6 +1741,26 @@ export const OPERATION_REGISTRY = {
       return issues;
     },
   } satisfies Capability<"SetSceneBackground">,
+  SetScenePostEffect: {
+    access: () => ({
+      reads: [{ channel: "scenePostEffect", entityId: "scene" }],
+      writes: [{ channel: "scenePostEffect", entityId: "scene" }],
+    }),
+    execution: () => CLIENT_ONLY_EXECUTION,
+    validate: (operation, scene) => {
+      const issues = [...baseIssues(operation, scene)];
+      if (operation.interval.start !== operation.interval.end || operation.provenance.origin !== "studio-default") {
+        issues.push({
+          code: "schema-invalid",
+          field: "postEffect",
+          message: "A Scene post effect must be one Studio Scene-graph setting without a Timeline duration.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      return issues;
+    },
+  } satisfies Capability<"SetScenePostEffect">,
   AnimateCamera: {
     access: () => ({
       reads: [{ channel: "camera", entityId: "camera" }],

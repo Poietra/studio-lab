@@ -1086,6 +1086,7 @@ mod tests {
                 origin: ProvenanceOriginV1::Fixture,
             }],
             required_capabilities,
+            post_effect: None,
             scene_id: "scene".to_owned(),
             schema: SceneIrSchemaV1::SceneIr,
             source: SceneSourceV1::StudioEditProgram {
