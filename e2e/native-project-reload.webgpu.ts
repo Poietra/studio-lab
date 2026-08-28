@@ -685,6 +685,31 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(penDrawClip).toHaveCount(0);
     await page.getByRole("button", { name: "Close path" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveValue("#ffffff");
+    await page.getByRole("button", { name: "Reopen path" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Close path" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await page.getByRole("button", { name: "Reopen path" }).click();
+    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+    await page.getByRole("button", { name: "Replace program" }).click();
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open SVG path fixture workspace" }).click();
+    await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
+    await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
+    await page.getByRole("button", { name: "Close path" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     await page.getByRole("checkbox", { name: "Select CubicBezier" }).check();
     const restoredPenFill = page.getByLabel("Fill color CubicBezier");
