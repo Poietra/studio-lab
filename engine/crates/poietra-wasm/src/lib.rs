@@ -143,6 +143,18 @@ pub fn compile_fragment_material_glsl(source: &str, entry_point: &str) -> Result
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
+/// Compiles one bounded Vulkan GLSL 450 Scene post effect to canonical WGSL.
+///
+/// # Errors
+///
+/// Returns a line/column diagnostic when parsing, validation, or the fixed
+/// Scene post-effect ABI check fails.
+#[wasm_bindgen(js_name = compileScenePostEffectGlsl)]
+pub fn compile_scene_post_effect_glsl(source: &str, entry_point: &str) -> Result<String, JsValue> {
+    poietra_render_wgpu::compile_scene_post_effect_glsl(source, entry_point)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
 /// Opaque WASM handle owned by one dedicated browser worker.
 #[wasm_bindgen]
 #[derive(Debug)]
@@ -187,6 +199,20 @@ impl PoietraEngineSessionV1 {
 mod tests {
     use super::*;
 
+    const SCENE_POST_EFFECT_GLSL: &str = r"#version 450
+layout(location = 0) out vec4 output_color;
+layout(set = 0, binding = 0, std140) uniform PoietraHost {
+    vec4 viewport_and_time;
+    vec4 parameters_0;
+    vec4 parameters_1;
+} host;
+layout(set = 0, binding = 1) uniform texture2D scene_texture;
+void main() {
+    output_color = texelFetch(scene_texture, ivec2(gl_FragCoord.xy), 0)
+        + vec4(host.parameters_0.xyz, 0.0);
+}
+";
+
     #[test]
     fn exported_abi_versions_are_explicit() {
         assert_eq!(poietra_engine_abi_version(), 40);
@@ -194,5 +220,12 @@ mod tests {
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
         assert_eq!(poietra_export_encoder_abi_version(), 1);
         assert_eq!(poietra_export_verify_abi_version(), 1);
+    }
+
+    #[test]
+    fn exports_the_scene_post_effect_glsl_compiler() {
+        let compiled = compile_scene_post_effect_glsl(SCENE_POST_EFFECT_GLSL, "main").unwrap();
+        assert!(compiled.contains("fn fs_main"));
+        assert!(compiled.contains("textureLoad"));
     }
 }

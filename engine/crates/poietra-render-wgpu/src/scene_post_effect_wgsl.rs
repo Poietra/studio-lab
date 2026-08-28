@@ -18,6 +18,23 @@ fn f32_vec4(module: &naga::Module, ty: naga::Handle<Type>) -> bool {
     )
 }
 
+fn interface_members<'a>(
+    module: &'a naga::Module,
+    ty: naga::Handle<Type>,
+    binding: Option<&'a Binding>,
+) -> Vec<(Option<&'a Binding>, naga::Handle<Type>)> {
+    if let Some(binding) = binding {
+        return vec![(Some(binding), ty)];
+    }
+    match &module.types[ty].inner {
+        TypeInner::Struct { members, .. } => members
+            .iter()
+            .map(|member| (member.binding.as_ref(), member.ty))
+            .collect(),
+        _ => vec![(None, ty)],
+    }
+}
+
 fn host_uniform_matches(module: &naga::Module, variable: &naga::GlobalVariable) -> bool {
     if variable.space != AddressSpace::Uniform {
         return false;
@@ -89,16 +106,24 @@ pub(crate) fn validate_scene_post_effect_wgsl(source: &str) -> Result<(), String
     for entry_point in &module.entry_points {
         match (entry_point.stage, entry_point.name.as_str()) {
             (ShaderStage::Fragment, "fs_main") => {
-                let valid_inputs = entry_point.function.arguments.len() <= 1
-                    && entry_point.function.arguments.iter().all(|argument| {
-                        matches!(
-                            argument.binding,
-                            Some(Binding::BuiltIn(BuiltIn::Position { .. }))
-                        ) && f32_vec4(&module, argument.ty)
+                let inputs = entry_point
+                    .function
+                    .arguments
+                    .iter()
+                    .flat_map(|argument| {
+                        interface_members(&module, argument.ty, argument.binding.as_ref())
+                    })
+                    .collect::<Vec<_>>();
+                let valid_inputs = inputs.len() <= 1
+                    && inputs.iter().all(|(binding, ty)| {
+                        matches!(binding, Some(Binding::BuiltIn(BuiltIn::Position { .. })))
+                            && f32_vec4(&module, *ty)
                     });
                 let valid_output = entry_point.function.result.as_ref().is_some_and(|result| {
-                    matches!(result.binding, Some(Binding::Location { location: 0, .. }))
-                        && f32_vec4(&module, result.ty)
+                    let outputs = interface_members(&module, result.ty, result.binding.as_ref());
+                    outputs.len() == 1
+                        && matches!(outputs[0].0, Some(Binding::Location { location: 0, .. }))
+                        && f32_vec4(&module, outputs[0].1)
                 });
                 if !valid_inputs || !valid_output {
                     return Err(
@@ -139,6 +164,20 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
 }
 ";
 
+    const VALID_STRUCT_INTERFACE: &str = r"
+struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_1: vec4<f32> };
+struct FragmentInput { @builtin(position) position: vec4<f32>, };
+struct FragmentOutput { @location(0) color: vec4<f32>, };
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@fragment fn fs_main(input: FragmentInput) -> FragmentOutput {
+    var output: FragmentOutput;
+    output.color = textureLoad(scene_texture, vec2<i32>(input.position.xy), 0)
+        + host.parameters_0;
+    return output;
+}
+";
+
     #[test]
     fn admits_only_the_fixed_scene_post_effect_abi() {
         assert!(validate_scene_post_effect_wgsl(VALID).is_ok());
@@ -166,5 +205,22 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn admits_naga_struct_wrappers_without_broadening_the_interface() {
+        assert!(validate_scene_post_effect_wgsl(VALID_STRUCT_INTERFACE).is_ok());
+
+        let extra_input = VALID_STRUCT_INTERFACE.replace(
+            "@builtin(position) position: vec4<f32>,",
+            "@builtin(position) position: vec4<f32>, @location(1) extra: vec4<f32>,",
+        );
+        assert!(validate_scene_post_effect_wgsl(&extra_input).is_err());
+
+        let extra_output = VALID_STRUCT_INTERFACE.replace(
+            "@location(0) color: vec4<f32>,",
+            "@location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32,",
+        );
+        assert!(validate_scene_post_effect_wgsl(&extra_output).is_err());
     }
 }

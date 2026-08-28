@@ -29,6 +29,7 @@ mod fragment_material_wgsl;
 mod gpu;
 mod image_gpu;
 mod prepare;
+mod scene_post_effect_glsl;
 mod scene_post_effect_gpu;
 mod scene_post_effect_wgsl;
 mod thumbnail;
@@ -75,6 +76,7 @@ pub use prepare::{
     tessellate_validated_frame_with_cache_assets_and_shader_sources_v1,
     tessellate_validated_frame_with_cache_v1, validate_frame_packet_v1,
 };
+pub use scene_post_effect_glsl::{ScenePostEffectGlslError, compile_scene_post_effect_glsl};
 pub use scene_post_effect_gpu::{
     MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1, ScenePostEffectRegistryErrorV1, ScenePostEffectSourceV1,
     validate_scene_post_effect_source_v1,

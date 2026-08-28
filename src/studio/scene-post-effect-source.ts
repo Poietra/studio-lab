@@ -16,6 +16,14 @@ import {
 export { MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1, PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 };
 
 const diagnosticSchema = z.string().min(1).max(MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1);
+export const scenePostEffectSourceLanguageV1Schema = z.enum(["wgsl", "glsl"]);
+const scenePostEffectEditableSourceV1Schema = z
+  .string()
+  .min(1, "Shader source must not be empty.")
+  .refine(
+    (source) => new TextEncoder().encode(source).byteLength <= MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1,
+    `Scene post-effect source accepts at most ${MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1} UTF-8 bytes.`,
+  );
 const parameterNameSchema = z
   .string()
   .min(1)
@@ -70,8 +78,10 @@ export const scenePostEffectParameterSchemaListV1 = z
 const acceptedScenePostEffectSourceSchemaV1 = z
   .object({
     generation: z.number().int().positive().max(0xffff_ffff),
+    originalGlslSource: scenePostEffectEditableSourceV1Schema.optional(),
     parameterSchema: scenePostEffectParameterSchemaListV1,
     shaderId: z.literal(PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1),
+    /** Canonical WGSL consumed by the renderer registry for every source language. */
     source: scenePostEffectWgslSourceV1Schema,
   })
   .strict();
@@ -80,7 +90,8 @@ const scenePostEffectSourceDraftSchemaV1 = z
   .object({
     diagnostic: diagnosticSchema.nullable(),
     parameterSchema: scenePostEffectParameterSchemaListV1,
-    source: scenePostEffectWgslSourceV1Schema,
+    source: scenePostEffectEditableSourceV1Schema,
+    sourceLanguage: scenePostEffectSourceLanguageV1Schema.default("wgsl"),
   })
   .strict();
 
@@ -101,6 +112,7 @@ export const projectScenePostEffectSourceStateV1Schema = z
 
 export type StudioScenePostEffectParameterV1 = z.infer<typeof scenePostEffectParameterSchemaV1>;
 export type StudioScenePostEffectParameterSchemaV1 = z.infer<typeof scenePostEffectParameterSchemaListV1>;
+export type StudioScenePostEffectSourceLanguageV1 = z.infer<typeof scenePostEffectSourceLanguageV1Schema>;
 export type StudioAcceptedScenePostEffectSourceV1 = z.infer<typeof acceptedScenePostEffectSourceSchemaV1>;
 export type StudioScenePostEffectSourceDraftV1 = z.infer<typeof scenePostEffectSourceDraftSchemaV1>;
 export type StudioScenePostEffectSourceAssetV1 = z.infer<typeof scenePostEffectSourceAssetSchemaV1>;
@@ -167,6 +179,7 @@ export function createStudioScenePostEffectSourceV1(
         diagnostic: null,
         parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
         source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+        sourceLanguage: "wgsl",
       },
     },
   });
@@ -175,21 +188,34 @@ export function createStudioScenePostEffectSourceV1(
 export function acceptStudioScenePostEffectSourceV1(
   state: ProjectScenePostEffectSourceStateV1,
   input: Readonly<{
+    canonicalWgslSource?: string;
     parameterSchema: StudioScenePostEffectParameterSchemaV1;
     source: string;
+    sourceLanguage?: StudioScenePostEffectSourceLanguageV1;
   }>,
 ): ProjectScenePostEffectSourceStateV1 {
   const asset = requireAsset(state);
   const parameterSchema = scenePostEffectParameterSchemaListV1.parse(input.parameterSchema);
-  const source = scenePostEffectWgslSourceV1Schema.parse(input.source);
+  const sourceLanguage = scenePostEffectSourceLanguageV1Schema.parse(input.sourceLanguage ?? "wgsl");
+  const draftSource = scenePostEffectEditableSourceV1Schema.parse(input.source);
+  if (sourceLanguage === "glsl" && input.canonicalWgslSource === undefined) {
+    throw new Error("Accepted GLSL requires the canonical WGSL emitted by the Rust core.");
+  }
+  const source = scenePostEffectWgslSourceV1Schema.parse(
+    sourceLanguage === "glsl" ? input.canonicalWgslSource : draftSource,
+  );
+  const originalGlslSource = sourceLanguage === "glsl" ? draftSource : undefined;
   const currentAccepted = asset.accepted;
   const generation =
-    currentAccepted?.source === source && sameParameterSchema(currentAccepted.parameterSchema, parameterSchema)
+    currentAccepted?.source === source &&
+    currentAccepted.originalGlslSource === originalGlslSource &&
+    sameParameterSchema(currentAccepted.parameterSchema, parameterSchema)
       ? currentAccepted.generation
       : (currentAccepted?.generation ?? 0) + 1;
   if (generation > 0xffff_ffff) throw new Error("The custom Scene post-effect generation is exhausted.");
   const accepted = acceptedScenePostEffectSourceSchemaV1.parse({
     generation,
+    ...(originalGlslSource === undefined ? {} : { originalGlslSource }),
     parameterSchema,
     shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
     source,
@@ -198,7 +224,7 @@ export function acceptStudioScenePostEffectSourceV1(
     ...state,
     asset: {
       accepted,
-      draft: { diagnostic: null, parameterSchema, source },
+      draft: { diagnostic: null, parameterSchema, source: draftSource, sourceLanguage },
     },
   });
 }
@@ -209,9 +235,11 @@ export function rejectStudioScenePostEffectSourceV1(
     diagnostic: string;
     parameterSchema: StudioScenePostEffectParameterSchemaV1;
     source: string;
+    sourceLanguage?: StudioScenePostEffectSourceLanguageV1;
   }>,
 ): ProjectScenePostEffectSourceStateV1 {
   const asset = requireAsset(state);
+  const sourceLanguage = scenePostEffectSourceLanguageV1Schema.parse(input.sourceLanguage ?? "wgsl");
   return parseState({
     ...state,
     asset: {
@@ -220,6 +248,7 @@ export function rejectStudioScenePostEffectSourceV1(
         diagnostic: input.diagnostic,
         parameterSchema: input.parameterSchema,
         source: input.source,
+        sourceLanguage,
       },
     },
   });
