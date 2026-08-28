@@ -1222,10 +1222,42 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     expect(writeIndex).toBeGreaterThan(fillIndex);
     await page.getByRole("button", { name: "Close" }).click();
 
+    await equationFill.fill("#ffffff");
+    await equationFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await expect(page.getByRole("alert")).toContainText("Moved the playhead to the latest safe .py source anchor");
+    await equationFill.fill("#ffffff");
+    await equationFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const gradientPreset = page.getByText("Gradient preset").locator("xpath=../..");
+    await gradientPreset.getByRole("button", { name: "Create & apply" }).click();
+    let equationMaterial = page.getByRole("combobox", { name: "Assigned fragment material" });
+    await expect(equationMaterial).not.toHaveValue("");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open MathTex Write fixture workspace" }).click();
+    await page.getByRole("checkbox", { name: "Select E = mc^2" }).check();
+    writeClip = page.getByRole("button", { name: "Edit E = mc^2 Write entrance" });
+    await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.50s · linear");
+    equationMaterial = page.getByRole("combobox", { name: "Assigned fragment material" });
+    await expect(equationMaterial).not.toHaveValue("");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
     const mp4 = await exportLocalMp4(page);
-    const exportedInkPixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6], "green-dominant");
+    const exportedInkPixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6]);
     expect(exportedInkPixels[1] ?? 0).toBeGreaterThan((exportedInkPixels[0] ?? 0) + 20);
     expect(exportedInkPixels[2] ?? 0).toBeGreaterThan(exportedInkPixels[1] ?? 0);
+    const [blueMaterialPixels = 0] = await decodedBrightPixelCounts(page, mp4, [1.6], "blue-dominant");
+    expect(blueMaterialPixels).toBeGreaterThan(0);
+
+    await equationMaterial.selectOption("");
+    await expect(equationMaterial).toHaveValue("");
+    await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.50s · linear");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await equationFill.fill("#22c55e");
+    await equationFill.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
 
     await scrubEntranceClip(page, writeClip, 1);
     const xPosition = page.getByRole("spinbutton", { name: "X position of E = mc^2" });

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use poietra_scene_ir::{
     AnimationChannelV1, ContractVersionV1, FragmentMaterialV1, KeyframeV1, ProvenanceOriginV1,
@@ -13,6 +13,11 @@ use crate::{EngineSessionV1, EvaluationError};
 enum FragmentMaterialPaintTarget {
     Fill,
     Stroke,
+}
+
+struct ResolvedFragmentMaterialTarget {
+    entity_id: String,
+    paint: FragmentMaterialPaintTarget,
 }
 
 fn fragment_material_paint_target(
@@ -40,6 +45,59 @@ fn fragment_material_paint_target(
         | poietra_scene_ir::SceneGeometryV1::Group {}
         | poietra_scene_ir::SceneGeometryV1::Image { .. } => None,
     }
+}
+
+fn math_tex_write_fill_targets(
+    scene: &poietra_scene_ir::SceneIrV1,
+    root: &poietra_scene_ir::SceneEntityV1,
+    material: Option<&FragmentMaterialV1>,
+) -> Option<Vec<ResolvedFragmentMaterialTarget>> {
+    if material.is_some_and(|material| material.texture.is_some())
+        || !matches!(root.geometry, poietra_scene_ir::SceneGeometryV1::Group {})
+        || !matches!(root.appearance, SceneAppearanceV1::Group { .. })
+    {
+        return None;
+    }
+
+    let prefix = format!("{}/write/", root.id);
+    let mut fragments = BTreeMap::<&str, (bool, Option<String>)>::new();
+    for child in scene
+        .entities
+        .iter()
+        .filter(|entity| entity.parent_id.as_deref() == Some(root.id.as_str()))
+    {
+        let (fragment_id, role) = child.id.strip_prefix(&prefix)?.split_once('/')?;
+        if !fragment_id.starts_with("fragment-") || fragment_id == "fragment-" || role.contains('/')
+        {
+            return None;
+        }
+        let entry = fragments.entry(fragment_id).or_default();
+        match (&child.appearance, role) {
+            (
+                SceneAppearanceV1::Vector {
+                    fill: None,
+                    stroke: Some(_),
+                    ..
+                },
+                "outline",
+            ) if !entry.0 => entry.0 = true,
+            (SceneAppearanceV1::Vector { fill: Some(_), .. }, "fill")
+                if entry.1.replace(child.id.clone()).is_none() => {}
+            _ => return None,
+        }
+    }
+
+    let mut targets = Vec::with_capacity(fragments.len());
+    for (has_outline, fill_id) in fragments.into_values() {
+        if !has_outline {
+            return None;
+        }
+        targets.push(ResolvedFragmentMaterialTarget {
+            entity_id: fill_id?,
+            paint: FragmentMaterialPaintTarget::Fill,
+        });
+    }
+    (!targets.is_empty()).then_some(targets)
 }
 
 fn fragment_material_capability_flags(scene: &poietra_scene_ir::SceneIrV1) -> (bool, bool) {
@@ -203,20 +261,36 @@ pub enum ApplyStudioFragmentMaterialsError {
 fn fragment_material_assignment_targets(
     scene: &poietra_scene_ir::SceneIrV1,
     assignments: &[StudioFragmentMaterialAssignment],
-) -> Result<Vec<FragmentMaterialPaintTarget>, ApplyStudioFragmentMaterialsError> {
-    let mut target_ids = BTreeSet::new();
+) -> Result<Vec<Vec<ResolvedFragmentMaterialTarget>>, ApplyStudioFragmentMaterialsError> {
+    let mut assignment_ids = BTreeSet::new();
+    let mut paint_ids = BTreeSet::<String>::new();
     assignments
         .iter()
         .map(|assignment| {
-            if !target_ids.insert(assignment.entity_id.as_str()) {
+            if !assignment_ids.insert(assignment.entity_id.as_str()) {
                 return Err(ApplyStudioFragmentMaterialsError::UnsupportedTarget);
             }
-            scene
+            let entity = scene
                 .entities
                 .iter()
                 .find(|entity| entity.id == assignment.entity_id)
-                .and_then(fragment_material_paint_target)
-                .ok_or(ApplyStudioFragmentMaterialsError::UnsupportedTarget)
+                .ok_or(ApplyStudioFragmentMaterialsError::UnsupportedTarget)?;
+            let targets = if let Some(paint) = fragment_material_paint_target(entity) {
+                vec![ResolvedFragmentMaterialTarget {
+                    entity_id: entity.id.clone(),
+                    paint,
+                }]
+            } else {
+                math_tex_write_fill_targets(scene, entity, assignment.material.as_ref())
+                    .ok_or(ApplyStudioFragmentMaterialsError::UnsupportedTarget)?
+            };
+            if targets
+                .iter()
+                .any(|target| !paint_ids.insert(target.entity_id.clone()))
+            {
+                return Err(ApplyStudioFragmentMaterialsError::UnsupportedTarget);
+            }
+            Ok(targets)
         })
         .collect()
 }
@@ -250,49 +324,51 @@ impl EngineSessionV1 {
             assets: self.assets().clone(),
             scene: self.scene().clone(),
         };
-        for (assignment, target) in command.assignments.into_iter().zip(targets) {
-            let Some(entity) = candidate
-                .scene
-                .entities
-                .iter_mut()
-                .find(|entity| entity.id == assignment.entity_id)
-            else {
-                return Err(ApplyStudioFragmentMaterialsError::UnsupportedTarget);
-            };
-            let SceneAppearanceV1::Vector { fill, stroke, .. } = &mut entity.appearance else {
-                return Err(ApplyStudioFragmentMaterialsError::UnsupportedTarget);
-            };
-            match target {
-                FragmentMaterialPaintTarget::Fill => fill
-                    .as_mut()
-                    .ok_or(ApplyStudioFragmentMaterialsError::UnsupportedTarget)?
-                    .fragment_material
-                    .clone_from(&assignment.material),
-                FragmentMaterialPaintTarget::Stroke => stroke
-                    .as_mut()
-                    .ok_or(ApplyStudioFragmentMaterialsError::UnsupportedTarget)?
-                    .fragment_material
-                    .clone_from(&assignment.material),
-            }
-            entity.provenance_id.clone_from(&provenance_id);
-            for channel in &mut candidate.scene.animation_channels {
-                let AnimationChannelV1::VectorAppearance {
-                    entity_id,
-                    keyframes,
-                    provenance_id: channel_provenance_id,
-                    ..
-                } = channel
+        for (assignment, targets) in command.assignments.into_iter().zip(targets) {
+            for target in targets {
+                let Some(entity) = candidate
+                    .scene
+                    .entities
+                    .iter_mut()
+                    .find(|entity| entity.id == target.entity_id)
                 else {
-                    continue;
+                    return Err(ApplyStudioFragmentMaterialsError::UnsupportedTarget);
                 };
-                if *entity_id == assignment.entity_id
-                    && apply_fragment_material_to_appearance_keyframes(
+                let SceneAppearanceV1::Vector { fill, stroke, .. } = &mut entity.appearance else {
+                    return Err(ApplyStudioFragmentMaterialsError::UnsupportedTarget);
+                };
+                match target.paint {
+                    FragmentMaterialPaintTarget::Fill => fill
+                        .as_mut()
+                        .ok_or(ApplyStudioFragmentMaterialsError::UnsupportedTarget)?
+                        .fragment_material
+                        .clone_from(&assignment.material),
+                    FragmentMaterialPaintTarget::Stroke => stroke
+                        .as_mut()
+                        .ok_or(ApplyStudioFragmentMaterialsError::UnsupportedTarget)?
+                        .fragment_material
+                        .clone_from(&assignment.material),
+                }
+                entity.provenance_id.clone_from(&provenance_id);
+                for channel in &mut candidate.scene.animation_channels {
+                    let AnimationChannelV1::VectorAppearance {
+                        entity_id,
                         keyframes,
-                        assignment.material.as_ref(),
-                        target,
-                    )
-                {
-                    channel_provenance_id.clone_from(&provenance_id);
+                        provenance_id: channel_provenance_id,
+                        ..
+                    } = channel
+                    else {
+                        continue;
+                    };
+                    if *entity_id == target.entity_id
+                        && apply_fragment_material_to_appearance_keyframes(
+                            keyframes,
+                            assignment.material.as_ref(),
+                            target.paint,
+                        )
+                    {
+                        channel_provenance_id.clone_from(&provenance_id);
+                    }
                 }
             }
         }
@@ -333,7 +409,9 @@ impl EngineSessionV1 {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{BASE_REVISION, NEXT_REVISION, imported_bundle};
+    use super::super::tests::{
+        BASE_REVISION, NEXT_REVISION, imported_bundle, static_imported_bundle,
+    };
     use super::*;
 
     fn assignment() -> StudioFragmentMaterialAssignment {
@@ -570,5 +648,38 @@ mod tests {
                 .into_iter()
                 .all(|candidate| candidate == Some(&material))
         );
+    }
+
+    #[test]
+    fn rejects_an_arbitrary_logical_group() {
+        let mut input = static_imported_bundle();
+        input.scene.compositing = RenderCompositingV1::LinearLight;
+        let target = input
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        target.geometry = poietra_scene_ir::SceneGeometryV1::Group {};
+        target.appearance = SceneAppearanceV1::Group { opacity: 1.0 };
+        input
+            .scene
+            .required_capabilities
+            .push(SceneCapabilityV1::LogicalGroup);
+        input.scene.required_capabilities.sort_unstable();
+        let mut session = EngineSessionV1::new(input).unwrap();
+
+        assert!(matches!(
+            session.apply_studio_fragment_materials(ApplyStudioFragmentMaterialsCommand {
+                assignments: vec![StudioFragmentMaterialAssignment {
+                    entity_id: "later".to_owned(),
+                    material: None,
+                }],
+                expected_base_revision: BASE_REVISION.to_owned(),
+                next_revision: NEXT_REVISION.to_owned(),
+            }),
+            Err(ApplyStudioFragmentMaterialsError::UnsupportedTarget)
+        ));
+        assert_eq!(session.scene().source.revision_hash(), BASE_REVISION);
     }
 }

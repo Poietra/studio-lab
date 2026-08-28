@@ -3200,7 +3200,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.bundle.scene.animationChannels).toBe(snapshot.snapshot.scene.animationChannels);
   });
 
-  it("attaches compiled MathTex outlines to the normalized Rust command", async () => {
+  it("attaches compiled MathTex outlines and sends only the logical root for fragment material assignment", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const texParts = ["\\frac{a}{b}"];
     const creation = createStudioEntitiesProgram({
@@ -3280,7 +3280,17 @@ describe("compileStudioPreviewSceneV1", () => {
     };
     const compilerInputs: string[][] = [];
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
+    const materialCommands: ApplyStudioFragmentMaterialsWireCommandV1[] = [];
     const outline = compiledMathTexResponse();
+    const material = createStudioGradientFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
+    const sceneFragmentMaterials = projectFragmentMaterialsForSceneV1(
+      assignStudioFragmentMaterialV1(material.state, {
+        entityId: creation.entityIds[0]!,
+        sceneId: "studio:circle-scene",
+        shaderId: material.shaderId,
+      }),
+      "studio:circle-scene",
+    );
 
     const result = await compileStudioPreviewSceneV1({
       applyStudioCreationEditCompiler: async (bundle, command) => {
@@ -3328,6 +3338,10 @@ describe("compileStudioPreviewSceneV1", () => {
           creationProjection,
         };
       },
+      applyStudioFragmentMaterialsCompiler: async (bundle, command) => {
+        materialCommands.push(command);
+        return bundle;
+      },
       frame: { height: 9, width: 16 },
       mathTexOutlineCompiler: async (input) => {
         compilerInputs.push([...input]);
@@ -3338,6 +3352,7 @@ describe("compileStudioPreviewSceneV1", () => {
         ...proposedState.base,
         appliedEdits: [programRecord(creation.validation.program, creation.validation)],
       },
+      sceneFragmentMaterials,
       workingRevision: "studio-working-v1:normalized-mathtex",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
@@ -3351,6 +3366,7 @@ describe("compileStudioPreviewSceneV1", () => {
       entity: { id: creation.entityIds[0], kind: "math-tex", lifetimeEnd: null, texParts },
       kind: "create",
     });
+    expect(materialCommands[0]?.assignments.map(({ entityId }) => entityId)).toEqual([creation.entityIds[0]]);
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(result.scene.creationProjection).toEqual(creationProjection);
     expect(result.scene.bundle.scene.entities.find(({ id }) => id === creation.entityIds[0])?.geometry).toEqual({

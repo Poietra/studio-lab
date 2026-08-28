@@ -410,6 +410,7 @@ describe("manual Studio authoring commands", () => {
     const withWrite = replaceWriteInProgram({
       baseProgram: creation.validation.program,
       entityId,
+      fragmentMaterial: null,
       scene: STUDIO_FIXTURE_SCENE,
       write: { easing: "linear", end: 2.5 },
     });

@@ -7365,6 +7365,126 @@ fn normalized_math_tex_write_root_can_join_a_logical_group() {
     }));
 }
 
+fn write_fill_materials_match(
+    scene: &poietra_scene_ir::SceneIrV1,
+    root_id: &str,
+    expected: Option<&FragmentMaterialV1>,
+) -> bool {
+    let entities = scene.entities.iter().filter_map(|entity| {
+        (entity.parent_id.as_deref() == Some(root_id) && entity.id.ends_with("/fill")).then(|| {
+            match &entity.appearance {
+                SceneAppearanceV1::Vector {
+                    fill: Some(fill), ..
+                } => fill.fragment_material.as_ref(),
+                _ => None,
+            }
+        })
+    });
+    let keyframes = scene
+        .animation_channels
+        .iter()
+        .flat_map(|channel| match channel {
+            AnimationChannelV1::VectorAppearance {
+                entity_id,
+                keyframes,
+                ..
+            } if entity_id.starts_with(root_id) && entity_id.ends_with("/fill") => keyframes
+                .iter()
+                .map(|keyframe| {
+                    keyframe
+                        .value
+                        .fill
+                        .as_ref()
+                        .and_then(|fill| fill.fragment_material.as_ref())
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        });
+    let materials = entities.chain(keyframes).collect::<Vec<_>>();
+    !materials.is_empty() && materials.into_iter().all(|candidate| candidate == expected)
+}
+
+#[test]
+fn math_tex_write_root_material_targets_fill_phase_and_unassigns() {
+    let mut bundle = static_imported_bundle();
+    bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+    let root_id = "tx:create/entity:circle";
+    let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+    session
+        .apply_studio_creation_edit(studio_math_tex_write_creation_command(&bundle))
+        .unwrap();
+    let material = FragmentMaterialV1 {
+        parameters: vec![0.4],
+        revision: 1,
+        shader_id: "project-write-material".to_owned(),
+        texture: None,
+    };
+    const ASSIGNED_REVISION: &str =
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    let assigned = session
+        .apply_studio_fragment_materials(ApplyStudioFragmentMaterialsCommand {
+            assignments: vec![StudioFragmentMaterialAssignment {
+                entity_id: root_id.to_owned(),
+                material: Some(material.clone()),
+            }],
+            expected_base_revision: NEXT_REVISION.to_owned(),
+            next_revision: ASSIGNED_REVISION.to_owned(),
+        })
+        .unwrap();
+    assert!(write_fill_materials_match(
+        &assigned.scene,
+        root_id,
+        Some(&material)
+    ));
+    assert!(
+        assigned
+            .scene
+            .animation_channels
+            .iter()
+            .any(|channel| matches!(
+                channel,
+                AnimationChannelV1::PathTrim { entity_id, .. }
+                    if entity_id.starts_with(root_id) && entity_id.ends_with("/outline")
+            ))
+    );
+
+    let texture_material = FragmentMaterialV1 {
+        texture: Some(Box::new(poietra_scene_ir::FragmentMaterialTextureV1 {
+            asset: AssetReferenceV1 {
+                asset_id: "texture".to_owned(),
+                sha256: "a".repeat(64),
+            },
+            sampler: ImageSamplerV1::Linear,
+        })),
+        ..material.clone()
+    };
+    assert!(matches!(
+        session.apply_studio_fragment_materials(ApplyStudioFragmentMaterialsCommand {
+            assignments: vec![StudioFragmentMaterialAssignment {
+                entity_id: root_id.to_owned(),
+                material: Some(texture_material),
+            }],
+            expected_base_revision: ASSIGNED_REVISION.to_owned(),
+            next_revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_owned(),
+        }),
+        Err(crate::authoring::ApplyStudioFragmentMaterialsError::UnsupportedTarget)
+    ));
+
+    let unassigned = session
+        .apply_studio_fragment_materials(ApplyStudioFragmentMaterialsCommand {
+            assignments: vec![StudioFragmentMaterialAssignment {
+                entity_id: root_id.to_owned(),
+                material: None,
+            }],
+            expected_base_revision: ASSIGNED_REVISION.to_owned(),
+            next_revision: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+                .to_owned(),
+        })
+        .unwrap();
+    assert!(write_fill_materials_match(&unassigned.scene, root_id, None));
+}
+
 #[test]
 fn normalized_math_tex_write_rejects_wrong_artifacts_and_conflicting_entrances() {
     let bundle = static_imported_bundle();

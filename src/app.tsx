@@ -1858,6 +1858,12 @@ export function App({
       const owner = previewAppliedEdits.find(({ program }) =>
         program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
       );
+      const assignment = activeSceneFragmentMaterials.assignments[entityId];
+      const materialSource = assignment
+        ? activeSceneFragmentMaterials.registry.materials.find(
+            (material) => material.shaderId === assignment.shaderId && material.revision === assignment.revision,
+          )
+        : null;
       const hasExternalMaterialAnimation = previewAppliedEdits.some(({ program }) =>
         program.operations.some(
           (operation) =>
@@ -1873,11 +1879,17 @@ export function App({
           ? "Apply or discard the current draft before adding Write."
           : canonicalGroupedChildIds.has(entityId)
             ? "Write currently supports only ungrouped root objects."
-            : activeSceneFragmentMaterials.assignments[entityId]
-              ? "Remove the object's fragment material before adding Write."
+            : assignment && !materialSource
+              ? "The assigned fragment material is unavailable. Reassign it before adding Write."
               : hasExternalMaterialAnimation
                 ? "Remove the object's material animation before adding Write."
-                : writeInUnavailableReason(owner.program, entityId);
+                : writeInUnavailableReason(owner.program, entityId, {
+                    fragmentMaterial: assignment
+                      ? {
+                          texture: assignment.texture !== undefined || materialSource?.textureSlot === "texture2d",
+                        }
+                      : null,
+                  });
       return [entityId, reason] as const;
     }),
   );
@@ -2480,6 +2492,7 @@ export function App({
   const transformTrackPrograms = previewAppliedEdits.map(({ program }) => program);
   const materialParameterOptions: readonly StudioMaterialParameterTimelineOption[] = workspaceCreationProjection
     ? Object.entries(activeSceneFragmentMaterials.assignments).flatMap(([entityId, assignment]) => {
+        if (sceneProgramsHaveWriteIn(previewAppliedSceneEdits, entityId)) return [];
         const owner = previewAppliedEdits.find(({ program }) =>
           program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId),
         );
@@ -4139,9 +4152,21 @@ export function App({
       return false;
     }
     try {
+      const assignment = activeSceneFragmentMaterials.assignments[entityId];
+      const materialSource = assignment
+        ? activeSceneFragmentMaterials.registry.materials.find(
+            (material) => material.shaderId === assignment.shaderId && material.revision === assignment.revision,
+          )
+        : null;
+      if (write && assignment && !materialSource) {
+        throw new Error("The assigned fragment material is unavailable. Reassign it before editing Write.");
+      }
       const validation = replaceWriteInProgram({
         baseProgram,
         entityId,
+        fragmentMaterial: assignment
+          ? { texture: assignment.texture !== undefined || materialSource?.textureSlot === "texture2d" }
+          : null,
         scene: projectedEditorScene.runtimeSceneState,
         write,
       });
@@ -4168,11 +4193,6 @@ export function App({
     const owner = studioCreationProgramOwner(entityId);
     if (!owner || !projectedEditorScene) {
       setDraftError("Write supports only eligible Studio-created MathTex objects.");
-      return;
-    }
-    const unavailable = writeInUnavailableReason(owner.record.program, entityId);
-    if (unavailable) {
-      setDraftError(unavailable);
       return;
     }
     const create = owner.record.program.operations.find(
@@ -5922,6 +5942,10 @@ export function App({
   }
 
   function addMaterialParameterKeyframe(entityId: string, name: string) {
+    if (sceneProgramsHaveWriteIn(previewAppliedSceneEdits, entityId)) {
+      setDraftError("Material parameter keyframes do not support Write. Remove Write before adding this track.");
+      return;
+    }
     const owner = studioCreationProgramOwner(entityId);
     const assignment = activeSceneFragmentMaterials.assignments[entityId];
     const schema = assignment ? activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId] : null;
@@ -9513,7 +9537,15 @@ export function App({
   ): string | null => {
     if (!selectedFragmentMaterialEntity) return null;
     if (sceneProgramsHaveWriteIn(previewAppliedSceneEdits, selectedFragmentMaterialEntity.id)) {
-      return "Remove Write before assigning a fragment material to this object.";
+      const owner = previewAppliedEdits.find(({ program }) =>
+        program.operations.some(
+          (operation) => operation.kind === "CreateEntity" && operation.entity.id === selectedFragmentMaterialEntity.id,
+        ),
+      );
+      if (!owner) return "Write supports only Studio-created objects.";
+      return writeInUnavailableReason(owner.program, selectedFragmentMaterialEntity.id, {
+        fragmentMaterial: { texture: material.textureSlot === "texture2d" },
+      });
     }
     if (!sceneProgramsHaveDrawIn(previewAppliedSceneEdits, selectedFragmentMaterialEntity.id)) return null;
     const owner = previewAppliedEdits.find(({ program }) =>
