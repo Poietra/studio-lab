@@ -1369,6 +1369,80 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
   }
 });
 
+test("keeps a material through one Studio MathTex Write and Transform", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "MathTex Write Transform material fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert equation/ }).click();
+    await page.getByRole("textbox", { name: "MathTex" }).fill("E = mc^2");
+    await canvas.click({ position: { x: 400, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await page.getByRole("button", { name: "Add Write entrance for E = mc^2" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+
+    await page
+      .getByText("Gradient preset")
+      .locator("xpath=../..")
+      .getByRole("button", { name: "Create & apply" })
+      .click();
+    await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    await page.getByLabel("Cool material color").fill("#0000ff");
+    await page.getByLabel("Warm material color").fill("#0000ff");
+
+    await page
+      .getByRole("textbox", { name: /MathTex transform target of/ })
+      .fill(String.raw`\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}`);
+    await page.getByRole("spinbutton", { name: /MathTex transform duration of/ }).fill("1");
+    await page.getByRole("button", { name: "Create Transform clip" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open MathTex Write Transform material fixture workspace" }).click();
+    const writeClip = page.getByRole("button", { name: "Edit E = mc^2 Write entrance" });
+    const transformClip = page.locator("[data-mathtex-transform-clip]");
+    await expect(writeClip).toBeVisible();
+    await expect(transformClip).toHaveCount(1);
+    await scrubEntranceClip(page, transformClip, 1);
+    await page.getByRole("checkbox", { name: /Select \\nabla/ }).check();
+    const material = page.getByRole("combobox", { name: "Assigned fragment material" });
+    await expect(material).not.toHaveValue("");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const sampleTimes = await Promise.all([
+      entranceClipTime(page, writeClip, 0),
+      entranceClipTime(page, writeClip, 0.5),
+      entranceClipTime(page, transformClip, 0.5),
+      entranceClipTime(page, transformClip, 1),
+    ]);
+    const mp4 = await exportLocalMp4(page);
+    const pixels = await decodedBrightPixelCounts(page, mp4, sampleTimes);
+    const materialPixels = await decodedBrightPixelCounts(
+      page,
+      mp4,
+      [sampleTimes[1]!, sampleTimes[3]!],
+      "blue-dominant",
+    );
+    expect((pixels[1] ?? 0) - (pixels[0] ?? 0)).toBeGreaterThan(10);
+    expect(Math.abs((pixels[2] ?? 0) - (pixels[3] ?? 0))).toBeGreaterThan(10);
+    expect(materialPixels[0] ?? 0).toBeGreaterThan(0);
+    expect(materialPixels[1] ?? 0).toBeGreaterThan(0);
+
+    await material.selectOption("");
+    await expect(material).toHaveValue("");
+    await expect(writeClip).toBeVisible();
+    await expect(transformClip).toHaveCount(1);
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("morphs one Studio MathTex A-to-B-to-A through reload and MP4 export", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(10_000);
