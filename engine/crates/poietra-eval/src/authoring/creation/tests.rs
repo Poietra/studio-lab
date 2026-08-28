@@ -515,6 +515,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 stroke_dash: None,
                 stroke_join: None,
                 stroke_width_world: None,
+                text_morph: None,
                 instant_transform: None,
                 visible: true,
                 write_in: None,
@@ -552,6 +553,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 stroke_dash: None,
                 stroke_join: None,
                 stroke_width_world: None,
+                text_morph: None,
                 instant_transform: Some(CreateSceneEntityInstantTransform {
                     at: 1.25,
                     position: PointV1 { x: -1.0, y: 0.5 },
@@ -593,6 +595,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                 stroke_cap: None,
                 stroke_dash: None,
                 stroke_join: None,
+                text_morph: None,
                 stroke_width_world: None,
                 instant_transform: None,
                 visible: true,
@@ -1628,7 +1631,7 @@ fn studio_math_tex_transform_program(
             },
             kind: StudioCreationOperationKind::TransformContent {
                 easing: StudioPropertyEasing::Smooth,
-                replacement,
+                replacement: StudioContentReplacement::MathTex(replacement),
                 source_entity_id: source_entity_id.to_owned(),
                 strategy: StudioMathTexTransformStrategy::ReplacementTransform,
                 target_entity_id: target_entity_id.to_owned(),
@@ -1895,13 +1898,31 @@ fn studio_text_creation_command(
         entity.tex_parts = None;
         entity.id.clone()
     };
-    let path = mathtex_fixture_path();
+    let seed = mathtex_fixture_path().subpaths[0].clone();
+    let fragments = text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .enumerate()
+        .map(|(order, character)| StudioCreationTextOutlineFragment {
+            order: u32::try_from(order).unwrap(),
+            path: CubicPathV1 {
+                subpaths: vec![seed.clone()],
+            },
+            source_correlation: super::super::StudioTextOutlineSourceCorrelation {
+                key: character.to_string(),
+                kind: super::super::StudioTextOutlineSourceCorrelationKind::NfcScalar,
+            },
+        })
+        .collect::<Vec<_>>();
+    let path = CubicPathV1 {
+        subpaths: fragments
+            .iter()
+            .flat_map(|fragment| fragment.path.subpaths.clone())
+            .collect(),
+    };
     command.text_outlines = vec![StudioCreationTextOutline {
         entity_id,
-        fragments: vec![StudioCreationTextOutlineFragment {
-            order: 0,
-            path: path.clone(),
-        }],
+        fragments,
         layout: StudioTextLayout::default(),
         path,
         text: text.to_owned(),
@@ -1925,26 +1946,136 @@ fn studio_text_write_creation_command(
 
     let outline = &mut command.text_outlines[0];
     outline.layout.font_size = 1.5;
-    let split = outline.path.subpaths.len() / 2;
-    assert!(split > 0 && split < outline.path.subpaths.len());
-    outline.fragments = outline
-        .path
-        .subpaths
-        .chunks(split)
-        .enumerate()
-        .map(|(order, subpaths)| StudioCreationTextOutlineFragment {
-            order: u32::try_from(order).unwrap(),
-            path: CubicPathV1 {
-                subpaths: subpaths.to_vec(),
-            },
-        })
-        .collect();
     let StudioCreationOperationKind::Create { entity } =
         &mut command.programs[0].operations[0].kind
     else {
         unreachable!();
     };
-    entity.layout = Some(outline.layout.clone());
+    entity.layout = Some(outline.layout);
+    command
+}
+
+fn text_outline_for_transform(
+    entity_id: &str,
+    content: &StudioTextContent,
+    path_scale: f64,
+) -> StudioCreationTextOutline {
+    let seed = scale_cubic_path(
+        &CubicPathV1 {
+            subpaths: vec![mathtex_fixture_path().subpaths[0].clone()],
+        },
+        path_scale,
+    );
+    let fragments = content
+        .text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .enumerate()
+        .map(|(order, character)| {
+            let order = u32::try_from(order).unwrap();
+            StudioCreationTextOutlineFragment {
+                order,
+                path: scale_cubic_path(&seed, 1.0 + f64::from(order) * 0.05),
+                source_correlation: super::super::StudioTextOutlineSourceCorrelation {
+                    key: character.to_string(),
+                    kind: super::super::StudioTextOutlineSourceCorrelationKind::NfcScalar,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    StudioCreationTextOutline {
+        entity_id: entity_id.to_owned(),
+        path: CubicPathV1 {
+            subpaths: fragments
+                .iter()
+                .flat_map(|fragment| fragment.path.subpaths.clone())
+                .collect(),
+        },
+        fragments,
+        layout: content.layout,
+        text: content.text.clone(),
+    }
+}
+
+fn studio_text_transform_program(
+    transaction_id: &str,
+    root_entity_id: &str,
+    source_entity_id: &str,
+    target_entity_id: &str,
+    replacement: StudioTextContent,
+) -> StudioCreationEditInput {
+    let operation_id = format!("transform-{transaction_id}");
+    StudioCreationEditInput {
+        anchor_captured_playhead: 0.5,
+        anchor_resolved_seconds: 0.5,
+        anchor_source: SceneEditAnchorSource::Playhead {
+            reference_seconds: Some(0.5),
+        },
+        intent_count: 1,
+        lowering_supported: false,
+        operations: vec![StudioCreationOperation {
+            depends_on: vec![],
+            entity_id: Some(root_entity_id.to_owned()),
+            id: operation_id.clone(),
+            interval: IntervalV1 {
+                end: 1.0,
+                start: 0.5,
+            },
+            kind: StudioCreationOperationKind::TransformContent {
+                easing: StudioPropertyEasing::Smooth,
+                replacement: StudioContentReplacement::Text(replacement),
+                source_entity_id: source_entity_id.to_owned(),
+                strategy: StudioMathTexTransformStrategy::ReplacementTransform,
+                target_entity_id: target_entity_id.to_owned(),
+                target_type: Some("Text".to_owned()),
+            },
+            origin: StudioAuthoringOrigin::DirectManipulation,
+        }],
+        origin: StudioAuthoringOrigin::DirectManipulation,
+        requested_execution: SceneEditExecution::Sequence,
+        schedule_edge_count: 0,
+        schedule_mode: SceneEditScheduleMode::Sequence,
+        schedule_order: vec![operation_id],
+        transaction_id: transaction_id.to_owned(),
+    }
+}
+
+fn studio_text_write_transform_chain_command(
+    bundle: &SceneIrBundleV1,
+) -> ApplyStudioCreationEditCommand {
+    let mut command = studio_text_write_creation_command(bundle, "AAB");
+    let root_id = "tx:create/entity:circle";
+    let middle_id = "tx:text-middle/entity:text";
+    let final_id = "tx:text-final/entity:text";
+    let layout = command.text_outlines[0].layout;
+    let middle = StudioTextContent {
+        layout,
+        text: "ACA".to_owned(),
+    };
+    let final_content = StudioTextContent {
+        layout,
+        text: "CAA".to_owned(),
+    };
+    command
+        .text_outlines
+        .push(text_outline_for_transform(middle_id, &middle, 1.1));
+    command
+        .text_outlines
+        .push(text_outline_for_transform(final_id, &final_content, 1.2));
+    command.programs.push(studio_text_transform_program(
+        "text-middle",
+        root_id,
+        root_id,
+        middle_id,
+        middle,
+    ));
+    command.programs.push(studio_text_transform_program(
+        "text-final",
+        root_id,
+        middle_id,
+        final_id,
+        final_content,
+    ));
     command
 }
 
@@ -10809,17 +10940,100 @@ fn normalized_text_write_reuses_the_segmented_write_materializer() {
             .filter(|id| id.starts_with(root_id))
             .collect::<Vec<_>>()
     };
-    assert_eq!(
-        draw_ids(&session, 0.6),
-        vec![format!("{root_id}/write/fragment-0000/outline")]
-    );
+    let early = draw_ids(&session, 0.6);
+    assert!(early.contains(&format!("{root_id}/write/fragment-0000/outline")));
+    assert!(early.iter().all(|id| id.ends_with("/outline")));
     assert_eq!(
         draw_ids(&session, 1.5),
-        vec![
-            format!("{root_id}/write/fragment-0000/fill"),
-            format!("{root_id}/write/fragment-0001/fill"),
-        ]
+        (0.."Write me"
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .count())
+            .map(|order| format!("{root_id}/write/fragment-{order:04}/fill"))
+            .collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn normalized_text_write_matches_repeated_glyphs_across_a_b_c_in_reading_order() {
+    let bundle = static_imported_bundle();
+    let command = studio_text_write_transform_chain_command(&bundle);
+    let root_id = "tx:create/entity:circle";
+    let projection =
+        project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+    assert_eq!(
+        projection
+            .mutations
+            .iter()
+            .filter(|mutation| matches!(
+                mutation.kind,
+                StudioCreationProjectedMutationKind::TextTransform { .. }
+            ))
+            .count(),
+        2
+    );
+
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    let scene = &result.bundle.scene;
+    let initial_a = format!("{root_id}/write/fragment-0000/fill");
+    let removed_b = format!("{root_id}/write/fragment-0002/fill");
+    let inserted_c = format!("{root_id}/text-transform/0000/fragment-0001/fill");
+    let path_channels = scene
+        .animation_channels
+        .iter()
+        .filter_map(|channel| match channel {
+            AnimationChannelV1::PathMorph {
+                entity_id,
+                keyframes,
+                ..
+            } => Some((entity_id, keyframes)),
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+    assert_eq!(path_channels[&initial_a].len(), 3);
+    assert_eq!(path_channels[&inserted_c].len(), 2);
+    assert!(scene.animation_channels.iter().any(|channel| matches!(
+        channel,
+        AnimationChannelV1::Opacity { entity_id, keyframes, .. }
+            if entity_id == &removed_b
+                && keyframes.first().is_some_and(|frame| (frame.value - 1.0).abs() < f64::EPSILON)
+                && keyframes.last().is_some_and(|frame| frame.value.abs() < f64::EPSILON)
+    )));
+    assert!(scene.animation_channels.iter().any(|channel| matches!(
+        channel,
+        AnimationChannelV1::Opacity { entity_id, keyframes, .. }
+            if entity_id == &inserted_c
+                && keyframes.first().is_some_and(|frame| frame.value.abs() < f64::EPSILON)
+                && keyframes.last().is_some_and(|frame| (frame.value - 1.0).abs() < f64::EPSILON)
+    )));
+}
+
+#[test]
+fn normalized_text_transform_rejects_spoofed_correlation_and_typography_atomically() {
+    let bundle = static_imported_bundle();
+    let mut spoofed = studio_text_write_transform_chain_command(&bundle);
+    spoofed.text_outlines[0].fragments[0].source_correlation.key = "B".to_owned();
+    let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+    assert!(matches!(
+        session.apply_studio_creation_edit(spoofed),
+        Err(ApplyStudioCreationEditError::Unsupported)
+    ));
+    assert_eq!(session.scene(), &bundle.scene);
+
+    let mut typography = studio_text_write_transform_chain_command(&bundle);
+    let StudioCreationOperationKind::TransformContent {
+        replacement: StudioContentReplacement::Text(content),
+        ..
+    } = &mut typography.programs[1].operations[0].kind
+    else {
+        unreachable!();
+    };
+    content.layout.font_family = super::super::StudioTextFontFamily::Mono;
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &typography.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
 }
 
 #[test]
@@ -10878,9 +11092,8 @@ fn normalized_creation_applies_nondefault_text_layout_in_the_initial_entity() {
     };
     entity.layout = Some(updated.layout);
     entity.text = Some(updated.text.clone());
+    command.text_outlines[0] = text_outline_for_transform(entity_id, &updated, 1.0);
     let updated_path = scale_cubic_path(&command.text_outlines[0].path, updated.layout.font_size);
-    command.text_outlines[0].layout = updated.layout;
-    command.text_outlines[0].text.clone_from(&updated.text);
 
     let projection =
         project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();

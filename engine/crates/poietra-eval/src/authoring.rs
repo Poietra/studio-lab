@@ -404,10 +404,31 @@ pub struct StudioTextContent {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum StudioContentReplacement {
+    MathTex(StudioMathTexContent),
+    Text(StudioTextContent),
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioTextOutlineSourceCorrelationKind {
+    NfcScalar,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioTextOutlineSourceCorrelation {
+    pub key: String,
+    pub kind: StudioTextOutlineSourceCorrelationKind,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCreationTextOutlineFragment {
     pub order: u32,
     pub path: CubicPathV1,
+    pub source_correlation: StudioTextOutlineSourceCorrelation,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

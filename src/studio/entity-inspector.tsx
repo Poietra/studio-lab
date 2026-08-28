@@ -2,6 +2,7 @@ import { type FormEvent, type KeyboardEvent, useEffect, useState } from "react";
 
 import { cn } from "../lib/cn";
 import { CAMERA_CLIP_EASINGS, type CameraClipEasing } from "./camera-clip-edit";
+import { CONTENT_TRANSFORM_EASINGS, type ContentTransformEasing } from "./content-transform-clip-edit";
 import {
   type InspectorEditField,
   type InspectorEditValues,
@@ -9,7 +10,6 @@ import {
   type ValidatedInspectorEdits,
   validateInspectorEdits,
 } from "./inspector-edit";
-import { MATH_TEX_TRANSFORM_EASINGS, type MathTexTransformEasing } from "./mathtex-transform-clip-edit";
 import type { ProjectedEntity } from "./model";
 import {
   isShapeTransformTarget,
@@ -20,15 +20,15 @@ import {
 } from "./shape-transform-clip-edit";
 import { entityLabel } from "./studio-viewport";
 
-export type MathTexTransformInspectorInput = Readonly<{
+export type ContentTransformInspectorInput = Readonly<{
   content: NonNullable<ValidatedInspectorEdits["content"]>;
   duration: number;
-  easing: MathTexTransformEasing;
+  easing: ContentTransformEasing;
 }>;
 
-export type MathTexTransformInspectorAuthoring = Readonly<{
+export type ContentTransformInspectorAuthoring = Readonly<{
   defaultDuration: number;
-  onCreate: (entityId: string, input: MathTexTransformInspectorInput) => boolean;
+  onCreate: (entityId: string, input: ContentTransformInspectorInput) => boolean;
   unavailableReason: string | null;
 }>;
 
@@ -155,7 +155,7 @@ export function CameraInspectorEditor({ authoring }: Readonly<{ authoring: Camer
 
 type EntityInspectorEditorProps = Readonly<{
   entity: ProjectedEntity;
-  mathTexTransform?: MathTexTransformInspectorAuthoring;
+  contentTransform?: ContentTransformInspectorAuthoring;
   onCreateDraft: (entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) => boolean;
   onFocusRestored: () => void;
   restoreFocus: InspectorEditField | null;
@@ -228,8 +228,8 @@ export function entityInspectorKey(entity: ProjectedEntity) {
 }
 
 export function EntityInspectorEditor({
+  contentTransform,
   entity,
-  mathTexTransform,
   onCreateDraft,
   onFocusRestored,
   restoreFocus,
@@ -239,8 +239,8 @@ export function EntityInspectorEditor({
   const [values, setValues] = useState<InspectorEditValues>(initialValues);
   const [errors, setErrors] = useState<Partial<Record<InspectorEditField, string>>>({});
   const [message, setMessage] = useState<string | null>(null);
-  const [transformDuration, setTransformDuration] = useState(String(mathTexTransform?.defaultDuration ?? 1));
-  const [transformEasing, setTransformEasing] = useState<MathTexTransformEasing>("smooth");
+  const [transformDuration, setTransformDuration] = useState(String(contentTransform?.defaultDuration ?? 1));
+  const [transformEasing, setTransformEasing] = useState<ContentTransformEasing>("smooth");
   const [transformMessage, setTransformMessage] = useState<string | null>(null);
   const [transformTarget, setTransformTarget] = useState(initialValues.content ?? "");
   const [shapeTransformDuration, setShapeTransformDuration] = useState(String(shapeTransform?.defaultDuration ?? 1));
@@ -342,10 +342,10 @@ export function EntityInspectorEditor({
     }
   }
 
-  function createMathTexTransform() {
-    if (!mathTexTransform || entity.type !== "MathTex") return;
-    if (mathTexTransform.unavailableReason) {
-      setTransformMessage(mathTexTransform.unavailableReason);
+  function createContentTransform() {
+    if (!contentTransform || (entity.type !== "MathTex" && entity.type !== "Text")) return;
+    if (contentTransform.unavailableReason) {
+      setTransformMessage(contentTransform.unavailableReason);
       return;
     }
     const duration = Number(transformDuration);
@@ -355,15 +355,18 @@ export function EntityInspectorEditor({
     }
     const validation = validateInspectorEdits(entity, { ...initialValues, content: transformTarget });
     if (validation.kind === "invalid") {
-      setTransformMessage(validation.errors.content ?? "Enter a valid MathTex target expression.");
+      setTransformMessage(
+        validation.errors.content ??
+          (entity.type === "MathTex" ? "Enter a valid MathTex target expression." : "Enter valid target text."),
+      );
       return;
     }
     if (!validation.edits.content) {
-      setTransformMessage("Enter a target expression different from the current MathTex content.");
+      setTransformMessage(`Enter target content different from the current ${entity.type} content.`);
       return;
     }
     if (
-      mathTexTransform.onCreate(entity.id, {
+      contentTransform.onCreate(entity.id, {
         content: validation.edits.content,
         duration,
         easing: transformEasing,
@@ -591,16 +594,16 @@ export function EntityInspectorEditor({
         </fieldset>
       ) : null}
 
-      {entity.type === "MathTex" && mathTexTransform ? (
+      {(entity.type === "MathTex" || entity.type === "Text") && contentTransform ? (
         <fieldset className="border-t border-zinc-800 pt-4">
-          <legend className="text-balance text-xs font-medium text-zinc-300">Animate MathTex transform</legend>
+          <legend className="text-balance text-xs font-medium text-zinc-300">Animate content transform</legend>
           <div className="mt-2 space-y-3">
             <label className="block text-[10px] text-zinc-500">
-              Target · one constructor argument per line
+              {entity.type === "MathTex" ? "Target · one constructor argument per line" : "Target text"}
               <textarea
-                aria-label={`MathTex transform target of ${entityLabel(entity)}`}
-                className={cn(textareaClass, "font-mono")}
-                disabled={mathTexTransform.unavailableReason !== null}
+                aria-label={`Content transform target of ${entityLabel(entity)}`}
+                className={cn(textareaClass, entity.type === "MathTex" && "font-mono")}
+                disabled={contentTransform.unavailableReason !== null}
                 maxLength={2_000}
                 onChange={(event) => {
                   setTransformTarget(event.currentTarget.value);
@@ -613,9 +616,9 @@ export function EntityInspectorEditor({
               <label className="text-[10px] text-zinc-500">
                 Duration (seconds)
                 <input
-                  aria-label={`MathTex transform duration of ${entityLabel(entity)}`}
+                  aria-label={`Content transform duration of ${entityLabel(entity)}`}
                   className={inputClass}
-                  disabled={mathTexTransform.unavailableReason !== null}
+                  disabled={contentTransform.unavailableReason !== null}
                   min="0.1"
                   onChange={(event) => {
                     setTransformDuration(event.currentTarget.value);
@@ -629,13 +632,13 @@ export function EntityInspectorEditor({
               <label className="text-[10px] text-zinc-500">
                 Easing
                 <select
-                  aria-label={`MathTex transform easing of ${entityLabel(entity)}`}
+                  aria-label={`Content transform easing of ${entityLabel(entity)}`}
                   className={inputClass}
-                  disabled={mathTexTransform.unavailableReason !== null}
-                  onChange={(event) => setTransformEasing(event.currentTarget.value as MathTexTransformEasing)}
+                  disabled={contentTransform.unavailableReason !== null}
+                  onChange={(event) => setTransformEasing(event.currentTarget.value as ContentTransformEasing)}
                   value={transformEasing}
                 >
-                  {MATH_TEX_TRANSFORM_EASINGS.map((easing) => (
+                  {CONTENT_TRANSFORM_EASINGS.map((easing) => (
                     <option key={easing} value={easing}>
                       {easing === "linear" ? "Linear" : "Smooth"}
                     </option>
@@ -645,16 +648,16 @@ export function EntityInspectorEditor({
             </div>
             <button
               className="h-9 w-full border border-teal-700 bg-teal-950 px-3 text-xs font-medium text-teal-200 hover:bg-teal-900 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900 disabled:text-zinc-600"
-              disabled={mathTexTransform.unavailableReason !== null}
-              onClick={createMathTexTransform}
-              title={mathTexTransform.unavailableReason ?? "Create a replacement Transform at the playhead"}
+              disabled={contentTransform.unavailableReason !== null}
+              onClick={createContentTransform}
+              title={contentTransform.unavailableReason ?? "Create a replacement Transform at the playhead"}
               type="button"
             >
               Create Transform clip
             </button>
-            {(transformMessage ?? mathTexTransform.unavailableReason) ? (
+            {(transformMessage ?? contentTransform.unavailableReason) ? (
               <p className="text-pretty text-[10px] leading-4 text-amber-400" role="status">
-                {transformMessage ?? mathTexTransform.unavailableReason}
+                {transformMessage ?? contentTransform.unavailableReason}
               </p>
             ) : null}
           </div>

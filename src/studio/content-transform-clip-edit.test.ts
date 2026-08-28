@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
-
-import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import {
-  createMathTexTransformProgram,
-  mathTexTransformClipFromProgram,
-  replaceMathTexTransformProgram,
-} from "./mathtex-transform-clip-edit";
+  contentTransformClipFromProgram,
+  createContentTransformProgram,
+  replaceContentTransformProgram,
+} from "./content-transform-clip-edit";
+import { STUDIO_TEXT_DEFAULT_LAYOUT } from "./editable-content";
+import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { RuntimeSceneState } from "./model";
 
 const ROOT_ID = "tx:create-equation/entity:equation";
+const TEXT_ROOT_ID = "tx:create-text/entity:label";
 
 function studioScene(): RuntimeSceneState {
   return {
@@ -31,10 +32,35 @@ function studioScene(): RuntimeSceneState {
   };
 }
 
-describe("Studio MathTex Transform clip editing", () => {
+function textStudioScene(): RuntimeSceneState {
+  return {
+    ...STUDIO_FIXTURE_SCENE,
+    objectGraph: {
+      ...STUDIO_FIXTURE_SCENE.objectGraph,
+      entities: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+        [TEXT_ROOT_ID]: {
+          content: {
+            displayLines: ["あA", "Text"],
+            text: "あA\nText",
+            textLayout: STUDIO_TEXT_DEFAULT_LAYOUT,
+          },
+          id: TEXT_ROOT_ID,
+          lifetime: [{ end: 10, start: 1 }],
+          provisional: false,
+          sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
+          transactionId: "create-text",
+          type: "Text",
+        },
+      },
+    },
+  };
+}
+
+describe("Studio Content Transform clip editing", () => {
   it("creates a replacement-only clip and preserves the logical root across edits", () => {
     const scene = studioScene();
-    const created = createMathTexTransformProgram({
+    const created = createContentTransformProgram({
       capturedPlayhead: 2,
       content: { displayLines: ["Maxwell"], label: "Maxwell", texParts: [String.raw`\nabla \cdot E = 0`] },
       easing: "smooth",
@@ -45,7 +71,7 @@ describe("Studio MathTex Transform clip editing", () => {
       start: 2,
       transactionId: "transform-maxwell",
     });
-    const clip = mathTexTransformClipFromProgram(created.program, ROOT_ID);
+    const clip = contentTransformClipFromProgram(created.program, ROOT_ID);
 
     expect(clip).toMatchObject({
       easing: "smooth",
@@ -61,14 +87,14 @@ describe("Studio MathTex Transform clip editing", () => {
       targetType: "MathTex",
     });
 
-    const edited = replaceMathTexTransformProgram({
+    const edited = replaceContentTransformProgram({
       baseProgram: created.program,
       duration: 1.5,
       easing: "linear",
       rootEntityId: ROOT_ID,
       scene,
     });
-    expect(mathTexTransformClipFromProgram(edited.program, ROOT_ID)).toMatchObject({
+    expect(contentTransformClipFromProgram(edited.program, ROOT_ID)).toMatchObject({
       easing: "linear",
       interval: { end: 3.5, start: 2 },
       operationId: clip?.operationId,
@@ -99,7 +125,7 @@ describe("Studio MathTex Transform clip editing", () => {
       },
     };
 
-    const created = createMathTexTransformProgram({
+    const created = createContentTransformProgram({
       capturedPlayhead: 4,
       content: { displayLines: ["E = mc^2"], texParts: ["E = mc^2"] },
       easing: "linear",
@@ -112,15 +138,60 @@ describe("Studio MathTex Transform clip editing", () => {
     });
 
     expect(created.program.operations[0]).toMatchObject({ sourceEntityId: previousTargetId });
-    expect(mathTexTransformClipFromProgram(created.program, ROOT_ID)).toMatchObject({
+    expect(contentTransformClipFromProgram(created.program, ROOT_ID)).toMatchObject({
       rootEntityId: ROOT_ID,
       transactionId: "transform-back",
     });
   });
 
+  it("creates a client-only Text Transform and requires unchanged typography", () => {
+    const scene = textStudioScene();
+    const content = {
+      displayLines: ["あB", "次"],
+      text: "あB\n次",
+      textLayout: STUDIO_TEXT_DEFAULT_LAYOUT,
+    };
+    const created = createContentTransformProgram({
+      capturedPlayhead: 2,
+      content,
+      easing: "smooth",
+      end: 3,
+      rootEntityId: TEXT_ROOT_ID,
+      scene,
+      sourceEntityId: TEXT_ROOT_ID,
+      start: 2,
+      transactionId: "transform-text",
+    });
+
+    expect(created.kind, JSON.stringify(created.issues)).toBe("valid");
+    expect(created.program.loweringStatus).toBe("unsupported");
+    expect(created.program.operations[0]).toMatchObject({
+      kind: "TransformContent",
+      replacement: content,
+      sourceEntityId: TEXT_ROOT_ID,
+      targetType: "Text",
+    });
+    expect(contentTransformClipFromProgram(created.program, TEXT_ROOT_ID)).toMatchObject({
+      content,
+      rootEntityId: TEXT_ROOT_ID,
+      targetType: "Text",
+    });
+    expect(() =>
+      replaceContentTransformProgram({
+        baseProgram: created.program,
+        content: {
+          ...content,
+          textLayout: { ...STUDIO_TEXT_DEFAULT_LAYOUT, fontSize: 2 },
+        },
+        rootEntityId: TEXT_ROOT_ID,
+        scene,
+      }),
+    ).toThrow(/typography/i);
+  });
+
   it("rejects imported MathTex and clips outside the root lifetime", () => {
     expect(() =>
-      createMathTexTransformProgram({
+      createContentTransformProgram({
         capturedPlayhead: 2,
         content: { displayLines: ["x"], texParts: ["x"] },
         easing: "smooth",
@@ -134,7 +205,7 @@ describe("Studio MathTex Transform clip editing", () => {
     ).toThrow(/Studio-created/);
 
     expect(() =>
-      createMathTexTransformProgram({
+      createContentTransformProgram({
         capturedPlayhead: 9.5,
         content: { displayLines: ["x"], texParts: ["x"] },
         easing: "smooth",

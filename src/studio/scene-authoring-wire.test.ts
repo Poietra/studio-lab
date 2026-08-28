@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createStudioSceneBackgroundProgram } from "./authoring-commands";
+import { STUDIO_TEXT_DEFAULT_LAYOUT } from "./editable-content";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import {
   buildStudioCreationEditCommand,
@@ -522,6 +523,49 @@ describe("Studio creation wire", () => {
         targetType: "MathTex",
       },
     ]);
+  });
+
+  it("normalizes a Studio Text transform without exposing glyph identities", () => {
+    const rootEntityId = "entity:Text";
+    const transform: SceneEdit = {
+      ...followupProgram("transform:Text", {
+        dependsOn: [],
+        easing: "smooth",
+        id: "transform:Text/operation",
+        interval: { end: 2, start: 1 },
+        kind: "TransformContent",
+        provenance: { evidence: [], origin: "direct-manipulation" },
+        replacement: {
+          displayLines: ["次の場面", "こんにちは"],
+          text: "次の場面\nこんにちは",
+          textLayout: STUDIO_TEXT_DEFAULT_LAYOUT,
+        },
+        sourceEntityId: rootEntityId,
+        strategy: "replacement-transform",
+        targetEntityId: "transform:Text/target",
+        targetType: "Text",
+      }),
+      loweringStatus: "unsupported",
+    };
+
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 4,
+      programs: [creationProgram("Text"), transform],
+    });
+
+    expect(command.programs[1]).toMatchObject({
+      loweringSupported: false,
+      operations: [
+        {
+          entityId: rootEntityId,
+          kind: "transform-content",
+          replacement: { layout: STUDIO_TEXT_DEFAULT_LAYOUT, text: "次の場面\nこんにちは" },
+          sourceEntityId: rootEntityId,
+          targetEntityId: "transform:Text/target",
+          targetType: "Text",
+        },
+      ],
+    });
   });
 
   it("forwards motion spin only through the Studio creation authority", () => {

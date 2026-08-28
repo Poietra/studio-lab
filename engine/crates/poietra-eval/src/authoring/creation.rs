@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use poietra_geometry::align_cubic_path_morph_chain;
 use poietra_scene_ir::{
@@ -46,14 +46,15 @@ use super::{
     SceneEditOperationFacts, SceneEditScheduleMode, StudioAuthoringAngles,
     StudioAuthoringCoordinateRange, StudioAuthoringCoordinateSystem, StudioAuthoringDimensions,
     StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioAuthoringOrigin,
-    StudioAuthoringSize, StudioCreationMathTexOutline, StudioCreationSegmentedMathTexOutline,
-    StudioCreationSegmentedMathTexRepresentation, StudioCreationSegmentedMathTexSourceCorrelation,
+    StudioAuthoringSize, StudioContentReplacement, StudioCreationMathTexOutline,
+    StudioCreationSegmentedMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
+    StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationTextOutline,
     StudioCreationTextOutlineFragment, StudioMathTexContent, StudioMathTexTransformStrategy,
     StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry, StudioTextContent,
-    StudioTextLayout, TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value,
-    scene_edit_anchor_is_closed, scene_edit_structure_is_closed, studio_arrow_appearance,
-    studio_authoring_point_is_finite, studio_authoring_shape_size,
+    StudioTextLayout, StudioTextOutlineSourceCorrelationKind, TIMELINE_ANCHOR_EPSILON,
+    close_transform_baseline_value, scene_edit_anchor_is_closed, scene_edit_structure_is_closed,
+    studio_arrow_appearance, studio_authoring_point_is_finite, studio_authoring_shape_size,
     studio_authoring_size_is_positive, studio_math_tex_appearance,
     studio_math_tex_content_is_canonical, studio_point_to_scene_point, studio_shape_appearance,
     studio_timeline_semantic_values_match, studio_vector_to_scene_vector, unused_channel_id,
@@ -149,6 +150,27 @@ struct CreateSceneEntityMathTexMorph {
     initial_path: CubicPathV1,
     keyframes: Vec<KeyframeV1<CubicPathV1>>,
     start: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CreateSceneEntityTextGlyphOrigin {
+    Initial { order: u32 },
+    TransformTarget { order: u32, transform_index: usize },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CreateSceneEntityTextGlyphMorph {
+    id: String,
+    initial_path: CubicPathV1,
+    lifetime_start: f64,
+    opacity_keyframes: Vec<KeyframeV1<f64>>,
+    origin: CreateSceneEntityTextGlyphOrigin,
+    path_keyframes: Vec<KeyframeV1<CubicPathV1>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct CreateSceneEntityTextMorph {
+    glyphs: Vec<CreateSceneEntityTextGlyphMorph>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -277,6 +299,7 @@ struct CreateSceneEntity {
     stroke_dash: Option<StudioStrokeDash>,
     stroke_join: Option<StrokeJoinV1>,
     stroke_width_world: Option<f64>,
+    text_morph: Option<CreateSceneEntityTextMorph>,
     instant_transform: Option<CreateSceneEntityInstantTransform>,
     visible: bool,
     write_in: Option<CreateSceneEntityWriteIn>,
@@ -392,6 +415,12 @@ pub enum StudioCreationProjectedMutationKind {
     },
     MathTexTransform {
         content: StudioMathTexContent,
+        easing: EasingV1,
+        source_entity_id: String,
+        target_entity_id: String,
+    },
+    TextTransform {
+        content: StudioTextContent,
         easing: EasingV1,
         source_entity_id: String,
         target_entity_id: String,
@@ -592,7 +621,7 @@ pub enum StudioCreationOperationKind {
     },
     TransformContent {
         easing: StudioPropertyEasing,
-        replacement: StudioMathTexContent,
+        replacement: StudioContentReplacement,
         source_entity_id: String,
         strategy: StudioMathTexTransformStrategy,
         target_entity_id: String,
@@ -1017,6 +1046,7 @@ struct PlannedStudioCreationEntity {
     stroke_dash_override: Option<StudioStrokeDash>,
     stroke_join_override: Option<StrokeJoinV1>,
     stroke_width_world_override: Option<f64>,
+    text_transforms: Vec<PlannedStudioTextTransform>,
     fade_interval: Option<IntervalV1>,
     initial_dimensions: StudioAuthoringDimensions,
     initial_position: PointV1,
@@ -1058,6 +1088,17 @@ struct PlannedStudioAnimatedResize {
 #[derive(Clone, Debug, PartialEq)]
 struct PlannedStudioMathTexTransform {
     content: StudioMathTexContent,
+    easing: EasingV1,
+    interval: IntervalV1,
+    operation_id: String,
+    source_entity_id: String,
+    target_entity_id: String,
+    transaction_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedStudioTextTransform {
+    content: StudioTextContent,
     easing: EasingV1,
     interval: IntervalV1,
     operation_id: String,

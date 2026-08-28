@@ -15,9 +15,9 @@ import { DraftInspector } from "./draft-inspector";
 import {
   type CameraInspectorAuthoring,
   CameraInspectorEditor,
+  type ContentTransformInspectorAuthoring,
   EntityInspectorEditor,
   entityInspectorKey,
-  type MathTexTransformInspectorAuthoring,
   type ShapeTransformInspectorAuthoring,
 } from "./entity-inspector";
 import type {
@@ -1212,7 +1212,7 @@ export function StudioInspector({
     onUpdateTexture: () => undefined,
     textureAssets: [],
   },
-  mathTexTransform,
+  contentTransform,
   onApplyDraft,
   onDiscardDraft,
   onDraftOperationChange,
@@ -1298,7 +1298,7 @@ export function StudioInspector({
     onUpdateTexture: (assetId: string, sampler: "linear" | "nearest") => void;
     textureAssets: readonly Readonly<{ assetId: string; label: string }>[];
   }>;
-  mathTexTransform?: MathTexTransformInspectorAuthoring;
+  contentTransform?: ContentTransformInspectorAuthoring;
   onApplyDraft: () => void;
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
@@ -1786,7 +1786,7 @@ export function StudioInspector({
               <EntityInspectorEditor
                 entity={selectedEntity}
                 key={entityInspectorKey(selectedEntity)}
-                mathTexTransform={mathTexTransform}
+                contentTransform={contentTransform}
                 onCreateDraft={onEntityEdit}
                 onFocusRestored={onInspectorFocusRestored}
                 restoreFocus={inspectorReturnFocus}

@@ -3,17 +3,18 @@
 use super::path_motion::append_studio_path_motions;
 use super::{
     AffineTransformV1, AnimationChannelV1, ApplyStudioCreationEditCommand,
-    ApplyStudioCreationEditError, BTreeSet, ContractVersionV1, CreateSceneEntitiesCommand,
-    CreateSceneEntitiesError, CreateSceneEntity, CreateSceneEntityAnimatedResize,
-    CreateSceneEntityDrawIn, CreateSceneEntityFadeIn, CreateSceneEntityGeometry,
-    CreateSceneEntityInstantTransform, CreateSceneEntityMathTexMorph, CreateSceneEntityPathMorph,
-    CreateSceneEntityWriteFragment, CreateSceneEntityWriteIn, CreateSceneEntityWritePlan,
-    CreateScenePathMotion, CubicPathV1, EasingV1, EngineSessionV1, FidelityV1, FillRuleV1,
-    FillStyleV1, FragmentMaterialV1, IntervalV1, KeyframeV1, MAX_STROKE_DASH_WORLD_V1,
-    MAX_STUDIO_STROKE_WIDTH_WORLD, MIN_STROKE_DASH_WORLD_V1, MIN_STUDIO_STROKE_WIDTH_WORLD,
-    PathTrimParameterizationV1, PlannedSceneMotion, PlannedStudioCameraAnimation,
-    PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PointV1, ProvenanceOriginV1,
-    ProvenanceRecordV1, RgbaColorV1, SEGMENTED_MATH_TEX_MAX_FRAGMENTS,
+    ApplyStudioCreationEditError, BTreeMap, BTreeSet, ContractVersionV1,
+    CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
+    CreateSceneEntityAnimatedResize, CreateSceneEntityDrawIn, CreateSceneEntityFadeIn,
+    CreateSceneEntityGeometry, CreateSceneEntityInstantTransform, CreateSceneEntityMathTexMorph,
+    CreateSceneEntityPathMorph, CreateSceneEntityTextGlyphMorph, CreateSceneEntityTextGlyphOrigin,
+    CreateSceneEntityTextMorph, CreateSceneEntityWriteFragment, CreateSceneEntityWriteIn,
+    CreateSceneEntityWritePlan, CreateScenePathMotion, CubicPathV1, EasingV1, EngineSessionV1,
+    FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1, IntervalV1, KeyframeV1,
+    MAX_STROKE_DASH_WORLD_V1, MAX_STUDIO_STROKE_WIDTH_WORLD, MIN_STROKE_DASH_WORLD_V1,
+    MIN_STUDIO_STROKE_WIDTH_WORLD, PathTrimParameterizationV1, PlannedSceneMotion,
+    PlannedStudioCameraAnimation, PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PointV1,
+    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SEGMENTED_MATH_TEX_MAX_FRAGMENTS,
     SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES, STUDIO_WRITE_MAX_CUBIC_SEGMENTS,
     STUDIO_WRITE_MAX_FRAGMENTS, STUDIO_WRITE_OUTLINE_STROKE_WIDTH, STUDIO_WRITE_PHASE_BOUNDARY,
     SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1,
@@ -22,21 +23,23 @@ use super::{
     StudioCreationSegmentedMathTexRepresentation, StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationShapeState,
     StudioCreationSpatialContext, StudioCreationTextOutline, StudioCreationTextOutlineFragment,
-    StudioPaintColorProperty, StudioPersistentRemoveProjection, TIMELINE_ANCHOR_EPSILON,
+    StudioPaintColorProperty, StudioPersistentRemoveProjection,
+    StudioTextOutlineSourceCorrelationKind, TIMELINE_ANCHOR_EPSILON, VecDeque,
     VectorAppearanceValueV1, align_cubic_path_morph_chain, append_planned_scene_motions,
     apply_persistent_scene_removals, apply_world_rotation, authored_motion_easing,
     canonical_studio_hex_color, close_transform_baseline_value, created_geometry_and_appearance,
-    insert_scene_time, manim_stroke_width_to_scene_world, plan_studio_creation_edits,
+    insert_scene_time, is_nfc, manim_stroke_width_to_scene_world, plan_studio_creation_edits,
     rotation_is_noop, scale_cubic_path, set_vector_paint_alpha, studio_arc_parameters,
     studio_arc_path, studio_authoring_shape_size, studio_authoring_size_is_positive,
     studio_camera_aspects_match, studio_camera_view_is_bounded,
     studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
     studio_coordinate_system_parameters, studio_coordinate_system_path,
-    studio_creation_supports_stroke_cap, studio_creation_supports_stroke_join,
-    studio_creation_supports_stroke_width, studio_cubic_bezier_appearance, studio_data_plot_path,
-    studio_ellipse_parameters, studio_ellipse_path, studio_math_tex_appearance,
-    studio_point_to_scene_point, studio_regular_polygon_parameters, studio_regular_polygon_path,
-    studio_sector_path, studio_shape_transform_path, studio_timeline_semantic_values_match,
+    studio_creation_spec_text_content, studio_creation_supports_stroke_cap,
+    studio_creation_supports_stroke_join, studio_creation_supports_stroke_width,
+    studio_cubic_bezier_appearance, studio_data_plot_path, studio_ellipse_parameters,
+    studio_ellipse_path, studio_math_tex_appearance, studio_point_to_scene_point,
+    studio_regular_polygon_parameters, studio_regular_polygon_path, studio_sector_path,
+    studio_shape_transform_path, studio_timeline_semantic_values_match,
     studio_vector_to_scene_vector, unused_channel_id,
 };
 
@@ -274,7 +277,17 @@ fn text_write_fragment(
 }
 
 fn text_outline_fragments_are_exact(outline: &StudioCreationTextOutline) -> bool {
-    (1..=STUDIO_WRITE_MAX_FRAGMENTS).contains(&outline.fragments.len())
+    let source_keys_match = outline
+        .text
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .map(|character| character.to_string())
+        .eq(outline
+            .fragments
+            .iter()
+            .map(|fragment| fragment.source_correlation.key.clone()));
+    source_keys_match
+        && (1..=STUDIO_WRITE_MAX_FRAGMENTS).contains(&outline.fragments.len())
         && outline
             .fragments
             .iter()
@@ -282,6 +295,10 @@ fn text_outline_fragments_are_exact(outline: &StudioCreationTextOutline) -> bool
             .all(|(index, fragment)| {
                 u32::try_from(index).ok() == Some(fragment.order)
                     && !fragment.path.subpaths.is_empty()
+                    && fragment.source_correlation.kind
+                        == StudioTextOutlineSourceCorrelationKind::NfcScalar
+                    && fragment.source_correlation.key.chars().count() == 1
+                    && is_nfc(&fragment.source_correlation.key)
             })
         && outline
             .fragments
@@ -794,6 +811,37 @@ pub(super) fn write_fragment_entity_id(root_id: &str, fragment_id: &str, role: &
     format!("{root_id}/write/{fragment_id}/{role}")
 }
 
+fn append_text_glyph_channels(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    entity_id: &str,
+    glyph: &CreateSceneEntityTextGlyphMorph,
+    provenance_id: &str,
+    capabilities: &mut BTreeSet<SceneCapabilityV1>,
+) {
+    if !glyph.path_keyframes.is_empty() {
+        capabilities.insert(SceneCapabilityV1::PathMorphAnimation);
+        let id = unused_channel_id(scene, &format!("studio-text-morph-{entity_id}"));
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::PathMorph {
+                entity_id: entity_id.to_owned(),
+                id,
+                keyframes: glyph.path_keyframes.clone(),
+                provenance_id: provenance_id.to_owned(),
+            });
+    }
+    if !glyph.opacity_keyframes.is_empty() {
+        capabilities.insert(SceneCapabilityV1::OpacityAnimation);
+        let id = unused_channel_id(scene, &format!("studio-text-opacity-{entity_id}"));
+        scene.animation_channels.push(AnimationChannelV1::Opacity {
+            entity_id: entity_id.to_owned(),
+            id,
+            keyframes: glyph.opacity_keyframes.clone(),
+            provenance_id: provenance_id.to_owned(),
+        });
+    }
+}
+
 #[allow(
     clippy::too_many_arguments,
     clippy::too_many_lines,
@@ -804,6 +852,7 @@ pub(super) fn append_created_write_fragments(
     root_id: &str,
     root_lifetime: &IntervalV1,
     write: CreateSceneEntityWriteIn,
+    text_morph: Option<&CreateSceneEntityTextMorph>,
     solid_fill_color: Option<&RgbaColorV1>,
     material_parameter_keyframes: &[KeyframeV1<FragmentMaterialV1>],
     provenance_id: &str,
@@ -830,6 +879,15 @@ pub(super) fn append_created_write_fragments(
     }
 
     for fragment in write.fragments {
+        let glyph_morph = text_morph.and_then(|morph| {
+            morph.glyphs.iter().find(|glyph| {
+                matches!(
+                    glyph.origin,
+                    CreateSceneEntityTextGlyphOrigin::Initial { order }
+                        if order == fragment.order
+                )
+            })
+        });
         let lagged_start = f64::from(fragment.order) * write.plan.fragment_lag_ratio;
         let outline_start = write.interval.start + write_duration * lagged_start / full_length;
         let phase_boundary = write.interval.start
@@ -927,7 +985,8 @@ pub(super) fn append_created_write_fragments(
                 stroke: Some(stroke.clone()),
             },
             geometry: SceneGeometryV1::CubicPath {
-                path: fragment.path,
+                path: glyph_morph
+                    .map_or_else(|| fragment.path.clone(), |glyph| glyph.initial_path.clone()),
             },
             id: fill_id.clone(),
             lifetimes: vec![IntervalV1 {
@@ -985,11 +1044,14 @@ pub(super) fn append_created_write_fragments(
         scene
             .animation_channels
             .push(AnimationChannelV1::VectorAppearance {
-                entity_id: fill_id,
+                entity_id: fill_id.clone(),
                 id: unused_channel_id(scene, &format!("studio-write-fill-{scene_order}")),
                 keyframes: appearance_keyframes,
                 provenance_id: provenance_id.to_owned(),
             });
+        if let Some(glyph) = glyph_morph {
+            append_text_glyph_channels(scene, &fill_id, glyph, provenance_id, capabilities);
+        }
     }
     u32::try_from(fragment_count.saturating_mul(2))
         .map_err(|_| CreateSceneEntitiesError::InvalidHierarchy)
@@ -1059,6 +1121,232 @@ pub(super) fn planned_math_tex_morph(
         keyframes,
         start: first_transform.interval.start,
     }))
+}
+
+#[derive(Clone)]
+struct WorkingTextGlyphMorph {
+    id: String,
+    initial_path: CubicPathV1,
+    lifetime_start: f64,
+    opacity_steps: Vec<(IntervalV1, EasingV1, f64, f64)>,
+    origin: CreateSceneEntityTextGlyphOrigin,
+    path_steps: Vec<(IntervalV1, EasingV1, CubicPathV1)>,
+    source_key: String,
+}
+
+fn initial_text_glyph_morph(
+    root_id: &str,
+    lifetime_start: f64,
+    font_size: f64,
+    fragment: &StudioCreationTextOutlineFragment,
+) -> WorkingTextGlyphMorph {
+    WorkingTextGlyphMorph {
+        id: write_fragment_entity_id(root_id, &format!("fragment-{:04}", fragment.order), "fill"),
+        initial_path: scale_cubic_path(&fragment.path, font_size),
+        lifetime_start,
+        opacity_steps: Vec::new(),
+        origin: CreateSceneEntityTextGlyphOrigin::Initial {
+            order: fragment.order,
+        },
+        path_steps: Vec::new(),
+        source_key: fragment.source_correlation.key.clone(),
+    }
+}
+
+fn finish_text_glyph_morph(
+    glyph: WorkingTextGlyphMorph,
+) -> Result<CreateSceneEntityTextGlyphMorph, ApplyStudioCreationEditError> {
+    let (initial_path, path_keyframes) =
+        text_morph_keyframes(&glyph.initial_path, &glyph.path_steps)?;
+    Ok(CreateSceneEntityTextGlyphMorph {
+        id: glyph.id,
+        initial_path,
+        lifetime_start: glyph.lifetime_start,
+        opacity_keyframes: text_opacity_keyframes(&glyph.opacity_steps),
+        origin: glyph.origin,
+        path_keyframes,
+    })
+}
+
+fn text_morph_keyframes(
+    initial: &CubicPathV1,
+    steps: &[(IntervalV1, EasingV1, CubicPathV1)],
+) -> Result<(CubicPathV1, Vec<KeyframeV1<CubicPathV1>>), ApplyStudioCreationEditError> {
+    if steps.is_empty() {
+        return Ok((initial.clone(), Vec::new()));
+    }
+    let mut paths = Vec::with_capacity(steps.len() + 1);
+    paths.push(initial.clone());
+    paths.extend(steps.iter().map(|(_, _, path)| path.clone()));
+    let aligned = align_cubic_path_morph_chain(&paths)
+        .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
+    let mut keyframes = Vec::<KeyframeV1<CubicPathV1>>::with_capacity(steps.len() * 2);
+    for (index, (interval, easing, _)) in steps.iter().enumerate() {
+        if let Some(previous) = keyframes.last_mut() {
+            if interval.start > previous.at + TIMELINE_ANCHOR_EPSILON {
+                previous.easing_to_next = Some(EasingV1::Linear {});
+                keyframes.push(KeyframeV1 {
+                    at: interval.start,
+                    easing_to_next: Some(easing.clone()),
+                    value: aligned[index].clone(),
+                });
+            } else {
+                previous.easing_to_next = Some(easing.clone());
+            }
+        } else {
+            keyframes.push(KeyframeV1 {
+                at: interval.start,
+                easing_to_next: Some(easing.clone()),
+                value: aligned[index].clone(),
+            });
+        }
+        keyframes.push(KeyframeV1 {
+            at: interval.end,
+            easing_to_next: None,
+            value: aligned[index + 1].clone(),
+        });
+    }
+    Ok((aligned[0].clone(), keyframes))
+}
+
+fn text_opacity_keyframes(steps: &[(IntervalV1, EasingV1, f64, f64)]) -> Vec<KeyframeV1<f64>> {
+    let mut keyframes = Vec::<KeyframeV1<f64>>::with_capacity(steps.len() * 2);
+    for (interval, easing, from, to) in steps {
+        if let Some(previous) = keyframes.last_mut() {
+            if interval.start > previous.at + TIMELINE_ANCHOR_EPSILON {
+                previous.easing_to_next = Some(EasingV1::Linear {});
+                keyframes.push(KeyframeV1 {
+                    at: interval.start,
+                    easing_to_next: Some(easing.clone()),
+                    value: *from,
+                });
+            } else {
+                previous.easing_to_next = Some(easing.clone());
+            }
+        } else {
+            keyframes.push(KeyframeV1 {
+                at: interval.start,
+                easing_to_next: Some(easing.clone()),
+                value: *from,
+            });
+        }
+        keyframes.push(KeyframeV1 {
+            at: interval.end,
+            easing_to_next: None,
+            value: *to,
+        });
+    }
+    keyframes
+}
+
+fn exact_text_outline<'a>(
+    outlines: &'a [StudioCreationTextOutline],
+    entity_id: &str,
+    text: &str,
+    layout: &super::StudioTextLayout,
+) -> Option<&'a StudioCreationTextOutline> {
+    let mut matching = outlines.iter().filter(|outline| {
+        outline.entity_id == entity_id && outline.text == text && &outline.layout == layout
+    });
+    matching
+        .next()
+        .filter(|outline| matching.next().is_none() && text_outline_fragments_are_exact(outline))
+}
+
+pub(super) fn planned_text_morph(
+    state: &PlannedStudioCreationEntity,
+    outlines: &[StudioCreationTextOutline],
+) -> Result<Option<CreateSceneEntityTextMorph>, ApplyStudioCreationEditError> {
+    if state.text_transforms.is_empty() {
+        return Ok(None);
+    }
+    let initial_content = studio_creation_spec_text_content(&state.spec)
+        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+    let initial_outline = exact_text_outline(
+        outlines,
+        &state.spec.id,
+        &initial_content.text,
+        &initial_content.layout,
+    )
+    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+    let font_size = initial_content.layout.font_size;
+    let mut glyphs = initial_outline
+        .fragments
+        .iter()
+        .map(|fragment| {
+            initial_text_glyph_morph(&state.spec.id, state.lifetime.start, font_size, fragment)
+        })
+        .collect::<Vec<_>>();
+    let mut active = (0..glyphs.len()).collect::<Vec<_>>();
+    for (transform_index, transform) in state.text_transforms.iter().enumerate() {
+        let target = exact_text_outline(
+            outlines,
+            &transform.target_entity_id,
+            &transform.content.text,
+            &transform.content.layout,
+        )
+        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+        let mut sources = BTreeMap::<String, VecDeque<usize>>::new();
+        for index in &active {
+            sources
+                .entry(glyphs[*index].source_key.clone())
+                .or_default()
+                .push_back(*index);
+        }
+        let mut matched = BTreeSet::new();
+        let mut next_active = Vec::with_capacity(target.fragments.len());
+        for fragment in &target.fragments {
+            let key = &fragment.source_correlation.key;
+            if let Some(source_index) = sources.get_mut(key).and_then(VecDeque::pop_front) {
+                glyphs[source_index].path_steps.push((
+                    transform.interval.clone(),
+                    transform.easing.clone(),
+                    scale_cubic_path(&fragment.path, font_size),
+                ));
+                matched.insert(source_index);
+                next_active.push(source_index);
+            } else {
+                let index = glyphs.len();
+                glyphs.push(WorkingTextGlyphMorph {
+                    id: format!(
+                        "{}/text-transform/{transform_index:04}/fragment-{:04}/fill",
+                        state.spec.id, fragment.order
+                    ),
+                    initial_path: scale_cubic_path(&fragment.path, font_size),
+                    lifetime_start: transform.interval.start,
+                    opacity_steps: vec![(
+                        transform.interval.clone(),
+                        transform.easing.clone(),
+                        0.0,
+                        1.0,
+                    )],
+                    origin: CreateSceneEntityTextGlyphOrigin::TransformTarget {
+                        order: fragment.order,
+                        transform_index,
+                    },
+                    path_steps: Vec::new(),
+                    source_key: key.clone(),
+                });
+                next_active.push(index);
+            }
+        }
+        for source_index in active {
+            if !matched.contains(&source_index) {
+                glyphs[source_index].opacity_steps.push((
+                    transform.interval.clone(),
+                    transform.easing.clone(),
+                    1.0,
+                    0.0,
+                ));
+            }
+        }
+        active = next_active;
+    }
+    let glyphs = glyphs
+        .into_iter()
+        .map(finish_text_glyph_morph)
+        .collect::<Result<Vec<_>, ApplyStudioCreationEditError>>()?;
+    Ok(Some(CreateSceneEntityTextMorph { glyphs }))
 }
 
 pub(super) fn studio_creation_shape_path(
@@ -1182,6 +1470,7 @@ pub(super) fn append_created_entity(
 ) -> Result<u32, CreateSceneEntitiesError> {
     let write_in = entity.write_in.clone();
     let math_tex_morph = entity.math_tex_morph.clone();
+    let text_morph = entity.text_morph.clone();
     let path_morph = entity.path_morph.clone();
     let shape_morph = entity.shape_morph.clone();
     let solid_fill_color = entity.fill_color.clone();
@@ -1710,6 +1999,7 @@ pub(super) fn append_created_entity(
             &created_id,
             &write_lifetime,
             write,
+            text_morph.as_ref(),
             solid_fill_color.as_ref(),
             &write_material_parameter_keyframes,
             provenance_id,
@@ -1720,6 +2010,71 @@ pub(super) fn append_created_entity(
             entity.visible,
             capabilities,
         )?
+    } else {
+        0
+    };
+    let text_morph_leaf_count = if let Some(morph) = &text_morph {
+        let mut count = 0_u32;
+        let color = solid_fill_color.clone().unwrap_or(RgbaColorV1 {
+            alpha: 1.0,
+            blue: 1.0,
+            green: 1.0,
+            red: 1.0,
+        });
+        for glyph in &morph.glyphs {
+            let CreateSceneEntityTextGlyphOrigin::TransformTarget {
+                order,
+                transform_index,
+            } = glyph.origin
+            else {
+                continue;
+            };
+            let expected_suffix =
+                format!("/text-transform/{transform_index:04}/fragment-{order:04}/fill");
+            if glyph.id.len() > 240
+                || !glyph.id.ends_with(&expected_suffix)
+                || glyph.lifetime_start < lifetime.start
+                || glyph.lifetime_start >= lifetime.end
+            {
+                return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
+            }
+            let target_scene_order = scene_order
+                .checked_add(1)
+                .and_then(|order| order.checked_add(write_leaf_count))
+                .and_then(|order| order.checked_add(count))
+                .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
+            scene.entities.push(SceneEntityV1 {
+                appearance: SceneAppearanceV1::Vector {
+                    fill: Some(FillStyleV1 {
+                        color: color.clone(),
+                        fragment_material: None,
+                        rule: FillRuleV1::NonZero,
+                    }),
+                    opacity: 1.0,
+                    stroke: None,
+                },
+                geometry: SceneGeometryV1::CubicPath {
+                    path: glyph.initial_path.clone(),
+                },
+                id: glyph.id.clone(),
+                lifetimes: vec![IntervalV1 {
+                    end: lifetime.end,
+                    start: glyph.lifetime_start,
+                }],
+                parent_id: Some(created_id.clone()),
+                provenance_id: provenance_id.to_owned(),
+                scene_order: target_scene_order,
+                source_z_index,
+                transform: AffineTransformV1::identity(),
+                visible: entity.visible,
+            });
+            append_text_glyph_channels(scene, &glyph.id, glyph, provenance_id, capabilities);
+            count = count
+                .checked_add(1)
+                .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
+        }
+        capabilities.insert(SceneCapabilityV1::CubicPathGeometry);
+        count
     } else {
         0
     };
@@ -1752,6 +2107,7 @@ pub(super) fn append_created_entity(
                 scene_order: scene_order
                     .checked_add(1)
                     .and_then(|order| order.checked_add(write_leaf_count))
+                    .and_then(|order| order.checked_add(text_morph_leaf_count))
                     .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?,
                 source_z_index,
                 transform: AffineTransformV1::identity(),
@@ -1800,6 +2156,7 @@ pub(super) fn append_created_entity(
     }
     1_u32
         .checked_add(write_leaf_count)
+        .and_then(|count| count.checked_add(text_morph_leaf_count))
         .and_then(|count| count.checked_add(morph_leaf_count))
         .ok_or(CreateSceneEntitiesError::InvalidHierarchy)
 }
@@ -2231,17 +2588,24 @@ impl EngineSessionV1 {
                     }
                 }
                 StudioAuthoringEntityKind::Text => {
-                    let mut matching_outlines = text_outlines.iter().filter(|outline| {
-                        outline.entity_id == state.spec.id
-                            && state.current_text_content.as_ref().is_some_and(|content| {
-                                outline.text == content.text && outline.layout == content.layout
-                            })
-                    });
-                    let outline = matching_outlines
-                        .next()
+                    let initial = studio_creation_spec_text_content(&state.spec)
                         .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    if matching_outlines.next().is_some()
-                        || !text_outline_fragments_are_exact(outline)
+                    if exact_text_outline(
+                        &text_outlines,
+                        &state.spec.id,
+                        &initial.text,
+                        &initial.layout,
+                    )
+                    .is_none()
+                        || state.text_transforms.iter().any(|transform| {
+                            exact_text_outline(
+                                &text_outlines,
+                                &transform.target_entity_id,
+                                &transform.content.text,
+                                &transform.content.layout,
+                            )
+                            .is_none()
+                        })
                     {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
@@ -2269,6 +2633,7 @@ impl EngineSessionV1 {
         let mut persistent_removals = Vec::new();
         for state in &plan.entities {
             let math_tex_morph = planned_math_tex_morph(state, &math_tex_outlines)?;
+            let text_morph = planned_text_morph(state, &text_outlines)?;
             let path_morph = planned_cubic_bezier_path_morph(state)?;
             let shape_morph = planned_shape_morph(state)?;
             let geometry = match state.kind {
@@ -2429,22 +2794,17 @@ impl EngineSessionV1 {
                     }
                 }
                 StudioAuthoringEntityKind::Text => {
-                    let outline = text_outlines
-                        .iter()
-                        .find(|outline| {
-                            outline.entity_id == state.spec.id
-                                && state.current_text_content.as_ref().is_some_and(|content| {
-                                    outline.text == content.text && outline.layout == content.layout
-                                })
-                        })
+                    let initial = studio_creation_spec_text_content(&state.spec)
                         .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    let font_size = state
-                        .current_text_content
-                        .as_ref()
-                        .map(|content| content.layout.font_size)
-                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    let outline = exact_text_outline(
+                        &text_outlines,
+                        &state.spec.id,
+                        &initial.text,
+                        &initial.layout,
+                    )
+                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                     CreateSceneEntityGeometry::TextOutline {
-                        path: scale_cubic_path(&outline.path, font_size),
+                        path: scale_cubic_path(&outline.path, initial.layout.font_size),
                     }
                 }
                 StudioAuthoringEntityKind::Other => {
@@ -2591,18 +2951,15 @@ impl EngineSessionV1 {
                         math_tex_write_in(outline, &source, interval, easing)?
                     }
                     StudioAuthoringEntityKind::Text => {
-                        let content = state
-                            .current_text_content
-                            .as_ref()
+                        let content = studio_creation_spec_text_content(&state.spec)
                             .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                        let outline = text_outlines
-                            .iter()
-                            .find(|outline| {
-                                outline.entity_id == state.spec.id
-                                    && outline.text == content.text
-                                    && outline.layout == content.layout
-                            })
-                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        let outline = exact_text_outline(
+                            &text_outlines,
+                            &state.spec.id,
+                            &content.text,
+                            &content.layout,
+                        )
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                         text_write_in(outline, content.layout.font_size, interval, easing)?
                     }
                     _ => return Err(ApplyStudioCreationEditError::Unsupported),
@@ -2655,6 +3012,7 @@ impl EngineSessionV1 {
                 stroke_dash,
                 stroke_join,
                 stroke_width_world,
+                text_morph,
                 visible: state.visible,
                 write_in,
             });

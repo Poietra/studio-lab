@@ -36,7 +36,7 @@ import {
 import { normalizeContentSamples } from "./property-sampling";
 import {
   isExactStudioMathTexTransformProgramBatch,
-  studioCreationMathTexTransformRoots,
+  studioCreationContentTransformRoots,
   studioMotionProjectionBatchKind,
 } from "./scene-authoring-wire";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
@@ -465,7 +465,9 @@ function creationMutationKind(operation: SceneEditOperation): StudioCreationProj
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") return "fade-in";
   if (operation.kind === "DrawIn") return "draw-in";
   if (operation.kind === "WriteIn") return "write-in";
-  if (operation.kind === "TransformContent") return "math-tex-transform";
+  if (operation.kind === "TransformContent") {
+    return operation.targetType === "Text" ? "text-transform" : "math-tex-transform";
+  }
   if (operation.kind === "TransformPath") return "path-morph";
   if (operation.kind === "TransformShape") return "shape-transform";
   if (operation.kind === "AnimateCamera") return "animate-camera";
@@ -491,7 +493,7 @@ function correlateCreationProjection(
   if (!operations.some(({ operation }) => isStudioNativeAuthoringBatchOperation(operation))) return null;
   if (!projection) throw new TypeError("A Rust creation projection is required to project Studio-native Programs.");
   const operationById = new Map(operations.map((entry) => [entry.operation.id, entry] as const));
-  const mathTexTransformRoots = studioCreationMathTexTransformRoots(programs);
+  const contentTransformRoots = studioCreationContentTransformRoots(programs);
   const transactionIds = new Set(programs.map(({ transactionId }) => transactionId));
   if (operationById.size !== operations.length || transactionIds.size !== programs.length) {
     throw new TypeError("A Studio creation batch must contain unique operation and transaction IDs.");
@@ -695,8 +697,10 @@ function correlateCreationProjection(
       sameProjectionNumber(mutation.interval.start, 0) &&
       sameProjectionNumber(mutation.interval.end, 0);
     const expectedMathTexContent =
-      operation?.kind === "TransformContent" ? canonicalEditableContent(operation.replacement, "MathTex") : null;
-    const mathTexTransformInsertion = expected
+      operation?.kind === "TransformContent" && operation.targetType !== "Text"
+        ? canonicalEditableContent(operation.replacement, "MathTex")
+        : null;
+    const contentTransformInsertion = expected
       ? insertionsByTransaction.get(expected.program.transactionId)
       : undefined;
     const isCorrelatedMathTexTransform =
@@ -704,21 +708,49 @@ function correlateCreationProjection(
       operation.strategy === "replacement-transform" &&
       expectedMathTexContent !== null &&
       expectedMathTexContent.texParts !== undefined &&
-      mathTexTransformInsertion !== undefined &&
+      contentTransformInsertion !== undefined &&
       mutation.kind === "math-tex-transform" &&
-      mutation.entityId === mathTexTransformRoots.get(operation.id) &&
+      mutation.entityId === contentTransformRoots.get(operation.id) &&
       mutation.sourceEntityId === operation.sourceEntityId &&
       mutation.targetEntityId === operation.targetEntityId &&
       mutation.easing.kind === ((operation.easing ?? "smooth") === "smooth" ? "manim-smooth" : "linear") &&
       mutation.content.label === expectedMathTexContent.label &&
       sameStrings(mutation.content.displayLines, expectedMathTexContent.displayLines) &&
       sameStrings(mutation.content.texParts, expectedMathTexContent.texParts) &&
-      sameProjectionNumber(mutation.interval.start, mathTexTransformInsertion.at) &&
+      sameProjectionNumber(mutation.interval.start, contentTransformInsertion.at) &&
       sameProjectionNumber(
         mutation.interval.end - mutation.interval.start,
         operation.interval.end - operation.interval.start,
       ) &&
-      sameProjectionNumber(mathTexTransformInsertion.duration, operation.interval.end - operation.interval.start);
+      sameProjectionNumber(contentTransformInsertion.duration, operation.interval.end - operation.interval.start);
+    const expectedTextContent =
+      operation?.kind === "TransformContent" && operation.targetType === "Text"
+        ? studioCreationTextContent(operation.replacement)
+        : null;
+    const isCorrelatedTextTransform =
+      operation?.kind === "TransformContent" &&
+      operation.targetType === "Text" &&
+      operation.strategy === "replacement-transform" &&
+      expectedTextContent !== null &&
+      contentTransformInsertion !== undefined &&
+      mutation.kind === "text-transform" &&
+      mutation.entityId === contentTransformRoots.get(operation.id) &&
+      mutation.sourceEntityId === operation.sourceEntityId &&
+      mutation.targetEntityId === operation.targetEntityId &&
+      mutation.easing.kind === ((operation.easing ?? "smooth") === "smooth" ? "manim-smooth" : "linear") &&
+      mutation.content.text === expectedTextContent.text &&
+      mutation.content.layout.alignment === expectedTextContent.layout.alignment &&
+      mutation.content.layout.fontFamily ===
+        (expectedTextContent.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) &&
+      sameProjectionNumber(mutation.content.layout.fontSize, expectedTextContent.layout.fontSize) &&
+      mutation.content.layout.fontWeight === expectedTextContent.layout.fontWeight &&
+      sameProjectionNumber(mutation.content.layout.lineHeight, expectedTextContent.layout.lineHeight) &&
+      sameProjectionNumber(mutation.interval.start, contentTransformInsertion.at) &&
+      sameProjectionNumber(
+        mutation.interval.end - mutation.interval.start,
+        operation.interval.end - operation.interval.start,
+      ) &&
+      sameProjectionNumber(contentTransformInsertion.duration, operation.interval.end - operation.interval.start);
     const shapeTransformInsertion = expected ? insertionsByTransaction.get(expected.program.transactionId) : undefined;
     const isCorrelatedShapeTransform =
       operation?.kind === "TransformShape" &&
@@ -784,6 +816,7 @@ function correlateCreationProjection(
       mutation.transactionId !== expected.program.transactionId ||
       (!isCorrelatedMutation &&
         !isCorrelatedMathTexTransform &&
+        !isCorrelatedTextTransform &&
         !isCorrelatedPathMorph &&
         !isCorrelatedShapeTransform &&
         !isCorrelatedCamera &&
@@ -1490,12 +1523,19 @@ function appendProjectedMutation(
       kind: "exact",
       value: semanticShape ?? mutation.toShape,
     });
-  } else if (mutation.kind === "math-tex-transform") {
+  } else if (mutation.kind === "math-tex-transform" || mutation.kind === "text-transform") {
     appendProjectedSample(draft.propertyChannels, entityId, "content", {
       ...metadata,
       interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.end },
       kind: "exact",
-      value: mutation.content,
+      value:
+        mutation.kind === "text-transform"
+          ? {
+              displayLines: mutation.content.text.split("\n"),
+              text: mutation.content.text,
+              textLayout: mutation.content.layout,
+            }
+          : mutation.content,
     });
   } else {
     appendProjectedSample(draft.propertyChannels, entityId, "content", {

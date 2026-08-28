@@ -67,6 +67,12 @@ import {
 } from "./studio/camera-clip-edit";
 import { canvasDragTargetEntityIds, toggleCanvasEntitySelection } from "./studio/canvas-selection";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
+import {
+  type ContentTransformEasing,
+  contentTransformClipFromProgram,
+  createContentTransformProgram,
+  replaceContentTransformProgram,
+} from "./studio/content-transform-clip-edit";
 import type { DataPlotInspectorAuthoring } from "./studio/data-plot-editor";
 import { runDraftSourcePreflight } from "./studio/draft-apply-preflight";
 import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } from "./studio/draft-validation";
@@ -174,12 +180,6 @@ import {
   replaceMaterialParameterKeyframe,
   replaceMaterialParameterKeyframeProgram,
 } from "./studio/material-parameter-keyframe-edit";
-import {
-  createMathTexTransformProgram,
-  type MathTexTransformEasing,
-  mathTexTransformClipFromProgram,
-  replaceMathTexTransformProgram,
-} from "./studio/mathtex-transform-clip-edit";
 import type {
   DataSeries,
   EntityContent,
@@ -359,12 +359,12 @@ import { importStudioSvgPathAsset, type StudioSvgPathAsset } from "./studio/stud
 import type {
   StudioCameraClipChange,
   StudioCameraTimelineClip,
+  StudioContentTransformClipChange,
+  StudioContentTransformTimelineClip,
   StudioDrawInClipChange,
   StudioDrawInTimelineClip,
   StudioMaterialParameterTimelineOption,
   StudioMaterialParameterTimelineTrack,
-  StudioMathTexTransformClipChange,
-  StudioMathTexTransformTimelineClip,
   StudioOpacityTimelineTrack,
   StudioPaintColorTimelineTrack,
   StudioPathMorphClipChange,
@@ -1986,15 +1986,17 @@ export function App({
       },
     ];
   });
-  const mathTexTransformClips: readonly StudioMathTexTransformTimelineClip[] = previewAppliedEdits.flatMap((record) => {
+  const contentTransformClips: readonly StudioContentTransformTimelineClip[] = previewAppliedEdits.flatMap((record) => {
     if (!workspaceCreationProjection) return [];
     const operation = record.program.operations.find((candidate) => candidate.kind === "TransformContent");
     if (!operation || operation.kind !== "TransformContent") return [];
     const mutation = workspaceCreationProjection.mutations.find(
-      (candidate) => candidate.kind === "math-tex-transform" && candidate.operationId === operation.id,
+      (candidate) =>
+        (candidate.kind === "math-tex-transform" || candidate.kind === "text-transform") &&
+        candidate.operationId === operation.id,
     );
-    if (!mutation || mutation.kind !== "math-tex-transform") return [];
-    const sourceClip = mathTexTransformClipFromProgram(record.program, mutation.entityId);
+    if (!mutation || (mutation.kind !== "math-tex-transform" && mutation.kind !== "text-transform")) return [];
+    const sourceClip = contentTransformClipFromProgram(record.program, mutation.entityId);
     if (!sourceClip) return [];
     const createOperation = previewAppliedEdits
       .flatMap(({ program }) => program.operations)
@@ -4244,37 +4246,60 @@ export function App({
     stageWriteIn(clip.entityId, owner.programIndex, owner.record.program, null);
   }
 
-  function mathTexTransformMutationsForRoot(entityId: string) {
+  function contentTransformMutationsForRoot(entityId: string) {
     return (workspaceCreationProjection?.mutations ?? [])
       .filter(
-        (mutation): mutation is Extract<StudioCreationProjectionMutationV1, { kind: "math-tex-transform" }> =>
-          mutation.kind === "math-tex-transform" && mutation.entityId === entityId,
+        (
+          mutation,
+        ): mutation is Extract<StudioCreationProjectionMutationV1, { kind: "math-tex-transform" | "text-transform" }> =>
+          (mutation.kind === "math-tex-transform" || mutation.kind === "text-transform") &&
+          mutation.entityId === entityId,
       )
       .sort((left, right) => left.interval.end - right.interval.end);
   }
 
-  function mathTexTransformUnavailableReason(entityId: string) {
+  function contentTransformUnavailableReason(entityId: string) {
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
-    if (!entity || entity.type !== "MathTex" || entity.sourceIdentity.kind !== "unknown" || !entity.transactionId) {
-      return "Transform supports only Studio-created MathTex objects.";
+    if (
+      !entity ||
+      (entity.type !== "MathTex" && entity.type !== "Text") ||
+      entity.sourceIdentity.kind !== "unknown" ||
+      !entity.transactionId
+    ) {
+      return "Content Transform supports only Studio-created MathTex and Text objects.";
     }
     if (previewRenderer?.state.phase !== "presented" || !workspaceCreationProjection || !workspaceProjection) {
       return "Wait for the canonical WebGPU preview before creating Transform.";
     }
+    if (entity.type === "Text" && !sceneProgramsHaveWriteIn(previewAppliedSceneEdits, entityId)) {
+      return "Add Write to this Text before creating Transform.";
+    }
+    const textWrite =
+      entity.type === "Text"
+        ? workspaceCreationProjection.mutations.find(
+            (mutation) => mutation.kind === "write-in" && mutation.entityId === entityId,
+          )
+        : undefined;
+    if (entity.type === "Text" && (!textWrite || currentTime < textWrite.interval.end - 0.0005)) {
+      return "Move the playhead to the end of Write before creating Transform.";
+    }
+    if (entity.type === "Text" && activeSceneFragmentMaterials.assignments[entityId]) {
+      return "Remove the Text fragment material before creating Transform.";
+    }
     if (lockedEntityIdSet.has(entityId)) return LOCKED_ENTITY_MUTATION_MESSAGE;
     if (draftEdit) return "Apply or discard the current draft before creating Transform.";
-    const latest = mathTexTransformMutationsForRoot(entityId).at(-1);
+    const latest = contentTransformMutationsForRoot(entityId).at(-1);
     if (latest && currentTime < latest.interval.end - 0.0005) {
       return "Move the playhead to the end of the latest Transform before appending another one.";
     }
     return null;
   }
 
-  function addMathTexTransform(
+  function addContentTransform(
     entityId: string,
-    input: Readonly<{ content: EntityContent; duration: number; easing: MathTexTransformEasing }>,
+    input: Readonly<{ content: EntityContent; duration: number; easing: ContentTransformEasing }>,
   ) {
-    const unavailable = mathTexTransformUnavailableReason(entityId);
+    const unavailable = contentTransformUnavailableReason(entityId);
     if (unavailable) {
       setDraftError(unavailable);
       return false;
@@ -4286,7 +4311,7 @@ export function App({
       gestureContext.sourcePrograms,
     );
     const anchor = manualAuthoringAnchor({
-      action: "creating a MathTex Transform",
+      action: "creating a Content Transform",
       allowSyntheticPreviewAnchor: true,
       requireAlignedPlayhead: true,
       scene: sourceScene,
@@ -4294,9 +4319,9 @@ export function App({
       targetEntityIds: [entityId],
     });
     if (!anchor) return false;
-    const sourceEntityId = mathTexTransformMutationsForRoot(entityId).at(-1)?.targetEntityId ?? entityId;
+    const sourceEntityId = contentTransformMutationsForRoot(entityId).at(-1)?.targetEntityId ?? entityId;
     try {
-      const validation = createMathTexTransformProgram({
+      const validation = createContentTransformProgram({
         capturedPlayhead: anchor.sourceTime,
         content: input.content,
         easing: input.easing,
@@ -4305,20 +4330,20 @@ export function App({
         scene: sourceScene,
         sourceEntityId,
         start: anchor.sourceTime,
-        transactionId: `studio-mathtex-transform-${crypto.randomUUID()}`,
+        transactionId: `studio-content-transform-${crypto.randomUUID()}`,
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
       return installCanonicalDraft(validated.record, [entityId], gestureContext.sourcePrograms);
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : "The MathTex Transform could not be created.");
+      setDraftError(error instanceof Error ? error.message : "The Content Transform could not be created.");
       return false;
     }
   }
 
-  function stageMathTexTransform(
-    clip: StudioMathTexTransformTimelineClip,
-    change: StudioMathTexTransformClipChange = {},
+  function stageContentTransform(
+    clip: StudioContentTransformTimelineClip,
+    change: StudioContentTransformClipChange = {},
   ) {
     if (clip.readOnlyReason) {
       setDraftError(clip.readOnlyReason);
@@ -4328,12 +4353,12 @@ export function App({
     const original = appliedEdits[programIndex];
     const base = previewAppliedEdits[programIndex];
     if (!original || !base || base.program.transactionId !== clip.transactionId) {
-      setDraftError("The MathTex Transform no longer matches the applied Program history.");
+      setDraftError("The Content Transform no longer matches the applied Program history.");
       return false;
     }
     try {
       const preceding = sourceSceneBeforeAppliedProgram(programIndex);
-      const validation = replaceMathTexTransformProgram({
+      const validation = replaceContentTransformProgram({
         baseProgram: base.program,
         duration: change.duration,
         easing: change.easing,
@@ -4347,12 +4372,12 @@ export function App({
         original,
       });
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : "The MathTex Transform could not be edited.");
+      setDraftError(error instanceof Error ? error.message : "The Content Transform could not be edited.");
       return false;
     }
   }
 
-  function deleteMathTexTransform(clip: StudioMathTexTransformTimelineClip) {
+  function deleteContentTransform(clip: StudioContentTransformTimelineClip) {
     const latest = appliedEdits.at(-1);
     const mutation = programUndoEntries.at(-1);
     if (
@@ -10633,7 +10658,7 @@ export function App({
               lockedEntityIds={lockedEntityIdSet}
               materialParameterOptions={materialParameterOptions}
               materialParameterTracks={materialParameterTracks}
-              mathTexTransformClips={mathTexTransformClips}
+              contentTransformClips={contentTransformClips}
               motionDuration={motionDuration}
               motionPaths={motionPaths}
               opacityTrackEligibleIds={opacityTrackEligibleIds}
@@ -10754,9 +10779,9 @@ export function App({
               onMaterialParameterKeyframeChange={changeMaterialParameterKeyframe}
               onMaterialParameterKeyframeDelete={deleteMaterialParameterKeyframe}
               onMaterialParameterKeyframeDuplicate={duplicateMaterialParameterKeyframe}
-              onMathTexTransformClipChange={stageMathTexTransform}
-              onMathTexTransformClipDelete={deleteMathTexTransform}
-              onMathTexTransformClipSelect={(clip) => void stageMathTexTransform(clip)}
+              onContentTransformClipChange={stageContentTransform}
+              onContentTransformClipDelete={deleteContentTransform}
+              onContentTransformClipSelect={(clip) => void stageContentTransform(clip)}
               onMotionControlChange={changeDraftMotionControl}
               onMotionDurationChange={setMotionDuration}
               onPathMotionAdd={addPenPathMotion}
@@ -10841,12 +10866,12 @@ export function App({
               draftOperation={draftOperation}
               draftEdit={draftEdit}
               inspectorReturnFocus={inspectorReturnFocus}
-              mathTexTransform={
-                selectedEntity?.type === "MathTex"
+              contentTransform={
+                selectedEntity?.type === "MathTex" || selectedEntity?.type === "Text"
                   ? {
                       defaultDuration: motionDuration,
-                      onCreate: addMathTexTransform,
-                      unavailableReason: mathTexTransformUnavailableReason(selectedEntity.id),
+                      onCreate: addContentTransform,
+                      unavailableReason: contentTransformUnavailableReason(selectedEntity.id),
                     }
                   : undefined
               }

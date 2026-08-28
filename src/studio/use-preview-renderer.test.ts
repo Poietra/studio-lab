@@ -136,16 +136,23 @@ function compiledMathTexResponse(
   });
 }
 
-function compiledTextResponse(): TextOutlineResponseV1 {
+function compiledTextResponse(text = "Hello Text"): TextOutlineResponseV1 {
   const mathTex = compiledMathTexResponse().result;
   if (mathTex.kind !== "compiled") throw new Error("The shared outline fixture must compile.");
+  const fragments = [...text.normalize("NFC")]
+    .filter((character) => !/\s/u.test(character))
+    .map((character, order) => ({
+      order,
+      path: mathTex.path,
+      sourceCorrelation: { key: character, kind: "nfc-scalar" as const },
+    }));
   return textOutlineResponseV1Schema.parse({
     result: {
       bounds: mathTex.bounds,
       fillRule: "nonzero",
-      fragments: [{ order: 0, path: mathTex.path }],
+      fragments,
       kind: "compiled",
-      path: mathTex.path,
+      path: { subpaths: fragments.flatMap((fragment) => fragment.path.subpaths) },
     },
     schema: "poietra.text-outline-response",
     version: 1,
@@ -3565,7 +3572,7 @@ describe("compileStudioPreviewSceneV1", () => {
     };
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
     const compilerInputs: TextOutlineInputV1[] = [];
-    const outline = compiledTextResponse();
+    const outline = compiledTextResponse(text);
 
     const result = await compileStudioPreviewSceneV1({
       applyStudioCreationEditCompiler: async (bundle, command) => {
@@ -3673,7 +3680,7 @@ describe("compileStudioPreviewSceneV1", () => {
       applyStudioCreationEditCompiler: async (bundle) => unchangedAuthoringResult(bundle),
       frame: { height: 9, width: 16 },
       snapshot,
-      textOutlineCompiler: async () => compiledTextResponse(),
+      textOutlineCompiler: async (input) => compiledTextResponse(input.text),
       workingState: {
         ...proposedState.base,
         appliedEdits: [programRecord(creation.validation.program, creation.validation)],

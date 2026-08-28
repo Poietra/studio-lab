@@ -574,6 +574,12 @@ const studioTextLayoutV1Schema = z
     lineHeight: finiteNumberSchema.positive(),
   })
   .strict();
+const studioTextContentV1Schema = z
+  .object({
+    layout: studioTextLayoutV1Schema,
+    text: z.string().min(1).max(256),
+  })
+  .strict();
 const studioCreationImageV1Schema = z
   .object({
     asset: z
@@ -863,6 +869,19 @@ const studioCreationProjectionV1Schema = z
             entityId: z.string().min(1),
             interval: studioTimelineProjectionIntervalV1Schema,
             kind: z.literal("math-tex-transform"),
+            operationId: z.string().min(1),
+            sourceEntityId: z.string().min(1),
+            targetEntityId: z.string().min(1),
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            content: studioTextContentV1Schema,
+            easing: easingV1Schema,
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("text-transform"),
             operationId: z.string().min(1),
             sourceEntityId: z.string().min(1),
             targetEntityId: z.string().min(1),
@@ -1311,7 +1330,7 @@ type StudioCreationOperationV1 = Readonly<{
         easing: "linear" | "smooth";
         entityId: string;
         kind: "transform-content";
-        replacement: StudioMathTexContentV1 | null;
+        replacement: StudioMathTexContentV1 | StudioTextContentV1 | null;
         sourceEntityId: string;
         strategy: "replacement-transform" | "transform-matching-tex";
         targetEntityId: string;
@@ -1415,6 +1434,7 @@ export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
     fragments: readonly Readonly<{
       order: number;
       path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
+      sourceCorrelation: Readonly<{ key: string; kind: "nfc-scalar" }>;
     }>[];
     layout: StudioTextContentV1["layout"];
     path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];

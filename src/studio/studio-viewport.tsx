@@ -126,7 +126,7 @@ export function StudioViewport({
   lockedEntityIds,
   materialParameterOptions,
   materialParameterTracks,
-  mathTexTransformClips,
+  contentTransformClips,
   motionDuration,
   motionPaths,
   opacityTrackEligibleIds,
@@ -193,9 +193,9 @@ export function StudioViewport({
   onMaterialParameterKeyframeChange,
   onMaterialParameterKeyframeDelete,
   onMaterialParameterKeyframeDuplicate,
-  onMathTexTransformClipChange,
-  onMathTexTransformClipDelete,
-  onMathTexTransformClipSelect,
+  onContentTransformClipChange,
+  onContentTransformClipDelete,
+  onContentTransformClipSelect,
   onMotionControlChange,
   onMotionDurationChange,
   onPathMotionAdd,
@@ -368,7 +368,7 @@ export function StudioViewport({
           lockedEntityIds={lockedEntityIds}
           materialParameterOptions={materialParameterOptions}
           materialParameterTracks={materialParameterTracks}
-          mathTexTransformClips={mathTexTransformClips}
+          contentTransformClips={contentTransformClips}
           motionDuration={motionDuration}
           objectTracks={projection.timeline.objectTracks}
           opacityTrackEligibleIds={opacityTrackEligibleIds}
@@ -400,9 +400,9 @@ export function StudioViewport({
           onMaterialParameterKeyframeChange={onMaterialParameterKeyframeChange}
           onMaterialParameterKeyframeDelete={onMaterialParameterKeyframeDelete}
           onMaterialParameterKeyframeDuplicate={onMaterialParameterKeyframeDuplicate}
-          onMathTexTransformClipChange={onMathTexTransformClipChange}
-          onMathTexTransformClipDelete={onMathTexTransformClipDelete}
-          onMathTexTransformClipSelect={onMathTexTransformClipSelect}
+          onContentTransformClipChange={onContentTransformClipChange}
+          onContentTransformClipDelete={onContentTransformClipDelete}
+          onContentTransformClipSelect={onContentTransformClipSelect}
           onMotionDurationChange={onMotionDurationChange}
           onPathMotionAdd={onPathMotionAdd}
           onOpacityKeyframeAdd={onOpacityKeyframeAdd}

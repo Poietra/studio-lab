@@ -13,11 +13,12 @@ use super::{
     PlannedStudioAnimatedResize, PlannedStudioCameraClip, PlannedStudioCreationEntity,
     PlannedStudioLogicalGroup, PlannedStudioMathTexTransform, PlannedStudioMotion,
     PlannedStudioPathMorph, PlannedStudioPathMotion, PlannedStudioShapeTransform,
-    ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1, SceneEditExecution,
-    SceneEditScheduleMode, StudioAuthoringDimensions, StudioAuthoringEntityKind,
-    StudioAuthoringOrigin, StudioCreationEditInput, StudioCreationOperationKind,
-    StudioCreationPlan, StudioCreationProjectedMutation, StudioCreationProjectedMutationKind,
-    StudioCreationShapeState, StudioMathTexTransformStrategy, StudioMotionEasing, StudioMotionPlan,
+    PlannedStudioTextTransform, ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1,
+    SceneEditExecution, SceneEditScheduleMode, StudioAuthoringDimensions,
+    StudioAuthoringEntityKind, StudioAuthoringOrigin, StudioContentReplacement,
+    StudioCreationEditInput, StudioCreationOperationKind, StudioCreationPlan,
+    StudioCreationProjectedMutation, StudioCreationProjectedMutationKind, StudioCreationShapeState,
+    StudioMathTexTransformStrategy, StudioMotionEasing, StudioMotionPlan,
     StudioMotionProjectionTarget, StudioPaintColorProperty, StudioPaintColorTrack,
     StudioPropertyEasing, StudioStrokeDash, TIMELINE_ANCHOR_EPSILON,
     close_transform_baseline_value, closed_studio_creation_motion_operations,
@@ -107,7 +108,7 @@ pub(super) fn plan_studio_creation_edits(
         followup_programs,
         hierarchy_programs,
         material_parameter_programs,
-        math_tex_transform_programs,
+        content_transform_programs,
         opacity_programs,
         paint_color_programs,
         rotation_programs,
@@ -948,6 +949,7 @@ pub(super) fn plan_studio_creation_edits(
             stroke_dash_override: None,
             stroke_join_override: None,
             stroke_width_world_override: None,
+            text_transforms: Vec::new(),
             fade_interval,
             has_position_or_resize_instant: false,
             initial_dimensions: spec.dimensions,
@@ -984,19 +986,19 @@ pub(super) fn plan_studio_creation_edits(
         });
     }
 
-    let mut math_tex_transform_target_ids = created_ids
+    let mut content_transform_target_ids = created_ids
         .iter()
         .map(|id| (*id).to_owned())
         .collect::<BTreeSet<_>>();
-    let mut math_tex_transform_root_by_identity = created_ids
+    let mut content_transform_root_by_identity = created_ids
         .iter()
         .map(|id| ((*id).to_owned(), (*id).to_owned()))
         .collect::<BTreeMap<_, _>>();
-    let mut current_math_tex_transform_identity = created_ids
+    let mut current_content_transform_identity = created_ids
         .iter()
         .map(|id| ((*id).to_owned(), (*id).to_owned()))
         .collect::<BTreeMap<_, _>>();
-    for program_index in math_tex_transform_programs {
+    for program_index in content_transform_programs {
         let program = &programs[program_index];
         if program.operations.len() != 1
             || program.schedule_order != [program.operations[0].id.clone()]
@@ -1019,7 +1021,7 @@ pub(super) fn plan_studio_creation_edits(
             .entity_id
             .as_deref()
             .ok_or(ProjectStudioCreationEditError::Unsupported)?;
-        let source_root_id = math_tex_transform_root_by_identity
+        let source_root_id = content_transform_root_by_identity
             .get(source_entity_id)
             .ok_or(ProjectStudioCreationEditError::Unsupported)?;
         let state = entities
@@ -1032,15 +1034,12 @@ pub(super) fn plan_studio_creation_edits(
             start: operation.interval.start + timeline.offsets[program_index],
         };
         if state.creation_program_rank >= program_rank
-            || state.kind != StudioAuthoringEntityKind::MathTex
             || operation.origin != StudioAuthoringOrigin::DirectManipulation
             || source_root_id != entity_id
-            || current_math_tex_transform_identity.get(entity_id) != Some(source_entity_id)
+            || current_content_transform_identity.get(entity_id) != Some(source_entity_id)
             || *strategy != StudioMathTexTransformStrategy::ReplacementTransform
-            || target_type.as_deref().is_some_and(|kind| kind != "MathTex")
             || !target_entity_id.starts_with(&format!("tx:{}/entity:", program.transaction_id))
-            || !math_tex_transform_target_ids.insert(target_entity_id.clone())
-            || !studio_math_tex_content_is_canonical(replacement)
+            || !content_transform_target_ids.insert(target_entity_id.clone())
             || !matches!(
                 easing,
                 StudioPropertyEasing::Linear | StudioPropertyEasing::Smooth
@@ -1058,40 +1057,85 @@ pub(super) fn plan_studio_creation_edits(
                 .math_tex_transforms
                 .last()
                 .is_some_and(|prior| interval.start < prior.interval.end - TIMELINE_ANCHOR_EPSILON)
+            || state
+                .text_transforms
+                .last()
+                .is_some_and(|prior| interval.start < prior.interval.end - TIMELINE_ANCHOR_EPSILON)
             || state.persistent_removal.as_ref().is_some_and(|removal| {
                 interval.end > removal.interval.start + TIMELINE_ANCHOR_EPSILON
             })
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
-        let planned = PlannedStudioMathTexTransform {
-            content: replacement.clone(),
-            easing: property_easing(*easing),
-            interval: interval.clone(),
-            operation_id: operation.id.clone(),
-            source_entity_id: source_entity_id.clone(),
-            target_entity_id: target_entity_id.clone(),
-            transaction_id: program.transaction_id.clone(),
+        let easing = property_easing(*easing);
+        let (mutation, operation_id, transaction_id) = match (state.kind, replacement) {
+            (StudioAuthoringEntityKind::MathTex, StudioContentReplacement::MathTex(content))
+                if target_type.as_deref().is_none_or(|kind| kind == "MathTex")
+                    && studio_math_tex_content_is_canonical(content) =>
+            {
+                let planned = PlannedStudioMathTexTransform {
+                    content: content.clone(),
+                    easing: easing.clone(),
+                    interval: interval.clone(),
+                    operation_id: operation.id.clone(),
+                    source_entity_id: source_entity_id.clone(),
+                    target_entity_id: target_entity_id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                };
+                let mutation = StudioCreationProjectedMutationKind::MathTexTransform {
+                    content: planned.content.clone(),
+                    easing: planned.easing.clone(),
+                    source_entity_id: planned.source_entity_id.clone(),
+                    target_entity_id: planned.target_entity_id.clone(),
+                };
+                let ids = (planned.operation_id.clone(), planned.transaction_id.clone());
+                state.math_tex_transforms.push(planned);
+                (mutation, ids.0, ids.1)
+            }
+            (StudioAuthoringEntityKind::Text, StudioContentReplacement::Text(content))
+                if target_type.as_deref() == Some("Text")
+                    && studio_text_content_is_canonical(content)
+                    && state.write_interval.is_some()
+                    && state
+                        .current_text_content
+                        .as_ref()
+                        .is_some_and(|current| current.layout == content.layout) =>
+            {
+                let planned = PlannedStudioTextTransform {
+                    content: content.clone(),
+                    easing: easing.clone(),
+                    interval: interval.clone(),
+                    operation_id: operation.id.clone(),
+                    source_entity_id: source_entity_id.clone(),
+                    target_entity_id: target_entity_id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                };
+                let mutation = StudioCreationProjectedMutationKind::TextTransform {
+                    content: planned.content.clone(),
+                    easing: planned.easing.clone(),
+                    source_entity_id: planned.source_entity_id.clone(),
+                    target_entity_id: planned.target_entity_id.clone(),
+                };
+                let ids = (planned.operation_id.clone(), planned.transaction_id.clone());
+                state.current_text_content = Some(content.clone());
+                state.text_transforms.push(planned);
+                (mutation, ids.0, ids.1)
+            }
+            _ => return Err(ProjectStudioCreationEditError::Unsupported),
         };
-        math_tex_transform_root_by_identity.insert(target_entity_id.clone(), entity_id.to_owned());
-        current_math_tex_transform_identity.insert(entity_id.to_owned(), target_entity_id.clone());
+        content_transform_root_by_identity.insert(target_entity_id.clone(), entity_id.to_owned());
+        current_content_transform_identity.insert(entity_id.to_owned(), target_entity_id.clone());
         ranked_mutations.push((
             program_rank,
             0,
             StudioCreationProjectedMutation {
                 entity_id: entity_id.to_owned(),
                 interval,
-                kind: StudioCreationProjectedMutationKind::MathTexTransform {
-                    content: planned.content.clone(),
-                    easing: planned.easing.clone(),
-                    source_entity_id: planned.source_entity_id.clone(),
-                    target_entity_id: planned.target_entity_id.clone(),
-                },
-                operation_id: planned.operation_id.clone(),
-                transaction_id: planned.transaction_id.clone(),
+                kind: mutation,
+                operation_id,
+                transaction_id,
             },
         ));
-        state.math_tex_transforms.push(planned);
     }
 
     for program_index in opacity_programs {
@@ -2930,6 +2974,9 @@ pub(super) fn plan_studio_creation_edits(
                     .instant_at
                     .is_some_and(|at| removal.interval.start < at)
                 || state.math_tex_transforms.last().is_some_and(|transform| {
+                    removal.interval.start < transform.interval.end - TIMELINE_ANCHOR_EPSILON
+                })
+                || state.text_transforms.last().is_some_and(|transform| {
                     removal.interval.start < transform.interval.end - TIMELINE_ANCHOR_EPSILON
                 })
                 || state.shape_transforms.last().is_some_and(|transform| {

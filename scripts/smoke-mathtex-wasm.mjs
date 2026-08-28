@@ -14,7 +14,7 @@ assert.equal(outline.poietraMathTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileMathTexOutlineV1, "function");
 assert.equal(outline.poietraSegmentedTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileSegmentedTexOutlineV1, "function");
-assert.equal(outline.poietraTextOutlineAbiVersion(), 7);
+assert.equal(outline.poietraTextOutlineAbiVersion(), 8);
 assert.equal(typeof outline.compileTextOutlineV1, "function");
 
 const encoder = new TextEncoder();
@@ -192,6 +192,7 @@ const textRequests = [
   encodeTextRequest("Mono日本語", "regular", "mono"),
   encodeTextRequest("Caf\u00e9"),
   encodeTextRequest("Cafe\u0301"),
+  encodeTextRequest("ABA A"),
   encodeTextRequest("tab\tcharacter"),
 ];
 const textWasmResponses = textRequests.map(compileTextWasm);
@@ -223,7 +224,7 @@ for (const [index, wasmResponse] of textWasmResponses.entries()) {
     `plain Text native and WASM response ${index} must be byte-identical`,
   );
 }
-for (const response of textWasmResponses.slice(0, 10)) {
+for (const response of textWasmResponses.slice(0, 11)) {
   const parsed = JSON.parse(decoder.decode(response));
   assert.equal(parsed.schema, "poietra.text-outline-response");
   assert.equal(parsed.version, 1);
@@ -234,6 +235,15 @@ for (const response of textWasmResponses.slice(0, 10)) {
   assert.deepEqual(
     parsed.result.fragments.map(({ order }) => order),
     parsed.result.fragments.map((_, order) => order),
+  );
+  assert.ok(
+    parsed.result.fragments.every(
+      ({ sourceCorrelation }) =>
+        sourceCorrelation.kind === "nfc-scalar" &&
+        [...sourceCorrelation.key].length === 1 &&
+        sourceCorrelation.key === sourceCorrelation.key.normalize("NFC") &&
+        !/^\s$/u.test(sourceCorrelation.key),
+    ),
   );
   assert.deepEqual(
     parsed.result.fragments.flatMap(({ path }) => path.subpaths),
@@ -250,6 +260,13 @@ assert.deepEqual(
   Buffer.from(textWasmResponses[9]),
   "composed and decomposed Unicode must compile to the same canonical Text outline",
 );
+assert.deepEqual(
+  JSON.parse(decoder.decode(textWasmResponses[10])).result.fragments.map(
+    ({ sourceCorrelation }) => sourceCorrelation.key,
+  ),
+  ["A", "B", "A", "A"],
+  "repeated Text source keys must preserve visible reading order while skipping spaces",
+);
 assert.notDeepEqual(
   JSON.parse(decoder.decode(textWasmResponses[0])).result.path,
   JSON.parse(decoder.decode(textWasmResponses[4])).result.path,
@@ -260,7 +277,7 @@ assert.notDeepEqual(
   JSON.parse(decoder.decode(textWasmResponses[6])).result.path,
   "regular and bold Mono must use distinct real font outlines",
 );
-const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[10]));
+const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[11]));
 assert.equal(unsupportedText.result.kind, "unsupported");
 assert.equal(unsupportedText.result.code, "character-unsupported");
 
