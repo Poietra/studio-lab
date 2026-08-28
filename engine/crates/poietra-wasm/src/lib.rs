@@ -36,6 +36,8 @@ mod fragment_material_registry;
 #[cfg(target_arch = "wasm32")]
 mod export_readback_proof;
 mod protocol;
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod scene_post_effect_registry;
 
 use wasm_bindgen::prelude::*;
 
@@ -66,6 +68,7 @@ pub use export_verify::{
 pub use protocol::{
     EngineWorkerSessionV1, MAX_SAMPLE_REQUEST_JSON_BYTES_V1, MAX_WORKER_RESPONSE_JSON_BYTES_V1,
 };
+pub use scene_post_effect_registry::validate_scene_post_effect_source_registry_v1;
 
 #[cfg(target_arch = "wasm32")]
 pub use browser_export::{export_scene_mp4_v1, export_scene_mp4_with_wav_v1};
@@ -75,9 +78,9 @@ pub use canvas::PoietraCanvasEngineV1;
 pub use export_encoder::{PoietraExportEncoderSessionV1, probe_export_encoder_h264_v1};
 
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
-pub const POIETRA_ENGINE_ABI_VERSION: u32 = 39;
+pub const POIETRA_ENGINE_ABI_VERSION: u32 = 40;
 /// `OffscreenCanvas` render ABI version, independent of worker packet sampling.
-pub const POIETRA_CANVAS_ABI_VERSION: u32 = 9;
+pub const POIETRA_CANVAS_ABI_VERSION: u32 = 10;
 
 /// Returns the worker ABI version before a session is constructed.
 #[must_use]
@@ -186,8 +189,8 @@ mod tests {
 
     #[test]
     fn exported_abi_versions_are_explicit() {
-        assert_eq!(poietra_engine_abi_version(), 39);
-        assert_eq!(poietra_canvas_abi_version(), 9);
+        assert_eq!(poietra_engine_abi_version(), 40);
+        assert_eq!(poietra_canvas_abi_version(), 10);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
         assert_eq!(poietra_export_encoder_abi_version(), 1);
         assert_eq!(poietra_export_verify_abi_version(), 1);

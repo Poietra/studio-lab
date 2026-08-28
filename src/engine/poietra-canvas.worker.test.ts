@@ -147,15 +147,19 @@ describe("Poietra canvas worker runtime", () => {
     const snapshots: string[] = [];
     const samples: unknown[] = [];
     const canvases: unknown[] = [];
+    const scenePostEffectRegistries: unknown[] = [];
     class Engine implements PoietraWasmCanvasEngineV1 {
       static async create(
         snapshotJson: Uint8Array,
         _assetMetadataJson: Uint8Array,
         _assetBytes: Uint8Array[],
         canvas: OffscreenCanvas,
+        _fragmentMaterialRegistryJson: Uint8Array,
+        scenePostEffectRegistryJson: Uint8Array,
       ) {
         snapshots.push(new TextDecoder().decode(snapshotJson));
         canvases.push(canvas);
+        scenePostEffectRegistries.push(JSON.parse(new TextDecoder().decode(scenePostEffectRegistryJson)));
         return new Engine();
       }
 
@@ -180,6 +184,9 @@ describe("Poietra canvas worker runtime", () => {
 
     expect(snapshots).toEqual(["snapshot-a"]);
     expect(canvases).toHaveLength(1);
+    expect(scenePostEffectRegistries).toEqual([
+      { effect: null, schema: "poietra.scene-post-effect-registry", version: 1 },
+    ]);
     expect(samples).toEqual([
       {
         evidence: ["Poietra WASM canvas worker v1"],
@@ -206,6 +213,67 @@ describe("Poietra canvas worker runtime", () => {
     ]);
     expect(posted[1]).not.toHaveProperty("packet");
     expect(posted[1]).not.toHaveProperty("responseJson");
+  });
+
+  it("forwards the exact custom Scene post-effect registry on install and replacement", async () => {
+    const registries: unknown[] = [];
+    class Engine implements PoietraWasmCanvasEngineV1 {
+      static async create(
+        _snapshotJson: Uint8Array,
+        _assetMetadataJson: Uint8Array,
+        _assetBytes: Uint8Array[],
+        _canvas: OffscreenCanvas,
+        _fragmentMaterialRegistryJson: Uint8Array,
+        scenePostEffectRegistryJson: Uint8Array,
+      ) {
+        registries.push(JSON.parse(new TextDecoder().decode(scenePostEffectRegistryJson)));
+        return new Engine();
+      }
+
+      replaceSnapshot(
+        _snapshotJson: Uint8Array,
+        _assetMetadataJson: Uint8Array,
+        _assetBytes: Uint8Array[],
+        _fragmentMaterialRegistryJson: Uint8Array,
+        scenePostEffectRegistryJson: Uint8Array,
+      ) {
+        registries.push(JSON.parse(new TextDecoder().decode(scenePostEffectRegistryJson)));
+      }
+
+      async render() {
+        return encodeResponse(presentedResponse("canvas:3"));
+      }
+    }
+    const registry = new TextEncoder().encode(
+      JSON.stringify({
+        effect: { revision: 1, shaderId: "project-scene-post-effect", source: "@fragment fn fs_main() {}" },
+        schema: "poietra.scene-post-effect-registry",
+        version: 1,
+      }),
+    ).buffer;
+    const runtime = new PoietraCanvasWorkerRuntimeV1({
+      loadWasm: async () => Engine,
+      postMessage: () => undefined,
+      scopeUrl: "https://studio.test/worker.js",
+    });
+
+    await runtime.accept(installRequest({ scenePostEffectRegistryJson: registry }));
+    await runtime.accept({
+      assetPayloads: [],
+      baseRevision: REVISION_A,
+      kind: "replace-scene",
+      requestId: 2,
+      revision: REVISION_B,
+      scenePostEffectRegistryJson: registry,
+      schema: "poietra.canvas-worker-request",
+      snapshotJson: new TextEncoder().encode("snapshot-b").buffer,
+      version: 1,
+    });
+
+    expect(registries).toEqual([
+      expect.objectContaining({ effect: expect.objectContaining({ shaderId: "project-scene-post-effect" }) }),
+      expect.objectContaining({ effect: expect.objectContaining({ shaderId: "project-scene-post-effect" }) }),
+    ]);
   });
 
   it("forwards strict PNG descriptors and byte arrays to the asset-aware WASM ABI", async () => {
@@ -1231,12 +1299,12 @@ describe("Poietra canvas WASM binding handshake", () => {
     }
   }
 
-  it("accepts only canvas ABI v9 with the complete class shape", async () => {
+  it("accepts only canvas ABI v10 with the complete class shape", async () => {
     const initialize = vi.fn(async () => undefined);
     await expect(
       initializePoietraCanvasBindingsV1({
         default: initialize,
-        poietraCanvasAbiVersion: () => 9,
+        poietraCanvasAbiVersion: () => 10,
         PoietraCanvasEngineV1: Engine,
       }),
     ).resolves.toBe(Engine);
@@ -1250,11 +1318,11 @@ describe("Poietra canvas WASM binding handshake", () => {
         poietraCanvasAbiVersion: () => 6,
         PoietraCanvasEngineV1: Engine,
       }),
-    ).rejects.toThrow(/ABI version 9/i);
+    ).rejects.toThrow(/ABI version 10/i);
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 9,
+        poietraCanvasAbiVersion: () => 10,
         PoietraCanvasEngineV1: class Incomplete {},
       }),
     ).rejects.toThrow(/PoietraCanvasEngineV1/i);
@@ -1273,7 +1341,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 9,
+        poietraCanvasAbiVersion: () => 10,
         poietraCanvasTelemetryAbiVersion: () => 4,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
@@ -1283,7 +1351,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 9,
+        poietraCanvasAbiVersion: () => 10,
         poietraCanvasTelemetryAbiVersion: () => 3,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
@@ -1293,7 +1361,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 9,
+        poietraCanvasAbiVersion: () => 10,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
     ).rejects.toThrow(/telemetry ABI version 4/i);
@@ -1307,7 +1375,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 9,
+        poietraCanvasAbiVersion: () => 10,
         poietraCanvasTelemetryAbiVersion: () => 4,
         PoietraCanvasEngineV1: PartialTelemetryEngine,
       }),
@@ -1317,7 +1385,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 9,
+        poietraCanvasAbiVersion: () => 10,
         PoietraCanvasEngineV1: Engine,
       }),
     ).resolves.toBe(Engine);

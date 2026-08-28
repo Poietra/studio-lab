@@ -19,6 +19,11 @@ import {
   encodeFragmentMaterialRegistryV1,
   type FragmentMaterialRegistryV1,
 } from "./fragment-material-registry";
+import {
+  EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
+  encodeScenePostEffectRegistryV1,
+  type ScenePostEffectRegistryV1,
+} from "./scene-post-effect-registry";
 
 export function browserMp4ExportProfileV1(
   selection: Pick<ExportProfileV1, "frameRate" | "resolution">,
@@ -55,6 +60,7 @@ export type BrowserMp4ExportInput = Readonly<{
   /** Bounded per-frame progress reports from the Rust export loop (#723). */
   onProgress?: (progress: ExportProgressV1) => void;
   profile: ExportProfileV1;
+  scenePostEffectRegistry?: ScenePostEffectRegistryV1;
   /**
    * Aborting requests the named `cancelled` refusal from the export session:
    * everything collected is discarded and no partial Blob is ever produced.
@@ -95,6 +101,9 @@ export async function runBrowserMp4ExportV1(input: BrowserMp4ExportInput): Promi
   const fragmentMaterialRegistryJson = encodeFragmentMaterialRegistryV1(
     input.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
   );
+  const scenePostEffectRegistryJson = encodeScenePostEffectRegistryV1(
+    input.scenePostEffectRegistry ?? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
+  );
   const requestId = 1;
   if (input.audioWav && (input.audioWav.byteLength === 0 || input.audioWav.byteLength > MAX_EXPORT_WAV_BYTES)) {
     throw new BrowserMp4ExportRefused(`The WAV attachment must be between 1 byte and ${MAX_EXPORT_WAV_BYTES} bytes.`);
@@ -106,6 +115,7 @@ export async function runBrowserMp4ExportV1(input: BrowserMp4ExportInput): Promi
     kind: "export-mp4",
     profileJson,
     requestId,
+    scenePostEffectRegistryJson,
     schema: "poietra.export-worker-request",
     snapshotJson,
     version: 1,
@@ -161,8 +171,9 @@ export async function runBrowserMp4ExportV1(input: BrowserMp4ExportInput): Promi
         resolve({ kind: "exported", mp4: new Blob([response.bytes], { type: "video/mp4" }) });
       });
       // Transfer the potentially large WAV without a second main-thread copy.
-      if (input.audioWav) worker.postMessage(request, [input.audioWav, fragmentMaterialRegistryJson]);
-      else worker.postMessage(request, [fragmentMaterialRegistryJson]);
+      if (input.audioWav)
+        worker.postMessage(request, [input.audioWav, fragmentMaterialRegistryJson, scenePostEffectRegistryJson]);
+      else worker.postMessage(request, [fragmentMaterialRegistryJson, scenePostEffectRegistryJson]);
       if (input.signal?.aborted) onAbort();
     });
   } finally {

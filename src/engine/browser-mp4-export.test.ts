@@ -14,6 +14,11 @@ import {
   exportWorkerRequestV1Schema,
 } from "./export-worker-protocol";
 import { fragmentMaterialRegistryV1Schema, STUDIO_GRADIENT_FRAGMENT_SOURCE_V1 } from "./fragment-material-registry";
+import {
+  PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+  scenePostEffectRegistryV1Schema,
+} from "./scene-post-effect-registry";
 
 class FakeWorker {
   readonly posted: unknown[] = [];
@@ -138,7 +143,7 @@ describe("runBrowserMp4ExportV1", () => {
     await expect(outcomePromise).resolves.toMatchObject({ kind: "exported" });
   });
 
-  it("hands the same object parameter values and canonical WGSL registry to the WebCodecs worker", async () => {
+  it("hands object materials and the project Scene post-effect registry to the WebCodecs worker", async () => {
     const base = await fixtureBundle();
     const first = base.scene.entities[0];
     if (!first || first.appearance.kind !== "vector" || !first.appearance.fill) {
@@ -173,10 +178,20 @@ describe("runBrowserMp4ExportV1", () => {
       schema: "poietra.fragment-material-registry",
       version: 1,
     });
+    const scenePostEffectRegistry = scenePostEffectRegistryV1Schema.parse({
+      effect: {
+        revision: 1,
+        shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+        source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+      },
+      schema: "poietra.scene-post-effect-registry",
+      version: 1,
+    });
     const worker = new FakeWorker();
     const outcomePromise = runBrowserMp4ExportV1({
       fragmentMaterialRegistry: registry,
       profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+      scenePostEffectRegistry,
       snapshot: bundle,
       workerFactory: () => worker as unknown as Worker,
     });
@@ -190,6 +205,8 @@ describe("runBrowserMp4ExportV1", () => {
       shaderId: "project-material-1",
     });
     expect(JSON.parse(new TextDecoder().decode(request.fragmentMaterialRegistryJson))).toEqual(registry);
+    expect(JSON.parse(new TextDecoder().decode(request.scenePostEffectRegistryJson))).toEqual(scenePostEffectRegistry);
+    expect(worker.transfers[0]).toEqual([request.fragmentMaterialRegistryJson, request.scenePostEffectRegistryJson]);
     worker.emitMessage({
       bytes: new Uint8Array([0, 0, 0, 8]).buffer,
       kind: "export-finished",
@@ -362,7 +379,11 @@ describe("runBrowserMp4ExportV1", () => {
     const request = exportWorkerRequestV1Schema.parse(worker.posted[0]);
     if (request.kind !== "export-mp4") throw new Error("missing export request");
     expect(new Uint8Array(request.audioWav ?? new ArrayBuffer(0))).toEqual(new Uint8Array(audioWav));
-    expect(worker.transfers[0]).toEqual([audioWav, request.fragmentMaterialRegistryJson]);
+    expect(worker.transfers[0]).toEqual([
+      audioWav,
+      request.fragmentMaterialRegistryJson,
+      request.scenePostEffectRegistryJson,
+    ]);
     worker.emitMessage({
       bytes: new Uint8Array([0, 0, 0, 8]).buffer,
       kind: "export-finished",

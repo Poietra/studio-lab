@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { canvasPngAssetTransfersV1Schema } from "./canvas-png-assets";
 import { MAX_CANVAS_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES } from "./canvas-worker-protocol";
+import { MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1 } from "./scene-post-effect-registry";
 
 /**
  * Page <-> export-worker protocol for the composed browser MP4 export
@@ -124,6 +125,10 @@ const exportMp4RequestV1Schema = z
       .optional(),
     kind: z.literal("export-mp4"),
     profileJson: z.instanceof(ArrayBuffer),
+    scenePostEffectRegistryJson: z
+      .instanceof(ArrayBuffer)
+      .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1)
+      .optional(),
     snapshotJson: z.instanceof(ArrayBuffer),
     wasmModuleUrl: z.string().url().max(2_048),
   })

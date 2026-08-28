@@ -25,6 +25,7 @@ import {
   MAX_CANVAS_WASM_MODULE_URL_LENGTH,
   normalizeCanvasInteractionEntityIdsV1,
 } from "./canvas-worker-protocol";
+import { MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1 } from "./scene-post-effect-registry";
 
 const REVISION = "a".repeat(64);
 
@@ -83,6 +84,43 @@ describe("canvas worker v1 protocol", () => {
     expect(MAX_CANVAS_INTERACTION_ENTITY_IDS).toBe(128);
     expect(MAX_CANVAS_WASM_MODULE_URL_LENGTH).toBe(2_048);
     expect(MAX_CANVAS_THUMBNAIL_PNG_BYTES).toBe(4 * 1024 * 1024);
+  });
+
+  it("admits one bounded Scene post-effect registry only on Scene installation and replacement", () => {
+    const registry = new TextEncoder().encode(
+      '{"effect":null,"schema":"poietra.scene-post-effect-registry","version":1}',
+    ).buffer;
+    const install = {
+      assetPayloads: [],
+      canvas: new FakeOffscreenCanvas(160, 90),
+      kind: "install-canvas",
+      requestId: 1,
+      revision: REVISION,
+      scenePostEffectRegistryJson: registry,
+      schema: "poietra.canvas-worker-request",
+      snapshotJson: new ArrayBuffer(16),
+      version: 1,
+      wasmModuleUrl: "https://studio.test/engine-wasm/poietra_wasm.js",
+    } as const;
+    expect(canvasWorkerRequestV1Schema.safeParse(install).success).toBe(true);
+    expect(
+      canvasWorkerRequestV1Schema.safeParse({
+        ...install,
+        scenePostEffectRegistryJson: new ArrayBuffer(MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1 + 1),
+      }).success,
+    ).toBe(false);
+    expect(
+      canvasWorkerRequestV1Schema.safeParse({
+        kind: "render-frame",
+        requestId: 2,
+        revision: REVISION,
+        sampleTime: 1,
+        scenePostEffectRegistryJson: registry,
+        schema: "poietra.canvas-worker-request",
+        version: 1,
+        viewport: { heightPx: 90, widthPx: 160 },
+      }).success,
+    ).toBe(false);
   });
 
   it("carries one bounded thumbnail payload without widening frame responses", () => {

@@ -27,6 +27,9 @@ const MAX_ERROR_MESSAGE_LENGTH = 4_096;
 const EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON = new TextEncoder().encode(
   '{"materials":[],"schema":"poietra.fragment-material-registry","version":1}',
 );
+const EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON = new TextEncoder().encode(
+  '{"effect":null,"schema":"poietra.scene-post-effect-registry","version":1}',
+);
 
 export type BrowserMp4ExportProgressCallbackV1 = (envelopeJson: Uint8Array) => boolean | undefined;
 
@@ -36,8 +39,9 @@ export type BrowserMp4ExportWasmBindingsV1 = Readonly<{
     profileJson: Uint8Array,
     assetMetadataJson: Uint8Array,
     assetBytes: Uint8Array[],
-    progress?: BrowserMp4ExportProgressCallbackV1,
-    fragmentMaterialRegistryJson?: Uint8Array,
+    progress: BrowserMp4ExportProgressCallbackV1 | undefined,
+    fragmentMaterialRegistryJson: Uint8Array,
+    scenePostEffectRegistryJson: Uint8Array,
   ) => Promise<Uint8Array>;
   exportSceneMp4WithWavV1?: (
     snapshotJson: Uint8Array,
@@ -45,8 +49,9 @@ export type BrowserMp4ExportWasmBindingsV1 = Readonly<{
     assetMetadataJson: Uint8Array,
     assetBytes: Uint8Array[],
     wavBytes: Uint8Array,
-    progress?: BrowserMp4ExportProgressCallbackV1,
-    fragmentMaterialRegistryJson?: Uint8Array,
+    progress: BrowserMp4ExportProgressCallbackV1 | undefined,
+    fragmentMaterialRegistryJson: Uint8Array,
+    scenePostEffectRegistryJson: Uint8Array,
   ) => Promise<Uint8Array>;
 }>;
 
@@ -233,6 +238,9 @@ export class BrowserMp4ExportWorkerRuntimeV1 {
       const fragmentMaterialRegistryJson = request.fragmentMaterialRegistryJson
         ? new Uint8Array(request.fragmentMaterialRegistryJson)
         : EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON;
+      const scenePostEffectRegistryJson = request.scenePostEffectRegistryJson
+        ? new Uint8Array(request.scenePostEffectRegistryJson)
+        : EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON;
       if (request.audioWav) {
         if (!bindings.exportSceneMp4WithWavV1) {
           this.postRefused(
@@ -250,6 +258,7 @@ export class BrowserMp4ExportWorkerRuntimeV1 {
           new Uint8Array(request.audioWav),
           progress,
           fragmentMaterialRegistryJson,
+          scenePostEffectRegistryJson,
         );
       } else {
         output = await bindings.exportSceneMp4V1(
@@ -259,6 +268,7 @@ export class BrowserMp4ExportWorkerRuntimeV1 {
           assets.bytes,
           progress,
           fragmentMaterialRegistryJson,
+          scenePostEffectRegistryJson,
         );
       }
     } catch (error) {

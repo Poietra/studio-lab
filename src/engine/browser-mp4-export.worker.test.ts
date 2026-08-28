@@ -81,11 +81,26 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
 
   it("streams progress envelopes and transfers the finished MP4 exactly once", async () => {
     const output = new Uint8Array([0, 0, 0, 8, 0x66, 0x74, 0x79, 0x70]);
-    const { posted, runtime } = runtimeWith(async (_snapshot, _profile, _metadata, _assets, progress) => {
-      expect(progress?.(progressEnvelope(1))).toBeUndefined();
-      expect(progress?.(progressEnvelope(2))).toBeUndefined();
-      return output;
-    });
+    const { posted, runtime } = runtimeWith(
+      async (
+        _snapshot,
+        _profile,
+        _metadata,
+        _assets,
+        progress,
+        _fragmentMaterialRegistryJson,
+        scenePostEffectRegistryJson,
+      ) => {
+        expect(JSON.parse(new TextDecoder().decode(scenePostEffectRegistryJson))).toEqual({
+          effect: null,
+          schema: "poietra.scene-post-effect-registry",
+          version: 1,
+        });
+        expect(progress?.(progressEnvelope(1))).toBeUndefined();
+        expect(progress?.(progressEnvelope(2))).toBeUndefined();
+        return output;
+      },
+    );
     await runtime.accept(exportRequest());
     expect(posted.map(({ response }) => response.kind)).toEqual([
       "export-progress",
@@ -106,23 +121,44 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
     expect(finished.transfer).toEqual([finished.response.bytes]);
   });
 
-  it("passes the project fragment registry unchanged into the video export entry", async () => {
-    const registry = encoder.encode(
+  it("passes project material and Scene post-effect registries unchanged into the video export entry", async () => {
+    const fragmentRegistry = encoder.encode(
       JSON.stringify({
         materials: [{ revision: 1, shaderId: "project-wave", source: "@fragment fn fs_main() {}" }],
         schema: "poietra.fragment-material-registry",
         version: 1,
       }),
     );
+    const scenePostEffectRegistry = encoder.encode(
+      JSON.stringify({
+        effect: { revision: 1, shaderId: "project-scene-post-effect", source: "@fragment fn fs_main() {}" },
+        schema: "poietra.scene-post-effect-registry",
+        version: 1,
+      }),
+    );
     const videoOnly = vi.fn(
-      async (_snapshot, _profile, _metadata, _assets, _progress, fragmentMaterialRegistryJson) => {
-        expect(fragmentMaterialRegistryJson).toEqual(registry);
+      async (
+        _snapshot,
+        _profile,
+        _metadata,
+        _assets,
+        _progress,
+        fragmentMaterialRegistryJson,
+        scenePostEffectRegistryJson,
+      ) => {
+        expect(fragmentMaterialRegistryJson).toEqual(fragmentRegistry);
+        expect(scenePostEffectRegistryJson).toEqual(scenePostEffectRegistry);
         return new Uint8Array([1]);
       },
     );
     const { runtime } = runtimeWith(videoOnly);
 
-    await runtime.accept(exportRequest({ fragmentMaterialRegistryJson: registry.buffer }));
+    await runtime.accept(
+      exportRequest({
+        fragmentMaterialRegistryJson: fragmentRegistry.buffer,
+        scenePostEffectRegistryJson: scenePostEffectRegistry.buffer,
+      }),
+    );
 
     expect(videoOnly).toHaveBeenCalledOnce();
   });
@@ -291,7 +327,7 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
     return {
       default: async () => undefined,
       exportSceneMp4V1: async () => new Uint8Array([1]),
-      poietraEngineAbiVersion: () => 39,
+      poietraEngineAbiVersion: () => 40,
       ...overrides,
     };
   }
@@ -323,6 +359,6 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
   it("rejects a stale engine ABI before calling an incompatible export signature", async () => {
     await expect(
       initializeBrowserMp4ExportBindingsV1(wasmModule({ poietraEngineAbiVersion: () => 31 })),
-    ).rejects.toThrow(/engine ABI 39/);
+    ).rejects.toThrow(/engine ABI 40/);
   });
 });
