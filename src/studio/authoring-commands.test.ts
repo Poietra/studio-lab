@@ -587,7 +587,7 @@ describe("manual Studio authoring commands", () => {
     expect(result.validation.program.provenance.styleProfileRef).toEqual(styleProfileRef(STUDIO_STYLE_PROFILE));
   });
 
-  it("keeps one canonical cubic path replacement in its creation Program", () => {
+  it("recomputes source lowering when a Studio-created cubic path is closed and reopened", () => {
     const cubicBezier = {
       arrowEnd: false,
       control1: { x: -1, y: 1 },
@@ -646,6 +646,7 @@ describe("manual Studio authoring commands", () => {
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(replacement.kind).toBe("valid");
+    expect(replacement.program.loweringStatus).toBe("unsupported");
     expect(replacement.program.operations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -662,6 +663,25 @@ describe("manual Studio authoring commands", () => {
         expect.objectContaining({ kind: "SetProperty", key: "position", value: { x: 325, y: 175 } }),
       ]),
     );
+
+    const reopened = replaceStudioCreatedCubicBezierProgram({
+      cubicBezier: {
+        ...cubicBezier,
+        continuationSegments,
+        control1: { x: -0.5, y: 1 },
+      },
+      dimensions: { height: 2, width: 4 },
+      entityId,
+      owner: programRecord(replacement.program, replacement),
+      position: { x: 325, y: 175 },
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(reopened.kind, JSON.stringify(reopened.issues)).toBe("valid");
+    expect(reopened.program.loweringStatus).toBe("supported");
+    expect(programExecutionCapabilities(reopened.program)).toMatchObject({
+      apply: "supported",
+      lowering: "supported",
+    });
   });
 
   it("creates a manifest-backed Image through the canonical Program while reporting source export unsupported", () => {

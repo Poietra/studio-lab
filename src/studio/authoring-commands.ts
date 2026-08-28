@@ -572,7 +572,17 @@ export function replaceStudioCreatedCubicBezierProgram(
   if (createCount !== 1 || positionCount !== 1) {
     throw new Error("The Studio-created cubic Bézier has no unique creation owner.");
   }
-  return validateAndScheduleProgram({ ...input.owner.program, operations }, input.scene);
+  return validateAndScheduleProgram(
+    {
+      ...input.owner.program,
+      // Closing an open Pen makes source export unsupported. Reopening must
+      // derive the capability from the replacement operations instead of
+      // retaining that status from the prior closed shape.
+      loweringStatus: "supported",
+      operations,
+    },
+    input.scene,
+  );
 }
 
 export function createRemoveEntitiesProgram(
