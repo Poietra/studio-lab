@@ -7486,6 +7486,61 @@ fn math_tex_write_root_material_targets_fill_phase_and_unassigns() {
 }
 
 #[test]
+fn math_tex_write_appends_material_parameter_suffix_to_each_fill_channel() {
+    let mut bundle = static_imported_bundle();
+    bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+    let root_id = "tx:create/entity:circle";
+    let mut command = studio_math_tex_write_creation_command(&bundle);
+    add_creation_material_parameter_segment(&mut command.programs[0], root_id, 1.6, 2.0);
+    let material = FragmentMaterialV1 {
+        parameters: vec![0.35, 8.0],
+        revision: 1,
+        shader_id: "project-wave".to_owned(),
+        texture: None,
+    };
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    session.apply_studio_creation_edit(command).unwrap();
+    let assigned = session
+        .apply_studio_fragment_materials(ApplyStudioFragmentMaterialsCommand {
+            assignments: vec![StudioFragmentMaterialAssignment {
+                entity_id: root_id.to_owned(),
+                material: Some(material),
+            }],
+            expected_base_revision: NEXT_REVISION.to_owned(),
+            next_revision: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                .to_owned(),
+        })
+        .unwrap();
+
+    let fill_channels = assigned
+        .scene
+        .animation_channels
+        .iter()
+        .filter_map(|channel| match channel {
+            AnimationChannelV1::VectorAppearance {
+                entity_id,
+                keyframes,
+                ..
+            } if entity_id.starts_with(root_id) && entity_id.ends_with("/fill") => Some(keyframes),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(fill_channels.len(), 2);
+    assert!(fill_channels.iter().all(|keyframes| keyframes.len() == 4));
+    let suffix_times = [fill_channels[0][2].at, fill_channels[0][3].at];
+    assert!(suffix_times[0] > 1.5);
+    for (sample_time, expected) in suffix_times.into_iter().zip([0.35, 0.85]) {
+        for fragment in ["fragment-0000", "fragment-0001"] {
+            let fill_id = format!("{root_id}/write/{fragment}/fill");
+            assert!(
+                (sampled_material_parameter(&session, &fill_id, sample_time) - expected).abs()
+                    < 1e-12
+            );
+        }
+    }
+}
+
+#[test]
 fn normalized_math_tex_write_rejects_wrong_artifacts_and_conflicting_entrances() {
     let bundle = static_imported_bundle();
     let command = studio_math_tex_write_creation_command(&bundle);

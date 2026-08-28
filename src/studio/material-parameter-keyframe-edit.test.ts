@@ -5,6 +5,7 @@ import { drawInClipFromProgram, replaceDrawInProgram } from "./draw-in-edit";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import {
   appendMaterialParameterKeyframe,
+  type MaterialParameterKeyframe,
   materialParameterAssignmentBlocker,
   materialParameterIdentityEditBlocker,
   materialParameterKeyframeTrackFromProgram,
@@ -13,6 +14,8 @@ import {
 import { opacityKeyframeTrackFromProgram, replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
 import { duplicatePropertyKeyframeAtTime } from "./property-keyframe-duplicate";
+import type { SceneEdit } from "./scene-edit-contract";
+import { replaceWriteInProgram, writeInClipFromProgram } from "./write-in-edit";
 
 const material = {
   parameters: [0.35, 8],
@@ -333,6 +336,85 @@ describe("material parameter keyframe editing", () => {
         scene: STUDIO_FIXTURE_SCENE,
       }),
     ).toThrow(/texture/);
+  });
+
+  it("composes MathTex Write with later texture-free material keyframes in either order", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [
+        {
+          content: { displayLines: [String.raw`E = mc^2`], texParts: [String.raw`E = mc^2`] },
+          position: { x: 320, y: 180 },
+          type: "MathTex",
+        },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "material-after-write",
+    });
+    const entityId = creation.entityIds[0]!;
+    const written = replaceWriteInProgram({
+      baseProgram: creation.validation.program,
+      entityId,
+      fragmentMaterial: { texture: false },
+      scene: STUDIO_FIXTURE_SCENE,
+      write: { easing: "linear", end: 2.5 },
+    });
+    const parameterFirstKeyframes = [
+      { easing: "smooth" as const, time: 3, value: 0.35 },
+      { easing: "linear" as const, time: 4, value: 0.8 },
+    ];
+    const writeThenParameterKeyframes = [
+      { easing: "smooth" as const, time: 1.1, value: 0.35 },
+      { easing: "linear" as const, time: 2, value: 0.8 },
+    ];
+    const replaceTrack = (
+      baseProgram: SceneEdit,
+      nextKeyframes: readonly MaterialParameterKeyframe[],
+      texture = false,
+    ) =>
+      replaceMaterialParameterKeyframeProgram({
+        baseProgram,
+        entityId,
+        fragmentMaterial: { texture },
+        keyframes: nextKeyframes,
+        material,
+        name: "amplitude",
+        parameterIndex: 0,
+        scene: STUDIO_FIXTURE_SCENE,
+      });
+    const replaceWrite = (baseProgram: SceneEdit, end: number | null, texture: boolean | null = false) =>
+      replaceWriteInProgram({
+        baseProgram,
+        entityId,
+        fragmentMaterial: texture === null ? null : { texture },
+        scene: STUDIO_FIXTURE_SCENE,
+        write: end === null ? null : { easing: "linear", end },
+      });
+
+    expect(() => replaceTrack(written.program, [{ ...writeThenParameterKeyframes[0]!, time: 1 }])).toThrow(
+      /initial entrance/i,
+    );
+    const tracked = replaceTrack(written.program, writeThenParameterKeyframes);
+    expect(tracked.kind, JSON.stringify(tracked.issues)).toBe("valid");
+    expect(
+      tracked.program.operations.flatMap((operation) =>
+        operation.kind === "AnimateProperty" && operation.materialParameter ? [operation.entityId] : [],
+      ),
+    ).toEqual([entityId]);
+
+    const parameterFirst = replaceTrack(creation.validation.program, parameterFirstKeyframes);
+    expect(() => replaceWrite(parameterFirst.program, 2.5, null)).toThrow(/metadata/i);
+    const recomposed = replaceWrite(parameterFirst.program, 2.5);
+    expect(writeInClipFromProgram(recomposed.program)?.interval.end).toBe(2.5);
+    expect(() => replaceWrite(recomposed.program, 4.5)).toThrow(/before the first material parameter keyframe/i);
+    expect(() => replaceTrack(written.program, writeThenParameterKeyframes, true)).toThrow(/texture/);
+
+    const recoveredTrack = replaceTrack(tracked.program, [], true);
+    expect(writeInClipFromProgram(recoveredTrack.program)).not.toBeNull();
+    expect(materialParameterKeyframeTrackFromProgram(recoveredTrack.program, 0)).toBeNull();
+    const recoveredWrite = replaceWrite(recomposed.program, null, true);
+    expect(writeInClipFromProgram(recoveredWrite.program)).toBeNull();
+    expect(materialParameterKeyframeTrackFromProgram(recoveredWrite.program, 0)).not.toBeNull();
   });
 
   it("blocks material identity edits only while a matching active track exists", () => {

@@ -1,6 +1,7 @@
 import type { RuntimeSceneState } from "./model";
 import { operationExecutionCapabilities } from "./operation-registry";
 import { operationId } from "./operations";
+import { sourceTimeToWorkingTime } from "./program-composition";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
 import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 
@@ -58,7 +59,10 @@ export function writeInClipFromProgram(program: SceneEdit): WriteInClip | null {
 export function writeInUnavailableReason(
   program: SceneEdit,
   entityId: string,
-  options: Readonly<{ fragmentMaterial?: WriteInFragmentMaterialAdmission | null }> = {},
+  options: Readonly<{
+    fragmentMaterial?: WriteInFragmentMaterialAdmission | null;
+    writeEnd?: number;
+  }> = {},
 ): string | null {
   const create = createdEntity(program, entityId);
   if (!create || create.kind !== "CreateEntity") return "Write supports only Studio-created objects.";
@@ -66,13 +70,25 @@ export function writeInUnavailableReason(
   if (options.fragmentMaterial?.texture) {
     return "Write does not support texture fragment materials. Choose a texture-free material or remove Write.";
   }
-  const hasMaterialParameterTrack = program.operations.some(
-    (operation) =>
+  const firstMaterialKeyframe = program.operations.reduce<number | null>(
+    (start, operation) =>
       operation.kind === "AnimateProperty" &&
       operation.entityId === entityId &&
-      operation.materialParameter !== undefined,
+      operation.materialParameter !== undefined
+        ? Math.min(start ?? operation.interval.start, operation.interval.start)
+        : start,
+    null,
   );
-  if (hasMaterialParameterTrack) return "Remove the object's material animation before adding Write.";
+  if (firstMaterialKeyframe !== null && !options.fragmentMaterial) {
+    return "Wait for the fragment material metadata before editing Write with material keyframes.";
+  }
+  if (
+    firstMaterialKeyframe !== null &&
+    options.writeEnd !== undefined &&
+    sourceTimeToWorkingTime([program], firstMaterialKeyframe) <= options.writeEnd + WRITE_IN_EPSILON
+  ) {
+    return "Write must finish before the first material parameter keyframe.";
+  }
   const hasPaintColorTrack = program.operations.some(
     (operation) =>
       operation.kind === "AnimateProperty" &&
@@ -108,7 +124,10 @@ export function replaceWriteInProgram(
   }>,
 ): SceneEditValidationResult {
   const unavailable = input.write
-    ? writeInUnavailableReason(input.baseProgram, input.entityId, { fragmentMaterial: input.fragmentMaterial })
+    ? writeInUnavailableReason(input.baseProgram, input.entityId, {
+        fragmentMaterial: input.fragmentMaterial,
+        writeEnd: input.write.end,
+      })
     : null;
   if (unavailable) throw new TypeError(unavailable);
   const create = createdEntity(input.baseProgram, input.entityId);
