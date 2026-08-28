@@ -7486,6 +7486,79 @@ fn math_tex_write_root_material_targets_fill_phase_and_unassigns() {
 }
 
 #[test]
+fn math_tex_write_transform_material_targets_both_visible_phases() {
+    let mut bundle = static_imported_bundle();
+    bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+    let root_id = "tx:create/entity:circle";
+    let morph_id = format!("{root_id}/math-tex-morph");
+    let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+    session
+        .apply_studio_creation_edit(studio_math_tex_write_transform_chain_command(&bundle))
+        .unwrap();
+    let materials_match = |scene: &poietra_scene_ir::SceneIrV1,
+                           expected: Option<&FragmentMaterialV1>| {
+        let morph_material = scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == morph_id)
+            .and_then(|entity| match &entity.appearance {
+                SceneAppearanceV1::Vector {
+                    fill: Some(fill), ..
+                } => fill.fragment_material.as_ref(),
+                _ => None,
+            });
+        write_fill_materials_match(scene, root_id, expected) && morph_material == expected
+    };
+    let path_channels = |scene: &poietra_scene_ir::SceneIrV1| {
+        scene
+            .animation_channels
+            .iter()
+            .filter(|channel| {
+                matches!(
+                    channel,
+                    AnimationChannelV1::PathTrim { .. } | AnimationChannelV1::PathMorph { .. }
+                )
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let retained_path_channels = path_channels(session.scene());
+    let material = FragmentMaterialV1 {
+        parameters: vec![0.4],
+        revision: 1,
+        shader_id: "project-write-transform-material".to_owned(),
+        texture: None,
+    };
+    const ASSIGNED_REVISION: &str =
+        "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    let assigned = session
+        .apply_studio_fragment_materials(ApplyStudioFragmentMaterialsCommand {
+            assignments: vec![StudioFragmentMaterialAssignment {
+                entity_id: root_id.to_owned(),
+                material: Some(material.clone()),
+            }],
+            expected_base_revision: NEXT_REVISION.to_owned(),
+            next_revision: ASSIGNED_REVISION.to_owned(),
+        })
+        .unwrap();
+    assert!(materials_match(&assigned.scene, Some(&material)));
+    assert_eq!(path_channels(&assigned.scene), retained_path_channels);
+
+    let unassigned = session
+        .apply_studio_fragment_materials(ApplyStudioFragmentMaterialsCommand {
+            assignments: vec![StudioFragmentMaterialAssignment {
+                entity_id: root_id.to_owned(),
+                material: None,
+            }],
+            expected_base_revision: ASSIGNED_REVISION.to_owned(),
+            next_revision: "abababababababababababababababababababababababababababababababab"
+                .to_owned(),
+        })
+        .unwrap();
+    assert!(materials_match(&unassigned.scene, None));
+}
+
+#[test]
 fn math_tex_write_appends_material_parameter_suffix_to_each_fill_channel() {
     let mut bundle = static_imported_bundle();
     bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;

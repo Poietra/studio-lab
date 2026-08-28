@@ -60,12 +60,27 @@ fn math_tex_write_fill_targets(
     }
 
     let prefix = format!("{}/write/", root.id);
+    let morph_id = format!("{}/math-tex-morph", root.id);
     let mut fragments = BTreeMap::<&str, (bool, Option<String>)>::new();
+    let mut morph_fill = None;
     for child in scene
         .entities
         .iter()
         .filter(|entity| entity.parent_id.as_deref() == Some(root.id.as_str()))
     {
+        if child.id == morph_id {
+            match (&child.geometry, &child.appearance) {
+                (
+                    poietra_scene_ir::SceneGeometryV1::CubicPath { .. },
+                    SceneAppearanceV1::Vector {
+                        fill: Some(_),
+                        stroke: None,
+                        ..
+                    },
+                ) if morph_fill.replace(child.id.clone()).is_none() => continue,
+                _ => return None,
+            }
+        }
         let (fragment_id, role) = child.id.strip_prefix(&prefix)?.split_once('/')?;
         if !fragment_id.starts_with("fragment-") || fragment_id == "fragment-" || role.contains('/')
         {
@@ -94,6 +109,12 @@ fn math_tex_write_fill_targets(
         }
         targets.push(ResolvedFragmentMaterialTarget {
             entity_id: fill_id?,
+            paint: FragmentMaterialPaintTarget::Fill,
+        });
+    }
+    if let Some(entity_id) = morph_fill {
+        targets.push(ResolvedFragmentMaterialTarget {
+            entity_id,
             paint: FragmentMaterialPaintTarget::Fill,
         });
     }

@@ -9542,6 +9542,8 @@ export function App({
       selectedFragmentMaterialEntity.geometry.style.value.fillColor != null) ||
       selectedSvgPathHasFill === true ||
       selectedFragmentMaterialEntity.type === "Line" ||
+      (selectedFragmentMaterialEntity.type === "MathTex" &&
+        sceneProgramsHaveWriteIn(previewAppliedSceneEdits, selectedFragmentMaterialEntity.id)) ||
       (selectedFragmentMaterialEntity.type === "CubicBezier" &&
         selectedCubicBezierCreation?.creation.entity.id === selectedFragmentMaterialEntity.id &&
         selectedCubicBezierCreation.creation.entity.cubicBezier?.closed !== true));
