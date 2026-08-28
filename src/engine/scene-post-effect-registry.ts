@@ -1,7 +1,9 @@
 import { z } from "zod";
 
 export const MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1 = 16 * 1024;
-export const MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1 = 20 * 1024;
+// JSON may escape each admitted UTF-8 source byte as `\u00xx`; keep the wire
+// envelope large enough for every source accepted by the source contract.
+export const MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1 = MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1 * 6 + 1024;
 export const PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 = "project-scene-post-effect";
 
 export const scenePostEffectWgslSourceV1Schema = z

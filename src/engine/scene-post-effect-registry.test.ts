@@ -45,4 +45,19 @@ describe("Scene post-effect registry", () => {
       }).success,
     ).toBe(false);
   });
+
+  it("encodes every admitted source even when JSON escaping expands it", () => {
+    const registry = scenePostEffectRegistryV1Schema.parse({
+      ...EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
+      effect: {
+        revision: 1,
+        shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+        source: "\n".repeat(MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1),
+      },
+    });
+
+    expect(encodeScenePostEffectRegistryV1(registry).byteLength).toBeLessThanOrEqual(
+      MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1 * 6 + 1024,
+    );
+  });
 });

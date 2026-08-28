@@ -5,7 +5,8 @@ use poietra_render_wgpu::{
 use serde::{Deserialize, Deserializer};
 use wasm_bindgen::prelude::*;
 
-pub(crate) const MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1: usize = 20 * 1024;
+pub(crate) const MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1: usize =
+    MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1 * 6 + 1024;
 
 fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
@@ -124,5 +125,13 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
             )
             .is_err()
         );
+
+        let escaped_source = "\n".repeat(MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1);
+        let escaped_source = serde_json::to_string(&escaped_source).unwrap();
+        let escaped_registry = format!(
+            "{{\"effect\":{{\"revision\":1,\"shaderId\":\"project-scene-post-effect\",\"source\":{escaped_source}}},\"schema\":\"poietra.scene-post-effect-registry\",\"version\":1}}"
+        );
+        assert!(escaped_registry.len() <= MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1);
+        assert!(parse_scene_post_effect_registry_v1(escaped_registry.as_bytes()).is_ok());
     }
 }
