@@ -136,9 +136,10 @@ async function decodedPixelStats(
   mp4Base64: string,
   sampleTimes: readonly number[],
   mode: DecodedPixelMode = "bright",
+  normalizedRegion?: Readonly<{ bottom: number; left: number; right: number; top: number }>,
 ) {
   return page.evaluate(
-    async ({ mode, mp4Base64, sampleTimes }) => {
+    async ({ mode, mp4Base64, normalizedRegion, sampleTimes }) => {
       const encoded = atob(mp4Base64);
       const bytes = Uint8Array.from(encoded, (character) => character.charCodeAt(0));
       const url = URL.createObjectURL(new Blob([bytes], { type: "video/mp4" }));
@@ -175,7 +176,22 @@ async function decodedPixelStats(
         canvas.height = video.videoHeight;
         const context = canvas.getContext("2d", { alpha: false, willReadFrequently: true });
         if (!context) throw new Error("The decoded Draw frame canvas is unavailable.");
-        const stats: Readonly<{ count: number; x: number; y: number }>[] = [];
+        const matchesMode = (red: number, green: number, blue: number) =>
+          mode === "green-dominant"
+            ? green > 32 && green > red * 2 && green > blue * 1.5
+            : mode === "blue-dominant"
+              ? blue > 32 && blue > red * 1.5 && blue > green * 1.5
+              : mode === "red-dominant"
+                ? red > 32 && red > green * 1.5 && red > blue * 1.5
+                : red + green + blue > 90;
+        const stats: Readonly<{
+          commonColorDifferenceFromPrevious: number;
+          commonPixelCountFromPrevious: number;
+          count: number;
+          x: number;
+          y: number;
+        }>[] = [];
+        let previousFrame: Uint8ClampedArray | null = null;
         for (const sampleTime of sampleTimes) {
           await new Promise<void>((resolve, reject) => {
             const timeout = setTimeout(() => reject(new Error(`MP4 seek to ${sampleTime}s timed out.`)), 15_000);
@@ -192,28 +208,46 @@ async function decodedPixelStats(
           context.drawImage(video, 0, 0);
           const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
           let bright = 0;
+          let commonColorDifferenceFromPrevious = 0;
+          let commonPixelCountFromPrevious = 0;
           let totalX = 0;
           let totalY = 0;
           for (let offset = 0; offset < pixels.length; offset += 4) {
+            const pixel = offset / 4;
+            const pixelX = pixel % canvas.width;
+            const pixelY = Math.floor(pixel / canvas.width);
+            if (
+              normalizedRegion &&
+              (pixelX < normalizedRegion.left * canvas.width ||
+                pixelX > normalizedRegion.right * canvas.width ||
+                pixelY < normalizedRegion.top * canvas.height ||
+                pixelY > normalizedRegion.bottom * canvas.height)
+            ) {
+              continue;
+            }
             const red = pixels[offset] ?? 0;
             const green = pixels[offset + 1] ?? 0;
             const blue = pixels[offset + 2] ?? 0;
-            const matches =
-              mode === "green-dominant"
-                ? green > 32 && green > red * 2 && green > blue * 1.5
-                : mode === "blue-dominant"
-                  ? blue > 32 && blue > red * 1.5 && blue > green * 1.5
-                  : mode === "red-dominant"
-                    ? red > 32 && red > green * 1.5 && red > blue * 1.5
-                    : red + green + blue > 90;
-            if (matches) {
-              const pixel = offset / 4;
+            if (matchesMode(red, green, blue)) {
               bright += 1;
-              totalX += pixel % canvas.width;
-              totalY += Math.floor(pixel / canvas.width);
+              totalX += pixelX;
+              totalY += pixelY;
+              if (previousFrame) {
+                const previousRed = previousFrame[offset] ?? 0;
+                const previousGreen = previousFrame[offset + 1] ?? 0;
+                const previousBlue = previousFrame[offset + 2] ?? 0;
+                if (matchesMode(previousRed, previousGreen, previousBlue)) {
+                  commonPixelCountFromPrevious += 1;
+                  commonColorDifferenceFromPrevious +=
+                    Math.abs(red - previousRed) + Math.abs(green - previousGreen) + Math.abs(blue - previousBlue);
+                }
+              }
             }
           }
+          previousFrame = new Uint8ClampedArray(pixels);
           stats.push({
+            commonColorDifferenceFromPrevious,
+            commonPixelCountFromPrevious,
             count: bright,
             x: bright === 0 ? Number.NaN : totalX / bright,
             y: bright === 0 ? Number.NaN : totalY / bright,
@@ -224,7 +258,7 @@ async function decodedPixelStats(
         URL.revokeObjectURL(url);
       }
     },
-    { mode, mp4Base64, sampleTimes },
+    { mode, mp4Base64, normalizedRegion, sampleTimes },
   );
 }
 
@@ -646,6 +680,29 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await expect(page.getByLabel("Fill color CubicBezier")).toHaveCount(0);
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+
+    const scenePlayhead = page.getByRole("slider", { name: "Scene playhead" });
+    const penMaterialParameter = page.getByRole("combobox", { name: "Material parameter for CubicBezier" });
+    await penMaterialParameter.selectOption("Angle");
+    await scenePlayhead.fill("1.5");
+    await page.getByRole("button", { name: "Add Angle material keyframe for CubicBezier" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await scenePlayhead.fill("1.8");
+    await page.getByRole("button", { name: "Add Angle material keyframe for CubicBezier" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    let penMaterialEnd = page.getByRole("button", { name: /Material parameter keyframe 2 at/u });
+    await penMaterialEnd.click();
+    await page.getByLabel("Material parameter keyframe value").fill("-3.1");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    penMaterialEnd = page.getByRole("button", { name: /Material parameter keyframe 2 at/u });
+    await penMaterialEnd.click();
+    await page.getByLabel("Material parameter keyframe time").fill("1.9");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    let penMaterialStart = page.getByRole("button", { name: /Material parameter keyframe 1 at/u });
+    await penMaterialStart.click();
+    await page.getByRole("combobox", { name: "Material parameter segment easing" }).selectOption("linear");
+    await page.getByRole("button", { name: "Replace program" }).click();
+
     const materializedPenDraw = page.getByRole("button", { name: "Add Draw entrance for CubicBezier" });
     await expect(materializedPenDraw).toHaveAttribute("aria-disabled", "false");
     await materializedPenDraw.click();
@@ -657,7 +714,7 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     await expect.poll(() => canvas.getAttribute("data-preview-revision")).not.toBe(penDrawEditRevision);
     const penDrawDuration = page.getByRole("spinbutton", { name: "Draw duration for CubicBezier" });
     const penDrawRevision = await canvas.getAttribute("data-preview-revision");
-    await penDrawDuration.fill("0.3");
+    await penDrawDuration.fill("1.7");
     await penDrawDuration.blur();
     await expect.poll(() => canvas.getAttribute("data-preview-revision")).not.toBe(penDrawRevision);
     await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
@@ -665,7 +722,7 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     penDrawClip = page.getByRole("button", { name: "Edit CubicBezier Draw entrance" });
-    await expect(penDrawClip).toHaveAttribute("title", "Draw 0.40–0.70s · smooth");
+    await expect(penDrawClip).toHaveAttribute("title", "Draw 0.40–2.10s · smooth");
 
     await page.reload();
     await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
@@ -675,11 +732,50 @@ test("paints imported SVG and a closed Pen path with WGSL through reload and MP4
     const penMaterial = page.getByRole("combobox", { name: "Assigned fragment material" });
     await expect(penMaterial).not.toHaveValue("");
     penDrawClip = page.getByRole("button", { name: "Edit CubicBezier Draw entrance" });
-    await expect(penDrawClip).toHaveAttribute("title", "Draw 0.40–0.70s · smooth");
+    await expect(penDrawClip).toHaveAttribute("title", "Draw 0.40–2.10s · smooth");
+    penMaterialStart = page.getByRole("button", { name: /Material parameter keyframe 1 at/u });
+    penMaterialEnd = page.getByRole("button", { name: /Material parameter keyframe 2 at/u });
+    await expect(penMaterialStart).toBeVisible();
+    await expect(penMaterialEnd).toBeVisible();
+    const penMaterialStartTime = await propertyKeyframeTime(penMaterialStart);
+    const penMaterialEndTime = await propertyKeyframeTime(penMaterialEnd);
+    const [canvasBounds, penBounds] = await Promise.all([
+      canvas.boundingBox(),
+      page.locator(`[data-studio-entity-wrapper="${penId}"]`).boundingBox(),
+    ]);
+    if (!canvasBounds || !penBounds) throw new Error("The Pen bounds were unavailable for MP4 color evidence.");
+    const penRegion = {
+      bottom: Math.min(1, (penBounds.y + penBounds.height - canvasBounds.y) / canvasBounds.height + 0.02),
+      left: Math.max(0, (penBounds.x - canvasBounds.x) / canvasBounds.width - 0.02),
+      right: Math.min(1, (penBounds.x + penBounds.width - canvasBounds.x) / canvasBounds.width + 0.02),
+      top: Math.max(0, (penBounds.y - canvasBounds.y) / canvasBounds.height - 0.02),
+    };
     const openPenMp4 = await exportLocalMp4(page);
-    const openPenPixels = await decodedBrightPixelCounts(page, openPenMp4, [0.35, 0.55, 0.75]);
+    const openPenStats = await decodedPixelStats(
+      page,
+      openPenMp4,
+      [0.35, penMaterialStartTime + 0.05, penMaterialEndTime - 0.05, 2.15],
+      "bright",
+      penRegion,
+    );
+    const openPenPixels = openPenStats.map(({ count }) => count);
     expect(openPenPixels[1] ?? 0).toBeGreaterThan((openPenPixels[0] ?? 0) + 20);
     expect(openPenPixels[2] ?? 0).toBeGreaterThan((openPenPixels[1] ?? 0) + 20);
+    expect(openPenPixels[3] ?? 0).toBeGreaterThan((openPenPixels[2] ?? 0) + 20);
+    const overlapEnd = openPenStats[2];
+    expect(overlapEnd?.commonPixelCountFromPrevious ?? 0).toBeGreaterThan(20);
+    expect(
+      (overlapEnd?.commonColorDifferenceFromPrevious ?? 0) / (overlapEnd?.commonPixelCountFromPrevious || 1),
+    ).toBeGreaterThan(8);
+
+    await penMaterialEnd.click();
+    await page.getByRole("button", { name: "Delete keyframe" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    penMaterialStart = page.getByRole("button", { name: /Material parameter keyframe 1 at/u });
+    await penMaterialStart.click();
+    await page.getByRole("button", { name: "Delete keyframe" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.locator('[data-property-keyframe="material"]')).toHaveCount(0);
     await penDrawClip.click();
     await page.getByRole("button", { name: "Remove Draw" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
@@ -910,6 +1006,22 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await wavePreset.getByRole("button", { name: "Create & apply" }).click();
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const linePlayhead = page.getByRole("slider", { name: "Scene playhead" });
+    await page.getByRole("combobox", { name: "Material parameter for Line" }).selectOption("Bands");
+    await linePlayhead.fill("1.1");
+    await page.getByRole("button", { name: "Add Bands material keyframe for Line" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await linePlayhead.fill("1.4");
+    await page.getByRole("button", { name: "Add Bands material keyframe for Line" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    let lineMaterialEnd = page.getByRole("button", { name: /Material parameter keyframe 2 at/u });
+    await lineMaterialEnd.click();
+    await page.getByLabel("Material parameter keyframe value").fill("1");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const lineMaterialStart = page.getByRole("button", { name: /Material parameter keyframe 1 at/u });
+    await lineMaterialStart.click();
+    await page.getByRole("combobox", { name: "Material parameter segment easing" }).selectOption("linear");
+    await page.getByRole("button", { name: "Replace program" }).click();
 
     await page.getByRole("button", { name: /Insert circle/ }).click();
     await canvas.click({ position: { x: 560, y: 300 } });
@@ -1000,6 +1112,10 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
     await expect(page.getByRole("spinbutton", { name: "Gap length Line" })).toHaveValue("0.2");
     await expect(page.getByRole("button", { name: "Use solid stroke" })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Assigned fragment material" })).not.toHaveValue("");
+    await expect(page.getByRole("button", { name: /Material parameter keyframe 1 at/u })).toBeVisible();
+    lineMaterialEnd = page.getByRole("button", { name: /Material parameter keyframe 2 at/u });
+    await lineMaterialEnd.click();
+    await expect(page.getByLabel("Material parameter keyframe value")).toHaveValue("1");
 
     const mp4 = await exportLocalMp4(page);
     const exportedStrokePixels = await decodedBrightPixelCounts(page, mp4, [0.02, 0.75, 1.6], "green-dominant");

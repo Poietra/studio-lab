@@ -503,6 +503,11 @@ fn fragment_material_stroke_prepares_the_evaluated_trimmed_curve() {
             .fragment_material()
             .is_some_and(|material| material.texture().is_none())
     );
+    let sampled_parameter = material.material_plan().materials()[draw_index]
+        .fragment_material()
+        .unwrap()
+        .parameters()[0];
+    assert!((sampled_parameter - 0.25).abs() < f32::EPSILON);
 }
 
 #[test]

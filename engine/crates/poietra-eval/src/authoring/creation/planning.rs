@@ -80,7 +80,7 @@ fn studio_path_morph_pair_is_supported(
         && from_path.segments.len() == to_path.segments.len()
 }
 
-fn studio_creation_supports_stroke_dash(state: &PlannedStudioCreationEntity) -> bool {
+fn studio_creation_supports_open_stroke_features(state: &PlannedStudioCreationEntity) -> bool {
     state.kind == StudioAuthoringEntityKind::Line
         || (state.kind == StudioAuthoringEntityKind::CubicBezier
             && state
@@ -1227,7 +1227,11 @@ pub(super) fn plan_studio_creation_edits(
                 end: operation.interval.end + timeline.offsets[program_index],
                 start: operation.interval.start + timeline.offsets[program_index],
             };
-            if state.creation_program_rank == program_rank
+            let composes_with_initial_draw = state.draw_interval.is_some()
+                && studio_creation_supports_open_stroke_features(state)
+                && material.texture.is_none();
+            if !composes_with_initial_draw
+                && state.creation_program_rank == program_rank
                 && let Some((_, insertion)) = timeline
                     .ranked_insertions
                     .iter()
@@ -1242,8 +1246,9 @@ pub(super) fn plan_studio_creation_edits(
             }
             if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
                 || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
-                || studio_creation_initial_appearance_end(state)
-                    .is_some_and(|end| interval.start <= end + TIMELINE_ANCHOR_EPSILON)
+                || studio_creation_initial_appearance_end(state).is_some_and(|end| {
+                    interval.start <= end + TIMELINE_ANCHOR_EPSILON && !composes_with_initial_draw
+                })
             {
                 return Err(ProjectStudioCreationEditError::Unsupported);
             }
@@ -2374,7 +2379,7 @@ pub(super) fn plan_studio_creation_edits(
                         }
                     };
                     if operation.origin != StudioAuthoringOrigin::DirectManipulation
-                        || !studio_creation_supports_stroke_dash(state)
+                        || !studio_creation_supports_open_stroke_features(state)
                         || state.stroke_dash_override == value
                         || !studio_timeline_semantic_values_match(
                             operation.interval.start,
@@ -3071,7 +3076,12 @@ pub(super) fn plan_studio_creation_edits(
     if entities.iter().any(|state| {
         state.draw_interval.is_some()
             && (state.fill_color_override.is_some()
-                || !state.material_parameter_keyframes.is_empty()
+                || (!state.material_parameter_keyframes.is_empty()
+                    && (!studio_creation_supports_open_stroke_features(state)
+                        || state
+                            .material_parameter_keyframes
+                            .iter()
+                            .any(|keyframe| keyframe.value.texture.is_some())))
                 || groups
                     .iter()
                     .any(|group| group.child_entity_ids.contains(&state.spec.id)))

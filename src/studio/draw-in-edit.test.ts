@@ -10,7 +10,7 @@ import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import { insertedProgramDuration } from "./program-composition";
 
-const STATIC_FRAGMENT_MATERIAL = { hasParameterKeyframes: false, texture: false } as const;
+const TEXTURE_FREE_FRAGMENT_MATERIAL = { texture: false } as const;
 
 function materialDrawCreation(transactionId: string, entity: StudioEntityInput) {
   return createStudioEntitiesProgram({
@@ -52,6 +52,7 @@ describe("Draw entrance editing", () => {
       baseProgram: creation.validation.program,
       draw: { easing: "smooth", end: 2.5 },
       entityId,
+      fragmentMaterial: null,
       scene: STUDIO_FIXTURE_SCENE,
     });
 
@@ -69,6 +70,7 @@ describe("Draw entrance editing", () => {
       baseProgram: drawn.program,
       draw: null,
       entityId,
+      fragmentMaterial: null,
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(removed.kind, JSON.stringify(removed.issues)).toBe("valid");
@@ -88,6 +90,7 @@ describe("Draw entrance editing", () => {
       baseProgram: creation.validation.program,
       draw: { easing: "linear", end: 2.5 },
       entityId,
+      fragmentMaterial: null,
       scene: STUDIO_FIXTURE_SCENE,
     });
     const shortened = replaceStudioEntityLifetimeProgram({
@@ -162,6 +165,7 @@ describe("Draw entrance editing", () => {
       baseProgram: creation.validation.program,
       draw: { easing: "linear", end: 2 },
       entityId,
+      fragmentMaterial: null,
       scene: STUDIO_FIXTURE_SCENE,
     });
 
@@ -189,6 +193,7 @@ describe("Draw entrance editing", () => {
       baseProgram: creation.validation.program,
       draw: { easing: "linear", end: 2 },
       entityId,
+      fragmentMaterial: null,
       scene: STUDIO_FIXTURE_SCENE,
       svgHasFill: false,
     });
@@ -200,6 +205,7 @@ describe("Draw entrance editing", () => {
         baseProgram: creation.validation.program,
         draw: { easing: "linear", end: 2 },
         entityId,
+        fragmentMaterial: null,
         scene: STUDIO_FIXTURE_SCENE,
         svgHasFill: true,
       }),
@@ -209,46 +215,72 @@ describe("Draw entrance editing", () => {
   it.each([
     ["Line", { position: { x: 320, y: 180 }, type: "Line" }],
     ["open Pen", materialDrawPen()],
-  ] as const)("admits a static material with Draw on a Studio-created %s in either order", (_, entity) => {
+  ] as const)("admits a texture-free material with Draw on a Studio-created %s in either order", (_, entity) => {
     const creation = materialDrawCreation(`draw-material-${entity.type}`, entity);
     const entityId = creation.entityIds[0]!;
 
     expect(
       drawInUnavailableReason(creation.validation.program, entityId, {
-        fragmentMaterial: STATIC_FRAGMENT_MATERIAL,
+        fragmentMaterial: TEXTURE_FREE_FRAGMENT_MATERIAL,
       }),
     ).toBeNull();
     const drawn = replaceDrawInProgram({
       baseProgram: creation.validation.program,
       draw: { easing: "smooth", end: 2 },
       entityId,
+      fragmentMaterial: TEXTURE_FREE_FRAGMENT_MATERIAL,
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
-    expect(drawInUnavailableReason(drawn.program, entityId, { fragmentMaterial: STATIC_FRAGMENT_MATERIAL })).toBeNull();
+    expect(
+      drawInUnavailableReason(drawn.program, entityId, { fragmentMaterial: TEXTURE_FREE_FRAGMENT_MATERIAL }),
+    ).toBeNull();
   });
 
   it.each([
-    ["unsupported target", { position: { x: 320, y: 180 }, type: "Circle" }, STATIC_FRAGMENT_MATERIAL, /Line/],
-    ["arrow Pen", materialDrawPen(true), STATIC_FRAGMENT_MATERIAL, /non-arrow/],
-    ["closed Pen", materialDrawPen(false, true), STATIC_FRAGMENT_MATERIAL, /open Pen/],
-    [
-      "texture",
-      { position: { x: 320, y: 180 }, type: "Line" },
-      { ...STATIC_FRAGMENT_MATERIAL, texture: true },
-      /texture/,
-    ],
-    [
-      "parameter keyframes",
-      { position: { x: 320, y: 180 }, type: "Line" },
-      { ...STATIC_FRAGMENT_MATERIAL, hasParameterKeyframes: true },
-      /parameter keyframes/,
-    ],
+    ["unsupported target", { position: { x: 320, y: 180 }, type: "Circle" }, TEXTURE_FREE_FRAGMENT_MATERIAL, /Line/],
+    ["arrow Pen", materialDrawPen(true), TEXTURE_FREE_FRAGMENT_MATERIAL, /non-arrow/],
+    ["closed Pen", materialDrawPen(false, true), TEXTURE_FREE_FRAGMENT_MATERIAL, /open Pen/],
+    ["texture", { position: { x: 320, y: 180 }, type: "Line" }, { texture: true }, /texture/],
   ] as const)("rejects a fragment material and Draw combination with %s", (name, entity, fragmentMaterial, reason) => {
     const creation = materialDrawCreation(`draw-material-${name.replaceAll(" ", "-")}`, entity);
     expect(drawInUnavailableReason(creation.validation.program, creation.entityIds[0]!, { fragmentMaterial })).toMatch(
       reason,
     );
+  });
+
+  it("rejects editing Draw after an incompatible material appears but always permits Draw removal", () => {
+    const creation = materialDrawCreation("draw-material-recovery", {
+      position: { x: 320, y: 180 },
+      type: "Line",
+    });
+    const entityId = creation.entityIds[0]!;
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "smooth", end: 2 },
+      entityId,
+      fragmentMaterial: TEXTURE_FREE_FRAGMENT_MATERIAL,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(() =>
+      replaceDrawInProgram({
+        baseProgram: drawn.program,
+        draw: { easing: "linear", end: 2.5 },
+        entityId,
+        fragmentMaterial: { texture: true },
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/texture/);
+    const removed = replaceDrawInProgram({
+      baseProgram: drawn.program,
+      draw: null,
+      entityId,
+      fragmentMaterial: { texture: true },
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(removed.kind, JSON.stringify(removed.issues)).toBe("valid");
+    expect(drawInClipFromProgram(removed.program)).toBeNull();
   });
 
   it("rejects Draw on a closed Pen path", () => {
@@ -282,6 +314,7 @@ describe("Draw entrance editing", () => {
         baseProgram: creation.validation.program,
         draw: { easing: "linear", end: 2 },
         entityId,
+        fragmentMaterial: null,
         scene: STUDIO_FIXTURE_SCENE,
       }),
     ).toThrow(/open Pen paths/);
@@ -299,6 +332,7 @@ describe("Draw entrance editing", () => {
         baseProgram: arrow.validation.program,
         draw: { easing: "linear", end: 2 },
         entityId: arrow.entityIds[0]!,
+        fragmentMaterial: null,
         scene: STUDIO_FIXTURE_SCENE,
       }),
     ).toThrow(/path objects/);

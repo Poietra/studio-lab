@@ -2278,7 +2278,7 @@ export function StudioTimeline({
                 data-timeline-track={track.entityId}
                 key={track.entityId}
               >
-                <div className={cn("flex min-w-0 items-center", selected && "bg-sky-950")}>
+                <div className={cn("relative z-20 flex min-w-0 items-center", selected && "bg-sky-950")}>
                   <button
                     aria-pressed={selected}
                     className={cn(
@@ -2402,12 +2402,13 @@ export function StudioTimeline({
                       <select
                         aria-label={`Material parameter for ${track.label}`}
                         className="h-5 max-w-20 border border-zinc-700 bg-zinc-950 px-1 text-[9px] text-fuchsia-300"
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          const parameterName = event.currentTarget.value;
                           setSelectedMaterialParameterByEntity((current) => ({
                             ...current,
-                            [track.entityId]: event.currentTarget.value,
-                          }))
-                        }
+                            [track.entityId]: parameterName,
+                          }));
+                        }}
                         value={selectedMaterialName}
                       >
                         {materialOptions.map((option) => (
