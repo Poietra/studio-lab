@@ -34,6 +34,7 @@ import {
 } from "./engine/cubic-bezier-authoring";
 import { compileFragmentMaterialGlsl } from "./engine/fragment-material-glsl";
 import type { StudioCreationProjectionMutationV1, StudioPropertyKeyframeEasing } from "./engine/scene-authoring";
+import { compileScenePostEffectGlsl, VULKAN_GLSL_SCENE_POST_EFFECT_ENTRY_POINT } from "./engine/scene-post-effect-glsl";
 import {
   PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
   scenePostEffectRegistryV1Schema,
@@ -6917,34 +6918,49 @@ export function App({
     const expected = loadProjectScenePostEffect(projectId) ?? EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
     if (!expected.asset) throw new Error("The custom Scene post effect no longer exists.");
     if ((expected.asset.accepted?.generation ?? null) !== input.expectedAcceptedGeneration) {
-      throw new Error("The custom Scene post effect changed while its WGSL was compiling. Review it and try again.");
+      throw new Error("The custom Scene post effect changed while its source was compiling. Review it and try again.");
     }
-    const candidate = acceptStudioScenePostEffectSourceV1(expected, input);
-    const registry = scenePostEffectRegistryV1Schema.parse({
-      effect: acceptedStudioScenePostEffectRegistrySourceV1(candidate),
-      schema: "poietra.scene-post-effect-registry",
-      version: 1,
-    });
+    let candidate: ProjectScenePostEffectSourceStateV1;
     try {
+      const canonicalWgslSource =
+        input.sourceLanguage === "glsl"
+          ? await compileScenePostEffectGlsl({
+              entryPoint: VULKAN_GLSL_SCENE_POST_EFFECT_ENTRY_POINT,
+              source: input.source,
+            })
+          : undefined;
+      candidate = acceptStudioScenePostEffectSourceV1(expected, {
+        ...input,
+        ...(canonicalWgslSource === undefined ? {} : { canonicalWgslSource }),
+      });
+      const registry = scenePostEffectRegistryV1Schema.parse({
+        effect: acceptedStudioScenePostEffectRegistrySourceV1(candidate),
+        schema: "poietra.scene-post-effect-registry",
+        version: 1,
+      });
       await validateScenePostEffectSource(registry);
     } catch (error) {
       const diagnostic =
         error instanceof Error && error.message
           ? error.message
-          : "The Rust core rejected the Scene post-effect WGSL source.";
+          : `The Rust core rejected the Scene post-effect ${input.sourceLanguage.toUpperCase()} source.`;
       const current = loadProjectScenePostEffect(projectId) ?? EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
       if ((current.asset?.accepted?.generation ?? null) !== input.expectedAcceptedGeneration || !current.asset) {
-        throw new Error("The custom Scene post effect changed while its WGSL was compiling. Review it and try again.");
+        throw new Error(
+          "The custom Scene post effect changed while its source was compiling. Review it and try again.",
+        );
       }
       const rejected = rejectStudioScenePostEffectSourceV1(current, { ...input, diagnostic });
       if (!commitProjectScenePostEffect(projectId, rejected)) {
-        throw new Error("The rejected WGSL source and its diagnostic could not be saved.");
+        throw new Error(
+          `The rejected ${input.sourceLanguage.toUpperCase()} source and its diagnostic could not be saved.`,
+        );
       }
       throw new Error(diagnostic);
     }
     const current = loadProjectScenePostEffect(projectId) ?? EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
     if ((current.asset?.accepted?.generation ?? null) !== input.expectedAcceptedGeneration || !current.asset) {
-      throw new Error("The custom Scene post effect changed while its WGSL was compiling. Review it and try again.");
+      throw new Error("The custom Scene post effect changed while its source was compiling. Review it and try again.");
     }
     if (!commitProjectScenePostEffect(projectId, candidate)) {
       throw new Error("The compiled Scene post effect could not be saved.");

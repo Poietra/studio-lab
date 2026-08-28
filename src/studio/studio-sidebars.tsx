@@ -136,7 +136,7 @@ function ScenePostEffectControls({
   if (!rgbSplitEffect) {
     return (
       <div className="space-y-1">
-        {effect ? <p className="text-[10px] text-sky-400">Custom WGSL active</p> : null}
+        {effect ? <p className="text-[10px] text-sky-400">Custom Scene effect active</p> : null}
         <div className="flex gap-1">
           <button
             className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"

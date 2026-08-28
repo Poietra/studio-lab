@@ -5,10 +5,25 @@ import {
   acceptStudioScenePostEffectSourceV1,
   createStudioScenePostEffectSourceV1,
   EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1,
+  MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1,
   PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
   rejectStudioScenePostEffectSourceV1,
+  STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
 } from "./scene-post-effect-source";
-import { ScenePostEffectSourceEditor } from "./scene-post-effect-source-editor";
+import { readStudioScenePostEffectGlslFileV1, ScenePostEffectSourceEditor } from "./scene-post-effect-source-editor";
+
+const GLSL_SOURCE = `#version 450
+layout(location = 0) out vec4 output_color;
+layout(set = 0, binding = 0, std140) uniform PoietraHost {
+    vec4 viewport_and_time;
+    vec4 parameters_0;
+    vec4 parameters_1;
+} host;
+layout(set = 0, binding = 1) uniform texture2D scene_texture;
+void main() {
+    output_color = texelFetch(scene_texture, ivec2(gl_FragCoord.xy), 0);
+}
+`;
 
 const callbacks = () => ({
   onActivate: vi.fn(),
@@ -34,7 +49,7 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain('aria-label="Custom Scene post effect"');
     expect(markup).toContain("Wave Distortion");
     expect(markup).toContain("Create starter");
-    expect(markup).toContain("project-local WGSL effect");
+    expect(markup).toContain("WGSL or import Vulkan GLSL 450");
   });
 
   it("renders the accepted identity, fixed ABI, source editor, and live scalar controls", () => {
@@ -70,6 +85,38 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("Applied to Scene");
   });
 
+  it("renders GLSL paste and bounded local file import while retaining canonical WGSL", () => {
+    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    const accepted = acceptStudioScenePostEffectSourceV1(created, {
+      canonicalWgslSource: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+      parameterSchema: created.asset!.draft.parameterSchema,
+      source: GLSL_SOURCE,
+      sourceLanguage: "glsl",
+    });
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        active
+        asset={accepted.asset}
+        available
+        parameters={[12, 64, 0.75]}
+        sourceAvailable
+        {...callbacks()}
+      />,
+    );
+
+    expect(markup).toContain("Custom GLSL");
+    expect(markup).toContain('aria-label="Scene post-effect source language"');
+    expect(markup).toContain('<option value="glsl" selected="">Vulkan GLSL 450</option>');
+    expect(markup).toContain("entry point main");
+    expect(markup).toContain("set 0 binding 0");
+    expect(markup).toContain('accept=".frag,.glsl"');
+    expect(markup).toContain('aria-label="Scene post-effect GLSL source"');
+    expect(markup).toContain("#version 450");
+    expect(markup).toContain("Compile &amp; accept GLSL");
+    expect(markup).toContain("Clear source");
+    expect(markup).not.toContain("@fragment\nfn fs_main");
+  });
+
   it("shows a rejected draft while explaining that the accepted revision remains active", () => {
     const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
     const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
@@ -97,6 +144,33 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("Applied to Scene");
   });
 
+  it("labels a rejected GLSL draft and keeps the last accepted generation available", () => {
+    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
+    const rejected = rejectStudioScenePostEffectSourceV1(accepted, {
+      diagnostic: "post-effect.glsl:8: binding 4 is unsupported",
+      parameterSchema: accepted.asset!.draft.parameterSchema,
+      source: GLSL_SOURCE,
+      sourceLanguage: "glsl",
+    });
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        active
+        asset={rejected.asset}
+        available
+        parameters={[12, 64, 0.75]}
+        sourceAvailable
+        {...callbacks()}
+      />,
+    );
+
+    expect(markup).toContain("GLSL was rejected");
+    expect(markup).toContain("post-effect.glsl:8: binding 4 is unsupported");
+    expect(markup).toContain("Last accepted generation 1 remains active.");
+    expect(markup).toContain('aria-label="Scene post-effect GLSL source"');
+    expect(markup).toContain("#version 450");
+  });
+
   it("keeps assignment controls unavailable without trapping source recovery", () => {
     const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
     const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
@@ -117,5 +191,39 @@ describe("ScenePostEffectSourceEditor", () => {
     const sourceControl = markup.match(/<textarea[^>]*aria-label="Scene post-effect WGSL source"[^>]*>/u)?.[0];
     expect(sourceControl).toBeDefined();
     expect(sourceControl).not.toContain("disabled");
+  });
+
+  it("reads only bounded .frag/.glsl UTF-8 files", async () => {
+    const encoded = new TextEncoder().encode(GLSL_SOURCE);
+    await expect(
+      readStudioScenePostEffectGlslFileV1({
+        arrayBuffer: async () => encoded.buffer,
+        name: "wave.frag",
+        size: encoded.byteLength,
+      }),
+    ).resolves.toBe(GLSL_SOURCE);
+    await expect(
+      readStudioScenePostEffectGlslFileV1({
+        arrayBuffer: async () => encoded.buffer,
+        name: "wave.txt",
+        size: encoded.byteLength,
+      }),
+    ).rejects.toThrow(/\.frag or \.glsl/);
+    await expect(
+      readStudioScenePostEffectGlslFileV1({
+        arrayBuffer: async () => new Uint8Array([0xc3, 0x28]).buffer,
+        name: "broken.glsl",
+        size: 2,
+      }),
+    ).rejects.toThrow(/UTF-8/);
+    const unread = vi.fn(async () => new ArrayBuffer(0));
+    await expect(
+      readStudioScenePostEffectGlslFileV1({
+        arrayBuffer: unread,
+        name: "huge.frag",
+        size: MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1 + 1,
+      }),
+    ).rejects.toThrow(/at most/);
+    expect(unread).not.toHaveBeenCalled();
   });
 });

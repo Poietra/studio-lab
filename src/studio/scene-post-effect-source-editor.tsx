@@ -6,12 +6,14 @@ import {
   STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
   type StudioScenePostEffectParameterSchemaV1,
   type StudioScenePostEffectSourceAssetV1,
+  type StudioScenePostEffectSourceLanguageV1,
 } from "./scene-post-effect-source";
 
 export type CompileStudioScenePostEffectSourceInputV1 = Readonly<{
   expectedAcceptedGeneration: number | null;
   parameterSchema: StudioScenePostEffectParameterSchemaV1;
   source: string;
+  sourceLanguage: StudioScenePostEffectSourceLanguageV1;
 }>;
 
 export type ScenePostEffectSourceEditorProps = Readonly<{
@@ -31,6 +33,27 @@ function sourceByteLength(source: string) {
   return new TextEncoder().encode(source).byteLength;
 }
 
+type StudioScenePostEffectGlslFileV1 = Pick<File, "arrayBuffer" | "name" | "size">;
+
+export async function readStudioScenePostEffectGlslFileV1(file: StudioScenePostEffectGlslFileV1) {
+  if (!/\.(?:frag|glsl)$/iu.test(file.name)) throw new Error("Choose a .frag or .glsl file.");
+  if (file.size > MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1) {
+    throw new Error(`GLSL accepts at most ${MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1} UTF-8 bytes.`);
+  }
+  const bytes = await file.arrayBuffer();
+  if (bytes.byteLength > MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1) {
+    throw new Error(`GLSL accepts at most ${MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1} UTF-8 bytes.`);
+  }
+  let source: string;
+  try {
+    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error("The GLSL file must be readable UTF-8 text.");
+  }
+  if (source.length === 0) throw new Error("The GLSL file must not be empty.");
+  return source;
+}
+
 export function ScenePostEffectSourceEditor({
   active,
   asset,
@@ -44,14 +67,19 @@ export function ScenePostEffectSourceEditor({
   sourceAvailable,
 }: ScenePostEffectSourceEditorProps) {
   const [pending, setPending] = useState(false);
+  const [filePending, setFilePending] = useState(false);
   const [source, setSource] = useState(() => asset?.draft.source ?? STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1);
+  const [sourceLanguage, setSourceLanguage] = useState<StudioScenePostEffectSourceLanguageV1>(
+    () => asset?.draft.sourceLanguage ?? "wgsl",
+  );
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [parameterDraft, setParameterDraft] = useState<readonly number[]>(() => parameters ?? []);
 
   useEffect(() => {
     setSource(asset?.draft.source ?? STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1);
+    setSourceLanguage(asset?.draft.sourceLanguage ?? "wgsl");
     setSubmitError(null);
-  }, [asset?.draft.source]);
+  }, [asset?.draft.source, asset?.draft.sourceLanguage]);
 
   useEffect(() => {
     setParameterDraft(parameters ?? asset?.accepted?.parameterSchema.map((parameter) => parameter.default) ?? []);
@@ -64,7 +92,7 @@ export function ScenePostEffectSourceEditor({
           <div>
             <h4 className="text-[10px] font-medium text-sky-200">Wave Distortion</h4>
             <p className="mt-0.5 text-pretty text-[10px] leading-4 text-zinc-500">
-              Start one project-local WGSL effect that displaces the composited Scene over time.
+              Start one project-local effect, then author it in WGSL or import Vulkan GLSL 450.
             </p>
           </div>
           <button
@@ -81,6 +109,8 @@ export function ScenePostEffectSourceEditor({
   }
 
   const accepted = asset.accepted;
+  const sourceBusy = pending || filePending;
+  const sourceLanguageLabel = sourceLanguage === "glsl" ? "GLSL" : "WGSL";
   const sourceBytes = sourceByteLength(source);
   const sourceInvalid = source.length === 0 || sourceBytes > MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1;
   const parameterValuesMatch =
@@ -108,7 +138,7 @@ export function ScenePostEffectSourceEditor({
     <section className="mt-3 border border-zinc-800 p-2" aria-label="Custom Scene post effect">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <h4 className="text-[10px] font-medium text-zinc-300">Custom WGSL</h4>
+          <h4 className="text-[10px] font-medium text-zinc-300">Custom {sourceLanguageLabel}</h4>
           <p className="mt-0.5 font-mono text-[9px] text-zinc-600">{PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1}</p>
         </div>
         <span className={asset.draft.diagnostic ? "text-[10px] text-red-300" : "text-[10px] text-sky-300"}>
@@ -116,14 +146,68 @@ export function ScenePostEffectSourceEditor({
         </span>
       </div>
 
-      <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
-        Fixed ABI: binding 0 is viewport, sample time, and 8 scalar slots; binding 1 is the current Scene texture. The
-        fullscreen vertex stage is renderer-owned.
-      </p>
+      {sourceLanguage === "glsl" ? (
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+          Vulkan GLSL 450 fragment profile: entry point main; set 0 binding 0 is the host uniform and binding 1 is the
+          current Scene texture. The fullscreen vertex stage is renderer-owned.
+        </p>
+      ) : (
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+          Fixed ABI: binding 0 is viewport, sample time, and 8 scalar slots; binding 1 is the current Scene texture. The
+          fullscreen vertex stage is renderer-owned.
+        </p>
+      )}
+
+      <label className="mt-2 block text-[10px] font-medium text-zinc-500" htmlFor="scene-post-effect-source-language">
+        Source language
+      </label>
+      <select
+        aria-label="Scene post-effect source language"
+        className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+        disabled={!sourceAvailable || sourceBusy}
+        id="scene-post-effect-source-language"
+        onChange={(event) => {
+          setSourceLanguage(event.currentTarget.value as StudioScenePostEffectSourceLanguageV1);
+          setSubmitError(null);
+        }}
+        value={sourceLanguage}
+      >
+        <option value="wgsl">WGSL</option>
+        <option value="glsl">Vulkan GLSL 450</option>
+      </select>
+
+      {sourceLanguage === "glsl" ? (
+        <>
+          <label className="mt-2 block text-[10px] font-medium text-zinc-500" htmlFor="scene-post-effect-glsl-file">
+            Local .frag/.glsl file
+          </label>
+          <input
+            accept=".frag,.glsl"
+            className="mt-1 block w-full text-[10px] text-zinc-500 file:mr-2 file:border file:border-zinc-700 file:bg-zinc-950 file:px-2 file:py-1 file:text-zinc-300 hover:file:bg-zinc-800 disabled:opacity-50"
+            disabled={!sourceAvailable || sourceBusy}
+            id="scene-post-effect-glsl-file"
+            onChange={(event) => {
+              const input = event.currentTarget;
+              const file = input.files?.[0];
+              input.value = "";
+              if (!file) return;
+              setFilePending(true);
+              setSubmitError(null);
+              void readStudioScenePostEffectGlslFileV1(file)
+                .then((loaded) => setSource(loaded))
+                .catch((caught: unknown) => {
+                  setSubmitError(caught instanceof Error ? caught.message : "The GLSL file could not be read.");
+                })
+                .finally(() => setFilePending(false));
+            }}
+            type="file"
+          />
+        </>
+      ) : null}
 
       {asset.draft.diagnostic ? (
         <div className="mt-2 border border-red-950 bg-red-950/20 p-2" role="alert">
-          <p className="text-[10px] font-medium text-red-300">WGSL was rejected</p>
+          <p className="text-[10px] font-medium text-red-300">{sourceLanguageLabel} was rejected</p>
           <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[9px] leading-4 text-red-200">
             {asset.draft.diagnostic}
           </pre>
@@ -141,7 +225,7 @@ export function ScenePostEffectSourceEditor({
         <div className="mt-2 flex gap-2">
           <button
             className="h-7 flex-1 border border-sky-800 px-2 text-[10px] text-sky-200 hover:bg-sky-950/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700"
-            disabled={!available || active || pending}
+            disabled={!available || active || sourceBusy}
             onClick={onActivate}
             type="button"
           >
@@ -151,7 +235,7 @@ export function ScenePostEffectSourceEditor({
       ) : (
         <button
           className="mt-2 h-7 w-full border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:text-zinc-700"
-          disabled={!sourceAvailable || pending}
+          disabled={!sourceAvailable || sourceBusy}
           onClick={onRemove}
           type="button"
         >
@@ -173,7 +257,7 @@ export function ScenePostEffectSourceEditor({
                 <input
                   aria-label={`${parameter.name} Scene post-effect parameter`}
                   className="mt-1 w-full accent-sky-500"
-                  disabled={!available || !active || !parameterValuesMatch || pending}
+                  disabled={!available || !active || !parameterValuesMatch || sourceBusy}
                   max={parameter.range.max}
                   min={parameter.range.min}
                   onChange={(event) => {
@@ -195,7 +279,7 @@ export function ScenePostEffectSourceEditor({
           ) : null}
           <button
             className="h-7 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:text-zinc-700"
-            disabled={!available || !active || !parameterValuesMatch || pending}
+            disabled={!available || !active || !parameterValuesMatch || sourceBusy}
             onClick={() => onParametersChange(parameterDraft)}
             type="button"
           >
@@ -208,7 +292,7 @@ export function ScenePostEffectSourceEditor({
         className="mt-3"
         onSubmit={(event) => {
           event.preventDefault();
-          if (sourceInvalid || pending) return;
+          if (sourceInvalid || sourceBusy) return;
           setPending(true);
           setSubmitError(null);
           void Promise.resolve(
@@ -216,24 +300,27 @@ export function ScenePostEffectSourceEditor({
               expectedAcceptedGeneration: accepted?.generation ?? null,
               parameterSchema: asset.draft.parameterSchema,
               source,
+              sourceLanguage,
             }),
           )
             .catch((caught: unknown) => {
-              setSubmitError(caught instanceof Error ? caught.message : "The Rust core rejected the WGSL source.");
+              setSubmitError(
+                caught instanceof Error ? caught.message : `The Rust core rejected the ${sourceLanguageLabel} source.`,
+              );
             })
             .finally(() => setPending(false));
         }}
       >
-        <label className="block text-[10px] font-medium text-zinc-500" htmlFor="scene-post-effect-wgsl-source">
-          Scene post-effect WGSL source
+        <label className="block text-[10px] font-medium text-zinc-500" htmlFor="scene-post-effect-source">
+          Scene post-effect {sourceLanguageLabel} source
         </label>
         <textarea
           aria-describedby="scene-post-effect-wgsl-byte-count"
           aria-invalid={sourceInvalid ? true : undefined}
-          aria-label="Scene post-effect WGSL source"
+          aria-label={`Scene post-effect ${sourceLanguageLabel} source`}
           className="mt-1 h-44 w-full resize-y border border-zinc-700 bg-zinc-950 p-2 font-mono text-[10px] leading-4 text-zinc-300 outline-none focus:border-sky-500"
-          disabled={!sourceAvailable || pending}
-          id="scene-post-effect-wgsl-source"
+          disabled={!sourceAvailable || sourceBusy}
+          id="scene-post-effect-source"
           onChange={(event) => setSource(event.currentTarget.value)}
           required
           spellCheck={false}
@@ -253,18 +340,18 @@ export function ScenePostEffectSourceEditor({
         <div className="mt-2 flex gap-2">
           <button
             className="h-8 flex-1 border border-sky-800 bg-sky-950/50 text-xs text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700"
-            disabled={!sourceAvailable || pending || sourceInvalid}
+            disabled={!sourceAvailable || sourceBusy || sourceInvalid}
             type="submit"
           >
-            {pending ? "Compiling…" : "Compile & accept WGSL"}
+            {pending ? "Compiling…" : `Compile & accept ${sourceLanguageLabel}`}
           </button>
           <button
             className="h-8 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:text-zinc-700"
-            disabled={!sourceAvailable || pending}
-            onClick={() => setSource(STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1)}
+            disabled={!sourceAvailable || sourceBusy}
+            onClick={() => setSource(sourceLanguage === "wgsl" ? STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1 : "")}
             type="button"
           >
-            Reset source
+            {sourceLanguage === "wgsl" ? "Reset source" : "Clear source"}
           </button>
         </div>
       </form>
