@@ -145,6 +145,7 @@ describe("opacity keyframe editing", () => {
       baseProgram: creation.validation.program,
       draw: { easing: "smooth", end: drawEnd },
       entityId: firstId!,
+      fragmentMaterial: null,
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");

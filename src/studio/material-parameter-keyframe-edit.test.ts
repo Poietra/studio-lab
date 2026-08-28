@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createStudioEntitiesProgram } from "./authoring-commands";
-import { replaceDrawInProgram } from "./draw-in-edit";
+import { drawInClipFromProgram, replaceDrawInProgram } from "./draw-in-edit";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import {
   appendMaterialParameterKeyframe,
@@ -203,7 +203,7 @@ describe("material parameter keyframe editing", () => {
     expect(materialParameterKeyframeTrackFromProgram(recovered.program, 0)).toBeNull();
   });
 
-  it("keeps keyframe insertion append-only and rejects the initial Draw entrance interval", () => {
+  it("keeps keyframe insertion append-only and composes a Line material track with Draw in either order", () => {
     expect(() => appendMaterialParameterKeyframe([{ easing: "smooth", time: 3, value: 0.35 }], 2.5, 0.35)).toThrow(
       /after the final marker/i,
     );
@@ -214,7 +214,7 @@ describe("material parameter keyframe editing", () => {
 
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
-      entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Circle" }],
+      entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Line" }],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "material-entrance-guard",
     });
@@ -224,22 +224,115 @@ describe("material parameter keyframe editing", () => {
       baseProgram: creation.validation.program,
       draw: { easing: "smooth", end: drawEnd },
       entityId,
+      fragmentMaterial: { texture: false },
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(drawn.kind, JSON.stringify(drawn.issues)).toBe("valid");
-    for (const time of [drawEnd - 0.1, drawEnd]) {
-      expect(() =>
-        replaceMaterialParameterKeyframeProgram({
-          baseProgram: drawn.program,
-          entityId,
-          keyframes: [{ easing: "smooth", time, value: 0.35 }],
-          material,
-          name: "amplitude",
-          parameterIndex: 0,
-          scene: STUDIO_FIXTURE_SCENE,
-        }),
-      ).toThrow(/after the object's initial entrance/i);
-    }
+    const drawThenKeyframes = replaceMaterialParameterKeyframeProgram({
+      baseProgram: drawn.program,
+      entityId,
+      fragmentMaterial: { texture: false },
+      keyframes: [
+        { easing: "smooth", time: 1.25, value: 0.35 },
+        { easing: "linear", time: 2, value: 0.7 },
+      ],
+      material,
+      name: "amplitude",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(drawThenKeyframes.kind, JSON.stringify(drawThenKeyframes.issues)).toBe("valid");
+    expect(drawInClipFromProgram(drawThenKeyframes.program)?.interval.end).toBe(drawEnd);
+    expect(materialParameterKeyframeTrackFromProgram(drawThenKeyframes.program, 0)?.keyframes).toHaveLength(2);
+
+    const edited = replaceMaterialParameterKeyframeProgram({
+      baseProgram: drawThenKeyframes.program,
+      entityId,
+      fragmentMaterial: { texture: false },
+      keyframes: [
+        { easing: "smooth", time: 1.25, value: 0.35 },
+        { easing: "ease-out", time: 2.25, value: 0.9 },
+      ],
+      material,
+      name: "amplitude",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(edited.kind, JSON.stringify(edited.issues)).toBe("valid");
+    const removedTrack = replaceMaterialParameterKeyframeProgram({
+      baseProgram: edited.program,
+      entityId,
+      keyframes: [],
+      material,
+      name: "amplitude",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(drawInClipFromProgram(removedTrack.program)).not.toBeNull();
+    expect(materialParameterKeyframeTrackFromProgram(removedTrack.program, 0)).toBeNull();
+
+    const keyframesFirst = replaceMaterialParameterKeyframeProgram({
+      baseProgram: creation.validation.program,
+      entityId,
+      keyframes: [
+        { easing: "smooth", time: 2, value: 0.35 },
+        { easing: "linear", time: 3, value: 0.7 },
+      ],
+      material,
+      name: "amplitude",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    const keyframesThenDraw = replaceDrawInProgram({
+      baseProgram: keyframesFirst.program,
+      draw: { easing: "smooth", end: drawEnd },
+      entityId,
+      fragmentMaterial: { texture: false },
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(keyframesThenDraw.kind, JSON.stringify(keyframesThenDraw.issues)).toBe("valid");
+    expect(drawInClipFromProgram(keyframesThenDraw.program)).not.toBeNull();
+    expect(materialParameterKeyframeTrackFromProgram(keyframesThenDraw.program, 0)).not.toBeNull();
+  });
+
+  it("requires material admission and rejects texture parameter tracks when Draw exists", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Line" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "material-draw-recovery",
+    });
+    const entityId = creation.entityIds[0]!;
+    const drawn = replaceDrawInProgram({
+      baseProgram: creation.validation.program,
+      draw: { easing: "smooth", end: 2 },
+      entityId,
+      fragmentMaterial: { texture: false },
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(() =>
+      replaceMaterialParameterKeyframeProgram({
+        baseProgram: drawn.program,
+        entityId,
+        keyframes: [{ easing: "smooth", time: 2.5, value: 0.35 }],
+        material,
+        name: "amplitude",
+        parameterIndex: 0,
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/metadata/);
+    expect(() =>
+      replaceMaterialParameterKeyframeProgram({
+        baseProgram: drawn.program,
+        entityId,
+        fragmentMaterial: { texture: true },
+        keyframes: [{ easing: "smooth", time: 2.5, value: 0.35 }],
+        material,
+        name: "amplitude",
+        parameterIndex: 0,
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/texture/);
   });
 
   it("blocks material identity edits only while a matching active track exists", () => {

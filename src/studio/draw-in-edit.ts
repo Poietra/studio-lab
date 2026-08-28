@@ -18,7 +18,6 @@ export type DrawInClip = Readonly<{
 }>;
 
 export type DrawInFragmentMaterialAdmission = Readonly<{
-  hasParameterKeyframes: boolean;
   texture: boolean;
 }>;
 
@@ -103,9 +102,6 @@ export function drawInUnavailableReason(
     if (options.fragmentMaterial.texture) {
       return "Draw does not support texture fragment materials. Choose a texture-free material or remove Draw.";
     }
-    if (options.fragmentMaterial.hasParameterKeyframes) {
-      return "Draw does not support material parameter keyframes. Remove the material track before combining them.";
-    }
   }
   const otherDraw = program.operations.find(
     (operation) => operation.kind === "DrawIn" && operation.entityId !== entityId,
@@ -115,8 +111,8 @@ export function drawInUnavailableReason(
     (operation) =>
       "entityId" in operation &&
       operation.entityId === entityId &&
-      ((operation.kind === "SetProperty" && operation.key === "fillColor") ||
-        (operation.kind === "AnimateProperty" && operation.materialParameter !== undefined)),
+      operation.kind === "SetProperty" &&
+      operation.key === "fillColor",
   );
   return filled ? "Draw currently supports stroke-only Studio shapes." : null;
 }
@@ -146,13 +142,17 @@ export function replaceDrawInProgram(
     baseProgram: SceneEdit;
     draw: Readonly<{ easing: DrawInEasing; end: number }> | null;
     entityId: string;
+    fragmentMaterial: DrawInFragmentMaterialAdmission | null;
     scene: RuntimeSceneState;
     svgHasFill?: boolean | null;
   }>,
 ): SceneEditValidationResult {
-  const unavailable = drawInUnavailableReason(input.baseProgram, input.entityId, {
-    svgHasFill: input.svgHasFill,
-  });
+  const unavailable = input.draw
+    ? drawInUnavailableReason(input.baseProgram, input.entityId, {
+        fragmentMaterial: input.fragmentMaterial,
+        svgHasFill: input.svgHasFill,
+      })
+    : null;
   if (unavailable) throw new TypeError(unavailable);
   const create = createdEntity(input.baseProgram, input.entityId);
   if (!create || create.kind !== "CreateEntity") throw new TypeError("The Studio creation operation is unavailable.");

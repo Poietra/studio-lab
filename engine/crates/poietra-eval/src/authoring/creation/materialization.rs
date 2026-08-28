@@ -66,6 +66,27 @@ pub(super) fn create_entity_has_only_initial_solid_glyph_fill(entity: &CreateSce
         && rotation_is_noop(entity.rotation)
 }
 
+fn create_entity_open_stroke_material_parameter_track_is_valid(entity: &CreateSceneEntity) -> bool {
+    !entity.material_parameter_keyframes.is_empty()
+        && entity
+            .material_parameter_keyframes
+            .iter()
+            .all(|keyframe| keyframe.value.texture.is_none())
+        && match &entity.geometry {
+            CreateSceneEntityGeometry::Line => true,
+            CreateSceneEntityGeometry::CubicBezier {
+                appearance: SceneAppearanceV1::Vector { fill, stroke, .. },
+                path,
+            } => {
+                fill.is_none()
+                    && stroke.is_some()
+                    && path.subpaths.len() == 1
+                    && !path.subpaths[0].closed
+            }
+            _ => false,
+        }
+}
+
 pub(super) fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
     entity.draw_in.as_ref().is_none_or(|draw| {
         draw.end.is_finite()
@@ -73,7 +94,8 @@ pub(super) fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
             && draw.end <= entity.lifetime.end
             && entity.fade_in.is_none()
             && entity.fill_color.is_none()
-            && entity.material_parameter_keyframes.is_empty()
+            && (entity.material_parameter_keyframes.is_empty()
+                || create_entity_open_stroke_material_parameter_track_is_valid(entity))
             && matches!(draw.easing, EasingV1::Linear {} | EasingV1::ManimSmooth {})
             && match &entity.geometry {
                 CreateSceneEntityGeometry::CubicBezier {
@@ -393,7 +415,13 @@ pub(super) fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEnt
                 && entity
                     .material_parameter_keyframes
                     .first()
-                    .is_none_or(|keyframe| keyframe.at > appearance_end + TIMELINE_ANCHOR_EPSILON)
+                    .is_none_or(|keyframe| {
+                        keyframe.at > appearance_end + TIMELINE_ANCHOR_EPSILON
+                            || (entity.draw_in.is_some()
+                                && create_entity_open_stroke_material_parameter_track_is_valid(
+                                    entity,
+                                ))
+                    })
                 && entity
                     .uniform_scale_keyframes
                     .first()
@@ -638,7 +666,9 @@ pub(super) fn validate_create_scene_entities_command(
             || !create_entity_draw_is_valid(entity)
             || !create_entity_write_is_valid(entity)
             || !create_entity_property_keyframes_are_valid(entity)
-            || (!entity.material_parameter_keyframes.is_empty() && has_color_override)
+            || (!entity.material_parameter_keyframes.is_empty()
+                && has_color_override
+                && !create_entity_open_stroke_material_parameter_track_is_valid(entity))
             || (appearance_changed
                 && entity.appearance_at.is_none()
                 && !has_initial_draw_stroke
@@ -1028,6 +1058,8 @@ pub(super) fn append_created_entity(
     let paint_color_track = entity.paint_color_track.clone();
     let has_initial_solid_glyph_fill = create_entity_has_initial_solid_glyph_fill(&entity);
     let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
+    let has_open_stroke_material_parameter_track =
+        create_entity_open_stroke_material_parameter_track_is_valid(&entity);
     let material_targets_fill = if has_material_parameter_keyframes {
         Some(
             create_entity_fragment_material_targets_fill(&entity.geometry)
@@ -1053,7 +1085,7 @@ pub(super) fn append_created_entity(
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         }
     }
-    if entity.draw_in.is_some()
+    if (entity.draw_in.is_some() || has_open_stroke_material_parameter_track)
         && let Some(color) = &entity.stroke_color
     {
         let SceneAppearanceV1::Vector {

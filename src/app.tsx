@@ -1823,14 +1823,6 @@ export function App({
             (material) => material.shaderId === assignment.shaderId && material.revision === assignment.revision,
           )
         : null;
-      const hasMaterialParameterKeyframes = previewAppliedEdits.some(({ program }) =>
-        program.operations.some(
-          (operation) =>
-            operation.kind === "AnimateProperty" &&
-            operation.entityId === entityId &&
-            operation.materialParameter !== undefined,
-        ),
-      );
       const hasExternalFill = previewAppliedEdits.some(({ program }) =>
         program.operations.some(
           (operation) =>
@@ -1853,7 +1845,6 @@ export function App({
                 : drawInUnavailableReason(owner.program, entityId, {
                     fragmentMaterial: assignment
                       ? {
-                          hasParameterKeyframes: hasMaterialParameterKeyframes,
                           texture: assignment.texture !== undefined || materialSource?.textureSlot === "texture2d",
                         }
                       : null,
@@ -1900,6 +1891,9 @@ export function App({
     mutation: Readonly<{ interval: Readonly<{ end: number; start: number }> }>,
   ) => {
     if (!workspaceCreationProjection) return 0.1;
+    const sourceIsDraw = record.program.operations.some(
+      (operation) => operation.id === sourceClip.operationId && operation.kind === "DrawIn",
+    );
     const created = workspaceCreationProjection.entities.find(({ entityId }) => entityId === sourceClip.entityId);
     const sourceCreated = record.program.operations.find(
       (operation) => operation.kind === "CreateEntity" && operation.entity.id === sourceClip.entityId,
@@ -1913,6 +1907,7 @@ export function App({
         "entityId" in candidate &&
         candidate.entityId === sourceClip.entityId &&
         candidate.operationId !== sourceClip.operationId &&
+        !(sourceIsDraw && candidate.kind === "material-parameter-keyframes") &&
         candidate.interval.start > mutation.interval.start + 0.0005
           ? [candidate.interval.start - (candidate.kind.endsWith("keyframes") ? 0.001 : 0)]
           : [],
@@ -2490,7 +2485,8 @@ export function App({
         );
         if (!owner) return [];
         const projectedEntity = workspaceCreationProjection.entities.find((entity) => entity.entityId === entityId);
-        if (!projectedEntity || !["arrow", "math-tex", "text"].includes(projectedEntity.kind)) return [];
+        if (!projectedEntity || !["arrow", "cubic-bezier", "line", "math-tex", "text"].includes(projectedEntity.kind))
+          return [];
         if (draftEdit && editingAppliedProgram?.original.program.transactionId !== owner.program.transactionId)
           return [];
         const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId];
@@ -4016,10 +4012,22 @@ export function App({
       return false;
     }
     try {
+      const assignment = activeSceneFragmentMaterials.assignments[entityId];
+      const materialSource = assignment
+        ? activeSceneFragmentMaterials.registry.materials.find(
+            (material) => material.shaderId === assignment.shaderId && material.revision === assignment.revision,
+          )
+        : null;
+      if (draw && assignment && !materialSource) {
+        throw new Error("The assigned fragment material is unavailable. Reassign it before editing Draw.");
+      }
       const validation = replaceDrawInProgram({
         baseProgram,
         draw,
         entityId,
+        fragmentMaterial: assignment
+          ? { texture: assignment.texture !== undefined || materialSource?.textureSlot === "texture2d" }
+          : null,
         scene: projectedEditorScene.runtimeSceneState,
         svgHasFill: studioSvgPathFillState(baseProgram, entityId),
       });
@@ -5876,9 +5884,19 @@ export function App({
       return false;
     }
     try {
+      const hasDraw = sceneProgramsHaveDrawIn([track.program], track.entityId);
+      const materialSource = activeSceneFragmentMaterials.registry.materials.find(
+        (material) => material.shaderId === track.material.shaderId && material.revision === track.material.revision,
+      );
+      if (track.keyframes.length > 0 && hasDraw && !materialSource) {
+        throw new Error("The assigned fragment material is unavailable. Reassign it before editing its keyframes.");
+      }
       const validation = replaceMaterialParameterKeyframeProgram({
         baseProgram: track.program,
         entityId: track.entityId,
+        fragmentMaterial: {
+          texture: track.material.texture !== undefined || materialSource?.textureSlot === "texture2d",
+        },
         keyframes: track.keyframes,
         material: track.material,
         name: track.name,
@@ -6251,6 +6269,14 @@ export function App({
   ) {
     const owned = cubicBezierOwnedCreation(entityId);
     if (!owned) return false;
+    if (
+      change.arrowEnd === true &&
+      activeSceneFragmentMaterials.assignments[entityId] !== undefined &&
+      sceneProgramsHaveDrawIn(previewAppliedSceneEdits, entityId)
+    ) {
+      setDraftError("Turn off the Pen arrow end before combining Draw with a fragment material.");
+      return false;
+    }
     void normalizeAndStageCubicBezier(entityId, { ...owned.creation.entity.cubicBezier!, ...change });
     return true;
   }
@@ -9496,17 +9522,8 @@ export function App({
       ),
     );
     if (!owner) return "Draw supports only Studio-created objects.";
-    const hasParameterKeyframes = previewAppliedSceneEdits.some((program) =>
-      program.operations.some(
-        (operation) =>
-          operation.kind === "AnimateProperty" &&
-          operation.entityId === selectedFragmentMaterialEntity.id &&
-          operation.materialParameter !== undefined,
-      ),
-    );
     return drawInUnavailableReason(owner.program, selectedFragmentMaterialEntity.id, {
       fragmentMaterial: {
-        hasParameterKeyframes,
         texture: material.textureSlot === "texture2d",
       },
       svgHasFill: studioSvgPathFillState(owner.program, selectedFragmentMaterialEntity.id),

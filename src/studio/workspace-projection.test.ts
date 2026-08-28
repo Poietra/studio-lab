@@ -714,6 +714,7 @@ describe("Studio workspace projection", () => {
       baseProgram: creation.validation.program,
       draw: { easing: "smooth", end: 1 },
       entityId,
+      fragmentMaterial: null,
       scene: imported.runtimeSceneState,
     }).program;
     const create = drawn.operations.find((operation) => operation.kind === "CreateEntity");

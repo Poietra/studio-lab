@@ -1,5 +1,6 @@
 import { MAX_FINITE_F32 } from "../engine/primitives";
 import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
+import { type DrawInFragmentMaterialAdmission, drawInUnavailableReason } from "./draw-in-edit";
 import type { StudioFragmentMaterialReferenceV1 } from "./fragment-material-authoring";
 import type { RuntimeSceneState } from "./model";
 import { initialAppearanceEnd, operationId } from "./operations";
@@ -94,6 +95,7 @@ export function replaceMaterialParameterKeyframeProgram(
   input: Readonly<{
     baseProgram: SceneEdit;
     entityId: string;
+    fragmentMaterial?: DrawInFragmentMaterialAdmission;
     keyframes: readonly MaterialParameterKeyframe[];
     material: StudioFragmentMaterialReferenceV1;
     name: string;
@@ -117,8 +119,24 @@ export function replaceMaterialParameterKeyframeProgram(
   if (input.keyframes[0] && Math.abs(input.keyframes[0].value - baseValue) > KEYFRAME_EPSILON) {
     throw new TypeError("The first material keyframe must preserve the assigned parameter value.");
   }
+  const hasDraw = input.baseProgram.operations.some(
+    (operation) => operation.kind === "DrawIn" && operation.entityId === input.entityId,
+  );
+  if (input.keyframes.length > 0 && hasDraw) {
+    if (!input.fragmentMaterial) {
+      throw new TypeError("Wait for the fragment material metadata before editing keyframes with Draw.");
+    }
+    const unavailable = drawInUnavailableReason(input.baseProgram, input.entityId, {
+      fragmentMaterial: input.fragmentMaterial,
+    });
+    if (unavailable) throw new TypeError(unavailable);
+  }
   const entranceEnd = initialAppearanceEnd(
-    input.baseProgram.operations,
+    hasDraw
+      ? input.baseProgram.operations.filter(
+          (operation) => operation.kind !== "DrawIn" || operation.entityId !== input.entityId,
+        )
+      : input.baseProgram.operations,
     input.entityId,
     targetCreate.entity.lifetime.start,
   );

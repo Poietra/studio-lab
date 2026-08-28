@@ -5450,6 +5450,200 @@ fn created_line_and_open_pen_keep_static_fragment_material_during_draw() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "two stroke targets share one overlapping Draw/material sampling proof"
+)]
+fn created_line_and_open_pen_animate_material_parameters_during_draw() {
+    let inspected_pen =
+        crate::authoring::inspect_studio_cubic_bezier(&StudioCreationCubicBezierSpec {
+            arrow_end: false,
+            closed: false,
+            control1: PointV1 { x: -1.0, y: 1.5 },
+            control2: PointV1 { x: 1.0, y: -1.5 },
+            continuation_segments: vec![poietra_scene_ir::CubicSegmentV1 {
+                control1: PointV1 { x: 2.5, y: 1.0 },
+                control2: PointV1 { x: 3.5, y: 1.0 },
+                end: PointV1 { x: 4.0, y: 0.0 },
+            }],
+            end: PointV1 { x: 2.0, y: 0.5 },
+            fill_color: None,
+            start: PointV1 { x: -2.0, y: -0.5 },
+            stroke_cap: StudioCubicBezierStrokeCap::Round,
+            stroke_width: 0.06,
+        })
+        .unwrap();
+    let cases = [
+        (
+            "line",
+            StudioAuthoringEntityKind::Line,
+            StudioAuthoringDimensions::default(),
+            None,
+        ),
+        (
+            "open-pen",
+            StudioAuthoringEntityKind::CubicBezier,
+            inspected_pen.dimensions,
+            Some(inspected_pen.cubic_bezier),
+        ),
+    ];
+
+    for (slug, kind, dimensions, cubic_bezier) in cases {
+        let mut input = static_imported_bundle();
+        input.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+        let entity_id = format!("tx:create/entity:{slug}");
+        let mut command = studio_draw_creation_command(&input);
+        let program = &mut command.programs[0];
+        for operation in &mut program.operations {
+            if operation.entity_id.as_deref() == Some("tx:create/entity:circle") {
+                operation.entity_id = Some(entity_id.clone());
+            }
+        }
+        let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
+            unreachable!();
+        };
+        entity.id.clone_from(&entity_id);
+        entity.kind = kind;
+        entity.dimensions = dimensions;
+        entity.cubic_bezier = cubic_bezier;
+        add_creation_material_parameter_segment(program, &entity_id, 0.75, 1.15);
+        command.programs.push(studio_created_appearance_edit_input(
+            0.5,
+            &entity_id,
+            "draw-material-stroke-color",
+            StudioCreationOperationKind::StrokeColor {
+                color: Some("#22c55e".to_owned()),
+            },
+        ));
+
+        let projection =
+            project_studio_creation_edits(input.scene.duration, &command.programs).unwrap();
+        assert!(projection.mutations.iter().any(|mutation| matches!(
+            mutation,
+            StudioCreationProjectedMutation {
+                entity_id: candidate,
+                kind: StudioCreationProjectedMutationKind::DrawIn { .. },
+                ..
+            } if candidate == &entity_id
+        )));
+        assert!(projection.mutations.iter().any(|mutation| matches!(
+            mutation,
+            StudioCreationProjectedMutation {
+                entity_id: candidate,
+                kind: StudioCreationProjectedMutationKind::MaterialParameterKeyframes { .. },
+                ..
+            } if candidate == &entity_id
+        )));
+
+        let mut without_draw = command.clone();
+        let creation_program = &mut without_draw.programs[0];
+        creation_program.operations.retain(|operation| {
+            !matches!(operation.kind, StudioCreationOperationKind::DrawIn { .. })
+        });
+        creation_program.schedule_order.retain(|operation_id| {
+            creation_program
+                .operations
+                .iter()
+                .any(|operation| operation.id == *operation_id)
+        });
+        creation_program.schedule_edge_count = 2 * (creation_program.operations.len() - 1);
+        let mut without_draw_session = EngineSessionV1::new(input.clone()).unwrap();
+        let without_draw_result = without_draw_session
+            .apply_studio_creation_edit(without_draw)
+            .unwrap();
+        assert!(!without_draw_result.bundle.scene.animation_channels.iter().any(
+            |channel| matches!(channel, AnimationChannelV1::PathTrim { entity_id: candidate, .. } if candidate == &entity_id)
+        ));
+        let without_draw_entity = without_draw_result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+        assert!(matches!(
+            &without_draw_entity.appearance,
+            SceneAppearanceV1::Vector { stroke: Some(stroke), .. }
+                if stroke.fragment_material.is_some()
+                    && (stroke.color.green - 197.0 / 255.0).abs() < 1e-12
+        ));
+
+        let mut session = EngineSessionV1::new(input).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::PathTrim { entity_id: candidate, .. }
+                            if candidate == &entity_id
+                    )
+                })
+        );
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::VectorAppearance { entity_id: candidate, .. }
+                            if candidate == &entity_id
+                    )
+                })
+        );
+
+        let sample = |time| {
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "draw-animated-material",
+                    sample_time: time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            packet
+                .draws
+                .iter()
+                .find_map(|draw| match draw {
+                    poietra_scene_ir::RenderDrawV1::Path {
+                        entity_id: candidate,
+                        path,
+                        stroke: Some(stroke),
+                        ..
+                    } if candidate == &entity_id => Some((
+                        path.clone(),
+                        stroke.fragment_material.as_ref().unwrap().parameters[0],
+                        stroke.color.clone(),
+                    )),
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let (start_path, start_parameter, _) = sample(0.75);
+        let (mid_path, mid_parameter, stroke_color) = sample(0.95);
+        let (end_path, end_parameter, _) = sample(1.15);
+        assert_ne!(start_path, mid_path);
+        assert_ne!(mid_path, end_path);
+        assert!((start_parameter - 0.35).abs() < 1e-12);
+        assert!((mid_parameter - 0.60).abs() < 1e-12);
+        assert!((end_parameter - 0.85).abs() < 1e-12);
+        assert!((stroke_color.red - 34.0 / 255.0).abs() < 1e-12);
+        assert!((stroke_color.green - 197.0 / 255.0).abs() < 1e-12);
+        assert!((stroke_color.blue - 94.0 / 255.0).abs() < 1e-12);
+    }
+}
+
+#[test]
 fn normalized_creation_draw_emits_one_path_trim_channel() {
     let bundle = static_imported_bundle();
     let mut command = studio_draw_creation_command(&bundle);
