@@ -198,13 +198,24 @@ describe("snapshot MathTex authorization", () => {
     const bundle = snapshot.snapshot.bundle as SceneIrBundleV1;
     const entity = bundle.scene.entities.find(({ geometry }) => geometry.kind === "cubic-path");
     if (!entity || entity.geometry.kind !== "cubic-path") throw new Error("The snapshot has no outline path.");
+    const glyphPath = entity.geometry.path;
+    const fragments = [..."Sized Text"]
+      .filter((character) => !/\s/u.test(character))
+      .map((character, order) => ({
+        order,
+        path: glyphPath,
+        sourceCorrelation: { key: character, kind: "nfc-scalar" as const },
+      }));
+    const outlinePath = {
+      subpaths: fragments.flatMap((fragment) => fragment.path.subpaths),
+    };
     compilers.textOutline.mockResolvedValue({
       result: {
         bounds: { bottom: -0.5, left: -0.5, right: 0.5, top: 0.5 },
         fillRule: "nonzero",
-        fragments: [{ order: 0, path: entity.geometry.path }],
+        fragments,
         kind: "compiled",
-        path: entity.geometry.path,
+        path: outlinePath,
       },
       schema: "poietra.text-outline-response",
       version: 1,
@@ -228,7 +239,7 @@ describe("snapshot MathTex authorization", () => {
       textOutlines: [
         {
           entityId: creation.entityIds[0],
-          fragments: [{ order: 0, path: entity.geometry.path }],
+          fragments,
           layout: {
             alignment: "left",
             fontFamily: "mono",

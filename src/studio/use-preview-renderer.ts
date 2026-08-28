@@ -886,6 +886,20 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
             );
           }
         } else if (operation.kind === "TransformContent") {
+          if (operation.targetType === "Text") {
+            const content = studioCreationTextContent(operation.replacement);
+            if (!content) {
+              return {
+                error: `Text transform target ${operation.targetEntityId} is invalid. ${STUDIO_CREATION_TEXT_CONTRACT}`,
+                kind: "unsupported",
+              };
+            }
+            textOutlineInputByKey.set(
+              `${operation.targetEntityId}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}`,
+              { content, entityId: operation.targetEntityId },
+            );
+            continue;
+          }
           const texParts = studioCreationMathTexParts(operation.replacement);
           if (!texParts) {
             return {
@@ -1026,7 +1040,11 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
         }
         textOutlines.push({
           entityId,
-          fragments: response.result.fragments.map(({ order, path }) => ({ order, path })),
+          fragments: response.result.fragments.map(({ order, path, sourceCorrelation }) => ({
+            order,
+            path,
+            sourceCorrelation,
+          })),
           layout: content.layout,
           path: response.result.path,
           text: content.text,

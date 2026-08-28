@@ -1544,11 +1544,13 @@ export const OPERATION_REGISTRY = {
       ],
     }),
     execution: (operation) =>
-      operation.interval.end - operation.interval.start > SOURCE_LOWERING_EPSILON
-        ? SUPPORTED_EXECUTION
-        : previewOnlyExecution(
-            "A zero-duration TransformContent can be previewed, but it cannot be lowered truthfully to Manim source.",
-          ),
+      operation.targetType === "Text"
+        ? CLIENT_ONLY_EXECUTION
+        : operation.interval.end - operation.interval.start > SOURCE_LOWERING_EPSILON
+          ? SUPPORTED_EXECUTION
+          : previewOnlyExecution(
+              "A zero-duration TransformContent can be previewed, but it cannot be lowered truthfully to Manim source.",
+            ),
     validate: (operation, scene) => {
       const issues = entityIssues([operation.sourceEntityId], operation, scene);
       const source = scene.objectGraph.entities[operation.sourceEntityId];

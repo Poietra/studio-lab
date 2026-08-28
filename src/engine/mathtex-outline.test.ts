@@ -187,7 +187,7 @@ describe("segmented Tex outline browser adapter", () => {
 
 describe("plain Text outline input", () => {
   it("pins the closed font-family and weight request ABI", () => {
-    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(7);
+    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(8);
   });
 
   it("accepts bounded Japanese multiline text and canonicalizes line endings and Unicode", () => {
@@ -212,7 +212,9 @@ describe("plain Text outline input", () => {
       result: {
         bounds: { bottom: -0.5, left: -0.5, right: 0.5, top: 0.5 },
         fillRule: "nonzero" as const,
-        fragments: [{ order: 0, path: { subpaths: [subpath] } }],
+        fragments: [
+          { order: 0, path: { subpaths: [subpath] }, sourceCorrelation: { key: "A", kind: "nfc-scalar" as const } },
+        ],
         kind: "compiled" as const,
         path: { subpaths: [subpath] },
       },
@@ -226,14 +228,35 @@ describe("plain Text outline input", () => {
         ...response,
         result: {
           ...response.result,
-          fragments: [{ order: 1, path: { subpaths: [subpath] } }],
+          fragments: [{ order: 0, path: { subpaths: [subpath] } }],
         },
       }).success,
     ).toBe(false);
     expect(
       textOutlineResponseV1Schema.safeParse({
         ...response,
-        result: { ...response.result, fragments: [{ order: 0, path: { subpaths: [] } }] },
+        result: {
+          ...response.result,
+          fragments: [{ order: 1, path: { subpaths: [subpath] }, sourceCorrelation: { key: "A", kind: "nfc-scalar" } }],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      textOutlineResponseV1Schema.safeParse({
+        ...response,
+        result: {
+          ...response.result,
+          fragments: [{ order: 0, path: { subpaths: [] }, sourceCorrelation: { key: "A", kind: "nfc-scalar" } }],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      textOutlineResponseV1Schema.safeParse({
+        ...response,
+        result: {
+          ...response.result,
+          fragments: [{ ...response.result.fragments[0], sourceCorrelation: { key: "e\u0301", kind: "nfc-scalar" } }],
+        },
       }).success,
     ).toBe(false);
   });

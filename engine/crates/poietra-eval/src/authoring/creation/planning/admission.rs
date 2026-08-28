@@ -20,7 +20,7 @@ pub(super) struct StudioCreationAdmission {
     pub(super) followup_programs: Vec<usize>,
     pub(super) hierarchy_programs: Vec<usize>,
     pub(super) material_parameter_programs: Vec<usize>,
-    pub(super) math_tex_transform_programs: Vec<usize>,
+    pub(super) content_transform_programs: Vec<usize>,
     pub(super) opacity_programs: Vec<usize>,
     pub(super) paint_color_programs: Vec<usize>,
     pub(super) rotation_programs: Vec<usize>,
@@ -404,7 +404,7 @@ pub(super) fn admit_studio_creation_programs(
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
     }
-    let math_tex_transform_programs = timeline
+    let content_transform_programs = timeline
         .ordered_programs
         .iter()
         .copied()
@@ -445,7 +445,7 @@ pub(super) fn admit_studio_creation_programs(
                 && !material_parameter_programs.contains(index)
                 && !uniform_scale_programs.contains(index)
                 && !rotation_programs.contains(index)
-                && !math_tex_transform_programs.contains(index)
+                && !content_transform_programs.contains(index)
                 && !hierarchy_programs.contains(index)
                 && !camera_programs.contains(index)
                 && !background_programs.contains(index)
@@ -460,7 +460,7 @@ pub(super) fn admit_studio_creation_programs(
         followup_programs,
         hierarchy_programs,
         material_parameter_programs,
-        math_tex_transform_programs,
+        content_transform_programs,
         opacity_programs,
         paint_color_programs,
         rotation_programs,

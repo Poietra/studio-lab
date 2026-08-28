@@ -123,6 +123,17 @@ pub type TextOutlineBoundsV1 = MathTexOutlineBoundsV1;
 pub struct TextOutlineGlyphFragmentV1 {
     pub order: u32,
     pub path: CubicPathV1,
+    pub source_correlation: TextOutlineGlyphSourceCorrelationV1,
+}
+
+/// Stable source key for one visible glyph in the supported scalar layout profile.
+///
+/// Text input is NFC-normalized before layout, so canonically equivalent input
+/// produces the same key. Repeated keys remain distinguishable by fragment order.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum TextOutlineGlyphSourceCorrelationV1 {
+    NfcScalar { key: String },
 }
 
 /// Renderer-native output for one supported plain-text block.
@@ -244,7 +255,7 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
             )?;
             let subpath_end = subpaths.len();
             if subpath_end > subpath_start {
-                glyph_subpath_ranges.push(subpath_start..subpath_end);
+                glyph_subpath_ranges.push((glyph.character, subpath_start..subpath_end));
             }
         }
     }
@@ -253,7 +264,7 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
     let fragments = glyph_subpath_ranges
         .into_iter()
         .enumerate()
-        .map(|(order, range)| {
+        .map(|(order, (character, range))| {
             Ok(TextOutlineGlyphFragmentV1 {
                 order: u32::try_from(order).map_err(|_| {
                     CompileFailure::new(
@@ -263,6 +274,9 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
                 })?,
                 path: CubicPathV1 {
                     subpaths: path.subpaths[range].to_vec(),
+                },
+                source_correlation: TextOutlineGlyphSourceCorrelationV1::NfcScalar {
+                    key: character.to_string(),
                 },
             })
         })
@@ -572,6 +586,16 @@ mod tests {
             .collect()
     }
 
+    fn fragment_source_keys(artifact: &TextOutlineArtifactV1) -> Vec<&str> {
+        artifact
+            .fragments
+            .iter()
+            .map(|fragment| match &fragment.source_correlation {
+                TextOutlineGlyphSourceCorrelationV1::NfcScalar { key } => key.as_str(),
+            })
+            .collect()
+    }
+
     fn path_y_range(path: &CubicPathV1) -> (f64, f64) {
         path.subpaths
             .iter()
@@ -610,6 +634,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0, 1]
         );
+        assert_eq!(fragment_source_keys(&ascii), ["A", "B"]);
         assert_eq!(fragment_subpaths(&ascii), ascii.path.subpaths);
         assert!(ascii.fragments.iter().all(|fragment| {
             !fragment.path.subpaths.is_empty()
@@ -619,8 +644,12 @@ mod tests {
         let compact = compiled("AB");
         assert_ne!(ascii.fragments[1].path, compact.fragments[1].path);
 
-        let japanese = compiled("日本語");
+        let repeated = compiled("ABA A");
+        assert_eq!(fragment_source_keys(&repeated), ["A", "B", "A", "A"]);
+
+        let japanese = compiled("日本日");
         assert_eq!(japanese.fragments.len(), 3);
+        assert_eq!(fragment_source_keys(&japanese), ["日", "本", "日"]);
         assert_eq!(fragment_subpaths(&japanese), japanese.path.subpaths);
 
         let multiline = compiled("A\n日 B");
@@ -632,6 +661,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [0, 1, 2]
         );
+        assert_eq!(fragment_source_keys(&multiline), ["A", "日", "B"]);
         assert_eq!(fragment_subpaths(&multiline), multiline.path.subpaths);
         let first_line_y = path_y_range(&multiline.fragments[0].path);
         let second_line_y = path_y_range(&multiline.fragments[1].path);
@@ -660,6 +690,7 @@ mod tests {
         let decomposed = compiled("Cafe\u{301}");
 
         assert_eq!(decomposed, composed);
+        assert_eq!(fragment_source_keys(&decomposed), ["C", "a", "f", "é"]);
         validate_cubic_path_v1(&decomposed.path).expect("NFC-normalized Text path must be valid");
     }
 

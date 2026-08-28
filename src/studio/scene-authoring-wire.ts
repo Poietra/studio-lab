@@ -500,13 +500,17 @@ function normalizedStudioCreationOperation(
     };
   }
   if (operation.kind === "TransformContent") {
-    const replacement = canonicalEditableContent(operation.replacement, "MathTex");
+    const targetType = operation.targetType ?? "MathTex";
+    const mathTexReplacement =
+      targetType === "MathTex" ? canonicalEditableContent(operation.replacement, "MathTex") : null;
+    const textReplacement = targetType === "Text" ? studioCreationTextContent(operation.replacement) : null;
+    const replacement = mathTexReplacement?.texParts ? (mathTexReplacement as StudioMathTexContentV1) : textReplacement;
     return {
       ...common,
       easing: operation.easing ?? "smooth",
       entityId: mathTexTransformRootEntityId ?? operation.sourceEntityId,
       kind: "transform-content",
-      replacement: replacement?.texParts ? (replacement as StudioMathTexContentV1) : null,
+      replacement,
       sourceEntityId: operation.sourceEntityId,
       strategy: operation.strategy,
       targetEntityId: operation.targetEntityId,
@@ -565,7 +569,7 @@ function normalizedStudioCreationOperation(
   return { ...common, kind: "unsupported" };
 }
 
-export function studioCreationMathTexTransformRoots(programs: readonly SceneEdit[]) {
+export function studioCreationContentTransformRoots(programs: readonly SceneEdit[]) {
   const rootByIdentity = new Map<string, string>();
   for (const program of programs) {
     for (const operation of program.operations) {
@@ -586,7 +590,7 @@ export function studioCreationMathTexTransformRoots(programs: readonly SceneEdit
 }
 
 function normalizedStudioCreationPrograms(programs: readonly SceneEdit[]) {
-  const transformRoots = studioCreationMathTexTransformRoots(programs);
+  const transformRoots = studioCreationContentTransformRoots(programs);
   return programs.map((program) => ({
     ...studioProgramEnvelope(program),
     operations: program.operations.map((operation) =>

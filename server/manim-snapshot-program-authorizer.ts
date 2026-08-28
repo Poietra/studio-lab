@@ -93,6 +93,18 @@ async function authorizeStudioCreationProgram(
           `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontFamily}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}`,
           { content, entityId: operation.entity.id },
         );
+      } else if (operation.kind === "TransformContent" && operation.targetType === "Text") {
+        const content = studioCreationTextContent(operation.replacement);
+        if (!content) {
+          throw new HttpError(
+            "Studio-created Text transform requires bounded canonical Unicode content and layout.",
+            400,
+          );
+        }
+        textInputs.set(
+          `${operation.targetEntityId}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontFamily}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}`,
+          { content, entityId: operation.targetEntityId },
+        );
       }
     }
   }
@@ -122,7 +134,11 @@ async function authorizeStudioCreationProgram(
     }
     textOutlines.push({
       entityId,
-      fragments: response.result.fragments.map(({ order, path }) => ({ order, path })),
+      fragments: response.result.fragments.map(({ order, path, sourceCorrelation }) => ({
+        order,
+        path,
+        sourceCorrelation,
+      })),
       layout: content.layout,
       path: response.result.path,
       text: content.text,
