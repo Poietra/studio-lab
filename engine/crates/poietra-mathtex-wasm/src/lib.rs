@@ -20,7 +20,7 @@ pub const POIETRA_MATHTEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Independent sibling ABI version for ordered Tex/MathTex fragments.
 pub const POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Independent sibling ABI version for bounded plain text.
-pub const POIETRA_TEXT_OUTLINE_ABI_VERSION: u32 = 6;
+pub const POIETRA_TEXT_OUTLINE_ABI_VERSION: u32 = 7;
 /// Upper bound for one JSON compilation request crossing the WASM boundary.
 pub const MAX_MATHTEX_OUTLINE_REQUEST_JSON_BYTES_V1: usize = 16 * 1024;
 /// Upper bound for one JSON compilation response crossing the WASM boundary.
@@ -251,7 +251,7 @@ mod tests {
     fn exported_abi_version_is_explicit() {
         assert_eq!(poietra_mathtex_outline_abi_version(), 1);
         assert_eq!(poietra_segmented_tex_outline_abi_version(), 1);
-        assert_eq!(poietra_text_outline_abi_version(), 6);
+        assert_eq!(poietra_text_outline_abi_version(), 7);
     }
 
     #[test]
@@ -296,6 +296,7 @@ mod tests {
         assert_eq!(decoded["version"], 1);
         assert_eq!(decoded["result"]["kind"], "compiled");
         assert_eq!(decoded["result"]["fillRule"], "nonzero");
+        assert_eq!(decoded["result"]["fragments"].as_array().unwrap().len(), 7);
         assert_eq!(decoded["result"]["bounds"]["bottom"], -0.5);
         assert_eq!(decoded["result"]["bounds"]["top"], 0.5);
         assert!(
@@ -309,6 +310,13 @@ mod tests {
                 .as_bytes(),
         );
         assert_eq!(decode(&japanese)["result"]["kind"], "compiled");
+        assert_eq!(
+            decode(&japanese)["result"]["fragments"]
+                .as_array()
+                .unwrap()
+                .len(),
+            14
+        );
 
         let bold = compile_text_outline_json_v1(
             br#"{"layout":{"alignment":"left","fontWeight":"bold","lineHeight":1.2},"schema":"poietra.text-outline-request","version":1,"text":"Hello AV"}"#,
@@ -362,5 +370,25 @@ mod tests {
                 + 1
         ]);
         assert_eq!(decode(&oversized)["result"]["code"], "request-too-large");
+    }
+
+    #[test]
+    fn maximum_glyph_count_text_response_stays_compiled_under_the_boundary_limit() {
+        let text = format!("{}\n{}", "i".repeat(127), "i".repeat(128));
+        let request = serde_json::to_vec(&serde_json::json!({
+            "layout": {"alignment": "left", "lineHeight": 1.2},
+            "schema": "poietra.text-outline-request",
+            "text": text,
+            "version": 1,
+        }))
+        .unwrap();
+        let response = compile_text_outline_json_v1(&request);
+        assert!(response.len() <= MAX_MATHTEX_OUTLINE_RESPONSE_JSON_BYTES_V1);
+        let decoded = decode(&response);
+        assert_eq!(decoded["result"]["kind"], "compiled");
+        assert_eq!(
+            decoded["result"]["fragments"].as_array().unwrap().len(),
+            255
+        );
     }
 }

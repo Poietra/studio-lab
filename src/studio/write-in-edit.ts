@@ -66,7 +66,12 @@ export function writeInUnavailableReason(
 ): string | null {
   const create = createdEntity(program, entityId);
   if (!create || create.kind !== "CreateEntity") return "Write supports only Studio-created objects.";
-  if (create.entity.type !== "MathTex") return "Write currently supports Studio-created MathTex objects.";
+  if (create.entity.type !== "MathTex" && create.entity.type !== "Text") {
+    return "Write currently supports Studio-created MathTex and Text objects.";
+  }
+  if (create.entity.type === "Text" && options.fragmentMaterial) {
+    return "Text Write does not support fragment materials. Remove the material before adding Write.";
+  }
   if (options.fragmentMaterial?.texture) {
     return "Write does not support texture fragment materials. Choose a texture-free material or remove Write.";
   }
@@ -169,7 +174,7 @@ export function replaceWriteInProgram(
           interval: { end: input.write.end, start },
           kind: "WriteIn",
           provenance: {
-            evidence: ["Timeline Write entrance", "canonical Rust segmented MathTex Write"],
+            evidence: ["Timeline Write entrance", "canonical Rust segmented Write"],
             origin: "direct-manipulation",
           },
         },
@@ -186,7 +191,7 @@ export function replaceWriteInProgram(
   return validateAndScheduleProgram(
     {
       ...input.baseProgram,
-      loweringStatus: loweringStatusFor(operations),
+      loweringStatus: input.write && create.entity.type === "Text" ? "unsupported" : loweringStatusFor(operations),
       operations,
       provenance: {
         ...input.baseProgram.provenance,

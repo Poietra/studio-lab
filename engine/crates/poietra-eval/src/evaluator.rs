@@ -277,9 +277,12 @@ where
             "non-final keyframe is missing easingToNext",
         ))?;
     let raw_progress = (time - left.at) / (right.at - left.at);
-    let matches_right_boundary = time > left.at
-        && (1.0 - raw_progress).abs() <= 4.0 * f64::EPSILON * raw_progress.abs().max(1.0);
-    let progress = if matches_right_boundary {
+    let endpoint_tolerance = 4.0 * f64::EPSILON * raw_progress.abs().max(1.0);
+    let matches_left_boundary = raw_progress.abs() <= endpoint_tolerance;
+    let matches_right_boundary = time > left.at && (1.0 - raw_progress).abs() <= endpoint_tolerance;
+    let progress = if matches_left_boundary {
+        0.0
+    } else if matches_right_boundary {
         1.0
     } else {
         raw_progress
@@ -1544,6 +1547,32 @@ mod tests {
             positive.packet.required_capabilities,
             vec![RenderCapabilityV1::CubicPathStroke]
         );
+
+        let AnimationChannelV1::PathTrim { keyframes, .. } = &mut scene.animation_channels[1]
+        else {
+            unreachable!();
+        };
+        keyframes[0].at = 1.2 / 3.0;
+        keyframes[1].at = 0.6;
+        let rounded_boundary = compile_engine_frame_v1(CompileEngineFrameOptionsV1 {
+            assets: &assets,
+            evidence: &[],
+            packet_id: "packet:rounded-trim-boundary",
+            sample_time: 12.0 / 30.0,
+            scene: &scene,
+            viewport: ViewportV1 {
+                height_px: 900,
+                width_px: 1600,
+            },
+        })
+        .unwrap();
+        assert!(matches!(
+            rounded_boundary.packet.draws.as_slice(),
+            [RenderDrawV1::Empty {
+                reason: RenderEmptyReasonV1::PathTrimZero,
+                ..
+            }]
+        ));
     }
 
     #[test]

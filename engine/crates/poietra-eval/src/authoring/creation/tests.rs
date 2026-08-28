@@ -1895,12 +1895,56 @@ fn studio_text_creation_command(
         entity.tex_parts = None;
         entity.id.clone()
     };
+    let path = mathtex_fixture_path();
     command.text_outlines = vec![StudioCreationTextOutline {
         entity_id,
+        fragments: vec![StudioCreationTextOutlineFragment {
+            order: 0,
+            path: path.clone(),
+        }],
         layout: StudioTextLayout::default(),
-        path: mathtex_fixture_path(),
+        path,
         text: text.to_owned(),
     }];
+    command
+}
+
+fn studio_text_write_creation_command(
+    bundle: &SceneIrBundleV1,
+    text: &str,
+) -> ApplyStudioCreationEditCommand {
+    let mut command = studio_text_creation_command(bundle, text);
+    command.programs.truncate(1);
+    let write = &mut command.programs[0].operations[2];
+    write.id = "write".to_owned();
+    write.interval.end = 1.5;
+    write.kind = StudioCreationOperationKind::WriteIn {
+        easing: StudioPropertyEasing::Linear,
+    };
+    command.programs[0].schedule_order[2] = "write".to_owned();
+
+    let outline = &mut command.text_outlines[0];
+    outline.layout.font_size = 1.5;
+    let split = outline.path.subpaths.len() / 2;
+    assert!(split > 0 && split < outline.path.subpaths.len());
+    outline.fragments = outline
+        .path
+        .subpaths
+        .chunks(split)
+        .enumerate()
+        .map(|(order, subpaths)| StudioCreationTextOutlineFragment {
+            order: u32::try_from(order).unwrap(),
+            path: CubicPathV1 {
+                subpaths: subpaths.to_vec(),
+            },
+        })
+        .collect();
+    let StudioCreationOperationKind::Create { entity } =
+        &mut command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    entity.layout = Some(outline.layout.clone());
     command
 }
 
@@ -10718,6 +10762,89 @@ fn normalized_creation_accepts_compiled_text_and_existing_instant_followups() {
             Err(ProjectStudioCreationEditError::Unsupported)
         ));
     }
+}
+
+#[test]
+fn normalized_text_write_reuses_the_segmented_write_materializer() {
+    let bundle = static_imported_bundle();
+    let command = studio_text_write_creation_command(&bundle, "Write me");
+    let root_id = "tx:create/entity:circle";
+    let expected_first_path = scale_cubic_path(&command.text_outlines[0].fragments[0].path, 1.5);
+
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    assert!(matches!(
+        result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == root_id)
+            .unwrap()
+            .geometry,
+        SceneGeometryV1::Group {}
+    ));
+    assert!(result.bundle.scene.entities.iter().any(|entity| {
+        entity.id == format!("{root_id}/write/fragment-0000/fill")
+            && matches!(
+                &entity.geometry,
+                SceneGeometryV1::CubicPath { path } if path == &expected_first_path
+            )
+    }));
+    let draw_ids = |session: &EngineSessionV1, sample_time| {
+        session
+            .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "studio-text-write",
+                sample_time,
+                viewport: poietra_scene_ir::ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap()
+            .draws
+            .into_iter()
+            .map(|draw| draw.entity_id().to_owned())
+            .filter(|id| id.starts_with(root_id))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        draw_ids(&session, 0.6),
+        vec![format!("{root_id}/write/fragment-0000/outline")]
+    );
+    assert_eq!(
+        draw_ids(&session, 1.5),
+        vec![
+            format!("{root_id}/write/fragment-0000/fill"),
+            format!("{root_id}/write/fragment-0001/fill"),
+        ]
+    );
+}
+
+#[test]
+fn normalized_text_rejects_invalid_outline_and_write_material_track() {
+    let bundle = static_imported_bundle();
+    let mut command = studio_text_creation_command(&bundle, "Invalid partition");
+    command.text_outlines[0].fragments[0].path.subpaths.clear();
+    let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+    assert!(matches!(
+        session.apply_studio_creation_edit(command),
+        Err(ApplyStudioCreationEditError::Unsupported)
+    ));
+    assert_eq!(session.scene(), &bundle.scene);
+
+    let mut unsupported_material = studio_text_write_creation_command(&bundle, "No material");
+    add_creation_material_parameter_segment(
+        &mut unsupported_material.programs[0],
+        "tx:create/entity:circle",
+        1.6,
+        2.0,
+    );
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &unsupported_material.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
 }
 
 #[test]

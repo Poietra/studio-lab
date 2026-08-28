@@ -1128,6 +1128,73 @@ test("draws a Studio Line through scrub, retime, history, reload, and MP4 export
   }
 });
 
+test("writes Japanese multiline Studio Text through reload and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Text Write fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert text/ }).click();
+    await page.getByRole("textbox", { name: "Text content" }).fill("こんにちは\n世界を描こう");
+    await canvas.click({ position: { x: 400, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const text = page.getByRole("button", { name: /Move こんにちは/ });
+    const textId = await text.getAttribute("data-studio-entity");
+    if (!textId) throw new Error("The Studio Text did not expose its logical root id.");
+    const wrapper = page.locator(`[data-studio-entity-wrapper="${textId}"]`);
+
+    const addWrite = page.getByRole("button", { name: /Add Write entrance for こんにちは/ });
+    await expect(addWrite).toHaveAttribute("aria-disabled", "false");
+    await addWrite.click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    let writeClip = page.locator("[data-write-in-clip]");
+    await expect(writeClip).toHaveCount(1);
+    await scrubEntranceClip(page, writeClip, 0);
+    await expect(wrapper).toHaveCount(0);
+    await scrubEntranceClip(page, writeClip, 0.5);
+    await expect(wrapper).toHaveCount(1);
+
+    await writeClip.click();
+    const duration = page.getByRole("spinbutton", { name: /Write duration for こんにちは/ });
+    await expect(duration).toBeEnabled();
+    const writeRevision = await canvas.getAttribute("data-preview-revision");
+    await duration.press("Control+A");
+    await duration.pressSequentially("1.2");
+    await duration.press("Enter");
+    await expect.poll(() => canvas.getAttribute("data-preview-revision")).not.toBe(writeRevision);
+    await expect(duration).toHaveValue("1.2");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.20s · linear");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Text Write fixture workspace" }).click();
+    writeClip = page.locator("[data-write-in-clip]");
+    await expect(writeClip).toHaveAttribute("title", "Write 0.00–1.20s · linear");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const sampleTimes = await Promise.all([
+      entranceClipTime(page, writeClip, 0),
+      entranceClipTime(page, writeClip, 0.5),
+      entranceClipTime(page, writeClip, 1),
+    ]);
+    const pixels = await decodedBrightPixelCounts(page, await exportLocalMp4(page), sampleTimes);
+    expect((pixels[1] ?? 0) - (pixels[0] ?? 0)).toBeGreaterThan(10);
+    expect((pixels[2] ?? 0) - (pixels[1] ?? 0)).toBeGreaterThan(10);
+
+    await writeClip.click();
+    await page.getByRole("button", { name: "Remove Write" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.locator("[data-write-in-clip]")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /Move こんにちは/ })).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("writes a Studio MathTex through scrub, history, reload, and MP4 export", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(10_000);

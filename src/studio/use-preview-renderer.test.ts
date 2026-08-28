@@ -143,6 +143,7 @@ function compiledTextResponse(): TextOutlineResponseV1 {
     result: {
       bounds: mathTex.bounds,
       fillRule: "nonzero",
+      fragments: [{ order: 0, path: mathTex.path }],
       kind: "compiled",
       path: mathTex.path,
     },
@@ -3625,7 +3626,13 @@ describe("compileStudioPreviewSceneV1", () => {
     const compiled = outline.result;
     if (compiled.kind !== "compiled") throw new Error("Text test outline must compile.");
     expect(commands[0]?.textOutlines).toEqual([
-      { entityId: creation.entityIds[0], layout: textContent.layout, path: compiled.path, text: textContent.text },
+      {
+        entityId: creation.entityIds[0],
+        fragments: compiled.fragments,
+        layout: textContent.layout,
+        path: compiled.path,
+        text: textContent.text,
+      },
     ]);
     expect(commands[0]?.programs[0]?.operations[0]).toMatchObject({
       entity: {

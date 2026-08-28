@@ -882,8 +882,10 @@ pub(super) fn plan_studio_creation_edits(
             }
         }
         if write_interval.as_ref().is_some_and(|write| {
-            spec.kind != StudioAuthoringEntityKind::MathTex
-                || !studio_timeline_semantic_values_match(write.start, lifetime.start)
+            !matches!(
+                spec.kind,
+                StudioAuthoringEntityKind::MathTex | StudioAuthoringEntityKind::Text
+            ) || !studio_timeline_semantic_values_match(write.start, lifetime.start)
                 || write.end > lifetime.end
         }) {
             return Err(ProjectStudioCreationEditError::Unsupported);
@@ -1206,6 +1208,7 @@ pub(super) fn plan_studio_creation_edits(
             || (state.creation_program_rank == program_rank
                 && state.creation_transaction_id != program.transaction_id)
             || !state.material_parameter_keyframes.is_empty()
+            || (state.kind == StudioAuthoringEntityKind::Text && state.write_interval.is_some())
             || state.persistent_removal.is_some()
         {
             return Err(ProjectStudioCreationEditError::Unsupported);

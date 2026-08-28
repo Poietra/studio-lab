@@ -114,6 +114,17 @@ impl TextOutlineRequestV1 {
 /// Canonical centered unit-height ink bounds for a compiled text outline.
 pub type TextOutlineBoundsV1 = MathTexOutlineBoundsV1;
 
+/// One visible glyph path in deterministic reading order.
+///
+/// Every path uses the same normalized coordinate space as the aggregate text
+/// outline. Whitespace advances layout but does not produce a fragment.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextOutlineGlyphFragmentV1 {
+    pub order: u32,
+    pub path: CubicPathV1,
+}
+
 /// Renderer-native output for one supported plain-text block.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -121,6 +132,7 @@ pub struct TextOutlineArtifactV1 {
     pub path: CubicPathV1,
     pub bounds: TextOutlineBoundsV1,
     pub fill_rule: FillRuleV1,
+    pub fragments: Vec<TextOutlineGlyphFragmentV1>,
 }
 
 /// Stable reason code for a text request that cannot be rendered.
@@ -201,6 +213,7 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
         .map(|line| line.advance)
         .fold(0.0_f64, f64::max);
     let mut subpaths = Vec::new();
+    let mut glyph_subpath_ranges = Vec::new();
     let mut segment_count = 0usize;
 
     for (line_index, line) in shaped_lines.into_iter().enumerate() {
@@ -217,6 +230,10 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
         })?;
         let baseline_y = -f64::from(line_index) * faces.em_units * request.layout.line_height;
         for glyph in line.glyphs {
+            if glyph.character.is_whitespace() {
+                continue;
+            }
+            let subpath_start = subpaths.len();
             append_glyph(
                 &faces,
                 glyph,
@@ -225,14 +242,36 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
                 &mut subpaths,
                 &mut segment_count,
             )?;
+            let subpath_end = subpaths.len();
+            if subpath_end > subpath_start {
+                glyph_subpath_ranges.push(subpath_start..subpath_end);
+            }
         }
     }
 
     let (path, bounds) = normalize_outline_subpaths(subpaths).map_err(map_outline_failure)?;
+    let fragments = glyph_subpath_ranges
+        .into_iter()
+        .enumerate()
+        .map(|(order, range)| {
+            Ok(TextOutlineGlyphFragmentV1 {
+                order: u32::try_from(order).map_err(|_| {
+                    CompileFailure::new(
+                        TextOutlineUnsupportedCodeV1::InternalFailure,
+                        "The bounded Text glyph order could not be represented",
+                    )
+                })?,
+                path: CubicPathV1 {
+                    subpaths: path.subpaths[range].to_vec(),
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, CompileFailure>>()?;
     Ok(TextOutlineArtifactV1 {
         path,
         bounds,
         fill_rule: FillRuleV1::NonZero,
+        fragments,
     })
 }
 
@@ -525,6 +564,30 @@ mod tests {
         }
     }
 
+    fn fragment_subpaths(artifact: &TextOutlineArtifactV1) -> Vec<CubicSubpathV1> {
+        artifact
+            .fragments
+            .iter()
+            .flat_map(|fragment| fragment.path.subpaths.iter().cloned())
+            .collect()
+    }
+
+    fn path_y_range(path: &CubicPathV1) -> (f64, f64) {
+        path.subpaths
+            .iter()
+            .flat_map(|subpath| {
+                std::iter::once(subpath.start.y).chain(
+                    subpath.segments.iter().flat_map(|segment| {
+                        [segment.control1.y, segment.control2.y, segment.end.y]
+                    }),
+                )
+            })
+            .fold(
+                (f64::INFINITY, f64::NEG_INFINITY),
+                |(minimum, maximum), y| (minimum.min(y), maximum.max(y)),
+            )
+    }
+
     #[test]
     fn compiles_printable_ascii_to_centered_unit_height_cubics() {
         let artifact = compiled("Hello, Poietra!");
@@ -534,6 +597,46 @@ mod tests {
         assert!((artifact.bounds.left + artifact.bounds.right).abs() <= 0.000_002);
         assert!((artifact.bounds.bottom + artifact.bounds.top).abs() <= 0.000_002);
         validate_cubic_path_v1(&artifact.path).expect("compiled text path must be valid");
+    }
+
+    #[test]
+    fn emits_ordered_global_coordinate_glyph_fragments_for_supported_text() {
+        let ascii = compiled("A B");
+        assert_eq!(
+            ascii
+                .fragments
+                .iter()
+                .map(|fragment| fragment.order)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_eq!(fragment_subpaths(&ascii), ascii.path.subpaths);
+        assert!(ascii.fragments.iter().all(|fragment| {
+            !fragment.path.subpaths.is_empty()
+                && fragment.path.subpaths.iter().all(|subpath| subpath.closed)
+                && validate_cubic_path_v1(&fragment.path).is_ok()
+        }));
+        let compact = compiled("AB");
+        assert_ne!(ascii.fragments[1].path, compact.fragments[1].path);
+
+        let japanese = compiled("日本語");
+        assert_eq!(japanese.fragments.len(), 3);
+        assert_eq!(fragment_subpaths(&japanese), japanese.path.subpaths);
+
+        let multiline = compiled("A\n日 B");
+        assert_eq!(
+            multiline
+                .fragments
+                .iter()
+                .map(|fragment| fragment.order)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(fragment_subpaths(&multiline), multiline.path.subpaths);
+        let first_line_y = path_y_range(&multiline.fragments[0].path);
+        let second_line_y = path_y_range(&multiline.fragments[1].path);
+        assert!(first_line_y.0 > second_line_y.1);
+        assert_eq!(multiline, compiled("A\n日 B"));
     }
 
     #[test]

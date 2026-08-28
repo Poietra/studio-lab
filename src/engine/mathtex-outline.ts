@@ -10,7 +10,7 @@ import {
 
 export const POIETRA_MATHTEX_OUTLINE_ABI_VERSION = 1 as const;
 export const POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION = 1 as const;
-export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 6 as const;
+export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 7 as const;
 const MAX_MATHTEX_PARTS = 16;
 const MAX_MATHTEX_CONTENT_LENGTH = 2_000;
 const MAX_MATHTEX_REQUEST_JSON_BYTES = 16 * 1024;
@@ -431,6 +431,21 @@ const textOutlineRequestV1Schema = z
   })
   .strict();
 
+export const textOutlineGlyphFragmentV1Schema = z
+  .object({
+    order: z.number().int().nonnegative().max(MAX_U32),
+    path: cubicPathV1Schema,
+  })
+  .strict()
+  .superRefine(({ path }, context) => {
+    if (path.subpaths.length === 0) {
+      context.addIssue({ code: "custom", message: "Text glyph fragments must contain visible contours." });
+    }
+    if (path.subpaths.some(({ closed }) => !closed)) {
+      context.addIssue({ code: "custom", message: "Text glyph fragment contours must be closed." });
+    }
+  });
+
 export const textOutlineArtifactV1Schema = z
   .object({
     bounds: z
@@ -443,11 +458,12 @@ export const textOutlineArtifactV1Schema = z
       .strict()
       .refine(({ bottom, left, right, top }) => right > left && top > bottom, "Text ink bounds must be positive."),
     fillRule: z.literal("nonzero"),
+    fragments: z.array(textOutlineGlyphFragmentV1Schema).min(1).max(MAX_TEXT_OUTLINE_SCALARS),
     kind: z.literal("compiled"),
     path: cubicPathV1Schema,
   })
   .strict()
-  .superRefine(({ bounds, path }, context) => {
+  .superRefine(({ bounds, fragments, path }, context) => {
     if (countCubicPathSegments(path) > MAX_TEXT_OUTLINE_SEGMENTS) {
       context.addIssue({ code: "custom", message: "Text outlines accept at most 2,048 cubic segments." });
     }
@@ -460,6 +476,23 @@ export const textOutlineArtifactV1Schema = z
       Math.abs(bounds.bottom + bounds.top) > MATHTEX_NORMALIZATION_TOLERANCE
     ) {
       context.addIssue({ code: "custom", message: "Text outline bounds must use canonical centered unit height." });
+    }
+    fragments.forEach((fragment, index) => {
+      if (fragment.order !== index) {
+        context.addIssue({
+          code: "custom",
+          message: "Text glyph fragments must preserve canonical reading order.",
+          path: ["fragments", index, "order"],
+        });
+      }
+    });
+    const fragmentSubpaths = fragments.flatMap((fragment) => fragment.path.subpaths);
+    if (JSON.stringify(fragmentSubpaths) !== JSON.stringify(path.subpaths)) {
+      context.addIssue({
+        code: "custom",
+        message: "Text glyph fragments must exactly partition the aggregate outline.",
+        path: ["fragments"],
+      });
     }
   });
 
@@ -489,6 +522,7 @@ export const textOutlineResponseV1Schema = z
   .strict();
 
 export type TextOutlineArtifactV1 = z.infer<typeof textOutlineArtifactV1Schema>;
+export type TextOutlineGlyphFragmentV1 = z.infer<typeof textOutlineGlyphFragmentV1Schema>;
 export type TextOutlineResponseV1 = z.infer<typeof textOutlineResponseV1Schema>;
 export type TextOutlineInputV1 = Readonly<{
   layout: z.infer<typeof textOutlineLayoutV1Schema>;

@@ -1412,6 +1412,10 @@ export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
   }>[];
   textOutlines: readonly Readonly<{
     entityId: string;
+    fragments: readonly Readonly<{
+      order: number;
+      path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
+    }>[];
     layout: StudioTextContentV1["layout"];
     path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
     text: string;

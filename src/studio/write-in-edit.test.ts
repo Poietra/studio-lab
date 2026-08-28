@@ -21,6 +21,21 @@ function mathTexCreation() {
   });
 }
 
+function textCreation() {
+  return createStudioEntitiesProgram({
+    capturedPlayhead: 1,
+    entities: [
+      {
+        content: { displayLines: ["Write"], text: "Write" },
+        position: { x: 320, y: 180 },
+        type: "Text",
+      },
+    ],
+    scene: STUDIO_FIXTURE_SCENE,
+    transactionId: "write-text",
+  });
+}
+
 describe("Write entrance editing", () => {
   it("replaces the automatic fade, retimes the canonical clip, and removes it", () => {
     const creation = mathTexCreation();
@@ -99,7 +114,41 @@ describe("Write entrance editing", () => {
     expect(writeInClipFromProgram(recovered.program)).toBeNull();
   });
 
-  it("rejects non-MathTex Studio objects", () => {
+  it("admits Text without a material and preserves removal when a material becomes incompatible", () => {
+    const creation = textCreation();
+    const entityId = creation.entityIds[0]!;
+    const written = replaceWriteInProgram({
+      baseProgram: creation.validation.program,
+      entityId,
+      fragmentMaterial: null,
+      scene: STUDIO_FIXTURE_SCENE,
+      write: { easing: "linear", end: 2.5 },
+    });
+    expect(written.kind, JSON.stringify(written.issues)).toBe("valid");
+    expect(written.program.loweringStatus).toBe("unsupported");
+    expect(writeInClipFromProgram(written.program)).toMatchObject({ entityId, interval: { end: 2.5, start: 1 } });
+    expect(() =>
+      replaceWriteInProgram({
+        baseProgram: written.program,
+        entityId,
+        fragmentMaterial: { texture: false },
+        scene: STUDIO_FIXTURE_SCENE,
+        write: { easing: "linear", end: 3 },
+      }),
+    ).toThrow(/fragment material/i);
+    const recovered = replaceWriteInProgram({
+      baseProgram: written.program,
+      entityId,
+      fragmentMaterial: { texture: false },
+      scene: STUDIO_FIXTURE_SCENE,
+      write: null,
+    });
+    expect(recovered.kind, JSON.stringify(recovered.issues)).toBe("valid");
+    expect(recovered.program.loweringStatus).toBe("supported");
+    expect(writeInClipFromProgram(recovered.program)).toBeNull();
+  });
+
+  it("rejects unsupported Studio objects", () => {
     const line = createStudioEntitiesProgram({
       capturedPlayhead: 1,
       entities: [{ position: { x: 320, y: 180 }, type: "Line" }],
@@ -114,7 +163,7 @@ describe("Write entrance editing", () => {
         scene: STUDIO_FIXTURE_SCENE,
         write: { easing: "linear", end: 2 },
       }),
-    ).toThrow(/MathTex/);
+    ).toThrow(/MathTex and Text/);
   });
 
   it("rejects Write after a paint color track is present", () => {
