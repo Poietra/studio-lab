@@ -27,6 +27,7 @@ import { programExecutionCapabilities } from "./operation-registry";
 import { isSceneDurationOperation } from "./operations";
 import { sourceTimeToWorkingTime } from "./program-composition";
 import { sceneEditSchema } from "./scene-edit-contract";
+import type { ProjectScenePostEffectSourceStateV1 } from "./scene-post-effect-source";
 import type { StudioTool } from "./studio-toolbar";
 import type { InteractionMode } from "./studio-viewport";
 import { STUDIO_STYLE_PROFILE } from "./style-profile";
@@ -791,6 +792,15 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     return sessionStore.current?.saveProjectFragmentMaterials(projectId, state) ?? false;
   }, []);
 
+  const loadProjectScenePostEffect = useCallback(
+    (projectId: string) => sessionStore.current?.restoreProjectScenePostEffect(projectId),
+    [],
+  );
+
+  const saveProjectScenePostEffect = useCallback((projectId: string, state: ProjectScenePostEffectSourceStateV1) => {
+    return sessionStore.current?.saveProjectScenePostEffect(projectId, state) ?? false;
+  }, []);
+
   const projectHasLocalMaterialParameterTrack = useCallback((projectId: string, shaderId: string) => {
     const identity = activeSession.current;
     return (
@@ -988,6 +998,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     isSuggestionRequestCurrent,
     installAcceptedState,
     loadProjectFragmentMaterials,
+    loadProjectScenePostEffect,
     openSession,
     pruneSessions: (projectIds: ReadonlySet<string>) => {
       sessionStore.current?.pruneProjects(projectIds);
@@ -1004,6 +1015,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     resetPrograms,
     saveSession,
     saveProjectFragmentMaterials,
+    saveProjectScenePostEffect,
     markSessionCloudManaged,
     setCurrentTime: (value: SetStateAction<number>) => setField("currentTime", value),
     setDurationError: (value: SetStateAction<string | null>) => setField("durationError", value),

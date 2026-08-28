@@ -36,6 +36,7 @@ import {
   studioEntityTypeSupportsStrokeWidth,
 } from "./scene-edit-contract";
 import { DEFAULT_RGB_SPLIT_POST_EFFECT_V1 } from "./scene-post-effect-authoring";
+import { ScenePostEffectSourceEditor, type ScenePostEffectSourceEditorProps } from "./scene-post-effect-source-editor";
 import {
   STUDIO_IMAGE_ASSET_DRAG_TYPE,
   type StudioNativeImageAssetV1,
@@ -114,29 +115,52 @@ function ScenePostEffectControls({
   onChange?: (effect: StudioScenePostEffectV1 | null) => void;
   unavailableReason: string | null;
 }>) {
+  const rgbSplitEffect =
+    effect?.shaderId === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.shaderId &&
+    effect.revision === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.revision &&
+    effect.parameters.length === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters.length
+      ? effect
+      : null;
   const [parameters, setParameters] = useState<[number, number, number, number]>([
-    ...(effect?.parameters ?? DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters),
+    ...(rgbSplitEffect?.parameters ?? DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters),
   ] as [number, number, number, number]);
   useEffect(() => {
-    setParameters([...(effect?.parameters ?? DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters)] as [
+    setParameters([...(rgbSplitEffect?.parameters ?? DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters)] as [
       number,
       number,
       number,
       number,
     ]);
-  }, [effect]);
+  }, [rgbSplitEffect]);
   const disabled = !available || !onChange;
-  if (!effect) {
+  if (!rgbSplitEffect) {
     return (
-      <button
-        className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
-        disabled={disabled}
-        onClick={() => onChange?.(DEFAULT_RGB_SPLIT_POST_EFFECT_V1)}
-        title={unavailableReason ?? undefined}
-        type="button"
-      >
-        Enable RGB split
-      </button>
+      <div className="space-y-1">
+        {effect ? <p className="text-[10px] text-sky-400">Custom WGSL active</p> : null}
+        <div className="flex gap-1">
+          <button
+            className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+            disabled={disabled}
+            onClick={() => onChange?.(DEFAULT_RGB_SPLIT_POST_EFFECT_V1)}
+            title={unavailableReason ?? undefined}
+            type="button"
+          >
+            {effect ? "Switch to RGB split" : "Enable RGB split"}
+          </button>
+          {effect ? (
+            <button
+              aria-label="Remove custom Scene post effect"
+              className="h-7 border border-zinc-800 px-1.5 text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+              disabled={disabled}
+              onClick={() => onChange?.(null)}
+              title={unavailableReason ?? undefined}
+              type="button"
+            >
+              Remove
+            </button>
+          ) : null}
+        </div>
+      </div>
     );
   }
   return (
@@ -144,7 +168,7 @@ function ScenePostEffectControls({
       className="space-y-2"
       onSubmit={(event) => {
         event.preventDefault();
-        onChange?.({ ...effect, parameters });
+        onChange?.({ ...rgbSplitEffect, parameters });
       }}
     >
       <p className="text-[10px] text-sky-400">RGB split</p>
@@ -363,6 +387,7 @@ export function WorkspaceSidebar({
   sceneBackgroundUnavailableReason = null,
   scenePostEffect = null,
   scenePostEffectAvailable = false,
+  scenePostEffectSourceEditor,
   scenePostEffectUnavailableReason = null,
   selectedIds,
   selectedGroupId = null,
@@ -424,6 +449,7 @@ export function WorkspaceSidebar({
   sceneBackgroundUnavailableReason?: string | null;
   scenePostEffect?: StudioScenePostEffectV1 | null;
   scenePostEffectAvailable?: boolean;
+  scenePostEffectSourceEditor?: ScenePostEffectSourceEditorProps;
   scenePostEffectUnavailableReason?: string | null;
   selectedIds: ReadonlySet<string>;
   selectedGroupId?: string | null;
@@ -1185,6 +1211,7 @@ export function WorkspaceSidebar({
               onChange={onScenePostEffectChange}
               unavailableReason={scenePostEffectUnavailableReason}
             />
+            {scenePostEffectSourceEditor ? <ScenePostEffectSourceEditor {...scenePostEffectSourceEditor} /> : null}
           </dd>
           <dt className="text-zinc-600">Anchors</dt>
           <dd className="tabular-nums text-zinc-400">

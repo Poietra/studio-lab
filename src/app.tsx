@@ -34,6 +34,11 @@ import {
 } from "./engine/cubic-bezier-authoring";
 import { compileFragmentMaterialGlsl } from "./engine/fragment-material-glsl";
 import type { StudioCreationProjectionMutationV1, StudioPropertyKeyframeEasing } from "./engine/scene-authoring";
+import {
+  PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  scenePostEffectRegistryV1Schema,
+} from "./engine/scene-post-effect-registry";
+import { validateScenePostEffectSource } from "./engine/scene-post-effect-source-compiler";
 import { cn } from "./lib/cn";
 import { exportManimSource } from "./render-pipeline/client";
 import type { RenderSessionView } from "./render-pipeline/contracts";
@@ -293,6 +298,17 @@ import {
   recordsWithoutScenePostEffectProgramsV1,
   scenePostEffectProgramOwnerV1,
 } from "./studio/scene-post-effect-authoring";
+import {
+  acceptedStudioScenePostEffectReferenceV1,
+  acceptedStudioScenePostEffectRegistrySourceV1,
+  acceptStudioScenePostEffectSourceV1,
+  createStudioScenePostEffectSourceV1,
+  EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1,
+  type ProjectScenePostEffectSourceStateV1,
+  rejectStudioScenePostEffectSourceV1,
+  removeStudioScenePostEffectSourceV1,
+} from "./studio/scene-post-effect-source";
+import type { CompileStudioScenePostEffectSourceInputV1 } from "./studio/scene-post-effect-source-editor";
 import {
   isSelectionLayoutCommand,
   planSelectionLayout,
@@ -678,6 +694,7 @@ export function App({
     installAcceptedState,
     isSuggestionRequestCurrent,
     loadProjectFragmentMaterials,
+    loadProjectScenePostEffect,
     markSessionCloudManaged,
     openSession,
     pruneSessions,
@@ -687,6 +704,7 @@ export function App({
     resetPrograms,
     saveSession,
     saveProjectFragmentMaterials,
+    saveProjectScenePostEffect,
     setCurrentTime,
     setDurationError,
     setDraftError,
@@ -770,6 +788,9 @@ export function App({
   const [renderSessions, setRenderSessions] = useState<Readonly<Record<string, RenderSessionView>>>({});
   const [projectFragmentMaterials, setProjectFragmentMaterials] = useState<
     Readonly<Record<string, ProjectFragmentMaterialStateV1>>
+  >({});
+  const [projectScenePostEffects, setProjectScenePostEffects] = useState<
+    Readonly<Record<string, ProjectScenePostEffectSourceStateV1>>
   >({});
   const [draftApplyPending, setDraftApplyPending] = useState(false);
   const [nativeProjectState, setNativeProjectState] = useState<TabLocalNativeProjectState | null>(null);
@@ -969,7 +990,22 @@ export function App({
         ? current
         : next;
     });
-  }, [loadProjectFragmentMaterials, projects, workspaceStatus]);
+    setProjectScenePostEffects((current) => {
+      const next = Object.fromEntries(
+        projects.flatMap((project) => {
+          const retained = current[project.id];
+          if (retained) return [[project.id, retained] as const];
+          const restored = loadProjectScenePostEffect(project.id);
+          return restored?.asset ? [[project.id, restored] as const] : [];
+        }),
+      );
+      const entries = Object.entries(next);
+      return entries.length === Object.keys(current).length &&
+        entries.every(([projectId, state]) => current[projectId] === state)
+        ? current
+        : next;
+    });
+  }, [loadProjectFragmentMaterials, loadProjectScenePostEffect, projects, workspaceStatus]);
 
   useEffect(() => {
     const onKeyDown = (event: globalThis.KeyboardEvent) => {
@@ -1354,6 +1390,18 @@ export function App({
     : activeProjectId
       ? (projectFragmentMaterials[activeProjectId] ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1)
       : EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
+  const activeProjectScenePostEffect = activeProjectId
+    ? (projectScenePostEffects[activeProjectId] ?? EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1)
+    : EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
+  const activeScenePostEffectRegistry = useMemo(
+    () =>
+      scenePostEffectRegistryV1Schema.parse({
+        effect: acceptedStudioScenePostEffectRegistrySourceV1(activeProjectScenePostEffect),
+        schema: "poietra.scene-post-effect-registry",
+        version: 1,
+      }),
+    [activeProjectScenePostEffect],
+  );
   const activeProjectNamedFragmentMaterials = useMemo(
     () =>
       listStudioFragmentMaterialsV1(activeProjectFragmentMaterials).map((material) => ({
@@ -1427,6 +1475,7 @@ export function App({
     nativeProvider: nativePreviewProvider,
     playbackClock,
     sceneFragmentMaterials: activeSceneFragmentMaterials,
+    scenePostEffectRegistry: activeScenePostEffectRegistry,
     retainedSourceDuration: nativePreviewContext?.sourceDuration ?? editorRevision.retainedSourceDuration,
     sampleTime: currentTime,
     sceneBoundaryActive: importedSceneBoundaryActive,
@@ -6830,6 +6879,78 @@ export function App({
     }
   }
 
+  function commitProjectScenePostEffect(projectId: string, next: ProjectScenePostEffectSourceStateV1) {
+    if (!saveProjectScenePostEffect(projectId, next)) {
+      setDraftError("The custom Scene post effect could not be saved.");
+      return false;
+    }
+    setProjectScenePostEffects((current) => {
+      const updated = { ...current };
+      if (next.asset) updated[projectId] = next;
+      else delete updated[projectId];
+      return updated;
+    });
+    return true;
+  }
+
+  function createProjectScenePostEffect() {
+    if (!activeProjectId) return;
+    try {
+      commitProjectScenePostEffect(activeProjectId, createStudioScenePostEffectSourceV1(activeProjectScenePostEffect));
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The custom Scene post effect could not be created.");
+    }
+  }
+
+  function removeUncompiledProjectScenePostEffect() {
+    if (!activeProjectId) return;
+    try {
+      commitProjectScenePostEffect(activeProjectId, removeStudioScenePostEffectSourceV1(activeProjectScenePostEffect));
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The custom Scene post effect could not be removed.");
+    }
+  }
+
+  async function compileProjectScenePostEffect(input: CompileStudioScenePostEffectSourceInputV1) {
+    if (!activeProjectId) throw new Error("No project is open.");
+    const projectId = activeProjectId;
+    const expected = loadProjectScenePostEffect(projectId) ?? EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
+    if (!expected.asset) throw new Error("The custom Scene post effect no longer exists.");
+    if ((expected.asset.accepted?.generation ?? null) !== input.expectedAcceptedGeneration) {
+      throw new Error("The custom Scene post effect changed while its WGSL was compiling. Review it and try again.");
+    }
+    const candidate = acceptStudioScenePostEffectSourceV1(expected, input);
+    const registry = scenePostEffectRegistryV1Schema.parse({
+      effect: acceptedStudioScenePostEffectRegistrySourceV1(candidate),
+      schema: "poietra.scene-post-effect-registry",
+      version: 1,
+    });
+    try {
+      await validateScenePostEffectSource(registry);
+    } catch (error) {
+      const diagnostic =
+        error instanceof Error && error.message
+          ? error.message
+          : "The Rust core rejected the Scene post-effect WGSL source.";
+      const current = loadProjectScenePostEffect(projectId) ?? EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
+      if ((current.asset?.accepted?.generation ?? null) !== input.expectedAcceptedGeneration || !current.asset) {
+        throw new Error("The custom Scene post effect changed while its WGSL was compiling. Review it and try again.");
+      }
+      const rejected = rejectStudioScenePostEffectSourceV1(current, { ...input, diagnostic });
+      if (!commitProjectScenePostEffect(projectId, rejected)) {
+        throw new Error("The rejected WGSL source and its diagnostic could not be saved.");
+      }
+      throw new Error(diagnostic);
+    }
+    const current = loadProjectScenePostEffect(projectId) ?? EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
+    if ((current.asset?.accepted?.generation ?? null) !== input.expectedAcceptedGeneration || !current.asset) {
+      throw new Error("The custom Scene post effect changed while its WGSL was compiling. Review it and try again.");
+    }
+    if (!commitProjectScenePostEffect(projectId, candidate)) {
+      throw new Error("The compiled Scene post effect could not be saved.");
+    }
+  }
+
   function sourceSceneBeforeAppliedProgram(index: number) {
     if (!projectedEditorScene) throw new Error("The active Scene is unavailable.");
     const preceding = appliedEdits.slice(0, index);
@@ -10241,6 +10362,12 @@ export function App({
       delete next[workspaceId];
       return next;
     });
+    setProjectScenePostEffects((current) => {
+      if (!(workspaceId in current)) return current;
+      const next = { ...current };
+      delete next[workspaceId];
+      return next;
+    });
     setRenderSessions((current) => {
       if (!(workspaceId in current)) return current;
       const next = { ...current };
@@ -10721,6 +10848,33 @@ export function App({
                   ? "Apply or discard the current draft before changing the Scene post effect."
                   : null
               }
+              scenePostEffectSourceEditor={{
+                active: scenePostEffect?.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+                asset: activeProjectScenePostEffect.asset,
+                available:
+                  !studioAuthoringLocked &&
+                  !isPlaying &&
+                  previewPaintAvailable &&
+                  draftEdit === null &&
+                  editingAppliedProgram === null,
+                onActivate: () => {
+                  const reference = acceptedStudioScenePostEffectReferenceV1(activeProjectScenePostEffect);
+                  if (reference) changeScenePostEffect(reference);
+                },
+                onCompile: compileProjectScenePostEffect,
+                onCreate: createProjectScenePostEffect,
+                onParametersChange: (parameters) => {
+                  const reference = acceptedStudioScenePostEffectReferenceV1(activeProjectScenePostEffect, parameters);
+                  if (reference) changeScenePostEffect(reference);
+                },
+                onRemove: removeUncompiledProjectScenePostEffect,
+                parameters:
+                  scenePostEffect?.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1
+                    ? scenePostEffect.parameters
+                    : null,
+                sourceAvailable:
+                  !studioAuthoringLocked && !isPlaying && draftEdit === null && editingAppliedProgram === null,
+              }}
               selectedIds={selectedSet}
               selectedGroupId={selectedLayerGroup?.groupId ?? null}
               sourceImportOutcomes={activeEditorScene.importOutcomes}

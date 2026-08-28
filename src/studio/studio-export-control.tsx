@@ -232,6 +232,7 @@ export function StudioExportControl({
           if (activeExport.current === controller) setRun({ kind: "running", progress });
         },
         profile: capturedProfile,
+        scenePostEffectRegistry: capturedSource.scenePostEffectRegistry,
         signal: controller.signal,
         snapshot: capturedSource.bundle,
       });

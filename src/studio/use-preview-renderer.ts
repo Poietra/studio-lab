@@ -65,6 +65,11 @@ import {
   type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
+import {
+  EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
+  PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  type ScenePostEffectRegistryV1,
+} from "../engine/scene-post-effect-registry";
 import { STUDIO_CREATION_TEXT_CONTRACT, STUDIO_TEXT_DEFAULT_LAYOUT } from "./editable-content";
 import {
   EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
@@ -156,6 +161,7 @@ export type StudioPreviewRendererView = Readonly<{
     assetPayloads: readonly CanvasPngAssetTransferV1[];
     bundle: SceneIrBundleV1;
     fragmentMaterialRegistry: FragmentMaterialRegistryV1;
+    scenePostEffectRegistry: ScenePostEffectRegistryV1;
     sourceLineage:
       | Readonly<{
           documentKey: string;
@@ -253,6 +259,7 @@ export type UseStudioPreviewRendererInput = Readonly<{
   playbackClock?: StudioPlaybackClock | null;
   provider: StudioPreviewSnapshotProviderV1 | null;
   sceneFragmentMaterials?: SceneFragmentMaterialStateV1;
+  scenePostEffectRegistry?: ScenePostEffectRegistryV1;
   retainedSourceDuration: number | null;
   sampleTime: number;
   sceneBoundaryActive: boolean;
@@ -282,6 +289,12 @@ export function correlateStudioPreviewFragmentMaterialInputV1<
   return scene?.fragmentMaterialInput === currentInput ? scene : null;
 }
 
+function correlateStudioPreviewScenePostEffectRegistryV1<
+  T extends Readonly<{ scenePostEffectRegistryInput?: ScenePostEffectRegistryV1 }>,
+>(scene: T | null, currentRegistry: ScenePostEffectRegistryV1): T | null {
+  return scene?.scenePostEffectRegistryInput === currentRegistry ? scene : null;
+}
+
 type BoundHostStateV1 = Readonly<{
   binding: StudioPreviewHostBinding;
   host: StudioPreviewRendererHost;
@@ -302,6 +315,8 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   mathTexTransformProjection?: StudioMathTexTransformProjectionV1;
   motionProjection?: StudioMotionProjectionV1;
   persistentRemoveProjection?: StudioPersistentRemoveProjectionV1;
+  scenePostEffectRegistryInput?: ScenePostEffectRegistryV1;
+  scenePostEffectRegistry?: ScenePostEffectRegistryV1;
   editAuthority?: StudioPreviewEditAuthority;
   snapshot: StudioVerifiedPreviewSnapshotV1;
   staticRootProjection?: StudioStaticRootProjectionV1;
@@ -1891,25 +1906,55 @@ function routeScenePostEffectProgramV1(
   }
 }
 
-async function digestScenePostEffectRevisionV1(baseRevision: string, effect: unknown) {
-  const bytes = new TextEncoder().encode(canonicalJsonV1(["poietra.studio-scene-post-effect", baseRevision, effect]));
+async function digestScenePostEffectRevisionV1(baseRevision: string, effect: unknown, registry: unknown) {
+  const bytes = new TextEncoder().encode(
+    canonicalJsonV1(["poietra.studio-scene-post-effect", baseRevision, effect, registry]),
+  );
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 export async function compileStudioPreviewSceneV1(
   input: Parameters<typeof compileStudioPreviewSceneWithoutPostEffectV1>[0] &
-    Readonly<{ applyStudioScenePostEffectCompiler?: ApplyStudioScenePostEffectCompiler }>,
+    Readonly<{
+      applyStudioScenePostEffectCompiler?: ApplyStudioScenePostEffectCompiler;
+      scenePostEffectRegistry?: ScenePostEffectRegistryV1;
+    }>,
 ): ReturnType<typeof compileStudioPreviewSceneWithoutPostEffectV1> {
   const route = routeScenePostEffectProgramV1(input.workingState);
   if (route.kind === "unsupported") return route;
   const result = await compileStudioPreviewSceneWithoutPostEffectV1({ ...input, workingState: route.workingState });
-  if (result.kind !== "compiled" || route.effectOwner === null) return result;
+  if (result.kind !== "compiled") return result;
+  const registry = input.scenePostEffectRegistry ?? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1;
+  if (route.effectOwner === null) {
+    return {
+      kind: "compiled",
+      scene: {
+        ...result.scene,
+        scenePostEffectRegistry: EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
+        scenePostEffectRegistryInput: registry,
+      },
+    };
+  }
   const operation = route.effectOwner.program.operations[0];
   if (operation?.kind !== "SetScenePostEffect") {
     return { error: "The Scene post-effect Program is invalid.", kind: "unsupported" };
   }
-  const nextRevision = await digestScenePostEffectRevisionV1(result.scene.engineRevisionHash, operation.effect);
+  if (
+    operation.effect?.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 &&
+    (registry.effect?.shaderId !== operation.effect.shaderId || registry.effect.revision !== operation.effect.revision)
+  ) {
+    return { error: "The custom Scene post effect has no matching accepted WGSL source.", kind: "unsupported" };
+  }
+  const installedRegistry =
+    operation.effect?.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1
+      ? registry
+      : EMPTY_SCENE_POST_EFFECT_REGISTRY_V1;
+  const nextRevision = await digestScenePostEffectRevisionV1(
+    result.scene.engineRevisionHash,
+    operation.effect,
+    installedRegistry,
+  );
   try {
     const bundle = await (input.applyStudioScenePostEffectCompiler ?? compileApplyStudioScenePostEffect)(
       result.scene.bundle,
@@ -1923,7 +1968,13 @@ export async function compileStudioPreviewSceneV1(
     );
     return {
       kind: "compiled",
-      scene: { ...result.scene, bundle, engineRevisionHash: nextRevision },
+      scene: {
+        ...result.scene,
+        bundle,
+        engineRevisionHash: nextRevision,
+        scenePostEffectRegistry: installedRegistry,
+        scenePostEffectRegistryInput: registry,
+      },
     };
   } catch (error) {
     return {
@@ -2005,6 +2056,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     playbackClock = null,
     provider,
     sceneFragmentMaterials = EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1,
+    scenePostEffectRegistry = EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
     retainedSourceDuration,
     sampleTime,
     sceneBoundaryActive,
@@ -2062,6 +2114,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     void compileStudioPreviewSceneV1({
       frame,
       sceneFragmentMaterials,
+      scenePostEffectRegistry,
       snapshot,
       workingState,
       workingRevision,
@@ -2099,6 +2152,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     frame.width,
     nativeContextActive,
     sceneFragmentMaterials,
+    scenePostEffectRegistry,
     retainedSourceDuration,
     snapshot,
     workspaceKey,
@@ -2113,9 +2167,9 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     compilation.scene.frame.width === frame.width
       ? compilation.scene
       : null;
-  const currentCompiledScene = correlateStudioPreviewFragmentMaterialInputV1(
-    revisionCorrelatedCompiledScene,
-    sceneFragmentMaterials,
+  const currentCompiledScene = correlateStudioPreviewScenePostEffectRegistryV1(
+    correlateStudioPreviewFragmentMaterialInputV1(revisionCorrelatedCompiledScene, sceneFragmentMaterials),
+    scenePostEffectRegistry,
   );
   const compilationError =
     compilation.phase === "unsupported" &&
@@ -2237,6 +2291,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       fragmentMaterialRegistry: installedScene.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
       interactionEntityIds: installedScene.interactionEntityIds,
       revision: installedScene.engineRevisionHash,
+      scenePostEffectRegistry: installedScene.scenePostEffectRegistry ?? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
       snapshot: installedScene.bundle,
     });
     return () => {
@@ -2272,6 +2327,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
         fragmentMaterialRegistry: currentCompiledScene.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
         interactionEntityIds: currentCompiledScene.interactionEntityIds,
         revision: currentCompiledScene.engineRevisionHash,
+        scenePostEffectRegistry: currentCompiledScene.scenePostEffectRegistry ?? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
         snapshot: currentCompiledScene.bundle,
       })
       .catch(() => undefined)
@@ -2422,6 +2478,8 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
           bundle: presentedCompiledScene.bundle,
           fragmentMaterialRegistry:
             presentedCompiledScene.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+          scenePostEffectRegistry:
+            presentedCompiledScene.scenePostEffectRegistry ?? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
           sourceLineage: isStudioNativePreviewSceneIdentityV1(presentedCompiledScene.snapshot.correlation.context)
             ? {
                 documentKey: presentedCompiledScene.snapshot.correlation.context.documentKey,
