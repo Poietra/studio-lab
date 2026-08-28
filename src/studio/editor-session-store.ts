@@ -14,6 +14,11 @@ import {
   projectFragmentMaterialStateV1Schema,
 } from "./fragment-material-authoring";
 import type { SceneEditOperation } from "./scene-edit-contract";
+import {
+  EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1,
+  type ProjectScenePostEffectSourceStateV1,
+  projectScenePostEffectSourceStateV1Schema,
+} from "./scene-post-effect-source";
 
 export type {
   AcceptedProgramRecord,
@@ -173,11 +178,18 @@ const storedProjectFragmentMaterialSchema = z
     state: projectFragmentMaterialStateV1Schema,
   })
   .strict();
+const storedProjectScenePostEffectSchema = z
+  .object({
+    sourceLanguage: z.literal("wgsl"),
+    state: projectScenePostEffectSourceStateV1Schema,
+  })
+  .strict();
 const storedEnvelopeSchema = z
   .object({
     entries: z.array(storedEntrySchema).max(100),
     fragmentMaterials: z.record(projectIdSchema, storedProjectFragmentMaterialSchema).optional(),
     nativeEntries: z.array(storedNativeEntrySchema).max(100).optional(),
+    scenePostEffects: z.record(projectIdSchema, storedProjectScenePostEffectSchema).optional(),
     version: z.literal(EDITOR_SESSION_STORAGE_VERSION),
   })
   .strict();
@@ -349,6 +361,7 @@ function migrateStoredEnvelope(value: unknown) {
         ...entry,
         snapshot: parseEditorSessionSnapshotV1(entry.snapshot),
       })),
+      scenePostEffects: parsed.data.scenePostEffects ?? {},
     };
   } catch {
     return null;
@@ -361,6 +374,7 @@ export class EditorSessionStore {
   private readonly persistedNativeSessions = new Map<string, StoredNativeEntry>();
   private readonly persistedSessions = new Map<string, StoredEntry>();
   private readonly projectFragmentMaterials = new Map<string, ProjectFragmentMaterialStateV1>();
+  private readonly projectScenePostEffects = new Map<string, ProjectScenePostEffectSourceStateV1>();
 
   constructor(
     private readonly adapter: EditorSessionStorageAdapter | null = null,
@@ -386,6 +400,7 @@ export class EditorSessionStore {
 
   clearProject(projectId: string) {
     let changed = this.projectFragmentMaterials.delete(projectId);
+    changed = this.projectScenePostEffects.delete(projectId) || changed;
     for (const [key, entry] of this.persistedNativeSessions) {
       if (entry.identity.projectId === projectId) {
         this.persistedNativeSessions.delete(key);
@@ -432,6 +447,12 @@ export class EditorSessionStore {
     for (const projectId of this.projectFragmentMaterials.keys()) {
       if (!projectIds.has(projectId)) {
         this.projectFragmentMaterials.delete(projectId);
+        changed = true;
+      }
+    }
+    for (const projectId of this.projectScenePostEffects.keys()) {
+      if (!projectIds.has(projectId)) {
+        this.projectScenePostEffects.delete(projectId);
         changed = true;
       }
     }
@@ -510,6 +531,11 @@ export class EditorSessionStore {
     return this.projectFragmentMaterials.get(projectId) ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
   }
 
+  restoreProjectScenePostEffect(projectId: string): ProjectScenePostEffectSourceStateV1 {
+    if (!projectIdSchema.safeParse(projectId).success) return EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
+    return this.projectScenePostEffects.get(projectId) ?? EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
+  }
+
   projectHasMaterialParameterTrack(
     projectId: string,
     shaderId: string,
@@ -548,6 +574,7 @@ export class EditorSessionStore {
     const materialEnvelope = JSON.stringify({
       entries: [],
       fragmentMaterials: this.serializedProjectFragmentMaterials(),
+      scenePostEffects: this.serializedProjectScenePostEffects(),
       version: EDITOR_SESSION_STORAGE_VERSION,
     });
     if (serializedBytes(materialEnvelope) > MAX_EDITOR_SESSION_STORAGE_BYTES) {
@@ -558,6 +585,27 @@ export class EditorSessionStore {
     if (this.flush()) return true;
     if (previous) this.projectFragmentMaterials.set(parsedProjectId.data, previous);
     else this.projectFragmentMaterials.delete(parsedProjectId.data);
+    return false;
+  }
+
+  saveProjectScenePostEffect(projectId: string, state: ProjectScenePostEffectSourceStateV1) {
+    const parsedProjectId = projectIdSchema.safeParse(projectId);
+    const parsedState = projectScenePostEffectSourceStateV1Schema.safeParse(state);
+    if (!parsedProjectId.success || !parsedState.success) return false;
+
+    const previous = this.projectScenePostEffects.get(parsedProjectId.data);
+    if (parsedState.data.asset === null) this.projectScenePostEffects.delete(parsedProjectId.data);
+    else this.projectScenePostEffects.set(parsedProjectId.data, parsedState.data);
+
+    const envelope = JSON.stringify({
+      entries: [],
+      fragmentMaterials: this.serializedProjectFragmentMaterials(),
+      scenePostEffects: this.serializedProjectScenePostEffects(),
+      version: EDITOR_SESSION_STORAGE_VERSION,
+    });
+    if (serializedBytes(envelope) <= MAX_EDITOR_SESSION_STORAGE_BYTES && this.flush()) return true;
+    if (previous) this.projectScenePostEffects.set(parsedProjectId.data, previous);
+    else this.projectScenePostEffects.delete(parsedProjectId.data);
     return false;
   }
 
@@ -614,10 +662,12 @@ export class EditorSessionStore {
       .filter(({ entry }) => serializedBytes(JSON.stringify(entry)) <= MAX_STORED_EDITOR_SESSION_BYTES)
       .slice(0, MAX_STORED_EDITOR_SESSIONS);
     const fragmentMaterials = this.serializedProjectFragmentMaterials();
+    const scenePostEffects = this.serializedProjectScenePostEffects();
     let envelope = {
       entries: retained.flatMap(({ entry, kind }) => (kind === "imported" ? [entry] : [])),
       fragmentMaterials,
       nativeEntries: retained.flatMap(({ entry, kind }) => (kind === "native" ? [entry] : [])),
+      scenePostEffects,
       version: EDITOR_SESSION_STORAGE_VERSION,
     };
     while (
@@ -644,7 +694,8 @@ export class EditorSessionStore {
       if (
         envelope.entries.length === 0 &&
         envelope.nativeEntries.length === 0 &&
-        Object.keys(envelope.fragmentMaterials).length === 0
+        Object.keys(envelope.fragmentMaterials).length === 0 &&
+        Object.keys(envelope.scenePostEffects).length === 0
       )
         this.adapter.clear();
       else this.adapter.write(JSON.stringify(envelope));
@@ -693,12 +744,24 @@ export class EditorSessionStore {
     for (const [projectId, material] of Object.entries(envelope.fragmentMaterials)) {
       this.projectFragmentMaterials.set(projectId, material.state);
     }
+    for (const [projectId, effect] of Object.entries(envelope.scenePostEffects)) {
+      this.projectScenePostEffects.set(projectId, effect.state);
+    }
     this.flush();
   }
 
   private serializedProjectFragmentMaterials() {
     return Object.fromEntries(
       [...this.projectFragmentMaterials.entries()].map(([projectId, state]) => [
+        projectId,
+        { sourceLanguage: "wgsl" as const, state },
+      ]),
+    );
+  }
+
+  private serializedProjectScenePostEffects() {
+    return Object.fromEntries(
+      [...this.projectScenePostEffects.entries()].map(([projectId, state]) => [
         projectId,
         { sourceLanguage: "wgsl" as const, state },
       ]),

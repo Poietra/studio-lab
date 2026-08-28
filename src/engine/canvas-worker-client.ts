@@ -25,6 +25,11 @@ import {
   type FragmentMaterialRegistryV1,
 } from "./fragment-material-registry";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
+import {
+  EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
+  encodeScenePostEffectRegistryV1,
+  type ScenePostEffectRegistryV1,
+} from "./scene-post-effect-registry";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const MAX_REQUEST_TIMEOUT_MS = 60_000;
@@ -105,6 +110,7 @@ export type InstallCanvasSceneInputV1 = Readonly<{
   canvas: HTMLCanvasElement;
   fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   revision: string;
+  scenePostEffectRegistry?: ScenePostEffectRegistryV1;
   snapshot: SceneIrBundleV1;
 }>;
 
@@ -113,6 +119,7 @@ export type ReplaceCanvasSceneInputV1 = Readonly<{
   baseRevision: string;
   fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   revision: string;
+  scenePostEffectRegistry?: ScenePostEffectRegistryV1;
   snapshot: SceneIrBundleV1;
 }>;
 
@@ -360,12 +367,16 @@ export class PoietraCanvasWorkerClient {
     }
     this.state = "installing";
     let fragmentMaterialRegistryJson: ArrayBuffer;
+    let scenePostEffectRegistryJson: ArrayBuffer;
     let snapshotJson: ArrayBuffer;
     let preparedAssets: Awaited<ReturnType<typeof prepareCanvasPngAssetTransfersV1>>;
     try {
       const snapshot = await verifySnapshot(input.snapshot);
       fragmentMaterialRegistryJson = encodeFragmentMaterialRegistryV1(
         input.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+      );
+      scenePostEffectRegistryJson = encodeScenePostEffectRegistryV1(
+        input.scenePostEffectRegistry ?? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
       );
       snapshotJson = encodeSnapshot(input.revision, snapshot);
       preparedAssets = await prepareCanvasPngAssetTransfersV1({
@@ -396,6 +407,7 @@ export class PoietraCanvasWorkerClient {
         kind: "install-canvas",
         requestId: this.takeRequestId(),
         revision: input.revision,
+        scenePostEffectRegistryJson,
         schema: "poietra.canvas-worker-request",
         snapshotJson,
         version: POIETRA_CANVAS_WORKER_VERSION,
@@ -412,6 +424,7 @@ export class PoietraCanvasWorkerClient {
       await this.dispatch(request, ["canvas-ready"], "install", [
         canvas,
         fragmentMaterialRegistryJson,
+        scenePostEffectRegistryJson,
         snapshotJson,
         ...preparedAssets.transfers.map((asset) => asset.bytes),
       ]);
@@ -438,12 +451,16 @@ export class PoietraCanvasWorkerClient {
     }
     this.state = "replacing";
     let fragmentMaterialRegistryJson: ArrayBuffer;
+    let scenePostEffectRegistryJson: ArrayBuffer;
     let snapshotJson: ArrayBuffer;
     let preparedAssets: Awaited<ReturnType<typeof prepareCanvasPngAssetTransfersV1>>;
     try {
       const snapshot = await verifySnapshot(input.snapshot);
       fragmentMaterialRegistryJson = encodeFragmentMaterialRegistryV1(
         input.fragmentMaterialRegistry ?? EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+      );
+      scenePostEffectRegistryJson = encodeScenePostEffectRegistryV1(
+        input.scenePostEffectRegistry ?? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
       );
       snapshotJson = encodeSnapshot(input.revision, snapshot);
       preparedAssets = await prepareCanvasPngAssetTransfersV1({
@@ -466,6 +483,7 @@ export class PoietraCanvasWorkerClient {
         kind: "replace-scene",
         requestId: this.takeRequestId(),
         revision: input.revision,
+        scenePostEffectRegistryJson,
         schema: "poietra.canvas-worker-request",
         snapshotJson,
         version: POIETRA_CANVAS_WORKER_VERSION,
@@ -482,6 +500,7 @@ export class PoietraCanvasWorkerClient {
     try {
       await this.dispatch(request, ["canvas-ready"], "replace", [
         fragmentMaterialRegistryJson,
+        scenePostEffectRegistryJson,
         snapshotJson,
         ...preparedAssets.transfers.map((asset) => asset.bytes),
       ]);

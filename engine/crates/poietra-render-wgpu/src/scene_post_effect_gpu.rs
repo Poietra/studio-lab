@@ -1,11 +1,115 @@
+use std::borrow::Cow;
+
+use poietra_scene_ir::{
+    PROJECT_SCENE_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_ID,
+    RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCompositingV1,
+};
 use wgpu::util::DeviceExt;
 
-use poietra_scene_ir::RenderCompositingV1;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::{JsCast, JsValue};
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen_futures::JsFuture;
+
+use crate::PreparedScenePostEffectV1;
+use crate::scene_post_effect_wgsl::validate_scene_post_effect_wgsl;
+
+pub const MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1: usize = 16 * 1024;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScenePostEffectSourceV1 {
+    pub revision: u32,
+    pub shader_id: String,
+    pub source: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ScenePostEffectRegistryErrorV1 {
+    #[error("Scene post effect {shader_id}@{revision} uses the reserved built-in identity")]
+    Reserved { revision: u32, shader_id: String },
+    #[error("project Scene post-effect shader ID must be {PROJECT_SCENE_POST_EFFECT_SHADER_ID}")]
+    InvalidShaderId,
+    #[error("project Scene post-effect revision must be positive")]
+    InvalidRevision,
+    #[error(
+        "Scene post effect {shader_id}@{revision} source must contain 1 to {maximum} UTF-8 bytes"
+    )]
+    SourceSize {
+        maximum: usize,
+        revision: u32,
+        shader_id: String,
+    },
+    #[error("Scene post effect {shader_id}@{revision} did not compile: {message}")]
+    Compilation {
+        message: String,
+        revision: u32,
+        shader_id: String,
+    },
+}
+
+/// Validates the one admitted project identity, source bound, WGSL resources,
+/// entry point, and fragment interface without allocating GPU resources.
+///
+/// # Errors
+///
+/// Returns a specific registry or compilation diagnostic for any mismatch.
+pub fn validate_scene_post_effect_source_v1(
+    source: &ScenePostEffectSourceV1,
+) -> Result<(), ScenePostEffectRegistryErrorV1> {
+    if source.shader_id == RGB_SPLIT_POST_EFFECT_SHADER_ID {
+        return Err(ScenePostEffectRegistryErrorV1::Reserved {
+            revision: source.revision,
+            shader_id: source.shader_id.clone(),
+        });
+    }
+    if source.shader_id != PROJECT_SCENE_POST_EFFECT_SHADER_ID {
+        return Err(ScenePostEffectRegistryErrorV1::InvalidShaderId);
+    }
+    if source.revision == 0 {
+        return Err(ScenePostEffectRegistryErrorV1::InvalidRevision);
+    }
+    if source.source.is_empty() || source.source.len() > MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1 {
+        return Err(ScenePostEffectRegistryErrorV1::SourceSize {
+            maximum: MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1,
+            revision: source.revision,
+            shader_id: source.shader_id.clone(),
+        });
+    }
+    validate_scene_post_effect_wgsl(&source.source).map_err(|message| {
+        ScenePostEffectRegistryErrorV1::Compilation {
+            message,
+            revision: source.revision,
+            shader_id: source.shader_id.clone(),
+        }
+    })
+}
 
 const HOST_UNIFORM_FLOATS: usize = 12;
 const HOST_UNIFORM_BYTES: usize = 48;
 const HOST_UNIFORM_BUFFER_SIZE: u64 = 48;
 const RGBA8_BYTES_PER_PIXEL: u64 = 4;
+
+#[derive(Debug)]
+struct ScenePostEffectPipelines {
+    cairo: wgpu::RenderPipeline,
+    linear: wgpu::RenderPipeline,
+}
+
+impl ScenePostEffectPipelines {
+    fn for_compositing(&self, compositing: RenderCompositingV1) -> &wgpu::RenderPipeline {
+        match compositing {
+            RenderCompositingV1::LinearLight => &self.linear,
+            RenderCompositingV1::ManimCairoSrgb => &self.cairo,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ProjectScenePostEffectPipelines {
+    pipelines: ScenePostEffectPipelines,
+    revision: u32,
+    shader_id: String,
+}
 
 #[derive(Debug)]
 struct SceneColorTarget {
@@ -29,11 +133,143 @@ impl SceneColorTarget {
     }
 }
 
+fn create_scene_post_effect_pipeline(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    format: wgpu::TextureFormat,
+    vertex_shader: &wgpu::ShaderModule,
+    fragment_shader: &wgpu::ShaderModule,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("poietra scene post-effect pipeline layout v1"),
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: vertex_shader,
+            entry_point: Some("vs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..wgpu::PrimitiveState::default()
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: fragment_shader,
+            entry_point: Some("fs_main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+fn create_project_scene_post_effect_pipelines_v1(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    linear_target_format: wgpu::TextureFormat,
+    cairo_target_format: wgpu::TextureFormat,
+    source: &ScenePostEffectSourceV1,
+) -> ProjectScenePostEffectPipelines {
+    let vertex_shader =
+        device.create_shader_module(wgpu::include_wgsl!("scene_post_effect_host_vertex.wgsl"));
+    let shader_label = format!(
+        "poietra project Scene post effect {}@{}",
+        source.shader_id, source.revision
+    );
+    let fragment_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(&shader_label),
+        source: wgpu::ShaderSource::Wgsl(Cow::Borrowed(&source.source)),
+    });
+    ProjectScenePostEffectPipelines {
+        pipelines: ScenePostEffectPipelines {
+            cairo: create_scene_post_effect_pipeline(
+                device,
+                bind_group_layout,
+                cairo_target_format,
+                &vertex_shader,
+                &fragment_shader,
+                &format!("{shader_label} Manim Cairo pipeline"),
+            ),
+            linear: create_scene_post_effect_pipeline(
+                device,
+                bind_group_layout,
+                linear_target_format,
+                &vertex_shader,
+                &fragment_shader,
+                &format!("{shader_label} linear-light pipeline"),
+            ),
+        },
+        revision: source.revision,
+        shader_id: source.shader_id.clone(),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn create_scoped_project_scene_post_effect_pipelines_v1(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    linear_target_format: wgpu::TextureFormat,
+    cairo_target_format: wgpu::TextureFormat,
+    source: &ScenePostEffectSourceV1,
+) -> Result<ProjectScenePostEffectPipelines, String> {
+    let raw_device: JsValue = device
+        .as_webgpu()
+        .ok_or_else(|| "WebGPU device handle is unavailable".to_owned())?
+        .clone()
+        .into();
+    let push = js_sys::Reflect::get(&raw_device, &JsValue::from_str("pushErrorScope"))
+        .and_then(JsCast::dyn_into::<js_sys::Function>)
+        .map_err(|error| format!("could not access WebGPU error scopes: {error:?}"))?;
+    let pop = js_sys::Reflect::get(&raw_device, &JsValue::from_str("popErrorScope"))
+        .and_then(JsCast::dyn_into::<js_sys::Function>)
+        .map_err(|error| format!("could not access WebGPU error scopes: {error:?}"))?;
+    push.call1(&raw_device, &JsValue::from_str("validation"))
+        .map_err(|error| format!("could not push WebGPU validation scope: {error:?}"))?;
+
+    let pipelines = create_project_scene_post_effect_pipelines_v1(
+        device,
+        bind_group_layout,
+        linear_target_format,
+        cairo_target_format,
+        source,
+    );
+    let promise = pop
+        .call0(&raw_device)
+        .and_then(JsCast::dyn_into::<js_sys::Promise>)
+        .map_err(|error| format!("could not pop WebGPU validation scope: {error:?}"))?;
+    let error = JsFuture::from(promise)
+        .await
+        .map_err(|error| format!("WebGPU validation scope promise rejected: {error:?}"))?;
+    if !error.is_null() && !error.is_undefined() {
+        return Err(js_sys::Reflect::get(&error, &JsValue::from_str("message"))
+            .ok()
+            .and_then(|value| value.as_string())
+            .unwrap_or_else(|| format!("{error:?}")));
+    }
+    Ok(pipelines)
+}
+
 #[derive(Debug)]
 pub(crate) struct ScenePostEffectGpu {
     bind_group_layout: wgpu::BindGroupLayout,
-    cairo_pipeline: wgpu::RenderPipeline,
-    linear_pipeline: wgpu::RenderPipeline,
+    builtin: ScenePostEffectPipelines,
+    cairo_target_format: wgpu::TextureFormat,
+    custom: Option<ProjectScenePostEffectPipelines>,
+    linear_target_format: wgpu::TextureFormat,
     target: Option<SceneColorTarget>,
     uniform_buffer: wgpu::Buffer,
 }
@@ -69,51 +305,25 @@ impl ScenePostEffectGpu {
                 },
             ],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("poietra scene post-effect pipeline layout v1"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
         let shader = device.create_shader_module(wgpu::include_wgsl!("rgb_split_post_effect.wgsl"));
-        let create_pipeline = |label, format| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    buffers: &[],
-                },
-                primitive: wgpu::PrimitiveState {
-                    topology: wgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..wgpu::PrimitiveState::default()
-                },
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some("fs_main"),
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
+        let builtin = ScenePostEffectPipelines {
+            cairo: create_scene_post_effect_pipeline(
+                device,
+                &bind_group_layout,
+                cairo_target_format,
+                &shader,
+                &shader,
+                "poietra Manim Cairo RGB split post-effect pipeline v1",
+            ),
+            linear: create_scene_post_effect_pipeline(
+                device,
+                &bind_group_layout,
+                linear_target_format,
+                &shader,
+                &shader,
+                "poietra linear-light RGB split post-effect pipeline v1",
+            ),
         };
-        let linear_pipeline = create_pipeline(
-            "poietra linear-light RGB split post-effect pipeline v1",
-            linear_target_format,
-        );
-        let cairo_pipeline = create_pipeline(
-            "poietra Manim Cairo RGB split post-effect pipeline v1",
-            cairo_target_format,
-        );
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("poietra scene post-effect host ABI uniform v1"),
             contents: &[0; HOST_UNIFORM_BYTES],
@@ -121,11 +331,70 @@ impl ScenePostEffectGpu {
         });
         Self {
             bind_group_layout,
-            cairo_pipeline,
-            linear_pipeline,
+            builtin,
+            cairo_target_format,
+            custom: None,
+            linear_target_format,
             target: None,
             uniform_buffer,
         }
+    }
+
+    pub(crate) async fn replace_source(
+        &mut self,
+        device: &wgpu::Device,
+        source: Option<&ScenePostEffectSourceV1>,
+    ) -> Result<(), ScenePostEffectRegistryErrorV1> {
+        let Some(source) = source else {
+            self.custom = None;
+            return Ok(());
+        };
+        validate_scene_post_effect_source_v1(source)?;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let candidate = {
+            let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let candidate = create_project_scene_post_effect_pipelines_v1(
+                device,
+                &self.bind_group_layout,
+                self.linear_target_format,
+                self.cairo_target_format,
+                source,
+            );
+            if let Some(error) = validation_scope.pop().await {
+                return Err(ScenePostEffectRegistryErrorV1::Compilation {
+                    message: error.to_string(),
+                    revision: source.revision,
+                    shader_id: source.shader_id.clone(),
+                });
+            }
+            candidate
+        };
+        #[cfg(target_arch = "wasm32")]
+        let candidate = create_scoped_project_scene_post_effect_pipelines_v1(
+            device,
+            &self.bind_group_layout,
+            self.linear_target_format,
+            self.cairo_target_format,
+            source,
+        )
+        .await
+        .map_err(|message| ScenePostEffectRegistryErrorV1::Compilation {
+            message,
+            revision: source.revision,
+            shader_id: source.shader_id.clone(),
+        })?;
+        self.custom = Some(candidate);
+        Ok(())
+    }
+
+    pub(crate) fn supports(&self, shader_id: &str, revision: u32) -> bool {
+        (shader_id == RGB_SPLIT_POST_EFFECT_SHADER_ID
+            && revision == RGB_SPLIT_POST_EFFECT_SHADER_REVISION)
+            || self
+                .custom
+                .as_ref()
+                .is_some_and(|custom| custom.shader_id == shader_id && custom.revision == revision)
     }
 
     pub(crate) fn clear_target(&mut self) {
@@ -212,8 +481,22 @@ impl ScenePostEffectGpu {
         encoder: &mut wgpu::CommandEncoder,
         target_view: &wgpu::TextureView,
         compositing: RenderCompositingV1,
+        effect: &PreparedScenePostEffectV1,
     ) -> Option<()> {
         let target = self.target.as_ref()?;
+        let pipelines = if effect.shader_id() == RGB_SPLIT_POST_EFFECT_SHADER_ID
+            && effect.revision() == RGB_SPLIT_POST_EFFECT_SHADER_REVISION
+        {
+            &self.builtin
+        } else {
+            &self
+                .custom
+                .as_ref()
+                .filter(|custom| {
+                    custom.shader_id == effect.shader_id() && custom.revision == effect.revision()
+                })?
+                .pipelines
+        };
         let attachments = [Some(wgpu::RenderPassColorAttachment {
             view: target_view,
             depth_slice: None,
@@ -231,11 +514,7 @@ impl ScenePostEffectGpu {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        let pipeline = match compositing {
-            RenderCompositingV1::LinearLight => &self.linear_pipeline,
-            RenderCompositingV1::ManimCairoSrgb => &self.cairo_pipeline,
-        };
-        pass.set_pipeline(pipeline);
+        pass.set_pipeline(pipelines.for_compositing(compositing));
         pass.set_bind_group(0, &target.binding, &[]);
         pass.draw(0..3, 0..1);
         Some(())
@@ -245,5 +524,59 @@ impl ScenePostEffectGpu {
         self.target
             .as_ref()
             .map_or(Some(0), SceneColorTarget::accounted_bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const VALID: &str = r"
+struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_1: vec4<f32> };
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(scene_texture, vec2<i32>(position.xy), 0) + host.parameters_0;
+}
+";
+
+    fn source(shader_id: &str, revision: u32, wgsl: &str) -> ScenePostEffectSourceV1 {
+        ScenePostEffectSourceV1 {
+            revision,
+            shader_id: shader_id.to_owned(),
+            source: wgsl.to_owned(),
+        }
+    }
+
+    #[test]
+    fn validates_the_single_bounded_project_identity() {
+        assert!(
+            validate_scene_post_effect_source_v1(&source(
+                PROJECT_SCENE_POST_EFFECT_SHADER_ID,
+                1,
+                VALID,
+            ))
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_scene_post_effect_source_v1(&source(
+                RGB_SPLIT_POST_EFFECT_SHADER_ID,
+                1,
+                VALID,
+            )),
+            Err(ScenePostEffectRegistryErrorV1::Reserved { .. })
+        ));
+        assert!(matches!(
+            validate_scene_post_effect_source_v1(&source("another-effect", 1, VALID)),
+            Err(ScenePostEffectRegistryErrorV1::InvalidShaderId)
+        ));
+        assert!(matches!(
+            validate_scene_post_effect_source_v1(&source(
+                PROJECT_SCENE_POST_EFFECT_SHADER_ID,
+                0,
+                VALID,
+            )),
+            Err(ScenePostEffectRegistryErrorV1::InvalidRevision)
+        ));
     }
 }

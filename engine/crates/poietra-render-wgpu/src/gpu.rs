@@ -12,7 +12,8 @@ use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
     FragmentMaterialSupportV1, GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1,
     ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1, MANIM_CAIRO_SAMPLE_COUNT_V1,
-    PreparedFrameV1, PreparedRenderCommandV1, build_gpu_upload_plan_v1,
+    PreparedFrameV1, PreparedRenderCommandV1, ScenePostEffectRegistryErrorV1,
+    ScenePostEffectSourceV1, ScenePostEffectSupportV1, build_gpu_upload_plan_v1,
 };
 use poietra_scene_ir::{ImageSamplerV1, MAX_VIEWPORT_PIXELS_V1, RenderCompositingV1};
 use wgpu::util::DeviceExt;
@@ -1034,6 +1035,12 @@ impl FragmentMaterialSupportV1 for WgpuFillRendererV1 {
     }
 }
 
+impl ScenePostEffectSupportV1 for WgpuFillRendererV1 {
+    fn supports_scene_post_effect(&self, shader_id: &str, revision: u32) -> bool {
+        self.scene_post_effect_gpu.supports(shader_id, revision)
+    }
+}
+
 /// Exact logical byte counts for GPU resources retained by one renderer.
 ///
 /// These values cover the grow-only vertex/index buffer arena, image textures
@@ -1267,6 +1274,22 @@ impl WgpuFillRendererV1 {
         self.project_fragment_material_pipelines = candidate;
         self.project_fragment_material_texture_slots = candidate_texture_slots;
         Ok(())
+    }
+
+    /// Compiles and atomically installs the one optional project-local Scene
+    /// post effect. A rejected candidate leaves the previous pipeline active.
+    ///
+    /// # Errors
+    ///
+    /// Returns an exact identity, source-contract, or GPU compilation error.
+    pub async fn replace_scene_post_effect_source(
+        &mut self,
+        device: &wgpu::Device,
+        source: Option<&ScenePostEffectSourceV1>,
+    ) -> Result<(), ScenePostEffectRegistryErrorV1> {
+        self.scene_post_effect_gpu
+            .replace_source(device, source)
+            .await
     }
 
     /// Drops all device-bound image resources. Future frames rebuild them
@@ -1688,11 +1711,11 @@ impl WgpuFillRendererV1 {
             pass.set_bind_group(0, &portable_aa_target.resolve_binding, &[]);
             pass.draw(0..3, 0..1);
         }
-        if frame.scene_post_effect().is_some() {
+        if let Some(effect) = frame.scene_post_effect() {
             self.scene_post_effect_gpu
-                .record(&mut encoder, target.view, frame.compositing())
+                .record(&mut encoder, target.view, frame.compositing(), effect)
                 .ok_or(GpuUploadPlanErrorV1::Inconsistent(
-                    "prepared Scene post effect has no retained color target",
+                    "prepared Scene post effect has no matching retained pipeline or color target",
                 ))?;
         }
         let command_buffer = encoder.finish();

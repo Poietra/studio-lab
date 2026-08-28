@@ -8,6 +8,7 @@ import {
   exportWorkerResponseV1Schema,
   MAX_EXPORT_WAV_BYTES,
 } from "./export-worker-protocol";
+import { MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1 } from "./scene-post-effect-registry";
 
 const PROGRESS_RESULT = {
   encodedMediaBytes: 4_096,
@@ -100,6 +101,28 @@ describe("export worker messages", () => {
     expect(exportWorkerRequestV1Schema.safeParse({ ...base, audioWav: new ArrayBuffer(0) }).success).toBe(false);
     expect(
       exportWorkerRequestV1Schema.safeParse({ ...base, audioWav: new ArrayBuffer(MAX_EXPORT_WAV_BYTES + 1) }).success,
+    ).toBe(false);
+  });
+
+  it("admits one bounded Scene post-effect registry on MP4 export", () => {
+    const base = {
+      assetPayloads: [],
+      kind: "export-mp4",
+      profileJson: new ArrayBuffer(8),
+      requestId: 1,
+      schema: "poietra.export-worker-request",
+      snapshotJson: new ArrayBuffer(8),
+      version: 1,
+      wasmModuleUrl: "https://studio.example/engine-wasm/poietra_wasm.js",
+    } as const;
+    expect(
+      exportWorkerRequestV1Schema.safeParse({ ...base, scenePostEffectRegistryJson: new ArrayBuffer(64) }).success,
+    ).toBe(true);
+    expect(
+      exportWorkerRequestV1Schema.safeParse({
+        ...base,
+        scenePostEffectRegistryJson: new ArrayBuffer(MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1 + 1),
+      }).success,
     ).toBe(false);
   });
 

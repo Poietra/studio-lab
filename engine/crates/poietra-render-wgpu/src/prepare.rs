@@ -1717,12 +1717,28 @@ pub trait FragmentMaterialSupportV1 {
     }
 }
 
+/// Registry view used while preparing one Scene-wide post effect. Scene IR
+/// carries only the admitted identity; source compilation remains renderer-owned.
+pub trait ScenePostEffectSupportV1 {
+    fn supports_scene_post_effect(&self, shader_id: &str, revision: u32) -> bool;
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 struct BuiltinFragmentMaterialSupportV1;
 
 impl FragmentMaterialSupportV1 for BuiltinFragmentMaterialSupportV1 {
     fn supports_fragment_material(&self, shader_id: &str, revision: u32) -> bool {
         shader_id == TIME_GRADIENT_SHADER_ID_V1 && revision == TIME_GRADIENT_SHADER_REVISION_V1
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct BuiltinScenePostEffectSupportV1;
+
+impl ScenePostEffectSupportV1 for BuiltinScenePostEffectSupportV1 {
+    fn supports_scene_post_effect(&self, shader_id: &str, revision: u32) -> bool {
+        shader_id == RGB_SPLIT_POST_EFFECT_SHADER_ID
+            && revision == RGB_SPLIT_POST_EFFECT_SHADER_REVISION
     }
 }
 
@@ -1832,6 +1848,29 @@ pub fn prepare_frame_with_cache_assets_and_fragment_materials_v1(
     )
 }
 
+/// Validates and prepares a packet against both application-owned shader
+/// registries installed in the renderer.
+///
+/// # Errors
+///
+/// Returns an error when validation, shader resolution, or preparation fails.
+pub fn prepare_frame_with_cache_assets_and_shader_sources_v1(
+    packet: &RenderPacketV1,
+    cache: &mut PreparedGeometryCacheV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+    fragment_materials: &dyn FragmentMaterialSupportV1,
+    scene_post_effects: &dyn ScenePostEffectSupportV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    cache.begin_frame();
+    tessellate_validated_frame_with_shader_sources_inner_v1(
+        validate_frame_packet_v1(packet)?,
+        Some(cache),
+        Some(assets),
+        fragment_materials,
+        scene_post_effects,
+    )
+}
+
 fn prepare_material(
     color: &RgbaColorV1,
     fragment_material: Option<&FragmentMaterialV1>,
@@ -1916,13 +1955,12 @@ fn prepare_fragment_material(
 
 fn prepare_scene_post_effect(
     effect: Option<&ScenePostEffectV1>,
+    support: &dyn ScenePostEffectSupportV1,
 ) -> Result<Option<PreparedScenePostEffectV1>, PrepareFrameErrorV1> {
     let Some(effect) = effect else {
         return Ok(None);
     };
-    if effect.shader_id != RGB_SPLIT_POST_EFFECT_SHADER_ID
-        || effect.revision != RGB_SPLIT_POST_EFFECT_SHADER_REVISION
-    {
+    if !support.supports_scene_post_effect(&effect.shader_id, effect.revision) {
         return Err(PrepareFrameErrorV1::UnsupportedScenePostEffect {
             revision: effect.revision,
             shader_id: effect.shader_id.clone(),
@@ -3354,6 +3392,29 @@ pub fn tessellate_validated_frame_with_cache_assets_and_fragment_materials_v1(
     tessellate_validated_frame_inner_v1(validated, Some(cache), Some(assets), fragment_materials)
 }
 
+/// Tessellates a validated packet against both exact application-owned shader
+/// registries while retaining geometry and decoded assets.
+///
+/// # Errors
+///
+/// Returns an error when shader resolution or tessellation fails.
+pub fn tessellate_validated_frame_with_cache_assets_and_shader_sources_v1(
+    validated: ValidatedRenderPacketV1<'_>,
+    cache: &mut PreparedGeometryCacheV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+    fragment_materials: &dyn FragmentMaterialSupportV1,
+    scene_post_effects: &dyn ScenePostEffectSupportV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    cache.begin_frame();
+    tessellate_validated_frame_with_shader_sources_inner_v1(
+        validated,
+        Some(cache),
+        Some(assets),
+        fragment_materials,
+        scene_post_effects,
+    )
+}
+
 fn validate_fragment_material_frame_v1(packet: &RenderPacketV1) -> Result<(), PrepareFrameErrorV1> {
     let mut material_draws = 0usize;
     for draw in &packet.draws {
@@ -3388,13 +3449,30 @@ fn validate_fragment_material_frame_v1(packet: &RenderPacketV1) -> Result<(), Pr
 
 fn tessellate_validated_frame_inner_v1(
     validated: ValidatedRenderPacketV1<'_>,
-    mut cache: Option<&mut PreparedGeometryCacheV1>,
+    cache: Option<&mut PreparedGeometryCacheV1>,
     assets: Option<&dyn DecodedPngAssetResolverV1>,
     fragment_materials: &dyn FragmentMaterialSupportV1,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
+    tessellate_validated_frame_with_shader_sources_inner_v1(
+        validated,
+        cache,
+        assets,
+        fragment_materials,
+        &BuiltinScenePostEffectSupportV1,
+    )
+}
+
+fn tessellate_validated_frame_with_shader_sources_inner_v1(
+    validated: ValidatedRenderPacketV1<'_>,
+    mut cache: Option<&mut PreparedGeometryCacheV1>,
+    assets: Option<&dyn DecodedPngAssetResolverV1>,
+    fragment_materials: &dyn FragmentMaterialSupportV1,
+    scene_post_effects: &dyn ScenePostEffectSupportV1,
+) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     let packet = validated.packet;
     validate_fragment_material_frame_v1(packet)?;
-    let scene_post_effect = prepare_scene_post_effect(packet.post_effect.as_ref())?;
+    let scene_post_effect =
+        prepare_scene_post_effect(packet.post_effect.as_ref(), scene_post_effects)?;
     if packet.compositing == RenderCompositingV1::ManimCairoSrgb
         && let Some(draw) = packet
             .draws

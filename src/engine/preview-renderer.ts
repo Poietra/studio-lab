@@ -15,6 +15,7 @@ import type { CanvasInteractionResultV1 } from "./canvas-worker-protocol";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 import type { FragmentMaterialRegistryV1 } from "./fragment-material-registry";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
+import type { ScenePostEffectRegistryV1 } from "./scene-post-effect-registry";
 
 /**
  * Bounded surface the Studio preview host may use. It is the retained
@@ -86,6 +87,7 @@ export type InstallPreviewSnapshotInputV1 = Readonly<{
   interactionEntityIds?: readonly string[];
   fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   revision: string;
+  scenePostEffectRegistry?: ScenePostEffectRegistryV1;
   snapshot: SceneIrBundleV1;
 }>;
 
@@ -94,6 +96,7 @@ export type UpdatePreviewSnapshotInputV1 = Readonly<{
   interactionEntityIds?: readonly string[];
   fragmentMaterialRegistry?: FragmentMaterialRegistryV1;
   revision: string;
+  scenePostEffectRegistry?: ScenePostEffectRegistryV1;
   snapshot: SceneIrBundleV1;
 }>;
 
@@ -190,6 +193,7 @@ export class StudioPreviewRendererHost {
         canvas: input.canvas,
         fragmentMaterialRegistry: input.fragmentMaterialRegistry,
         revision: input.revision,
+        scenePostEffectRegistry: input.scenePostEffectRegistry,
         snapshot,
       });
     } catch (error) {
@@ -393,6 +397,7 @@ export class StudioPreviewRendererHost {
           baseRevision: effectiveBaseRevision,
           fragmentMaterialRegistry: input.fragmentMaterialRegistry,
           revision: input.revision,
+          scenePostEffectRegistry: input.scenePostEffectRegistry,
           snapshot: next,
         });
       }

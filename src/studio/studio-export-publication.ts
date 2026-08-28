@@ -4,12 +4,14 @@ import type { SceneIrBundleV1 } from "../engine/contracts";
 import type { ExportProfileV1 } from "../engine/export-profile";
 import type { FragmentMaterialRegistryV1 } from "../engine/fragment-material-registry";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
+import type { ScenePostEffectRegistryV1 } from "../engine/scene-post-effect-registry";
 import type { EditorDocumentExportLineageV1 } from "./use-editor-document-authority";
 
 export type StudioMp4ExportSourceV1 = Readonly<{
   assetPayloads: readonly CanvasPngAssetTransferV1[];
   bundle: SceneIrBundleV1;
   fragmentMaterialRegistry: FragmentMaterialRegistryV1;
+  scenePostEffectRegistry: ScenePostEffectRegistryV1;
   /** Exact imported-source or Studio-native context that produced this Scene. */
   sourceLineage:
     | Readonly<{

@@ -8,6 +8,7 @@ import {
 } from "../engine/browser-mp4-export";
 import type { SceneIrBundleV1 } from "../engine/contracts";
 import { EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1 } from "../engine/fragment-material-registry";
+import { EMPTY_SCENE_POST_EFFECT_REGISTRY_V1 } from "../engine/scene-post-effect-registry";
 import {
   completeBrowserMp4ExportV1,
   StudioExportControl,
@@ -23,6 +24,7 @@ const exportSource: StudioMp4ExportSourceV1 = {
   assetPayloads: [],
   bundle: { assets: {}, scene: { sceneId: "scene:shared_circle_opacity" } } as unknown as SceneIrBundleV1,
   fragmentMaterialRegistry: EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
+  scenePostEffectRegistry: EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
   sourceLineage: {
     projectId: "project-a",
     sceneId: "scene:shared_circle_opacity",

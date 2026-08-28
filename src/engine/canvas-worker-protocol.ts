@@ -8,6 +8,7 @@ import {
   sourceIdentityV1Schema,
 } from "./primitives";
 import { renderViewportV1Schema } from "./render-packet";
+import { MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1 } from "./scene-post-effect-registry";
 
 export const POIETRA_CANVAS_WORKER_VERSION = 1 as const;
 export const POIETRA_CANVAS_TELEMETRY_ABI_VERSION = 4 as const;
@@ -62,6 +63,11 @@ const fragmentMaterialRegistryJsonSchema = z
   .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= MAX_CANVAS_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES, {
     message: `Fragment material registry JSON accepts 1 to ${MAX_CANVAS_FRAGMENT_MATERIAL_REGISTRY_JSON_BYTES} bytes.`,
   });
+const scenePostEffectRegistryJsonSchema = z
+  .instanceof(ArrayBuffer)
+  .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1, {
+    message: `Scene post-effect registry JSON accepts 1 to ${MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1} bytes.`,
+  });
 const offscreenCanvasSchema = z.custom<OffscreenCanvas>(isOffscreenCanvas, "Expected an OffscreenCanvas.");
 
 export const canvasWorkerRequestEnvelopeV1 = {
@@ -82,6 +88,7 @@ const installCanvasRequestV1Schema = z
     fragmentMaterialRegistryJson: fragmentMaterialRegistryJsonSchema.optional(),
     kind: z.literal("install-canvas"),
     revision: revisionSchema,
+    scenePostEffectRegistryJson: scenePostEffectRegistryJsonSchema.optional(),
     snapshotJson: snapshotJsonSchema,
     wasmModuleUrl: z.string().url().max(MAX_CANVAS_WASM_MODULE_URL_LENGTH),
   })
@@ -95,6 +102,7 @@ const replaceSceneRequestV1Schema = z
     fragmentMaterialRegistryJson: fragmentMaterialRegistryJsonSchema.optional(),
     kind: z.literal("replace-scene"),
     revision: revisionSchema,
+    scenePostEffectRegistryJson: scenePostEffectRegistryJsonSchema.optional(),
     snapshotJson: snapshotJsonSchema,
   })
   .strict();

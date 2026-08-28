@@ -11,6 +11,11 @@ import {
 } from "./canvas-worker-client";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 import { type PreviewRendererHostStateV1, type PreviewRendererV1, StudioPreviewRendererHost } from "./preview-renderer";
+import {
+  PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+  scenePostEffectRegistryV1Schema,
+} from "./scene-post-effect-registry";
 
 const REVISION = "a".repeat(64);
 const OTHER_REVISION = "b".repeat(64);
@@ -240,6 +245,24 @@ async function requestAndPresent(
 }
 
 describe("StudioPreviewRendererHost", () => {
+  it("forwards the project Scene post-effect registry during installation", async () => {
+    const fixture = createFixture();
+    const scenePostEffectRegistry = scenePostEffectRegistryV1Schema.parse({
+      effect: {
+        revision: 1,
+        shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+        source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+      },
+      schema: "poietra.scene-post-effect-registry",
+      version: 1,
+    });
+    const pending = fixture.host.install({ ...installInput(), scenePostEffectRegistry });
+
+    expect(fixture.installs[0]?.scenePostEffectRegistry).toBe(scenePostEffectRegistry);
+    fixture.install.resolve();
+    await pending;
+  });
+
   it("renders a thumbnail only for the revision captured by the caller", async () => {
     const { fixture, snapshot } = await readyUpdateFixture();
     await requestAndPresent(fixture, 0, 1);

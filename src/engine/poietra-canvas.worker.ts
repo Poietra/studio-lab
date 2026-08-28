@@ -27,6 +27,9 @@ const MAX_ERROR_MESSAGE_LENGTH = 4_096;
 const EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON = new TextEncoder().encode(
   '{"materials":[],"schema":"poietra.fragment-material-registry","version":1}',
 );
+const EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON = new TextEncoder().encode(
+  '{"effect":null,"schema":"poietra.scene-post-effect-registry","version":1}',
+);
 
 export type PoietraWasmCanvasEngineV1 = {
   generateThumbnail?: () => Promise<Uint8Array>;
@@ -36,6 +39,7 @@ export type PoietraWasmCanvasEngineV1 = {
     assetMetadataJson: Uint8Array,
     assetBytes: Uint8Array[],
     fragmentMaterialRegistryJson: Uint8Array,
+    scenePostEffectRegistryJson: Uint8Array,
   ) => void | Promise<void>;
   // Telemetry-free modules remain supported. A module that exposes any
   // telemetry surface must complete the exact v4 handshake below; ABI3 is
@@ -50,7 +54,8 @@ export type PoietraWasmCanvasEngineClassV1 = {
     assetMetadataJson: Uint8Array,
     assetBytes: Uint8Array[],
     canvas: OffscreenCanvas,
-    fragmentMaterialRegistryJson?: Uint8Array,
+    fragmentMaterialRegistryJson: Uint8Array,
+    scenePostEffectRegistryJson: Uint8Array,
   ) => Promise<PoietraWasmCanvasEngineV1>;
   prototype: PoietraWasmCanvasEngineV1;
 };
@@ -340,6 +345,9 @@ export class PoietraCanvasWorkerRuntimeV1 {
         request.fragmentMaterialRegistryJson
           ? new Uint8Array(request.fragmentMaterialRegistryJson)
           : EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON,
+        request.scenePostEffectRegistryJson
+          ? new Uint8Array(request.scenePostEffectRegistryJson)
+          : EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON,
       );
       this.currentRevision = request.revision;
     } catch (error) {
@@ -386,6 +394,9 @@ export class PoietraCanvasWorkerRuntimeV1 {
         request.fragmentMaterialRegistryJson
           ? new Uint8Array(request.fragmentMaterialRegistryJson)
           : EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON,
+        request.scenePostEffectRegistryJson
+          ? new Uint8Array(request.scenePostEffectRegistryJson)
+          : EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON,
       );
       this.currentRevision = request.revision;
     } catch (error) {

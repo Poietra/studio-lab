@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useSyncExternalStore } from "react";
+import type { ScenePostEffectRegistryV1 } from "../engine/scene-post-effect-registry";
 import type { SceneFragmentMaterialStateV1 } from "./fragment-material-authoring";
 import type { WorkingState } from "./model";
 import {
@@ -45,6 +46,7 @@ type UseStudioPreviewAuthorityControllerInput = Readonly<{
   nativeProvider?: StudioPreviewSnapshotProviderV1 | null;
   playbackClock?: StudioPlaybackClock | null;
   sceneFragmentMaterials?: SceneFragmentMaterialStateV1;
+  scenePostEffectRegistry?: ScenePostEffectRegistryV1;
   retainedSourceDuration: number | null;
   sampleTime: number;
   sceneBoundaryActive: boolean;
@@ -221,6 +223,7 @@ export function useStudioPreviewAuthorityController({
   nativeProvider = null,
   playbackClock = null,
   sceneFragmentMaterials,
+  scenePostEffectRegistry,
   retainedSourceDuration,
   sampleTime,
   sceneBoundaryActive,
@@ -300,6 +303,7 @@ export function useStudioPreviewAuthorityController({
     frame,
     playbackClock,
     sceneFragmentMaterials,
+    scenePostEffectRegistry,
     provider,
     retainedSourceDuration,
     sampleTime,

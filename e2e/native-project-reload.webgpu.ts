@@ -373,6 +373,107 @@ test("applies one Scene-wide RGB split through scrub, history, reload, and MP4 e
   }
 });
 
+test("authors one project-local WGSL Scene effect through Preview, reload, and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Custom WGSL effect fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    const playhead = page.getByRole("slider", { name: "Scene playhead" });
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const waitForNewPresentedRevision = async (previous: string) => {
+      await expect
+        .poll(async () => {
+          if ((await canvas.getAttribute("data-preview-renderer")) !== "presented") return null;
+          const revision = await canvas.getAttribute("data-preview-revision");
+          return revision && revision !== previous ? revision : null;
+        })
+        .not.toBeNull();
+      const revision = await canvas.getAttribute("data-preview-revision");
+      if (!revision) throw new Error("The custom WGSL Scene did not expose its presented revision.");
+      return revision;
+    };
+    const blankRevision = await canvas.getAttribute("data-preview-revision");
+    if (!blankRevision) throw new Error("The blank Scene did not expose its presented revision.");
+
+    await playhead.fill("1");
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const plainRevision = await waitForNewPresentedRevision(blankRevision);
+
+    await page.getByRole("button", { name: "Create starter" }).click();
+    const source = page.getByRole("textbox", { name: "Scene post-effect WGSL source" });
+    await expect(source).toHaveValue(/textureLoad\(scene_texture/u);
+    await source.fill(
+      (await source.inputValue()).replace(
+        "return textureLoad(scene_texture, coordinate, 0);",
+        `let color = textureLoad(scene_texture, coordinate, 0);
+    let pulse = 0.6 + 0.4 * sin(6.28318530718 * host.viewport_and_time.z * host.parameters_0.z);
+    return vec4<f32>(color.rgb * pulse, color.a);`,
+      ),
+    );
+    await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
+    await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Apply to Scene" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByText("Custom WGSL active", { exact: true })).toBeVisible();
+    const effectRevision = await waitForNewPresentedRevision(plainRevision);
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
+    const undoRevision = await waitForNewPresentedRevision(effectRevision);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(page.getByText("Custom WGSL active", { exact: true })).toBeVisible();
+    const redoRevision = await waitForNewPresentedRevision(undoRevision);
+
+    await page.getByRole("slider", { name: "Amplitude Scene post-effect parameter" }).fill("20");
+    await page.getByRole("button", { name: "Update parameters" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForNewPresentedRevision(redoRevision);
+    await playhead.fill("2");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
+    const startPacket = await canvas.getAttribute("data-preview-packet-id");
+    await playhead.fill("2.25");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.25, 1);
+    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(startPacket);
+    const earlyPacket = await canvas.getAttribute("data-preview-packet-id");
+    await playhead.fill("2.75");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.75, 1);
+    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(earlyPacket);
+
+    await source.fill("@fragment fn broken(");
+    await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
+    await expect(page.getByText("WGSL was rejected", { exact: true })).toBeVisible();
+    await expect(page.getByText("Last accepted generation 1 remains active.", { exact: true })).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Custom WGSL effect fixture workspace" }).click();
+    await expect(page.getByText("Custom WGSL active", { exact: true })).toBeVisible();
+    await expect(page.getByText("WGSL was rejected", { exact: true })).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const mp4 = await exportLocalMp4(page);
+    const stats = await decodedPixelStats(page, mp4, [2.25, 2.75]);
+    expect(stats[0]?.count ?? 0).toBeGreaterThan(100);
+    expect(stats[1]?.count ?? 0).toBeGreaterThan(100);
+    expect(stats[1]?.commonPixelCountFromPrevious ?? 0).toBeGreaterThan(100);
+    expect(stats[1]?.commonColorDifferenceFromPrevious ?? 0).toBeGreaterThan(100);
+
+    const activeRevision = await canvas.getAttribute("data-preview-revision");
+    if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");
+    await page.getByRole("button", { name: "Remove custom Scene post effect" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
+    await waitForNewPresentedRevision(activeRevision);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("downloads a bounded Manim Scene from Studio-native authoring", async ({ page }) => {
   page.setDefaultTimeout(15_000);
   let projectId: string | null = null;

@@ -36,6 +36,11 @@ import {
 } from "./fragment-material-authoring";
 import type { ProgramRecord } from "./model";
 import {
+  acceptStudioScenePostEffectSourceV1,
+  createStudioScenePostEffectSourceV1,
+  EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1,
+} from "./scene-post-effect-source";
+import {
   applyEditorDraft,
   createInitialEditorState,
   editorProgramRecord,
@@ -570,6 +575,22 @@ describe("durable editor session storage", () => {
     expect(afterDeletion).toEqual(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
   });
 
+  it("restores the accepted project Scene post-effect source without requiring a Scene Program", () => {
+    const adapter = new MemoryAdapter();
+    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
+
+    expect(new EditorSessionStore(adapter).saveProjectScenePostEffect("project-a", accepted)).toBe(true);
+    const restored = new EditorSessionStore(adapter).restoreProjectScenePostEffect("project-a");
+
+    expect(restored).toEqual(accepted);
+    expect(restored.asset?.accepted).toMatchObject({ generation: 1, shaderId: "project-scene-post-effect" });
+    expect(JSON.parse(adapter.value!)).toMatchObject({
+      scenePostEffects: { "project-a": { state: accepted } },
+      version: EDITOR_SESSION_STORAGE_VERSION,
+    });
+  });
+
   it("rejects a material deletion when its durable storage mutation fails", () => {
     const adapter = new MemoryAdapter();
     const store = new EditorSessionStore(adapter);
@@ -919,6 +940,11 @@ describe("durable editor session storage", () => {
     store.save(identity("other.py#Scene", "c".repeat(64), "project-b"), snapshot());
     store.save(nativeIdentity(), snapshot());
     store.saveProjectFragmentMaterials("project-a", assignedFragmentMaterials("scene-a", "circle"));
+    const createdEffect = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    store.saveProjectScenePostEffect(
+      "project-a",
+      acceptStudioScenePostEffectSourceV1(createdEffect, createdEffect.asset!.draft),
+    );
 
     store.clearProject("project-a");
 
@@ -929,6 +955,7 @@ describe("durable editor session storage", () => {
       kind: "restored",
     });
     expect(reloaded.restoreProjectFragmentMaterials("project-a")).toBe(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
+    expect(reloaded.restoreProjectScenePostEffect("project-a")).toBe(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
   });
 
   it("prunes unknown projects and keeps only the newest bounded session count", () => {
@@ -940,6 +967,11 @@ describe("durable editor session storage", () => {
     }
     store.save(identity("other.py#Scene", "f".repeat(64), "project-b"), snapshot());
     store.saveProjectFragmentMaterials("project-b", assignedFragmentMaterials("scene-b", "circle"));
+    const createdEffect = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    store.saveProjectScenePostEffect(
+      "project-b",
+      acceptStudioScenePostEffectSourceV1(createdEffect, createdEffect.asset!.draft),
+    );
     store.pruneProjects(new Set(["project-a"]));
 
     const envelope = JSON.parse(adapter.value!) as { entries: readonly unknown[]; version: number };
@@ -947,6 +979,7 @@ describe("durable editor session storage", () => {
     expect(envelope.entries.length).toBeLessThanOrEqual(MAX_STORED_EDITOR_SESSIONS);
     expect(new TextEncoder().encode(adapter.value!).byteLength).toBeLessThanOrEqual(MAX_EDITOR_SESSION_STORAGE_BYTES);
     expect(JSON.stringify(envelope)).not.toContain("project-b");
+    expect(store.restoreProjectScenePostEffect("project-b")).toBe(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
   });
 
   it("keeps the in-memory session usable when persistent storage throws", () => {

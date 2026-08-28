@@ -1,9 +1,9 @@
 use std::collections::BTreeSet;
 
 use poietra_scene_ir::{
-    ContractVersionV1, ProvenanceOriginV1, ProvenanceRecordV1, RGB_SPLIT_POST_EFFECT_SHADER_ID,
-    RGB_SPLIT_POST_EFFECT_SHADER_REVISION, SceneCapabilityV1, SceneIrBundleV1, ScenePostEffectV1,
-    SceneSourceV1,
+    ContractVersionV1, PROJECT_SCENE_POST_EFFECT_SHADER_ID, ProvenanceOriginV1, ProvenanceRecordV1,
+    RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, SceneCapabilityV1,
+    SceneIrBundleV1, ScenePostEffectV1, SceneSourceV1,
 };
 use serde::Deserialize;
 
@@ -30,8 +30,9 @@ pub enum ApplyStudioScenePostEffectError {
 }
 
 fn studio_effect_is_supported(effect: &ScenePostEffectV1) -> bool {
-    effect.shader_id == RGB_SPLIT_POST_EFFECT_SHADER_ID
-        && effect.revision == RGB_SPLIT_POST_EFFECT_SHADER_REVISION
+    (effect.shader_id == RGB_SPLIT_POST_EFFECT_SHADER_ID
+        && effect.revision == RGB_SPLIT_POST_EFFECT_SHADER_REVISION)
+        || (effect.shader_id == PROJECT_SCENE_POST_EFFECT_SHADER_ID && effect.revision > 0)
 }
 
 impl EngineSessionV1 {
@@ -42,7 +43,7 @@ impl EngineSessionV1 {
     ///
     /// # Errors
     ///
-    /// Rejects stale revisions, unknown built-in effects, and invalid results.
+    /// Rejects stale revisions, unknown effect identities, and invalid results.
     pub fn apply_studio_scene_post_effect(
         &mut self,
         command: ApplyStudioScenePostEffectCommand,
@@ -171,5 +172,23 @@ mod tests {
         ));
         assert_eq!(session.scene().source.revision_hash(), BASE_REVISION);
         assert!(session.scene().post_effect.is_none());
+    }
+
+    #[test]
+    fn accepts_the_single_project_scene_post_effect_identity() {
+        let mut session = session();
+        let effect = ScenePostEffectV1 {
+            parameters: vec![1.0, 2.0],
+            revision: 7,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        };
+        let applied = session
+            .apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
+                effect: Some(effect.clone()),
+                expected_base_revision: BASE_REVISION.to_owned(),
+                next_revision: NEXT_REVISION.to_owned(),
+            })
+            .unwrap();
+        assert_eq!(applied.scene.post_effect, Some(effect));
     }
 }

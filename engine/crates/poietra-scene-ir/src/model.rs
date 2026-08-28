@@ -316,6 +316,8 @@ pub struct ScenePostEffectV1 {
 pub const RGB_SPLIT_POST_EFFECT_SHADER_ID: &str = "rgb-split";
 /// Admitted revision of [`RGB_SPLIT_POST_EFFECT_SHADER_ID`].
 pub const RGB_SPLIT_POST_EFFECT_SHADER_REVISION: u32 = 1;
+/// The single project-local Scene post-effect identity admitted by Studio.
+pub const PROJECT_SCENE_POST_EFFECT_SHADER_ID: &str = "project-scene-post-effect";
 
 /// The single host-owned 2D texture slot available to a fragment material.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

@@ -21,6 +21,12 @@ import {
   canvasWorkerRequestV1Schema,
 } from "./canvas-worker-protocol";
 import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
+import {
+  EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
+  PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+  scenePostEffectRegistryV1Schema,
+} from "./scene-post-effect-registry";
 
 const REVISION_A = "a".repeat(64);
 const REVISION_B = "b".repeat(64);
@@ -265,8 +271,12 @@ describe("Poietra canvas worker client", () => {
     expect(worker.posted[0]?.transfer).toEqual([
       installRequest.canvas,
       installRequest.fragmentMaterialRegistryJson,
+      installRequest.scenePostEffectRegistryJson,
       installRequest.snapshotJson,
     ]);
+    expect(JSON.parse(new TextDecoder().decode(installRequest.scenePostEffectRegistryJson))).toEqual(
+      EMPTY_SCENE_POST_EFFECT_REGISTRY_V1,
+    );
 
     const rendered = client.render({
       revision: REVISION_A,
@@ -445,6 +455,15 @@ describe("Poietra canvas worker client", () => {
     const replacing = client.replaceScene({
       baseRevision: REVISION_A,
       revision: REVISION_B,
+      scenePostEffectRegistry: scenePostEffectRegistryV1Schema.parse({
+        effect: {
+          revision: 1,
+          shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+        },
+        schema: "poietra.scene-post-effect-registry",
+        version: 1,
+      }),
       snapshot: replacement,
     });
     await expect(renderOutcome).resolves.toMatchObject({ code: "stale-response" });
@@ -453,8 +472,12 @@ describe("Poietra canvas worker client", () => {
     if (replaceRequest.kind !== "replace-scene") throw new Error("missing replacement request");
     expect(worker.posted[2]?.transfer).toEqual([
       replaceRequest.fragmentMaterialRegistryJson,
+      replaceRequest.scenePostEffectRegistryJson,
       replaceRequest.snapshotJson,
     ]);
+    expect(JSON.parse(new TextDecoder().decode(replaceRequest.scenePostEffectRegistryJson))).toMatchObject({
+      effect: { revision: 1, shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 },
+    });
     expect(canvas.transferControlToOffscreen).toHaveBeenCalledOnce();
     const renderRequest = requestAt(worker, 1);
     if (renderRequest.kind !== "render-frame") throw new Error("missing stale render request");
@@ -499,8 +522,8 @@ describe("Poietra canvas worker client", () => {
     expect(installRequest.assetPayloads).toHaveLength(1);
     expect(installRequest.assetPayloads[0]?.bytes.byteLength).toBe(4);
     const installTransfer = worker.posted[0]?.transfer;
-    expect(installTransfer).toHaveLength(4);
-    const transferredPng = installTransfer?.[3];
+    expect(installTransfer).toHaveLength(5);
+    const transferredPng = installTransfer?.[4];
     expect(transferredPng).not.toBe(firstBytes);
     if (!(transferredPng instanceof ArrayBuffer)) throw new Error("missing transferred PNG buffer");
     expect(transferredPng.byteLength).toBe(4);
@@ -517,7 +540,7 @@ describe("Poietra canvas worker client", () => {
     const reuseRequest = requestAt(worker, 1);
     if (reuseRequest.kind !== "replace-scene") throw new Error("missing PNG reuse request");
     expect(reuseRequest.assetPayloads).toEqual([]);
-    expect(worker.posted[1]?.transfer).toHaveLength(2);
+    expect(worker.posted[1]?.transfer).toHaveLength(3);
     worker.emitMessage(readyResponse(reuseRequest));
     await reusing;
 
@@ -533,7 +556,7 @@ describe("Poietra canvas worker client", () => {
     const advanceRequest = requestAt(worker, 2);
     if (advanceRequest.kind !== "replace-scene") throw new Error("missing PNG advance request");
     expect(advanceRequest.assetPayloads).toHaveLength(1);
-    expect(worker.posted[2]?.transfer).toHaveLength(3);
+    expect(worker.posted[2]?.transfer).toHaveLength(4);
     expect(secondBytes.byteLength).toBe(4);
     worker.emitMessage(readyResponse(advanceRequest));
     await advancing;
