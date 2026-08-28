@@ -34,9 +34,9 @@ pub use text::{
     DEFAULT_TEXT_LINE_HEIGHT_EM, MAX_TEXT_CHARACTERS_V1, MAX_TEXT_CUBIC_SEGMENTS_V1,
     MAX_TEXT_LINE_CHARACTERS_V1, MAX_TEXT_LINES_V1, TEXT_OUTLINE_REQUEST_SCHEMA_V1,
     TEXT_OUTLINE_RESPONSE_SCHEMA_V1, TEXT_OUTLINE_VERSION_V1, TextAlignmentV1, TextFontFamilyV1,
-    TextOutlineArtifactV1, TextOutlineBoundsV1, TextOutlineLayoutV1, TextOutlineRequestSchemaV1,
-    TextOutlineRequestV1, TextOutlineResultV1, TextOutlineUnsupportedCodeV1,
-    TextOutlineUnsupportedV1, compile_text_outline_v1,
+    TextOutlineArtifactV1, TextOutlineBoundsV1, TextOutlineGlyphFragmentV1, TextOutlineLayoutV1,
+    TextOutlineRequestSchemaV1, TextOutlineRequestV1, TextOutlineResultV1,
+    TextOutlineUnsupportedCodeV1, TextOutlineUnsupportedV1, compile_text_outline_v1,
 };
 
 /// Exact request schema literal accepted by the v1 compiler.

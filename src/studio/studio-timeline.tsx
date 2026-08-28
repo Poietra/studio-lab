@@ -2325,7 +2325,7 @@ export function StudioTimeline({
                         onClick={() => {
                           if (!writeInAddBlocker) onWriteInAdd(track.entityId);
                         }}
-                        title={writeInAddBlocker ?? "Replace the initial fade with a segmented MathTex Write entrance"}
+                        title={writeInAddBlocker ?? "Replace the initial fade with a glyph-ordered Write entrance"}
                         type="button"
                       >
                         W+

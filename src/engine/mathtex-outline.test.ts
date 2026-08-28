@@ -7,6 +7,7 @@ import {
   POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION,
   POIETRA_TEXT_OUTLINE_ABI_VERSION,
   segmentedTexOutlineRequestV1Schema,
+  textOutlineResponseV1Schema,
 } from "./mathtex-outline";
 
 function candidate(initialize: (input?: unknown) => Promise<unknown>) {
@@ -186,13 +187,55 @@ describe("segmented Tex outline browser adapter", () => {
 
 describe("plain Text outline input", () => {
   it("pins the closed font-family and weight request ABI", () => {
-    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(6);
+    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(7);
   });
 
   it("accepts bounded Japanese multiline text and canonicalizes line endings and Unicode", () => {
     expect(canonicalTextOutlineInputV1("日本語で動画を作る\r\nこんにちは")).toBe("日本語で動画を作る\nこんにちは");
     expect(canonicalTextOutlineInputV1("Cafe\u0301")).toBe("Caf\u00e9");
     expect(canonicalTextOutlineInputV1("supplementary: 🚀")).toBe("supplementary: 🚀");
+  });
+
+  it("requires ordered glyph fragments to exactly partition the aggregate path", () => {
+    const subpath = {
+      closed: true as const,
+      segments: [
+        {
+          control1: { x: -0.5, y: 0.5 },
+          control2: { x: 0.5, y: 0.5 },
+          end: { x: -0.5, y: -0.5 },
+        },
+      ],
+      start: { x: -0.5, y: -0.5 },
+    };
+    const response = {
+      result: {
+        bounds: { bottom: -0.5, left: -0.5, right: 0.5, top: 0.5 },
+        fillRule: "nonzero" as const,
+        fragments: [{ order: 0, path: { subpaths: [subpath] } }],
+        kind: "compiled" as const,
+        path: { subpaths: [subpath] },
+      },
+      schema: "poietra.text-outline-response" as const,
+      version: 1 as const,
+    };
+
+    expect(textOutlineResponseV1Schema.safeParse(response).success).toBe(true);
+    expect(
+      textOutlineResponseV1Schema.safeParse({
+        ...response,
+        result: {
+          ...response.result,
+          fragments: [{ order: 1, path: { subpaths: [subpath] } }],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      textOutlineResponseV1Schema.safeParse({
+        ...response,
+        result: { ...response.result, fragments: [{ order: 0, path: { subpaths: [] } }] },
+      }).success,
+    ).toBe(false);
   });
 
   it.each([

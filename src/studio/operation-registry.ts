@@ -289,6 +289,18 @@ function drawInHasTruthfulLineCreation(program: SceneEdit, operation: Extract<Sc
   );
 }
 
+function writeInHasClientOnlyTextCreation(
+  program: SceneEdit,
+  operation: Extract<SceneEditOperation, { kind: "WriteIn" }>,
+) {
+  return program.operations.some(
+    (candidate) =>
+      candidate.kind === "CreateEntity" &&
+      candidate.entity.id === operation.entityId &&
+      candidate.entity.type === "Text",
+  );
+}
+
 function programStructureBlocker(program: SceneEdit) {
   const scheduleIndex = new Map(program.schedule.order.map((id, index) => [id, index]));
   const operations = [...program.operations].sort(
@@ -989,11 +1001,11 @@ export const OPERATION_REGISTRY = {
           severity: "error",
         });
       }
-      if (entity && (!entity.transactionId || entity.type !== "MathTex")) {
+      if (entity && (!entity.transactionId || (entity.type !== "MathTex" && entity.type !== "Text"))) {
         issues.push({
           code: "lowering-unsupported",
           field: "entityId",
-          message: "WriteIn supports only Studio-created MathTex entities.",
+          message: "WriteIn supports only Studio-created MathTex and Text entities.",
           operationId: operation.id,
           severity: "error",
         });
@@ -1779,6 +1791,9 @@ const LOWERING_PRIORITY: Readonly<Record<OperationExecutionCapabilities["lowerin
 export function programExecutionCapabilities(program: SceneEdit): ProgramExecutionCapabilities {
   const operationCapabilities = program.operations.map((operation) => {
     const capabilities = operationExecutionCapabilities(operation);
+    if (operation.kind === "WriteIn" && writeInHasClientOnlyTextCreation(program, operation)) {
+      return { ...capabilities, lowering: "unsupported" as const };
+    }
     return operation.kind === "DrawIn" && drawInHasTruthfulLineCreation(program, operation)
       ? { ...capabilities, lowering: "supported" as const }
       : capabilities;

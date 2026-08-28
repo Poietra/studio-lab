@@ -46,11 +46,10 @@ use super::{
     SceneEditOperationFacts, SceneEditScheduleMode, StudioAuthoringAngles,
     StudioAuthoringCoordinateRange, StudioAuthoringCoordinateSystem, StudioAuthoringDimensions,
     StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioAuthoringOrigin,
-    StudioAuthoringSize, StudioCreationMathTexOutline, StudioCreationSegmentedMathTexFragment,
-    StudioCreationSegmentedMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
-    StudioCreationSegmentedMathTexSourceCorrelation,
-    StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationSegmentedMathTexWritePlan,
-    StudioCreationTextOutline, StudioMathTexContent, StudioMathTexTransformStrategy,
+    StudioAuthoringSize, StudioCreationMathTexOutline, StudioCreationSegmentedMathTexOutline,
+    StudioCreationSegmentedMathTexRepresentation, StudioCreationSegmentedMathTexSourceCorrelation,
+    StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationTextOutline,
+    StudioCreationTextOutlineFragment, StudioMathTexContent, StudioMathTexTransformStrategy,
     StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry, StudioTextContent,
     StudioTextLayout, TIMELINE_ANCHOR_EPSILON, close_transform_baseline_value,
     scene_edit_anchor_is_closed, scene_edit_structure_is_closed, studio_arrow_appearance,
@@ -59,6 +58,8 @@ use super::{
     studio_math_tex_content_is_canonical, studio_point_to_scene_point, studio_shape_appearance,
     studio_timeline_semantic_values_match, studio_vector_to_scene_vector, unused_channel_id,
 };
+#[cfg(test)]
+use super::{StudioCreationSegmentedMathTexFragment, StudioCreationSegmentedMathTexWritePlan};
 #[cfg(test)]
 use geometry::straight_cubic_segment;
 use geometry::{
@@ -120,12 +121,27 @@ struct CreateSceneEntityDrawIn {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct CreateSceneEntityWriteFragment {
+    fill_rule: FillRuleV1,
+    id: String,
+    order: u32,
+    paint: RgbaColorV1,
+    path: CubicPathV1,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CreateSceneEntityWritePlan {
+    fragment_lag_ratio: f64,
+    outline_stroke_width: f64,
+    phase_boundary: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct CreateSceneEntityWriteIn {
     easing: EasingV1,
     interval: IntervalV1,
-    fragments: Vec<StudioCreationSegmentedMathTexFragment>,
-    plan: StudioCreationSegmentedMathTexWritePlan,
-    source: String,
+    fragments: Vec<CreateSceneEntityWriteFragment>,
+    plan: CreateSceneEntityWritePlan,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -142,10 +158,11 @@ struct CreateSceneEntityPathMorph {
 }
 
 const SEGMENTED_MATH_TEX_MAX_FRAGMENTS: usize = 128;
-const SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS: usize = 2_048;
+const STUDIO_WRITE_MAX_FRAGMENTS: usize = 256;
+const STUDIO_WRITE_MAX_CUBIC_SEGMENTS: usize = 2_048;
 const SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES: usize = 256;
-const SEGMENTED_MATH_TEX_PHASE_BOUNDARY: f64 = 0.5;
-const SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH: f64 = 2.0;
+const STUDIO_WRITE_PHASE_BOUNDARY: f64 = 0.5;
+const STUDIO_WRITE_OUTLINE_STROKE_WIDTH: f64 = 2.0;
 const MANIM_STROKE_WIDTH_TO_SCENE_WORLD: f64 = 0.01;
 const MIN_STUDIO_STROKE_WIDTH_WORLD: f64 = 0.005;
 const MAX_STUDIO_STROKE_WIDTH_WORLD: f64 = 0.5;

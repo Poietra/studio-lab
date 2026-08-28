@@ -405,8 +405,16 @@ pub struct StudioTextContent {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioCreationTextOutlineFragment {
+    pub order: u32,
+    pub path: CubicPathV1,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCreationTextOutline {
     pub entity_id: String,
+    pub fragments: Vec<StudioCreationTextOutlineFragment>,
     #[serde(default)]
     pub layout: StudioTextLayout,
     pub path: CubicPathV1,

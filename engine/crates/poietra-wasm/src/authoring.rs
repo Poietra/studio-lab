@@ -2138,9 +2138,14 @@ mod tests {
         }
         let outline_fixture: serde_json::Value =
             serde_json::from_slice(&static_math_tex_fixture_json()).unwrap();
+        let outline_path = outline_fixture["scene"]["entities"][0]["geometry"]["path"].clone();
         command["textOutlines"] = json!([{
             "entityId": "tx:create/entity:rectangle",
-            "path": outline_fixture["scene"]["entities"][0]["geometry"]["path"],
+            "fragments": [{
+                "order": 0,
+                "path": outline_path,
+            }],
+            "path": outline_path,
             "text": "Hello"
         }]);
 

@@ -4180,7 +4180,7 @@ export function App({
     if (rejectLockedEntityMutation(entityId)) return;
     const owner = studioCreationProgramOwner(entityId);
     if (!owner || !projectedEditorScene) {
-      setDraftError("Write supports only eligible Studio-created MathTex objects.");
+      setDraftError("Write supports only eligible Studio-created MathTex and Text objects.");
       return;
     }
     const create = owner.record.program.operations.find(

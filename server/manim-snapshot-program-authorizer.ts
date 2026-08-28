@@ -120,7 +120,13 @@ async function authorizeStudioCreationProgram(
         400,
       );
     }
-    textOutlines.push({ entityId, layout: content.layout, path: response.result.path, text: content.text });
+    textOutlines.push({
+      entityId,
+      fragments: response.result.fragments.map(({ order, path }) => ({ order, path })),
+      layout: content.layout,
+      path: response.result.path,
+      text: content.text,
+    });
   }
   await compileApplyStudioCreationEdit(
     bundle,

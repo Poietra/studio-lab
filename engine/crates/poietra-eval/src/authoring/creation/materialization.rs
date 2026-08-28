@@ -7,27 +7,29 @@ use super::{
     CreateSceneEntitiesError, CreateSceneEntity, CreateSceneEntityAnimatedResize,
     CreateSceneEntityDrawIn, CreateSceneEntityFadeIn, CreateSceneEntityGeometry,
     CreateSceneEntityInstantTransform, CreateSceneEntityMathTexMorph, CreateSceneEntityPathMorph,
-    CreateSceneEntityWriteIn, CreateScenePathMotion, CubicPathV1, EasingV1, EngineSessionV1,
-    FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1, IntervalV1, KeyframeV1,
-    MAX_STROKE_DASH_WORLD_V1, MAX_STUDIO_STROKE_WIDTH_WORLD, MIN_STROKE_DASH_WORLD_V1,
-    MIN_STUDIO_STROKE_WIDTH_WORLD, PathTrimParameterizationV1, PlannedSceneMotion,
-    PlannedStudioCameraAnimation, PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PointV1,
-    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS,
-    SEGMENTED_MATH_TEX_MAX_FRAGMENTS, SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES,
-    SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH, SEGMENTED_MATH_TEX_PHASE_BOUNDARY, SceneAppearanceV1,
-    SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
-    SceneSourceV1, StudioAuthoringDimensions, StudioAuthoringEditResult, StudioAuthoringEntityKind,
-    StudioCreationMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
-    StudioCreationSegmentedMathTexSourceCorrelation,
+    CreateSceneEntityWriteFragment, CreateSceneEntityWriteIn, CreateSceneEntityWritePlan,
+    CreateScenePathMotion, CubicPathV1, EasingV1, EngineSessionV1, FidelityV1, FillRuleV1,
+    FillStyleV1, FragmentMaterialV1, IntervalV1, KeyframeV1, MAX_STROKE_DASH_WORLD_V1,
+    MAX_STUDIO_STROKE_WIDTH_WORLD, MIN_STROKE_DASH_WORLD_V1, MIN_STUDIO_STROKE_WIDTH_WORLD,
+    PathTrimParameterizationV1, PlannedSceneMotion, PlannedStudioCameraAnimation,
+    PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PointV1, ProvenanceOriginV1,
+    ProvenanceRecordV1, RgbaColorV1, SEGMENTED_MATH_TEX_MAX_FRAGMENTS,
+    SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES, STUDIO_WRITE_MAX_CUBIC_SEGMENTS,
+    STUDIO_WRITE_MAX_FRAGMENTS, STUDIO_WRITE_OUTLINE_STROKE_WIDTH, STUDIO_WRITE_PHASE_BOUNDARY,
+    SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1,
+    SceneIrBundleV1, SceneSourceV1, StudioAuthoringDimensions, StudioAuthoringEditResult,
+    StudioAuthoringEntityKind, StudioCreationMathTexOutline, StudioCreationSegmentedMathTexOutline,
+    StudioCreationSegmentedMathTexRepresentation, StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationShapeState,
-    StudioCreationSpatialContext, StudioPaintColorProperty, StudioPersistentRemoveProjection,
-    TIMELINE_ANCHOR_EPSILON, VectorAppearanceValueV1, align_cubic_path_morph_chain,
-    append_planned_scene_motions, apply_persistent_scene_removals, apply_world_rotation,
-    authored_motion_easing, canonical_studio_hex_color, close_transform_baseline_value,
-    created_geometry_and_appearance, insert_scene_time, manim_stroke_width_to_scene_world,
-    plan_studio_creation_edits, rotation_is_noop, scale_cubic_path, set_vector_paint_alpha,
-    studio_arc_parameters, studio_arc_path, studio_authoring_shape_size,
-    studio_authoring_size_is_positive, studio_camera_aspects_match, studio_camera_view_is_bounded,
+    StudioCreationSpatialContext, StudioCreationTextOutline, StudioCreationTextOutlineFragment,
+    StudioPaintColorProperty, StudioPersistentRemoveProjection, TIMELINE_ANCHOR_EPSILON,
+    VectorAppearanceValueV1, align_cubic_path_morph_chain, append_planned_scene_motions,
+    apply_persistent_scene_removals, apply_world_rotation, authored_motion_easing,
+    canonical_studio_hex_color, close_transform_baseline_value, created_geometry_and_appearance,
+    insert_scene_time, manim_stroke_width_to_scene_world, plan_studio_creation_edits,
+    rotation_is_noop, scale_cubic_path, set_vector_paint_alpha, studio_arc_parameters,
+    studio_arc_path, studio_authoring_shape_size, studio_authoring_size_is_positive,
+    studio_camera_aspects_match, studio_camera_view_is_bounded,
     studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
     studio_coordinate_system_parameters, studio_coordinate_system_path,
     studio_creation_supports_stroke_cap, studio_creation_supports_stroke_join,
@@ -145,20 +147,21 @@ pub(super) fn studio_write_path_has_closed_renderable_contours(path: &CubicPathV
         })
 }
 
+fn canonical_write_plan(fragment_count: usize) -> Option<CreateSceneEntityWritePlan> {
+    let fragment_count = u32::try_from(fragment_count).ok()?;
+    (fragment_count > 0).then_some(CreateSceneEntityWritePlan {
+        fragment_lag_ratio: (4.0 / f64::from(fragment_count)).min(0.2),
+        outline_stroke_width: STUDIO_WRITE_OUTLINE_STROKE_WIDTH,
+        phase_boundary: STUDIO_WRITE_PHASE_BOUNDARY,
+    })
+}
+
 pub(super) fn create_entity_write_is_valid(entity: &CreateSceneEntity) -> bool {
     let Some(write) = &entity.write_in else {
         return !matches!(entity.geometry, CreateSceneEntityGeometry::LogicalGroup);
     };
     let plan = write.plan;
-    let Ok(fragment_count) = u32::try_from(write.fragments.len()) else {
-        return false;
-    };
-    if fragment_count == 0 {
-        return false;
-    }
-    let expected_lag_ratio = (4.0 / f64::from(fragment_count)).min(0.2);
-    let source_byte_length = write.source.len();
-    let Ok(source_end_byte) = u32::try_from(source_byte_length) else {
+    let Some(expected_plan) = canonical_write_plan(write.fragments.len()) else {
         return false;
     };
     let mut fragment_ids = BTreeSet::new();
@@ -179,42 +182,131 @@ pub(super) fn create_entity_write_is_valid(entity: &CreateSceneEntity) -> bool {
         && write.interval.end > write.interval.start
         && write.interval.end <= entity.lifetime.end
         && matches!(write.easing, EasingV1::Linear {})
-        && close_transform_baseline_value(plan.fragment_lag_ratio, expected_lag_ratio)
-        && close_transform_baseline_value(plan.phase_boundary, SEGMENTED_MATH_TEX_PHASE_BOUNDARY)
-        && plan.representation
-            == StudioCreationSegmentedMathTexRepresentation::SeparateOutlineAndFillEntities
+        && close_transform_baseline_value(plan.fragment_lag_ratio, expected_plan.fragment_lag_ratio)
+        && close_transform_baseline_value(plan.phase_boundary, expected_plan.phase_boundary)
         && close_transform_baseline_value(
             plan.outline_stroke_width,
-            SEGMENTED_MATH_TEX_OUTLINE_STROKE_WIDTH,
+            expected_plan.outline_stroke_width,
         )
         && !write.fragments.is_empty()
-        && write.fragments.len() <= SEGMENTED_MATH_TEX_MAX_FRAGMENTS
-        && source_byte_length <= SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES
-        && matches!(
-            total_segments,
-            Some(1..=SEGMENTED_MATH_TEX_MAX_CUBIC_SEGMENTS)
-        ) && write.fragments.iter().enumerate().all(|(index, fragment)| {
-        u32::try_from(index).ok() == Some(fragment.order)
-            && fragment.id == format!("fragment-{index:04}")
-            && fragment.outline_entity_id == format!("{}:outline", fragment.id)
-            && fragment.fill_entity_id == format!("{}:fill", fragment.id)
-            && fragment.fill_rule == FillRuleV1::NonZero
-            && studio_write_fragment_id_is_portable(&fragment.id)
-            && fragment_ids.insert(fragment.id.as_str())
-            && fragment.paint.red.to_bits() == 1.0_f64.to_bits()
-            && fragment.paint.green.to_bits() == 1.0_f64.to_bits()
-            && fragment.paint.blue.to_bits() == 1.0_f64.to_bits()
-            && fragment.paint.alpha.to_bits() == 1.0_f64.to_bits()
-            && fragment.source_correlation
-                == (StudioCreationSegmentedMathTexSourceCorrelation {
-                    kind: StudioCreationSegmentedMathTexSourceCorrelationKind::ExpressionByteRange,
-                    source_end_byte,
-                    source_start_byte: 0,
-                })
-            && studio_write_path_has_closed_renderable_contours(&fragment.path)
-            && ["outline", "fill"]
-                .into_iter()
-                .all(|role| format!("{}/write/{}/{role}", entity.id, fragment.id).len() <= 240)
+        && write.fragments.len() <= STUDIO_WRITE_MAX_FRAGMENTS
+        && matches!(total_segments, Some(1..=STUDIO_WRITE_MAX_CUBIC_SEGMENTS))
+        && write.fragments.iter().enumerate().all(|(index, fragment)| {
+            u32::try_from(index).ok() == Some(fragment.order)
+                && fragment.id == format!("fragment-{index:04}")
+                && fragment.fill_rule == FillRuleV1::NonZero
+                && studio_write_fragment_id_is_portable(&fragment.id)
+                && fragment_ids.insert(fragment.id.as_str())
+                && fragment.paint.red.to_bits() == 1.0_f64.to_bits()
+                && fragment.paint.green.to_bits() == 1.0_f64.to_bits()
+                && fragment.paint.blue.to_bits() == 1.0_f64.to_bits()
+                && fragment.paint.alpha.to_bits() == 1.0_f64.to_bits()
+                && studio_write_path_has_closed_renderable_contours(&fragment.path)
+                && ["outline", "fill"]
+                    .into_iter()
+                    .all(|role| format!("{}/write/{}/{role}", entity.id, fragment.id).len() <= 240)
+        })
+}
+
+fn math_tex_write_in(
+    outline: &StudioCreationSegmentedMathTexOutline,
+    source: &str,
+    interval: &IntervalV1,
+    easing: &EasingV1,
+) -> Result<CreateSceneEntityWriteIn, ApplyStudioCreationEditError> {
+    let source_end_byte =
+        u32::try_from(source.len()).map_err(|_| CreateSceneEntitiesError::InvalidAppearanceEdit)?;
+    if source.len() > SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES
+        || outline.fragments.len() > SEGMENTED_MATH_TEX_MAX_FRAGMENTS
+        || outline.write_plan.representation
+            != StudioCreationSegmentedMathTexRepresentation::SeparateOutlineAndFillEntities
+        || outline.fragments.iter().any(|fragment| {
+            fragment.outline_entity_id != format!("{}:outline", fragment.id)
+                || fragment.fill_entity_id != format!("{}:fill", fragment.id)
+                || fragment.source_correlation
+                    != (StudioCreationSegmentedMathTexSourceCorrelation {
+                        kind: StudioCreationSegmentedMathTexSourceCorrelationKind::ExpressionByteRange,
+                        source_end_byte,
+                        source_start_byte: 0,
+                    })
+        })
+    {
+        return Err(CreateSceneEntitiesError::InvalidAppearanceEdit.into());
+    }
+    Ok(CreateSceneEntityWriteIn {
+        easing: easing.clone(),
+        fragments: outline
+            .fragments
+            .iter()
+            .map(|fragment| CreateSceneEntityWriteFragment {
+                fill_rule: fragment.fill_rule,
+                id: fragment.id.clone(),
+                order: fragment.order,
+                paint: fragment.paint.clone(),
+                path: fragment.path.clone(),
+            })
+            .collect(),
+        interval: interval.clone(),
+        plan: CreateSceneEntityWritePlan {
+            fragment_lag_ratio: outline.write_plan.fragment_lag_ratio,
+            outline_stroke_width: outline.write_plan.outline_stroke_width,
+            phase_boundary: outline.write_plan.phase_boundary,
+        },
+    })
+}
+
+fn text_write_fragment(
+    fragment: &StudioCreationTextOutlineFragment,
+    font_size: f64,
+) -> CreateSceneEntityWriteFragment {
+    CreateSceneEntityWriteFragment {
+        fill_rule: FillRuleV1::NonZero,
+        id: format!("fragment-{:04}", fragment.order),
+        order: fragment.order,
+        paint: RgbaColorV1 {
+            alpha: 1.0,
+            blue: 1.0,
+            green: 1.0,
+            red: 1.0,
+        },
+        path: scale_cubic_path(&fragment.path, font_size),
+    }
+}
+
+fn text_outline_fragments_are_exact(outline: &StudioCreationTextOutline) -> bool {
+    (1..=STUDIO_WRITE_MAX_FRAGMENTS).contains(&outline.fragments.len())
+        && outline
+            .fragments
+            .iter()
+            .enumerate()
+            .all(|(index, fragment)| {
+                u32::try_from(index).ok() == Some(fragment.order)
+                    && !fragment.path.subpaths.is_empty()
+            })
+        && outline
+            .fragments
+            .iter()
+            .flat_map(|fragment| fragment.path.subpaths.iter())
+            .eq(outline.path.subpaths.iter())
+}
+
+fn text_write_in(
+    outline: &StudioCreationTextOutline,
+    font_size: f64,
+    interval: &IntervalV1,
+    easing: &EasingV1,
+) -> Result<CreateSceneEntityWriteIn, ApplyStudioCreationEditError> {
+    let plan = canonical_write_plan(outline.fragments.len())
+        .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?;
+    Ok(CreateSceneEntityWriteIn {
+        easing: easing.clone(),
+        fragments: outline
+            .fragments
+            .iter()
+            .map(|fragment| text_write_fragment(fragment, font_size))
+            .collect(),
+        interval: interval.clone(),
+        plan,
     })
 }
 
@@ -2139,16 +2231,18 @@ impl EngineSessionV1 {
                     }
                 }
                 StudioAuthoringEntityKind::Text => {
-                    let matching_outline_count = text_outlines
-                        .iter()
-                        .filter(|outline| {
-                            outline.entity_id == state.spec.id
-                                && state.current_text_content.as_ref().is_some_and(|content| {
-                                    outline.text == content.text && outline.layout == content.layout
-                                })
-                        })
-                        .count();
-                    if matching_outline_count != 1 {
+                    let mut matching_outlines = text_outlines.iter().filter(|outline| {
+                        outline.entity_id == state.spec.id
+                            && state.current_text_content.as_ref().is_some_and(|content| {
+                                outline.text == content.text && outline.layout == content.layout
+                            })
+                    });
+                    let outline = matching_outlines
+                        .next()
+                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                    if matching_outlines.next().is_some()
+                        || !text_outline_fragments_are_exact(outline)
+                    {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
                 }
@@ -2311,7 +2405,9 @@ impl EngineSessionV1 {
                         path: svg.path.clone(),
                     }
                 }
-                StudioAuthoringEntityKind::MathTex if state.write_interval.is_some() => {
+                StudioAuthoringEntityKind::MathTex | StudioAuthoringEntityKind::Text
+                    if state.write_interval.is_some() =>
+                {
                     CreateSceneEntityGeometry::LogicalGroup
                 }
                 StudioAuthoringEntityKind::MathTex => {
@@ -2478,27 +2574,39 @@ impl EngineSessionV1 {
                 return Err(ApplyStudioCreationEditError::Unsupported);
             }
             let write_in = match (&state.write_interval, &state.write_easing) {
-                (Some(interval), Some(easing)) => {
-                    let source = state
-                        .spec
-                        .tex_parts
-                        .as_ref()
-                        .map(|parts| parts.join(" "))
-                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    let outline = segmented_math_tex_outlines
-                        .iter()
-                        .find(|outline| {
-                            outline.entity_id == state.spec.id && outline.source == source
-                        })
-                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                    Some(CreateSceneEntityWriteIn {
-                        easing: easing.clone(),
-                        fragments: outline.fragments.clone(),
-                        interval: interval.clone(),
-                        plan: outline.write_plan,
-                        source,
-                    })
-                }
+                (Some(interval), Some(easing)) => Some(match state.kind {
+                    StudioAuthoringEntityKind::MathTex => {
+                        let source = state
+                            .spec
+                            .tex_parts
+                            .as_ref()
+                            .map(|parts| parts.join(" "))
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        let outline = segmented_math_tex_outlines
+                            .iter()
+                            .find(|outline| {
+                                outline.entity_id == state.spec.id && outline.source == source
+                            })
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        math_tex_write_in(outline, &source, interval, easing)?
+                    }
+                    StudioAuthoringEntityKind::Text => {
+                        let content = state
+                            .current_text_content
+                            .as_ref()
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        let outline = text_outlines
+                            .iter()
+                            .find(|outline| {
+                                outline.entity_id == state.spec.id
+                                    && outline.text == content.text
+                                    && outline.layout == content.layout
+                            })
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        text_write_in(outline, content.layout.font_size, interval, easing)?
+                    }
+                    _ => return Err(ApplyStudioCreationEditError::Unsupported),
+                }),
                 (None, None) => None,
                 (Some(_), None) | (None, Some(_)) => {
                     return Err(ApplyStudioCreationEditError::Unsupported);

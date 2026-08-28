@@ -14,7 +14,7 @@ assert.equal(outline.poietraMathTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileMathTexOutlineV1, "function");
 assert.equal(outline.poietraSegmentedTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileSegmentedTexOutlineV1, "function");
-assert.equal(outline.poietraTextOutlineAbiVersion(), 6);
+assert.equal(outline.poietraTextOutlineAbiVersion(), 7);
 assert.equal(typeof outline.compileTextOutlineV1, "function");
 
 const encoder = new TextEncoder();
@@ -230,6 +230,15 @@ for (const response of textWasmResponses.slice(0, 10)) {
   assert.equal(parsed.result.kind, "compiled");
   assert.equal(parsed.result.fillRule, "nonzero");
   assert.ok(parsed.result.path.subpaths.length > 0);
+  assert.ok(parsed.result.fragments.length > 0);
+  assert.deepEqual(
+    parsed.result.fragments.map(({ order }) => order),
+    parsed.result.fragments.map((_, order) => order),
+  );
+  assert.deepEqual(
+    parsed.result.fragments.flatMap(({ path }) => path.subpaths),
+    parsed.result.path.subpaths,
+  );
 }
 assert.deepEqual(
   Buffer.from(textWasmResponses[1]),

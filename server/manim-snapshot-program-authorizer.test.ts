@@ -202,6 +202,7 @@ describe("snapshot MathTex authorization", () => {
       result: {
         bounds: { bottom: -0.5, left: -0.5, right: 0.5, top: 0.5 },
         fillRule: "nonzero",
+        fragments: [{ order: 0, path: entity.geometry.path }],
         kind: "compiled",
         path: entity.geometry.path,
       },
@@ -227,6 +228,7 @@ describe("snapshot MathTex authorization", () => {
       textOutlines: [
         {
           entityId: creation.entityIds[0],
+          fragments: [{ order: 0, path: entity.geometry.path }],
           layout: {
             alignment: "left",
             fontFamily: "mono",

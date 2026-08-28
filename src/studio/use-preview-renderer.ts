@@ -615,7 +615,7 @@ export async function digestStudioPreviewSceneRevisionV1(
       ]),
     Object.entries(input.textOutlines ?? {})
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([entityId, outline]) => [entityId, outline.bounds, outline.fillRule, outline.path]),
+      .map(([entityId, outline]) => [entityId, outline.bounds, outline.fillRule, outline.fragments, outline.path]),
   ];
   const bytes = new TextEncoder().encode(canonicalJsonV1(revisionBasis));
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
@@ -1024,7 +1024,13 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
             kind: "unsupported",
           };
         }
-        textOutlines.push({ entityId, layout: content.layout, path: response.result.path, text: content.text });
+        textOutlines.push({
+          entityId,
+          fragments: response.result.fragments.map(({ order, path }) => ({ order, path })),
+          layout: content.layout,
+          path: response.result.path,
+          text: content.text,
+        });
         textOutlineDigestMap[entityId] = response.result;
       }
     } catch (error) {
