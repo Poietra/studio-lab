@@ -166,11 +166,20 @@ fn scene_texture_matches(module: &Module, variable: &naga::GlobalVariable) -> bo
         )
 }
 
+fn scene_sampler_matches(module: &Module, variable: &naga::GlobalVariable) -> bool {
+    variable.space == AddressSpace::Handle
+        && matches!(
+            module.types[variable.ty].inner,
+            TypeInner::Sampler { comparison: false }
+        )
+}
+
 fn validate_fragment_resources(
     source: &str,
     module: &Module,
 ) -> Result<(), ScenePostEffectGlslError> {
     let mut host_uniforms = 0_usize;
+    let mut scene_samplers = 0_usize;
     let mut scene_textures = 0_usize;
     for (_, variable) in module.global_variables.iter() {
         match variable.binding {
@@ -188,6 +197,13 @@ fn validate_fragment_resources(
             {
                 scene_textures += 1;
             }
+            Some(binding)
+                if binding.group == 0
+                    && binding.binding == 2
+                    && scene_sampler_matches(module, variable) =>
+            {
+                scene_samplers += 1;
+            }
             None if variable.space == AddressSpace::Private => {}
             Some(binding) if binding.group == 0 && binding.binding == 0 => {
                 return Err(ScenePostEffectGlslError::named(
@@ -203,6 +219,13 @@ fn validate_fragment_resources(
                     "set 0 binding 1 must be one sampled float texture2D Scene texture",
                 ));
             }
+            Some(binding) if binding.group == 0 && binding.binding == 2 => {
+                return Err(ScenePostEffectGlslError::named(
+                    source,
+                    variable.name.as_deref(),
+                    "set 0 binding 2 must be one non-comparison sampler",
+                ));
+            }
             _ => {
                 return Err(ScenePostEffectGlslError::named(
                     source,
@@ -212,10 +235,10 @@ fn validate_fragment_resources(
             }
         }
     }
-    if host_uniforms != 1 || scene_textures != 1 {
+    if host_uniforms != 1 || scene_textures != 1 || scene_samplers > 1 {
         return Err(ScenePostEffectGlslError::first(
             source,
-            "Scene post effects require exactly set 0 binding 0 host uniform and binding 1 texture2D Scene texture",
+            "Scene post effects require exactly set 0 binding 0 host uniform and binding 1 texture2D Scene texture, with at most one set 0 binding 2 sampler",
         ));
     }
     Ok(())
@@ -225,8 +248,10 @@ fn validate_fragment_resources(
 ///
 /// The profile accepts one fragment `main`, optional `gl_FragCoord`, one
 /// location-zero color output, and exactly the existing Poietra Scene
-/// post-effect host uniform and Scene texture. The renderer receives only the
-/// generated WGSL and therefore retains its existing bind-group ABI.
+/// post-effect host uniform and Scene texture, plus an optional separate
+/// sampler at set 0 binding 2. Omitting the sampler keeps stored binding 0/1
+/// sources compatible; when declared, the renderer owns its linear-clamp
+/// configuration.
 ///
 /// # Errors
 ///
@@ -336,10 +361,11 @@ layout(set = 0, binding = 0, std140) uniform PoietraHost {
     vec4 parameters_1;
 } host;
 layout(set = 0, binding = 1) uniform texture2D scene_texture;
+layout(set = 0, binding = 2) uniform sampler scene_sampler;
 
 void main() {
-    ivec2 coordinate = ivec2(gl_FragCoord.xy);
-    vec4 scene_color = texelFetch(scene_texture, coordinate, 0);
+    vec2 coordinate = gl_FragCoord.xy / max(host.viewport_and_time.xy, vec2(1.0));
+    vec4 scene_color = texture(sampler2D(scene_texture, scene_sampler), coordinate);
     float pulse = 0.5 + 0.5 * sin(host.viewport_and_time.z + host.parameters_0.x);
     output_color = vec4(scene_color.rgb * pulse, scene_color.a);
 }
@@ -352,9 +378,26 @@ void main() {
         assert!(compiled.contains("fn fs_main"));
         assert!(compiled.contains("@group(0) @binding(0)"));
         assert!(compiled.contains("@group(0) @binding(1)"));
-        assert!(compiled.contains("textureLoad"));
+        assert!(compiled.contains("@group(0) @binding(2)"));
+        assert!(compiled.contains("textureSample"));
         assert!(!compiled.contains("#version"));
         assert!(validate_scene_post_effect_wgsl(&compiled).is_ok());
+    }
+
+    #[test]
+    fn retains_the_samplerless_binding_zero_one_profile() {
+        let legacy = SUPPORTED
+            .replace(
+                "layout(set = 0, binding = 2) uniform sampler scene_sampler;\n",
+                "",
+            )
+            .replace(
+                "vec2 coordinate = gl_FragCoord.xy / max(host.viewport_and_time.xy, vec2(1.0));\n    vec4 scene_color = texture(sampler2D(scene_texture, scene_sampler), coordinate);",
+                "ivec2 coordinate = ivec2(gl_FragCoord.xy);\n    vec4 scene_color = texelFetch(scene_texture, coordinate, 0);",
+            );
+        let compiled = compile_scene_post_effect_glsl(&legacy, "main").unwrap();
+        assert!(compiled.contains("textureLoad"));
+        assert!(!compiled.contains("@group(0) @binding(2)"));
     }
 
     #[test]
@@ -370,7 +413,7 @@ void main() {
 
         let extra_sampler = SUPPORTED.replace(
             "void main()",
-            "layout(set = 0, binding = 2) uniform sampler extra_sampler;\nvoid main()",
+            "layout(set = 0, binding = 3) uniform sampler extra_sampler;\nvoid main()",
         );
         assert!(compile_scene_post_effect_glsl(&extra_sampler, "main").is_err());
         let combined_sampler =

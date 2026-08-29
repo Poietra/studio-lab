@@ -1274,6 +1274,70 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
 }
 
 #[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated GPU lane runs this proof"]
+fn custom_scene_post_effect_samples_subpixels_with_the_renderer_linear_clamp_sampler() {
+    const SOURCE: &str = r"
+struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_1: vec4<f32> };
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@group(0) @binding(2) var scene_sampler: sampler;
+@fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let viewport = max(host.viewport_and_time.xy, vec2<f32>(1.0));
+    let uv = vec2<f32>((position.x - 0.5) / viewport.x, position.y / viewport.y);
+    return textureSample(scene_texture, scene_sampler, uv);
+}
+";
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+    let source = ScenePostEffectSourceV1 {
+        revision: 9,
+        shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        source: SOURCE.to_owned(),
+    };
+    pollster::block_on(renderer.replace_scene_post_effect_source(&device, Some(&source)))
+        .expect("filtered custom WGSL must install");
+
+    for (compositing, expected_seam_channel) in [
+        (RenderCompositingV1::LinearLight, 188_u8),
+        (RenderCompositingV1::ManimCairoSrgb, 128_u8),
+    ] {
+        let mut packet = rgb_split_packet(compositing, false);
+        packet.post_effect = Some(ScenePostEffectV1 {
+            parameters: vec![],
+            revision: source.revision,
+            shader_id: source.shader_id.clone(),
+        });
+        packet
+            .required_capabilities
+            .push(RenderCapabilityV1::ScenePostEffect);
+        packet.required_capabilities.sort_unstable();
+
+        let (texture, extent) =
+            render_project_scene_post_effect_packet(&device, &queue, &mut renderer, &packet);
+        let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+        assert_eq!(
+            pixel(&rgba, extent.width, 0, 8),
+            [255, 0, 0, 255],
+            "clamp-to-edge must preserve the left edge instead of wrapping"
+        );
+        let seam = pixel(&rgba, extent.width, 16, 8);
+        assert_eq!(seam[0], seam[2]);
+        assert_eq!([seam[1], seam[3]], [0, 255]);
+        assert!(
+            seam[0].abs_diff(expected_seam_channel) <= 1,
+            "linear filtering must interpolate the half-pixel red/blue seam; got {seam:?}"
+        );
+    }
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+}
+
+#[test]
 #[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
 fn renders_solid_fragment_solid_in_order_and_samples_scene_time() {
     let instance =
