@@ -92,7 +92,7 @@ export function replaceScenePostEffectParameterKeyframeProgram(
 ): SceneEditValidationResult {
   const operation = scenePostEffectOperation(input.owner.program);
   if (!operation || input.owner.program.loweringStatus !== "unsupported") {
-    throw new TypeError("Only one canonical Scene post-effect Program can own a parameter track.");
+    throw new TypeError("Only one canonical Scene post-effect Program can own parameter tracks.");
   }
   const effect = operation.effects.find(
     (candidate) => candidate.shaderId === input.shaderId && candidate.revision === input.revision,
@@ -127,21 +127,22 @@ export function replaceScenePostEffectParameterKeyframeProgram(
     revision: input.revision,
     shaderId: input.shaderId,
   };
-  if (input.keyframes.length > 0 && operation.parameterTrack && !sameTarget(operation.parameterTrack, target)) {
-    throw new TypeError("Remove the current Scene effect parameter track before selecting another parameter.");
-  }
-  const parameterTrack =
+  const nextTrack = {
+    ...target,
+    keyframes: input.keyframes,
+    name: input.name,
+  };
+  const targetExists = operation.parameterTracks.some((track) => sameTarget(track, target));
+  const parameterTracks =
     input.keyframes.length === 0
-      ? null
-      : {
-          ...target,
-          keyframes: input.keyframes,
-          name: input.name,
-        };
+      ? operation.parameterTracks.filter((track) => !sameTarget(track, target))
+      : targetExists
+        ? operation.parameterTracks.map((track) => (sameTarget(track, target) ? nextTrack : track))
+        : [...operation.parameterTracks, nextTrack];
   return replaceStudioScenePostEffectProgram({
     effects: operation.effects,
     owner: input.owner,
-    parameterTrack,
+    parameterTracks,
     scene: input.scene,
   });
 }
@@ -198,6 +199,13 @@ export function scenePostEffectParameterTrackMatchesEffects(
   return baseValue !== undefined && firstValue !== undefined && Math.abs(baseValue - firstValue) <= KEYFRAME_EPSILON;
 }
 
+export function scenePostEffectParameterTracksMatchEffects(
+  tracks: readonly ScenePostEffectParameterTrack[],
+  effects: readonly StudioScenePostEffectV1[],
+) {
+  return tracks.every((track) => scenePostEffectParameterTrackMatchesEffects(track, effects));
+}
+
 export function scenePostEffectParameterTrackToWorkingTime(
   track: ScenePostEffectParameterTrack,
   authority: ScenePostEffectParameterTimeAuthority,
@@ -210,6 +218,13 @@ export function scenePostEffectParameterTrackToWorkingTime(
       time: toWorkingTime(keyframe.time),
     })),
   };
+}
+
+export function scenePostEffectParameterTracksToWorkingTime(
+  tracks: readonly ScenePostEffectParameterTrack[],
+  authority: ScenePostEffectParameterTimeAuthority,
+): readonly ScenePostEffectParameterTrack[] {
+  return tracks.map((track) => scenePostEffectParameterTrackToWorkingTime(track, authority));
 }
 
 export function scenePostEffectParameterKeyframesToSourceTime(

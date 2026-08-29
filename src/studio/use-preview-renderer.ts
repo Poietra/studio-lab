@@ -138,7 +138,7 @@ import {
   studioMotionStudioEntities,
 } from "./scene-authoring-wire";
 import { withoutScenePostEffectProgramsV1 } from "./scene-post-effect-authoring";
-import { scenePostEffectParameterTrackToWorkingTime } from "./scene-post-effect-parameter-keyframe-edit";
+import { scenePostEffectParameterTracksToWorkingTime } from "./scene-post-effect-parameter-keyframe-edit";
 import type { StudioPlaybackClock } from "./studio-playback-clock";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import {
@@ -1973,32 +1973,28 @@ export async function compileStudioPreviewSceneV1(
   }
   const installedRegistry = registry.effects.length === 0 ? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1 : registry;
   const parameterTimePrograms = sourceEditRecords(route.workingState).map(({ program }) => program);
-  const workingParameterTrack = operation.parameterTrack
-    ? scenePostEffectParameterTrackToWorkingTime(operation.parameterTrack, {
-        programs: parameterTimePrograms,
-        timelineTransforms: result.scene.timelineProjection?.transforms ?? null,
-      })
-    : null;
-  const parameterTracks: ApplyStudioScenePostEffectWireCommandV1["parameterTracks"] = workingParameterTrack
-    ? [
-        {
-          keyframes: workingParameterTrack.keyframes.map((keyframe, index) => ({
-            ...keyframe,
-            value:
-              index === 0
-                ? (operation.effects.find(
-                    (effect) =>
-                      effect.shaderId === workingParameterTrack.shaderId &&
-                      effect.revision === workingParameterTrack.revision,
-                  )?.parameters[workingParameterTrack.parameterIndex] ?? keyframe.value)
-                : keyframe.value,
-          })),
-          parameterIndex: workingParameterTrack.parameterIndex,
-          revision: workingParameterTrack.revision,
-          shaderId: workingParameterTrack.shaderId,
-        },
-      ]
-    : [];
+  const workingParameterTracks = scenePostEffectParameterTracksToWorkingTime(operation.parameterTracks, {
+    programs: parameterTimePrograms,
+    timelineTransforms: result.scene.timelineProjection?.transforms ?? null,
+  });
+  const parameterTracks: ApplyStudioScenePostEffectWireCommandV1["parameterTracks"] = workingParameterTracks.map(
+    (workingParameterTrack) => ({
+      keyframes: workingParameterTrack.keyframes.map((keyframe, index) => ({
+        ...keyframe,
+        value:
+          index === 0
+            ? (operation.effects.find(
+                (effect) =>
+                  effect.shaderId === workingParameterTrack.shaderId &&
+                  effect.revision === workingParameterTrack.revision,
+              )?.parameters[workingParameterTrack.parameterIndex] ?? keyframe.value)
+            : keyframe.value,
+      })),
+      parameterIndex: workingParameterTrack.parameterIndex,
+      revision: workingParameterTrack.revision,
+      shaderId: workingParameterTrack.shaderId,
+    }),
+  );
   const nextRevision = await digestScenePostEffectRevisionV1(
     result.scene.engineRevisionHash,
     operation.effects,

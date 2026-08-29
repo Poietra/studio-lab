@@ -41,7 +41,7 @@ const callbacks = () => ({
   onTextureChange: vi.fn(),
   parameterAnimationAvailable: true,
   selectedRevision: null,
-  parameterTrack: null,
+  parameterTracks: [],
   playhead: 1,
   texture: null,
 });
@@ -146,16 +146,18 @@ describe("ScenePostEffectSourceEditor", () => {
         assets={accepted.state.assets}
         available
         parameters={[18, 80, 1.25]}
-        parameterTrack={{
-          keyframes: [
-            { easing: "smooth", time: 0, value: 18 },
-            { easing: "linear", time: 2, value: 32 },
-          ],
-          name: "Amplitude",
-          parameterIndex: 0,
-          revision: created.revision,
-          shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
-        }}
+        parameterTracks={[
+          {
+            keyframes: [
+              { easing: "smooth", time: 0, value: 18 },
+              { easing: "linear", time: 2, value: 32 },
+            ],
+            name: "Amplitude",
+            parameterIndex: 0,
+            revision: created.revision,
+            shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          },
+        ]}
         sourceAvailable
       />,
     );
@@ -165,7 +167,56 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain('aria-label="Amplitude keyframe 2 value"');
     expect(markup).toContain("Update animation");
     expect(markup).toContain("Remove animation");
-    expect(markup).toContain("Static parameters are locked while Amplitude has a Timeline track.");
+    expect(markup).toContain("1 / 3 parameters animated");
+    expect(markup).toContain("Amplitude · animated");
+    expect(markup).toContain("Animated parameters keep their static baseline locked.");
+    expect(markup).toMatch(/aria-label="Amplitude Scene post-effect parameter"[^>]*disabled=""/u);
+    expect(markup).not.toMatch(/aria-label="Wavelength Scene post-effect parameter"[^>]*disabled=""/u);
+  });
+
+  it("lists independent animation targets when two parameters have Timeline tracks", () => {
+    const created = createAsset("Wave Distortion");
+    const accepted = acceptAsset(created);
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        {...callbacks()}
+        activeRevisions={[created.revision]}
+        assets={accepted.state.assets}
+        available
+        parameters={[18, 80, 1.25]}
+        parameterTracks={[
+          {
+            keyframes: [
+              { easing: "smooth", time: 0, value: 18 },
+              { easing: "linear", time: 2, value: 32 },
+            ],
+            name: "Amplitude",
+            parameterIndex: 0,
+            revision: created.revision,
+            shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          },
+          {
+            keyframes: [
+              { easing: "smooth", time: 0, value: 80 },
+              { easing: "ease-out", time: 2.75, value: 120 },
+            ],
+            name: "Wavelength",
+            parameterIndex: 1,
+            revision: created.revision,
+            shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          },
+        ]}
+        sourceAvailable
+      />,
+    );
+
+    expect(markup).toContain("2 / 3 parameters animated");
+    expect(markup).toContain("Amplitude · animated");
+    expect(markup).toContain("Wavelength · animated");
+    expect(markup).toContain('data-scene-post-effect-parameter-track="Amplitude"');
+    expect(markup).toMatch(/aria-label="Amplitude Scene post-effect parameter"[^>]*disabled=""/u);
+    expect(markup).toMatch(/aria-label="Wavelength Scene post-effect parameter"[^>]*disabled=""/u);
+    expect(markup).not.toMatch(/aria-label="Speed Scene post-effect parameter"[^>]*disabled=""/u);
   });
 
   it("disables parameter animation while the timeline projection is not ready", () => {

@@ -29,8 +29,7 @@ import {
   type SceneEditOperation,
   type ScenePostEffectParameterTrack,
   type StudioScenePostEffectV1,
-  scenePostEffectParameterTrackSchema,
-  scenePostEffectStackV1Schema,
+  sceneEditOperationSchema,
 } from "./scene-edit-contract";
 import { STUDIO_STYLE_PROFILE, type StyleProfileRef, styleProfileRef } from "./style-profile";
 import { resolveTimeAnchorOnce } from "./time";
@@ -223,41 +222,35 @@ export function createStudioScenePostEffectProgram(
   input: Readonly<{
     capturedPlayhead: number;
     effects: readonly StudioScenePostEffectV1[];
-    parameterTrack?: ScenePostEffectParameterTrack | null;
+    parameterTracks?: readonly ScenePostEffectParameterTrack[];
     scene: RuntimeSceneState;
     transactionId: string;
   }>,
 ): SceneEditValidationResult {
-  const effects = scenePostEffectStackV1Schema.parse(input.effects);
-  const parameterTrack = input.parameterTrack ? scenePostEffectParameterTrackSchema.parse(input.parameterTrack) : null;
-  return authoringProgram(
-    [
-      {
-        dependsOn: [],
-        effects,
-        id: operationId(input.transactionId, "set-scene-post-effect"),
-        interval: { end: input.capturedPlayhead, start: input.capturedPlayhead },
-        kind: "SetScenePostEffect",
-        parameterTrack,
-        provenance: provenance("studio-default", ["Scene graph RGB split post effect"]),
-      },
-    ],
-    {
-      capturedPlayhead: input.capturedPlayhead,
-      loweringStatus: "unsupported",
-      origin: "studio-default",
-      programEvidence: ["renderer-owned Scene-wide RGB split post effect"],
-      scene: input.scene,
-      transactionId: input.transactionId,
-    },
-  );
+  const operation = sceneEditOperationSchema.parse({
+    dependsOn: [],
+    effects: input.effects,
+    id: operationId(input.transactionId, "set-scene-post-effect"),
+    interval: { end: input.capturedPlayhead, start: input.capturedPlayhead },
+    kind: "SetScenePostEffect",
+    parameterTracks: input.parameterTracks ?? [],
+    provenance: provenance("studio-default", ["Scene graph RGB split post effect"]),
+  });
+  return authoringProgram([operation], {
+    capturedPlayhead: input.capturedPlayhead,
+    loweringStatus: "unsupported",
+    origin: "studio-default",
+    programEvidence: ["renderer-owned Scene-wide RGB split post effect"],
+    scene: input.scene,
+    transactionId: input.transactionId,
+  });
 }
 
 export function replaceStudioScenePostEffectProgram(
   input: Readonly<{
     effects: readonly StudioScenePostEffectV1[];
     owner: ProgramRecord;
-    parameterTrack?: ScenePostEffectParameterTrack | null;
+    parameterTracks?: readonly ScenePostEffectParameterTrack[];
     scene: RuntimeSceneState;
   }>,
 ): SceneEditValidationResult {
@@ -269,22 +262,15 @@ export function replaceStudioScenePostEffectProgram(
   ) {
     throw new TypeError("Only one canonical Scene post-effect Program can be replaced.");
   }
-  const parameterTrack =
-    input.parameterTrack === undefined
-      ? undefined
-      : input.parameterTrack === null
-        ? null
-        : scenePostEffectParameterTrackSchema.parse(input.parameterTrack);
+  const replacement = sceneEditOperationSchema.parse({
+    ...operation,
+    effects: input.effects,
+    ...(input.parameterTracks === undefined ? {} : { parameterTracks: input.parameterTracks }),
+  });
   return validateAndScheduleProgram(
     {
       ...input.owner.program,
-      operations: [
-        {
-          ...operation,
-          effects: scenePostEffectStackV1Schema.parse(input.effects),
-          ...(parameterTrack === undefined ? {} : { parameterTrack }),
-        },
-      ],
+      operations: [replacement],
     },
     input.scene,
   );

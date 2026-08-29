@@ -47,7 +47,7 @@ export type ScenePostEffectSourceEditorProps = Readonly<{
   onTextureChange: (assetRevision: number, texture: StudioScenePostEffectTextureV1) => void;
   parameterAnimationAvailable: boolean;
   parameters: readonly number[] | null;
-  parameterTrack: ScenePostEffectParameterTrack | null;
+  parameterTracks: readonly ScenePostEffectParameterTrack[];
   playhead: number;
   selectedRevision: number | null;
   sourceAvailable: boolean;
@@ -95,7 +95,7 @@ export function ScenePostEffectSourceEditor({
   onTextureChange,
   parameterAnimationAvailable,
   parameters,
-  parameterTrack,
+  parameterTracks,
   playhead,
   selectedRevision,
   sourceAvailable,
@@ -146,13 +146,12 @@ export function ScenePostEffectSourceEditor({
 
   const accepted = asset?.accepted ?? null;
   const sourceBusy = pending || filePending;
-  const activeParameterTrack =
-    parameterTrack &&
-    asset &&
-    parameterTrack.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 &&
-    parameterTrack.revision === asset.revision
-      ? parameterTrack
-      : null;
+  const activeParameterTracks = asset
+    ? parameterTracks.filter(
+        (track) => track.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && track.revision === asset.revision,
+      )
+    : [];
+  const animatedParameterIndices = new Set(activeParameterTracks.map((track) => track.parameterIndex));
   const acceptedUsesTexture = accepted?.textureSlot === "texture2d";
   const declaredTextureSlot = accepted ? acceptedUsesTexture : textureSlot;
   const sourceLanguageLabel = sourceLanguage === "glsl" ? "GLSL" : "WGSL";
@@ -500,7 +499,11 @@ export function ScenePostEffectSourceEditor({
                       aria-label={`${parameter.name} Scene post-effect parameter`}
                       className="mt-1 w-full accent-sky-500"
                       disabled={
-                        !available || !active || !parameterValuesMatch || sourceBusy || activeParameterTrack !== null
+                        !available ||
+                        !active ||
+                        !parameterValuesMatch ||
+                        sourceBusy ||
+                        animatedParameterIndices.has(index)
                       }
                       max={parameter.range.max}
                       min={parameter.range.min}
@@ -521,14 +524,20 @@ export function ScenePostEffectSourceEditor({
                   The active Scene reference does not match the accepted parameter schema. Reapply the effect.
                 </p>
               ) : null}
-              {activeParameterTrack ? (
+              {activeParameterTracks.length > 0 ? (
                 <p className="text-pretty text-[10px] leading-4 text-sky-300">
-                  Static parameters are locked while {activeParameterTrack.name} has a Timeline track.
+                  Animated parameters keep their static baseline locked. You can still update the other parameters.
                 </p>
               ) : null}
               <button
                 className="h-7 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:text-zinc-700"
-                disabled={!available || !active || !parameterValuesMatch || sourceBusy || activeParameterTrack !== null}
+                disabled={
+                  !available ||
+                  !active ||
+                  !parameterValuesMatch ||
+                  sourceBusy ||
+                  accepted.parameterSchema.every((_, index) => animatedParameterIndices.has(index))
+                }
                 onClick={() => onParametersChange(asset.revision, parameterDraft)}
                 type="button"
               >
@@ -542,10 +551,11 @@ export function ScenePostEffectSourceEditor({
               assetRevision={asset.revision}
               available={available && parameterAnimationAvailable && !sourceBusy}
               duration={duration}
+              key={asset.revision}
               onChange={onParameterTrackChange}
               parameterSchema={accepted.parameterSchema}
               parameters={parameters}
-              parameterTrack={parameterTrack}
+              parameterTracks={parameterTracks}
               playhead={playhead}
             />
           ) : null}

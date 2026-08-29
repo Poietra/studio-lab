@@ -461,6 +461,35 @@ mod tests {
     }
 
     #[test]
+    fn installs_and_samples_multiple_scene_post_effect_parameter_tracks() {
+        let mut session = session();
+        session
+            .apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
+                effects: vec![rgb_split()],
+                expected_base_revision: BASE_REVISION.to_owned(),
+                next_revision: NEXT_REVISION.to_owned(),
+                parameter_tracks: vec![
+                    parameter_track(0, &[(0.0, 6.0), (2.0, 10.0)]),
+                    parameter_track(1, &[(0.0, 2.0), (2.0, 6.0)]),
+                ],
+            })
+            .unwrap();
+
+        let packet = session
+            .sample_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "packet:multiple-animated-scene-post-effect-parameters",
+                sample_time: 1.0,
+                viewport: ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap();
+        assert_eq!(packet.post_effects[0].parameters, vec![8.0, 4.0, 0.5, 0.0]);
+    }
+
+    #[test]
     fn empty_parameter_tracks_remove_the_previous_animation_atomically() {
         let mut session = session();
         session

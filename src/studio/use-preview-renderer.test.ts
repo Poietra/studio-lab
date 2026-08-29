@@ -1261,7 +1261,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.scenePostEffectRegistry).toBe(registry);
   });
 
-  it("lowers one Scene effect parameter track exactly and digests only engine semantics", async () => {
+  it("lowers two Scene effect parameter tracks exactly and digests only engine semantics", async () => {
     const base = await compilablePreviewInput();
     const effects = [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }] as const;
     const commands: ApplyStudioScenePostEffectWireCommandV1[] = [];
@@ -1269,16 +1269,28 @@ describe("compileStudioPreviewSceneV1", () => {
       const validation = createStudioScenePostEffectProgram({
         capturedPlayhead: 0,
         effects,
-        parameterTrack: {
-          keyframes: [
-            { easing: "ease-in", time: 0, value: baselineValue },
-            { easing: "smooth", time: 2, value: terminalValue },
-          ],
-          name,
-          parameterIndex: 0,
-          revision: 1,
-          shaderId: "rgb-split",
-        },
+        parameterTracks: [
+          {
+            keyframes: [
+              { easing: "ease-in", time: 0, value: baselineValue },
+              { easing: "smooth", time: 2, value: terminalValue },
+            ],
+            name,
+            parameterIndex: 0,
+            revision: 1,
+            shaderId: "rgb-split",
+          },
+          {
+            keyframes: [
+              { easing: "linear", time: 0.25, value: 2 },
+              { easing: "ease-out", time: 1.75, value: 6 },
+            ],
+            name: "Amplitude",
+            parameterIndex: 1,
+            revision: 1,
+            shaderId: "rgb-split",
+          },
+        ],
         scene: base.proposedState.base.runtimeSceneState,
         transactionId: `scene-effect-track-${commands.length}`,
       });
@@ -1327,6 +1339,15 @@ describe("compileStudioPreviewSceneV1", () => {
         revision: 1,
         shaderId: "rgb-split",
       },
+      {
+        keyframes: [
+          { easing: "linear", time: 0.25, value: 2 },
+          { easing: "ease-out", time: 1.75, value: 6 },
+        ],
+        parameterIndex: 1,
+        revision: 1,
+        shaderId: "rgb-split",
+      },
     ]);
     expect(commands[1]?.nextRevision).toBe(commands[0]?.nextRevision);
     expect(commands[2]?.nextRevision).not.toBe(commands[0]?.nextRevision);
@@ -1340,16 +1361,28 @@ describe("compileStudioPreviewSceneV1", () => {
     const effect = createStudioScenePostEffectProgram({
       capturedPlayhead: 0,
       effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
-      parameterTrack: {
-        keyframes: [
-          { easing: "smooth", time: 0.5, value: 4 },
-          { easing: "linear", time: 1.5, value: 8 },
-        ],
-        name: "Offset",
-        parameterIndex: 0,
-        revision: 1,
-        shaderId: "rgb-split",
-      },
+      parameterTracks: [
+        {
+          keyframes: [
+            { easing: "smooth", time: 0.5, value: 4 },
+            { easing: "linear", time: 1.5, value: 8 },
+          ],
+          name: "Offset",
+          parameterIndex: 0,
+          revision: 1,
+          shaderId: "rgb-split",
+        },
+        {
+          keyframes: [
+            { easing: "ease-in", time: 0.25, value: 2 },
+            { easing: "ease-out", time: 1.25, value: 6 },
+          ],
+          name: "Amplitude",
+          parameterIndex: 1,
+          revision: 1,
+          shaderId: "rgb-split",
+        },
+      ],
       scene: workingBase.runtimeSceneState,
       transactionId: "source-time-scene-effect-track",
     });
@@ -1430,8 +1463,14 @@ describe("compileStudioPreviewSceneV1", () => {
       { easing: "smooth", time: 0.5, value: 4 },
       { easing: "linear", time: 2.5, value: 8 },
     ]);
+    expect(effectCommands[0]?.parameterTracks[1]?.keyframes).toEqual([
+      { easing: "ease-in", time: 0.25, value: 2 },
+      { easing: "ease-out", time: 2.25, value: 6 },
+    ]);
     const storedOperation = effect.program.operations[0];
-    expect(storedOperation?.kind === "SetScenePostEffect" ? storedOperation.parameterTrack?.keyframes : null).toEqual([
+    expect(
+      storedOperation?.kind === "SetScenePostEffect" ? storedOperation.parameterTracks[0]?.keyframes : null,
+    ).toEqual([
       { easing: "smooth", time: 0.5, value: 4 },
       { easing: "linear", time: 1.5, value: 8 },
     ]);
@@ -1452,16 +1491,18 @@ describe("compileStudioPreviewSceneV1", () => {
     const effectValidation = createStudioScenePostEffectProgram({
       capturedPlayhead: 0,
       effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
-      parameterTrack: {
-        keyframes: [
-          { easing: "smooth", time: 0.25, value: 4 },
-          { easing: "linear", time: 1.5, value: 8 },
-        ],
-        name: "Offset",
-        parameterIndex: 0,
-        revision: 1,
-        shaderId: "rgb-split",
-      },
+      parameterTracks: [
+        {
+          keyframes: [
+            { easing: "smooth", time: 0.25, value: 4 },
+            { easing: "linear", time: 1.5, value: 8 },
+          ],
+          name: "Offset",
+          parameterIndex: 0,
+          revision: 1,
+          shaderId: "rgb-split",
+        },
+      ],
       scene: workingBase.runtimeSceneState,
       transactionId: "legacy-source-time-scene-effect-track",
     });

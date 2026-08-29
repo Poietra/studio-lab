@@ -10,6 +10,8 @@ import {
   replaceScenePostEffectParameterKeyframeProgram,
   scenePostEffectParameterKeyframesToSourceTime,
   scenePostEffectParameterTrackMatchesEffects,
+  scenePostEffectParameterTracksMatchEffects,
+  scenePostEffectParameterTracksToWorkingTime,
   scenePostEffectParameterTrackToWorkingTime,
 } from "./scene-post-effect-parameter-keyframe-edit";
 
@@ -25,9 +27,13 @@ function owner() {
   return programRecord(validation.program, validation);
 }
 
-function parameterTrack(program: ReturnType<typeof owner>["program"]) {
+function parameterTracks(program: ReturnType<typeof owner>["program"]) {
   const operation = program.operations[0];
-  return operation?.kind === "SetScenePostEffect" ? operation.parameterTrack : null;
+  return operation?.kind === "SetScenePostEffect" ? operation.parameterTracks : [];
+}
+
+function parameterTrack(program: ReturnType<typeof owner>["program"], parameterIndex = 0) {
+  return parameterTracks(program).find((track) => track.parameterIndex === parameterIndex) ?? null;
 }
 
 function legacyInsertionProgram() {
@@ -98,6 +104,67 @@ describe("Scene post-effect parameter keyframe editing", () => {
       shaderId: "rgb-split",
     });
     expect(parameterTrack(removed.program)).toBeNull();
+  });
+
+  it("adds, updates, and removes one target without changing sibling parameter tracks", () => {
+    const offset = replaceScenePostEffectParameterKeyframeProgram({
+      keyframes: [
+        { easing: "smooth", time: 1, value: 4 },
+        { easing: "linear", time: 2, value: 8 },
+      ],
+      name: "Offset",
+      owner: owner(),
+      parameterIndex: 0,
+      range: { max: 20, min: 0 },
+      revision: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shaderId: "rgb-split",
+    });
+    const strength = replaceScenePostEffectParameterKeyframeProgram({
+      keyframes: [
+        { easing: "smooth", time: 0, value: 2 },
+        { easing: "ease-in", time: 3, value: 6 },
+      ],
+      name: "Strength",
+      owner: programRecord(offset.program, offset),
+      parameterIndex: 1,
+      range: { max: 10, min: 0 },
+      revision: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shaderId: "rgb-split",
+    });
+
+    expect(parameterTracks(strength.program)).toHaveLength(2);
+    expect(parameterTrack(strength.program, 0)?.keyframes[1]?.value).toBe(8);
+    expect(parameterTrack(strength.program, 1)?.keyframes[1]?.value).toBe(6);
+
+    const updated = replaceScenePostEffectParameterKeyframeProgram({
+      keyframes: [
+        { easing: "smooth", time: 1, value: 4 },
+        { easing: "ease-out", time: 2.5, value: 12 },
+      ],
+      name: "Offset",
+      owner: programRecord(strength.program, strength),
+      parameterIndex: 0,
+      range: { max: 20, min: 0 },
+      revision: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shaderId: "rgb-split",
+    });
+    expect(parameterTrack(updated.program, 0)?.keyframes[1]).toEqual({ easing: "ease-out", time: 2.5, value: 12 });
+    expect(parameterTrack(updated.program, 1)).toEqual(parameterTrack(strength.program, 1));
+
+    const removed = replaceScenePostEffectParameterKeyframeProgram({
+      keyframes: [],
+      name: "Offset",
+      owner: programRecord(updated.program, updated),
+      parameterIndex: 0,
+      range: { max: 20, min: 0 },
+      revision: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+      shaderId: "rgb-split",
+    });
+    expect(parameterTracks(removed.program)).toEqual([parameterTrack(strength.program, 1)]);
   });
 
   it("rejects stale identity, a changed baseline, and invalid keyframe order", () => {
@@ -208,6 +275,9 @@ describe("Scene post-effect parameter keyframe editing", () => {
       false,
     );
     expect(scenePostEffectParameterTrackMatchesEffects(track, [])).toBe(false);
+    expect(scenePostEffectParameterTracksMatchEffects([track!], [effect])).toBe(true);
+    expect(scenePostEffectParameterTracksMatchEffects([track!], [])).toBe(false);
+    expect(scenePostEffectParameterTracksMatchEffects([], [])).toBe(true);
   });
 
   it("keeps stored markers in source time while projecting InsertWait into the working timeline", () => {
@@ -234,6 +304,10 @@ describe("Scene post-effect parameter keyframe editing", () => {
     expect(working.keyframes.map(({ time }) => time)).toEqual([0.5, 2.5]);
     expect(scenePostEffectParameterKeyframesToSourceTime(working.keyframes, authority)).toEqual(track.keyframes);
     expect(track.keyframes.map(({ time }) => time)).toEqual([0.5, 1.5]);
+    expect(scenePostEffectParameterTracksToWorkingTime([track, { ...track, parameterIndex: 1 }], authority)).toEqual([
+      working,
+      { ...working, parameterIndex: 1 },
+    ]);
   });
 
   it("uses the legacy Program composition mapping when no Rust timeline transform exists", () => {

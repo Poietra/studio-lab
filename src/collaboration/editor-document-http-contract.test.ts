@@ -7,13 +7,13 @@ import {
   editorDocumentOpenRequestSchemaV1,
   editorDocumentOpenRequestUnionSchemaV1,
   editorDocumentOpenResultViewSchemaV1,
-  editorDocumentViewUnionSchemaV1,
   editorDocumentProjectionViewSchemaV1,
   editorDocumentSessionPutRequestSchemaV1,
   editorDocumentSessionPutResultViewSchemaV1,
   editorDocumentSessionViewSchemaV1,
   editorDocumentTailQuerySchemaV1,
   editorDocumentViewSchemaV1,
+  editorDocumentViewUnionSchemaV1,
   parseEditorDocumentSessionQueryV1,
   parseEditorDocumentTailQueryV1,
   serializeEditorDocumentCommitResultV1,
@@ -78,6 +78,36 @@ function program(transactionId = "motion"): CanonicalEditProgram {
     schedule: { edges: [], mode: "sequence", order: [operation.id] },
     transactionId,
     version: 1,
+  };
+}
+
+function legacySceneEffectProgram(transactionId = "legacy-scene-effect") {
+  const base = program(transactionId);
+  const operationId = `${transactionId}/set-scene-post-effect`;
+  return {
+    ...base,
+    loweringStatus: "unsupported",
+    operations: [
+      {
+        dependsOn: [],
+        effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
+        id: operationId,
+        interval: { end: 1, start: 1 },
+        kind: "SetScenePostEffect",
+        parameterTrack: {
+          keyframes: [
+            { easing: "smooth", time: 0, value: 4 },
+            { easing: "linear", time: 2, value: 8 },
+          ],
+          name: "Offset",
+          parameterIndex: 0,
+          revision: 1,
+          shaderId: "rgb-split",
+        },
+        provenance: { evidence: [], origin: "studio-default" },
+      },
+    ],
+    schedule: { edges: [], mode: "sequence", order: [operationId] },
   };
 }
 
@@ -154,6 +184,26 @@ describe("editor document HTTP requests", () => {
       mutation,
     };
     expect(editorDocumentCommitRequestSchemaV1.parse(request)).toEqual(request);
+  });
+
+  it("normalizes the former singleton Scene-effect track before deep-strict mutation and projection checks", () => {
+    const committed = editorDocumentCommitRequestSchemaV1.parse({
+      baseRevision: "0",
+      clientMutationId: MUTATION_ID,
+      epoch: EPOCH,
+      mutation: { kind: "append", program: legacySceneEffectProgram() },
+    });
+    const projected = editorDocumentProjectionViewSchemaV1.parse({
+      programs: [legacySceneEffectProgram()],
+      revision: "1",
+    });
+
+    const committedOperation = committed.mutation.program.operations[0];
+    const projectedOperation = projected.programs[0]?.operations[0];
+    expect(committedOperation).toMatchObject({ kind: "SetScenePostEffect", parameterTracks: [{ parameterIndex: 0 }] });
+    expect(projectedOperation).toMatchObject({ kind: "SetScenePostEffect", parameterTracks: [{ parameterIndex: 0 }] });
+    expect(committedOperation).not.toHaveProperty("parameterTrack");
+    expect(projectedOperation).not.toHaveProperty("parameterTrack");
   });
 
   it.each([0, 1, -1, 1.5, Number.MAX_SAFE_INTEGER])("rejects numeric revision %s", (baseRevision) => {

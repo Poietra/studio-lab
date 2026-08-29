@@ -6,7 +6,11 @@ import {
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../render-pipeline/manim-identity-contract";
-import { sceneEditSchema as canonicalEditProgramSchemaV1, type SceneEdit } from "../studio/scene-edit-contract";
+import {
+  sceneEditSchema as canonicalEditProgramSchemaV1,
+  normalizeLegacySceneEditWireAliases,
+  type SceneEdit,
+} from "../studio/scene-edit-contract";
 import { deepStrictWireSchemaV1 } from "./deep-strict-wire-schema";
 import {
   type EditorEditMutationV1,
@@ -26,9 +30,13 @@ const MAX_EDITOR_REVISION_V1 = 9_223_372_036_854_775_807n;
 const MAX_EDITOR_HTTP_EVENT_TAIL_LIMIT_V1 = 32n;
 const MAX_EDITOR_PROGRAM_BYTES_V1 = 256 * 1024;
 
-const deepStrictEditorEditMutationSchemaV1 = deepStrictWireSchemaV1(editorEditMutationV1Schema);
-const deepStrictCanonicalEditProgramSchemaV1 = deepStrictWireSchemaV1(canonicalEditProgramSchemaV1).superRefine(
-  (program, context) => {
+const deepStrictEditorEditMutationSchemaV1 = z.preprocess(
+  normalizeLegacySceneEditWireAliases,
+  deepStrictWireSchemaV1(editorEditMutationV1Schema),
+);
+const deepStrictCanonicalEditProgramSchemaV1 = z
+  .preprocess(normalizeLegacySceneEditWireAliases, deepStrictWireSchemaV1(canonicalEditProgramSchemaV1))
+  .superRefine((program, context) => {
     const byteSize = new TextEncoder().encode(canonicalJsonV1(program)).byteLength;
     if (byteSize > MAX_EDITOR_PROGRAM_BYTES_V1) {
       context.addIssue({
@@ -36,8 +44,7 @@ const deepStrictCanonicalEditProgramSchemaV1 = deepStrictWireSchemaV1(canonicalE
         message: `Canonical Editor Programs accept at most ${MAX_EDITOR_PROGRAM_BYTES_V1} UTF-8 bytes.`,
       });
     }
-  },
-);
+  });
 const editorDocumentProjectionProgramsViewSchemaV1 = z
   .array(deepStrictCanonicalEditProgramSchemaV1)
   .max(MAX_APPLIED_EDITOR_PROGRAMS_V1)

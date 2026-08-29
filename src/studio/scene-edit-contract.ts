@@ -35,6 +35,7 @@ export const scenePostEffectStackV1Schema = z
 export type StudioScenePostEffectStackV1 = DeepReadonly<z.infer<typeof scenePostEffectStackV1Schema>>;
 
 export const MAX_STUDIO_SCENE_POST_EFFECT_PARAMETER_KEYFRAMES = 32;
+export const MAX_STUDIO_SCENE_POST_EFFECT_PARAMETER_TRACKS = 32;
 const scenePostEffectParameterKeyframeSchema = z
   .object({
     easing: studioPropertyKeyframeEasingSchema,
@@ -59,6 +60,23 @@ export const scenePostEffectParameterTrackSchema = z
   })
   .strict();
 export type ScenePostEffectParameterTrack = DeepReadonly<z.infer<typeof scenePostEffectParameterTrackSchema>>;
+export const scenePostEffectParameterTracksSchema = z
+  .array(scenePostEffectParameterTrackSchema)
+  .max(MAX_STUDIO_SCENE_POST_EFFECT_PARAMETER_TRACKS)
+  .superRefine((tracks, context) => {
+    const targets = new Set<string>();
+    tracks.forEach((track, index) => {
+      const target = `${track.shaderId}\u0000${track.revision}\u0000${track.parameterIndex}`;
+      if (targets.has(target)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A Scene post-effect parameter can have at most one track.",
+          path: [index],
+        });
+      }
+      targets.add(target);
+    });
+  });
 
 export function isCanonicalRgbHex(value: unknown): value is string {
   return canonicalRgbHexSchema.safeParse(value).success;
@@ -342,7 +360,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   operationBaseSchema.extend({
     effects: scenePostEffectStackV1Schema,
     kind: z.literal("SetScenePostEffect"),
-    parameterTrack: scenePostEffectParameterTrackSchema.nullable().default(null),
+    parameterTracks: scenePostEffectParameterTracksSchema.default([]),
   }),
   operationBaseSchema.extend({
     easing: z.enum(["linear", "smooth"]),
@@ -365,32 +383,33 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
 ]);
 
 const canonicalSceneEditOperationSchema = sceneEditOperationStructureSchema.superRefine((operation, context) => {
-  if (operation.kind === "SetScenePostEffect" && operation.parameterTrack) {
-    const track = operation.parameterTrack;
-    const effect = operation.effects.find(
-      (candidate) => candidate.shaderId === track.shaderId && candidate.revision === track.revision,
-    );
-    const baseValue = effect?.parameters[track.parameterIndex];
-    if (baseValue === undefined) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "The Scene post-effect parameter track must target an existing effect parameter.",
-        path: ["parameterTrack"],
-      });
-    } else if (Math.abs(track.keyframes[0]!.value - baseValue) > 0.0005) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "The first Scene post-effect keyframe must preserve the effect's static parameter value.",
-        path: ["parameterTrack", "keyframes", 0, "value"],
-      });
-    }
-    if (track.keyframes.slice(1).some((keyframe, index) => keyframe.time <= track.keyframes[index]!.time + 0.0005)) {
-      context.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Scene post-effect parameter keyframes must be ordered and distinct.",
-        path: ["parameterTrack", "keyframes"],
-      });
-    }
+  if (operation.kind === "SetScenePostEffect") {
+    operation.parameterTracks.forEach((track, trackIndex) => {
+      const effect = operation.effects.find(
+        (candidate) => candidate.shaderId === track.shaderId && candidate.revision === track.revision,
+      );
+      const baseValue = effect?.parameters[track.parameterIndex];
+      if (baseValue === undefined) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "The Scene post-effect parameter track must target an existing effect parameter.",
+          path: ["parameterTracks", trackIndex],
+        });
+      } else if (Math.abs(track.keyframes[0]!.value - baseValue) > 0.0005) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "The first Scene post-effect keyframe must preserve the effect's static parameter value.",
+          path: ["parameterTracks", trackIndex, "keyframes", 0, "value"],
+        });
+      }
+      if (track.keyframes.slice(1).some((keyframe, index) => keyframe.time <= track.keyframes[index]!.time + 0.0005)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Scene post-effect parameter keyframes must be ordered and distinct.",
+          path: ["parameterTracks", trackIndex, "keyframes"],
+        });
+      }
+    });
   }
   if (operation.kind === "SetProperty" && operation.value === null && operation.key !== "strokeDash") {
     context.addIssue({
@@ -515,21 +534,49 @@ const canonicalSceneEditOperationSchema = sceneEditOperationStructureSchema.supe
   }
 });
 
-/** Reads the former singleton Scene effect operation and returns only the canonical stack shape. */
-export const sceneEditOperationSchema = z.preprocess((input) => {
+function normalizeLegacyScenePostEffectOperation(input: unknown): unknown {
   if (
     typeof input !== "object" ||
     input === null ||
     Array.isArray(input) ||
-    (input as Readonly<Record<string, unknown>>).kind !== "SetScenePostEffect" ||
-    "effects" in input ||
-    !("effect" in input)
+    (input as Readonly<Record<string, unknown>>).kind !== "SetScenePostEffect"
   ) {
     return input;
   }
-  const { effect, ...operation } = input as Readonly<Record<string, unknown>>;
-  return { ...operation, effects: effect === null || effect === undefined ? [] : [effect] };
-}, canonicalSceneEditOperationSchema);
+  const record = input as Readonly<Record<string, unknown>>;
+  let operation = record;
+  if (!("effects" in operation) && "effect" in operation) {
+    const { effect, ...rest } = operation;
+    operation = { ...rest, effects: effect === null || effect === undefined ? [] : [effect] };
+  }
+  if (!("parameterTracks" in operation) && "parameterTrack" in operation) {
+    const { parameterTrack, ...rest } = operation;
+    operation = {
+      ...rest,
+      parameterTracks: parameterTrack === null || parameterTrack === undefined ? [] : [parameterTrack],
+    };
+  }
+  return operation;
+}
+
+/**
+ * Canonicalizes only former Scene-effect aliases before a deep-strict
+ * persisted-wire check. Every other key remains available to reject.
+ */
+export function normalizeLegacySceneEditWireAliases(input: unknown): unknown {
+  if (Array.isArray(input)) return input.map(normalizeLegacySceneEditWireAliases);
+  if (typeof input !== "object" || input === null) return input;
+  const normalized = Object.fromEntries(
+    Object.entries(input).map(([key, value]) => [key, normalizeLegacySceneEditWireAliases(value)]),
+  );
+  return normalizeLegacyScenePostEffectOperation(normalized);
+}
+
+/** Reads former singleton Scene effect shapes and returns only the canonical stack and track arrays. */
+export const sceneEditOperationSchema = z.preprocess(
+  normalizeLegacyScenePostEffectOperation,
+  canonicalSceneEditOperationSchema,
+);
 
 const finiteNumber = z.number().finite();
 const resolvedAnchorSchema = z.object({
