@@ -16,12 +16,12 @@ use poietra_render_wgpu::{
     prepare_frame_with_assets_v1, prepare_frame_with_cache_assets_and_shader_sources_v1,
 };
 use poietra_scene_ir::{
-    AffineTransformV1, CubicSubpathV1, ImageLocalRectV1, ImageSamplerV1,
-    PROJECT_SCENE_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_ID,
-    RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1,
-    RenderCompositingV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrBundleV1,
-    ScenePostEffectV1, SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1, StrokeJoinV1,
-    ViewportV1,
+    AffineTransformV1, AssetReferenceV1, CubicSubpathV1, FragmentMaterialTextureV1,
+    ImageLocalRectV1, ImageSamplerV1, PROJECT_SCENE_POST_EFFECT_SHADER_ID,
+    RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCameraKindV1,
+    RenderCameraV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RenderPacketV1,
+    RgbaColorV1, SceneIrBundleV1, ScenePostEffectV1, SceneSourceV1, SnapshotProfileVersionV1,
+    StrokeCapV1, StrokeJoinV1, ViewportV1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -839,10 +839,20 @@ fn render_project_scene_post_effect_packet(
     packet: &RenderPacketV1,
 ) -> (wgpu::Texture, wgpu::Extent3d) {
     let no_assets = |_sha256: &str| None;
+    render_project_scene_post_effect_packet_with_assets(device, queue, renderer, packet, &no_assets)
+}
+
+fn render_project_scene_post_effect_packet_with_assets(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut WgpuPaintRendererV1,
+    packet: &RenderPacketV1,
+    assets: &dyn DecodedPngAssetResolverV1,
+) -> (wgpu::Texture, wgpu::Extent3d) {
     let prepared = prepare_frame_with_cache_assets_and_shader_sources_v1(
         packet,
         &mut PreparedGeometryCacheV1::default(),
-        &no_assets,
+        assets,
         renderer,
         renderer,
     )
@@ -915,6 +925,7 @@ fn rgb_split_packet(compositing: RenderCompositingV1, enabled: bool) -> RenderPa
             parameters: vec![0.0, 4.0, 1.0, 0.0],
             revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
             shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
         }];
         packet
             .required_capabilities
@@ -1224,6 +1235,7 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
         revision: 7,
         shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
         source: SOURCE.to_owned(),
+        texture_slot: false,
     };
     pollster::block_on(
         renderer.replace_scene_post_effect_sources(&device, std::slice::from_ref(&source)),
@@ -1240,6 +1252,7 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
             parameters: vec![0.25],
             revision: 7,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
         }];
         first
             .required_capabilities
@@ -1265,6 +1278,7 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
         revision: 8,
         shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
         source: format!("{SOURCE}\n@group(1) @binding(0) var extra: texture_2d<f32>;"),
+        texture_slot: false,
     };
     assert!(
         pollster::block_on(renderer.replace_scene_post_effect_sources(&device, &[rejected]))
@@ -1308,11 +1322,13 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
             revision: 10,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
             source: FIRST.to_owned(),
+            texture_slot: false,
         },
         ScenePostEffectSourceV1 {
             revision: 11,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
             source: SECOND.to_owned(),
+            texture_slot: false,
         },
     ];
     pollster::block_on(renderer.replace_scene_post_effect_sources(&device, &sources))
@@ -1324,11 +1340,13 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
             parameters: vec![0.0],
             revision: 10,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
         },
         ScenePostEffectV1 {
             parameters: vec![1.0],
             revision: 11,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
         },
     ];
     packet
@@ -1345,11 +1363,13 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
             revision: 12,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
             source: FIRST.to_owned(),
+            texture_slot: false,
         },
         ScenePostEffectSourceV1 {
             revision: 13,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
             source: format!("{SECOND}\n@group(1) @binding(0) var extra: texture_2d<f32>;"),
+            texture_slot: false,
         },
     ];
     assert!(
@@ -1358,6 +1378,103 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
     assert!(renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 10));
     assert!(renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 11));
     assert!(!renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 12));
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated GPU lane runs this proof"]
+fn scene_post_effect_stack_binds_pass_specific_pngs_without_geometry() {
+    const FIRST: &str = r"
+struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_1: vec4<f32> };
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@group(0) @binding(3) var auxiliary_texture: texture_2d<f32>;
+@group(0) @binding(4) var auxiliary_sampler: sampler;
+@fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureSample(auxiliary_texture, auxiliary_sampler, vec2<f32>(0.5));
+}
+";
+    const SECOND: &str = r"
+struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_1: vec4<f32> };
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@group(0) @binding(3) var auxiliary_texture: texture_2d<f32>;
+@group(0) @binding(4) var auxiliary_sampler: sampler;
+@fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let scene = textureLoad(scene_texture, vec2<i32>(position.xy), 0);
+    let auxiliary = textureSample(auxiliary_texture, auxiliary_sampler, vec2<f32>(0.5));
+    return vec4<f32>(scene.r, auxiliary.g, 0.0, 1.0);
+}
+";
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+    let sources = vec![
+        ScenePostEffectSourceV1 {
+            revision: 20,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            source: FIRST.to_owned(),
+            texture_slot: true,
+        },
+        ScenePostEffectSourceV1 {
+            revision: 21,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            source: SECOND.to_owned(),
+            texture_slot: true,
+        },
+    ];
+    pollster::block_on(renderer.replace_scene_post_effect_sources(&device, &sources))
+        .expect("the textured source stack must install atomically");
+
+    let (red_metadata, red) = verified_rgba_png("asset:effect-red", 1, 1, &[255, 0, 0, 255]);
+    let (green_metadata, green) = verified_rgba_png("asset:effect-green", 1, 1, &[0, 255, 0, 255]);
+    let assets = |sha256: &str| match sha256 {
+        digest if digest == red_metadata.sha256 => Some(Arc::clone(&red)),
+        digest if digest == green_metadata.sha256 => Some(Arc::clone(&green)),
+        _ => None,
+    };
+    let mut packet = rgb_split_packet(RenderCompositingV1::LinearLight, false);
+    packet.draws.clear();
+    packet.post_effects = [
+        (&red_metadata, ImageSamplerV1::Nearest, 20),
+        (&green_metadata, ImageSamplerV1::Linear, 21),
+    ]
+    .into_iter()
+    .map(|(metadata, sampler, revision)| ScenePostEffectV1 {
+        parameters: Vec::new(),
+        revision,
+        shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        texture: Some(Box::new(FragmentMaterialTextureV1 {
+            asset: AssetReferenceV1 {
+                asset_id: metadata.id.clone(),
+                sha256: metadata.sha256.clone(),
+            },
+            sampler,
+        })),
+    })
+    .collect();
+    packet.required_capabilities = vec![
+        RenderCapabilityV1::PngImage,
+        RenderCapabilityV1::ScenePostEffect,
+    ];
+
+    let (texture, extent) = render_project_scene_post_effect_packet_with_assets(
+        &device,
+        &queue,
+        &mut renderer,
+        &packet,
+        &assets,
+    );
+    let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+    assert_eq!(
+        pixel(&rgba, extent.width, 8, 8),
+        [255, 255, 0, 255],
+        "the empty-geometry frame must bind the red first-pass and green second-pass PNGs independently"
+    );
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
 }
 
@@ -1386,6 +1503,7 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
         revision: 9,
         shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
         source: SOURCE.to_owned(),
+        texture_slot: false,
     };
     pollster::block_on(
         renderer.replace_scene_post_effect_sources(&device, std::slice::from_ref(&source)),
@@ -1401,6 +1519,7 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
             parameters: vec![],
             revision: source.revision,
             shader_id: source.shader_id.clone(),
+            texture: None,
         }];
         packet
             .required_capabilities

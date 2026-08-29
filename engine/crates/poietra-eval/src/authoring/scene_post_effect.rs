@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use poietra_scene_ir::{
     ContractVersionV1, MAX_SCENE_POST_EFFECTS_V1, PROJECT_SCENE_POST_EFFECT_SHADER_ID,
     ProvenanceOriginV1, ProvenanceRecordV1, RGB_SPLIT_POST_EFFECT_SHADER_ID,
-    RGB_SPLIT_POST_EFFECT_SHADER_REVISION, SceneCapabilityV1, SceneIrBundleV1, ScenePostEffectV1,
-    SceneSourceV1,
+    RGB_SPLIT_POST_EFFECT_SHADER_REVISION, SceneAppearanceV1, SceneCapabilityV1, SceneGeometryV1,
+    SceneIrBundleV1, SceneIrV1, ScenePostEffectV1, SceneSourceV1,
 };
 use serde::Deserialize;
 
@@ -37,9 +37,24 @@ pub enum ApplyStudioScenePostEffectError {
 }
 
 fn studio_effect_is_supported(effect: &ScenePostEffectV1) -> bool {
-    (effect.shader_id == RGB_SPLIT_POST_EFFECT_SHADER_ID
-        && effect.revision == RGB_SPLIT_POST_EFFECT_SHADER_REVISION)
-        || (effect.shader_id == PROJECT_SCENE_POST_EFFECT_SHADER_ID && effect.revision > 0)
+    let builtin = effect.shader_id == RGB_SPLIT_POST_EFFECT_SHADER_ID
+        && effect.revision == RGB_SPLIT_POST_EFFECT_SHADER_REVISION
+        && effect.texture.is_none();
+    let project = effect.shader_id == PROJECT_SCENE_POST_EFFECT_SHADER_ID && effect.revision > 0;
+    builtin || project
+}
+
+fn scene_uses_png(scene: &SceneIrV1) -> bool {
+    scene.post_effects.iter().any(|effect| effect.texture.is_some())
+        || scene.entities.iter().any(|entity| {
+            matches!(entity.geometry, SceneGeometryV1::Image { .. })
+                || matches!(
+                    &entity.appearance,
+                    SceneAppearanceV1::Vector { fill, stroke, .. }
+                        if fill.as_ref().and_then(|fill| fill.fragment_material.as_ref()).is_some_and(|material| material.texture.is_some())
+                            || stroke.as_ref().and_then(|stroke| stroke.fragment_material.as_ref()).is_some_and(|material| material.texture.is_some())
+                )
+        })
 }
 
 impl EngineSessionV1 {
@@ -96,6 +111,11 @@ impl EngineSessionV1 {
         } else {
             capabilities.insert(SceneCapabilityV1::ScenePostEffect);
         }
+        if scene_uses_png(&candidate.scene) {
+            capabilities.insert(SceneCapabilityV1::PngImage);
+        } else {
+            capabilities.remove(&SceneCapabilityV1::PngImage);
+        }
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
         candidate.scene.provenance.push(ProvenanceRecordV1 {
             evidence: vec!["Studio set the Scene-wide post-effect stack.".to_owned()],
@@ -133,6 +153,7 @@ mod tests {
             parameters: vec![6.0, 2.0, 0.5, 0.0],
             revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
             shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
         }
     }
 
@@ -179,6 +200,7 @@ mod tests {
                 parameters: vec![],
                 revision: 1,
                 shader_id: "unknown".to_owned(),
+                texture: None,
             }],
             expected_base_revision: BASE_REVISION.to_owned(),
             next_revision: NEXT_REVISION.to_owned(),
@@ -198,6 +220,7 @@ mod tests {
             parameters: vec![1.0, 2.0],
             revision: 7,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
         };
         let applied = session
             .apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
@@ -241,6 +264,7 @@ mod tests {
             parameters: vec![1.0, 2.0],
             revision: 7,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
         };
         let effects = vec![project, rgb_split()];
         let applied = session

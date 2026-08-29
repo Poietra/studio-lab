@@ -27,6 +27,7 @@ fn prepares_only_the_bounded_rgb_split_scene_post_effect() {
         parameters: vec![4.0, 2.0, 1.5, 0.25],
         revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
         shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+        texture: None,
     }];
     packet
         .required_capabilities
@@ -225,6 +226,18 @@ impl ScenePostEffectSupportV1 for ProjectScenePostEffect {
     }
 }
 
+struct TexturedProjectScenePostEffect;
+
+impl ScenePostEffectSupportV1 for TexturedProjectScenePostEffect {
+    fn supports_scene_post_effect(&self, shader_id: &str, revision: u32) -> bool {
+        shader_id == PROJECT_SCENE_POST_EFFECT_SHADER_ID && revision == 7
+    }
+
+    fn has_scene_post_effect_texture_slot(&self, shader_id: &str, revision: u32) -> bool {
+        self.supports_scene_post_effect(shader_id, revision)
+    }
+}
+
 #[test]
 fn resolves_custom_scene_post_effect_against_the_exact_installed_revision() {
     let mut packet = sampled_packet();
@@ -232,6 +245,7 @@ fn resolves_custom_scene_post_effect_against_the_exact_installed_revision() {
         parameters: vec![3.0],
         revision: 7,
         shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        texture: None,
     }];
     packet
         .required_capabilities
@@ -261,6 +275,100 @@ fn resolves_custom_scene_post_effect_against_the_exact_installed_revision() {
             &ProjectScenePostEffect,
         ),
         Err(PrepareFrameErrorV1::UnsupportedScenePostEffect { revision: 8, .. })
+    ));
+}
+
+#[test]
+fn resolves_scene_post_effect_texture_and_rejects_missing_or_mismatched_slots() {
+    let (metadata, decoded) = verified_rgba_png("asset:effect", 1, 1, &[255, 0, 0, 255]);
+    let resolver =
+        |sha256: &str| (sha256 == metadata.sha256).then(|| std::sync::Arc::clone(&decoded));
+    let mut packet = sampled_packet();
+    packet.post_effects = vec![ScenePostEffectV1 {
+        parameters: Vec::new(),
+        revision: 7,
+        shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        texture: Some(Box::new(FragmentMaterialTextureV1 {
+            asset: AssetReferenceV1 {
+                asset_id: metadata.id.clone(),
+                sha256: metadata.sha256.clone(),
+            },
+            sampler: ImageSamplerV1::Nearest,
+        })),
+    }];
+    packet.required_capabilities.extend([
+        RenderCapabilityV1::PngImage,
+        RenderCapabilityV1::ScenePostEffect,
+    ]);
+    packet.required_capabilities.sort_unstable();
+    let mut cache = PreparedGeometryCacheV1::default();
+
+    let prepared = prepare_frame_with_cache_assets_and_shader_sources_v1(
+        &packet,
+        &mut cache,
+        &resolver,
+        &NoFragmentMaterials,
+        &TexturedProjectScenePostEffect,
+    )
+    .expect("the exact auxiliary PNG and sampler must prepare");
+    let texture = prepared.scene_post_effects()[0]
+        .texture()
+        .expect("the prepared effect must retain its auxiliary image");
+    assert_eq!(texture.asset().sha256(), metadata.sha256.as_str());
+    assert_eq!(texture.sampler(), ImageSamplerV1::Nearest);
+
+    assert!(matches!(
+        prepare_frame_with_cache_assets_and_shader_sources_v1(
+            &packet,
+            &mut cache,
+            &NoAssets,
+            &NoFragmentMaterials,
+            &TexturedProjectScenePostEffect,
+        ),
+        Err(PrepareFrameErrorV1::MissingScenePostEffectTextureAsset { .. })
+    ));
+
+    packet.post_effects[0].texture = None;
+    packet
+        .required_capabilities
+        .retain(|capability| *capability != RenderCapabilityV1::PngImage);
+    assert!(matches!(
+        prepare_frame_with_cache_assets_and_shader_sources_v1(
+            &packet,
+            &mut cache,
+            &resolver,
+            &NoFragmentMaterials,
+            &TexturedProjectScenePostEffect,
+        ),
+        Err(PrepareFrameErrorV1::ScenePostEffectTextureMismatch {
+            expects_texture: true,
+            ..
+        })
+    ));
+
+    packet.post_effects[0].texture = Some(Box::new(FragmentMaterialTextureV1 {
+        asset: AssetReferenceV1 {
+            asset_id: metadata.id.clone(),
+            sha256: metadata.sha256.clone(),
+        },
+        sampler: ImageSamplerV1::Linear,
+    }));
+    packet
+        .required_capabilities
+        .push(RenderCapabilityV1::PngImage);
+    packet.required_capabilities.sort_unstable();
+    assert!(matches!(
+        prepare_frame_with_cache_assets_and_shader_sources_v1(
+            &packet,
+            &mut cache,
+            &resolver,
+            &NoFragmentMaterials,
+            &ProjectScenePostEffect,
+        ),
+        Err(PrepareFrameErrorV1::ScenePostEffectTextureMismatch {
+            expects_texture: false,
+            ..
+        })
     ));
 }
 

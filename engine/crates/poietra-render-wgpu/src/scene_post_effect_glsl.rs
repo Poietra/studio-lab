@@ -174,10 +174,16 @@ fn scene_sampler_matches(module: &Module, variable: &naga::GlobalVariable) -> bo
         )
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps the five fixed resource bindings in one closed admission match"
+)]
 fn validate_fragment_resources(
     source: &str,
     module: &Module,
-) -> Result<(), ScenePostEffectGlslError> {
+) -> Result<bool, ScenePostEffectGlslError> {
+    let mut auxiliary_samplers = 0_usize;
+    let mut auxiliary_textures = 0_usize;
     let mut host_uniforms = 0_usize;
     let mut scene_samplers = 0_usize;
     let mut scene_textures = 0_usize;
@@ -204,6 +210,20 @@ fn validate_fragment_resources(
             {
                 scene_samplers += 1;
             }
+            Some(binding)
+                if binding.group == 0
+                    && binding.binding == 3
+                    && scene_texture_matches(module, variable) =>
+            {
+                auxiliary_textures += 1;
+            }
+            Some(binding)
+                if binding.group == 0
+                    && binding.binding == 4
+                    && scene_sampler_matches(module, variable) =>
+            {
+                auxiliary_samplers += 1;
+            }
             None if variable.space == AddressSpace::Private => {}
             Some(binding) if binding.group == 0 && binding.binding == 0 => {
                 return Err(ScenePostEffectGlslError::named(
@@ -226,6 +246,20 @@ fn validate_fragment_resources(
                     "set 0 binding 2 must be one non-comparison sampler",
                 ));
             }
+            Some(binding) if binding.group == 0 && binding.binding == 3 => {
+                return Err(ScenePostEffectGlslError::named(
+                    source,
+                    variable.name.as_deref(),
+                    "set 0 binding 3 must be one sampled float texture2D auxiliary texture",
+                ));
+            }
+            Some(binding) if binding.group == 0 && binding.binding == 4 => {
+                return Err(ScenePostEffectGlslError::named(
+                    source,
+                    variable.name.as_deref(),
+                    "set 0 binding 4 must be one non-comparison auxiliary sampler",
+                ));
+            }
             _ => {
                 return Err(ScenePostEffectGlslError::named(
                     source,
@@ -241,7 +275,16 @@ fn validate_fragment_resources(
             "Scene post effects require exactly set 0 binding 0 host uniform and binding 1 texture2D Scene texture, with at most one set 0 binding 2 sampler",
         ));
     }
-    Ok(())
+    if auxiliary_textures > 1
+        || auxiliary_samplers > 1
+        || (auxiliary_textures == 1) != (auxiliary_samplers == 1)
+    {
+        return Err(ScenePostEffectGlslError::first(
+            source,
+            "auxiliary images require exactly set 0 binding 3 texture2D and binding 4 sampler",
+        ));
+    }
+    Ok(auxiliary_textures == 1)
 }
 
 /// Compiles one bounded Vulkan GLSL 450 Scene post effect to canonical WGSL.
@@ -307,7 +350,7 @@ pub fn compile_scene_post_effect_glsl(
     }
 
     validate_fragment_interface(source, &module)?;
-    validate_fragment_resources(source, &module)?;
+    let texture_slot = validate_fragment_resources(source, &module)?;
     let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
         .validate(&module)
         .map_err(|error| {
@@ -340,7 +383,7 @@ pub fn compile_scene_post_effect_glsl(
             ),
         ));
     }
-    validate_scene_post_effect_wgsl(&generated).map_err(|message| {
+    validate_scene_post_effect_wgsl(&generated, texture_slot).map_err(|message| {
         ScenePostEffectGlslError::first(
             source,
             format!("generated WGSL failed Scene post-effect admission: {message}"),
@@ -371,6 +414,23 @@ void main() {
 }
 ";
 
+    const TEXTURED: &str = r"#version 450
+layout(location = 0) out vec4 output_color;
+layout(set = 0, binding = 0, std140) uniform PoietraHost {
+    vec4 viewport_and_time;
+    vec4 parameters_0;
+    vec4 parameters_1;
+} host;
+layout(set = 0, binding = 1) uniform texture2D scene_texture;
+layout(set = 0, binding = 3) uniform texture2D auxiliary_texture;
+layout(set = 0, binding = 4) uniform sampler auxiliary_sampler;
+
+void main() {
+    vec2 uv = gl_FragCoord.xy / max(host.viewport_and_time.xy, vec2(1.0));
+    output_color = texture(sampler2D(auxiliary_texture, auxiliary_sampler), uv);
+}
+";
+
     #[test]
     fn compiles_the_fixed_scene_texture_profile_to_canonical_wgsl() {
         let compiled = compile_scene_post_effect_glsl(SUPPORTED, "main").unwrap();
@@ -381,7 +441,7 @@ void main() {
         assert!(compiled.contains("@group(0) @binding(2)"));
         assert!(compiled.contains("textureSample"));
         assert!(!compiled.contains("#version"));
-        assert!(validate_scene_post_effect_wgsl(&compiled).is_ok());
+        assert!(validate_scene_post_effect_wgsl(&compiled, false).is_ok());
     }
 
     #[test]
@@ -398,6 +458,20 @@ void main() {
         let compiled = compile_scene_post_effect_glsl(&legacy, "main").unwrap();
         assert!(compiled.contains("textureLoad"));
         assert!(!compiled.contains("@group(0) @binding(2)"));
+    }
+
+    #[test]
+    fn compiles_the_optional_auxiliary_texture_profile() {
+        let compiled = compile_scene_post_effect_glsl(TEXTURED, "main").unwrap();
+        assert!(compiled.contains("@group(0) @binding(3)"));
+        assert!(compiled.contains("@group(0) @binding(4)"));
+        assert!(validate_scene_post_effect_wgsl(&compiled, true).is_ok());
+
+        let missing_sampler = TEXTURED.replace(
+            "layout(set = 0, binding = 4) uniform sampler auxiliary_sampler;",
+            "",
+        );
+        assert!(compile_scene_post_effect_glsl(&missing_sampler, "main").is_err());
     }
 
     #[test]

@@ -356,6 +356,9 @@ fn validate_scene_post_effect(effect: &ScenePostEffectV1, path: &str, validator:
             validator.issue(parameter_path, "must fit the finite f32 range");
         }
     }
+    if let Some(texture) = &effect.texture {
+        validate_asset_reference(&texture.asset, &format!("{path}.texture.asset"), validator);
+    }
 }
 
 fn validate_scene_post_effects(
@@ -807,6 +810,13 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
     let mut capabilities = BTreeSet::new();
     if !scene.post_effects.is_empty() {
         capabilities.insert(SceneCapabilityV1::ScenePostEffect);
+    }
+    if scene
+        .post_effects
+        .iter()
+        .any(|effect| effect.texture.is_some())
+    {
+        capabilities.insert(SceneCapabilityV1::PngImage);
     }
     for entity in &scene.entities {
         capabilities.insert(match entity.geometry {
@@ -1691,6 +1701,13 @@ fn required_render_capabilities(packet: &RenderPacketV1) -> Vec<RenderCapability
     let mut capabilities = BTreeSet::new();
     if !packet.post_effects.is_empty() {
         capabilities.insert(RenderCapabilityV1::ScenePostEffect);
+    }
+    if packet
+        .post_effects
+        .iter()
+        .any(|effect| effect.texture.is_some())
+    {
+        capabilities.insert(RenderCapabilityV1::PngImage);
     }
     for draw in &packet.draws {
         match draw {

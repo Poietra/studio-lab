@@ -310,6 +310,8 @@ pub struct ScenePostEffectV1 {
     #[serde(deserialize_with = "deserialize_js_safe_u32")]
     pub revision: u32,
     pub shader_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texture: Option<Box<FragmentMaterialTextureV1>>,
 }
 
 /// Maximum number of ordered fullscreen passes retained by one Scene.

@@ -696,10 +696,14 @@ fn sample_camera(
 fn render_capabilities(
     draws: &[RenderDrawV1],
     has_scene_post_effect: bool,
+    has_scene_post_effect_texture: bool,
 ) -> Vec<RenderCapabilityV1> {
     let mut capabilities = BTreeSet::new();
     if has_scene_post_effect {
         capabilities.insert(RenderCapabilityV1::ScenePostEffect);
+    }
+    if has_scene_post_effect_texture {
+        capabilities.insert(RenderCapabilityV1::PngImage);
     }
     for draw in draws {
         match draw {
@@ -907,7 +911,15 @@ fn compile_render_packet_with_camera_fit_v1(
         },
         compositing: options.scene.compositing,
         coordinate_space: options.scene.coordinate_space.clone(),
-        required_capabilities: render_capabilities(&draws, !options.scene.post_effects.is_empty()),
+        required_capabilities: render_capabilities(
+            &draws,
+            !options.scene.post_effects.is_empty(),
+            options
+                .scene
+                .post_effects
+                .iter()
+                .any(|effect| effect.texture.is_some()),
+        ),
         draws,
         evidence: if options.evidence.is_empty() {
             vec!["Poietra reference evaluator v1".to_owned()]
@@ -1127,6 +1139,7 @@ mod tests {
             parameters: vec![4.0, 2.0, 1.5, 0.25],
             revision: poietra_scene_ir::RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
             shader_id: poietra_scene_ir::RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
         };
         scene.post_effects = vec![effect.clone()];
         scene
@@ -1155,6 +1168,13 @@ mod tests {
                 RenderCapabilityV1::ScenePostEffect,
             ]
         );
+    }
+
+    #[test]
+    fn derives_png_capability_for_a_textured_scene_post_effect_without_draws() {
+        let capabilities = render_capabilities(&[], true, true);
+        assert!(capabilities.contains(&RenderCapabilityV1::PngImage));
+        assert!(capabilities.contains(&RenderCapabilityV1::ScenePostEffect));
     }
 
     #[test]

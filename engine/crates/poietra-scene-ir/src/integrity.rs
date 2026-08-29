@@ -97,6 +97,16 @@ fn validate_scene_assets(
         issues,
     );
     let assets = asset_index(manifest);
+    for (index, effect) in scene.post_effects.iter().enumerate() {
+        if let Some(texture) = &effect.texture {
+            validate_asset_reference(
+                &texture.asset,
+                &assets,
+                &format!("{scene_prefix}.postEffects[{index}].texture.asset"),
+                issues,
+            );
+        }
+    }
     for (index, entity) in scene.entities.iter().enumerate() {
         if let SceneGeometryV1::Image { asset, .. } = &entity.geometry {
             validate_asset_reference(
@@ -184,6 +194,16 @@ fn validate_packet_assets(
         issues,
     );
     let assets = asset_index(manifest);
+    for (index, effect) in packet.post_effects.iter().enumerate() {
+        if let Some(texture) = &effect.texture {
+            validate_asset_reference(
+                &texture.asset,
+                &assets,
+                &format!("{packet_prefix}.postEffects[{index}].texture.asset"),
+                issues,
+            );
+        }
+    }
     for (index, draw) in packet.draws.iter().enumerate() {
         if let RenderDrawV1::Image { asset, .. } = draw {
             validate_asset_reference(
