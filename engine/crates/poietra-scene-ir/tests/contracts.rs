@@ -895,6 +895,120 @@ fn fragment_material_contract_is_bounded_and_linear_light_only() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one contract proof covers valid independent tracks and both fail-closed mutations"
+)]
+fn fragment_material_parameter_channels_are_independent_and_fail_closed() {
+    let material = FragmentMaterialV1 {
+        parameters: vec![0.25, 8.0],
+        revision: 1,
+        shader_id: "project-wave".to_owned(),
+        texture: None,
+    };
+    let mut scene = empty_scene();
+    scene.entities.push(SceneEntityV1 {
+        appearance: SceneAppearanceV1::Vector {
+            fill: Some(FillStyleV1 {
+                color: black(),
+                fragment_material: Some(material.clone()),
+                rule: FillRuleV1::NonZero,
+            }),
+            opacity: 1.0,
+            stroke: None,
+        },
+        geometry: SceneGeometryV1::Circle {
+            center: PointV1 { x: 0.0, y: 0.0 },
+            radius: 1.0,
+        },
+        id: "shape".to_owned(),
+        lifetimes: vec![IntervalV1 {
+            end: scene.duration,
+            start: 0.0,
+        }],
+        parent_id: None,
+        provenance_id: "fixture:root".to_owned(),
+        scene_order: 0,
+        source_z_index: 0.0,
+        transform: AffineTransformV1::identity(),
+        visible: true,
+    });
+    scene.animation_channels = vec![
+        AnimationChannelV1::FragmentMaterialParameter {
+            entity_id: "shape".to_owned(),
+            id: "material:amplitude".to_owned(),
+            keyframes: vec![
+                KeyframeV1 {
+                    at: 0.25,
+                    easing_to_next: Some(EasingV1::ManimSmooth {}),
+                    value: 0.25,
+                },
+                KeyframeV1 {
+                    at: 1.0,
+                    easing_to_next: None,
+                    value: 0.75,
+                },
+            ],
+            material: material.clone(),
+            paint_target: FragmentMaterialPaintTargetV1::Fill,
+            parameter_index: 0,
+            provenance_id: "fixture:root".to_owned(),
+        },
+        AnimationChannelV1::FragmentMaterialParameter {
+            entity_id: "shape".to_owned(),
+            id: "material:frequency".to_owned(),
+            keyframes: vec![
+                KeyframeV1 {
+                    at: 0.5,
+                    easing_to_next: Some(EasingV1::Linear {}),
+                    value: 8.0,
+                },
+                KeyframeV1 {
+                    at: 1.5,
+                    easing_to_next: None,
+                    value: 12.0,
+                },
+            ],
+            material: material.clone(),
+            paint_target: FragmentMaterialPaintTargetV1::Fill,
+            parameter_index: 1,
+            provenance_id: "fixture:root".to_owned(),
+        },
+    ];
+    scene.required_capabilities = vec![
+        SceneCapabilityV1::FragmentMaterial,
+        SceneCapabilityV1::FragmentMaterialParameterAnimation,
+        SceneCapabilityV1::ShapePrimitives,
+    ];
+    validate_scene_ir_v1(&scene).unwrap();
+
+    let mut duplicate = scene.clone();
+    duplicate.animation_channels[1] = duplicate.animation_channels[0].clone();
+    if let AnimationChannelV1::FragmentMaterialParameter { id, .. } =
+        &mut duplicate.animation_channels[1]
+    {
+        *id = "material:amplitude:duplicate".to_owned();
+    }
+    assert!(
+        validate_scene_ir_v1(&duplicate)
+            .unwrap_err()
+            .contains_message("duplicate animation channel target")
+    );
+
+    let mut stale_identity = scene;
+    if let AnimationChannelV1::FragmentMaterialParameter { material, .. } =
+        &mut stale_identity.animation_channels[1]
+    {
+        material.revision = 2;
+    }
+    assert!(
+        validate_scene_ir_v1(&stale_identity)
+            .unwrap_err()
+            .contains_message("must exactly match the selected paint's static fragment material")
+    );
+}
+
+#[test]
 fn fragment_material_wire_fixture_is_emitted_by_the_rust_contract() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../../fixtures/engine-v1/shared-fragment-material.json");

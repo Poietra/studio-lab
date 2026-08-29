@@ -355,6 +355,42 @@ describe("Poietra Engine v1 contracts", () => {
     ).toBe(false);
   });
 
+  it("decodes the renderer-neutral fragment material scalar animation channel", async () => {
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const material = { parameters: [0.35, 8], revision: 1, shaderId: "project-wave" } as const;
+    const channel = {
+      entityId: "circle",
+      id: "circle-material-speed",
+      keyframes: [
+        { at: 0, easingToNext: { kind: "linear" }, value: 0.35 },
+        { at: 2, easingToNext: null, value: 1.5 },
+      ],
+      kind: "fragment-material-parameter",
+      material,
+      paintTarget: "fill",
+      parameterIndex: 0,
+      provenanceId: "fixture",
+    } as const;
+    const withTrack = {
+      ...validScene,
+      animationChannels: [...validScene.animationChannels, channel],
+      requiredCapabilities: [
+        ...validScene.requiredCapabilities,
+        "fragment-material",
+        "fragment-material-parameter-animation",
+      ],
+    };
+
+    expect(sceneIrV1Schema.safeParse(withTrack).success).toBe(true);
+    expect(
+      sceneIrV1Schema.safeParse({
+        ...withTrack,
+        animationChannels: [...validScene.animationChannels, { ...channel, parameterIndex: 8 }],
+      }).success,
+    ).toBe(false);
+  });
+
   it("delegates Scene semantic invariants to the Rust core", async () => {
     const assets = await manifest();
     const validScene = scene(assets);

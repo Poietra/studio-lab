@@ -299,6 +299,14 @@ pub struct FragmentMaterialV1 {
     pub texture: Option<Box<FragmentMaterialTextureV1>>,
 }
 
+/// The vector paint whose fragment-material parameter is animated.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum FragmentMaterialPaintTargetV1 {
+    Fill,
+    Stroke,
+}
+
 /// One bounded Scene-wide fragment pass applied after the composited frame.
 ///
 /// Scene IR carries only the admitted shader identity and uniform values. The
@@ -677,6 +685,23 @@ pub enum AnimationChannelV1 {
         #[serde(rename = "provenanceId")]
         provenance_id: String,
     },
+    #[serde(rename = "fragment-material-parameter")]
+    FragmentMaterialParameter {
+        #[serde(rename = "entityId")]
+        entity_id: String,
+        id: String,
+        keyframes: Vec<KeyframeV1<f64>>,
+        material: FragmentMaterialV1,
+        #[serde(rename = "paintTarget")]
+        paint_target: FragmentMaterialPaintTargetV1,
+        #[serde(
+            rename = "parameterIndex",
+            deserialize_with = "deserialize_js_safe_u32"
+        )]
+        parameter_index: u32,
+        #[serde(rename = "provenanceId")]
+        provenance_id: String,
+    },
     #[serde(rename = "motion-path")]
     MotionPath {
         #[serde(rename = "entityId")]
@@ -726,6 +751,7 @@ impl AnimationChannelV1 {
             | Self::PathTrim { id, .. }
             | Self::PathMorph { id, .. }
             | Self::VectorAppearance { id, .. }
+            | Self::FragmentMaterialParameter { id, .. }
             | Self::MotionPath { id, .. }
             | Self::Camera { id, .. }
             | Self::ScenePostEffectParameter { id, .. } => id,
@@ -741,6 +767,7 @@ impl AnimationChannelV1 {
             | Self::PathTrim { provenance_id, .. }
             | Self::PathMorph { provenance_id, .. }
             | Self::VectorAppearance { provenance_id, .. }
+            | Self::FragmentMaterialParameter { provenance_id, .. }
             | Self::MotionPath { provenance_id, .. }
             | Self::Camera { provenance_id, .. }
             | Self::ScenePostEffectParameter { provenance_id, .. } => provenance_id,
@@ -756,6 +783,7 @@ impl AnimationChannelV1 {
             | Self::PathTrim { entity_id, .. }
             | Self::PathMorph { entity_id, .. }
             | Self::VectorAppearance { entity_id, .. }
+            | Self::FragmentMaterialParameter { entity_id, .. }
             | Self::MotionPath { entity_id, .. } => Some(entity_id),
             Self::Camera { .. } | Self::ScenePostEffectParameter { .. } => None,
         }
@@ -770,6 +798,7 @@ impl AnimationChannelV1 {
             Self::PathTrim { .. } => "path-trim",
             Self::PathMorph { .. } => "path-morph",
             Self::VectorAppearance { .. } => "vector-appearance",
+            Self::FragmentMaterialParameter { .. } => "fragment-material-parameter",
             Self::MotionPath { .. } => "motion-path",
             Self::Camera { .. } => "camera",
             Self::ScenePostEffectParameter { .. } => "scene-post-effect-parameter",
@@ -861,6 +890,8 @@ pub enum SceneCapabilityV1 {
     CubicPathGeometry,
     #[serde(rename = "fragment-material")]
     FragmentMaterial,
+    #[serde(rename = "fragment-material-parameter-animation")]
+    FragmentMaterialParameterAnimation,
     #[serde(rename = "logical-group")]
     LogicalGroup,
     #[serde(rename = "motion-path-animation")]

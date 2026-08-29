@@ -187,39 +187,50 @@ fn validate_scene_assets(
         }
     }
     for (channel_index, channel) in scene.animation_channels.iter().enumerate() {
-        let AnimationChannelV1::VectorAppearance { keyframes, .. } = channel else {
-            continue;
-        };
-        for (keyframe_index, keyframe) in keyframes.iter().enumerate() {
-            for (paint_name, material) in [
-                (
-                    "fill",
-                    keyframe
-                        .value
-                        .fill
-                        .as_ref()
-                        .and_then(|fill| fill.fragment_material.as_ref()),
-                ),
-                (
-                    "stroke",
-                    keyframe
-                        .value
-                        .stroke
-                        .as_ref()
-                        .and_then(|stroke| stroke.fragment_material.as_ref()),
-                ),
-            ] {
-                if let Some(texture) = material.and_then(|material| material.texture.as_ref()) {
-                    validate_asset_reference(
-                        &texture.asset,
-                        &assets,
-                        &format!(
-                            "{scene_prefix}.animationChannels[{channel_index}].keyframes[{keyframe_index}].value.{paint_name}.fragmentMaterial.texture.asset"
-                        ),
-                        issues,
-                    );
+        if let AnimationChannelV1::VectorAppearance { keyframes, .. } = channel {
+            for (keyframe_index, keyframe) in keyframes.iter().enumerate() {
+                for (paint_name, material) in [
+                    (
+                        "fill",
+                        keyframe
+                            .value
+                            .fill
+                            .as_ref()
+                            .and_then(|fill| fill.fragment_material.as_ref()),
+                    ),
+                    (
+                        "stroke",
+                        keyframe
+                            .value
+                            .stroke
+                            .as_ref()
+                            .and_then(|stroke| stroke.fragment_material.as_ref()),
+                    ),
+                ] {
+                    if let Some(texture) = material.and_then(|material| material.texture.as_ref()) {
+                        validate_asset_reference(
+                            &texture.asset,
+                            &assets,
+                            &format!(
+                                "{scene_prefix}.animationChannels[{channel_index}].keyframes[{keyframe_index}].value.{paint_name}.fragmentMaterial.texture.asset"
+                            ),
+                            issues,
+                        );
+                    }
                 }
             }
+        }
+        if let AnimationChannelV1::FragmentMaterialParameter { material, .. } = channel
+            && let Some(texture) = &material.texture
+        {
+            validate_asset_reference(
+                &texture.asset,
+                &assets,
+                &format!(
+                    "{scene_prefix}.animationChannels[{channel_index}].material.texture.asset"
+                ),
+                issues,
+            );
         }
     }
 }
@@ -417,7 +428,10 @@ fn validate_render_packet_for_scene(
         .animation_channels
         .iter()
         .filter_map(|channel| match channel {
-            AnimationChannelV1::VectorAppearance { entity_id, .. } => Some(entity_id.as_str()),
+            AnimationChannelV1::VectorAppearance { entity_id, .. }
+            | AnimationChannelV1::FragmentMaterialParameter { entity_id, .. } => {
+                Some(entity_id.as_str())
+            }
             _ => None,
         })
         .collect();

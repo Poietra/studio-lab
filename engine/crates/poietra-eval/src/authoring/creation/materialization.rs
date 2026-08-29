@@ -10,20 +10,21 @@ use super::{
     CreateSceneEntityPathMorph, CreateSceneEntityTextGlyphMorph, CreateSceneEntityTextGlyphOrigin,
     CreateSceneEntityTextMorph, CreateSceneEntityWriteFragment, CreateSceneEntityWriteIn,
     CreateSceneEntityWritePlan, CreateScenePathMotion, CubicPathV1, EasingV1, EngineSessionV1,
-    FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1, IntervalV1, KeyframeV1,
-    MAX_STROKE_DASH_WORLD_V1, MAX_STUDIO_STROKE_WIDTH_WORLD, MIN_STROKE_DASH_WORLD_V1,
-    MIN_STUDIO_STROKE_WIDTH_WORLD, PathTrimParameterizationV1, PlannedSceneMotion,
-    PlannedStudioCameraAnimation, PlannedStudioCreationEntity, PlannedStudioLogicalGroup, PointV1,
-    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SEGMENTED_MATH_TEX_MAX_FRAGMENTS,
-    SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES, STUDIO_WRITE_MAX_CUBIC_SEGMENTS,
-    STUDIO_WRITE_MAX_FRAGMENTS, STUDIO_WRITE_OUTLINE_STROKE_WIDTH, STUDIO_WRITE_PHASE_BOUNDARY,
-    SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1,
-    SceneIrBundleV1, SceneSourceV1, StudioAuthoringDimensions, StudioAuthoringEditResult,
-    StudioAuthoringEntityKind, StudioCreationMathTexOutline, StudioCreationSegmentedMathTexOutline,
-    StudioCreationSegmentedMathTexRepresentation, StudioCreationSegmentedMathTexSourceCorrelation,
+    FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialPaintTargetV1, IntervalV1, KeyframeV1,
+    MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, MAX_STROKE_DASH_WORLD_V1, MAX_STUDIO_STROKE_WIDTH_WORLD,
+    MIN_STROKE_DASH_WORLD_V1, MIN_STUDIO_STROKE_WIDTH_WORLD, PathTrimParameterizationV1,
+    PlannedSceneMotion, PlannedStudioCameraAnimation, PlannedStudioCreationEntity,
+    PlannedStudioLogicalGroup, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
+    SEGMENTED_MATH_TEX_MAX_FRAGMENTS, SEGMENTED_MATH_TEX_MAX_SOURCE_BYTES,
+    STUDIO_WRITE_MAX_CUBIC_SEGMENTS, STUDIO_WRITE_MAX_FRAGMENTS, STUDIO_WRITE_OUTLINE_STROKE_WIDTH,
+    STUDIO_WRITE_PHASE_BOUNDARY, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1,
+    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StudioAuthoringDimensions,
+    StudioAuthoringEditResult, StudioAuthoringEntityKind, StudioCreationMathTexOutline,
+    StudioCreationSegmentedMathTexOutline, StudioCreationSegmentedMathTexRepresentation,
+    StudioCreationSegmentedMathTexSourceCorrelation,
     StudioCreationSegmentedMathTexSourceCorrelationKind, StudioCreationShapeState,
     StudioCreationSpatialContext, StudioCreationTextOutline, StudioCreationTextOutlineFragment,
-    StudioPaintColorProperty, StudioPersistentRemoveProjection,
+    StudioMaterialParameterTrack, StudioPaintColorProperty, StudioPersistentRemoveProjection,
     StudioTextOutlineSourceCorrelationKind, TIMELINE_ANCHOR_EPSILON, VecDeque,
     VectorAppearanceValueV1, align_cubic_path_morph_chain, append_planned_scene_motions,
     apply_persistent_scene_removals, apply_world_rotation, authored_motion_easing,
@@ -72,11 +73,11 @@ pub(super) fn create_entity_has_only_initial_solid_glyph_fill(entity: &CreateSce
 }
 
 fn create_entity_open_stroke_material_parameter_track_is_valid(entity: &CreateSceneEntity) -> bool {
-    !entity.material_parameter_keyframes.is_empty()
+    !entity.material_parameter_tracks.is_empty()
         && entity
-            .material_parameter_keyframes
+            .material_parameter_tracks
             .iter()
-            .all(|keyframe| keyframe.value.texture.is_none())
+            .all(|track| track.material.texture.is_none())
         && match &entity.geometry {
             CreateSceneEntityGeometry::Line => true,
             CreateSceneEntityGeometry::CubicBezier {
@@ -99,7 +100,7 @@ pub(super) fn create_entity_draw_is_valid(entity: &CreateSceneEntity) -> bool {
             && draw.end <= entity.lifetime.end
             && entity.fade_in.is_none()
             && entity.fill_color.is_none()
-            && (entity.material_parameter_keyframes.is_empty()
+            && (entity.material_parameter_tracks.is_empty()
                 || create_entity_open_stroke_material_parameter_track_is_valid(entity))
             && matches!(draw.easing, EasingV1::Linear {} | EasingV1::ManimSmooth {})
             && match &entity.geometry {
@@ -381,13 +382,13 @@ fn create_entity_paint_color_baseline(
 }
 
 fn create_entity_write_fill_material_parameter_track_is_valid(entity: &CreateSceneEntity) -> bool {
-    !entity.material_parameter_keyframes.is_empty()
+    !entity.material_parameter_tracks.is_empty()
         && entity.write_in.is_some()
         && matches!(entity.geometry, CreateSceneEntityGeometry::LogicalGroup)
         && entity
-            .material_parameter_keyframes
+            .material_parameter_tracks
             .iter()
-            .all(|keyframe| keyframe.value.texture.is_none())
+            .all(|track| track.material.texture.is_none())
 }
 
 fn create_entity_paint_color_keyframes_are_valid(entity: &CreateSceneEntity) -> bool {
@@ -405,7 +406,7 @@ fn create_entity_paint_color_keyframes_are_valid(entity: &CreateSceneEntity) -> 
                 });
         (2..=32).contains(&track.keyframes.len())
             && first_matches_baseline
-            && entity.material_parameter_keyframes.is_empty()
+            && entity.material_parameter_tracks.is_empty()
             && entity.write_in.is_none()
             && track.keyframes.iter().enumerate().all(|(index, keyframe)| {
                 keyframe.at.is_finite()
@@ -470,6 +471,10 @@ fn create_entity_fragment_material_targets_fill(
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps the closed creation-property validation gate visible as one atomic predicate"
+)]
 pub(super) fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEntity) -> bool {
     let opacity_is_valid = entity.opacity_keyframes.iter().all(|keyframe| {
         keyframe.at.is_finite()
@@ -484,21 +489,41 @@ pub(super) fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEnt
     let base_has_material_paint = create_entity_fragment_material_targets_fill(&entity.geometry)
         .is_some()
         || create_entity_write_fill_material_parameter_track_is_valid(entity);
-    let material_is_valid = entity.material_parameter_keyframes.iter().all(|keyframe| {
-        keyframe.at.is_finite()
-            && keyframe.at >= entity.lifetime.start
-            && keyframe.at <= entity.lifetime.end
-            && !keyframe.value.parameters.is_empty()
-            && keyframe
-                .value
-                .parameters
-                .iter()
-                .all(|value| value.is_finite())
-    }) && entity
-        .material_parameter_keyframes
-        .windows(2)
-        .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
-        && (entity.material_parameter_keyframes.is_empty() || base_has_material_paint);
+    let mut material_parameter_targets = BTreeSet::new();
+    let material_baseline = entity
+        .material_parameter_tracks
+        .first()
+        .map(|track| &track.material);
+    let material_is_valid = entity.material_parameter_tracks.len()
+        <= MAX_FRAGMENT_MATERIAL_PARAMETERS_V1
+        && entity.material_parameter_tracks.iter().all(|track| {
+            material_parameter_targets.insert(track.parameter_index)
+                && material_baseline.is_some_and(|baseline| baseline == &track.material)
+                && track
+                    .material
+                    .parameters
+                    .get(track.parameter_index)
+                    .zip(track.keyframes.first())
+                    .is_some_and(|(baseline, first)| baseline.to_bits() == first.value.to_bits())
+                && !track.material.parameters.is_empty()
+                && track.material.parameters.len() <= MAX_FRAGMENT_MATERIAL_PARAMETERS_V1
+                && track
+                    .material
+                    .parameters
+                    .iter()
+                    .all(|value| value.is_finite())
+                && track.keyframes.iter().all(|keyframe| {
+                    keyframe.at.is_finite()
+                        && keyframe.at >= entity.lifetime.start
+                        && keyframe.at <= entity.lifetime.end
+                        && keyframe.value.is_finite()
+                })
+                && track
+                    .keyframes
+                    .windows(2)
+                    .all(|pair| pair[1].at > pair[0].at + TIMELINE_ANCHOR_EPSILON)
+        })
+        && (entity.material_parameter_tracks.is_empty() || base_has_material_paint);
     let scale_is_valid = entity.uniform_scale_keyframes.iter().all(|keyframe| {
         keyframe.at.is_finite()
             && keyframe.at >= entity.lifetime.start
@@ -532,16 +557,15 @@ pub(super) fn create_entity_property_keyframes_are_valid(entity: &CreateSceneEnt
                 .opacity_keyframes
                 .first()
                 .is_none_or(|keyframe| keyframe.at > appearance_end + TIMELINE_ANCHOR_EPSILON)
-                && entity
-                    .material_parameter_keyframes
-                    .first()
-                    .is_none_or(|keyframe| {
+                && entity.material_parameter_tracks.iter().all(|track| {
+                    track.keyframes.first().is_none_or(|keyframe| {
                         keyframe.at > appearance_end + TIMELINE_ANCHOR_EPSILON
                             || (entity.draw_in.is_some()
                                 && create_entity_open_stroke_material_parameter_track_is_valid(
                                     entity,
                                 ))
                     })
+                })
                 && entity
                     .uniform_scale_keyframes
                     .first()
@@ -786,7 +810,7 @@ pub(super) fn validate_create_scene_entities_command(
             || !create_entity_draw_is_valid(entity)
             || !create_entity_write_is_valid(entity)
             || !create_entity_property_keyframes_are_valid(entity)
-            || (!entity.material_parameter_keyframes.is_empty()
+            || (!entity.material_parameter_tracks.is_empty()
                 && has_color_override
                 && !create_entity_open_stroke_material_parameter_track_is_valid(entity)
                 && !create_entity_write_fill_material_parameter_track_is_valid(entity))
@@ -854,7 +878,7 @@ pub(super) fn append_created_write_fragments(
     write: CreateSceneEntityWriteIn,
     text_morph: Option<&CreateSceneEntityTextMorph>,
     solid_fill_color: Option<&RgbaColorV1>,
-    material_parameter_keyframes: &[KeyframeV1<FragmentMaterialV1>],
+    material_parameter_tracks: &[StudioMaterialParameterTrack],
     provenance_id: &str,
     first_scene_order: u32,
     source_z_index: f64,
@@ -874,8 +898,14 @@ pub(super) fn append_created_write_fragments(
         SceneCapabilityV1::PathTrimAnimation,
         SceneCapabilityV1::VectorAppearanceAnimation,
     ]);
-    if !material_parameter_keyframes.is_empty() {
+    if !material_parameter_tracks.is_empty() {
         capabilities.insert(SceneCapabilityV1::FragmentMaterial);
+        if material_parameter_tracks
+            .iter()
+            .any(|track| track.keyframes.len() >= 2)
+        {
+            capabilities.insert(SceneCapabilityV1::FragmentMaterialParameterAnimation);
+        }
     }
 
     for fragment in write.fragments {
@@ -965,9 +995,9 @@ pub(super) fn append_created_write_fragments(
 
         let mut transparent_paint = paint.clone();
         transparent_paint.alpha = 0.0;
-        let initial_material = material_parameter_keyframes
+        let initial_material = material_parameter_tracks
             .first()
-            .map(|keyframe| keyframe.value.clone());
+            .map(|track| track.material.clone());
         let initial_fill = FillStyleV1 {
             color: transparent_paint,
             fragment_material: initial_material.clone(),
@@ -1005,7 +1035,7 @@ pub(super) fn append_created_write_fragments(
             .ok_or(CreateSceneEntitiesError::InvalidHierarchy)?;
         let mut final_stroke = stroke.clone();
         final_stroke.width_world = 0.0;
-        let mut appearance_keyframes = vec![
+        let appearance_keyframes = vec![
             KeyframeV1 {
                 at: phase_boundary,
                 easing_to_next: Some(write.easing.clone()),
@@ -1023,24 +1053,6 @@ pub(super) fn append_created_write_fragments(
                 },
             },
         ];
-        if material_parameter_keyframes.len() >= 2 {
-            appearance_keyframes
-                .last_mut()
-                .expect("Write fill has a settled keyframe")
-                .easing_to_next = Some(EasingV1::Linear {});
-            appearance_keyframes.extend(material_parameter_keyframes.iter().map(|keyframe| {
-                let mut fill = final_fill.clone();
-                fill.fragment_material = Some(keyframe.value.clone());
-                KeyframeV1 {
-                    at: keyframe.at,
-                    easing_to_next: keyframe.easing_to_next.clone(),
-                    value: VectorAppearanceValueV1 {
-                        fill: Some(fill),
-                        stroke: Some(final_stroke.clone()),
-                    },
-                }
-            }));
-        }
         scene
             .animation_channels
             .push(AnimationChannelV1::VectorAppearance {
@@ -1049,6 +1061,29 @@ pub(super) fn append_created_write_fragments(
                 keyframes: appearance_keyframes,
                 provenance_id: provenance_id.to_owned(),
             });
+        for track in material_parameter_tracks
+            .iter()
+            .filter(|track| track.keyframes.len() >= 2)
+        {
+            scene
+                .animation_channels
+                .push(AnimationChannelV1::FragmentMaterialParameter {
+                    entity_id: fill_id.clone(),
+                    id: unused_channel_id(
+                        scene,
+                        &format!(
+                            "studio-write-fill-material-{scene_order}-{}",
+                            track.parameter_index
+                        ),
+                    ),
+                    keyframes: track.keyframes.clone(),
+                    material: track.material.clone(),
+                    paint_target: FragmentMaterialPaintTargetV1::Fill,
+                    parameter_index: u32::try_from(track.parameter_index)
+                        .map_err(|_| CreateSceneEntitiesError::InvalidAppearanceEdit)?,
+                    provenance_id: provenance_id.to_owned(),
+                });
+        }
         if let Some(glyph) = glyph_morph {
             append_text_glyph_channels(scene, &fill_id, glyph, provenance_id, capabilities);
         }
@@ -1476,18 +1511,18 @@ pub(super) fn append_created_entity(
     let solid_fill_color = entity.fill_color.clone();
     let paint_color_track = entity.paint_color_track.clone();
     let has_initial_solid_glyph_fill = create_entity_has_initial_solid_glyph_fill(&entity);
-    let has_material_parameter_keyframes = !entity.material_parameter_keyframes.is_empty();
+    let has_material_parameter_tracks = !entity.material_parameter_tracks.is_empty();
     let has_write_fill_material_parameter_track =
         create_entity_write_fill_material_parameter_track_is_valid(&entity);
-    let write_material_parameter_keyframes = if has_write_fill_material_parameter_track {
-        entity.material_parameter_keyframes.clone()
+    let write_material_parameter_tracks = if has_write_fill_material_parameter_track {
+        entity.material_parameter_tracks.clone()
     } else {
         Vec::new()
     };
     let has_open_stroke_material_parameter_track =
         create_entity_open_stroke_material_parameter_track_is_valid(&entity);
     let material_targets_fill =
-        if has_material_parameter_keyframes && !has_write_fill_material_parameter_track {
+        if has_material_parameter_tracks && !has_write_fill_material_parameter_track {
             Some(
                 create_entity_fragment_material_targets_fill(&entity.geometry)
                     .ok_or(CreateSceneEntitiesError::InvalidAppearanceEdit)?,
@@ -1567,7 +1602,7 @@ pub(super) fn append_created_entity(
         stroke.gap_length_world = Some(dash.gap_length);
     }
     if let Some(first) = entity
-        .material_parameter_keyframes
+        .material_parameter_tracks
         .first()
         .filter(|_| !has_write_fill_material_parameter_track)
     {
@@ -1578,9 +1613,9 @@ pub(super) fn append_created_entity(
             let Some(fill) = fill else {
                 return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
             };
-            fill.fragment_material = Some(first.value.clone());
+            fill.fragment_material = Some(first.material.clone());
         } else if let Some(stroke) = stroke {
-            stroke.fragment_material = Some(first.value.clone());
+            stroke.fragment_material = Some(first.material.clone());
         } else {
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         }
@@ -1661,7 +1696,7 @@ pub(super) fn append_created_entity(
             provenance_id: provenance_id.to_owned(),
         });
     }
-    if has_material_parameter_keyframes && !has_write_fill_material_parameter_track {
+    if has_material_parameter_tracks && !has_write_fill_material_parameter_track {
         let SceneAppearanceV1::Vector { fill, stroke, .. } = appearance.clone() else {
             return Err(CreateSceneEntitiesError::InvalidAppearanceEdit);
         };
@@ -1670,45 +1705,39 @@ pub(super) fn append_created_entity(
         }
         capabilities.insert(SceneCapabilityV1::FragmentMaterial);
         if entity
-            .material_parameter_keyframes
+            .material_parameter_tracks
             .iter()
-            .any(|keyframe| keyframe.value.texture.is_some())
+            .any(|track| track.material.texture.is_some())
         {
             capabilities.insert(SceneCapabilityV1::PngImage);
         }
-        if entity.material_parameter_keyframes.len() >= 2 {
-            let keyframes = entity
-                .material_parameter_keyframes
-                .into_iter()
-                .map(|keyframe| {
-                    let mut fill = fill.clone();
-                    let mut stroke = stroke.clone();
-                    if material_targets_fill == Some(true) {
-                        fill.as_mut()
-                            .expect("fill target was checked")
-                            .fragment_material = Some(keyframe.value);
-                    } else {
-                        stroke
-                            .as_mut()
-                            .expect("stroke target was checked")
-                            .fragment_material = Some(keyframe.value);
-                    }
-                    KeyframeV1 {
-                        at: keyframe.at,
-                        easing_to_next: keyframe.easing_to_next,
-                        value: VectorAppearanceValueV1 { fill, stroke },
-                    }
-                })
-                .collect();
-            capabilities.insert(SceneCapabilityV1::VectorAppearanceAnimation);
-            let channel_id =
-                unused_channel_id(scene, &format!("studio-material-parameter-{scene_order}"));
+        for track in entity
+            .material_parameter_tracks
+            .into_iter()
+            .filter(|track| track.keyframes.len() >= 2)
+        {
+            capabilities.insert(SceneCapabilityV1::FragmentMaterialParameterAnimation);
+            let channel_id = unused_channel_id(
+                scene,
+                &format!(
+                    "studio-material-parameter-{scene_order}-{}",
+                    track.parameter_index
+                ),
+            );
             scene
                 .animation_channels
-                .push(AnimationChannelV1::VectorAppearance {
+                .push(AnimationChannelV1::FragmentMaterialParameter {
                     entity_id: created_id.clone(),
                     id: channel_id,
-                    keyframes,
+                    keyframes: track.keyframes,
+                    material: track.material,
+                    paint_target: if material_targets_fill == Some(true) {
+                        FragmentMaterialPaintTargetV1::Fill
+                    } else {
+                        FragmentMaterialPaintTargetV1::Stroke
+                    },
+                    parameter_index: u32::try_from(track.parameter_index)
+                        .map_err(|_| CreateSceneEntitiesError::InvalidAppearanceEdit)?,
                     provenance_id: provenance_id.to_owned(),
                 });
         }
@@ -1827,7 +1856,7 @@ pub(super) fn append_created_entity(
     }
     if let Some(at) = entity.appearance_at {
         if paint_color_track.is_none()
-            && !has_material_parameter_keyframes
+            && !has_material_parameter_tracks
             && (!close_transform_baseline_value(entity.paint_opacity, 1.0)
                 || entity.fill_color.is_some()
                 || entity.stroke_color.is_some())
@@ -2001,7 +2030,7 @@ pub(super) fn append_created_entity(
             write,
             text_morph.as_ref(),
             solid_fill_color.as_ref(),
-            &write_material_parameter_keyframes,
+            &write_material_parameter_tracks,
             provenance_id,
             scene_order
                 .checked_add(1)
@@ -2989,7 +3018,7 @@ impl EngineSessionV1 {
                 id: state.spec.id.clone(),
                 instant_transform,
                 lifetime: state.lifetime.clone(),
-                material_parameter_keyframes: state.material_parameter_keyframes.clone(),
+                material_parameter_tracks: state.material_parameter_tracks.clone(),
                 math_tex_morph,
                 opacity_keyframes: state.opacity_keyframes.clone(),
                 paint_color_track: state.paint_color_track.clone(),

@@ -4,7 +4,7 @@ use super::super::{
     BTreeSet, ProjectStudioCreationEditError, SceneEditExecution, SceneEditScheduleMode,
     StudioAuthoringOrigin, StudioCreationEditInput, StudioCreationOperation,
     StudioCreationOperationKind, StudioCreationTimelinePlan, StudioPaintColorProperty,
-    StudioPropertyEasing, TIMELINE_ANCHOR_EPSILON, closed_studio_material_parameter_track,
+    StudioPropertyEasing, TIMELINE_ANCHOR_EPSILON, closed_studio_material_parameter_tracks,
     closed_studio_opacity_track, closed_studio_rotation_track, closed_studio_uniform_scale_track,
     plan_studio_creation_timeline, studio_timeline_semantic_values_match,
 };
@@ -288,9 +288,10 @@ pub(super) fn admit_studio_creation_programs(
         .collect::<Vec<_>>();
     for index in &material_parameter_programs {
         let program = &programs[*index];
-        let Some((entity_id, _)) = closed_studio_material_parameter_track(program) else {
+        let Some(tracks) = closed_studio_material_parameter_tracks(program) else {
             return Err(ProjectStudioCreationEditError::Unsupported);
         };
+        let entity_id = tracks[0].entity_id;
         let creates_target = program.operations.iter().any(|operation| {
             matches!(
                 &operation.kind,
