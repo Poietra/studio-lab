@@ -305,8 +305,8 @@ import {
 import {
   replaceScenePostEffectParameterKeyframeProgram,
   scenePostEffectParameterKeyframesToSourceTime,
-  scenePostEffectParameterTrackMatchesEffects,
-  scenePostEffectParameterTrackToWorkingTime,
+  scenePostEffectParameterTracksMatchEffects,
+  scenePostEffectParameterTracksToWorkingTime,
 } from "./studio/scene-post-effect-parameter-keyframe-edit";
 import {
   acceptedStudioScenePostEffectReferenceV1,
@@ -1424,7 +1424,7 @@ export function App({
     () => scenePostEffectStackV1Schema.parse(scenePostEffectOperation?.effects ?? []),
     [scenePostEffectOperation?.effects],
   );
-  const scenePostEffectSourceParameterTrack = scenePostEffectOperation?.parameterTrack ?? null;
+  const scenePostEffectSourceParameterTracks = scenePostEffectOperation?.parameterTracks ?? [];
   const activeProjectScenePostEffectRevisions = useMemo(
     () =>
       scenePostEffects.flatMap((effect) =>
@@ -1974,13 +1974,13 @@ export function App({
   const appliedTimelineProjection = timelineProjectionForPrograms(previewAppliedSceneEdits);
   const appliedTimelineTransforms = timelineTransformsForPrograms(previewAppliedSceneEdits);
   const previewTimelineTransforms = timelineTransformsForPrograms(previewSceneEdits);
-  const scenePostEffectParameterTrack =
-    scenePostEffectSourceParameterTrack && previewTimelineTransforms !== undefined
-      ? scenePostEffectParameterTrackToWorkingTime(scenePostEffectSourceParameterTrack, {
+  const scenePostEffectParameterTracks =
+    previewTimelineTransforms !== undefined
+      ? scenePostEffectParameterTracksToWorkingTime(scenePostEffectSourceParameterTracks, {
           programs: previewSceneEdits,
           timelineTransforms: previewTimelineTransforms,
         })
-      : null;
+      : [];
   const sourceCurrentTime =
     appliedTimelineTransforms === undefined
       ? currentTime
@@ -6948,8 +6948,10 @@ export function App({
     }
     try {
       const parsedEffects = scenePostEffectStackV1Schema.parse(effects);
-      if (!scenePostEffectParameterTrackMatchesEffects(scenePostEffectSourceParameterTrack, parsedEffects)) {
-        throw new Error("Remove the Scene effect parameter animation before removing its effect or baseline value.");
+      if (!scenePostEffectParameterTracksMatchEffects(scenePostEffectSourceParameterTracks, parsedEffects)) {
+        throw new Error(
+          "Remove the affected Scene effect parameter animations before changing their effect or baseline values.",
+        );
       }
       const owner = scenePostEffectProgramOwnerV1(appliedEdits);
       if (owner) {
@@ -7090,7 +7092,9 @@ export function App({
       throw new Error("The custom Scene post effect changed while its source was compiling. Review it and try again.");
     }
     if (
-      scenePostEffectSourceParameterTrack?.revision === input.assetRevision &&
+      scenePostEffectSourceParameterTracks.some(
+        (track) => track.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && track.revision === input.assetRevision,
+      ) &&
       expectedAsset.accepted &&
       JSON.stringify(expectedAsset.accepted.parameterSchema) !== JSON.stringify(input.parameterSchema)
     ) {
@@ -11140,7 +11144,7 @@ export function App({
                 },
                 parameterAnimationAvailable: appliedTimelineTransforms !== undefined,
                 parameters: selectedScenePostEffect?.parameters ?? null,
-                parameterTrack: scenePostEffectParameterTrack,
+                parameterTracks: scenePostEffectParameterTracks,
                 playhead: currentTime,
                 selectedRevision: selectedProjectScenePostEffectRevision,
                 sourceAvailable:

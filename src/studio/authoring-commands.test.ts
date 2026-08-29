@@ -147,7 +147,7 @@ describe("manual Studio authoring commands", () => {
           effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
           interval: { end: 3, start: 3 },
           kind: "SetScenePostEffect",
-          parameterTrack: null,
+          parameterTracks: [],
         },
       ],
     });
@@ -173,7 +173,7 @@ describe("manual Studio authoring commands", () => {
 
     const operation = created.program.operations[0];
     if (operation?.kind !== "SetScenePostEffect") throw new Error("missing Scene post-effect operation");
-    const { effects, parameterTrack: _parameterTrack, ...legacyOperation } = operation;
+    const { effects, parameterTracks: _parameterTracks, ...legacyOperation } = operation;
     expect(sceneEditOperationSchema.parse({ ...legacyOperation, effect: effects[0] })).toEqual(operation);
     expect(() =>
       createStudioScenePostEffectProgram({
@@ -188,9 +188,9 @@ describe("manual Studio authoring commands", () => {
     ).toThrow(/same shader revision/u);
   });
 
-  it("stores exactly one bounded Scene post-effect parameter track and preserves it across stack updates", () => {
+  it("stores multiple bounded Scene post-effect parameter tracks and preserves them across stack updates", () => {
     const effects = [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }] as const;
-    const parameterTrack = {
+    const offsetTrack = {
       keyframes: [
         { easing: "ease-in" as const, time: 0, value: 4 },
         { easing: "smooth" as const, time: 2, value: 8 },
@@ -200,20 +200,28 @@ describe("manual Studio authoring commands", () => {
       revision: 1,
       shaderId: "rgb-split",
     };
+    const angleTrack = {
+      keyframes: [
+        { easing: "linear" as const, time: 0, value: 2 },
+        { easing: "ease-out" as const, time: 3, value: 6 },
+      ],
+      name: "Angle",
+      parameterIndex: 1,
+      revision: 1,
+      shaderId: "rgb-split",
+    };
     const created = createStudioScenePostEffectProgram({
       capturedPlayhead: 0,
       effects,
-      parameterTrack,
+      parameterTracks: [offsetTrack, angleTrack],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "scene-post-effect-parameter",
     });
 
     expect(created.kind, JSON.stringify(created.issues)).toBe("valid");
     const operation = created.program.operations[0];
-    expect(operation?.kind === "SetScenePostEffect" ? operation.parameterTrack : null).toEqual({
-      ...parameterTrack,
-      name: "Offset",
-    });
+    if (operation?.kind !== "SetScenePostEffect") throw new Error("missing Scene post-effect operation");
+    expect(operation.parameterTracks).toEqual([{ ...offsetTrack, name: "Offset" }, angleTrack]);
 
     const replaced = replaceStudioScenePostEffectProgram({
       effects,
@@ -222,35 +230,77 @@ describe("manual Studio authoring commands", () => {
     });
     expect(replaced.program.operations[0]).toMatchObject({
       kind: "SetScenePostEffect",
-      parameterTrack: { keyframes: parameterTrack.keyframes, name: "Offset" },
+      parameterTracks: [
+        { keyframes: offsetTrack.keyframes, name: "Offset" },
+        { keyframes: angleTrack.keyframes, name: "Angle" },
+      ],
+    });
+
+    const { parameterTracks: _parameterTracks, ...legacyOperation } = operation;
+    expect(sceneEditOperationSchema.parse({ ...legacyOperation, parameterTrack: offsetTrack })).toEqual({
+      ...operation,
+      parameterTracks: [{ ...offsetTrack, name: "Offset" }],
     });
 
     const outsideScene = createStudioScenePostEffectProgram({
       capturedPlayhead: 0,
       effects,
-      parameterTrack: {
-        ...parameterTrack,
-        keyframes: [
-          parameterTrack.keyframes[0],
-          { easing: "smooth", time: STUDIO_FIXTURE_SCENE.duration + 1, value: 8 },
-        ],
-      },
+      parameterTracks: [
+        {
+          ...offsetTrack,
+          keyframes: [
+            offsetTrack.keyframes[0],
+            { easing: "smooth", time: STUDIO_FIXTURE_SCENE.duration + 1, value: 8 },
+          ],
+        },
+      ],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "scene-post-effect-outside-scene",
     });
     expect(outsideScene.kind).toBe("invalid");
     expect(outsideScene.issues).toEqual(
-      expect.arrayContaining([expect.objectContaining({ field: "parameterTrack", severity: "error" })]),
+      expect.arrayContaining([expect.objectContaining({ field: "parameterTracks", severity: "error" })]),
     );
     expect(() =>
       createStudioScenePostEffectProgram({
         capturedPlayhead: 0,
         effects,
-        parameterTrack: { ...parameterTrack, keyframes: [parameterTrack.keyframes[0]] },
+        parameterTracks: [{ ...offsetTrack, keyframes: [offsetTrack.keyframes[0]] }],
         scene: STUDIO_FIXTURE_SCENE,
         transactionId: "scene-post-effect-single-marker",
       }),
     ).toThrow(/>=2/u);
+    expect(() =>
+      createStudioScenePostEffectProgram({
+        capturedPlayhead: 0,
+        effects,
+        parameterTracks: [offsetTrack, { ...offsetTrack, name: "Duplicate" }],
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "duplicate-scene-post-effect-parameter-track",
+      }),
+    ).toThrow(/at most one track/u);
+    expect(() =>
+      createStudioScenePostEffectProgram({
+        capturedPlayhead: 0,
+        effects,
+        parameterTracks: [{ ...offsetTrack, revision: 2 }],
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "unknown-scene-post-effect-revision",
+      }),
+    ).toThrow(/existing effect parameter/u);
+    expect(() =>
+      createStudioScenePostEffectProgram({
+        capturedPlayhead: 0,
+        effects,
+        parameterTracks: Array.from({ length: 33 }, (_, parameterIndex) => ({
+          ...offsetTrack,
+          parameterIndex: parameterIndex % 8,
+          revision: Math.floor(parameterIndex / 8) + 1,
+        })),
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "too-many-scene-post-effect-parameter-tracks",
+      }),
+    ).toThrow(/<=32/u);
   });
 
   it("projects Inspector position and content edits from one canonical program", () => {

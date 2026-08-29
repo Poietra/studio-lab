@@ -7,7 +7,11 @@ import { INSERT_ENTITY_TYPES } from "../studio/authoring-commands";
 import type { ProgramRecord } from "../studio/model";
 import { programExecutionCapabilities } from "../studio/operation-registry";
 import type { SceneEdit, SceneEditDraft } from "../studio/scene-edit-contract";
-import { sceneEditDraftSchema, sceneEditSchema } from "../studio/scene-edit-contract";
+import {
+  normalizeLegacySceneEditWireAliases,
+  sceneEditDraftSchema,
+  sceneEditSchema,
+} from "../studio/scene-edit-contract";
 import type { StudioTool } from "../studio/studio-toolbar";
 import type { InteractionMode } from "../studio/studio-viewport";
 import { deepStrictWireSchemaV1 } from "./deep-strict-wire-schema";
@@ -275,7 +279,10 @@ const editorSessionSnapshotBaseSchemaV1 = z
     }
   });
 
-export const editorSessionSnapshotSchemaV1 = deepStrictWireSchemaV1(editorSessionSnapshotBaseSchemaV1);
+export const editorSessionSnapshotSchemaV1 = z.preprocess(
+  normalizeLegacySceneEditWireAliases,
+  deepStrictWireSchemaV1(editorSessionSnapshotBaseSchemaV1),
+);
 
 export function parseEditorSessionSnapshotV1(value: unknown): EditorSessionSnapshotV1 {
   const snapshot = editorSessionSnapshotSchemaV1.parse(value);

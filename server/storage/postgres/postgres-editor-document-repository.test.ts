@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
+
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
 import type { EditorSessionSnapshotV1 } from "../../../src/collaboration/editor-session-contract";
+import { canonicalJsonV1 } from "../../../src/engine/fast-manim-snapshot-digest";
 import type { CanonicalEditProgram } from "../../../src/studio/operations";
 import {
   canonicalEditorProgramV1,
@@ -98,6 +101,53 @@ const PROGRAM_A_REPLACED = {
   operations: program("editor-a-replaced").operations,
   schedule: program("editor-a-replaced").schedule,
 } satisfies CanonicalEditProgram;
+
+function legacyScenePostEffectProgram() {
+  const operationId = "tx:legacy-scene-effect/operation:set-scene-post-effect";
+  const current = canonicalEditorProgramV1({
+    ...program("legacy-scene-effect"),
+    loweringStatus: "unsupported",
+    operations: [
+      {
+        dependsOn: [],
+        effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
+        id: operationId,
+        interval: { end: 0, start: 0 },
+        kind: "SetScenePostEffect",
+        parameterTracks: [
+          {
+            keyframes: [
+              { easing: "linear", time: 0, value: 4 },
+              { easing: "smooth", time: 1, value: 8 },
+            ],
+            name: "Offset",
+            parameterIndex: 0,
+            revision: 1,
+            shaderId: "rgb-split",
+          },
+        ],
+        provenance: { evidence: [], origin: "fixture" },
+      },
+    ],
+    schedule: { edges: [], mode: "sequence", order: [operationId] },
+    transactionId: "legacy-scene-effect",
+  }).program;
+  const operation = current.operations[0];
+  if (operation?.kind !== "SetScenePostEffect") throw new Error("Missing Scene post-effect fixture operation.");
+  const { parameterTracks, ...legacyOperation } = operation;
+  return {
+    ...current,
+    operations: [{ ...legacyOperation, parameterTrack: parameterTracks[0] }],
+  };
+}
+
+function rawJsonEvidence(value: unknown) {
+  const json = canonicalJsonV1(value);
+  return {
+    byteSize: Buffer.byteLength(json, "utf8"),
+    digest: createHash("sha256").update(json, "utf8").digest("hex"),
+  } as const;
+}
 
 function sessionSnapshot(programs: readonly CanonicalEditProgram[] = []): EditorSessionSnapshotV1 {
   return {
@@ -1018,6 +1068,104 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     expect(tail?.events.map((event) => event.revision)).toEqual([2n, 3n]);
     await expect(tailRepository.readEventTail({ ...tailInput, tenantId: TENANT_B })).resolves.toBeNull();
     expect(eventTailReads).toBe(1);
+  });
+
+  it("verifies legacy Scene-effect seals before returning normalized events and sessions", async () => {
+    const legacyProgram = legacyScenePostEffectProgram();
+    const normalizedProgram = canonicalEditorProgramV1(legacyProgram);
+    const rawProgramEvidence = rawJsonEvidence(legacyProgram);
+    expect(rawProgramEvidence.digest).not.toBe(normalizedProgram.digest);
+    const legacyEvent = {
+      ...eventRow(),
+      canonical_byte_size: rawProgramEvidence.byteSize,
+      canonical_digest: Buffer.from(rawProgramEvidence.digest, "hex"),
+      canonical_program: legacyProgram,
+    };
+
+    const legacySnapshot = {
+      ...sessionSnapshot(),
+      appliedPrograms: [
+        {
+          program: legacyProgram,
+          validation: { issues: [], status: "valid" },
+        },
+      ],
+    };
+    const normalizedSnapshot = canonicalEditorSessionSnapshotV1(legacySnapshot);
+    const rawSnapshotEvidence = rawJsonEvidence(legacySnapshot);
+    expect(rawSnapshotEvidence.digest).not.toBe(normalizedSnapshot.digest);
+    const legacySession = {
+      ...sessionRow(sessionSnapshot([normalizedProgram.program]), { documentRevision: "1" }),
+      snapshot: legacySnapshot,
+      snapshot_byte_size: rawSnapshotEvidence.byteSize,
+      snapshot_digest: Buffer.from(rawSnapshotEvidence.digest, "hex"),
+    };
+
+    const fixture = fakePool((text) => {
+      if (text.includes("AS actor_can_edit")) {
+        return { rowCount: 1, rows: [{ actor_can_edit: true }] };
+      }
+      if (text.includes("FROM public.editor_documents document") && text.includes("FOR SHARE OF document")) {
+        return { rowCount: 1, rows: [documentRow({ revision: "1" })] };
+      }
+      if (text.includes("FROM public.editor_edit_events event") && text.includes("event.revision >")) {
+        return { rowCount: 1, rows: [legacyEvent] };
+      }
+      if (
+        text.includes("FROM public.editor_session_snapshots snapshot") &&
+        text.includes("JOIN public.editor_documents document")
+      ) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              ...legacySession,
+              current_document_revision: "1",
+              projection_programs: [normalizedProgram.program],
+              projection_revision: "1",
+            },
+          ],
+        };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+
+    const tail = await repository.readEventTail({
+      afterRevision: 0n,
+      documentKey: DOCUMENT_KEY,
+      epoch: EPOCH_A,
+      limit: 1,
+      projectId: PROJECT,
+      tenantId: TENANT_A,
+    });
+    expect(tail?.events[0]).toMatchObject({
+      byteSize: normalizedProgram.byteSize,
+      digest: normalizedProgram.digest,
+      mutation: {
+        program: { operations: [{ kind: "SetScenePostEffect", parameterTracks: [{ parameterIndex: 0 }] }] },
+      },
+    });
+
+    const session = await repository.readSessionSnapshot({
+      documentKey: DOCUMENT_KEY,
+      epoch: EPOCH_A,
+      projectId: PROJECT,
+      subjectId: SUBJECT,
+      tenantId: TENANT_A,
+    });
+    expect(session).toMatchObject({
+      kind: "available",
+      session: {
+        snapshot: {
+          appliedPrograms: [
+            { program: { operations: [{ kind: "SetScenePostEffect", parameterTracks: [{ parameterIndex: 0 }] }] } },
+          ],
+        },
+        snapshotByteSize: normalizedSnapshot.byteSize,
+        snapshotDigest: normalizedSnapshot.digest,
+      },
+    });
   });
 
   it("creates, exactly replays, advances, reads, and isolates a subject-private session snapshot", async () => {

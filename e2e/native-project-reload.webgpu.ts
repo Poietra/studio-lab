@@ -207,6 +207,8 @@ async function decodedPixelStats(
                 ? red > 32 && red > green * 1.5 && red > blue * 1.5
                 : red + green + blue > 90;
         const stats: Readonly<{
+          averageGreen: number;
+          averageRed: number;
           commonColorDifferenceFromPrevious: number;
           commonPixelCountFromPrevious: number;
           count: number;
@@ -232,6 +234,8 @@ async function decodedPixelStats(
           let bright = 0;
           let commonColorDifferenceFromPrevious = 0;
           let commonPixelCountFromPrevious = 0;
+          let totalGreen = 0;
+          let totalRed = 0;
           let totalX = 0;
           let totalY = 0;
           for (let offset = 0; offset < pixels.length; offset += 4) {
@@ -252,6 +256,8 @@ async function decodedPixelStats(
             const blue = pixels[offset + 2] ?? 0;
             if (matchesMode(red, green, blue)) {
               bright += 1;
+              totalGreen += green;
+              totalRed += red;
               totalX += pixelX;
               totalY += pixelY;
               if (previousFrame) {
@@ -268,6 +274,8 @@ async function decodedPixelStats(
           }
           previousFrame = new Uint8ClampedArray(pixels);
           stats.push({
+            averageGreen: bright === 0 ? Number.NaN : totalGreen / bright,
+            averageRed: bright === 0 ? Number.NaN : totalRed / bright,
             commonColorDifferenceFromPrevious,
             commonPixelCountFromPrevious,
             count: bright,
@@ -463,7 +471,9 @@ test("applies one Scene-wide RGB split through scrub, history, reload, and MP4 e
   }
 });
 
-test("authors one project-local WGSL Scene effect through Preview, reload, and MP4 export", async ({ page }) => {
+test("authors two animated parameters on one WGSL Scene effect through Preview, reload, and MP4 export", async ({
+  page,
+}) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(15_000);
   let projectId: string | null = null;
@@ -500,9 +510,9 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     await source.fill(
       (await source.inputValue()).replace(
         "return textureSample(scene_texture, scene_sampler, coordinate / viewport);",
-        `let color = textureSample(scene_texture, scene_sampler, coordinate / viewport);
-    let amplitude = clamp(host.parameters_0.x / 64.0, 0.0, 1.0);
-    return vec4<f32>(color.rgb * amplitude, color.a);`,
+        `let amplitude = clamp(host.parameters_0.x / 64.0, 0.0, 1.0);
+    let wavelength_level = clamp(host.parameters_0.y / 512.0, 0.0, 1.0);
+    return vec4<f32>(amplitude, wavelength_level, 0.1, 1.0);`,
       ),
     );
     await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
@@ -525,22 +535,43 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     const parameterRevision = await waitForNewPresentedRevision(redoRevision);
 
     await page.getByRole("button", { name: /Animate from 0s to/u }).click();
-    await page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" }).fill("2.75");
+    await page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" }).fill("2");
     await page.getByRole("spinbutton", { name: "Amplitude keyframe 2 value" }).fill("60");
     await page.getByRole("combobox", { name: "Amplitude keyframe 1 easing" }).selectOption("linear");
-    await page.getByRole("button", { name: "Update animation" }).click();
+    await page.getByRole("button", { name: "Add animation" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
-    await waitForNewPresentedRevision(parameterRevision);
+    const amplitudeRevision = await waitForNewPresentedRevision(parameterRevision);
+
+    await page
+      .getByRole("combobox", { name: "Scene effect parameter to animate" })
+      .selectOption({ label: "Wavelength" });
+    await page.getByRole("button", { name: /Animate from 0s to/u }).click();
+    await page.getByRole("spinbutton", { name: "Wavelength keyframe 1 time" }).fill("2");
+    await page.getByRole("spinbutton", { name: "Wavelength keyframe 2 time" }).fill("2.75");
+    await page.getByRole("spinbutton", { name: "Wavelength keyframe 2 value" }).fill("448");
+    await page.getByRole("combobox", { name: "Wavelength keyframe 1 easing" }).selectOption("linear");
+    await page.getByRole("button", { name: "Add animation" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const bothTracksRevision = await waitForNewPresentedRevision(amplitudeRevision);
+    await expect(page.getByText("2 / 3 parameters animated", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByText("1 / 3 parameters animated", { exact: true })).toBeVisible();
+    const undoOneTrackRevision = await waitForNewPresentedRevision(bothTracksRevision);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(page.getByText("2 / 3 parameters animated", { exact: true })).toBeVisible();
+    await waitForNewPresentedRevision(undoOneTrackRevision);
+
+    await playhead.fill("1.25");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1.25, 1);
+    const amplitudeEarlyPacket = await canvas.getAttribute("data-preview-packet-id");
     await playhead.fill("2");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
-    const startPacket = await canvas.getAttribute("data-preview-packet-id");
-    await playhead.fill("2.25");
-    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.25, 1);
-    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(startPacket);
-    const earlyPacket = await canvas.getAttribute("data-preview-packet-id");
+    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(amplitudeEarlyPacket);
+    const wavelengthEarlyPacket = await canvas.getAttribute("data-preview-packet-id");
     await playhead.fill("2.75");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.75, 1);
-    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(earlyPacket);
+    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(wavelengthEarlyPacket);
 
     await source.fill("@fragment fn broken(");
     await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
@@ -553,25 +584,42 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     await page.getByRole("button", { name: "Open Custom WGSL effect fixture workspace" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     await expect(page.getByText("WGSL was rejected", { exact: true })).toBeVisible();
+    await expect(page.getByText("2 / 3 parameters animated", { exact: true })).toBeVisible();
+    const parameterAnimation = page.getByRole("combobox", { name: "Scene effect parameter to animate" });
+    await expect(parameterAnimation.getByRole("option", { name: "Amplitude · animated" })).toHaveCount(1);
+    await expect(parameterAnimation.getByRole("option", { name: "Wavelength · animated" })).toHaveCount(1);
+    await parameterAnimation.selectOption({ label: "Amplitude · animated" });
     await expect(page.getByText("Amplitude · 2 keyframes", { exact: true })).toBeVisible();
-    await expect(page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" })).toHaveValue("2.75");
+    await expect(page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" })).toHaveValue("2");
     await expect(page.getByRole("spinbutton", { name: "Amplitude keyframe 2 value" })).toHaveValue("60");
+    await parameterAnimation.selectOption({ label: "Wavelength · animated" });
+    await expect(page.getByText("Wavelength · 2 keyframes", { exact: true })).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "Wavelength keyframe 1 time" })).toHaveValue("2");
+    await expect(page.getByRole("spinbutton", { name: "Wavelength keyframe 2 time" })).toHaveValue("2.75");
+    await expect(page.getByRole("spinbutton", { name: "Wavelength keyframe 2 value" })).toHaveValue("448");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     const mp4 = await exportLocalMp4(page);
-    const stats = await decodedPixelStats(page, mp4, [2, 2.75]);
-    expect(stats[0]?.count ?? 0).toBeGreaterThan(100);
-    expect(stats[1]?.count ?? 0).toBeGreaterThan(100);
-    expect(stats[1]?.commonPixelCountFromPrevious ?? 0).toBeGreaterThan(100);
-    expect(
-      (stats[1]?.commonColorDifferenceFromPrevious ?? 0) / (stats[1]?.commonPixelCountFromPrevious || 1),
-    ).toBeGreaterThan(8);
+    const stats = await decodedPixelStats(page, mp4, [0.5, 1.25, 2, 2.75]);
+    expect(stats.every(({ count }) => count > 100)).toBe(true);
+    const amplitudeRedDelta = (stats[1]?.averageRed ?? 0) - (stats[0]?.averageRed ?? 0);
+    const amplitudeGreenDelta = (stats[1]?.averageGreen ?? 0) - (stats[0]?.averageGreen ?? 0);
+    expect(amplitudeRedDelta).toBeGreaterThan(20);
+    expect(amplitudeRedDelta).toBeGreaterThan(Math.abs(amplitudeGreenDelta) * 2);
+    const wavelengthGreenDelta = (stats[3]?.averageGreen ?? 0) - (stats[2]?.averageGreen ?? 0);
+    const wavelengthRedDelta = (stats[3]?.averageRed ?? 0) - (stats[2]?.averageRed ?? 0);
+    expect(wavelengthGreenDelta).toBeGreaterThan(30);
+    expect(wavelengthGreenDelta).toBeGreaterThan(Math.abs(wavelengthRedDelta) * 2);
 
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");
-    await page.getByRole("button", { name: "Remove animation" }).click();
+    await page.getByRole("button", { name: "Remove Wavelength animation" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
-    const staticRevision = await waitForNewPresentedRevision(activeRevision);
+    const oneTrackRevision = await waitForNewPresentedRevision(activeRevision);
+    await parameterAnimation.selectOption({ label: "Amplitude · animated" });
+    await page.getByRole("button", { name: "Remove Amplitude animation" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const staticRevision = await waitForNewPresentedRevision(oneTrackRevision);
     await page.getByRole("button", { name: "Remove Wave Distortion effect from stack" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(page.getByRole("button", { name: "Add to stack" })).toBeVisible();

@@ -155,6 +155,66 @@ describe("editor session snapshot V1 contract", () => {
     ).toThrow();
   });
 
+  it("restores the former singleton Scene-effect parameter track as a canonical list", () => {
+    const base = record("legacy-scene-effect-track");
+    const operationId = "legacy-scene-effect-track/set-scene-post-effect";
+    const legacyRecord = {
+      ...base,
+      program: {
+        ...base.program,
+        loweringStatus: "unsupported" as const,
+        operations: [
+          {
+            dependsOn: [],
+            effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
+            id: operationId,
+            interval: { end: 2, start: 2 },
+            kind: "SetScenePostEffect" as const,
+            parameterTrack: {
+              keyframes: [
+                { easing: "smooth" as const, time: 0, value: 4 },
+                { easing: "linear" as const, time: 2, value: 8 },
+              ],
+              name: "Offset",
+              parameterIndex: 0,
+              revision: 1,
+              shaderId: "rgb-split",
+            },
+            provenance: { evidence: [], origin: "studio-default" as const },
+          },
+        ],
+        schedule: { edges: [], mode: "sequence" as const, order: [operationId] },
+      },
+    };
+    const value = {
+      ...snapshot(),
+      appliedPrograms: [legacyRecord],
+      draftOperation: null,
+      draftProgram: null,
+      editingAppliedProgram: null,
+      programUndoEntries: [],
+      redoPrograms: [],
+      selectedObjectIds: [],
+    };
+
+    const operation = parseEditorSessionSnapshotV1(value).appliedPrograms[0]?.program.operations[0];
+    expect(operation).toMatchObject({
+      kind: "SetScenePostEffect",
+      parameterTracks: [
+        {
+          keyframes: [
+            { easing: "smooth", time: 0, value: 4 },
+            { easing: "linear", time: 2, value: 8 },
+          ],
+          parameterIndex: 0,
+          revision: 1,
+          shaderId: "rgb-split",
+        },
+      ],
+    });
+    expect(operation).not.toHaveProperty("parameterTrack");
+  });
+
   it("restores authenticated Studio-native DataPlot creation payloads", () => {
     const base = record("data-plot");
     const operationId = "data-plot/create";

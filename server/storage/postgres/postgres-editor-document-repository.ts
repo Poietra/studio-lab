@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 
@@ -7,6 +7,7 @@ import {
   MAX_APPLIED_EDITOR_PROGRAMS_V1,
   parseAuthoritativeEditorProgramsV1,
 } from "../../../src/collaboration/editor-edit-mutation";
+import { canonicalJsonV1 } from "../../../src/engine/fast-manim-snapshot-digest";
 import { HttpError } from "../../http/json";
 import {
   canonicalEditorProgramV1,
@@ -161,6 +162,14 @@ function digestBytesV1(value: string) {
   return Buffer.from(value, "hex");
 }
 
+function storedJsonEvidenceV1(value: unknown) {
+  const json = canonicalJsonV1(value);
+  return {
+    byteSize: Buffer.byteLength(json, "utf8"),
+    digest: createHash("sha256").update(json, "utf8").digest("hex"),
+  } as const;
+}
+
 function documentFromRowV1(row: DocumentRow): EditorDocumentV1 {
   const base = {
     documentKey: digestFromPostgresV1(row.document_key, "editor document key"),
@@ -193,11 +202,12 @@ function documentFromRowV1(row: DocumentRow): EditorDocumentV1 {
 }
 
 function eventFromRowV1(row: EventRow): EditorEditEventV1 {
-  const canonical = canonicalEditorProgramV1(row.canonical_program);
-  const digest = digestFromPostgresV1(row.canonical_digest, "editor event digest");
-  if (canonical.digest !== digest || canonical.byteSize !== row.canonical_byte_size) {
+  const stored = storedJsonEvidenceV1(row.canonical_program);
+  const storedDigest = digestFromPostgresV1(row.canonical_digest, "editor event digest");
+  if (stored.digest !== storedDigest || stored.byteSize !== row.canonical_byte_size) {
     throw new TypeError("PostgreSQL returned an inconsistent canonical editor event.");
   }
+  const canonical = canonicalEditorProgramV1(row.canonical_program);
   const mutation = (() => {
     if (row.mutation_kind === "append") {
       if (row.target_transaction_id !== null) {
@@ -226,7 +236,7 @@ function eventFromRowV1(row: EventRow): EditorEditEventV1 {
     byteSize: canonical.byteSize,
     clientMutationId: row.client_mutation_id,
     committedAt: row.committed_at,
-    digest,
+    digest: canonical.digest,
     documentKey: digestFromPostgresV1(row.document_key, "editor event document key"),
     epoch: row.epoch,
     mutation,
@@ -238,11 +248,12 @@ function eventFromRowV1(row: EventRow): EditorEditEventV1 {
 }
 
 function sessionSnapshotFromRowV1(row: SessionSnapshotRow): EditorSessionSnapshotRecordV1 {
-  const canonical = canonicalEditorSessionSnapshotV1(row.snapshot);
-  const digest = digestFromPostgresV1(row.snapshot_digest, "editor session snapshot digest");
-  if (canonical.digest !== digest || canonical.byteSize !== row.snapshot_byte_size) {
+  const stored = storedJsonEvidenceV1(row.snapshot);
+  const storedDigest = digestFromPostgresV1(row.snapshot_digest, "editor session snapshot digest");
+  if (stored.digest !== storedDigest || stored.byteSize !== row.snapshot_byte_size) {
     throw new TypeError("PostgreSQL returned an inconsistent editor session snapshot.");
   }
+  const canonical = canonicalEditorSessionSnapshotV1(row.snapshot);
   if (row.snapshot_version !== 1) {
     throw new TypeError("PostgreSQL returned an unknown editor session snapshot version.");
   }
