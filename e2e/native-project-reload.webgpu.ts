@@ -566,7 +566,7 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
   }
 });
 
-test("imports Vulkan GLSL 450 as a Scene effect for Preview and local MP4 export", async ({ page }) => {
+test("switches named WGSL and GLSL Scene effects through Preview, history, reload, and MP4", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(15_000);
   let projectId: string | null = null;
@@ -596,7 +596,19 @@ test("imports Vulkan GLSL 450 as a Scene effect for Preview and local MP4 export
     await page.getByRole("button", { name: "Apply program" }).click();
     const plainRevision = await waitForNewPresentedRevision(blankRevision);
 
+    await page.getByRole("textbox", { name: "New Scene effect name" }).fill("WGSL Wave");
     await page.getByRole("button", { name: "Create starter" }).click();
+    await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
+    await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
+
+    await page.getByRole("textbox", { name: "New Scene effect name" }).fill("GLSL Pulse");
+    await page.getByRole("button", { name: "Add effect" }).click();
+    await expect(page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u })).toBeVisible();
+    await page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u }).click();
+    await expect(page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
     await page.getByRole("combobox", { name: "Scene post-effect source language" }).selectOption("glsl");
     const source = page.getByRole("textbox", { name: "Scene post-effect GLSL source" });
     const glsl = `#version 450
@@ -620,7 +632,27 @@ void main() {
     await page.getByRole("button", { name: "Apply to Scene" }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
-    await waitForNewPresentedRevision(plainRevision);
+    const glslRevision = await waitForNewPresentedRevision(plainRevision);
+
+    await page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u }).click();
+    await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u })).toContainText("Active");
+    await page.getByRole("button", { name: "Apply to Scene" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const wgslRevision = await waitForNewPresentedRevision(glslRevision);
+    await expect(page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u })).toContainText("Active");
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    const undoRevision = await waitForNewPresentedRevision(wgslRevision);
+    await expect(page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u })).toContainText("Active");
+    await page.getByRole("button", { name: "Redo" }).click();
+    const redoRevision = await waitForNewPresentedRevision(undoRevision);
+    await expect(page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u })).toContainText("Active");
+
+    await page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u }).click();
+    await page.getByRole("button", { name: "Apply to Scene" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForNewPresentedRevision(redoRevision);
 
     await playhead.fill("2.25");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.25, 1);
@@ -639,6 +671,8 @@ void main() {
     await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
     await page.getByRole("button", { name: "Open Custom GLSL effect fixture workspace" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u })).toContainText("Active");
     await expect(page.getByText("GLSL was rejected", { exact: true })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Scene post-effect source language" })).toHaveValue("glsl");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
