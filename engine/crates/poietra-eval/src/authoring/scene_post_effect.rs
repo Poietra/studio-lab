@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 
 use poietra_scene_ir::{
-    ContractVersionV1, PROJECT_SCENE_POST_EFFECT_SHADER_ID, ProvenanceOriginV1, ProvenanceRecordV1,
-    RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, SceneCapabilityV1,
-    SceneIrBundleV1, ScenePostEffectV1, SceneSourceV1,
+    ContractVersionV1, MAX_SCENE_POST_EFFECTS_V1, PROJECT_SCENE_POST_EFFECT_SHADER_ID,
+    ProvenanceOriginV1, ProvenanceRecordV1, RGB_SPLIT_POST_EFFECT_SHADER_ID,
+    RGB_SPLIT_POST_EFFECT_SHADER_REVISION, SceneCapabilityV1, SceneIrBundleV1, ScenePostEffectV1,
+    SceneSourceV1,
 };
 use serde::Deserialize;
 
@@ -12,7 +13,7 @@ use crate::{EngineSessionV1, EvaluationError};
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplyStudioScenePostEffectCommand {
-    pub effect: Option<ScenePostEffectV1>,
+    pub effects: Vec<ScenePostEffectV1>,
     pub expected_base_revision: String,
     pub next_revision: String,
 }
@@ -25,6 +26,12 @@ pub enum ApplyStudioScenePostEffectError {
     RevisionDidNotAdvance,
     #[error("the Studio Scene post effect is unsupported")]
     UnsupportedEffect,
+    #[error(
+        "the Studio Scene post-effect stack accepts at most {MAX_SCENE_POST_EFFECTS_V1} passes"
+    )]
+    TooManyEffects,
+    #[error("the Studio Scene post-effect stack contains a duplicate shader identity")]
+    DuplicateEffect,
     #[error(transparent)]
     InvalidScene(#[from] EvaluationError),
 }
@@ -36,7 +43,7 @@ fn studio_effect_is_supported(effect: &ScenePostEffectV1) -> bool {
 }
 
 impl EngineSessionV1 {
-    /// Applies or removes the one bounded Scene-wide post-effect reference.
+    /// Atomically replaces the bounded ordered Scene-wide post-effect stack.
     ///
     /// Shader source and GPU resources remain renderer-owned. The complete
     /// candidate is validated before it replaces the retained Scene.
@@ -54,12 +61,22 @@ impl EngineSessionV1 {
         if command.next_revision == command.expected_base_revision {
             return Err(ApplyStudioScenePostEffectError::RevisionDidNotAdvance);
         }
+        if command.effects.len() > MAX_SCENE_POST_EFFECTS_V1 {
+            return Err(ApplyStudioScenePostEffectError::TooManyEffects);
+        }
         if command
-            .effect
-            .as_ref()
-            .is_some_and(|effect| !studio_effect_is_supported(effect))
+            .effects
+            .iter()
+            .any(|effect| !studio_effect_is_supported(effect))
         {
             return Err(ApplyStudioScenePostEffectError::UnsupportedEffect);
+        }
+        if command.effects.iter().enumerate().any(|(index, effect)| {
+            command.effects[..index].iter().any(|earlier| {
+                earlier.shader_id == effect.shader_id && earlier.revision == effect.revision
+            })
+        }) {
+            return Err(ApplyStudioScenePostEffectError::DuplicateEffect);
         }
 
         let provenance_id = format!("studio-scene-post-effect:{}", command.next_revision);
@@ -67,21 +84,21 @@ impl EngineSessionV1 {
             assets: self.assets().clone(),
             scene: self.scene().clone(),
         };
-        candidate.scene.post_effect = command.effect;
+        candidate.scene.post_effects = command.effects;
         let mut capabilities = candidate
             .scene
             .required_capabilities
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
-        if candidate.scene.post_effect.is_some() {
-            capabilities.insert(SceneCapabilityV1::ScenePostEffect);
-        } else {
+        if candidate.scene.post_effects.is_empty() {
             capabilities.remove(&SceneCapabilityV1::ScenePostEffect);
+        } else {
+            capabilities.insert(SceneCapabilityV1::ScenePostEffect);
         }
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
         candidate.scene.provenance.push(ProvenanceRecordV1 {
-            evidence: vec!["Studio set the Scene-wide post effect.".to_owned()],
+            evidence: vec!["Studio set the Scene-wide post-effect stack.".to_owned()],
             id: provenance_id,
             origin: ProvenanceOriginV1::StudioEditProgram,
         });
@@ -120,16 +137,16 @@ mod tests {
     }
 
     #[test]
-    fn applies_and_removes_the_bounded_scene_post_effect_atomically() {
+    fn atomically_replaces_and_removes_the_bounded_scene_post_effect_stack() {
         let mut session = session();
         let applied = session
             .apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
-                effect: Some(rgb_split()),
+                effects: vec![rgb_split()],
                 expected_base_revision: BASE_REVISION.to_owned(),
                 next_revision: NEXT_REVISION.to_owned(),
             })
             .unwrap();
-        assert_eq!(applied.scene.post_effect, Some(rgb_split()));
+        assert_eq!(applied.scene.post_effects, vec![rgb_split()]);
         assert!(
             applied
                 .scene
@@ -139,13 +156,13 @@ mod tests {
 
         let removed = session
             .apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
-                effect: None,
+                effects: Vec::new(),
                 expected_base_revision: NEXT_REVISION.to_owned(),
                 next_revision: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
                     .to_owned(),
             })
             .unwrap();
-        assert!(removed.scene.post_effect.is_none());
+        assert!(removed.scene.post_effects.is_empty());
         assert!(
             !removed
                 .scene
@@ -158,11 +175,11 @@ mod tests {
     fn rejects_unknown_effect_without_mutating_the_session() {
         let mut session = session();
         let result = session.apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
-            effect: Some(ScenePostEffectV1 {
+            effects: vec![ScenePostEffectV1 {
                 parameters: vec![],
                 revision: 1,
                 shader_id: "unknown".to_owned(),
-            }),
+            }],
             expected_base_revision: BASE_REVISION.to_owned(),
             next_revision: NEXT_REVISION.to_owned(),
         });
@@ -171,7 +188,7 @@ mod tests {
             Err(ApplyStudioScenePostEffectError::UnsupportedEffect)
         ));
         assert_eq!(session.scene().source.revision_hash(), BASE_REVISION);
-        assert!(session.scene().post_effect.is_none());
+        assert!(session.scene().post_effects.is_empty());
     }
 
     #[test]
@@ -184,11 +201,55 @@ mod tests {
         };
         let applied = session
             .apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
-                effect: Some(effect.clone()),
+                effects: vec![effect.clone()],
                 expected_base_revision: BASE_REVISION.to_owned(),
                 next_revision: NEXT_REVISION.to_owned(),
             })
             .unwrap();
-        assert_eq!(applied.scene.post_effect, Some(effect));
+        assert_eq!(applied.scene.post_effects, vec![effect]);
+    }
+
+    #[test]
+    fn rejects_an_oversized_or_duplicate_stack_without_mutating_the_session() {
+        let mut session = session();
+        let too_many = vec![rgb_split(); MAX_SCENE_POST_EFFECTS_V1 + 1];
+        assert!(matches!(
+            session.apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
+                effects: too_many,
+                expected_base_revision: BASE_REVISION.to_owned(),
+                next_revision: NEXT_REVISION.to_owned(),
+            }),
+            Err(ApplyStudioScenePostEffectError::TooManyEffects)
+        ));
+        assert_eq!(session.scene().source.revision_hash(), BASE_REVISION);
+
+        assert!(matches!(
+            session.apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
+                effects: vec![rgb_split(), rgb_split()],
+                expected_base_revision: BASE_REVISION.to_owned(),
+                next_revision: NEXT_REVISION.to_owned(),
+            }),
+            Err(ApplyStudioScenePostEffectError::DuplicateEffect)
+        ));
+        assert_eq!(session.scene().source.revision_hash(), BASE_REVISION);
+    }
+
+    #[test]
+    fn preserves_the_declared_stack_order() {
+        let mut session = session();
+        let project = ScenePostEffectV1 {
+            parameters: vec![1.0, 2.0],
+            revision: 7,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        };
+        let effects = vec![project, rgb_split()];
+        let applied = session
+            .apply_studio_scene_post_effect(ApplyStudioScenePostEffectCommand {
+                effects: effects.clone(),
+                expected_base_revision: BASE_REVISION.to_owned(),
+                next_revision: NEXT_REVISION.to_owned(),
+            })
+            .unwrap();
+        assert_eq!(applied.scene.post_effects, effects);
     }
 }

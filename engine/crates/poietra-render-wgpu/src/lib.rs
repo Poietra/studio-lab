@@ -79,7 +79,7 @@ pub use prepare::{
 pub use scene_post_effect_glsl::{ScenePostEffectGlslError, compile_scene_post_effect_glsl};
 pub use scene_post_effect_gpu::{
     MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1, ScenePostEffectRegistryErrorV1, ScenePostEffectSourceV1,
-    validate_scene_post_effect_source_v1,
+    validate_scene_post_effect_source_v1, validate_scene_post_effect_sources_v1,
 };
 pub use thumbnail::{
     ENGINE_THUMBNAIL_HEIGHT_PX, ENGINE_THUMBNAIL_WIDTH_PX, MAX_ENGINE_THUMBNAIL_PNG_BYTES,

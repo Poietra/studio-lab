@@ -911,11 +911,11 @@ fn rgb_split_packet(compositing: RenderCompositingV1, enabled: bool) -> RenderPa
     ];
     packet.required_capabilities = vec![RenderCapabilityV1::CubicPathFill];
     if enabled {
-        packet.post_effect = Some(ScenePostEffectV1 {
+        packet.post_effects = vec![ScenePostEffectV1 {
             parameters: vec![0.0, 4.0, 1.0, 0.0],
             revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
             shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
-        });
+        }];
         packet
             .required_capabilities
             .push(RenderCapabilityV1::ScenePostEffect);
@@ -1225,8 +1225,10 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
         shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
         source: SOURCE.to_owned(),
     };
-    pollster::block_on(renderer.replace_scene_post_effect_source(&device, Some(&source)))
-        .expect("valid custom WGSL must install");
+    pollster::block_on(
+        renderer.replace_scene_post_effect_sources(&device, std::slice::from_ref(&source)),
+    )
+    .expect("valid custom WGSL must install");
 
     for compositing in [
         RenderCompositingV1::LinearLight,
@@ -1234,11 +1236,11 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
     ] {
         let mut first = rgb_split_packet(compositing, false);
         first.sample_time = 0.25;
-        first.post_effect = Some(ScenePostEffectV1 {
+        first.post_effects = vec![ScenePostEffectV1 {
             parameters: vec![0.25],
             revision: 7,
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
-        });
+        }];
         first
             .required_capabilities
             .push(RenderCapabilityV1::ScenePostEffect);
@@ -1265,11 +1267,97 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
         source: format!("{SOURCE}\n@group(1) @binding(0) var extra: texture_2d<f32>;"),
     };
     assert!(
-        pollster::block_on(renderer.replace_scene_post_effect_source(&device, Some(&rejected)))
+        pollster::block_on(renderer.replace_scene_post_effect_sources(&device, &[rejected]))
             .is_err()
     );
     assert!(renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 7));
     assert!(!renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 8));
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated GPU lane runs this proof"]
+fn scene_post_effect_stack_preserves_pass_order_and_independent_parameters() {
+    const FIRST: &str = r"
+struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_1: vec4<f32> };
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let source = textureLoad(scene_texture, vec2<i32>(position.xy), 0);
+    return vec4<f32>(host.parameters_0.x, source.r, 0.0, source.a);
+}
+";
+    const SECOND: &str = r"
+struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_1: vec4<f32> };
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let source = textureLoad(scene_texture, vec2<i32>(position.xy), 0);
+    return vec4<f32>(source.g, host.parameters_0.x * source.r, source.r, source.a);
+}
+";
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+    let sources = vec![
+        ScenePostEffectSourceV1 {
+            revision: 10,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            source: FIRST.to_owned(),
+        },
+        ScenePostEffectSourceV1 {
+            revision: 11,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            source: SECOND.to_owned(),
+        },
+    ];
+    pollster::block_on(renderer.replace_scene_post_effect_sources(&device, &sources))
+        .expect("the complete stack source registry must install");
+
+    let mut packet = rgb_split_packet(RenderCompositingV1::LinearLight, false);
+    packet.post_effects = vec![
+        ScenePostEffectV1 {
+            parameters: vec![0.0],
+            revision: 10,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        },
+        ScenePostEffectV1 {
+            parameters: vec![1.0],
+            revision: 11,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        },
+    ];
+    packet
+        .required_capabilities
+        .push(RenderCapabilityV1::ScenePostEffect);
+    packet.required_capabilities.sort_unstable();
+    let (texture, extent) =
+        render_project_scene_post_effect_packet(&device, &queue, &mut renderer, &packet);
+    let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+    assert_eq!(pixel(&rgba, extent.width, 8, 8), [255, 0, 0, 255]);
+
+    let rejected = vec![
+        ScenePostEffectSourceV1 {
+            revision: 12,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            source: FIRST.to_owned(),
+        },
+        ScenePostEffectSourceV1 {
+            revision: 13,
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            source: format!("{SECOND}\n@group(1) @binding(0) var extra: texture_2d<f32>;"),
+        },
+    ];
+    assert!(
+        pollster::block_on(renderer.replace_scene_post_effect_sources(&device, &rejected)).is_err()
+    );
+    assert!(renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 10));
+    assert!(renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 11));
+    assert!(!renderer.supports_scene_post_effect(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 12));
     assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
 }
 
@@ -1299,19 +1387,21 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
         shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
         source: SOURCE.to_owned(),
     };
-    pollster::block_on(renderer.replace_scene_post_effect_source(&device, Some(&source)))
-        .expect("filtered custom WGSL must install");
+    pollster::block_on(
+        renderer.replace_scene_post_effect_sources(&device, std::slice::from_ref(&source)),
+    )
+    .expect("filtered custom WGSL must install");
 
     for (compositing, expected_seam_channel) in [
         (RenderCompositingV1::LinearLight, 188_u8),
         (RenderCompositingV1::ManimCairoSrgb, 128_u8),
     ] {
         let mut packet = rgb_split_packet(compositing, false);
-        packet.post_effect = Some(ScenePostEffectV1 {
+        packet.post_effects = vec![ScenePostEffectV1 {
             parameters: vec![],
             revision: source.revision,
             shader_id: source.shader_id.clone(),
-        });
+        }];
         packet
             .required_capabilities
             .push(RenderCapabilityV1::ScenePostEffect);

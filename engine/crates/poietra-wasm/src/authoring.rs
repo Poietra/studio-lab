@@ -365,7 +365,7 @@ impl From<ApplyStudioFragmentMaterialsCommandJsonV1> for ApplyStudioFragmentMate
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioScenePostEffectCommandJsonV1 {
-    effect: Option<ScenePostEffectV1>,
+    effects: Vec<ScenePostEffectV1>,
     expected_base_revision: String,
     next_revision: String,
     #[serde(rename = "schema")]
@@ -377,7 +377,7 @@ struct ApplyStudioScenePostEffectCommandJsonV1 {
 impl From<ApplyStudioScenePostEffectCommandJsonV1> for ApplyStudioScenePostEffectCommand {
     fn from(value: ApplyStudioScenePostEffectCommandJsonV1) -> Self {
         Self {
-            effect: value.effect,
+            effects: value.effects,
             expected_base_revision: value.expected_base_revision,
             next_revision: value.next_revision,
         }
@@ -868,7 +868,7 @@ pub fn apply_studio_fragment_materials_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Applies or removes one bounded Scene-wide post effect through the shared core.
+/// Atomically replaces the bounded ordered Scene-wide post-effect stack.
 ///
 /// # Errors
 ///

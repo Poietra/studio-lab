@@ -1,5 +1,9 @@
 import { type DragEvent, useEffect, useRef, useState } from "react";
 import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggestions";
+import {
+  MAX_SCENE_POST_EFFECTS_V1,
+  PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+} from "../engine/scene-post-effect-registry";
 import { cn } from "../lib/cn";
 import type {
   ManimSourceImportOutcome,
@@ -106,21 +110,24 @@ const RGB_SPLIT_PARAMETER_CONTROLS = [
 
 function ScenePostEffectControls({
   available,
-  effect,
+  effectNames,
+  effects,
   onChange,
   unavailableReason,
 }: Readonly<{
   available: boolean;
-  effect: StudioScenePostEffectV1 | null;
-  onChange?: (effect: StudioScenePostEffectV1 | null) => void;
+  effectNames: Readonly<Record<number, string>>;
+  effects: readonly StudioScenePostEffectV1[];
+  onChange?: (effects: readonly StudioScenePostEffectV1[]) => void;
   unavailableReason: string | null;
 }>) {
-  const rgbSplitEffect =
-    effect?.shaderId === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.shaderId &&
-    effect.revision === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.revision &&
-    effect.parameters.length === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters.length
-      ? effect
-      : null;
+  const rgbSplitIndex = effects.findIndex(
+    (effect) =>
+      effect.shaderId === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.shaderId &&
+      effect.revision === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.revision &&
+      effect.parameters.length === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters.length,
+  );
+  const rgbSplitEffect = rgbSplitIndex < 0 ? null : (effects[rgbSplitIndex] ?? null);
   const [parameters, setParameters] = useState<[number, number, number, number]>([
     ...(rgbSplitEffect?.parameters ?? DEFAULT_RGB_SPLIT_POST_EFFECT_V1.parameters),
   ] as [number, number, number, number]);
@@ -133,90 +140,130 @@ function ScenePostEffectControls({
     ]);
   }, [rgbSplitEffect]);
   const disabled = !available || !onChange;
-  if (!rgbSplitEffect) {
-    return (
-      <div className="space-y-1">
-        {effect ? <p className="text-[10px] text-sky-400">Custom Scene effect active</p> : null}
-        <div className="flex gap-1">
-          <button
-            className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
-            disabled={disabled}
-            onClick={() => onChange?.(DEFAULT_RGB_SPLIT_POST_EFFECT_V1)}
-            title={unavailableReason ?? undefined}
-            type="button"
+  const effectLabel = (effect: StudioScenePostEffectV1) =>
+    effect.shaderId === DEFAULT_RGB_SPLIT_POST_EFFECT_V1.shaderId
+      ? "RGB split"
+      : effect.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1
+        ? (effectNames[effect.revision] ?? `Custom #${effect.revision}`)
+        : `${effect.shaderId}@${effect.revision}`;
+  const replaceAt = (index: number, effect: StudioScenePostEffectV1) =>
+    effects.map((candidate, candidateIndex) => (candidateIndex === index ? effect : candidate));
+  const move = (index: number, offset: -1 | 1) => {
+    const target = index + offset;
+    if (target < 0 || target >= effects.length) return;
+    const next = [...effects];
+    [next[index], next[target]] = [next[target]!, next[index]!];
+    onChange?.(next);
+  };
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[10px] text-zinc-500">Ordered passes</p>
+        <span className="tabular-nums text-[10px] text-zinc-600">
+          {effects.length} / {MAX_SCENE_POST_EFFECTS_V1}
+        </span>
+      </div>
+      {effects.some((effect) => effect.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1) ? (
+        <p className="text-[10px] text-sky-400">Custom Scene effect active</p>
+      ) : null}
+      {effects.length === 0 ? <p className="text-[10px] text-zinc-600">No Scene effects.</p> : null}
+      <ol aria-label="Scene effect stack" className="space-y-1">
+        {effects.map((effect, index) => (
+          <li
+            className="flex items-center gap-1 border border-zinc-800 px-1.5 py-1"
+            key={`${effect.shaderId}/${effect.revision}`}
           >
-            {effect ? "Switch to RGB split" : "Enable RGB split"}
-          </button>
-          {effect ? (
+            <span className="min-w-0 flex-1 truncate text-[10px] text-zinc-300">
+              {index + 1}. {effectLabel(effect)}
+            </span>
             <button
-              aria-label="Remove custom Scene post effect"
-              className="h-7 border border-zinc-800 px-1.5 text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+              aria-label={`Move ${effectLabel(effect)} effect up`}
+              className="size-6 text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-30"
+              disabled={disabled || index === 0}
+              onClick={() => move(index, -1)}
+              title={unavailableReason ?? undefined}
+              type="button"
+            >
+              ↑
+            </button>
+            <button
+              aria-label={`Move ${effectLabel(effect)} effect down`}
+              className="size-6 text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-30"
+              disabled={disabled || index === effects.length - 1}
+              onClick={() => move(index, 1)}
+              title={unavailableReason ?? undefined}
+              type="button"
+            >
+              ↓
+            </button>
+            <button
+              aria-label={`Remove ${effectLabel(effect)} effect from stack`}
+              className="h-6 px-1 text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-30"
               disabled={disabled}
-              onClick={() => onChange?.(null)}
+              onClick={() => onChange?.(effects.filter((_, candidateIndex) => candidateIndex !== index))}
               title={unavailableReason ?? undefined}
               type="button"
             >
               Remove
             </button>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-  return (
-    <form
-      className="space-y-2"
-      onSubmit={(event) => {
-        event.preventDefault();
-        onChange?.({ ...rgbSplitEffect, parameters });
-      }}
-    >
-      <p className="text-[10px] text-sky-400">RGB split</p>
-      {RGB_SPLIT_PARAMETER_CONTROLS.map((control, index) => (
-        <label className="block" key={control.label}>
-          <span className="flex justify-between gap-2 text-[10px] text-zinc-500">
-            <span>{control.label}</span>
-            <span className="tabular-nums">
-              {parameters[index].toFixed(1)} {control.unit}
-            </span>
-          </span>
-          <input
-            aria-label={`RGB split ${control.label}`}
-            className="mt-1 block w-full accent-sky-500 disabled:opacity-50"
+          </li>
+        ))}
+      </ol>
+      {rgbSplitEffect ? (
+        <form
+          className="space-y-2 border border-zinc-800 p-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onChange?.(replaceAt(rgbSplitIndex, { ...rgbSplitEffect, parameters }));
+          }}
+        >
+          <p className="text-[10px] text-sky-400">RGB split parameters</p>
+          {RGB_SPLIT_PARAMETER_CONTROLS.map((control, index) => (
+            <label className="block" key={control.label}>
+              <span className="flex justify-between gap-2 text-[10px] text-zinc-500">
+                <span>{control.label}</span>
+                <span className="tabular-nums">
+                  {parameters[index].toFixed(1)} {control.unit}
+                </span>
+              </span>
+              <input
+                aria-label={`RGB split ${control.label}`}
+                className="mt-1 block w-full accent-sky-500 disabled:opacity-50"
+                disabled={disabled}
+                max={control.max}
+                min={control.min}
+                onChange={(event) => {
+                  const next = [...parameters] as [number, number, number, number];
+                  next[index] = event.currentTarget.valueAsNumber;
+                  setParameters(next);
+                }}
+                step={control.step}
+                type="range"
+                value={parameters[index]}
+              />
+            </label>
+          ))}
+          <button
+            className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
             disabled={disabled}
-            max={control.max}
-            min={control.min}
-            onChange={(event) => {
-              const next = [...parameters] as [number, number, number, number];
-              next[index] = event.currentTarget.valueAsNumber;
-              setParameters(next);
-            }}
-            step={control.step}
-            type="range"
-            value={parameters[index]}
-          />
-        </label>
-      ))}
-      <div className="flex gap-1">
+            title={unavailableReason ?? undefined}
+            type="submit"
+          >
+            Update RGB split
+          </button>
+        </form>
+      ) : (
         <button
           className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
-          disabled={disabled}
-          title={unavailableReason ?? undefined}
-          type="submit"
-        >
-          Update
-        </button>
-        <button
-          className="h-7 border border-zinc-800 px-1.5 text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
-          disabled={disabled}
-          onClick={() => onChange?.(null)}
+          disabled={disabled || effects.length >= MAX_SCENE_POST_EFFECTS_V1}
+          onClick={() => onChange?.([...effects, DEFAULT_RGB_SPLIT_POST_EFFECT_V1])}
           title={unavailableReason ?? undefined}
           type="button"
         >
-          Remove
+          Add RGB split
         </button>
-      </div>
-    </form>
+      )}
+    </div>
   );
 }
 
@@ -368,7 +415,7 @@ export function WorkspaceSidebar({
   onRemoveAudioTrack,
   onDurationChange,
   onSceneBackgroundChange,
-  onScenePostEffectChange,
+  onScenePostEffectsChange,
   onAddImageAsset,
   onAddSvgAsset,
   onEditAppliedProgram,
@@ -390,7 +437,8 @@ export function WorkspaceSidebar({
   sceneBackgroundAvailable = false,
   sceneBackgroundColor = "#000000",
   sceneBackgroundUnavailableReason = null,
-  scenePostEffect = null,
+  scenePostEffectNames = {},
+  scenePostEffects = [],
   scenePostEffectAvailable = false,
   scenePostEffectSourceEditor,
   scenePostEffectUnavailableReason = null,
@@ -435,7 +483,7 @@ export function WorkspaceSidebar({
   onRemoveAudioTrack?: () => void;
   onDurationChange: (duration: number) => void;
   onSceneBackgroundChange?: (color: string) => void;
-  onScenePostEffectChange?: (effect: StudioScenePostEffectV1 | null) => void;
+  onScenePostEffectsChange?: (effects: readonly StudioScenePostEffectV1[]) => void;
   onAddImageAsset?: (asset: StudioNativeImageAssetV1) => void;
   onAddSvgAsset?: (asset: StudioSvgPathAsset) => void;
   onEditAppliedProgram: (record: ProgramRecord, index: number) => void;
@@ -457,7 +505,8 @@ export function WorkspaceSidebar({
   sceneBackgroundAvailable?: boolean;
   sceneBackgroundColor?: string;
   sceneBackgroundUnavailableReason?: string | null;
-  scenePostEffect?: StudioScenePostEffectV1 | null;
+  scenePostEffectNames?: Readonly<Record<number, string>>;
+  scenePostEffects?: readonly StudioScenePostEffectV1[];
   scenePostEffectAvailable?: boolean;
   scenePostEffectSourceEditor?: ScenePostEffectSourceEditorProps;
   scenePostEffectUnavailableReason?: string | null;
@@ -1273,8 +1322,9 @@ export function WorkspaceSidebar({
           <dd>
             <ScenePostEffectControls
               available={scenePostEffectAvailable}
-              effect={scenePostEffect}
-              onChange={onScenePostEffectChange}
+              effectNames={scenePostEffectNames}
+              effects={scenePostEffects}
+              onChange={onScenePostEffectsChange}
               unavailableReason={scenePostEffectUnavailableReason}
             />
             {scenePostEffectSourceEditor ? <ScenePostEffectSourceEditor {...scenePostEffectSourceEditor} /> : null}

@@ -297,7 +297,7 @@ async fn export_scene_mp4(
     }
     let fragment_materials = parse_fragment_material_registry_v1(fragment_material_registry_json)
         .map_err(|error| refused("invalid-scene", error))?;
-    let scene_post_effect_source =
+    let scene_post_effect_sources =
         parse_scene_post_effect_registry_v1(scene_post_effect_registry_json)
             .map_err(|error| refused("invalid-scene", error))?;
 
@@ -353,7 +353,7 @@ async fn export_scene_mp4(
             })
         },
         &fragment_materials,
-        scene_post_effect_source.as_ref(),
+        scene_post_effect_sources.as_ref(),
     )
     .await
     .map_err(|error| refused("render-failed", error))?;

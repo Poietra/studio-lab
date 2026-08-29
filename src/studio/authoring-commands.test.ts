@@ -26,6 +26,7 @@ import { programExecutionCapabilities } from "./operation-registry";
 import type { CanonicalEditOperation } from "./operations";
 import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
+import { sceneEditOperationSchema } from "./scene-edit-contract";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import { STUDIO_STARTER_COMPOSITION_TITLE, studioStarterCompositionEntities } from "./starter-composition";
 import { STUDIO_STYLE_PROFILE, styleProfileRef } from "./style-profile";
@@ -133,7 +134,7 @@ describe("manual Studio authoring commands", () => {
   it("creates, updates, and disables one built-in Scene post-effect Program", () => {
     const created = createStudioScenePostEffectProgram({
       capturedPlayhead: 3,
-      effect: { parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" },
+      effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "scene-post-effect",
     });
@@ -143,7 +144,7 @@ describe("manual Studio authoring commands", () => {
       loweringStatus: "unsupported",
       operations: [
         {
-          effect: { parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" },
+          effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
           interval: { end: 3, start: 3 },
           kind: "SetScenePostEffect",
         },
@@ -156,18 +157,34 @@ describe("manual Studio authoring commands", () => {
 
     const owner = programRecord(created.program, created);
     const updated = replaceStudioScenePostEffectProgram({
-      effect: { parameters: [8, 1, 0.5, Math.PI], revision: 1, shaderId: "rgb-split" },
+      effects: [{ parameters: [8, 1, 0.5, Math.PI], revision: 1, shaderId: "rgb-split" }],
       owner,
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(updated.kind, JSON.stringify(updated.issues)).toBe("valid");
     expect(updated.program.operations[0]).toMatchObject({
-      effect: { parameters: [8, 1, 0.5, Math.PI] },
+      effects: [{ parameters: [8, 1, 0.5, Math.PI] }],
       kind: "SetScenePostEffect",
     });
     expect(
-      replaceStudioScenePostEffectProgram({ effect: null, owner, scene: STUDIO_FIXTURE_SCENE }).program.operations[0],
-    ).toMatchObject({ effect: null, kind: "SetScenePostEffect" });
+      replaceStudioScenePostEffectProgram({ effects: [], owner, scene: STUDIO_FIXTURE_SCENE }).program.operations[0],
+    ).toMatchObject({ effects: [], kind: "SetScenePostEffect" });
+
+    const operation = created.program.operations[0];
+    if (operation?.kind !== "SetScenePostEffect") throw new Error("missing Scene post-effect operation");
+    const { effects, ...legacyOperation } = operation;
+    expect(sceneEditOperationSchema.parse({ ...legacyOperation, effect: effects[0] })).toEqual(operation);
+    expect(() =>
+      createStudioScenePostEffectProgram({
+        capturedPlayhead: 3,
+        effects: [
+          { ...effects[0]!, parameters: [...effects[0]!.parameters] },
+          { ...effects[0]!, parameters: [...effects[0]!.parameters] },
+        ],
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "duplicate-scene-post-effect",
+      }),
+    ).toThrow(/same shader revision/u);
   });
 
   it("projects Inspector position and content edits from one canonical program", () => {

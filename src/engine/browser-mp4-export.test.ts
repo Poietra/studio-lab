@@ -179,11 +179,13 @@ describe("runBrowserMp4ExportV1", () => {
       version: 1,
     });
     const scenePostEffectRegistry = scenePostEffectRegistryV1Schema.parse({
-      effect: {
-        revision: 1,
-        shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
-        source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
-      },
+      effects: [
+        {
+          revision: 1,
+          shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+        },
+      ],
       schema: "poietra.scene-post-effect-registry",
       version: 1,
     });

@@ -1752,8 +1752,8 @@ export const OPERATION_REGISTRY = {
       if (operation.interval.start !== operation.interval.end || operation.provenance.origin !== "studio-default") {
         issues.push({
           code: "schema-invalid",
-          field: "postEffect",
-          message: "A Scene post effect must be one Studio Scene-graph setting without a Timeline duration.",
+          field: "postEffects",
+          message: "A Scene post-effect stack must be one Studio Scene-graph setting without a Timeline duration.",
           operationId: operation.id,
           severity: "error",
         });

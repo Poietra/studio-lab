@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { MAX_SCENE_POST_EFFECTS_V1 } from "../engine/scene-post-effect-registry";
 
 import {
   MAX_PROJECT_SCENE_POST_EFFECT_ASSETS,
@@ -19,10 +20,10 @@ export type CompileStudioScenePostEffectSourceInputV1 = Readonly<{
 }>;
 
 export type ScenePostEffectSourceEditorProps = Readonly<{
-  activeRevision: number | null;
+  activeRevisions: readonly number[];
   assets: readonly StudioScenePostEffectSourceAssetV1[];
   available: boolean;
-  onActivate: (assetRevision: number) => void;
+  onAddToStack: (assetRevision: number) => void;
   onCompile: (input: CompileStudioScenePostEffectSourceInputV1) => Promise<void> | void;
   onCreate: (name: string) => boolean;
   onParametersChange: (assetRevision: number, parameters: readonly number[]) => void;
@@ -59,10 +60,10 @@ export async function readStudioScenePostEffectGlslFileV1(file: StudioScenePostE
 }
 
 export function ScenePostEffectSourceEditor({
-  activeRevision,
+  activeRevisions,
   assets,
   available,
-  onActivate,
+  onAddToStack,
   onCompile,
   onCreate,
   onParametersChange,
@@ -77,10 +78,10 @@ export function ScenePostEffectSourceEditor({
   const [filePending, setFilePending] = useState(false);
   const asset =
     assets.find(({ revision }) => revision === selectedRevision) ??
-    assets.find(({ revision }) => revision === activeRevision) ??
+    assets.find(({ revision }) => activeRevisions.includes(revision)) ??
     assets[0] ??
     null;
-  const active = asset?.revision === activeRevision;
+  const active = asset !== null && activeRevisions.includes(asset.revision);
   const [source, setSource] = useState(() => asset?.draft.source ?? STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1);
   const [sourceLanguage, setSourceLanguage] = useState<StudioScenePostEffectSourceLanguageV1>(
     () => asset?.draft.sourceLanguage ?? "wgsl",
@@ -172,7 +173,7 @@ export function ScenePostEffectSourceEditor({
         <div aria-label="Project Scene effect assets" className="mt-2 grid gap-1">
           {assets.map((candidate) => {
             const selected = candidate.revision === asset?.revision;
-            const candidateActive = candidate.revision === activeRevision;
+            const candidateActive = activeRevisions.includes(candidate.revision);
             return (
               <button
                 aria-label={`Edit Scene effect ${candidate.name}, revision ${candidate.revision}`}
@@ -191,7 +192,7 @@ export function ScenePostEffectSourceEditor({
                 <span className="truncate">{candidate.name}</span>
                 <span className={candidateActive ? "shrink-0 text-sky-300" : "shrink-0 text-zinc-600"}>
                   {candidateActive
-                    ? `Active · #${candidate.revision}`
+                    ? `In stack · #${candidate.revision}`
                     : candidate.accepted
                       ? `Ready · #${candidate.revision}`
                       : `Draft · #${candidate.revision}`}
@@ -305,11 +306,15 @@ export function ScenePostEffectSourceEditor({
             <div className="mt-2 flex gap-2">
               <button
                 className="h-7 flex-1 border border-sky-800 px-2 text-[10px] text-sky-200 hover:bg-sky-950/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700"
-                disabled={!available || active || sourceBusy}
-                onClick={() => onActivate(asset.revision)}
+                disabled={!available || active || sourceBusy || activeRevisions.length >= MAX_SCENE_POST_EFFECTS_V1}
+                onClick={() => onAddToStack(asset.revision)}
                 type="button"
               >
-                {active ? "Applied to Scene" : "Apply to Scene"}
+                {active
+                  ? "In Scene stack"
+                  : activeRevisions.length >= MAX_SCENE_POST_EFFECTS_V1
+                    ? "Stack is full"
+                    : "Add to stack"}
               </button>
             </div>
           ) : (

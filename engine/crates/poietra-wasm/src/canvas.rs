@@ -465,7 +465,7 @@ pub struct PoietraCanvasEngineV1 {
     // rendered; `None` records an explicit counter overflow.
     frame_surface_configurations: Option<u32>,
     fragment_material_sources: Vec<FragmentMaterialSourceV1>,
-    scene_post_effect_source: Option<ScenePostEffectSourceV1>,
+    scene_post_effect_sources: Vec<ScenePostEffectSourceV1>,
     memory_high_water: EngineMemoryHighWaterV1,
     // Kept before `device` so Drop unregisters the JS callback first.
     _uncaptured_error_listener: RawUncapturedErrorListenerV1,
@@ -532,7 +532,7 @@ impl PoietraCanvasEngineV1 {
         let fragment_materials =
             parse_fragment_material_registry_v1(fragment_material_registry_json)
                 .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error))?;
-        let scene_post_effect_source =
+        let scene_post_effect_sources =
             parse_scene_post_effect_registry_v1(scene_post_effect_registry_json)
                 .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error))?;
         let mut gpu = acquire_canvas_gpu_candidate(&canvas).await?;
@@ -541,7 +541,7 @@ impl PoietraCanvasEngineV1 {
             .await
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         gpu.renderer
-            .replace_scene_post_effect_source(&gpu.device, scene_post_effect_source.as_ref())
+            .replace_scene_post_effect_sources(&gpu.device, scene_post_effect_sources.as_ref())
             .await
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
 
@@ -552,7 +552,7 @@ impl PoietraCanvasEngineV1 {
             configured_viewport: None,
             frame_surface_configurations: Some(0),
             fragment_material_sources: fragment_materials,
-            scene_post_effect_source,
+            scene_post_effect_sources,
             memory_high_water: EngineMemoryHighWaterV1::default(),
             _uncaptured_error_listener: gpu.uncaptured_error_listener,
             device: gpu.device,
@@ -596,7 +596,7 @@ impl PoietraCanvasEngineV1 {
         let fragment_materials =
             parse_fragment_material_registry_v1(fragment_material_registry_json)
                 .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error))?;
-        let scene_post_effect_source =
+        let scene_post_effect_sources =
             parse_scene_post_effect_registry_v1(scene_post_effect_registry_json)
                 .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error))?;
         let mut candidate_renderer = WgpuPaintRendererV1::new(&self.device, self.view_format)
@@ -606,7 +606,7 @@ impl PoietraCanvasEngineV1 {
             .await
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         candidate_renderer
-            .replace_scene_post_effect_source(&self.device, scene_post_effect_source.as_ref())
+            .replace_scene_post_effect_sources(&self.device, scene_post_effect_sources.as_ref())
             .await
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         self.session
@@ -614,7 +614,7 @@ impl PoietraCanvasEngineV1 {
             .map_err(|error| named_js_error(SNAPSHOT_REJECTED_ERROR_NAME, &error.to_string()))?;
         self.asset_registry = candidate_registry;
         self.fragment_material_sources = fragment_materials;
-        self.scene_post_effect_source = scene_post_effect_source;
+        self.scene_post_effect_sources = scene_post_effect_sources;
         self.renderer = candidate_renderer;
         self.prepared_geometry_cache.clear();
         Ok(())
@@ -984,7 +984,7 @@ impl PoietraCanvasEngineV1 {
                 message: format!("WebGPU fragment material recovery failed: {error}"),
             })?;
         gpu.renderer
-            .replace_scene_post_effect_source(&gpu.device, self.scene_post_effect_source.as_ref())
+            .replace_scene_post_effect_sources(&gpu.device, self.scene_post_effect_sources.as_ref())
             .await
             .map_err(|error| RuntimeFailureV1 {
                 code: CanvasRenderErrorCodeV1::DeviceLost,

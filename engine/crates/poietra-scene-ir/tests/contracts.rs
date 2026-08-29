@@ -58,7 +58,7 @@ fn empty_scene() -> SceneIrV1 {
             origin: ProvenanceOriginV1::Fixture,
         }],
         required_capabilities: Vec::new(),
-        post_effect: None,
+        post_effects: Vec::new(),
         scene_id: "scene:empty".to_owned(),
         schema: SceneIrSchemaV1::SceneIr,
         source: SceneSourceV1::StudioEditProgram {
@@ -89,7 +89,7 @@ fn empty_packet() -> RenderPacketV1 {
         draws: Vec::new(),
         evidence: Vec::new(),
         packet_id: "packet:empty:1".to_owned(),
-        post_effect: None,
+        post_effects: Vec::new(),
         required_capabilities: Vec::new(),
         sample_time: 1.0,
         scene_duration: 2.0,
@@ -106,19 +106,19 @@ fn empty_packet() -> RenderPacketV1 {
 }
 
 #[test]
-fn scene_post_effect_is_bounded_capability_derived_and_packet_correlated() {
+fn scene_post_effect_stack_is_bounded_capability_derived_and_packet_correlated() {
     let effect = ScenePostEffectV1 {
         parameters: vec![4.0, 2.0, 1.5, 0.25],
         revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
         shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
     };
     let mut scene = empty_scene();
-    scene.post_effect = Some(effect.clone());
+    scene.post_effects = vec![effect.clone()];
     scene.required_capabilities = vec![SceneCapabilityV1::ScenePostEffect];
     validate_scene_ir_v1(&scene).unwrap();
 
     let mut packet = empty_packet();
-    packet.post_effect = Some(effect.clone());
+    packet.post_effects = vec![effect.clone()];
     packet.required_capabilities = vec![RenderCapabilityV1::ScenePostEffect];
     validate_render_packet_v1(&packet).unwrap();
     validate_engine_frame_v1(&EngineFrameV1 {
@@ -128,29 +128,75 @@ fn scene_post_effect_is_bounded_capability_derived_and_packet_correlated() {
     })
     .unwrap();
 
-    packet.post_effect.as_mut().unwrap().parameters[0] = 5.0;
+    packet.post_effects[0].parameters[0] = 5.0;
     let mismatch = validate_engine_frame_v1(&EngineFrameV1 {
         assets: empty_manifest(),
         packet,
         scene: scene.clone(),
     })
     .unwrap_err();
-    assert!(mismatch.contains_message("post effect does not match scene semantics"));
+    assert!(mismatch.contains_message("post-effect stack does not match scene semantics"));
 
-    scene.post_effect.as_mut().unwrap().parameters =
-        vec![0.0; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 + 1];
+    scene.post_effects[0].parameters = vec![0.0; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 + 1];
     assert!(validate_scene_ir_v1(&scene).is_err());
-    scene.post_effect.as_mut().unwrap().parameters = vec![f64::NAN];
+    scene.post_effects[0].parameters = vec![f64::NAN];
     assert!(validate_scene_ir_v1(&scene).is_err());
-    scene.post_effect.as_mut().unwrap().parameters = Vec::new();
+    scene.post_effects[0].parameters = Vec::new();
     scene.compositing = RenderCompositingV1::ManimCairoSrgb;
     validate_scene_ir_v1(&scene).unwrap();
 
     let mut cairo_packet = empty_packet();
     cairo_packet.compositing = RenderCompositingV1::ManimCairoSrgb;
-    cairo_packet.post_effect = scene.post_effect.clone();
+    cairo_packet.post_effects = scene.post_effects.clone();
     cairo_packet.required_capabilities = vec![RenderCapabilityV1::ScenePostEffect];
     validate_render_packet_v1(&cairo_packet).unwrap();
+}
+
+#[test]
+fn scene_post_effect_stack_rejects_duplicates_and_more_than_four_passes() {
+    let effect = ScenePostEffectV1 {
+        parameters: Vec::new(),
+        revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+        shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+    };
+    let mut scene = empty_scene();
+    scene.required_capabilities = vec![SceneCapabilityV1::ScenePostEffect];
+    scene.post_effects = vec![effect.clone(), effect.clone()];
+    assert!(validate_scene_ir_v1(&scene).is_err());
+
+    scene.post_effects = (0..=MAX_SCENE_POST_EFFECTS_V1)
+        .map(|index| ScenePostEffectV1 {
+            parameters: Vec::new(),
+            revision: u32::try_from(index + 1).unwrap(),
+            shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        })
+        .collect();
+    assert!(validate_scene_ir_v1(&scene).is_err());
+}
+
+#[test]
+fn legacy_single_post_effect_reads_as_one_canonical_plural_pass() {
+    let effect = ScenePostEffectV1 {
+        parameters: vec![2.0],
+        revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+        shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+    };
+    let mut scene = empty_scene();
+    scene.post_effects = vec![effect.clone()];
+    scene.required_capabilities = vec![SceneCapabilityV1::ScenePostEffect];
+    let mut legacy = serde_json::to_value(&scene).unwrap();
+    let object = legacy.as_object_mut().unwrap();
+    let stack = object.remove("postEffects").unwrap();
+    object.insert(
+        "postEffect".to_owned(),
+        stack.as_array().unwrap()[0].clone(),
+    );
+
+    let migrated: SceneIrV1 = serde_json::from_value(legacy).unwrap();
+    assert_eq!(migrated.post_effects, vec![effect]);
+    let canonical = serde_json::to_value(migrated).unwrap();
+    assert!(canonical.get("postEffects").is_some());
+    assert!(canonical.get("postEffect").is_none());
 }
 
 fn filled_path_draw(paint_order: u32) -> RenderDrawV1 {

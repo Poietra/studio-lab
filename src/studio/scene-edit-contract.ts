@@ -2,12 +2,31 @@ import { z } from "zod";
 import { studioCubicBezierPathSchema, studioCubicBezierSpecSchema } from "../engine/cubic-bezier-authoring";
 import { assetReferenceV1Schema, fragmentMaterialV1Schema, scenePostEffectV1Schema } from "../engine/primitives";
 import { studioPropertyKeyframeEasingSchema } from "../engine/scene-authoring";
+import { MAX_SCENE_POST_EFFECTS_V1 } from "../engine/scene-post-effect-registry";
 import { styleProfileRefSchema } from "./style-profile";
 
 export const SCENE_EDIT_VERSION = 1 as const;
 export const canonicalRgbHexSchema = z.string().regex(/^#[0-9a-f]{6}$/u);
 export const studioScenePostEffectV1Schema = scenePostEffectV1Schema;
 export type StudioScenePostEffectV1 = z.infer<typeof studioScenePostEffectV1Schema>;
+export const scenePostEffectStackV1Schema = z
+  .array(studioScenePostEffectV1Schema)
+  .max(MAX_SCENE_POST_EFFECTS_V1)
+  .superRefine((effects, context) => {
+    const identities = new Set<string>();
+    effects.forEach((effect, index) => {
+      const identity = `${effect.shaderId}\u0000${effect.revision}`;
+      if (identities.has(identity)) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "A Scene post-effect stack cannot contain the same shader revision more than once.",
+          path: [index],
+        });
+      }
+      identities.add(identity);
+    });
+  });
+export type StudioScenePostEffectStackV1 = z.infer<typeof scenePostEffectStackV1Schema>;
 
 export function isCanonicalRgbHex(value: unknown): value is string {
   return canonicalRgbHexSchema.safeParse(value).success;
@@ -289,7 +308,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
     kind: z.literal("SetSceneBackground"),
   }),
   operationBaseSchema.extend({
-    effect: studioScenePostEffectV1Schema.nullable(),
+    effects: scenePostEffectStackV1Schema,
     kind: z.literal("SetScenePostEffect"),
   }),
   operationBaseSchema.extend({
@@ -312,7 +331,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superRefine((operation, context) => {
+const canonicalSceneEditOperationSchema = sceneEditOperationStructureSchema.superRefine((operation, context) => {
   if (operation.kind === "SetProperty" && operation.value === null && operation.key !== "strokeDash") {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -435,6 +454,22 @@ export const sceneEditOperationSchema = sceneEditOperationStructureSchema.superR
     });
   }
 });
+
+/** Reads the former singleton Scene effect operation and returns only the canonical stack shape. */
+export const sceneEditOperationSchema = z.preprocess((input) => {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    Array.isArray(input) ||
+    (input as Readonly<Record<string, unknown>>).kind !== "SetScenePostEffect" ||
+    "effects" in input ||
+    !("effect" in input)
+  ) {
+    return input;
+  }
+  const { effect, ...operation } = input as Readonly<Record<string, unknown>>;
+  return { ...operation, effects: effect === null || effect === undefined ? [] : [effect] };
+}, canonicalSceneEditOperationSchema);
 
 const finiteNumber = z.number().finite();
 const resolvedAnchorSchema = z.object({

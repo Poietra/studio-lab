@@ -88,7 +88,7 @@ describe("canvas worker v1 protocol", () => {
 
   it("admits one bounded Scene post-effect registry only on Scene installation and replacement", () => {
     const registry = new TextEncoder().encode(
-      '{"effect":null,"schema":"poietra.scene-post-effect-registry","version":1}',
+      '{"effects":[],"schema":"poietra.scene-post-effect-registry","version":1}',
     ).buffer;
     const install = {
       assetPayloads: [],
