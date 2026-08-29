@@ -20,9 +20,28 @@ export const sceneIrBundleV1Schema = z
 
 export type SceneIrBundleV1 = z.infer<typeof sceneIrBundleV1Schema>;
 
+function migrateLegacyScenePostEffectV1(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || !("scene" in value)) return value;
+  const scene = (value as Readonly<Record<string, unknown>>).scene;
+  if (
+    typeof scene !== "object" ||
+    scene === null ||
+    Array.isArray(scene) ||
+    "postEffects" in scene ||
+    !("postEffect" in scene)
+  ) {
+    return value;
+  }
+  const { postEffect, ...canonicalScene } = scene as Readonly<Record<string, unknown>>;
+  return {
+    ...(value as Readonly<Record<string, unknown>>),
+    scene: { ...canonicalScene, postEffects: postEffect === null || postEffect === undefined ? [] : [postEffect] },
+  };
+}
+
 /** Admits a Scene bundle through the canonical Rust core. */
 export async function parseVerifiedSceneIrBundleV1(value: unknown): Promise<SceneIrBundleV1> {
-  const json = JSON.stringify(value);
+  const json = JSON.stringify(migrateLegacyScenePostEffectV1(value));
   if (json === undefined) throw new TypeError("The Scene IR bundle is not JSON serializable.");
   const module = await loadPoietraWasmModule();
   if (typeof module.validateSceneIrBundleV1 !== "function") {

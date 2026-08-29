@@ -20,6 +20,7 @@ import {
   sourceIdentityV1Schema,
   strokeStyleV1Schema,
 } from "./primitives";
+import { MAX_SCENE_POST_EFFECTS_V1 } from "./scene-post-effect-registry";
 
 const MAX_ENTITIES = 10_000;
 const MAX_CHANNELS = 10_000;
@@ -390,8 +391,7 @@ const sceneStateSamplingV1Schema = z
   })
   .strict();
 
-/** Type and fixture decoder only; semantic admission belongs to the Rust core. */
-export const sceneIrV1Schema = z
+const canonicalSceneIrV1Schema = z
   .object({
     animationChannels: z.array(animationChannelV1Schema).max(MAX_CHANNELS),
     assetManifest: assetManifestReferenceV1Schema,
@@ -415,7 +415,7 @@ export const sceneIrV1Schema = z
       .min(1)
       .max(MAX_ENTITIES + MAX_CHANNELS),
     requiredCapabilities: z.array(sceneCapabilityV1Schema).max(sceneCapabilityV1Schema.options.length),
-    postEffect: scenePostEffectV1Schema.optional(),
+    postEffects: z.array(scenePostEffectV1Schema).max(MAX_SCENE_POST_EFFECTS_V1).optional(),
     sceneId: sourceIdentityV1Schema,
     schema: z.literal("poietra.scene-ir"),
     source: sceneSourceV1Schema,
@@ -423,6 +423,21 @@ export const sceneIrV1Schema = z
     version: z.literal(POIETRA_ENGINE_CONTRACT_VERSION),
   })
   .strict();
+
+/** Type and fixture decoder only; semantic admission belongs to the Rust core. */
+export const sceneIrV1Schema = z.preprocess((input) => {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    Array.isArray(input) ||
+    "postEffects" in input ||
+    !("postEffect" in input)
+  ) {
+    return input;
+  }
+  const { postEffect, ...scene } = input as Readonly<Record<string, unknown>>;
+  return { ...scene, postEffects: postEffect === null || postEffect === undefined ? [] : [postEffect] };
+}, canonicalSceneIrV1Schema);
 
 type SceneIrV1Input = z.infer<typeof sceneIrV1Schema>;
 export type SceneEntityV1 = SceneIrV1Input["entities"][number];

@@ -28,7 +28,7 @@ const EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON = new TextEncoder().encode(
   '{"materials":[],"schema":"poietra.fragment-material-registry","version":1}',
 );
 const EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON = new TextEncoder().encode(
-  '{"effect":null,"schema":"poietra.scene-post-effect-registry","version":1}',
+  '{"effects":[],"schema":"poietra.scene-post-effect-registry","version":1}',
 );
 
 export type BrowserMp4ExportProgressCallbackV1 = (envelopeJson: Uint8Array) => boolean | undefined;

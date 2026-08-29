@@ -1906,9 +1906,9 @@ function routeScenePostEffectProgramV1(
   }
 }
 
-async function digestScenePostEffectRevisionV1(baseRevision: string, effect: unknown, registry: unknown) {
+async function digestScenePostEffectRevisionV1(baseRevision: string, effects: unknown, registry: unknown) {
   const bytes = new TextEncoder().encode(
-    canonicalJsonV1(["poietra.studio-scene-post-effect", baseRevision, effect, registry]),
+    canonicalJsonV1(["poietra.studio-scene-post-effect", baseRevision, effects, registry]),
   );
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -1940,26 +1940,32 @@ export async function compileStudioPreviewSceneV1(
   if (operation?.kind !== "SetScenePostEffect") {
     return { error: "The Scene post-effect Program is invalid.", kind: "unsupported" };
   }
+  const referencedProjectEffects = operation.effects.filter(
+    ({ shaderId }) => shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  );
   if (
-    operation.effect?.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 &&
-    (registry.effect?.shaderId !== operation.effect.shaderId || registry.effect.revision !== operation.effect.revision)
+    referencedProjectEffects.length !== registry.effects.length ||
+    referencedProjectEffects.some((effect, index) => {
+      const source = registry.effects[index];
+      return source?.shaderId !== effect.shaderId || source.revision !== effect.revision;
+    })
   ) {
-    return { error: "The custom Scene post effect has no matching accepted WGSL source.", kind: "unsupported" };
+    return {
+      error: "The Scene post-effect stack does not have exactly the accepted project-local WGSL sources it references.",
+      kind: "unsupported",
+    };
   }
-  const installedRegistry =
-    operation.effect?.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1
-      ? registry
-      : EMPTY_SCENE_POST_EFFECT_REGISTRY_V1;
+  const installedRegistry = registry.effects.length === 0 ? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1 : registry;
   const nextRevision = await digestScenePostEffectRevisionV1(
     result.scene.engineRevisionHash,
-    operation.effect,
+    operation.effects,
     installedRegistry,
   );
   try {
     const bundle = await (input.applyStudioScenePostEffectCompiler ?? compileApplyStudioScenePostEffect)(
       result.scene.bundle,
       {
-        effect: operation.effect,
+        effects: operation.effects,
         expectedBaseRevision: result.scene.engineRevisionHash,
         nextRevision,
         schema: "poietra.apply-studio-scene-post-effect",

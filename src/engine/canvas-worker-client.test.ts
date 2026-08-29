@@ -456,11 +456,13 @@ describe("Poietra canvas worker client", () => {
       baseRevision: REVISION_A,
       revision: REVISION_B,
       scenePostEffectRegistry: scenePostEffectRegistryV1Schema.parse({
-        effect: {
-          revision: 1,
-          shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
-          source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
-        },
+        effects: [
+          {
+            revision: 1,
+            shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+            source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+          },
+        ],
         schema: "poietra.scene-post-effect-registry",
         version: 1,
       }),
@@ -476,7 +478,7 @@ describe("Poietra canvas worker client", () => {
       replaceRequest.snapshotJson,
     ]);
     expect(JSON.parse(new TextDecoder().decode(replaceRequest.scenePostEffectRegistryJson))).toMatchObject({
-      effect: { revision: 1, shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 },
+      effects: [{ revision: 1, shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 }],
     });
     expect(canvas.transferControlToOffscreen).toHaveBeenCalledOnce();
     const renderRequest = requestAt(worker, 1);

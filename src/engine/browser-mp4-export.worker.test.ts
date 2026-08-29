@@ -92,7 +92,7 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
         scenePostEffectRegistryJson,
       ) => {
         expect(JSON.parse(new TextDecoder().decode(scenePostEffectRegistryJson))).toEqual({
-          effect: null,
+          effects: [],
           schema: "poietra.scene-post-effect-registry",
           version: 1,
         });
@@ -131,7 +131,7 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
     );
     const scenePostEffectRegistry = encoder.encode(
       JSON.stringify({
-        effect: { revision: 1, shaderId: "project-scene-post-effect", source: "@fragment fn fs_main() {}" },
+        effects: [{ revision: 1, shaderId: "project-scene-post-effect", source: "@fragment fn fs_main() {}" }],
         schema: "poietra.scene-post-effect-registry",
         version: 1,
       }),

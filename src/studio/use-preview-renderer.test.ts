@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { pngSnapshotBundleFixture } from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
-import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
+import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1, sceneIrBundleV1Schema } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import {
   type MathTexOutlineResponseV1,
@@ -20,6 +20,7 @@ import type {
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditCompiler,
   ApplyStudioMotionEditWireCommandV1,
+  ApplyStudioScenePostEffectWireCommandV1,
   ApplyStudioTimelineEditCompiler,
   ApplyStudioTimelineEditWireCommandV1,
   StudioCreationProjectionV1,
@@ -28,6 +29,11 @@ import type {
   StudioStaticRootProjectionV1,
 } from "../engine/scene-authoring";
 import { compileApplyStaticRootTransformEdit, compileApplyStudioFragmentMaterials } from "../engine/scene-authoring";
+import {
+  PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+  scenePostEffectRegistryV1Schema,
+} from "../engine/scene-post-effect-registry";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { importManimScene } from "../render-pipeline/source-import";
 import {
@@ -35,6 +41,7 @@ import {
   createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
+  createStudioScenePostEffectProgram,
 } from "./authoring-commands";
 import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
 import { programRecord } from "./evaluator";
@@ -1193,6 +1200,95 @@ describe("studioPreviewInteractionAuthority", () => {
 });
 
 describe("compileStudioPreviewSceneV1", () => {
+  it("applies an ordered stack with exactly its referenced project-local sources", async () => {
+    const base = await compilablePreviewInput();
+    const effects = [
+      { parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" },
+      { parameters: [8, 48, 0.25, 0], revision: 7, shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 },
+    ];
+    const validation = createStudioScenePostEffectProgram({
+      capturedPlayhead: 0.5,
+      effects,
+      scene: base.proposedState.base.runtimeSceneState,
+      transactionId: "scene-effect-stack",
+    });
+    if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+    const record = programRecord(validation.program, validation);
+    const workingRevision = "studio-working-v1:scene-effect-stack";
+    const registry = scenePostEffectRegistryV1Schema.parse({
+      effects: [
+        {
+          revision: 7,
+          shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+        },
+      ],
+      schema: "poietra.scene-post-effect-registry",
+      version: 1,
+    });
+    const commands: ApplyStudioScenePostEffectWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioScenePostEffectCompiler: async (bundle, command) => {
+        commands.push(command);
+        return sceneIrBundleV1Schema.parse({
+          ...bundle,
+          scene: {
+            ...bundle.scene,
+            postEffects: command.effects,
+            requiredCapabilities: [...new Set([...bundle.scene.requiredCapabilities, "scene-post-effect"])],
+            source: {
+              editProgramVersion: 1,
+              kind: "studio-edit-program",
+              revisionHash: command.nextRevision,
+            },
+          },
+        });
+      },
+      frame: { height: 9, width: 16 },
+      scenePostEffectRegistry: registry,
+      snapshot: base.snapshot,
+      workingState: { ...base.proposedState.base, appliedEdits: [record] },
+      workingRevision,
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.effects).toEqual(effects);
+    expect(result.scene.bundle.scene.postEffects).toEqual(effects);
+    expect(result.scene.scenePostEffectRegistry).toBe(registry);
+  });
+
+  it("rejects a missing project-local source before calling the Rust core", async () => {
+    const base = await compilablePreviewInput();
+    const validation = createStudioScenePostEffectProgram({
+      capturedPlayhead: 0.5,
+      effects: [{ parameters: [8, 48, 0.25, 0], revision: 7, shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 }],
+      scene: base.proposedState.base.runtimeSceneState,
+      transactionId: "missing-scene-effect-source",
+    });
+    if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+    let compilerCalls = 0;
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioScenePostEffectCompiler: async (bundle) => {
+        compilerCalls += 1;
+        return bundle;
+      },
+      frame: { height: 9, width: 16 },
+      snapshot: base.snapshot,
+      workingState: {
+        ...base.proposedState.base,
+        appliedEdits: [programRecord(validation.program, validation)],
+      },
+      workingRevision: "studio-working-v1:missing-scene-effect-source",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    expect(result).toMatchObject({ kind: "unsupported" });
+    expect(compilerCalls).toBe(0);
+  });
+
   it("compiles a locally ingested PNG into ImageMobject on one exact native base", async () => {
     const documentKey = "d".repeat(64);
     const projectId = "native-project";

@@ -185,7 +185,7 @@ describe("Poietra canvas worker runtime", () => {
     expect(snapshots).toEqual(["snapshot-a"]);
     expect(canvases).toHaveLength(1);
     expect(scenePostEffectRegistries).toEqual([
-      { effect: null, schema: "poietra.scene-post-effect-registry", version: 1 },
+      { effects: [], schema: "poietra.scene-post-effect-registry", version: 1 },
     ]);
     expect(samples).toEqual([
       {
@@ -246,7 +246,7 @@ describe("Poietra canvas worker runtime", () => {
     }
     const registry = new TextEncoder().encode(
       JSON.stringify({
-        effect: { revision: 1, shaderId: "project-scene-post-effect", source: "@fragment fn fs_main() {}" },
+        effects: [{ revision: 1, shaderId: "project-scene-post-effect", source: "@fragment fn fs_main() {}" }],
         schema: "poietra.scene-post-effect-registry",
         version: 1,
       }),
@@ -271,8 +271,8 @@ describe("Poietra canvas worker runtime", () => {
     });
 
     expect(registries).toEqual([
-      expect.objectContaining({ effect: expect.objectContaining({ shaderId: "project-scene-post-effect" }) }),
-      expect.objectContaining({ effect: expect.objectContaining({ shaderId: "project-scene-post-effect" }) }),
+      expect.objectContaining({ effects: [expect.objectContaining({ shaderId: "project-scene-post-effect" })] }),
+      expect.objectContaining({ effects: [expect.objectContaining({ shaderId: "project-scene-post-effect" })] }),
     ]);
   });
 

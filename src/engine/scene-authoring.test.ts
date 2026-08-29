@@ -488,7 +488,7 @@ describe("Scene authoring WASM adapter", () => {
   it("forwards the exact built-in Scene post-effect assignment", async () => {
     const bundle = await fixtureBundle();
     const command: ApplyStudioScenePostEffectWireCommandV1 = {
-      effect: { parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" },
+      effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
       expectedBaseRevision: "a".repeat(64),
       nextRevision: "b".repeat(64),
       schema: "poietra.apply-studio-scene-post-effect",
@@ -499,14 +499,14 @@ describe("Scene authoring WASM adapter", () => {
       applyStudioScenePostEffectV1: (snapshotJson, commandJson) => {
         calls.push(JSON.parse(new TextDecoder().decode(commandJson)));
         const snapshot = JSON.parse(new TextDecoder().decode(snapshotJson));
-        snapshot.scene.postEffect = command.effect;
+        snapshot.scene.postEffects = command.effects;
         snapshot.scene.requiredCapabilities = [...snapshot.scene.requiredCapabilities, "scene-post-effect"];
         snapshot.scene.source = { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: "b".repeat(64) };
         return new TextEncoder().encode(JSON.stringify(snapshot));
       },
     }));
 
-    await expect(compile(bundle, command)).resolves.toMatchObject({ scene: { postEffect: command.effect } });
+    await expect(compile(bundle, command)).resolves.toMatchObject({ scene: { postEffects: command.effects } });
     expect(calls).toEqual([command]);
   });
 

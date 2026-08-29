@@ -28,7 +28,7 @@ import {
   type SceneEdit,
   type SceneEditOperation,
   type StudioScenePostEffectV1,
-  studioScenePostEffectV1Schema,
+  scenePostEffectStackV1Schema,
 } from "./scene-edit-contract";
 import { STUDIO_STYLE_PROFILE, type StyleProfileRef, styleProfileRef } from "./style-profile";
 import { resolveTimeAnchorOnce } from "./time";
@@ -220,17 +220,17 @@ export function replaceStudioSceneBackgroundProgram(
 export function createStudioScenePostEffectProgram(
   input: Readonly<{
     capturedPlayhead: number;
-    effect: StudioScenePostEffectV1;
+    effects: readonly StudioScenePostEffectV1[];
     scene: RuntimeSceneState;
     transactionId: string;
   }>,
 ): SceneEditValidationResult {
-  const effect = studioScenePostEffectV1Schema.parse(input.effect);
+  const effects = scenePostEffectStackV1Schema.parse(input.effects);
   return authoringProgram(
     [
       {
         dependsOn: [],
-        effect,
+        effects,
         id: operationId(input.transactionId, "set-scene-post-effect"),
         interval: { end: input.capturedPlayhead, start: input.capturedPlayhead },
         kind: "SetScenePostEffect",
@@ -250,7 +250,7 @@ export function createStudioScenePostEffectProgram(
 
 export function replaceStudioScenePostEffectProgram(
   input: Readonly<{
-    effect: StudioScenePostEffectV1 | null;
+    effects: readonly StudioScenePostEffectV1[];
     owner: ProgramRecord;
     scene: RuntimeSceneState;
   }>,
@@ -269,7 +269,7 @@ export function replaceStudioScenePostEffectProgram(
       operations: [
         {
           ...operation,
-          effect: input.effect === null ? null : studioScenePostEffectV1Schema.parse(input.effect),
+          effects: scenePostEffectStackV1Schema.parse(input.effects),
         },
       ],
     },

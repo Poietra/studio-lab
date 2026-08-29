@@ -268,6 +268,19 @@ describe("Poietra Engine v1 contracts", () => {
     ).toBe(false);
   });
 
+  it("migrates a legacy singleton Scene post effect to the canonical stack at the parse boundary", async () => {
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const legacy = {
+      ...validScene,
+      postEffect: { parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" },
+    };
+
+    const migrated = sceneIrV1Schema.parse(legacy);
+    expect(migrated.postEffects).toEqual([legacy.postEffect]);
+    expect(migrated).not.toHaveProperty("postEffect");
+  });
+
   it("delegates Scene semantic invariants to the Rust core", async () => {
     const assets = await manifest();
     const validScene = scene(assets);
