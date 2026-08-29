@@ -224,13 +224,14 @@ export function ScenePostEffectSourceEditor({
 
           {sourceLanguage === "glsl" ? (
             <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
-              Vulkan GLSL 450 fragment profile: entry point main; set 0 binding 0 is the host uniform and binding 1 is
-              the current Scene texture. The fullscreen vertex stage is renderer-owned.
+              Vulkan GLSL 450 fragment profile: entry point main; set 0 binding 0 is the host uniform, binding 1 is the
+              current Scene texture, and binding 2 is the fixed linear clamp sampler. The fullscreen vertex stage is
+              renderer-owned.
             </p>
           ) : (
             <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
-              Fixed ABI: binding 0 is viewport, sample time, and 8 scalar slots; binding 1 is the current Scene texture.
-              The fullscreen vertex stage is renderer-owned.
+              Fixed ABI: binding 0 is viewport, sample time, and 8 scalar slots; binding 1 is the current Scene texture;
+              binding 2 is the fixed linear clamp sampler. The fullscreen vertex stage is renderer-owned.
             </p>
           )}
 

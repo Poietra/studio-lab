@@ -21,8 +21,10 @@ layout(set = 0, binding = 0, std140) uniform PoietraHost {
     vec4 parameters_1;
 } host;
 layout(set = 0, binding = 1) uniform texture2D scene_texture;
+layout(set = 0, binding = 2) uniform sampler scene_sampler;
 void main() {
-    output_color = texelFetch(scene_texture, ivec2(gl_FragCoord.xy), 0);
+    vec2 coordinate = gl_FragCoord.xy / max(host.viewport_and_time.xy, vec2(1.0));
+    output_color = texture(sampler2D(scene_texture, scene_sampler), coordinate);
 }
 `;
 
@@ -109,6 +111,7 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("Active · generation 1");
     expect(markup).toContain("binding 0 is viewport, sample time, and 8 scalar slots");
     expect(markup).toContain("binding 1 is the current Scene texture");
+    expect(markup).toContain("binding 2 is the fixed linear clamp sampler");
     expect(markup).toContain("renderer-owned");
     expect(markup).toContain('aria-label="Scene post-effect parameters"');
     expect(markup).toContain('aria-label="Amplitude Scene post-effect parameter"');
@@ -118,7 +121,7 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("<output>80</output>");
     expect(markup).toContain("<output>1.25</output>");
     expect(markup).toContain('aria-label="Scene post-effect WGSL source"');
-    expect(markup).toContain("textureLoad(scene_texture");
+    expect(markup).toContain("textureSample(scene_texture, scene_sampler");
     expect(markup).toContain("Compile &amp; accept WGSL");
     expect(markup).toContain("Reset source");
     expect(markup).toContain("Applied to Scene");
@@ -149,6 +152,7 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain('<option value="glsl" selected="">Vulkan GLSL 450</option>');
     expect(markup).toContain("entry point main");
     expect(markup).toContain("set 0 binding 0");
+    expect(markup).toContain("binding 2 is the fixed linear clamp sampler");
     expect(markup).toContain('accept=".frag,.glsl"');
     expect(markup).toContain('aria-label="Scene post-effect GLSL source"');
     expect(markup).toContain("#version 450");

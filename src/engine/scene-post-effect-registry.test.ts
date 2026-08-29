@@ -21,6 +21,8 @@ describe("Scene post-effect registry", () => {
       version: 1,
     });
 
+    expect(STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1).toContain("@group(0) @binding(2)");
+    expect(STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1).toContain("textureSample(scene_texture, scene_sampler");
     expect(JSON.parse(new TextDecoder().decode(encodeScenePostEffectRegistryV1(registry)))).toEqual(registry);
   });
 
