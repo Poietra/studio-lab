@@ -724,7 +724,7 @@ where
             assets,
             sample_packet,
             fragment_materials,
-            None,
+            &[],
         )
         .await
     }
@@ -747,7 +747,7 @@ where
         assets: &'assets dyn DecodedPngAssetResolverV1,
         sample_packet: SamplePacket,
         fragment_materials: &[FragmentMaterialSourceV1],
-        scene_post_effect: Option<&ScenePostEffectSourceV1>,
+        scene_post_effects: &[ScenePostEffectSourceV1],
     ) -> Result<Self, ExportFrameSequenceErrorV1<SampleError>> {
         let mut session = Self::new(device, queue, scene, params, assets, sample_packet)?;
         session
@@ -756,7 +756,7 @@ where
             .await?;
         session
             .renderer
-            .replace_scene_post_effect_source(device, scene_post_effect)
+            .replace_scene_post_effect_sources(device, scene_post_effects)
             .await?;
         Ok(session)
     }
@@ -1127,7 +1127,7 @@ mod tests {
                 origin: ProvenanceOriginV1::Fixture,
             }],
             required_capabilities,
-            post_effect: None,
+            post_effects: Vec::new(),
             scene_id: "scene".to_owned(),
             schema: SceneIrSchemaV1::SceneIr,
             source: SceneSourceV1::StudioEditProgram {

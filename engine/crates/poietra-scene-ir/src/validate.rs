@@ -6,10 +6,10 @@ use crate::export_profile::ExportProfileV1;
 use crate::model::{
     AffineTransformV1, AnimationChannelV1, AssetManifestReferenceV1, AssetManifestV1,
     AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1, FragmentMaterialV1,
-    ImageLocalRectV1, IntervalV1, KeyframeV1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, PointV1,
-    RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketV1,
-    RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneGeometryV1,
-    SceneIrV1, ScenePostEffectV1, SceneSourceV1, StrokeStyleV1,
+    ImageLocalRectV1, IntervalV1, KeyframeV1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1,
+    MAX_SCENE_POST_EFFECTS_V1, PointV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1,
+    RenderEmptyReasonV1, RenderPacketV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
+    SceneCapabilityV1, SceneGeometryV1, SceneIrV1, ScenePostEffectV1, SceneSourceV1, StrokeStyleV1,
 };
 
 pub const MAX_COORDINATE_V1: f64 = 1_000_000_000.0;
@@ -354,6 +354,27 @@ fn validate_scene_post_effect(effect: &ScenePostEffectV1, path: &str, validator:
             && (*parameter < f64::from(f32::MIN) || *parameter > f64::from(f32::MAX))
         {
             validator.issue(parameter_path, "must fit the finite f32 range");
+        }
+    }
+}
+
+fn validate_scene_post_effects(
+    effects: &[ScenePostEffectV1],
+    path: &str,
+    validator: &mut Validator,
+) {
+    if effects.len() > MAX_SCENE_POST_EFFECTS_V1 {
+        validator.issue(
+            path,
+            format!("accepts at most {MAX_SCENE_POST_EFFECTS_V1} ordered passes"),
+        );
+    }
+    let mut identities = HashSet::new();
+    for (index, effect) in effects.iter().enumerate() {
+        let effect_path = format!("{path}[{index}]");
+        validate_scene_post_effect(effect, &effect_path, validator);
+        if !identities.insert((effect.shader_id.as_str(), effect.revision)) {
+            validator.issue(effect_path, "duplicates an earlier shaderId/revision pair");
         }
     }
 }
@@ -784,7 +805,7 @@ fn validate_scene_source(source: &SceneSourceV1, path: &str, validator: &mut Val
 
 fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
     let mut capabilities = BTreeSet::new();
-    if scene.post_effect.is_some() {
+    if !scene.post_effects.is_empty() {
         capabilities.insert(SceneCapabilityV1::ScenePostEffect);
     }
     for entity in &scene.entities {
@@ -986,9 +1007,7 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
     );
     validate_camera_view(&scene.camera.view, "$.camera.view", &mut validator);
     validate_scene_source(&scene.source, "$.source", &mut validator);
-    if let Some(effect) = &scene.post_effect {
-        validate_scene_post_effect(effect, "$.postEffect", &mut validator);
-    }
+    validate_scene_post_effects(&scene.post_effects, "$.postEffects", &mut validator);
 
     match &scene.fidelity {
         FidelityV1::Exact {} => {}
@@ -1670,7 +1689,7 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
 
 fn required_render_capabilities(packet: &RenderPacketV1) -> Vec<RenderCapabilityV1> {
     let mut capabilities = BTreeSet::new();
-    if packet.post_effect.is_some() {
+    if !packet.post_effects.is_empty() {
         capabilities.insert(RenderCapabilityV1::ScenePostEffect);
     }
     for draw in &packet.draws {
@@ -1742,9 +1761,7 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
     for (index, evidence) in packet.evidence.iter().enumerate() {
         validate_evidence(evidence, &format!("$.evidence[{index}]"), &mut validator);
     }
-    if let Some(effect) = &packet.post_effect {
-        validate_scene_post_effect(effect, "$.postEffect", &mut validator);
-    }
+    validate_scene_post_effects(&packet.post_effects, "$.postEffects", &mut validator);
 
     validate_coordinate(packet.camera.bottom, "$.camera.bottom", &mut validator);
     validate_coordinate(packet.camera.left, "$.camera.left", &mut validator);

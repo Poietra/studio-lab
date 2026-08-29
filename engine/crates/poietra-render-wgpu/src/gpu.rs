@@ -1282,13 +1282,13 @@ impl WgpuFillRendererV1 {
     /// # Errors
     ///
     /// Returns an exact identity, source-contract, or GPU compilation error.
-    pub async fn replace_scene_post_effect_source(
+    pub async fn replace_scene_post_effect_sources(
         &mut self,
         device: &wgpu::Device,
-        source: Option<&ScenePostEffectSourceV1>,
+        sources: &[ScenePostEffectSourceV1],
     ) -> Result<(), ScenePostEffectRegistryErrorV1> {
         self.scene_post_effect_gpu
-            .replace_source(device, source)
+            .replace_sources(device, sources)
             .await
     }
 
@@ -1471,17 +1471,17 @@ impl WgpuFillRendererV1 {
             }
         }
 
-        if let Some(effect) = frame.scene_post_effect() {
+        if frame.scene_post_effects().is_empty() {
+            self.scene_post_effect_gpu.clear_targets();
+        } else {
             self.scene_post_effect_gpu.prepare(
                 device,
                 queue,
                 expected_target_format,
                 [target.width_px, target.height_px],
                 frame.sample_time(),
-                effect.parameters(),
+                frame.scene_post_effects(),
             );
-        } else {
-            self.scene_post_effect_gpu.clear_target();
         }
 
         let mut evidence = RenderStageEvidenceV1::empty();
@@ -1711,9 +1711,14 @@ impl WgpuFillRendererV1 {
             pass.set_bind_group(0, &portable_aa_target.resolve_binding, &[]);
             pass.draw(0..3, 0..1);
         }
-        if let Some(effect) = frame.scene_post_effect() {
+        if !frame.scene_post_effects().is_empty() {
             self.scene_post_effect_gpu
-                .record(&mut encoder, target.view, frame.compositing(), effect)
+                .record(
+                    &mut encoder,
+                    target.view,
+                    frame.compositing(),
+                    frame.scene_post_effects(),
+                )
                 .ok_or(GpuUploadPlanErrorV1::Inconsistent(
                     "prepared Scene post effect has no matching retained pipeline or color target",
                 ))?;

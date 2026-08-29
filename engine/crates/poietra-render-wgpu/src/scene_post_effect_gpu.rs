@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use poietra_scene_ir::{
-    PROJECT_SCENE_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_ID,
-    RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCompositingV1,
+    MAX_SCENE_POST_EFFECTS_V1, PROJECT_SCENE_POST_EFFECT_SHADER_ID,
+    RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCompositingV1,
 };
 use wgpu::util::DeviceExt;
 
@@ -25,6 +25,10 @@ pub struct ScenePostEffectSourceV1 {
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum ScenePostEffectRegistryErrorV1 {
+    #[error("Scene post-effect registry accepts at most {maximum} sources")]
+    TooManySources { maximum: usize },
+    #[error("Scene post-effect registry repeats {shader_id}@{revision}")]
+    Duplicate { revision: u32, shader_id: String },
     #[error("Scene post effect {shader_id}@{revision} uses the reserved built-in identity")]
     Reserved { revision: u32, shader_id: String },
     #[error("project Scene post-effect shader ID must be {PROJECT_SCENE_POST_EFFECT_SHADER_ID}")]
@@ -47,7 +51,7 @@ pub enum ScenePostEffectRegistryErrorV1 {
     },
 }
 
-/// Validates the one admitted project identity, source bound, WGSL resources,
+/// Validates one admitted project identity, source bound, WGSL resources,
 /// entry point, and fragment interface without allocating GPU resources.
 ///
 /// # Errors
@@ -84,6 +88,33 @@ pub fn validate_scene_post_effect_source_v1(
     })
 }
 
+/// Validates the complete bounded source registry before GPU installation.
+///
+/// # Errors
+///
+/// Rejects oversized registries, duplicate identities, or any invalid source.
+pub fn validate_scene_post_effect_sources_v1(
+    sources: &[ScenePostEffectSourceV1],
+) -> Result<(), ScenePostEffectRegistryErrorV1> {
+    if sources.len() > MAX_SCENE_POST_EFFECTS_V1 {
+        return Err(ScenePostEffectRegistryErrorV1::TooManySources {
+            maximum: MAX_SCENE_POST_EFFECTS_V1,
+        });
+    }
+    for (index, source) in sources.iter().enumerate() {
+        validate_scene_post_effect_source_v1(source)?;
+        if sources[..index].iter().any(|earlier| {
+            earlier.shader_id == source.shader_id && earlier.revision == source.revision
+        }) {
+            return Err(ScenePostEffectRegistryErrorV1::Duplicate {
+                revision: source.revision,
+                shader_id: source.shader_id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 const HOST_UNIFORM_FLOATS: usize = 12;
 const HOST_UNIFORM_BYTES: usize = 48;
 const HOST_UNIFORM_BUFFER_SIZE: u64 = 48;
@@ -113,7 +144,7 @@ struct ProjectScenePostEffectPipelines {
 
 #[derive(Debug)]
 struct SceneColorTarget {
-    binding: wgpu::BindGroup,
+    bindings: Vec<wgpu::BindGroup>,
     format: wgpu::TextureFormat,
     height_px: u32,
     _texture: wgpu::Texture,
@@ -130,6 +161,84 @@ impl SceneColorTarget {
         u64::from(self.width_px)
             .checked_mul(u64::from(self.height_px))?
             .checked_mul(RGBA8_BYTES_PER_PIXEL)
+    }
+}
+
+#[derive(Debug)]
+struct SceneColorTargets {
+    first: SceneColorTarget,
+    second: SceneColorTarget,
+}
+
+impl SceneColorTargets {
+    fn matches(&self, format: wgpu::TextureFormat, width_px: u32, height_px: u32) -> bool {
+        self.first.matches(format, width_px, height_px)
+            && self.second.matches(format, width_px, height_px)
+    }
+
+    fn accounted_bytes(&self) -> Option<u64> {
+        self.first
+            .accounted_bytes()?
+            .checked_add(self.second.accounted_bytes()?)
+    }
+}
+
+fn create_scene_color_target(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    linear_clamp_sampler: &wgpu::Sampler,
+    uniform_buffers: &[wgpu::Buffer],
+    format: wgpu::TextureFormat,
+    extent: [u32; 2],
+    label: &str,
+) -> SceneColorTarget {
+    let [width_px, height_px] = extent;
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            depth_or_array_layers: 1,
+            height: height_px,
+            width: width_px,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let bindings = uniform_buffers
+        .iter()
+        .enumerate()
+        .map(|(index, uniform_buffer)| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(&format!("poietra Scene post-effect input binding {index}")),
+                layout: bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(linear_clamp_sampler),
+                    },
+                ],
+            })
+        })
+        .collect();
+    SceneColorTarget {
+        bindings,
+        format,
+        height_px,
+        _texture: texture,
+        view,
+        width_px,
     }
 }
 
@@ -268,11 +377,11 @@ pub(crate) struct ScenePostEffectGpu {
     bind_group_layout: wgpu::BindGroupLayout,
     builtin: ScenePostEffectPipelines,
     cairo_target_format: wgpu::TextureFormat,
-    custom: Option<ProjectScenePostEffectPipelines>,
+    custom: Vec<ProjectScenePostEffectPipelines>,
     linear_clamp_sampler: wgpu::Sampler,
     linear_target_format: wgpu::TextureFormat,
-    target: Option<SceneColorTarget>,
-    uniform_buffer: wgpu::Buffer,
+    targets: Option<SceneColorTargets>,
+    uniform_buffers: Vec<wgpu::Buffer>,
 }
 
 impl ScenePostEffectGpu {
@@ -331,11 +440,15 @@ impl ScenePostEffectGpu {
                 "poietra linear-light RGB split post-effect pipeline v1",
             ),
         };
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("poietra scene post-effect host ABI uniform v1"),
-            contents: &[0; HOST_UNIFORM_BYTES],
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
-        });
+        let uniform_buffers = (0..MAX_SCENE_POST_EFFECTS_V1)
+            .map(|index| {
+                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("poietra Scene post-effect pass {index} uniform")),
+                    contents: &[0; HOST_UNIFORM_BYTES],
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+                })
+            })
+            .collect();
         let linear_clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("poietra Scene post-effect linear clamp sampler v1"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -350,59 +463,58 @@ impl ScenePostEffectGpu {
             bind_group_layout,
             builtin,
             cairo_target_format,
-            custom: None,
+            custom: Vec::new(),
             linear_clamp_sampler,
             linear_target_format,
-            target: None,
-            uniform_buffer,
+            targets: None,
+            uniform_buffers,
         }
     }
 
-    pub(crate) async fn replace_source(
+    pub(crate) async fn replace_sources(
         &mut self,
         device: &wgpu::Device,
-        source: Option<&ScenePostEffectSourceV1>,
+        sources: &[ScenePostEffectSourceV1],
     ) -> Result<(), ScenePostEffectRegistryErrorV1> {
-        let Some(source) = source else {
-            self.custom = None;
-            return Ok(());
-        };
-        validate_scene_post_effect_source_v1(source)?;
-
-        #[cfg(not(target_arch = "wasm32"))]
-        let candidate = {
-            let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let candidate = create_project_scene_post_effect_pipelines_v1(
+        validate_scene_post_effect_sources_v1(sources)?;
+        let mut candidates = Vec::with_capacity(sources.len());
+        for source in sources {
+            #[cfg(not(target_arch = "wasm32"))]
+            let candidate = {
+                let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let candidate = create_project_scene_post_effect_pipelines_v1(
+                    device,
+                    &self.bind_group_layout,
+                    self.linear_target_format,
+                    self.cairo_target_format,
+                    source,
+                );
+                if let Some(error) = validation_scope.pop().await {
+                    return Err(ScenePostEffectRegistryErrorV1::Compilation {
+                        message: error.to_string(),
+                        revision: source.revision,
+                        shader_id: source.shader_id.clone(),
+                    });
+                }
+                candidate
+            };
+            #[cfg(target_arch = "wasm32")]
+            let candidate = create_scoped_project_scene_post_effect_pipelines_v1(
                 device,
                 &self.bind_group_layout,
                 self.linear_target_format,
                 self.cairo_target_format,
                 source,
-            );
-            if let Some(error) = validation_scope.pop().await {
-                return Err(ScenePostEffectRegistryErrorV1::Compilation {
-                    message: error.to_string(),
-                    revision: source.revision,
-                    shader_id: source.shader_id.clone(),
-                });
-            }
-            candidate
-        };
-        #[cfg(target_arch = "wasm32")]
-        let candidate = create_scoped_project_scene_post_effect_pipelines_v1(
-            device,
-            &self.bind_group_layout,
-            self.linear_target_format,
-            self.cairo_target_format,
-            source,
-        )
-        .await
-        .map_err(|message| ScenePostEffectRegistryErrorV1::Compilation {
-            message,
-            revision: source.revision,
-            shader_id: source.shader_id.clone(),
-        })?;
-        self.custom = Some(candidate);
+            )
+            .await
+            .map_err(|message| ScenePostEffectRegistryErrorV1::Compilation {
+                message,
+                revision: source.revision,
+                shader_id: source.shader_id.clone(),
+            })?;
+            candidates.push(candidate);
+        }
+        self.custom = candidates;
         Ok(())
     }
 
@@ -411,12 +523,12 @@ impl ScenePostEffectGpu {
             && revision == RGB_SPLIT_POST_EFFECT_SHADER_REVISION)
             || self
                 .custom
-                .as_ref()
-                .is_some_and(|custom| custom.shader_id == shader_id && custom.revision == revision)
+                .iter()
+                .any(|custom| custom.shader_id == shader_id && custom.revision == revision)
     }
 
-    pub(crate) fn clear_target(&mut self) {
-        self.target = None;
+    pub(crate) fn clear_targets(&mut self) {
+        self.targets = None;
     }
 
     #[allow(
@@ -430,72 +542,52 @@ impl ScenePostEffectGpu {
         format: wgpu::TextureFormat,
         viewport: [u32; 2],
         sample_time: f32,
-        parameters: &[f32; 8],
+        effects: &[PreparedScenePostEffectV1],
     ) {
         let [width_px, height_px] = viewport;
-        let recreate_target = self
-            .target
+        let recreate_targets = self
+            .targets
             .as_ref()
-            .is_none_or(|target| !target.matches(format, width_px, height_px));
-        if recreate_target {
-            let texture = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("poietra scene post-effect color target v1"),
-                size: wgpu::Extent3d {
-                    depth_or_array_layers: 1,
-                    height: height_px,
-                    width: width_px,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                    | wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            });
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let binding = device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("poietra scene post-effect host ABI binding v1"),
-                layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: self.uniform_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: wgpu::BindingResource::Sampler(&self.linear_clamp_sampler),
-                    },
-                ],
-            });
-            self.target = Some(SceneColorTarget {
-                binding,
-                format,
-                height_px,
-                _texture: texture,
-                view,
-                width_px,
+            .is_none_or(|targets| !targets.matches(format, width_px, height_px));
+        if recreate_targets {
+            self.targets = Some(SceneColorTargets {
+                first: create_scene_color_target(
+                    device,
+                    &self.bind_group_layout,
+                    &self.linear_clamp_sampler,
+                    &self.uniform_buffers,
+                    format,
+                    [width_px, height_px],
+                    "poietra Scene post-effect ping target A",
+                ),
+                second: create_scene_color_target(
+                    device,
+                    &self.bind_group_layout,
+                    &self.linear_clamp_sampler,
+                    &self.uniform_buffers,
+                    format,
+                    [width_px, height_px],
+                    "poietra Scene post-effect pong target B",
+                ),
             });
         }
 
-        let mut values = [0.0_f32; HOST_UNIFORM_FLOATS];
-        values[0] = width_px as f32;
-        values[1] = height_px as f32;
-        values[2] = sample_time;
-        values[4..].copy_from_slice(parameters);
-        let mut bytes = [0_u8; HOST_UNIFORM_BYTES];
-        for (chunk, value) in bytes.chunks_exact_mut(4).zip(values) {
-            chunk.copy_from_slice(&value.to_le_bytes());
+        for (effect, uniform_buffer) in effects.iter().zip(&self.uniform_buffers) {
+            let mut values = [0.0_f32; HOST_UNIFORM_FLOATS];
+            values[0] = width_px as f32;
+            values[1] = height_px as f32;
+            values[2] = sample_time;
+            values[4..].copy_from_slice(effect.parameters());
+            let mut bytes = [0_u8; HOST_UNIFORM_BYTES];
+            for (chunk, value) in bytes.chunks_exact_mut(4).zip(values) {
+                chunk.copy_from_slice(&value.to_le_bytes());
+            }
+            queue.write_buffer(uniform_buffer, 0, &bytes);
         }
-        queue.write_buffer(&self.uniform_buffer, 0, &bytes);
     }
 
     pub(crate) fn scene_view(&self) -> Option<&wgpu::TextureView> {
-        self.target.as_ref().map(|target| &target.view)
+        self.targets.as_ref().map(|targets| &targets.first.view)
     }
 
     pub(crate) fn record(
@@ -503,49 +595,62 @@ impl ScenePostEffectGpu {
         encoder: &mut wgpu::CommandEncoder,
         target_view: &wgpu::TextureView,
         compositing: RenderCompositingV1,
-        effect: &PreparedScenePostEffectV1,
+        effects: &[PreparedScenePostEffectV1],
     ) -> Option<()> {
-        let target = self.target.as_ref()?;
-        let pipelines = if effect.shader_id() == RGB_SPLIT_POST_EFFECT_SHADER_ID
-            && effect.revision() == RGB_SPLIT_POST_EFFECT_SHADER_REVISION
-        {
-            &self.builtin
-        } else {
-            &self
-                .custom
-                .as_ref()
-                .filter(|custom| {
-                    custom.shader_id == effect.shader_id() && custom.revision == effect.revision()
-                })?
-                .pipelines
-        };
-        let attachments = [Some(wgpu::RenderPassColorAttachment {
-            view: target_view,
-            depth_slice: None,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                store: wgpu::StoreOp::Store,
-            },
-        })];
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("poietra scene post-effect pass v1"),
-            color_attachments: &attachments,
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_pipeline(pipelines.for_compositing(compositing));
-        pass.set_bind_group(0, &target.binding, &[]);
-        pass.draw(0..3, 0..1);
+        let targets = self.targets.as_ref()?;
+        for (index, effect) in effects.iter().enumerate() {
+            let pipelines = if effect.shader_id() == RGB_SPLIT_POST_EFFECT_SHADER_ID
+                && effect.revision() == RGB_SPLIT_POST_EFFECT_SHADER_REVISION
+            {
+                &self.builtin
+            } else {
+                &self
+                    .custom
+                    .iter()
+                    .find(|custom| {
+                        custom.shader_id == effect.shader_id()
+                            && custom.revision == effect.revision()
+                    })?
+                    .pipelines
+            };
+            let (input, intermediate_output) = if index % 2 == 0 {
+                (&targets.first, &targets.second.view)
+            } else {
+                (&targets.second, &targets.first.view)
+            };
+            let output = if index + 1 == effects.len() {
+                target_view
+            } else {
+                intermediate_output
+            };
+            let attachments = [Some(wgpu::RenderPassColorAttachment {
+                view: output,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })];
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("poietra Scene post-effect stack pass"),
+                color_attachments: &attachments,
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(pipelines.for_compositing(compositing));
+            pass.set_bind_group(0, input.bindings.get(index)?, &[]);
+            pass.draw(0..3, 0..1);
+        }
         Some(())
     }
 
     pub(crate) fn accounted_bytes(&self) -> Option<u64> {
-        self.target
+        self.targets
             .as_ref()
-            .map_or(Some(0), SceneColorTarget::accounted_bytes)
+            .map_or(Some(0), SceneColorTargets::accounted_bytes)
     }
 }
 
@@ -571,7 +676,7 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
     }
 
     #[test]
-    fn validates_the_single_bounded_project_identity() {
+    fn validates_the_bounded_project_source_registry() {
         assert!(
             validate_scene_post_effect_source_v1(&source(
                 PROJECT_SCENE_POST_EFFECT_SHADER_ID,
@@ -599,6 +704,27 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
                 VALID,
             )),
             Err(ScenePostEffectRegistryErrorV1::InvalidRevision)
+        ));
+
+        let four = (1..=MAX_SCENE_POST_EFFECTS_V1)
+            .map(|revision| {
+                source(
+                    PROJECT_SCENE_POST_EFFECT_SHADER_ID,
+                    u32::try_from(revision).unwrap(),
+                    VALID,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(validate_scene_post_effect_sources_v1(&four).is_ok());
+        let mut five = four.clone();
+        five.push(source(PROJECT_SCENE_POST_EFFECT_SHADER_ID, 5, VALID));
+        assert!(matches!(
+            validate_scene_post_effect_sources_v1(&five),
+            Err(ScenePostEffectRegistryErrorV1::TooManySources { .. })
+        ));
+        assert!(matches!(
+            validate_scene_post_effect_sources_v1(&[four[0].clone(), four[0].clone()]),
+            Err(ScenePostEffectRegistryErrorV1::Duplicate { .. })
         ));
     }
 }

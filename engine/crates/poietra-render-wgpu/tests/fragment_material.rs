@@ -23,20 +23,18 @@ use support::{
 #[test]
 fn prepares_only_the_bounded_rgb_split_scene_post_effect() {
     let mut packet = sampled_packet();
-    packet.post_effect = Some(ScenePostEffectV1 {
+    packet.post_effects = vec![ScenePostEffectV1 {
         parameters: vec![4.0, 2.0, 1.5, 0.25],
         revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
         shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
-    });
+    }];
     packet
         .required_capabilities
         .push(RenderCapabilityV1::ScenePostEffect);
     packet.required_capabilities.sort_unstable();
 
     let prepared = prepare_frame_v1(&packet).expect("the built-in RGB split must prepare");
-    let effect = prepared
-        .scene_post_effect()
-        .expect("the prepared frame must retain the scene post effect");
+    let effect = &prepared.scene_post_effects()[0];
     assert_eq!(effect.shader_id(), RGB_SPLIT_POST_EFFECT_SHADER_ID);
     assert_eq!(effect.revision(), RGB_SPLIT_POST_EFFECT_SHADER_REVISION);
     let expected_parameters = [4.0_f32, 2.0, 1.5, 0.25, 0.0, 0.0, 0.0, 0.0];
@@ -48,7 +46,7 @@ fn prepares_only_the_bounded_rgb_split_scene_post_effect() {
             .all(|(actual, expected)| actual.to_bits() == expected.to_bits())
     );
 
-    packet.post_effect.as_mut().unwrap().revision += 1;
+    packet.post_effects[0].revision += 1;
     assert!(matches!(
         prepare_frame_v1(&packet),
         Err(PrepareFrameErrorV1::UnsupportedScenePostEffect {
@@ -230,11 +228,11 @@ impl ScenePostEffectSupportV1 for ProjectScenePostEffect {
 #[test]
 fn resolves_custom_scene_post_effect_against_the_exact_installed_revision() {
     let mut packet = sampled_packet();
-    packet.post_effect = Some(ScenePostEffectV1 {
+    packet.post_effects = vec![ScenePostEffectV1 {
         parameters: vec![3.0],
         revision: 7,
         shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
-    });
+    }];
     packet
         .required_capabilities
         .push(RenderCapabilityV1::ScenePostEffect);
@@ -249,11 +247,11 @@ fn resolves_custom_scene_post_effect_against_the_exact_installed_revision() {
     )
     .expect("the exact project Scene post-effect revision must prepare");
     assert_eq!(
-        prepared.scene_post_effect().unwrap().shader_id(),
+        prepared.scene_post_effects()[0].shader_id(),
         PROJECT_SCENE_POST_EFFECT_SHADER_ID
     );
 
-    packet.post_effect.as_mut().unwrap().revision = 8;
+    packet.post_effects[0].revision = 8;
     assert!(matches!(
         prepare_frame_with_cache_assets_and_shader_sources_v1(
             &packet,

@@ -337,11 +337,11 @@ fn validate_render_packet_for_scene(
             "packet compositing does not match scene semantics",
         );
     }
-    if packet.post_effect != scene.post_effect {
+    if packet.post_effects != scene.post_effects {
         issue(
             &mut issues,
-            "$.packet.postEffect",
-            "packet Scene post effect does not match scene semantics",
+            "$.packet.postEffects",
+            "packet Scene post-effect stack does not match scene semantics",
         );
     }
 

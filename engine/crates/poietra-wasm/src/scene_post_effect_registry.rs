@@ -1,20 +1,13 @@
 use poietra_render_wgpu::{
     MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1, ScenePostEffectSourceV1,
-    validate_scene_post_effect_source_v1,
+    validate_scene_post_effect_sources_v1,
 };
-use serde::{Deserialize, Deserializer};
+use poietra_scene_ir::MAX_SCENE_POST_EFFECTS_V1;
+use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
 pub(crate) const MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1: usize =
-    MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1 * 6 + 1024;
-
-fn deserialize_required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(deserializer)
-}
+    MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1 * MAX_SCENE_POST_EFFECTS_V1 * 6 + 4096;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -27,15 +20,14 @@ struct ScenePostEffectSourceJsonV1 {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ScenePostEffectRegistryJsonV1 {
-    #[serde(deserialize_with = "deserialize_required_nullable")]
-    effect: Option<ScenePostEffectSourceJsonV1>,
+    effects: Vec<ScenePostEffectSourceJsonV1>,
     schema: String,
     version: u32,
 }
 
 pub(crate) fn parse_scene_post_effect_registry_v1(
     registry_json: &[u8],
-) -> Result<Option<ScenePostEffectSourceV1>, String> {
+) -> Result<Vec<ScenePostEffectSourceV1>, String> {
     if registry_json.is_empty()
         || registry_json.len() > MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1
     {
@@ -48,20 +40,29 @@ pub(crate) fn parse_scene_post_effect_registry_v1(
     if registry.schema != "poietra.scene-post-effect-registry" || registry.version != 1 {
         return Err("Scene post-effect registry schema/version is unsupported".to_owned());
     }
-    let effect = registry.effect.map(|effect| ScenePostEffectSourceV1 {
-        revision: effect.revision,
-        shader_id: effect.shader_id,
-        source: effect.source,
-    });
-    if effect
-        .as_ref()
-        .is_some_and(|effect| effect.source.len() > MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1)
-    {
+    if registry.effects.len() > MAX_SCENE_POST_EFFECTS_V1 {
         return Err(format!(
-            "Scene post-effect WGSL accepts at most {MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1} UTF-8 bytes"
+            "Scene post-effect registry accepts at most {MAX_SCENE_POST_EFFECTS_V1} sources"
         ));
     }
-    Ok(effect)
+    let effects = registry
+        .effects
+        .into_iter()
+        .map(|effect| ScenePostEffectSourceV1 {
+            revision: effect.revision,
+            shader_id: effect.shader_id,
+            source: effect.source,
+        })
+        .collect::<Vec<_>>();
+    if effects
+        .iter()
+        .any(|effect| effect.source.len() > MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1)
+    {
+        return Err(format!(
+            "Scene post-effect WGSL accepts at most {MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1} UTF-8 bytes per source"
+        ));
+    }
+    Ok(effects)
 }
 
 /// Performs the same source and fixed-ABI validation used before renderer
@@ -72,13 +73,9 @@ pub(crate) fn parse_scene_post_effect_registry_v1(
 /// Throws a diagnostic when the registry or WGSL source is invalid.
 #[wasm_bindgen(js_name = validateScenePostEffectSourceV1)]
 pub fn validate_scene_post_effect_source_registry_v1(registry_json: &[u8]) -> Result<(), JsValue> {
-    let source = parse_scene_post_effect_registry_v1(registry_json)
+    let sources = parse_scene_post_effect_registry_v1(registry_json)
         .map_err(|error| JsValue::from_str(&error))?;
-    source
-        .as_ref()
-        .map(validate_scene_post_effect_source_v1)
-        .transpose()
-        .map(|_| ())
+    validate_scene_post_effect_sources_v1(&sources)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -96,22 +93,26 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
 ";
 
     #[test]
-    fn registry_is_strict_bounded_and_exactly_zero_or_one_effect() {
+    fn registry_is_strict_bounded_and_accepts_an_ordered_source_stack() {
         let empty = parse_scene_post_effect_registry_v1(
-            br#"{"effect":null,"schema":"poietra.scene-post-effect-registry","version":1}"#,
+            br#"{"effects":[],"schema":"poietra.scene-post-effect-registry","version":1}"#,
         )
         .unwrap();
-        assert!(empty.is_none());
+        assert!(empty.is_empty());
 
         let encoded_source = serde_json::to_string(VALID_SOURCE).unwrap();
         let json = format!(
-            "{{\"effect\":{{\"revision\":3,\"shaderId\":\"project-scene-post-effect\",\"source\":{encoded_source}}},\"schema\":\"poietra.scene-post-effect-registry\",\"version\":1}}"
+            "{{\"effects\":[{{\"revision\":3,\"shaderId\":\"project-scene-post-effect\",\"source\":{encoded_source}}},{{\"revision\":4,\"shaderId\":\"project-scene-post-effect\",\"source\":{encoded_source}}}],\"schema\":\"poietra.scene-post-effect-registry\",\"version\":1}}"
         );
-        let parsed = parse_scene_post_effect_registry_v1(json.as_bytes())
-            .unwrap()
-            .unwrap();
-        assert_eq!(parsed.revision, 3);
-        assert_eq!(parsed.source, VALID_SOURCE);
+        let parsed = parse_scene_post_effect_registry_v1(json.as_bytes()).unwrap();
+        assert_eq!(
+            parsed
+                .iter()
+                .map(|source| source.revision)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert_eq!(parsed[0].source, VALID_SOURCE);
 
         assert!(
             parse_scene_post_effect_registry_v1(
@@ -121,7 +122,7 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
         );
         assert!(
             parse_scene_post_effect_registry_v1(
-                br#"{"effect":null,"schema":"poietra.scene-post-effect-registry","version":1,"extra":true}"#
+                br#"{"effects":[],"schema":"poietra.scene-post-effect-registry","version":1,"extra":true}"#
             )
             .is_err()
         );
@@ -129,7 +130,7 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
         let escaped_source = "\n".repeat(MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1);
         let escaped_source = serde_json::to_string(&escaped_source).unwrap();
         let escaped_registry = format!(
-            "{{\"effect\":{{\"revision\":1,\"shaderId\":\"project-scene-post-effect\",\"source\":{escaped_source}}},\"schema\":\"poietra.scene-post-effect-registry\",\"version\":1}}"
+            "{{\"effects\":[{{\"revision\":1,\"shaderId\":\"project-scene-post-effect\",\"source\":{escaped_source}}}],\"schema\":\"poietra.scene-post-effect-registry\",\"version\":1}}"
         );
         assert!(escaped_registry.len() <= MAX_SCENE_POST_EFFECT_REGISTRY_JSON_BYTES_V1);
         assert!(parse_scene_post_effect_registry_v1(escaped_registry.as_bytes()).is_ok());

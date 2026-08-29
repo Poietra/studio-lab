@@ -312,12 +312,39 @@ pub struct ScenePostEffectV1 {
     pub shader_id: String,
 }
 
+/// Maximum number of ordered fullscreen passes retained by one Scene.
+pub const MAX_SCENE_POST_EFFECTS_V1: usize = 4;
+
 /// Host-owned Scene post-effect identity shared by authoring and rendering.
 pub const RGB_SPLIT_POST_EFFECT_SHADER_ID: &str = "rgb-split";
 /// Admitted revision of [`RGB_SPLIT_POST_EFFECT_SHADER_ID`].
 pub const RGB_SPLIT_POST_EFFECT_SHADER_REVISION: u32 = 1;
-/// The single project-local Scene post-effect identity admitted by Studio.
+/// The project-local Scene post-effect identity admitted by Studio.
 pub const PROJECT_SCENE_POST_EFFECT_SHADER_ID: &str = "project-scene-post-effect";
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ScenePostEffectsInputV1 {
+    Stack(Vec<ScenePostEffectV1>),
+    LegacySingle(ScenePostEffectV1),
+}
+
+fn deserialize_scene_post_effects<'de, D>(
+    deserializer: D,
+) -> Result<Vec<ScenePostEffectV1>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(
+        Option::<ScenePostEffectsInputV1>::deserialize(deserializer)?.map_or_else(
+            Vec::new,
+            |input| match input {
+                ScenePostEffectsInputV1::Stack(effects) => effects,
+                ScenePostEffectsInputV1::LegacySingle(effect) => vec![effect],
+            },
+        ),
+    )
+}
 
 /// The single host-owned 2D texture slot available to a fragment material.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -922,8 +949,13 @@ pub struct SceneIrV1 {
     pub fidelity: FidelityV1,
     pub provenance: Vec<ProvenanceRecordV1>,
     pub required_capabilities: Vec<SceneCapabilityV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub post_effect: Option<ScenePostEffectV1>,
+    #[serde(
+        default,
+        alias = "postEffect",
+        deserialize_with = "deserialize_scene_post_effects",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub post_effects: Vec<ScenePostEffectV1>,
     pub scene_id: String,
     pub schema: SceneIrSchemaV1,
     pub source: SceneSourceV1,
@@ -1252,8 +1284,13 @@ pub struct RenderPacketV1 {
     pub draws: Vec<RenderDrawV1>,
     pub evidence: Vec<String>,
     pub packet_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub post_effect: Option<ScenePostEffectV1>,
+    #[serde(
+        default,
+        alias = "postEffect",
+        deserialize_with = "deserialize_scene_post_effects",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub post_effects: Vec<ScenePostEffectV1>,
     pub required_capabilities: Vec<RenderCapabilityV1>,
     pub sample_time: f64,
     pub scene_duration: f64,
