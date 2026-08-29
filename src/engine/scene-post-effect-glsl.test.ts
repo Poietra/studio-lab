@@ -17,8 +17,10 @@ layout(set = 0, binding = 0, std140) uniform PoietraHost {
     vec4 parameters_1;
 } host;
 layout(set = 0, binding = 1) uniform texture2D scene_texture;
+layout(set = 0, binding = 2) uniform sampler scene_sampler;
 void main() {
-    output_color = texelFetch(scene_texture, ivec2(gl_FragCoord.xy), 0);
+    vec2 coordinate = gl_FragCoord.xy / max(host.viewport_and_time.xy, vec2(1.0));
+    output_color = texture(sampler2D(scene_texture, scene_sampler), coordinate);
 }`;
 
     const compiled = await compileScenePostEffectGlsl({
@@ -27,7 +29,8 @@ void main() {
     });
     expect(compiled).toContain("@fragment");
     expect(compiled).toContain("fn fs_main");
-    expect(compiled).toContain("textureLoad");
+    expect(compiled).toContain("@group(0) @binding(2)");
+    expect(compiled).toContain("textureSample");
     await expect(
       compileScenePostEffectGlsl({
         entryPoint: VULKAN_GLSL_SCENE_POST_EFFECT_ENTRY_POINT,

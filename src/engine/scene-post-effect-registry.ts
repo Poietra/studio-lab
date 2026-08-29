@@ -54,18 +54,19 @@ var<uniform> host: ScenePostEffectHost;
 @group(0) @binding(1)
 var scene_texture: texture_2d<f32>;
 
+@group(0) @binding(2)
+var scene_sampler: sampler;
+
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-    let viewport = max(vec2<i32>(host.viewport_and_time.xy), vec2<i32>(1));
-    let maximum = viewport - vec2<i32>(1);
-    let center = clamp(vec2<i32>(position.xy), vec2<i32>(0), maximum);
+    let viewport = max(host.viewport_and_time.xy, vec2<f32>(1.0));
     let wavelength = max(host.parameters_0.y, 1.0);
     let phase = 6.28318530718 * (
         position.y / wavelength + host.viewport_and_time.z * host.parameters_0.z
     ) + host.parameters_0.w;
-    let offset = i32(round(host.parameters_0.x * sin(phase)));
-    let coordinate = clamp(center + vec2<i32>(offset, 0), vec2<i32>(0), maximum);
-    return textureLoad(scene_texture, coordinate, 0);
+    let offset = host.parameters_0.x * sin(phase);
+    let coordinate = position.xy + vec2<f32>(offset, 0.0);
+    return textureSample(scene_texture, scene_sampler, coordinate / viewport);
 }
 `;
 

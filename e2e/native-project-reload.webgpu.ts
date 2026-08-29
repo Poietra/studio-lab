@@ -497,11 +497,12 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
 
     await page.getByRole("button", { name: "Create starter" }).click();
     const source = page.getByRole("textbox", { name: "Scene post-effect WGSL source" });
-    await expect(source).toHaveValue(/textureLoad\(scene_texture/u);
+    await expect(source).toHaveValue(/@binding\(2\)[\s\S]*scene_sampler/u);
+    await expect(source).toHaveValue(/textureSample\(scene_texture, scene_sampler/u);
     await source.fill(
       (await source.inputValue()).replace(
-        "return textureLoad(scene_texture, coordinate, 0);",
-        `let color = textureLoad(scene_texture, coordinate, 0);
+        "return textureSample(scene_texture, scene_sampler, coordinate / viewport);",
+        `let color = textureSample(scene_texture, scene_sampler, coordinate / viewport);
     let pulse = 0.6 + 0.4 * sin(6.28318530718 * host.viewport_and_time.z * host.parameters_0.z);
     return vec4<f32>(color.rgb * pulse, color.a);`,
       ),
@@ -619,10 +620,11 @@ layout(set = 0, binding = 0, std140) uniform PoietraHost {
     vec4 parameters_1;
 } host;
 layout(set = 0, binding = 1) uniform texture2D scene_texture;
+layout(set = 0, binding = 2) uniform sampler scene_sampler;
 
 void main() {
-    ivec2 coordinate = ivec2(gl_FragCoord.xy);
-    vec4 color = texelFetch(scene_texture, coordinate, 0);
+    vec2 coordinate = gl_FragCoord.xy / max(host.viewport_and_time.xy, vec2(1.0));
+    vec4 color = texture(sampler2D(scene_texture, scene_sampler), coordinate);
     float pulse = 0.6 + 0.4 * sin(6.28318530718 * host.viewport_and_time.z * host.parameters_0.z);
     output_color = vec4(color.rgb * pulse, color.a);
 }`;
