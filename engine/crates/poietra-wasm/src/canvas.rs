@@ -641,6 +641,8 @@ impl PoietraCanvasEngineV1 {
             &self.queue,
             self.session.scene(),
             &self.asset_registry,
+            &self.fragment_material_sources,
+            &self.scene_post_effect_sources,
             |sample_time, viewport| {
                 self.session
                     .sample_export_render_packet("thumbnail:representative", sample_time, viewport)
