@@ -8,7 +8,7 @@ import {
   type MaterialParameterKeyframe,
   materialParameterAssignmentBlocker,
   materialParameterIdentityEditBlocker,
-  materialParameterKeyframeTrackFromProgram,
+  materialParameterKeyframeTracksFromProgram,
   replaceMaterialParameterKeyframeProgram,
 } from "./material-parameter-keyframe-edit";
 import { opacityKeyframeTrackFromProgram, replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
@@ -48,7 +48,7 @@ describe("material parameter keyframe editing", () => {
     expect(result.kind, JSON.stringify(result.issues)).toBe("valid");
     expect(result.program.loweringStatus).toBe("unsupported");
     expect(insertedProgramDuration(result.program)).toBe(insertedProgramDuration(creation.validation.program));
-    expect(materialParameterKeyframeTrackFromProgram(result.program, 0)).toMatchObject({
+    expect(materialParameterKeyframeTracksFromProgram(result.program, 0)[0]).toMatchObject({
       entityId,
       keyframes: [
         { easing: "ease-out", time: 2, value: 0.35 },
@@ -58,7 +58,7 @@ describe("material parameter keyframe editing", () => {
       name: "amplitude",
       parameterIndex: 0,
     });
-    const sourceKeyframes = materialParameterKeyframeTrackFromProgram(result.program, 0)!.keyframes;
+    const sourceKeyframes = materialParameterKeyframeTracksFromProgram(result.program, 0)[0]!.keyframes;
     const duplicated = replaceMaterialParameterKeyframeProgram({
       baseProgram: result.program,
       entityId,
@@ -68,7 +68,7 @@ describe("material parameter keyframe editing", () => {
       parameterIndex: 0,
       scene: STUDIO_FIXTURE_SCENE,
     });
-    expect(materialParameterKeyframeTrackFromProgram(duplicated.program, 0)?.keyframes).toEqual([
+    expect(materialParameterKeyframeTracksFromProgram(duplicated.program, 0)[0]?.keyframes).toEqual([
       { easing: "ease-out", time: 2, value: 0.35 },
       { easing: "smooth", time: 3, value: 0.8 },
       { easing: "smooth", time: 4, value: 0.8 },
@@ -95,7 +95,100 @@ describe("material parameter keyframe editing", () => {
     });
     expect(removed.program.loweringStatus).toBe("supported");
     expect(removed.program.provenance.evidence).not.toContain("Studio material f32 parameter keyframes");
-    expect(materialParameterKeyframeTrackFromProgram(removed.program, 0)).toBeNull();
+    expect(materialParameterKeyframeTracksFromProgram(removed.program, 0)).toEqual([]);
+  });
+
+  it("edits and removes one material parameter track without changing its sibling", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Arrow" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "material-tracks",
+    });
+    const entityId = creation.entityIds[0]!;
+    const withSpeed = replaceMaterialParameterKeyframeProgram({
+      baseProgram: creation.validation.program,
+      entityId,
+      keyframes: [
+        { easing: "ease-out", time: 2, value: 0.35 },
+        { easing: "linear", time: 4, value: 0.75 },
+      ],
+      material,
+      name: "Speed",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    const withBands = replaceMaterialParameterKeyframeProgram({
+      baseProgram: withSpeed.program,
+      entityId,
+      keyframes: [
+        { easing: "linear", time: 2.5, value: 8 },
+        { easing: "smooth", time: 4.5, value: 12 },
+      ],
+      material,
+      name: "Bands",
+      parameterIndex: 1,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(withBands.kind, JSON.stringify(withBands.issues)).toBe("valid");
+    expect(materialParameterKeyframeTracksFromProgram(withBands.program, 0)).toMatchObject([
+      { name: "Speed", parameterIndex: 0 },
+      { name: "Bands", parameterIndex: 1 },
+    ]);
+    expect(withBands.program.operations.map(({ id }) => id)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("material-parameter-0-segment-0"),
+        expect.stringContaining("material-parameter-1-segment-0"),
+      ]),
+    );
+    const bandsOperations = withBands.program.operations.filter(
+      (operation) => operation.kind === "AnimateProperty" && operation.materialParameter?.parameterIndex === 1,
+    );
+    const editedSpeed = replaceMaterialParameterKeyframeProgram({
+      baseProgram: withBands.program,
+      entityId,
+      keyframes: [
+        { easing: "smooth", time: 2, value: 0.35 },
+        { easing: "ease-in", time: 3.5, value: 0.9 },
+      ],
+      material,
+      name: "Speed",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(editedSpeed.kind, JSON.stringify(editedSpeed.issues)).toBe("valid");
+    expect(
+      JSON.stringify(
+        editedSpeed.program.operations.filter(
+          (operation) => operation.kind === "AnimateProperty" && operation.materialParameter?.parameterIndex === 1,
+        ),
+      ),
+    ).toBe(JSON.stringify(bandsOperations));
+
+    const withoutSpeed = replaceMaterialParameterKeyframeProgram({
+      baseProgram: editedSpeed.program,
+      entityId,
+      keyframes: [],
+      material,
+      name: "Speed",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(withoutSpeed.kind, JSON.stringify(withoutSpeed.issues)).toBe("valid");
+    expect(
+      JSON.stringify(
+        withoutSpeed.program.operations.filter(
+          (operation) => operation.kind === "AnimateProperty" && operation.materialParameter?.parameterIndex === 1,
+        ),
+      ),
+    ).toBe(JSON.stringify(bandsOperations));
+    expect(materialParameterKeyframeTracksFromProgram(withoutSpeed.program, 0)).toMatchObject([
+      { name: "Bands", parameterIndex: 1 },
+    ]);
+    expect(withoutSpeed.program.provenance.evidence).toContain("Studio material f32 parameter keyframes");
   });
 
   it("coexists with opacity and fails closed when the assigned material changes", () => {
@@ -130,7 +223,7 @@ describe("material parameter keyframe editing", () => {
 
     expect(withBoth.kind, JSON.stringify(withBoth.issues)).toBe("valid");
     expect(opacityKeyframeTrackFromProgram(withBoth.program, 0)).not.toBeNull();
-    expect(materialParameterKeyframeTrackFromProgram(withBoth.program, 0)).not.toBeNull();
+    expect(materialParameterKeyframeTracksFromProgram(withBoth.program, 0)).toHaveLength(1);
     expect(materialParameterAssignmentBlocker([withBoth.program], { [entityId]: material })).toBeNull();
     expect(
       materialParameterAssignmentBlocker([withBoth.program], {
@@ -191,19 +284,19 @@ describe("material parameter keyframe editing", () => {
         parameterIndex: 0,
         scene: STUDIO_FIXTURE_SCENE,
       }),
-    ).toThrow(/one material parameter track/i);
+    ).toThrow(/one object and material/i);
 
     const recovered = replaceMaterialParameterKeyframeProgram({
       baseProgram: first.program,
       entityId,
       keyframes: [],
-      material: { ...material, parameters: [0.4, 8], revision: 2 },
+      material,
       name: "amplitude",
       parameterIndex: 0,
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(recovered.kind, JSON.stringify(recovered.issues)).toBe("valid");
-    expect(materialParameterKeyframeTrackFromProgram(recovered.program, 0)).toBeNull();
+    expect(materialParameterKeyframeTracksFromProgram(recovered.program, 0)).toEqual([]);
   });
 
   it("keeps keyframe insertion append-only and composes a Line material track with Draw in either order", () => {
@@ -246,7 +339,7 @@ describe("material parameter keyframe editing", () => {
     });
     expect(drawThenKeyframes.kind, JSON.stringify(drawThenKeyframes.issues)).toBe("valid");
     expect(drawInClipFromProgram(drawThenKeyframes.program)?.interval.end).toBe(drawEnd);
-    expect(materialParameterKeyframeTrackFromProgram(drawThenKeyframes.program, 0)?.keyframes).toHaveLength(2);
+    expect(materialParameterKeyframeTracksFromProgram(drawThenKeyframes.program, 0)[0]?.keyframes).toHaveLength(2);
 
     const edited = replaceMaterialParameterKeyframeProgram({
       baseProgram: drawThenKeyframes.program,
@@ -272,7 +365,7 @@ describe("material parameter keyframe editing", () => {
       scene: STUDIO_FIXTURE_SCENE,
     });
     expect(drawInClipFromProgram(removedTrack.program)).not.toBeNull();
-    expect(materialParameterKeyframeTrackFromProgram(removedTrack.program, 0)).toBeNull();
+    expect(materialParameterKeyframeTracksFromProgram(removedTrack.program, 0)).toEqual([]);
 
     const keyframesFirst = replaceMaterialParameterKeyframeProgram({
       baseProgram: creation.validation.program,
@@ -295,7 +388,7 @@ describe("material parameter keyframe editing", () => {
     });
     expect(keyframesThenDraw.kind, JSON.stringify(keyframesThenDraw.issues)).toBe("valid");
     expect(drawInClipFromProgram(keyframesThenDraw.program)).not.toBeNull();
-    expect(materialParameterKeyframeTrackFromProgram(keyframesThenDraw.program, 0)).not.toBeNull();
+    expect(materialParameterKeyframeTracksFromProgram(keyframesThenDraw.program, 0)).toHaveLength(1);
   });
 
   it("requires material admission and rejects texture parameter tracks when Draw exists", () => {
@@ -411,10 +504,10 @@ describe("material parameter keyframe editing", () => {
 
     const recoveredTrack = replaceTrack(tracked.program, [], true);
     expect(writeInClipFromProgram(recoveredTrack.program)).not.toBeNull();
-    expect(materialParameterKeyframeTrackFromProgram(recoveredTrack.program, 0)).toBeNull();
+    expect(materialParameterKeyframeTracksFromProgram(recoveredTrack.program, 0)).toEqual([]);
     const recoveredWrite = replaceWrite(recomposed.program, null, true);
     expect(writeInClipFromProgram(recoveredWrite.program)).toBeNull();
-    expect(materialParameterKeyframeTrackFromProgram(recoveredWrite.program, 0)).not.toBeNull();
+    expect(materialParameterKeyframeTracksFromProgram(recoveredWrite.program, 0)).toHaveLength(1);
   });
 
   it("blocks material identity edits only while a matching active track exists", () => {

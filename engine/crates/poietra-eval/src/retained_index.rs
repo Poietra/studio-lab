@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::mem::size_of;
 
-use poietra_scene_ir::{AnimationChannelV1, SceneIrV1};
+use poietra_scene_ir::{AnimationChannelV1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, SceneIrV1};
 
 /// Hard ceiling for snapshot-derived evaluator indices retained beside one Scene.
 ///
@@ -82,6 +82,7 @@ impl RetainedSceneIndexStatsV1 {
 struct ChannelPositionsV1 {
     affine: Vec<Option<usize>>,
     camera: Option<usize>,
+    fragment_material_parameters: Vec<[Option<usize>; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1]>,
     motion: Vec<Option<usize>>,
     opacity: Vec<Option<usize>>,
     path_morph: Vec<Option<usize>>,
@@ -102,6 +103,10 @@ impl ChannelPositionsV1 {
         Self {
             affine: vec![None; entity_count],
             camera: None,
+            fragment_material_parameters: vec![
+                [None; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1];
+                entity_count
+            ],
             motion: vec![None; entity_count],
             opacity: vec![None; entity_count],
             path_morph: vec![None; entity_count],
@@ -123,6 +128,13 @@ impl ChannelPositionsV1 {
         ] {
             bytes = checked_add(bytes, checked_mul(capacity, size_of::<Option<usize>>())?)?;
         }
+        bytes = checked_add(
+            bytes,
+            checked_mul(
+                self.fragment_material_parameters.capacity(),
+                size_of::<[Option<usize>; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1]>(),
+            )?,
+        )?;
         checked_add(
             bytes,
             checked_mul(
@@ -134,6 +146,12 @@ impl ChannelPositionsV1 {
 
     fn entries(&self) -> usize {
         self.affine.iter().flatten().count()
+            + self
+                .fragment_material_parameters
+                .iter()
+                .flat_map(|slots| slots.iter())
+                .flatten()
+                .count()
             + self.motion.iter().flatten().count()
             + self.opacity.iter().flatten().count()
             + self.path_morph.iter().flatten().count()
@@ -206,6 +224,19 @@ impl RetainedSceneIndexV1 {
 
     pub(crate) fn hierarchy_order(&self) -> &[usize] {
         &self.hierarchy_order
+    }
+
+    pub(crate) fn fragment_material_parameter_channels(
+        &self,
+        entity_index: usize,
+    ) -> impl Iterator<Item = usize> + '_ {
+        self.channels
+            .fragment_material_parameters
+            .get(entity_index)
+            .into_iter()
+            .flat_map(|slots| slots.iter())
+            .copied()
+            .flatten()
     }
 
     pub(crate) fn motion_channel(&self, entity_index: usize) -> Option<usize> {
@@ -387,6 +418,21 @@ fn install_channel_position(
         AnimationChannelV1::VectorAppearance { .. } => {
             &mut channels.vector_appearance[entity_index()?]
         }
+        AnimationChannelV1::FragmentMaterialParameter {
+            parameter_index, ..
+        } => {
+            let parameter_index = usize::try_from(*parameter_index).map_err(|_| {
+                RetainedSceneIndexErrorV1::Inconsistent(
+                    "invalid fragment-material parameter index reached index construction",
+                )
+            })?;
+            if parameter_index >= MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 {
+                return Err(RetainedSceneIndexErrorV1::Inconsistent(
+                    "unknown fragment-material parameter reached index construction",
+                ));
+            }
+            &mut channels.fragment_material_parameters[entity_index()?][parameter_index]
+        }
         AnimationChannelV1::Camera { .. } => {
             if channels.camera.replace(channel_index).is_some() {
                 return Err(RetainedSceneIndexErrorV1::Inconsistent(
@@ -515,8 +561,15 @@ fn preflight_accounted_bytes(scene: &SceneIrV1) -> Result<usize, RetainedSceneIn
     }
 
     let option_vector = checked_mul(entity_count, size_of::<Option<usize>>())?;
-    // Six entity channel vectors and one parent vector.
+    // Six single-channel entity vectors and one parent vector.
     bytes = checked_add(bytes, checked_mul(option_vector, 7)?)?;
+    bytes = checked_add(
+        bytes,
+        checked_mul(
+            entity_count,
+            size_of::<[Option<usize>; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1]>(),
+        )?,
+    )?;
     let scene_post_effect_parameter_channels = scene
         .animation_channels
         .iter()

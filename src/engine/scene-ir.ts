@@ -12,6 +12,7 @@ import {
   fillStyleV1Schema,
   finiteF32V1Schema,
   finiteNumberV1Schema,
+  fragmentMaterialV1Schema,
   MAX_COORDINATE,
   MAX_FRAGMENT_MATERIAL_PARAMETERS_V1,
   normalizedNumberV1Schema,
@@ -257,6 +258,21 @@ const vectorAppearanceChannelV1Schema = z
   })
   .strict();
 
+const fragmentMaterialParameterChannelV1Schema = z
+  .object({
+    ...entityChannelBase,
+    keyframes: z.array(keyframeV1Schema(finiteF32V1Schema)).min(2).max(MAX_KEYFRAMES),
+    kind: z.literal("fragment-material-parameter"),
+    material: fragmentMaterialV1Schema,
+    paintTarget: z.enum(["fill", "stroke"]),
+    parameterIndex: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 - 1),
+  })
+  .strict();
+
 const motionPathChannelV1Schema = z
   .object({
     ...entityChannelBase,
@@ -311,6 +327,7 @@ const scenePostEffectParameterChannelV1Schema = z
 export const animationChannelV1Schema = z.discriminatedUnion("kind", [
   affineTransformChannelV1Schema,
   cameraChannelV1Schema,
+  fragmentMaterialParameterChannelV1Schema,
   motionPathChannelV1Schema,
   opacityChannelV1Schema,
   pathMorphChannelV1Schema,
@@ -384,6 +401,7 @@ export const sceneCapabilityV1Schema = z.enum([
   "camera-animation",
   "cubic-path-geometry",
   "fragment-material",
+  "fragment-material-parameter-animation",
   "logical-group",
   "motion-path-animation",
   "opacity-animation",

@@ -8,11 +8,11 @@ use poietra_geometry::{
 };
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetManifestV1, ContractVersionV1, CubicPathV1,
-    EngineFrameV1, FillStyleV1, KeyframeV1, MotionPathParameterizationV1,
-    PathTrimParameterizationV1, RENDER_ASPECT_RELATIVE_TOLERANCE_V1, RenderCameraKindV1,
-    RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketSchemaV1,
-    RenderPacketV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1,
-    SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ScenePostEffectV1, StrokeStyleV1,
+    EngineFrameV1, FillStyleV1, FragmentMaterialPaintTargetV1, KeyframeV1,
+    MotionPathParameterizationV1, PathTrimParameterizationV1, RENDER_ASPECT_RELATIVE_TOLERANCE_V1,
+    RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1,
+    RenderPacketSchemaV1, RenderPacketV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
+    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ScenePostEffectV1, StrokeStyleV1,
     VectorAppearanceValueV1, ViewportV1, affine_transform_is_singular_v1,
     validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
 };
@@ -525,6 +525,93 @@ fn sample_vector_appearance(
         .map(|sample| Some(normalize_vector_appearance_stroke(sample.0)))
 }
 
+fn sample_fragment_material_parameters(
+    index: &RetainedSceneIndexV1,
+    scene: &SceneIrV1,
+    entity_index: usize,
+    time: f64,
+    appearance: Option<VectorAppearanceValueV1>,
+) -> Result<Option<VectorAppearanceValueV1>, EvaluationError> {
+    let mut channel_indices = index
+        .fragment_material_parameter_channels(entity_index)
+        .peekable();
+    if channel_indices.peek().is_none() {
+        return Ok(appearance);
+    }
+    let Some(mut appearance) = appearance else {
+        return Err(EvaluationError::MalformedScene(
+            "fragment-material parameter channel targets image appearance",
+        ));
+    };
+    for channel_index in channel_indices {
+        let Some(AnimationChannelV1::FragmentMaterialParameter {
+            keyframes,
+            material: baseline,
+            paint_target,
+            parameter_index,
+            ..
+        }) = scene.animation_channels.get(channel_index)
+        else {
+            return Err(EvaluationError::MalformedScene(
+                "retained fragment-material parameter channel index has the wrong kind",
+            ));
+        };
+        let material = match paint_target {
+            FragmentMaterialPaintTargetV1::Fill => appearance
+                .fill
+                .as_mut()
+                .and_then(|fill| fill.fragment_material.as_mut()),
+            FragmentMaterialPaintTargetV1::Stroke => appearance
+                .stroke
+                .as_mut()
+                .and_then(|stroke| stroke.fragment_material.as_mut()),
+        }
+        .ok_or(EvaluationError::MalformedScene(
+            "fragment-material parameter target lost its material after validation",
+        ))?;
+        if material.shader_id != baseline.shader_id
+            || material.revision != baseline.revision
+            || material.texture != baseline.texture
+            || material.parameters.len() != baseline.parameters.len()
+        {
+            return Err(EvaluationError::MalformedScene(
+                "fragment-material parameter identity changed after validation",
+            ));
+        }
+        let parameter_index = usize::try_from(*parameter_index).map_err(|_| {
+            EvaluationError::MalformedScene(
+                "fragment-material parameter index changed after validation",
+            )
+        })?;
+        let base =
+            baseline
+                .parameters
+                .get(parameter_index)
+                .ok_or(EvaluationError::MalformedScene(
+                    "fragment-material parameter target changed after validation",
+                ))?;
+        let value = sample_keyframes(base, keyframes, time, interpolate_number)?.0;
+        *material
+            .parameters
+            .get_mut(parameter_index)
+            .ok_or(EvaluationError::MalformedScene(
+                "fragment-material parameter target changed after validation",
+            ))? = value;
+    }
+    Ok(Some(appearance))
+}
+
+fn sample_entity_appearance(
+    index: &RetainedSceneIndexV1,
+    scene: &SceneIrV1,
+    entity_index: usize,
+    entity: &SceneEntityV1,
+    time: f64,
+) -> Result<Option<VectorAppearanceValueV1>, EvaluationError> {
+    let appearance = sample_vector_appearance(index, scene, entity_index, entity, time)?;
+    sample_fragment_material_parameters(index, scene, entity_index, time, appearance)
+}
+
 fn sample_local_entity(
     index: &RetainedSceneIndexV1,
     scene: &SceneIrV1,
@@ -546,7 +633,7 @@ fn sample_local_entity(
         base_opacity
     };
 
-    let appearance = sample_vector_appearance(index, scene, entity_index, entity, time)?;
+    let appearance = sample_entity_appearance(index, scene, entity_index, entity, time)?;
 
     let (mut transform, singular_affine_sample) =
         sample_affine_transform(index, scene, entity_index, entity, time)?;

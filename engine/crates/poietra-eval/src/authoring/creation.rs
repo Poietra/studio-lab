@@ -3,12 +3,13 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use poietra_geometry::align_cubic_path_morph_chain;
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetReferenceV1, ContractVersionV1, CubicPathV1,
-    CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialV1,
-    ImageLocalRectV1, ImageSamplerV1, IntervalV1, KeyframeV1, MAX_COORDINATE_V1,
-    MAX_STROKE_DASH_WORLD_V1, MIN_STROKE_DASH_WORLD_V1, PathTrimParameterizationV1, PointV1,
-    ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
-    SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StrokeCapV1,
-    StrokeJoinV1, VectorAppearanceValueV1,
+    CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1, FragmentMaterialPaintTargetV1,
+    FragmentMaterialV1, ImageLocalRectV1, ImageSamplerV1, IntervalV1, KeyframeV1,
+    MAX_COORDINATE_V1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, MAX_STROKE_DASH_WORLD_V1,
+    MIN_STROKE_DASH_WORLD_V1, PathTrimParameterizationV1, PointV1, ProvenanceOriginV1,
+    ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1,
+    SceneEntityV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StrokeCapV1, StrokeJoinV1,
+    VectorAppearanceValueV1,
 };
 use serde::{Deserialize, Serialize};
 use unicode_normalization::is_nfc;
@@ -256,6 +257,13 @@ struct StudioPaintColorTrack {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+struct StudioMaterialParameterTrack {
+    keyframes: Vec<KeyframeV1<f64>>,
+    material: FragmentMaterialV1,
+    parameter_index: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 struct CreateSceneEntityInstantTransform {
     at: f64,
     position: PointV1,
@@ -281,7 +289,7 @@ struct CreateSceneEntity {
     geometry: CreateSceneEntityGeometry,
     id: String,
     lifetime: IntervalV1,
-    material_parameter_keyframes: Vec<KeyframeV1<FragmentMaterialV1>>,
+    material_parameter_tracks: Vec<StudioMaterialParameterTrack>,
     math_tex_morph: Option<CreateSceneEntityMathTexMorph>,
     opacity_keyframes: Vec<KeyframeV1<f64>>,
     paint_color_track: Option<StudioPaintColorTrack>,
@@ -1055,7 +1063,7 @@ struct PlannedStudioCreationEntity {
     has_position_or_resize_instant: bool,
     kind: StudioAuthoringEntityKind,
     lifetime: IntervalV1,
-    material_parameter_keyframes: Vec<KeyframeV1<FragmentMaterialV1>>,
+    material_parameter_tracks: Vec<StudioMaterialParameterTrack>,
     math_tex_transforms: Vec<PlannedStudioMathTexTransform>,
     opacity_keyframes: Vec<KeyframeV1<f64>>,
     paint_color_track: Option<StudioPaintColorTrack>,
@@ -1165,7 +1173,7 @@ fn studio_creation_timeline_input(
         .iter()
         .filter(|operation| {
             matches!(
-                operation.kind,
+                &operation.kind,
                 StudioCreationOperationKind::InsertWait { .. }
                     | StudioCreationOperationKind::TrimSceneDuration { .. }
             )
@@ -2076,9 +2084,61 @@ fn closed_studio_opacity_track(
     Some((entity_id, operations))
 }
 
-fn closed_studio_material_parameter_track(
+struct ClosedStudioMaterialParameterTrack<'a> {
+    entity_id: &'a str,
+    material: &'a FragmentMaterialV1,
+    name: &'a str,
+    operations: Vec<&'a StudioCreationOperation>,
+    parameter_index: usize,
+}
+
+fn studio_material_parameter_track_is_closed(
+    track: &ClosedStudioMaterialParameterTrack<'_>,
+) -> bool {
+    for (index, operation) in track.operations.iter().enumerate() {
+        let StudioCreationOperationKind::MaterialParameterKeyframes {
+            from: Some(from),
+            to: Some(to),
+            ..
+        } = &operation.kind
+        else {
+            return false;
+        };
+        if track.operations.len() == 1 && interval_is_exact_point(&operation.interval) {
+            if !close_transform_baseline_value(*from, *to) {
+                return false;
+            }
+            continue;
+        }
+        if operation.interval.end <= operation.interval.start + TIMELINE_ANCHOR_EPSILON {
+            return false;
+        }
+        if let Some(previous) = index
+            .checked_sub(1)
+            .and_then(|prior| track.operations.get(prior))
+        {
+            let StudioCreationOperationKind::MaterialParameterKeyframes {
+                to: Some(previous_to),
+                ..
+            } = &previous.kind
+            else {
+                return false;
+            };
+            if !studio_timeline_semantic_values_match(
+                previous.interval.end,
+                operation.interval.start,
+            ) || !close_transform_baseline_value(*previous_to, *from)
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn closed_studio_material_parameter_tracks(
     program: &StudioCreationEditInput,
-) -> Option<(&str, Vec<&StudioCreationOperation>)> {
+) -> Option<Vec<ClosedStudioMaterialParameterTrack<'_>>> {
     if program.origin != StudioAuthoringOrigin::DirectManipulation
         || program.requested_execution != SceneEditExecution::Sequence
         || program.schedule_mode != SceneEditScheduleMode::Sequence
@@ -2086,40 +2146,12 @@ fn closed_studio_material_parameter_track(
     {
         return None;
     }
-    let operations = program
-        .schedule_order
-        .iter()
-        .filter_map(|operation_id| {
-            let operation = program
-                .operations
-                .iter()
-                .find(|operation| operation.id == *operation_id)?;
-            matches!(
-                operation.kind,
-                StudioCreationOperationKind::MaterialParameterKeyframes { .. }
-            )
-            .then_some(operation)
-        })
-        .collect::<Vec<_>>();
-    let first = *operations.first()?;
-    let entity_id = first.entity_id.as_deref()?;
-    let StudioCreationOperationKind::MaterialParameterKeyframes {
-        from: Some(first_from),
-        material: first_material,
-        name: first_name,
-        parameter_index: first_parameter_index,
-        ..
-    } = &first.kind
-    else {
-        return None;
-    };
-    if first.interval.start + TIMELINE_ANCHOR_EPSILON < program.anchor_resolved_seconds
-        || first_material.parameters.get(*first_parameter_index) != Some(first_from)
-        || first_name.is_empty()
-    {
-        return None;
-    }
-    for (index, operation) in operations.iter().enumerate() {
+    let mut tracks = Vec::<ClosedStudioMaterialParameterTrack<'_>>::new();
+    for operation_id in &program.schedule_order {
+        let operation = program
+            .operations
+            .iter()
+            .find(|operation| operation.id == *operation_id)?;
         let StudioCreationOperationKind::MaterialParameterKeyframes {
             from: Some(from),
             material,
@@ -2129,45 +2161,57 @@ fn closed_studio_material_parameter_track(
             ..
         } = &operation.kind
         else {
-            return None;
-        };
-        if operation.origin != StudioAuthoringOrigin::DirectManipulation
-            || operation.entity_id.as_deref() != Some(entity_id)
-            || material != first_material
-            || name != first_name
-            || parameter_index != first_parameter_index
-            || !from.is_finite()
-            || !to.is_finite()
-        {
-            return None;
-        }
-        if operations.len() == 1 && interval_is_exact_point(&operation.interval) {
-            if !close_transform_baseline_value(*from, *to) {
+            if matches!(
+                operation.kind,
+                StudioCreationOperationKind::MaterialParameterKeyframes { .. }
+            ) {
                 return None;
             }
             continue;
-        }
-        if operation.interval.end <= operation.interval.start + TIMELINE_ANCHOR_EPSILON {
+        };
+        let entity_id = operation.entity_id.as_deref()?;
+        if operation.origin != StudioAuthoringOrigin::DirectManipulation
+            || operation.interval.start + TIMELINE_ANCHOR_EPSILON < program.anchor_resolved_seconds
+            || name.is_empty()
+            || !from.is_finite()
+            || !to.is_finite()
+            || tracks
+                .first()
+                .is_some_and(|first| first.entity_id != entity_id || first.material != material)
+        {
             return None;
         }
-        if let Some(previous) = index.checked_sub(1).and_then(|prior| operations.get(prior)) {
-            let StudioCreationOperationKind::MaterialParameterKeyframes {
-                to: Some(previous_to),
-                ..
-            } = &previous.kind
-            else {
-                return None;
-            };
-            if !studio_timeline_semantic_values_match(
-                previous.interval.end,
-                operation.interval.start,
-            ) || !close_transform_baseline_value(*previous_to, *from)
-            {
+        if let Some(track) = tracks
+            .iter_mut()
+            .find(|track| track.parameter_index == *parameter_index)
+        {
+            if track.name != name || track.material != material || track.entity_id != entity_id {
                 return None;
             }
+            track.operations.push(operation);
+        } else {
+            if tracks.len() == MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 {
+                return None;
+            }
+            if material.parameters.get(*parameter_index) != Some(from) {
+                return None;
+            }
+            tracks.push(ClosedStudioMaterialParameterTrack {
+                entity_id,
+                material,
+                name,
+                operations: vec![operation],
+                parameter_index: *parameter_index,
+            });
         }
     }
-    Some((entity_id, operations))
+    if tracks.is_empty() {
+        return None;
+    }
+    tracks
+        .iter()
+        .all(studio_material_parameter_track_is_closed)
+        .then_some(tracks)
 }
 
 fn closed_studio_group_rotation(

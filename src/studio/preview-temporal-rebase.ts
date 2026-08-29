@@ -144,7 +144,9 @@ function genericRuntimeTraceSubtreePaintEvidence(scene: SceneIrV1, rootId: strin
     (channel) =>
       "entityId" in channel &&
       entityIds.has(channel.entityId) &&
-      (channel.kind === "opacity" || channel.kind === "vector-appearance"),
+      (channel.kind === "fragment-material-parameter" ||
+        channel.kind === "opacity" ||
+        channel.kind === "vector-appearance"),
   );
   const opacityEditable = surfacesAreVectorPaint && vectorPaintCount > 0 && !paintIsDynamic;
   const firstAlpha = paintAlphas[0];

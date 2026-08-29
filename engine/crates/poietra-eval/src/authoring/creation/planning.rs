@@ -8,22 +8,23 @@ use admission::{
 
 use super::{
     BTreeMap, BTreeSet, CubicSubpathV1, IntervalV1, KeyframeV1, MAX_COORDINATE_V1,
-    MAX_STROKE_DASH_WORLD_V1, MAX_STUDIO_CUBIC_BEZIER_SEGMENTS, MAX_STUDIO_STROKE_WIDTH_WORLD,
-    MIN_STROKE_DASH_WORLD_V1, MIN_STUDIO_STROKE_WIDTH_WORLD, PersistentSceneRemoval,
-    PlannedStudioAnimatedResize, PlannedStudioCameraClip, PlannedStudioCreationEntity,
-    PlannedStudioLogicalGroup, PlannedStudioMathTexTransform, PlannedStudioMotion,
-    PlannedStudioPathMorph, PlannedStudioPathMotion, PlannedStudioShapeTransform,
-    PlannedStudioTextTransform, ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1,
-    SceneEditExecution, SceneEditScheduleMode, StudioAuthoringDimensions,
-    StudioAuthoringEntityKind, StudioAuthoringOrigin, StudioContentReplacement,
-    StudioCreationEditInput, StudioCreationOperationKind, StudioCreationPlan,
-    StudioCreationProjectedMutation, StudioCreationProjectedMutationKind, StudioCreationShapeState,
+    MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, MAX_STROKE_DASH_WORLD_V1,
+    MAX_STUDIO_CUBIC_BEZIER_SEGMENTS, MAX_STUDIO_STROKE_WIDTH_WORLD, MIN_STROKE_DASH_WORLD_V1,
+    MIN_STUDIO_STROKE_WIDTH_WORLD, PersistentSceneRemoval, PlannedStudioAnimatedResize,
+    PlannedStudioCameraClip, PlannedStudioCreationEntity, PlannedStudioLogicalGroup,
+    PlannedStudioMathTexTransform, PlannedStudioMotion, PlannedStudioPathMorph,
+    PlannedStudioPathMotion, PlannedStudioShapeTransform, PlannedStudioTextTransform,
+    ProjectStudioCreationEditError, RgbaColorV1, SceneAppearanceV1, SceneEditExecution,
+    SceneEditScheduleMode, StudioAuthoringDimensions, StudioAuthoringEntityKind,
+    StudioAuthoringOrigin, StudioContentReplacement, StudioCreationEditInput,
+    StudioCreationOperationKind, StudioCreationPlan, StudioCreationProjectedMutation,
+    StudioCreationProjectedMutationKind, StudioCreationShapeState, StudioMaterialParameterTrack,
     StudioMathTexTransformStrategy, StudioMotionEasing, StudioMotionPlan,
     StudioMotionProjectionTarget, StudioPaintColorProperty, StudioPaintColorTrack,
     StudioPropertyEasing, StudioStrokeDash, TIMELINE_ANCHOR_EPSILON,
     close_transform_baseline_value, closed_studio_creation_motion_operations,
     closed_studio_group_layer_order, closed_studio_group_rotation,
-    closed_studio_material_parameter_track, closed_studio_opacity_track,
+    closed_studio_material_parameter_tracks, closed_studio_opacity_track,
     closed_studio_rotation_track, closed_studio_uniform_scale_track, interval_is_exact_point,
     motion_easing, normalize_studio_cubic_bezier, normalize_studio_svg_path_asset,
     planned_studio_camera_animation, project_studio_motion_plan, property_easing, rotation_is_noop,
@@ -958,7 +959,7 @@ pub(super) fn plan_studio_creation_edits(
             instant_rotation: 0.0,
             kind: spec.kind,
             lifetime,
-            material_parameter_keyframes: Vec::new(),
+            material_parameter_tracks: Vec::new(),
             math_tex_transforms: Vec::new(),
             opacity_keyframes: Vec::new(),
             paint_color_track: None,
@@ -1241,8 +1242,9 @@ pub(super) fn plan_studio_creation_edits(
 
     for program_index in material_parameter_programs {
         let program = &programs[program_index];
-        let (entity_id, track_operations) = closed_studio_material_parameter_track(program)
+        let tracks = closed_studio_material_parameter_tracks(program)
             .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        let entity_id = tracks[0].entity_id;
         let state = entities
             .iter_mut()
             .find(|state| state.spec.id == entity_id)
@@ -1251,112 +1253,115 @@ pub(super) fn plan_studio_creation_edits(
         if state.creation_program_rank > program_rank
             || (state.creation_program_rank == program_rank
                 && state.creation_transaction_id != program.transaction_id)
-            || !state.material_parameter_keyframes.is_empty()
+            || state.material_parameter_tracks.len() + tracks.len()
+                > MAX_FRAGMENT_MATERIAL_PARAMETERS_V1
+            || tracks.iter().any(|track| {
+                state.material_parameter_tracks.iter().any(|existing| {
+                    existing.parameter_index == track.parameter_index
+                        || existing.material != *track.material
+                })
+            })
             || (state.kind == StudioAuthoringEntityKind::Text && state.write_interval.is_some())
             || state.persistent_removal.is_some()
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
-        let mut projected = Vec::with_capacity(track_operations.len());
-        for operation in track_operations {
-            let StudioCreationOperationKind::MaterialParameterKeyframes {
-                easing,
-                from: Some(from),
-                material,
-                name,
-                parameter_index,
-                to: Some(to),
-            } = &operation.kind
-            else {
-                unreachable!();
-            };
-            let mut interval = IntervalV1 {
-                end: operation.interval.end + timeline.offsets[program_index],
-                start: operation.interval.start + timeline.offsets[program_index],
-            };
-            let composes_with_initial_draw = state.draw_interval.is_some()
-                && studio_creation_supports_open_stroke_features(state)
-                && material.texture.is_none();
-            if !composes_with_initial_draw
-                && state.creation_program_rank == program_rank
-                && let Some((_, insertion)) = timeline
-                    .ranked_insertions
-                    .iter()
-                    .find(|(rank, _)| *rank == program_rank)
-            {
-                shift_interval_for_insertion(&mut interval, insertion);
-            }
-            for (rank, insertion) in &timeline.ranked_insertions {
-                if *rank > program_rank {
+        for track in tracks {
+            let mut projected = Vec::with_capacity(track.operations.len());
+            for operation in track.operations {
+                let StudioCreationOperationKind::MaterialParameterKeyframes {
+                    easing,
+                    from: Some(from),
+                    material,
+                    name,
+                    parameter_index,
+                    to: Some(to),
+                } = &operation.kind
+                else {
+                    unreachable!();
+                };
+                let mut interval = IntervalV1 {
+                    end: operation.interval.end + timeline.offsets[program_index],
+                    start: operation.interval.start + timeline.offsets[program_index],
+                };
+                let composes_with_initial_draw = state.draw_interval.is_some()
+                    && studio_creation_supports_open_stroke_features(state)
+                    && material.texture.is_none();
+                if !composes_with_initial_draw
+                    && state.creation_program_rank == program_rank
+                    && let Some((_, insertion)) = timeline
+                        .ranked_insertions
+                        .iter()
+                        .find(|(rank, _)| *rank == program_rank)
+                {
                     shift_interval_for_insertion(&mut interval, insertion);
                 }
-            }
-            if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
-                || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
-                || studio_creation_initial_appearance_end(state).is_some_and(|end| {
-                    interval.start <= end + TIMELINE_ANCHOR_EPSILON && !composes_with_initial_draw
-                })
-            {
-                return Err(ProjectStudioCreationEditError::Unsupported);
-            }
-            let schedule_index = program
-                .schedule_order
-                .iter()
-                .position(|operation_id| operation_id == &operation.id)
-                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
-            ranked_mutations.push((
-                program_rank,
-                schedule_index,
-                StudioCreationProjectedMutation {
-                    entity_id: entity_id.to_owned(),
-                    interval: interval.clone(),
-                    kind: StudioCreationProjectedMutationKind::MaterialParameterKeyframes {
-                        easing: property_easing(*easing),
-                        from: *from,
-                        name: name.clone(),
-                        parameter_index: *parameter_index,
-                        to: *to,
+                for (rank, insertion) in &timeline.ranked_insertions {
+                    if *rank > program_rank {
+                        shift_interval_for_insertion(&mut interval, insertion);
+                    }
+                }
+                if interval.start < state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                    || interval.end > state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+                    || studio_creation_initial_appearance_end(state).is_some_and(|end| {
+                        interval.start <= end + TIMELINE_ANCHOR_EPSILON
+                            && !composes_with_initial_draw
+                    })
+                {
+                    return Err(ProjectStudioCreationEditError::Unsupported);
+                }
+                let schedule_index = program
+                    .schedule_order
+                    .iter()
+                    .position(|operation_id| operation_id == &operation.id)
+                    .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                ranked_mutations.push((
+                    program_rank,
+                    schedule_index,
+                    StudioCreationProjectedMutation {
+                        entity_id: entity_id.to_owned(),
+                        interval: interval.clone(),
+                        kind: StudioCreationProjectedMutationKind::MaterialParameterKeyframes {
+                            easing: property_easing(*easing),
+                            from: *from,
+                            name: name.clone(),
+                            parameter_index: *parameter_index,
+                            to: *to,
+                        },
+                        operation_id: operation.id.clone(),
+                        transaction_id: program.transaction_id.clone(),
                     },
-                    operation_id: operation.id.clone(),
-                    transaction_id: program.transaction_id.clone(),
-                },
-            ));
-            projected.push((
-                interval,
-                *easing,
-                *from,
-                material.clone(),
-                *parameter_index,
-                *to,
-            ));
-        }
-        let mut keyframes = Vec::with_capacity(projected.len() + 1);
-        for (index, (interval, easing, from, material, parameter_index, to)) in
-            projected.iter().enumerate()
-        {
-            let mut from_material = material.clone();
-            let mut to_material = material.clone();
-            from_material.parameters[*parameter_index] = *from;
-            to_material.parameters[*parameter_index] = *to;
-            if index == 0 {
-                keyframes.push(KeyframeV1 {
-                    at: interval.start,
-                    easing_to_next: (interval.end > interval.start + TIMELINE_ANCHOR_EPSILON)
-                        .then(|| property_easing(*easing)),
-                    value: from_material,
-                });
+                ));
+                projected.push((interval, *easing, *from, *to));
             }
-            if interval.end > interval.start + TIMELINE_ANCHOR_EPSILON {
-                keyframes.push(KeyframeV1 {
-                    at: interval.end,
-                    easing_to_next: projected
-                        .get(index + 1)
-                        .map(|(_, next_easing, ..)| property_easing(*next_easing)),
-                    value: to_material,
-                });
+            let mut keyframes = Vec::with_capacity(projected.len() + 1);
+            for (index, (interval, easing, from, to)) in projected.iter().enumerate() {
+                if index == 0 {
+                    keyframes.push(KeyframeV1 {
+                        at: interval.start,
+                        easing_to_next: (interval.end > interval.start + TIMELINE_ANCHOR_EPSILON)
+                            .then(|| property_easing(*easing)),
+                        value: *from,
+                    });
+                }
+                if interval.end > interval.start + TIMELINE_ANCHOR_EPSILON {
+                    keyframes.push(KeyframeV1 {
+                        at: interval.end,
+                        easing_to_next: projected
+                            .get(index + 1)
+                            .map(|(_, next_easing, ..)| property_easing(*next_easing)),
+                        value: *to,
+                    });
+                }
             }
+            state
+                .material_parameter_tracks
+                .push(StudioMaterialParameterTrack {
+                    keyframes,
+                    material: track.material.clone(),
+                    parameter_index: track.parameter_index,
+                });
         }
-        state.material_parameter_keyframes = keyframes;
     }
 
     for program_index in uniform_scale_programs {
@@ -2813,7 +2818,7 @@ pub(super) fn plan_studio_creation_edits(
             || (state.creation_program_rank == program_rank
                 && state.creation_transaction_id != program.transaction_id)
             || state.paint_color_track.is_some()
-            || !state.material_parameter_keyframes.is_empty()
+            || !state.material_parameter_tracks.is_empty()
             || state.write_interval.is_some()
             || state.persistent_removal.is_some()
         {
@@ -3126,12 +3131,12 @@ pub(super) fn plan_studio_creation_edits(
     if entities.iter().any(|state| {
         state.draw_interval.is_some()
             && (state.fill_color_override.is_some()
-                || (!state.material_parameter_keyframes.is_empty()
+                || (!state.material_parameter_tracks.is_empty()
                     && (!studio_creation_supports_open_stroke_features(state)
                         || state
-                            .material_parameter_keyframes
+                            .material_parameter_tracks
                             .iter()
-                            .any(|keyframe| keyframe.value.texture.is_some())))
+                            .any(|track| track.material.texture.is_some())))
                 || groups
                     .iter()
                     .any(|group| group.child_entity_ids.contains(&state.spec.id)))

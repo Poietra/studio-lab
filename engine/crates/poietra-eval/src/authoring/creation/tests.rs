@@ -497,7 +497,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                     end: 2.5,
                     start: 0.5,
                 },
-                material_parameter_keyframes: vec![],
+                material_parameter_tracks: vec![],
                 math_tex_morph: None,
                 paint_opacity: 1.0,
                 opacity_keyframes: vec![],
@@ -535,7 +535,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                     end: 2.5,
                     start: 0.5,
                 },
-                material_parameter_keyframes: vec![],
+                material_parameter_tracks: vec![],
                 math_tex_morph: None,
                 paint_opacity: 1.0,
                 opacity_keyframes: vec![],
@@ -578,7 +578,7 @@ fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
                     end: 2.5,
                     start: 0.5,
                 },
-                material_parameter_keyframes: vec![],
+                material_parameter_tracks: vec![],
                 math_tex_morph: None,
                 paint_opacity: 1.0,
                 opacity_keyframes: vec![],
@@ -2504,6 +2504,37 @@ fn add_creation_material_parameter_segment(
     program.schedule_edge_count = 2 * (program.operations.len() - 1);
 }
 
+fn add_creation_second_material_parameter_segment(
+    program: &mut StudioCreationEditInput,
+    entity_id: &str,
+    start: f64,
+    end: f64,
+) {
+    let operation_id = "material-segment-frequency".to_owned();
+    program.operations.push(StudioCreationOperation {
+        depends_on: vec![],
+        entity_id: Some(entity_id.to_owned()),
+        id: operation_id.clone(),
+        interval: IntervalV1 { end, start },
+        kind: StudioCreationOperationKind::MaterialParameterKeyframes {
+            easing: StudioPropertyEasing::Linear,
+            from: Some(8.0),
+            material: FragmentMaterialV1 {
+                parameters: vec![0.35, 8.0],
+                revision: 1,
+                shader_id: "project-wave".to_owned(),
+                texture: None,
+            },
+            name: "frequency".to_owned(),
+            parameter_index: 1,
+            to: Some(12.0),
+        },
+        origin: StudioAuthoringOrigin::DirectManipulation,
+    });
+    program.schedule_order.push(operation_id);
+    program.schedule_edge_count = 2 * (program.operations.len() - 1);
+}
+
 fn add_creation_uniform_scale_segment(
     program: &mut StudioCreationEditInput,
     entity_id: &str,
@@ -2562,7 +2593,12 @@ fn add_creation_rotation_segment(
     program.schedule_edge_count = 2 * (program.operations.len() - 1);
 }
 
-fn sampled_material_parameter(session: &EngineSessionV1, entity_id: &str, sample_time: f64) -> f64 {
+fn sampled_material_parameter_at(
+    session: &EngineSessionV1,
+    entity_id: &str,
+    parameter_index: usize,
+    sample_time: f64,
+) -> f64 {
     let packet_id = format!("material-parameter-{sample_time}");
     let packet = session
         .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
@@ -2595,7 +2631,11 @@ fn sampled_material_parameter(session: &EngineSessionV1, entity_id: &str, sample
             _ => None,
         })
         .unwrap()
-        .parameters[0]
+        .parameters[parameter_index]
+}
+
+fn sampled_material_parameter(session: &EngineSessionV1, entity_id: &str, sample_time: f64) -> f64 {
+    sampled_material_parameter_at(session, entity_id, 0, sample_time)
 }
 
 fn studio_created_appearance_edit_input(
@@ -5768,7 +5808,7 @@ fn created_line_and_open_pen_animate_material_parameters_during_draw() {
                 .any(|channel| {
                     matches!(
                         channel,
-                        AnimationChannelV1::VectorAppearance { entity_id: candidate, .. }
+                        AnimationChannelV1::FragmentMaterialParameter { entity_id: candidate, .. }
                             if candidate == &entity_id
                     )
                 })
@@ -7734,7 +7774,7 @@ fn math_tex_write_transform_material_targets_both_visible_phases() {
 }
 
 #[test]
-fn math_tex_write_appends_material_parameter_suffix_to_each_fill_channel() {
+fn math_tex_write_emits_material_parameter_channel_for_each_fill() {
     let mut bundle = static_imported_bundle();
     bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
     let root_id = "tx:create/entity:circle";
@@ -7774,10 +7814,30 @@ fn math_tex_write_appends_material_parameter_suffix_to_each_fill_channel() {
         })
         .collect::<Vec<_>>();
     assert_eq!(fill_channels.len(), 2);
-    assert!(fill_channels.iter().all(|keyframes| keyframes.len() == 4));
-    let suffix_times = [fill_channels[0][2].at, fill_channels[0][3].at];
-    assert!(suffix_times[0] > 1.5);
-    for (sample_time, expected) in suffix_times.into_iter().zip([0.35, 0.85]) {
+    assert!(fill_channels.iter().all(|keyframes| keyframes.len() == 2));
+    let material_channels = assigned
+        .scene
+        .animation_channels
+        .iter()
+        .filter_map(|channel| match channel {
+            AnimationChannelV1::FragmentMaterialParameter {
+                entity_id,
+                keyframes,
+                paint_target: FragmentMaterialPaintTargetV1::Fill,
+                ..
+            } if entity_id.starts_with(root_id) && entity_id.ends_with("/fill") => Some(keyframes),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(material_channels.len(), 2);
+    assert!(
+        material_channels
+            .iter()
+            .all(|keyframes| keyframes.len() == 2)
+    );
+    let track_times = [material_channels[0][0].at, material_channels[0][1].at];
+    assert!(track_times[0] > 1.5);
+    for (sample_time, expected) in track_times.into_iter().zip([0.35, 0.85]) {
         for fragment in ["fragment-0000", "fragment-0001"] {
             let fill_id = format!("{root_id}/write/{fragment}/fill");
             assert!(
@@ -9324,7 +9384,7 @@ fn creation_rotation_and_scale_tracks_are_mutually_exclusive() {
 }
 
 #[test]
-fn creation_material_parameter_track_emits_vector_appearance_and_coexists_with_opacity() {
+fn creation_material_parameter_track_emits_scalar_channel_and_coexists_with_opacity() {
     let mut bundle = static_imported_bundle();
     bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
     let entity_id = "tx:create/entity:circle";
@@ -9348,7 +9408,7 @@ fn creation_material_parameter_track_emits_vector_appearance_and_coexists_with_o
         .animation_channels
         .iter()
         .find_map(|channel| match channel {
-            AnimationChannelV1::VectorAppearance {
+            AnimationChannelV1::FragmentMaterialParameter {
                 entity_id: candidate,
                 keyframes,
                 ..
@@ -9361,21 +9421,8 @@ fn creation_material_parameter_track_emits_vector_appearance_and_coexists_with_o
         material_channel[0].easing_to_next,
         Some(EasingV1::ManimSmooth {})
     );
-    let first_material = material_channel[0]
-        .value
-        .fill
-        .as_ref()
-        .and_then(|fill| fill.fragment_material.as_ref())
-        .unwrap();
-    let final_material = material_channel[1]
-        .value
-        .fill
-        .as_ref()
-        .and_then(|fill| fill.fragment_material.as_ref())
-        .unwrap();
-    assert_eq!(first_material.shader_id, "project-wave");
-    assert_eq!(first_material.parameters, vec![0.35, 8.0]);
-    assert_eq!(final_material.parameters, vec![0.85, 8.0]);
+    assert_eq!(material_channel[0].value, 0.35);
+    assert_eq!(material_channel[1].value, 0.85);
     let packet = session
         .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
             evidence: &[],
@@ -9475,13 +9522,13 @@ fn creation_material_parameter_track_composes_static_opacity_and_rotation() {
             && (stroke.color.alpha - 0.25).abs() < 1e-12
             && fill.fragment_material.is_some()
     ));
-    let appearance_channels = result
+    let material_channels = result
         .bundle
         .scene
         .animation_channels
         .iter()
         .filter_map(|channel| match channel {
-            AnimationChannelV1::VectorAppearance {
+            AnimationChannelV1::FragmentMaterialParameter {
                 entity_id: candidate,
                 keyframes,
                 ..
@@ -9489,15 +9536,9 @@ fn creation_material_parameter_track_composes_static_opacity_and_rotation() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(appearance_channels.len(), 1);
-    assert!(appearance_channels[0].iter().all(|keyframe| matches!(
-        &keyframe.value,
-        VectorAppearanceValueV1 {
-            fill: Some(fill),
-            stroke: Some(stroke),
-        } if (fill.color.alpha - 0.25).abs() < 1e-12
-            && (stroke.color.alpha - 0.25).abs() < 1e-12
-    )));
+    assert_eq!(material_channels.len(), 1);
+    assert_eq!(material_channels[0][0].value, 0.35);
+    assert_eq!(material_channels[0][1].value, 0.85);
     assert!(
         result
             .bundle
@@ -9569,7 +9610,7 @@ fn one_material_parameter_marker_sets_the_base_without_an_animation_channel() {
             .any(|channel| {
                 matches!(
                     channel,
-                    AnimationChannelV1::VectorAppearance { entity_id: candidate, .. }
+                    AnimationChannelV1::FragmentMaterialParameter { entity_id: candidate, .. }
                         if candidate == entity_id
                 )
             })
@@ -9600,6 +9641,94 @@ fn creation_material_parameter_track_rejects_a_fill_less_shape_without_panicking
             CreateSceneEntitiesError::InvalidAppearanceEdit
         ))
     ));
+}
+
+#[test]
+fn creation_material_parameter_track_rejects_an_open_segment_atomically() {
+    let mut bundle = static_imported_bundle();
+    bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+    let entity_id = "tx:create/entity:circle";
+    let mut command = studio_creation_command(&bundle);
+    command.programs.truncate(1);
+    let StudioCreationOperationKind::Create { entity } =
+        &mut command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    entity.kind = StudioAuthoringEntityKind::Arrow;
+    entity.dimensions = StudioAuthoringDimensions::default();
+    add_creation_material_parameter_segment(&mut command.programs[0], entity_id, 1.0, 1.4);
+    let StudioCreationOperationKind::MaterialParameterKeyframes { to, .. } =
+        &mut command.programs[0].operations.last_mut().unwrap().kind
+    else {
+        unreachable!();
+    };
+    *to = None;
+    let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+
+    assert!(matches!(
+        session.apply_studio_creation_edit(command),
+        Err(ApplyStudioCreationEditError::Unsupported)
+    ));
+    assert_eq!(session.scene(), &bundle.scene);
+}
+
+#[test]
+fn line_draw_composes_two_independent_material_parameter_tracks() {
+    let mut bundle = static_imported_bundle();
+    bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::LinearLight;
+    let entity_id = "tx:create/entity:line";
+    let mut command = studio_draw_creation_command(&bundle);
+    let program = &mut command.programs[0];
+    for operation in &mut program.operations {
+        if operation.entity_id.as_deref() == Some("tx:create/entity:circle") {
+            operation.entity_id = Some(entity_id.to_owned());
+        }
+    }
+    let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
+        unreachable!();
+    };
+    entity.id = entity_id.to_owned();
+    entity.kind = StudioAuthoringEntityKind::Line;
+    entity.dimensions = StudioAuthoringDimensions::default();
+    add_creation_material_parameter_segment(program, entity_id, 0.75, 1.15);
+    add_creation_second_material_parameter_segment(program, entity_id, 0.85, 1.45);
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+
+    let result = session.apply_studio_creation_edit(command).unwrap();
+    let channels = result
+        .bundle
+        .scene
+        .animation_channels
+        .iter()
+        .filter_map(|channel| match channel {
+            AnimationChannelV1::FragmentMaterialParameter {
+                entity_id: candidate,
+                keyframes,
+                paint_target,
+                parameter_index,
+                ..
+            } if candidate == entity_id => Some((keyframes, paint_target, parameter_index)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(channels.len(), 2);
+    assert_eq!(*channels[0].1, FragmentMaterialPaintTargetV1::Stroke);
+    assert_eq!(*channels[0].2, 0);
+    assert_eq!(*channels[1].2, 1);
+    assert_eq!(
+        channels[0].0[0].easing_to_next,
+        Some(EasingV1::ManimSmooth {})
+    );
+    assert_eq!(channels[1].0[0].easing_to_next, Some(EasingV1::Linear {}));
+    assert_eq!(
+        sampled_material_parameter_at(&session, entity_id, 0, 1.15),
+        0.85
+    );
+    assert_eq!(
+        sampled_material_parameter_at(&session, entity_id, 1, 1.15),
+        10.0
+    );
 }
 
 #[test]
@@ -9641,29 +9770,27 @@ fn creation_material_parameter_track_targets_a_fillless_line_stroke() {
             ..
         } if stroke.fragment_material.is_some()
     ));
-    let keyframes = result
+    let (keyframes, material, paint_target) = result
         .bundle
         .scene
         .animation_channels
         .iter()
         .find_map(|channel| match channel {
-            AnimationChannelV1::VectorAppearance {
+            AnimationChannelV1::FragmentMaterialParameter {
                 entity_id: candidate,
                 keyframes,
+                material,
+                paint_target,
                 ..
-            } if candidate == entity_id => Some(keyframes),
+            } if candidate == entity_id => Some((keyframes, material, paint_target)),
             _ => None,
         })
         .unwrap();
-    assert!(keyframes.iter().all(|keyframe| {
-        keyframe.value.fill.is_none()
-            && keyframe
-                .value
-                .stroke
-                .as_ref()
-                .and_then(|stroke| stroke.fragment_material.as_ref())
-                .is_some()
-    }));
+    assert_eq!(keyframes.len(), 2);
+    assert_eq!(material.shader_id, "project-wave");
+    assert_eq!(*paint_target, FragmentMaterialPaintTargetV1::Stroke);
+    assert_eq!(keyframes[0].value, 0.35);
+    assert_eq!(keyframes[1].value, 0.85);
     assert!((sampled_material_parameter(&session, entity_id, 1.6) - 0.60).abs() < 1e-12);
 }
 

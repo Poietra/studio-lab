@@ -5,11 +5,12 @@ use std::fmt;
 use crate::export_profile::ExportProfileV1;
 use crate::model::{
     AffineTransformV1, AnimationChannelV1, AssetManifestReferenceV1, AssetManifestV1,
-    AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1, FragmentMaterialV1,
-    ImageLocalRectV1, IntervalV1, KeyframeV1, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1,
-    MAX_SCENE_POST_EFFECTS_V1, PointV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1,
-    RenderEmptyReasonV1, RenderPacketV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
-    SceneCapabilityV1, SceneGeometryV1, SceneIrV1, ScenePostEffectV1, SceneSourceV1, StrokeStyleV1,
+    AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1,
+    FragmentMaterialPaintTargetV1, FragmentMaterialV1, ImageLocalRectV1, IntervalV1, KeyframeV1,
+    MAX_FRAGMENT_MATERIAL_PARAMETERS_V1, MAX_SCENE_POST_EFFECTS_V1, PointV1, RenderCapabilityV1,
+    RenderCompositingV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketV1, RgbaColorV1,
+    SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneGeometryV1, SceneIrV1,
+    ScenePostEffectV1, SceneSourceV1, StrokeStyleV1,
 };
 
 pub const MAX_COORDINATE_V1: f64 = 1_000_000_000.0;
@@ -855,6 +856,9 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
             AnimationChannelV1::VectorAppearance { .. } => {
                 SceneCapabilityV1::VectorAppearanceAnimation
             }
+            AnimationChannelV1::FragmentMaterialParameter { .. } => {
+                SceneCapabilityV1::FragmentMaterialParameterAnimation
+            }
             AnimationChannelV1::ScenePostEffectParameter { .. } => {
                 SceneCapabilityV1::ScenePostEffect
             }
@@ -904,6 +908,11 @@ enum AnimationChannelTarget<'a> {
         entity_id: &'a str,
         kind: &'static str,
     },
+    FragmentMaterialParameter {
+        entity_id: &'a str,
+        paint_target: FragmentMaterialPaintTargetV1,
+        parameter_index: u32,
+    },
     ScenePostEffectParameter {
         parameter_index: u32,
         revision: u32,
@@ -916,6 +925,14 @@ impl fmt::Display for AnimationChannelTarget<'_> {
         match self {
             Self::Camera => formatter.write_str("camera"),
             Self::Entity { entity_id, kind } => write!(formatter, "{entity_id}/{kind}"),
+            Self::FragmentMaterialParameter {
+                entity_id,
+                paint_target,
+                parameter_index,
+            } => write!(
+                formatter,
+                "{entity_id}/fragment-material/{paint_target:?}/parameter/{parameter_index}"
+            ),
             Self::ScenePostEffectParameter {
                 parameter_index,
                 revision,
@@ -942,6 +959,16 @@ fn animation_channel_target(channel: &AnimationChannelV1) -> AnimationChannelTar
         | AnimationChannelV1::MotionPath { entity_id, .. } => AnimationChannelTarget::Entity {
             entity_id,
             kind: channel.kind_name(),
+        },
+        AnimationChannelV1::FragmentMaterialParameter {
+            entity_id,
+            paint_target,
+            parameter_index,
+            ..
+        } => AnimationChannelTarget::FragmentMaterialParameter {
+            entity_id,
+            paint_target: *paint_target,
+            parameter_index: *parameter_index,
         },
         AnimationChannelV1::Camera { .. } => AnimationChannelTarget::Camera,
         AnimationChannelV1::ScenePostEffectParameter {
@@ -1364,6 +1391,7 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
     let mut channel_targets = HashSet::new();
     let mut total_keyframes = 0usize;
     let mut camera_channels = 0usize;
+    let mut fragment_material_parameter_channels = HashMap::<&str, usize>::new();
     for (index, channel) in scene.animation_channels.iter().enumerate() {
         let path = format!("$.animationChannels[{index}]");
         validate_source_identity(channel.id(), &format!("{path}.id"), &mut validator);
@@ -1672,6 +1700,126 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                                     "vector-appearance cannot transition between stroke dash or miter-limit styles or fragment materials",
                                 );
                             }
+                        }
+                    },
+                );
+            }
+            AnimationChannelV1::FragmentMaterialParameter {
+                entity_id,
+                keyframes,
+                material,
+                paint_target,
+                parameter_index,
+                ..
+            } => {
+                let channel_count = fragment_material_parameter_channels
+                    .entry(entity_id.as_str())
+                    .or_default();
+                *channel_count += 1;
+                if *channel_count > MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 {
+                    validator.issue(
+                        path.clone(),
+                        format!(
+                            "one entity accepts at most {MAX_FRAGMENT_MATERIAL_PARAMETERS_V1} fragment-material parameter channels"
+                        ),
+                    );
+                }
+                validate_fragment_material(material, &format!("{path}.material"), &mut validator);
+                let base_material =
+                    entity_indexes
+                        .get(entity_id.as_str())
+                        .and_then(
+                            |entity_index| match &scene.entities[*entity_index].appearance {
+                                SceneAppearanceV1::Vector { fill, stroke, .. } => {
+                                    match paint_target {
+                                        FragmentMaterialPaintTargetV1::Fill => fill
+                                            .as_ref()
+                                            .and_then(|fill| fill.fragment_material.as_ref()),
+                                        FragmentMaterialPaintTargetV1::Stroke => stroke
+                                            .as_ref()
+                                            .and_then(|stroke| stroke.fragment_material.as_ref()),
+                                    }
+                                }
+                                SceneAppearanceV1::Group { .. }
+                                | SceneAppearanceV1::Image { .. } => None,
+                            },
+                        );
+                if entity_indexes.contains_key(entity_id.as_str()) && base_material.is_none() {
+                    validator.issue(
+                        format!("{path}.paintTarget"),
+                        "fragment-material parameter animation requires the selected vector paint to own a material",
+                    );
+                }
+                if base_material.is_some_and(|base| base != material) {
+                    validator.issue(
+                        format!("{path}.material"),
+                        "must exactly match the selected paint's static fragment material",
+                    );
+                }
+                let parameter_index = usize::try_from(*parameter_index).ok();
+                let base_parameter = parameter_index
+                    .and_then(|parameter_index| material.parameters.get(parameter_index))
+                    .copied();
+                if base_parameter.is_none() {
+                    validator.issue(
+                        format!("{path}.parameterIndex"),
+                        "must target an existing fragment-material parameter",
+                    );
+                }
+                if let (Some(base_parameter), Some(first)) = (base_parameter, keyframes.first())
+                    && first.value.to_bits() != base_parameter.to_bits()
+                {
+                    validator.issue(
+                        format!("{path}.keyframes[0].value"),
+                        "must exactly match the static fragment-material parameter baseline",
+                    );
+                }
+                let conflicting_vector_appearance =
+                    scene.animation_channels.iter().any(|candidate| {
+                        let AnimationChannelV1::VectorAppearance {
+                            entity_id: candidate_entity_id,
+                            keyframes,
+                            ..
+                        } = candidate
+                        else {
+                            return false;
+                        };
+                        candidate_entity_id == entity_id
+                            && keyframes.iter().any(|keyframe| {
+                                let candidate_material = match paint_target {
+                                    FragmentMaterialPaintTargetV1::Fill => keyframe
+                                        .value
+                                        .fill
+                                        .as_ref()
+                                        .and_then(|fill| fill.fragment_material.as_ref()),
+                                    FragmentMaterialPaintTargetV1::Stroke => keyframe
+                                        .value
+                                        .stroke
+                                        .as_ref()
+                                        .and_then(|stroke| stroke.fragment_material.as_ref()),
+                                };
+                                candidate_material.is_some_and(|candidate| candidate != material)
+                            })
+                    });
+                if conflicting_vector_appearance {
+                    validator.issue(
+                        path.clone(),
+                        "fragment-material parameter channels cannot overlap a vector-appearance material animation",
+                    );
+                }
+                total_keyframes = total_keyframes.saturating_add(keyframes.len());
+                validate_keyframes(
+                    keyframes,
+                    MAX_KEYFRAMES_V1,
+                    scene.duration,
+                    &format!("{path}.keyframes"),
+                    &mut validator,
+                    |value, value_path, validator| {
+                        validate_finite(*value, value_path, validator);
+                        if value.is_finite()
+                            && (*value < f64::from(f32::MIN) || *value > f64::from(f32::MAX))
+                        {
+                            validator.issue(value_path, "must fit the finite f32 range");
                         }
                     },
                 );
