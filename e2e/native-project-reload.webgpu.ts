@@ -509,13 +509,13 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     );
     await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
     await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Apply to Scene" }).click();
+    await page.getByRole("button", { name: "Add to stack" }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     const effectRevision = await waitForNewPresentedRevision(plainRevision);
 
     await page.getByRole("button", { name: "Undo" }).click();
-    await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add to stack" })).toBeVisible();
     const undoRevision = await waitForNewPresentedRevision(effectRevision);
     await page.getByRole("button", { name: "Redo" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
@@ -558,16 +558,18 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
 
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");
-    await page.getByRole("button", { name: "Remove custom Scene post effect" }).click();
+    await page.getByRole("button", { name: "Remove Wave Distortion effect from stack" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
-    await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add to stack" })).toBeVisible();
     await waitForNewPresentedRevision(activeRevision);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
 });
 
-test("switches named WGSL and GLSL Scene effects through Preview, history, reload, and MP4", async ({ page }) => {
+test("stacks and reorders named WGSL and GLSL Scene effects through Preview, history, reload, and MP4", async ({
+  page,
+}) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(15_000);
   let projectId: string | null = null;
@@ -631,30 +633,37 @@ void main() {
     await source.fill(glsl);
     await page.getByRole("button", { name: "Compile & accept GLSL" }).click();
     await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
-    await page.getByRole("button", { name: "Apply to Scene" }).click();
+    await page.getByRole("button", { name: "Add to stack" }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     const glslRevision = await waitForNewPresentedRevision(plainRevision);
 
     await page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u }).click();
-    await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u })).toContainText("Active");
-    await page.getByRole("button", { name: "Apply to Scene" }).click();
+    await expect(page.getByRole("button", { name: "Add to stack" })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u })).toContainText("In stack");
+    await page.getByRole("button", { name: "Add to stack" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     const wgslRevision = await waitForNewPresentedRevision(glslRevision);
-    await expect(page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u })).toContainText("Active");
+    await expect(page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u })).toContainText("In stack");
+    const stack = page.getByRole("list", { name: "Scene effect stack" }).locator("li");
+    await expect(stack).toHaveCount(2);
+    await expect(stack.nth(0)).toContainText("GLSL Pulse");
+    await expect(stack.nth(1)).toContainText("WGSL Wave");
+
+    await page.getByRole("button", { name: "Move WGSL Wave effect up" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const reorderedRevision = await waitForNewPresentedRevision(wgslRevision);
+    await expect(stack.nth(0)).toContainText("WGSL Wave");
+    await expect(stack.nth(1)).toContainText("GLSL Pulse");
 
     await page.getByRole("button", { name: "Undo" }).click();
-    const undoRevision = await waitForNewPresentedRevision(wgslRevision);
-    await expect(page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u })).toContainText("Active");
+    const undoRevision = await waitForNewPresentedRevision(reorderedRevision);
+    await expect(stack.nth(0)).toContainText("GLSL Pulse");
+    await expect(stack.nth(1)).toContainText("WGSL Wave");
     await page.getByRole("button", { name: "Redo" }).click();
-    const redoRevision = await waitForNewPresentedRevision(undoRevision);
-    await expect(page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u })).toContainText("Active");
-
-    await page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u }).click();
-    await page.getByRole("button", { name: "Apply to Scene" }).click();
-    await page.getByRole("button", { name: "Replace program" }).click();
-    await waitForNewPresentedRevision(redoRevision);
+    await waitForNewPresentedRevision(undoRevision);
+    await expect(stack.nth(0)).toContainText("WGSL Wave");
+    await expect(stack.nth(1)).toContainText("GLSL Pulse");
 
     await playhead.fill("2.25");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.25, 1);
@@ -663,6 +672,7 @@ void main() {
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2.75, 1);
     await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(earlyPacket);
 
+    await page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u }).click();
     await source.fill(glsl.replace("void main()", "void main("));
     await page.getByRole("button", { name: "Compile & accept GLSL" }).click();
     await expect(page.getByText("GLSL was rejected", { exact: true })).toBeVisible();
@@ -674,7 +684,9 @@ void main() {
     await page.getByRole("button", { name: "Open Custom GLSL effect fixture workspace" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u })).toBeVisible();
-    await expect(page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u })).toContainText("Active");
+    await expect(page.getByRole("button", { name: /Edit Scene effect WGSL Wave/u })).toContainText("In stack");
+    await expect(page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u })).toContainText("In stack");
+    await page.getByRole("button", { name: /Edit Scene effect GLSL Pulse/u }).click();
     await expect(page.getByText("GLSL was rejected", { exact: true })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Scene post-effect source language" })).toHaveValue("glsl");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
@@ -689,10 +701,13 @@ void main() {
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom GLSL Scene did not expose its revision.");
     await playhead.fill("2");
-    await page.getByRole("button", { name: "Remove custom Scene post effect" }).click();
+    await page.getByRole("button", { name: "Remove GLSL Pulse effect from stack" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
-    await expect(page.getByRole("button", { name: "Apply to Scene" })).toBeVisible();
-    await waitForNewPresentedRevision(activeRevision);
+    const oneEffectRevision = await waitForNewPresentedRevision(activeRevision);
+    await page.getByRole("button", { name: "Remove WGSL Wave effect from stack" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(page.getByRole("button", { name: "Add to stack" })).toBeVisible();
+    await waitForNewPresentedRevision(oneEffectRevision);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
