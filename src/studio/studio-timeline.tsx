@@ -60,6 +60,7 @@ export type StudioTimelineProps = Readonly<{
   paintColorTracks?: readonly StudioPaintColorTimelineTrack[];
   pathMorphClips?: readonly StudioPathMorphTimelineClip[];
   pathMotionUnavailableReason?: string | null;
+  projectAudioTrack?: StudioProjectAudioTimelineTrack | null;
   rotationTrackEligibleIds: ReadonlySet<string>;
   rotationTracks: readonly StudioRotationTimelineTrack[];
   scaleTrackEligibleIds: ReadonlySet<string>;
@@ -142,6 +143,10 @@ export type StudioTimelineProps = Readonly<{
   onWriteInSelect: (clip: StudioWriteInTimelineClip) => void;
   readOnly: boolean;
   selectedIds: ReadonlySet<string>;
+}>;
+
+export type StudioProjectAudioTimelineTrack = Readonly<{
+  fileName: string;
 }>;
 
 export type StudioDrawInTimelineClip = Readonly<{
@@ -965,6 +970,7 @@ export function StudioTimeline({
   paintColorTracks = [],
   pathMorphClips = [],
   pathMotionUnavailableReason = "Select one Studio-created object and one open multi-segment Pen.",
+  projectAudioTrack = null,
   rotationTrackEligibleIds,
   rotationTracks,
   scaleTrackEligibleIds,
@@ -2181,6 +2187,25 @@ export function StudioTimeline({
               <TimelinePlayhead currentTime={currentTime} duration={duration} playbackClock={playbackClock} />
             </div>
           </div>
+          {projectAudioTrack ? (
+            <div
+              className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]"
+              data-project-audio-track
+            >
+              <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-emerald-300">Audio</div>
+              <div className="pointer-events-none relative h-8 min-w-0 overflow-hidden" data-timeline-audio-lane>
+                <div
+                  aria-label={`Audio track ${projectAudioTrack.fileName}, 0.00–${duration.toFixed(2)} seconds`}
+                  className="absolute top-1 h-5 min-w-px border border-emerald-800 bg-emerald-950 px-1 text-[9px] leading-4 text-emerald-300"
+                  style={timelineIntervalStyle({ end: duration, start: 0 }, duration)}
+                  title={`${projectAudioTrack.fileName} · 0.00–${duration.toFixed(2)}s`}
+                >
+                  <span className="block truncate">{projectAudioTrack.fileName}</span>
+                </div>
+                <TimelinePlayhead currentTime={currentTime} duration={duration} playbackClock={playbackClock} />
+              </div>
+            </div>
+          ) : null}
           <div
             className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]"
             data-camera-track

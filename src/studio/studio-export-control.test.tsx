@@ -174,6 +174,29 @@ describe("StudioExportControl", () => {
     expect(markup).toContain('data-studio-export-profile="854x480@30"');
   });
 
+  it("directs an empty Studio-native project to its Assets panel", () => {
+    const markup = renderToStaticMarkup(
+      <StudioExportControl audioTrack={null} exportSource={exportSource} publication={unavailablePublication} />,
+    );
+
+    expect(markup).toContain("No project audio is attached");
+    expect(markup).not.toContain("Choose WAV");
+  });
+
+  it("reports the project audio that will be attached", () => {
+    const markup = renderToStaticMarkup(
+      <StudioExportControl
+        audioTrack={{ fileName: "narration.wav", wavBytes: new ArrayBuffer(44) }}
+        exportSource={exportSource}
+        publication={unavailablePublication}
+      />,
+    );
+
+    expect(markup).toContain("narration.wav");
+    expect(markup).toContain("WAV audio exports are local-only in this release.");
+    expect(markup).not.toContain("Choose WAV");
+  });
+
   it("stays disabled while the surrounding session transition locks the header", () => {
     const markup = renderToStaticMarkup(
       <StudioExportControl disabled exportSource={exportSource} publication={unavailablePublication} />,

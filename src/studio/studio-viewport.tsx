@@ -135,6 +135,7 @@ export function StudioViewport({
   paintColorTracks,
   pathMorphClips,
   pathMotionUnavailableReason,
+  projectAudioTrack,
   rotationTrackEligibleIds,
   rotationTracks,
   scaleTrackEligibleIds,
@@ -377,6 +378,7 @@ export function StudioViewport({
           paintColorTracks={paintColorTracks}
           pathMorphClips={pathMorphClips}
           pathMotionUnavailableReason={pathMotionUnavailableReason}
+          projectAudioTrack={projectAudioTrack}
           rotationTrackEligibleIds={rotationTrackEligibleIds}
           rotationTracks={rotationTracks}
           scaleTrackEligibleIds={scaleTrackEligibleIds}

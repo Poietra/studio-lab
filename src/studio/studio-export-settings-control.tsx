@@ -10,12 +10,14 @@ const DIALOG_TITLE_ID = "studio-export-settings-title";
 const DIALOG_DESCRIPTION_ID = "studio-export-settings-description";
 
 export function StudioExportSettingsControl({
+  audioTrack,
   disabled = false,
   exportSource,
   generateThumbnail,
   manimSourceExport = null,
   publication,
 }: Readonly<{
+  audioTrack?: Readonly<{ fileName: string; wavBytes: ArrayBuffer }> | null;
   disabled?: boolean;
   exportSource: StudioMp4ExportSourceV1 | null;
   generateThumbnail: ((signal?: AbortSignal) => Promise<Uint8Array<ArrayBuffer>>) | null;
@@ -57,7 +59,12 @@ export function StudioExportSettingsControl({
           </p>
 
           <div className="mt-5">
-            <StudioExportControl disabled={disabled} exportSource={exportSource} publication={publication} />
+            <StudioExportControl
+              audioTrack={audioTrack}
+              disabled={disabled}
+              exportSource={exportSource}
+              publication={publication}
+            />
           </div>
 
           <section aria-labelledby="studio-thumbnail-settings-title" className="mt-5 border-t border-zinc-800 pt-4">
