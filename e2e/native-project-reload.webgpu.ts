@@ -501,8 +501,8 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
       (await source.inputValue()).replace(
         "return textureSample(scene_texture, scene_sampler, coordinate / viewport);",
         `let color = textureSample(scene_texture, scene_sampler, coordinate / viewport);
-    let pulse = 0.6 + 0.4 * sin(6.28318530718 * host.viewport_and_time.z * host.parameters_0.z);
-    return vec4<f32>(color.rgb * pulse, color.a);`,
+    let amplitude = clamp(host.parameters_0.x / 64.0, 0.0, 1.0);
+    return vec4<f32>(color.rgb * amplitude, color.a);`,
       ),
     );
     await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
@@ -522,7 +522,15 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     await page.getByRole("slider", { name: "Amplitude Scene post-effect parameter" }).fill("20");
     await page.getByRole("button", { name: "Update parameters" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
-    await waitForNewPresentedRevision(redoRevision);
+    const parameterRevision = await waitForNewPresentedRevision(redoRevision);
+
+    await page.getByRole("button", { name: /Animate from 0s to/u }).click();
+    await page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" }).fill("2.75");
+    await page.getByRole("spinbutton", { name: "Amplitude keyframe 2 value" }).fill("60");
+    await page.getByRole("combobox", { name: "Amplitude keyframe 1 easing" }).selectOption("linear");
+    await page.getByRole("button", { name: "Update animation" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForNewPresentedRevision(parameterRevision);
     await playhead.fill("2");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
     const startPacket = await canvas.getAttribute("data-preview-packet-id");
@@ -545,21 +553,29 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     await page.getByRole("button", { name: "Open Custom WGSL effect fixture workspace" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     await expect(page.getByText("WGSL was rejected", { exact: true })).toBeVisible();
+    await expect(page.getByText("Amplitude · 2 keyframes", { exact: true })).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" })).toHaveValue("2.75");
+    await expect(page.getByRole("spinbutton", { name: "Amplitude keyframe 2 value" })).toHaveValue("60");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     const mp4 = await exportLocalMp4(page);
-    const stats = await decodedPixelStats(page, mp4, [2.25, 2.75]);
+    const stats = await decodedPixelStats(page, mp4, [2, 2.75]);
     expect(stats[0]?.count ?? 0).toBeGreaterThan(100);
     expect(stats[1]?.count ?? 0).toBeGreaterThan(100);
     expect(stats[1]?.commonPixelCountFromPrevious ?? 0).toBeGreaterThan(100);
-    expect(stats[1]?.commonColorDifferenceFromPrevious ?? 0).toBeGreaterThan(100);
+    expect(
+      (stats[1]?.commonColorDifferenceFromPrevious ?? 0) / (stats[1]?.commonPixelCountFromPrevious || 1),
+    ).toBeGreaterThan(8);
 
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");
+    await page.getByRole("button", { name: "Remove animation" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const staticRevision = await waitForNewPresentedRevision(activeRevision);
     await page.getByRole("button", { name: "Remove Wave Distortion effect from stack" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(page.getByRole("button", { name: "Add to stack" })).toBeVisible();
-    await waitForNewPresentedRevision(activeRevision);
+    await waitForNewPresentedRevision(staticRevision);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

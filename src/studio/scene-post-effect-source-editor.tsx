@@ -1,5 +1,8 @@
 import { useEffect, useState } from "react";
 import { MAX_SCENE_POST_EFFECTS_V1 } from "../engine/scene-post-effect-registry";
+import type { ScenePostEffectParameterTrack } from "./scene-edit-contract";
+import { ScenePostEffectParameterAnimationEditor } from "./scene-post-effect-parameter-animation-editor";
+import type { ScenePostEffectParameterKeyframe } from "./scene-post-effect-parameter-keyframe-edit";
 
 import {
   MAX_PROJECT_SCENE_POST_EFFECT_ASSETS,
@@ -26,15 +29,26 @@ export type ScenePostEffectSourceEditorProps = Readonly<{
   activeRevisions: readonly number[];
   assets: readonly StudioScenePostEffectSourceAssetV1[];
   available: boolean;
+  duration: number;
   imageAssets: readonly StudioNativeImageAssetV1[];
   onAddToStack: (assetRevision: number, texture?: StudioScenePostEffectTextureV1) => void;
   onCompile: (input: CompileStudioScenePostEffectSourceInputV1) => Promise<void> | void;
   onCreate: (name: string) => boolean;
   onParametersChange: (assetRevision: number, parameters: readonly number[]) => void;
+  onParameterTrackChange: (input: {
+    assetRevision: number;
+    keyframes: readonly ScenePostEffectParameterKeyframe[];
+    name: string;
+    parameterIndex: number;
+    range: Readonly<{ max: number; min: number }>;
+  }) => void;
   onRemove: (assetRevision: number) => void;
   onSelect: (assetRevision: number) => void;
   onTextureChange: (assetRevision: number, texture: StudioScenePostEffectTextureV1) => void;
+  parameterAnimationAvailable: boolean;
   parameters: readonly number[] | null;
+  parameterTrack: ScenePostEffectParameterTrack | null;
+  playhead: number;
   selectedRevision: number | null;
   sourceAvailable: boolean;
   texture: StudioScenePostEffectTextureV1 | null;
@@ -69,15 +83,20 @@ export function ScenePostEffectSourceEditor({
   activeRevisions,
   assets,
   available,
+  duration,
   imageAssets,
   onAddToStack,
   onCompile,
   onCreate,
   onParametersChange,
+  onParameterTrackChange,
   onRemove,
   onSelect,
   onTextureChange,
+  parameterAnimationAvailable,
   parameters,
+  parameterTrack,
+  playhead,
   selectedRevision,
   sourceAvailable,
   texture,
@@ -127,6 +146,13 @@ export function ScenePostEffectSourceEditor({
 
   const accepted = asset?.accepted ?? null;
   const sourceBusy = pending || filePending;
+  const activeParameterTrack =
+    parameterTrack &&
+    asset &&
+    parameterTrack.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 &&
+    parameterTrack.revision === asset.revision
+      ? parameterTrack
+      : null;
   const acceptedUsesTexture = accepted?.textureSlot === "texture2d";
   const declaredTextureSlot = accepted ? acceptedUsesTexture : textureSlot;
   const sourceLanguageLabel = sourceLanguage === "glsl" ? "GLSL" : "WGSL";
@@ -473,7 +499,9 @@ export function ScenePostEffectSourceEditor({
                     <input
                       aria-label={`${parameter.name} Scene post-effect parameter`}
                       className="mt-1 w-full accent-sky-500"
-                      disabled={!available || !active || !parameterValuesMatch || sourceBusy}
+                      disabled={
+                        !available || !active || !parameterValuesMatch || sourceBusy || activeParameterTrack !== null
+                      }
                       max={parameter.range.max}
                       min={parameter.range.min}
                       onChange={(event) => {
@@ -493,15 +521,33 @@ export function ScenePostEffectSourceEditor({
                   The active Scene reference does not match the accepted parameter schema. Reapply the effect.
                 </p>
               ) : null}
+              {activeParameterTrack ? (
+                <p className="text-pretty text-[10px] leading-4 text-sky-300">
+                  Static parameters are locked while {activeParameterTrack.name} has a Timeline track.
+                </p>
+              ) : null}
               <button
                 className="h-7 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:text-zinc-700"
-                disabled={!available || !active || !parameterValuesMatch || sourceBusy}
+                disabled={!available || !active || !parameterValuesMatch || sourceBusy || activeParameterTrack !== null}
                 onClick={() => onParametersChange(asset.revision, parameterDraft)}
                 type="button"
               >
                 Update parameters
               </button>
             </fieldset>
+          ) : null}
+
+          {accepted?.parameterSchema.length && active && parameters ? (
+            <ScenePostEffectParameterAnimationEditor
+              assetRevision={asset.revision}
+              available={available && parameterAnimationAvailable && !sourceBusy}
+              duration={duration}
+              onChange={onParameterTrackChange}
+              parameterSchema={accepted.parameterSchema}
+              parameters={parameters}
+              parameterTrack={parameterTrack}
+              playhead={playhead}
+            />
           ) : null}
 
           <form

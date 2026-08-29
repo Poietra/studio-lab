@@ -492,7 +492,7 @@ mod tests {
     #[test]
     fn fixture_provenance_serializes_to_the_canonical_compact_json() {
         let expected = format!(
-            "{{\"engineAbiVersion\":40,\"exportProfileHash\":\"{}\",\
+            "{{\"engineAbiVersion\":41,\"exportProfileHash\":\"{}\",\
              \"sceneId\":\"fixture-scene\",\"sceneRevisionHash\":\"{}\"}}",
             "a".repeat(64),
             "b".repeat(64)

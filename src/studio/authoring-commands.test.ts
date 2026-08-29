@@ -147,6 +147,7 @@ describe("manual Studio authoring commands", () => {
           effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
           interval: { end: 3, start: 3 },
           kind: "SetScenePostEffect",
+          parameterTrack: null,
         },
       ],
     });
@@ -172,7 +173,7 @@ describe("manual Studio authoring commands", () => {
 
     const operation = created.program.operations[0];
     if (operation?.kind !== "SetScenePostEffect") throw new Error("missing Scene post-effect operation");
-    const { effects, ...legacyOperation } = operation;
+    const { effects, parameterTrack: _parameterTrack, ...legacyOperation } = operation;
     expect(sceneEditOperationSchema.parse({ ...legacyOperation, effect: effects[0] })).toEqual(operation);
     expect(() =>
       createStudioScenePostEffectProgram({
@@ -185,6 +186,71 @@ describe("manual Studio authoring commands", () => {
         transactionId: "duplicate-scene-post-effect",
       }),
     ).toThrow(/same shader revision/u);
+  });
+
+  it("stores exactly one bounded Scene post-effect parameter track and preserves it across stack updates", () => {
+    const effects = [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }] as const;
+    const parameterTrack = {
+      keyframes: [
+        { easing: "ease-in" as const, time: 0, value: 4 },
+        { easing: "smooth" as const, time: 2, value: 8 },
+      ],
+      name: "  Offset  ",
+      parameterIndex: 0,
+      revision: 1,
+      shaderId: "rgb-split",
+    };
+    const created = createStudioScenePostEffectProgram({
+      capturedPlayhead: 0,
+      effects,
+      parameterTrack,
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "scene-post-effect-parameter",
+    });
+
+    expect(created.kind, JSON.stringify(created.issues)).toBe("valid");
+    const operation = created.program.operations[0];
+    expect(operation?.kind === "SetScenePostEffect" ? operation.parameterTrack : null).toEqual({
+      ...parameterTrack,
+      name: "Offset",
+    });
+
+    const replaced = replaceStudioScenePostEffectProgram({
+      effects,
+      owner: programRecord(created.program, created),
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(replaced.program.operations[0]).toMatchObject({
+      kind: "SetScenePostEffect",
+      parameterTrack: { keyframes: parameterTrack.keyframes, name: "Offset" },
+    });
+
+    const outsideScene = createStudioScenePostEffectProgram({
+      capturedPlayhead: 0,
+      effects,
+      parameterTrack: {
+        ...parameterTrack,
+        keyframes: [
+          parameterTrack.keyframes[0],
+          { easing: "smooth", time: STUDIO_FIXTURE_SCENE.duration + 1, value: 8 },
+        ],
+      },
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "scene-post-effect-outside-scene",
+    });
+    expect(outsideScene.kind).toBe("invalid");
+    expect(outsideScene.issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ field: "parameterTrack", severity: "error" })]),
+    );
+    expect(() =>
+      createStudioScenePostEffectProgram({
+        capturedPlayhead: 0,
+        effects,
+        parameterTrack: { ...parameterTrack, keyframes: [parameterTrack.keyframes[0]] },
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "scene-post-effect-single-marker",
+      }),
+    ).toThrow(/>=2/u);
   });
 
   it("projects Inspector position and content edits from one canonical program", () => {

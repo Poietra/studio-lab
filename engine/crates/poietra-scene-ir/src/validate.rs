@@ -855,6 +855,9 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
             AnimationChannelV1::VectorAppearance { .. } => {
                 SceneCapabilityV1::VectorAppearanceAnimation
             }
+            AnimationChannelV1::ScenePostEffectParameter { .. } => {
+                SceneCapabilityV1::ScenePostEffect
+            }
         });
         if let AnimationChannelV1::VectorAppearance { keyframes, .. } = channel
             && keyframes.iter().any(|keyframe| {
@@ -892,6 +895,66 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
         }
     }
     capabilities.into_iter().collect()
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+enum AnimationChannelTarget<'a> {
+    Camera,
+    Entity {
+        entity_id: &'a str,
+        kind: &'static str,
+    },
+    ScenePostEffectParameter {
+        parameter_index: u32,
+        revision: u32,
+        shader_id: &'a str,
+    },
+}
+
+impl fmt::Display for AnimationChannelTarget<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Camera => formatter.write_str("camera"),
+            Self::Entity { entity_id, kind } => write!(formatter, "{entity_id}/{kind}"),
+            Self::ScenePostEffectParameter {
+                parameter_index,
+                revision,
+                shader_id,
+            } => write!(
+                formatter,
+                "scene-post-effect/{shader_id}/{revision}/parameter/{parameter_index}"
+            ),
+        }
+    }
+}
+
+fn animation_channel_target(channel: &AnimationChannelV1) -> AnimationChannelTarget<'_> {
+    match channel {
+        AnimationChannelV1::AffineTransform { entity_id, .. }
+        | AnimationChannelV1::Rotation { entity_id, .. } => AnimationChannelTarget::Entity {
+            entity_id,
+            kind: "transform",
+        },
+        AnimationChannelV1::Opacity { entity_id, .. }
+        | AnimationChannelV1::PathTrim { entity_id, .. }
+        | AnimationChannelV1::PathMorph { entity_id, .. }
+        | AnimationChannelV1::VectorAppearance { entity_id, .. }
+        | AnimationChannelV1::MotionPath { entity_id, .. } => AnimationChannelTarget::Entity {
+            entity_id,
+            kind: channel.kind_name(),
+        },
+        AnimationChannelV1::Camera { .. } => AnimationChannelTarget::Camera,
+        AnimationChannelV1::ScenePostEffectParameter {
+            parameter_index,
+            revision,
+            shader_id,
+            ..
+        } => AnimationChannelTarget::ScenePostEffectParameter {
+            parameter_index: *parameter_index,
+            revision: *revision,
+            shader_id,
+        },
+    }
 }
 
 /// Validates an export profile's declared bounds.
@@ -1321,20 +1384,7 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                 format!("unknown provenance record {}", channel.provenance_id()),
             );
         }
-        let target = channel.entity_id().map_or_else(
-            || "camera".to_owned(),
-            |id| {
-                if matches!(
-                    channel,
-                    AnimationChannelV1::AffineTransform { .. }
-                        | AnimationChannelV1::Rotation { .. }
-                ) {
-                    format!("{id}/transform")
-                } else {
-                    format!("{id}/{}", channel.kind_name())
-                }
-            },
-        );
+        let target = animation_channel_target(channel);
         if !channel_targets.insert(target.clone()) {
             validator.issue(
                 path.clone(),
@@ -1664,6 +1714,68 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                     &format!("{path}.keyframes"),
                     &mut validator,
                     validate_camera_view,
+                );
+            }
+            AnimationChannelV1::ScenePostEffectParameter {
+                keyframes,
+                parameter_index,
+                revision,
+                shader_id,
+                ..
+            } => {
+                validate_opaque_id(shader_id, &format!("{path}.shaderId"), &mut validator);
+                if *revision == 0 {
+                    validator.issue(format!("{path}.revision"), "must be positive");
+                }
+                let base_parameter =
+                    match scene.post_effects.iter().find(|effect| {
+                        effect.shader_id == *shader_id && effect.revision == *revision
+                    }) {
+                        None => {
+                            validator.issue(
+                                format!("{path}.shaderId"),
+                                "must target an existing Scene post-effect shaderId/revision pair",
+                            );
+                            None
+                        }
+                        Some(effect)
+                            if usize::try_from(*parameter_index)
+                                .map_or(true, |index| index >= effect.parameters.len()) =>
+                        {
+                            validator.issue(
+                                format!("{path}.parameterIndex"),
+                                "must target an existing Scene post-effect parameter",
+                            );
+                            None
+                        }
+                        Some(effect) => usize::try_from(*parameter_index)
+                            .ok()
+                            .and_then(|index| effect.parameters.get(index))
+                            .copied(),
+                    };
+                if let (Some(base_parameter), Some(first)) = (base_parameter, keyframes.first())
+                    && first.value.to_bits() != base_parameter.to_bits()
+                {
+                    validator.issue(
+                        format!("{path}.keyframes[0].value"),
+                        "must exactly match the static Scene post-effect parameter baseline",
+                    );
+                }
+                total_keyframes = total_keyframes.saturating_add(keyframes.len());
+                validate_keyframes(
+                    keyframes,
+                    MAX_KEYFRAMES_V1,
+                    scene.duration,
+                    &format!("{path}.keyframes"),
+                    &mut validator,
+                    |value, value_path, validator| {
+                        validate_finite(*value, value_path, validator);
+                        if value.is_finite()
+                            && (*value < f64::from(f32::MIN) || *value > f64::from(f32::MAX))
+                        {
+                            validator.issue(value_path, "must fit the finite f32 range");
+                        }
+                    },
                 );
             }
         }

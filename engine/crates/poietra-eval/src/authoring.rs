@@ -71,7 +71,11 @@ pub use presence::{
     ApplyStudioPersistentRemoveError, StudioPersistentRemoveProjection,
     StudioPersistentRemoveProjectionEntry,
 };
-pub use scene_post_effect::{ApplyStudioScenePostEffectCommand, ApplyStudioScenePostEffectError};
+pub use scene_post_effect::{
+    ApplyStudioScenePostEffectCommand, ApplyStudioScenePostEffectError,
+    MAX_STUDIO_SCENE_POST_EFFECT_PARAMETER_KEYFRAMES, StudioScenePostEffectParameterKeyframe,
+    StudioScenePostEffectParameterTrack,
+};
 use static_root::static_root_transform_edit_input_is_closed;
 pub use static_root::{
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,

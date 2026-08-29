@@ -1740,7 +1740,7 @@ struct PlannedStudioGroupLayerOrder {
     entity_ids: BTreeSet<String>,
 }
 
-fn property_easing(easing: StudioPropertyEasing) -> EasingV1 {
+pub(super) fn property_easing(easing: StudioPropertyEasing) -> EasingV1 {
     match easing {
         StudioPropertyEasing::Linear => EasingV1::Linear {},
         StudioPropertyEasing::Smooth => EasingV1::ManimSmooth {},

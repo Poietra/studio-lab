@@ -303,6 +303,12 @@ import {
   scenePostEffectProgramOwnerV1,
 } from "./studio/scene-post-effect-authoring";
 import {
+  replaceScenePostEffectParameterKeyframeProgram,
+  scenePostEffectParameterKeyframesToSourceTime,
+  scenePostEffectParameterTrackMatchesEffects,
+  scenePostEffectParameterTrackToWorkingTime,
+} from "./studio/scene-post-effect-parameter-keyframe-edit";
+import {
   acceptedStudioScenePostEffectReferenceV1,
   acceptedStudioScenePostEffectRegistrySourceV1,
   acceptStudioScenePostEffectSourceV1,
@@ -1418,6 +1424,7 @@ export function App({
     () => scenePostEffectStackV1Schema.parse(scenePostEffectOperation?.effects ?? []),
     [scenePostEffectOperation?.effects],
   );
+  const scenePostEffectSourceParameterTrack = scenePostEffectOperation?.parameterTrack ?? null;
   const activeProjectScenePostEffectRevisions = useMemo(
     () =>
       scenePostEffects.flatMap((effect) =>
@@ -1961,10 +1968,19 @@ export function App({
           timelineProjection: workspaceTimelineProjection,
         })
       : null;
+  const previewSceneEdits = previewEditRecords.map((record) => record.program);
   const previewAppliedSceneEdits = previewAppliedEdits.map((record) => record.program);
   const appliedCreationProjection = creationProjectionForPrograms(previewAppliedSceneEdits);
   const appliedTimelineProjection = timelineProjectionForPrograms(previewAppliedSceneEdits);
   const appliedTimelineTransforms = timelineTransformsForPrograms(previewAppliedSceneEdits);
+  const previewTimelineTransforms = timelineTransformsForPrograms(previewSceneEdits);
+  const scenePostEffectParameterTrack =
+    scenePostEffectSourceParameterTrack && previewTimelineTransforms !== undefined
+      ? scenePostEffectParameterTrackToWorkingTime(scenePostEffectSourceParameterTrack, {
+          programs: previewSceneEdits,
+          timelineTransforms: previewTimelineTransforms,
+        })
+      : null;
   const sourceCurrentTime =
     appliedTimelineTransforms === undefined
       ? currentTime
@@ -6932,6 +6948,9 @@ export function App({
     }
     try {
       const parsedEffects = scenePostEffectStackV1Schema.parse(effects);
+      if (!scenePostEffectParameterTrackMatchesEffects(scenePostEffectSourceParameterTrack, parsedEffects)) {
+        throw new Error("Remove the Scene effect parameter animation before removing its effect or baseline value.");
+      }
       const owner = scenePostEffectProgramOwnerV1(appliedEdits);
       if (owner) {
         if (JSON.stringify(owner.operation.effects) === JSON.stringify(parsedEffects)) return true;
@@ -6962,6 +6981,60 @@ export function App({
       return installCanonicalDraft(validated.record);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The Scene post-effect stack could not be changed.");
+      return false;
+    }
+  }
+
+  function changeScenePostEffectParameterTrack(
+    input: Readonly<{
+      assetRevision: number;
+      keyframes: readonly Readonly<{
+        easing: StudioPropertyKeyframeEasing;
+        time: number;
+        value: number;
+      }>[];
+      name: string;
+      parameterIndex: number;
+      range: Readonly<{ max: number; min: number }>;
+    }>,
+  ) {
+    if (!draftBaseState) {
+      setDraftError("Wait for the editable Scene before changing its post-effect animation.");
+      return false;
+    }
+    if (draftEdit || editingAppliedProgram) {
+      setDraftError("Apply or discard the current draft before changing the Scene post-effect animation.");
+      return false;
+    }
+    try {
+      if (appliedTimelineTransforms === undefined) {
+        throw new Error("Wait for the Rust timeline projection before changing the Scene effect animation.");
+      }
+      const owner = scenePostEffectProgramOwnerV1(appliedEdits);
+      if (!owner) throw new Error("Add the Scene post effect before animating one of its parameters.");
+      const editorOwner = appliedEdits[owner.index];
+      if (!editorOwner) throw new Error("The Scene post-effect Program no longer exists.");
+      const preceding = sourceSceneBeforeAppliedProgram(owner.index);
+      const sourceKeyframes = scenePostEffectParameterKeyframesToSourceTime(input.keyframes, {
+        programs: previewAppliedSceneEdits,
+        timelineTransforms: appliedTimelineTransforms,
+      });
+      const validation = replaceScenePostEffectParameterKeyframeProgram({
+        ...input,
+        keyframes: sourceKeyframes,
+        owner: editorOwner,
+        revision: input.assetRevision,
+        scene: preceding.scene,
+        shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return installCanonicalDraft(validated.record, [], preceding.canonical, null, {
+        index: owner.index,
+        original: editorOwner,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The Scene post-effect animation could not be changed.");
       return false;
     }
   }
@@ -7015,6 +7088,13 @@ export function App({
     if (!expectedAsset) throw new Error("The custom Scene post effect no longer exists.");
     if ((expectedAsset.accepted?.generation ?? null) !== input.expectedAcceptedGeneration) {
       throw new Error("The custom Scene post effect changed while its source was compiling. Review it and try again.");
+    }
+    if (
+      scenePostEffectSourceParameterTrack?.revision === input.assetRevision &&
+      expectedAsset.accepted &&
+      JSON.stringify(expectedAsset.accepted.parameterSchema) !== JSON.stringify(input.parameterSchema)
+    ) {
+      throw new Error("Remove the Scene effect parameter animation before changing its parameter schema.");
     }
     let candidate: ProjectScenePostEffectLibraryState;
     try {
@@ -10993,6 +11073,7 @@ export function App({
                   previewPaintAvailable &&
                   draftEdit === null &&
                   editingAppliedProgram === null,
+                duration: activeDuration,
                 imageAssets: studioImageAssets,
                 onAddToStack: (assetRevision, texture) => {
                   const reference = acceptedStudioScenePostEffectReferenceV1(
@@ -11028,6 +11109,7 @@ export function App({
                     );
                   }
                 },
+                onParameterTrackChange: changeScenePostEffectParameterTrack,
                 onRemove: removeUncompiledProjectScenePostEffect,
                 onSelect: (assetRevision) => {
                   if (!activeProjectId) return;
@@ -11056,7 +11138,10 @@ export function App({
                     ),
                   );
                 },
+                parameterAnimationAvailable: appliedTimelineTransforms !== undefined,
                 parameters: selectedScenePostEffect?.parameters ?? null,
+                parameterTrack: scenePostEffectParameterTrack,
+                playhead: currentTime,
                 selectedRevision: selectedProjectScenePostEffectRevision,
                 sourceAvailable:
                   !studioAuthoringLocked && !isPlaying && draftEdit === null && editingAppliedProgram === null,

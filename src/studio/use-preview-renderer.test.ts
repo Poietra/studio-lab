@@ -1256,8 +1256,267 @@ describe("compileStudioPreviewSceneV1", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
     expect(commands[0]?.effects).toEqual(effects);
+    expect(commands[0]?.parameterTracks).toEqual([]);
     expect(result.scene.bundle.scene.postEffects).toEqual(effects);
     expect(result.scene.scenePostEffectRegistry).toBe(registry);
+  });
+
+  it("lowers one Scene effect parameter track exactly and digests only engine semantics", async () => {
+    const base = await compilablePreviewInput();
+    const effects = [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }] as const;
+    const commands: ApplyStudioScenePostEffectWireCommandV1[] = [];
+    const compile = async (name: string, terminalValue: number, baselineValue = 4) => {
+      const validation = createStudioScenePostEffectProgram({
+        capturedPlayhead: 0,
+        effects,
+        parameterTrack: {
+          keyframes: [
+            { easing: "ease-in", time: 0, value: baselineValue },
+            { easing: "smooth", time: 2, value: terminalValue },
+          ],
+          name,
+          parameterIndex: 0,
+          revision: 1,
+          shaderId: "rgb-split",
+        },
+        scene: base.proposedState.base.runtimeSceneState,
+        transactionId: `scene-effect-track-${commands.length}`,
+      });
+      if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+      const result = await compileStudioPreviewSceneV1({
+        applyStudioScenePostEffectCompiler: async (bundle, command) => {
+          commands.push(command);
+          return sceneIrBundleV1Schema.parse({
+            ...bundle,
+            scene: {
+              ...bundle.scene,
+              postEffects: command.effects,
+              requiredCapabilities: [...new Set([...bundle.scene.requiredCapabilities, "scene-post-effect"])],
+              source: {
+                editProgramVersion: 1,
+                kind: "studio-edit-program",
+                revisionHash: command.nextRevision,
+              },
+            },
+          });
+        },
+        frame: { height: 9, width: 16 },
+        snapshot: base.snapshot,
+        workingState: {
+          ...base.proposedState.base,
+          appliedEdits: [programRecord(validation.program, validation)],
+        },
+        workingRevision: `studio-working-v1:scene-effect-track-${commands.length}`,
+        workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+      });
+      if (result.kind !== "compiled") throw new Error(result.error);
+    };
+
+    await compile("Offset", 8);
+    await compile("Renamed offset", 8);
+    await compile("Offset", 9);
+    await compile("Offset", 8, 4.0004);
+
+    expect(commands[0]?.parameterTracks).toEqual([
+      {
+        keyframes: [
+          { easing: "ease-in", time: 0, value: 4 },
+          { easing: "smooth", time: 2, value: 8 },
+        ],
+        parameterIndex: 0,
+        revision: 1,
+        shaderId: "rgb-split",
+      },
+    ]);
+    expect(commands[1]?.nextRevision).toBe(commands[0]?.nextRevision);
+    expect(commands[2]?.nextRevision).not.toBe(commands[0]?.nextRevision);
+    expect(commands[3]?.parameterTracks[0]?.keyframes[0]?.value).toBe(4);
+    expect(commands[3]?.nextRevision).toBe(commands[0]?.nextRevision);
+  });
+
+  it("projects stored source-time Scene effect markers through the Rust InsertWait transform", async () => {
+    const base = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(base);
+    const effect = createStudioScenePostEffectProgram({
+      capturedPlayhead: 0,
+      effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
+      parameterTrack: {
+        keyframes: [
+          { easing: "smooth", time: 0.5, value: 4 },
+          { easing: "linear", time: 1.5, value: 8 },
+        ],
+        name: "Offset",
+        parameterIndex: 0,
+        revision: 1,
+        shaderId: "rgb-split",
+      },
+      scene: workingBase.runtimeSceneState,
+      transactionId: "source-time-scene-effect-track",
+    });
+    const extension = createSceneDurationProgram({
+      capturedPlayhead: 1,
+      scene: workingBase.runtimeSceneState,
+      sourceAnchor: 1,
+      targetDuration: 3,
+      transactionId: "insert-wait-before-scene-effect-marker",
+    });
+    if (effect.kind !== "valid" || extension.kind !== "valid") {
+      throw new Error(JSON.stringify([...effect.issues, ...extension.issues]));
+    }
+    const effectCommands: ApplyStudioScenePostEffectWireCommandV1[] = [];
+    const extensionOperationId = extension.program.operations[0]!.id;
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioScenePostEffectCompiler: async (bundle, command) => {
+        effectCommands.push(command);
+        return sceneIrBundleV1Schema.parse({
+          ...bundle,
+          scene: {
+            ...bundle.scene,
+            postEffects: command.effects,
+            requiredCapabilities: [...new Set([...bundle.scene.requiredCapabilities, "scene-post-effect"])],
+            source: {
+              editProgramVersion: 1,
+              kind: "studio-edit-program",
+              revisionHash: command.nextRevision,
+            },
+          },
+        });
+      },
+      applyStudioTimelineEditCompiler: async (bundle, command) =>
+        sceneIrBundleV1Schema.parse({
+          ...bundle,
+          scene: {
+            ...bundle.scene,
+            duration: 3,
+            source: {
+              editProgramVersion: 1,
+              kind: "studio-edit-program",
+              revisionHash: command.nextRevision,
+            },
+          },
+        }),
+      frame: { height: 9, width: 16 },
+      projectStudioTimelineCompiler: async () => ({
+        programProjections: [
+          {
+            operationId: extensionOperationId,
+            transactionId: extension.program.transactionId,
+            workingAnchor: 1,
+            workingInterval: { end: 2, start: 1 },
+          },
+        ],
+        projectedDuration: 3,
+        transforms: [
+          {
+            interval: { end: 2, start: 1 },
+            kind: "insert",
+            operationId: extensionOperationId,
+          },
+        ],
+      }),
+      snapshot: base.snapshot,
+      workingState: {
+        ...workingBase,
+        appliedEdits: [programRecord(effect.program, effect), programRecord(extension.program, extension)],
+      },
+      workingRevision: "studio-working-v1:source-time-scene-effect-track",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(effectCommands).toHaveLength(1);
+    expect(effectCommands[0]?.parameterTracks[0]?.keyframes).toEqual([
+      { easing: "smooth", time: 0.5, value: 4 },
+      { easing: "linear", time: 2.5, value: 8 },
+    ]);
+    const storedOperation = effect.program.operations[0];
+    expect(storedOperation?.kind === "SetScenePostEffect" ? storedOperation.parameterTrack?.keyframes : null).toEqual([
+      { easing: "smooth", time: 0.5, value: 4 },
+      { easing: "linear", time: 1.5, value: 8 },
+    ]);
+  });
+
+  it("projects Scene effect markers through legacy Program composition without a Rust timeline projection", async () => {
+    const base = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(base);
+    const motionValidation = validateMotionProgramFixture({
+      capturedPlayhead: 0.5,
+      controlOffset: { x: 32, y: 18 },
+      delta: { x: 64, y: -36 },
+      interval: { end: 1.5, start: 0.5 },
+      scene: workingBase.runtimeSceneState,
+      targetEntityIds: ["source:circle"],
+      transactionId: "legacy-motion-before-scene-effect-marker",
+    });
+    const effectValidation = createStudioScenePostEffectProgram({
+      capturedPlayhead: 0,
+      effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
+      parameterTrack: {
+        keyframes: [
+          { easing: "smooth", time: 0.25, value: 4 },
+          { easing: "linear", time: 1.5, value: 8 },
+        ],
+        name: "Offset",
+        parameterIndex: 0,
+        revision: 1,
+        shaderId: "rgb-split",
+      },
+      scene: workingBase.runtimeSceneState,
+      transactionId: "legacy-source-time-scene-effect-track",
+    });
+    if (motionValidation.kind !== "valid" || effectValidation.kind !== "valid") {
+      throw new Error(JSON.stringify([...motionValidation.issues, ...effectValidation.issues]));
+    }
+    const motion = motionValidation.program.operations[0];
+    if (motion?.kind !== "CreateMotion") throw new Error("Motion fixture is malformed.");
+    const effectCommands: ApplyStudioScenePostEffectWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioMotionEditCompiler: async (bundle) => bundle,
+      applyStudioScenePostEffectCompiler: async (bundle, command) => {
+        effectCommands.push(command);
+        return bundle;
+      },
+      frame: { height: 9, width: 16 },
+      projectStudioMotionCompiler: async () => ({
+        insertions: [{ at: 0.5, duration: 1, transactionId: motionValidation.program.transactionId }],
+        motions: [
+          {
+            control: { x: 384, y: 180 },
+            controlOffset: motion.controlOffset,
+            delta: motion.delta,
+            easing: motion.easing === "smooth" ? "manim-smooth" : "linear",
+            from: { x: 320, y: 180 },
+            interval: motion.interval,
+            operationId: motion.id,
+            orientToPath: false,
+            sourceInterval: motion.interval,
+            targetEntityId: "source:circle",
+            to: { x: 384, y: 144 },
+            transactionId: motionValidation.program.transactionId,
+          },
+        ],
+        projectedDuration: base.snapshot.snapshot.scene.duration + 1,
+      }),
+      snapshot: base.snapshot,
+      workingState: {
+        ...workingBase,
+        appliedEdits: [
+          programRecord(motionValidation.program, motionValidation),
+          programRecord(effectValidation.program, effectValidation),
+        ],
+      },
+      workingRevision: "studio-working-v1:legacy-source-time-scene-effect-track",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.timelineProjection).toBeUndefined();
+    expect(effectCommands[0]?.parameterTracks[0]?.keyframes).toEqual([
+      { easing: "smooth", time: 0.25, value: 4 },
+      { easing: "linear", time: 2.5, value: 8 },
+    ]);
   });
 
   it("rejects a missing project-local source before calling the Rust core", async () => {

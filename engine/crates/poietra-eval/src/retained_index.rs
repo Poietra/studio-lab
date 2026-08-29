@@ -86,7 +86,15 @@ struct ChannelPositionsV1 {
     opacity: Vec<Option<usize>>,
     path_morph: Vec<Option<usize>>,
     path_trim: Vec<Option<usize>>,
+    scene_post_effect_parameters: Vec<ScenePostEffectParameterChannelPositionV1>,
     vector_appearance: Vec<Option<usize>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ScenePostEffectParameterChannelPositionV1 {
+    channel: usize,
+    effect: usize,
+    parameter: usize,
 }
 
 impl ChannelPositionsV1 {
@@ -98,6 +106,7 @@ impl ChannelPositionsV1 {
             opacity: vec![None; entity_count],
             path_morph: vec![None; entity_count],
             path_trim: vec![None; entity_count],
+            scene_post_effect_parameters: Vec::new(),
             vector_appearance: vec![None; entity_count],
         }
     }
@@ -114,7 +123,13 @@ impl ChannelPositionsV1 {
         ] {
             bytes = checked_add(bytes, checked_mul(capacity, size_of::<Option<usize>>())?)?;
         }
-        Ok(bytes)
+        checked_add(
+            bytes,
+            checked_mul(
+                self.scene_post_effect_parameters.capacity(),
+                size_of::<ScenePostEffectParameterChannelPositionV1>(),
+            )?,
+        )
     }
 
     fn entries(&self) -> usize {
@@ -123,6 +138,7 @@ impl ChannelPositionsV1 {
             + self.opacity.iter().flatten().count()
             + self.path_morph.iter().flatten().count()
             + self.path_trim.iter().flatten().count()
+            + self.scene_post_effect_parameters.len()
             + self.vector_appearance.iter().flatten().count()
             + usize::from(self.camera.is_some())
     }
@@ -214,6 +230,20 @@ impl RetainedSceneIndexV1 {
 
     pub(crate) fn path_trim_channel(&self, entity_index: usize) -> Option<usize> {
         self.channels.path_trim.get(entity_index).copied().flatten()
+    }
+
+    pub(crate) fn scene_post_effect_parameter_channel(
+        &self,
+        effect_index: usize,
+        parameter_index: usize,
+    ) -> Option<usize> {
+        self.channels
+            .scene_post_effect_parameters
+            .iter()
+            .find(|position| {
+                position.effect == effect_index && position.parameter == parameter_index
+            })
+            .map(|position| position.channel)
     }
 
     pub(crate) fn vector_appearance_channel(&self, entity_index: usize) -> Option<usize> {
@@ -308,6 +338,15 @@ fn build_channel_positions(
     entity_by_id: &HashMap<String, usize>,
 ) -> Result<ChannelPositionsV1, RetainedSceneIndexErrorV1> {
     let mut channels = ChannelPositionsV1::empty(scene.entities.len());
+    let scene_post_effect_parameter_count = scene
+        .animation_channels
+        .iter()
+        .filter(|channel| matches!(channel, AnimationChannelV1::ScenePostEffectParameter { .. }))
+        .count();
+    channels
+        .scene_post_effect_parameters
+        .try_reserve_exact(scene_post_effect_parameter_count)
+        .map_err(|_| RetainedSceneIndexErrorV1::AllocationFailed)?;
     for (channel_index, channel) in scene.animation_channels.iter().enumerate() {
         let entity_index = channel
             .entity_id()
@@ -320,13 +359,14 @@ fn build_channel_positions(
                     ))
             })
             .transpose()?;
-        install_channel_position(&mut channels, channel, channel_index, entity_index)?;
+        install_channel_position(&mut channels, scene, channel, channel_index, entity_index)?;
     }
     Ok(channels)
 }
 
 fn install_channel_position(
     channels: &mut ChannelPositionsV1,
+    scene: &SceneIrV1,
     channel: &AnimationChannelV1,
     channel_index: usize,
     entity_index: Option<usize>,
@@ -353,6 +393,49 @@ fn install_channel_position(
                     "duplicate camera channel reached index construction",
                 ));
             }
+            return Ok(());
+        }
+        AnimationChannelV1::ScenePostEffectParameter {
+            parameter_index,
+            revision,
+            shader_id,
+            ..
+        } => {
+            let effect_index = scene
+                .post_effects
+                .iter()
+                .position(|effect| effect.shader_id == *shader_id && effect.revision == *revision)
+                .ok_or(RetainedSceneIndexErrorV1::Inconsistent(
+                    "unknown Scene post-effect animation target reached index construction",
+                ))?;
+            let parameter_index = usize::try_from(*parameter_index).map_err(|_| {
+                RetainedSceneIndexErrorV1::Inconsistent(
+                    "invalid Scene post-effect parameter index reached index construction",
+                )
+            })?;
+            if parameter_index >= scene.post_effects[effect_index].parameters.len() {
+                return Err(RetainedSceneIndexErrorV1::Inconsistent(
+                    "unknown Scene post-effect parameter reached index construction",
+                ));
+            }
+            if channels
+                .scene_post_effect_parameters
+                .iter()
+                .any(|position| {
+                    position.effect == effect_index && position.parameter == parameter_index
+                })
+            {
+                return Err(RetainedSceneIndexErrorV1::Inconsistent(
+                    "duplicate Scene post-effect parameter target reached index construction",
+                ));
+            }
+            channels
+                .scene_post_effect_parameters
+                .push(ScenePostEffectParameterChannelPositionV1 {
+                    channel: channel_index,
+                    effect: effect_index,
+                    parameter: parameter_index,
+                });
             return Ok(());
         }
     };
@@ -432,8 +515,20 @@ fn preflight_accounted_bytes(scene: &SceneIrV1) -> Result<usize, RetainedSceneIn
     }
 
     let option_vector = checked_mul(entity_count, size_of::<Option<usize>>())?;
-    // Five channel vectors and one parent vector.
-    bytes = checked_add(bytes, checked_mul(option_vector, 6)?)?;
+    // Six entity channel vectors and one parent vector.
+    bytes = checked_add(bytes, checked_mul(option_vector, 7)?)?;
+    let scene_post_effect_parameter_channels = scene
+        .animation_channels
+        .iter()
+        .filter(|channel| matches!(channel, AnimationChannelV1::ScenePostEffectParameter { .. }))
+        .count();
+    bytes = checked_add(
+        bytes,
+        checked_mul(
+            scene_post_effect_parameter_channels,
+            size_of::<ScenePostEffectParameterChannelPositionV1>(),
+        )?,
+    )?;
     let index_vector = checked_mul(entity_count, size_of::<usize>())?;
     // Hierarchy order and stable paint order.
     checked_add(bytes, checked_mul(index_vector, 2)?)

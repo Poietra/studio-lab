@@ -27,7 +27,9 @@ import {
   isCanonicalRgbHex,
   type SceneEdit,
   type SceneEditOperation,
+  type ScenePostEffectParameterTrack,
   type StudioScenePostEffectV1,
+  scenePostEffectParameterTrackSchema,
   scenePostEffectStackV1Schema,
 } from "./scene-edit-contract";
 import { STUDIO_STYLE_PROFILE, type StyleProfileRef, styleProfileRef } from "./style-profile";
@@ -221,11 +223,13 @@ export function createStudioScenePostEffectProgram(
   input: Readonly<{
     capturedPlayhead: number;
     effects: readonly StudioScenePostEffectV1[];
+    parameterTrack?: ScenePostEffectParameterTrack | null;
     scene: RuntimeSceneState;
     transactionId: string;
   }>,
 ): SceneEditValidationResult {
   const effects = scenePostEffectStackV1Schema.parse(input.effects);
+  const parameterTrack = input.parameterTrack ? scenePostEffectParameterTrackSchema.parse(input.parameterTrack) : null;
   return authoringProgram(
     [
       {
@@ -234,6 +238,7 @@ export function createStudioScenePostEffectProgram(
         id: operationId(input.transactionId, "set-scene-post-effect"),
         interval: { end: input.capturedPlayhead, start: input.capturedPlayhead },
         kind: "SetScenePostEffect",
+        parameterTrack,
         provenance: provenance("studio-default", ["Scene graph RGB split post effect"]),
       },
     ],
@@ -252,6 +257,7 @@ export function replaceStudioScenePostEffectProgram(
   input: Readonly<{
     effects: readonly StudioScenePostEffectV1[];
     owner: ProgramRecord;
+    parameterTrack?: ScenePostEffectParameterTrack | null;
     scene: RuntimeSceneState;
   }>,
 ): SceneEditValidationResult {
@@ -263,6 +269,12 @@ export function replaceStudioScenePostEffectProgram(
   ) {
     throw new TypeError("Only one canonical Scene post-effect Program can be replaced.");
   }
+  const parameterTrack =
+    input.parameterTrack === undefined
+      ? undefined
+      : input.parameterTrack === null
+        ? null
+        : scenePostEffectParameterTrackSchema.parse(input.parameterTrack);
   return validateAndScheduleProgram(
     {
       ...input.owner.program,
@@ -270,6 +282,7 @@ export function replaceStudioScenePostEffectProgram(
         {
           ...operation,
           effects: scenePostEffectStackV1Schema.parse(input.effects),
+          ...(parameterTrack === undefined ? {} : { parameterTrack }),
         },
       ],
     },
