@@ -522,7 +522,15 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     await page.getByRole("slider", { name: "Amplitude Scene post-effect parameter" }).fill("20");
     await page.getByRole("button", { name: "Update parameters" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
-    await waitForNewPresentedRevision(redoRevision);
+    const parameterRevision = await waitForNewPresentedRevision(redoRevision);
+
+    await page.getByRole("button", { name: /Animate from 0s to/u }).click();
+    await page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" }).fill("2.75");
+    await page.getByRole("spinbutton", { name: "Amplitude keyframe 2 value" }).fill("60");
+    await page.getByRole("combobox", { name: "Amplitude keyframe 1 easing" }).selectOption("linear");
+    await page.getByRole("button", { name: "Update animation" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForNewPresentedRevision(parameterRevision);
     await playhead.fill("2");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
     const startPacket = await canvas.getAttribute("data-preview-packet-id");
@@ -545,6 +553,9 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     await page.getByRole("button", { name: "Open Custom WGSL effect fixture workspace" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     await expect(page.getByText("WGSL was rejected", { exact: true })).toBeVisible();
+    await expect(page.getByText("Amplitude · 2 keyframes", { exact: true })).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" })).toHaveValue("2.75");
+    await expect(page.getByRole("spinbutton", { name: "Amplitude keyframe 2 value" })).toHaveValue("60");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     const mp4 = await exportLocalMp4(page);
@@ -556,10 +567,13 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
 
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");
+    await page.getByRole("button", { name: "Remove animation" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const staticRevision = await waitForNewPresentedRevision(activeRevision);
     await page.getByRole("button", { name: "Remove Wave Distortion effect from stack" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(page.getByRole("button", { name: "Add to stack" })).toBeVisible();
-    await waitForNewPresentedRevision(activeRevision);
+    await waitForNewPresentedRevision(staticRevision);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

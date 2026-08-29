@@ -94,7 +94,20 @@ test("renders an effect-only project PNG through the canonical thumbnail path", 
     assets: png.assets,
     scene: {
       ...base.scene,
-      animationChannels: [],
+      animationChannels: [
+        {
+          id: "scene-effect-parameter:thumbnail",
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: 0.05 },
+            { at: base.scene.duration, easingToNext: null, value: 1 },
+          ],
+          kind: "scene-post-effect-parameter",
+          parameterIndex: 0,
+          provenanceId: "fixture",
+          revision: 1,
+          shaderId: "project-scene-post-effect",
+        },
+      ],
       assetManifest: {
         manifestDigest: png.assets.manifestDigest,
         manifestId: png.assets.manifestId,
@@ -102,7 +115,7 @@ test("renders an effect-only project PNG through the canonical thumbnail path", 
       entities: [],
       postEffects: [
         {
-          parameters: [],
+          parameters: [0.05],
           revision: 1,
           shaderId: "project-scene-post-effect",
           texture: {
@@ -132,7 +145,8 @@ test("renders an effect-only project PNG through the canonical thumbnail path", 
 @group(0) @binding(4) var auxiliary_sampler: sampler;
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
-  return textureSample(auxiliary_texture, auxiliary_sampler, vec2<f32>(0.25, 0.5));
+  let sampled = textureSample(auxiliary_texture, auxiliary_sampler, vec2<f32>(0.25, 0.5));
+  return vec4<f32>(sampled.rgb * host.parameters_0.x, sampled.a);
 }`,
         textureSlot: "texture2d",
       },
@@ -187,5 +201,8 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     { asset, encodedBytes: payload.encodedBytes, scenePostEffectRegistry, snapshot },
   );
 
+  // The static baseline is intentionally too dark for this threshold. Passing
+  // proves thumbnail generation samples the parameter track at the same final
+  // representative instant as the canonical evaluator.
   expect(result.redDominantPixels).toBeGreaterThan(100_000);
 });

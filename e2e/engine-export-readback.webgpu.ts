@@ -54,7 +54,16 @@ type BrowserAssetPayloadFixture = Readonly<{
 }>;
 
 type PreviewMp4PixelProof =
-  | Readonly<{ decodedPixels: readonly (readonly number[])[]; kind: "decoded"; previewPixels: readonly number[][] }>
+  | Readonly<{
+      decodedPixels: readonly (readonly number[])[];
+      kind: "decoded";
+      previewPixels: readonly number[][];
+      samples: readonly Readonly<{
+        decodedPixels: readonly (readonly number[])[];
+        previewPixels: readonly (readonly number[])[];
+        sampleTime: number;
+      }>[];
+    }>
   | Readonly<{ kind: "refused"; message: string; reason: string }>;
 
 function pixelAt(rgba: readonly number[], frame: number, x: number, y: number) {
@@ -233,6 +242,7 @@ async function renderPreviewAndDecodedMp4Pixels(
     fps: number;
     fragmentMaterialRegistry: FragmentMaterialRegistryV1;
     sampleFractions: readonly Readonly<{ fractionX: number; fractionY: number }>[];
+    sampleTimes?: readonly number[];
     scenePostEffectRegistry?: ScenePostEffectRegistryV1;
     snapshot: SceneIrBundleV1;
     viewport: Readonly<{ heightPx: number; widthPx: number }>;
@@ -269,7 +279,8 @@ async function renderPreviewAndDecodedMp4Pixels(
         }),
       onStateChange: () => undefined,
     });
-    let previewPixels: readonly number[][];
+    const sampleTimes = input.sampleTimes ?? [0];
+    const previewSamples: Readonly<{ previewPixels: readonly (readonly number[])[]; sampleTime: number }>[] = [];
     try {
       const revision = input.snapshot.scene.source.revisionHash;
       await host.install({
@@ -280,13 +291,22 @@ async function renderPreviewAndDecodedMp4Pixels(
         scenePostEffectRegistry: input.scenePostEffectRegistry,
         snapshot: input.snapshot,
       });
-      host.requestFrame({ sampleTime: 0, viewport: input.viewport });
-      const deadline = performance.now() + 30_000;
-      while (host.state.phase !== "presented" || host.state.frame.revision !== revision) {
-        if (performance.now() >= deadline) throw new Error(`Preview failed: ${JSON.stringify(host.state)}`);
-        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      for (const sampleTime of sampleTimes) {
+        host.requestFrame({ sampleTime, viewport: input.viewport });
+        const deadline = performance.now() + 30_000;
+        while (
+          host.state.phase !== "presented" ||
+          host.state.frame.revision !== revision ||
+          host.state.frame.sampleTime !== sampleTime
+        ) {
+          if (performance.now() >= deadline) throw new Error(`Preview failed: ${JSON.stringify(host.state)}`);
+          await new Promise<void>((resolve) => setTimeout(resolve, 10));
+        }
+        previewSamples.push({
+          previewPixels: (await host.captureEvidence(input.sampleFractions)).samples,
+          sampleTime,
+        });
       }
-      previewPixels = (await host.captureEvidence(input.sampleFractions)).samples;
     } finally {
       host.dispose();
     }
@@ -313,27 +333,49 @@ async function renderPreviewAndDecodedMp4Pixels(
         });
         video.load();
       });
-      await new Promise<void>((resolve) => {
-        video.addEventListener("seeked", () => resolve(), { once: true });
-        video.currentTime = 0.1 / input.fps;
-      });
       const decodedCanvas = document.createElement("canvas");
       decodedCanvas.height = video.videoHeight;
       decodedCanvas.width = video.videoWidth;
       const context = decodedCanvas.getContext("2d", { alpha: false, willReadFrequently: true });
       if (!context) throw new Error("The decoded-frame canvas is unavailable.");
-      context.drawImage(video, 0, 0);
-      const decodedPixels = input.sampleFractions.map(({ fractionX, fractionY }) =>
-        Array.from(
-          context.getImageData(
-            Math.floor(video.videoWidth * fractionX),
-            Math.floor(video.videoHeight * fractionY),
-            1,
-            1,
-          ).data,
-        ),
-      );
-      return { decodedPixels, kind: "decoded" as const, previewPixels };
+      const samples = [];
+      for (const previewSample of previewSamples) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(
+            () => reject(new Error(`MP4 seek to ${previewSample.sampleTime}s timed out.`)),
+            15_000,
+          );
+          video.addEventListener(
+            "seeked",
+            () => {
+              clearTimeout(timeout);
+              resolve();
+            },
+            { once: true },
+          );
+          video.currentTime = previewSample.sampleTime + 0.1 / input.fps;
+        });
+        context.drawImage(video, 0, 0);
+        const decodedPixels = input.sampleFractions.map(({ fractionX, fractionY }) =>
+          Array.from(
+            context.getImageData(
+              Math.floor(video.videoWidth * fractionX),
+              Math.floor(video.videoHeight * fractionY),
+              1,
+              1,
+            ).data,
+          ),
+        );
+        samples.push({ ...previewSample, decodedPixels });
+      }
+      const first = samples[0];
+      if (!first) throw new Error("At least one Preview/MP4 sample time is required.");
+      return {
+        decodedPixels: first.decodedPixels,
+        kind: "decoded" as const,
+        previewPixels: first.previewPixels,
+        samples,
+      };
     } finally {
       URL.revokeObjectURL(url);
     }
@@ -548,6 +590,95 @@ test("imported GLSL stays pixel-equivalent between Preview and decoded WebCodecs
   }
   expectPixelClose(proof.previewPixels[0] ?? [], [188, 137, 225, 255], 4);
   expectPixelClose(proof.decodedPixels[0] ?? [], proof.previewPixels[0] ?? [], 4);
+});
+
+test("Scene effect parameter keyframes stay pixel-equivalent between Preview and decoded WebCodecs MP4", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const fixture = JSON.parse(
+    await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8"),
+  ) as SceneIrBundleV1;
+  const shaderId = "project-scene-post-effect";
+  const snapshot: SceneIrBundleV1 = {
+    assets: fixture.assets,
+    scene: {
+      ...fixture.scene,
+      animationChannels: [
+        {
+          id: "scene-effect-parameter:red",
+          keyframes: [
+            { at: 0, easingToNext: { kind: "linear" }, value: 0.2 },
+            { at: 0.1, easingToNext: null, value: 0.8 },
+          ],
+          kind: "scene-post-effect-parameter",
+          parameterIndex: 0,
+          provenanceId: "fixture",
+          revision: 1,
+          shaderId,
+        },
+      ],
+      duration: FRAGMENT_EXPORT_DURATION,
+      entities: [],
+      postEffects: [{ parameters: [0.2], revision: 1, shaderId }],
+      requiredCapabilities: ["scene-post-effect"],
+      sceneId: "fixture:animated-scene-effect-export",
+      source: { ...fixture.scene.source, revisionHash: "a".repeat(64) },
+    },
+  };
+  const scenePostEffectRegistry = {
+    effects: [
+      {
+        revision: 1,
+        shaderId,
+        source: `struct Host {
+  viewport_and_time: vec4<f32>,
+  parameters_0: vec4<f32>,
+  parameters_1: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+  return vec4<f32>(host.parameters_0.x, 0.0, 0.0, 1.0);
+}`,
+      },
+    ],
+    schema: "poietra.scene-post-effect-registry",
+    version: 1,
+  } satisfies ScenePostEffectRegistryV1;
+
+  await page.goto("/");
+  const proof = await renderPreviewAndDecodedMp4Pixels(page, {
+    fps: FRAGMENT_EXPORT_FPS,
+    fragmentMaterialRegistry: {
+      materials: [],
+      schema: "poietra.fragment-material-registry",
+      version: 1,
+    },
+    sampleFractions: [{ fractionX: 0.5, fractionY: 0.5 }],
+    sampleTimes: [0, 0.1],
+    scenePostEffectRegistry,
+    snapshot,
+    viewport: FRAGMENT_READBACK_VIEWPORT,
+  });
+
+  test.skip(
+    proof.kind === "refused" && ["api-unavailable", "unsupported-codec"].includes(proof.reason),
+    proof.kind === "refused" ? `Chromium has no usable H.264 WebCodecs encoder: ${proof.message}` : undefined,
+  );
+  if (proof.kind === "refused") {
+    throw new Error(`Browser MP4 export refused with ${proof.reason}: ${proof.message}`);
+  }
+  expect(proof.samples).toHaveLength(2);
+  const start = proof.samples[0];
+  const end = proof.samples[1];
+  expect(start?.sampleTime).toBe(0);
+  expect(end?.sampleTime).toBe(0.1);
+  expect((end?.previewPixels[0]?.[0] ?? 0) - (start?.previewPixels[0]?.[0] ?? 0)).toBeGreaterThan(80);
+  for (const sample of proof.samples) {
+    expectPixelClose(sample.decodedPixels[0] ?? [], sample.previewPixels[0] ?? [], 6);
+  }
 });
 
 test("a project PNG material stays pixel-equivalent between Preview and decoded WebCodecs MP4", async ({ page }) => {
