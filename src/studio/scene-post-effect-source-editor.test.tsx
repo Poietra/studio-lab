@@ -29,7 +29,7 @@ void main() {
 `;
 
 const callbacks = () => ({
-  onActivate: vi.fn(),
+  onAddToStack: vi.fn(),
   onCompile: vi.fn(),
   onCreate: vi.fn(),
   onParametersChange: vi.fn(),
@@ -52,7 +52,7 @@ describe("ScenePostEffectSourceEditor", () => {
   it("offers one Wave Distortion starter when the project has no custom asset", () => {
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        activeRevision={null}
+        activeRevisions={[]}
         assets={[]}
         available
         parameters={null}
@@ -74,7 +74,7 @@ describe("ScenePostEffectSourceEditor", () => {
     const state = acceptStudioScenePostEffectSourceV1(second.state, second.revision, secondAsset.draft);
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        activeRevision={second.revision}
+        activeRevisions={[second.revision]}
         assets={state.assets}
         available
         parameters={[12, 64, 0.75]}
@@ -90,7 +90,7 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain(`data-scene-post-effect-asset-revision="${second.revision}"`);
     expect(markup).toContain("Chromatic Shift · WGSL");
     expect(markup).toContain("Active · generation 1");
-    expect(markup).toContain("Applied to Scene");
+    expect(markup).toContain("In Scene stack");
   });
 
   it("renders the accepted identity, fixed ABI, source editor, and live scalar controls", () => {
@@ -98,7 +98,7 @@ describe("ScenePostEffectSourceEditor", () => {
     const accepted = acceptAsset(created);
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        activeRevision={created.revision}
+        activeRevisions={[created.revision]}
         assets={accepted.state.assets}
         available
         parameters={[18, 80, 1.25]}
@@ -124,7 +124,7 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("textureSample(scene_texture, scene_sampler");
     expect(markup).toContain("Compile &amp; accept WGSL");
     expect(markup).toContain("Reset source");
-    expect(markup).toContain("Applied to Scene");
+    expect(markup).toContain("In Scene stack");
   });
 
   it("renders GLSL paste and bounded local file import while retaining canonical WGSL", () => {
@@ -138,7 +138,7 @@ describe("ScenePostEffectSourceEditor", () => {
     });
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        activeRevision={created.revision}
+        activeRevisions={[created.revision]}
         assets={accepted.assets}
         available
         parameters={[12, 64, 0.75]}
@@ -171,7 +171,7 @@ describe("ScenePostEffectSourceEditor", () => {
     });
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        activeRevision={created.revision}
+        activeRevisions={[created.revision]}
         assets={rejected.assets}
         available
         parameters={[12, 64, 0.75]}
@@ -185,7 +185,7 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("post-effect.wgsl:7:4: expected expression");
     expect(markup).toContain("Last accepted generation 1 remains active.");
     expect(markup).toContain("@fragment fn broken(");
-    expect(markup).toContain("Applied to Scene");
+    expect(markup).toContain("In Scene stack");
   });
 
   it("labels a rejected GLSL draft and keeps the last accepted generation available", () => {
@@ -199,7 +199,7 @@ describe("ScenePostEffectSourceEditor", () => {
     });
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        activeRevision={created.revision}
+        activeRevisions={[created.revision]}
         assets={rejected.assets}
         available
         parameters={[12, 64, 0.75]}
@@ -220,7 +220,7 @@ describe("ScenePostEffectSourceEditor", () => {
     const accepted = acceptAsset(created);
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        activeRevision={created.revision}
+        activeRevisions={[created.revision]}
         assets={accepted.state.assets}
         available={false}
         parameters={[12]}

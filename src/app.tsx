@@ -36,6 +36,7 @@ import { compileFragmentMaterialGlsl } from "./engine/fragment-material-glsl";
 import type { StudioCreationProjectionMutationV1, StudioPropertyKeyframeEasing } from "./engine/scene-authoring";
 import { compileScenePostEffectGlsl, VULKAN_GLSL_SCENE_POST_EFFECT_ENTRY_POINT } from "./engine/scene-post-effect-glsl";
 import {
+  MAX_SCENE_POST_EFFECTS_V1,
   PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
   scenePostEffectRegistryV1Schema,
 } from "./engine/scene-post-effect-registry";
@@ -288,12 +289,12 @@ import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-author
 import {
   type SceneEdit,
   type StudioScenePostEffectV1,
+  scenePostEffectStackV1Schema,
   shapeTransformChangesShape,
   studioEntityTypeMayExposeStrokeDash,
   studioEntityTypeSupportsStrokeCap,
   studioEntityTypeSupportsStrokeWidth,
   studioPaintColorTrackProperty,
-  studioScenePostEffectV1Schema,
 } from "./studio/scene-edit-contract";
 import {
   isScenePostEffectProgramV1,
@@ -1412,13 +1413,17 @@ export function App({
       return null;
     }
   })();
-  const scenePostEffect = useMemo(
-    () =>
-      scenePostEffectOperation?.effect ? studioScenePostEffectV1Schema.parse(scenePostEffectOperation.effect) : null,
-    [scenePostEffectOperation?.effect],
+  const scenePostEffects = useMemo(
+    () => scenePostEffectStackV1Schema.parse(scenePostEffectOperation?.effects ?? []),
+    [scenePostEffectOperation?.effects],
   );
-  const activeProjectScenePostEffectRevision =
-    scenePostEffect?.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 ? scenePostEffect.revision : null;
+  const activeProjectScenePostEffectRevisions = useMemo(
+    () =>
+      scenePostEffects.flatMap((effect) =>
+        effect.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 ? [effect.revision] : [],
+      ),
+    [scenePostEffects],
+  );
   const activeProjectScenePostEffect = activeProjectId
     ? (projectScenePostEffects[activeProjectId] ?? EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE)
     : EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE;
@@ -1429,21 +1434,33 @@ export function App({
     ({ revision }) => revision === retainedProjectScenePostEffectSelection,
   )
     ? retainedProjectScenePostEffectSelection
-    : (activeProjectScenePostEffectRevision ?? activeProjectScenePostEffect.assets[0]?.revision ?? null);
+    : (activeProjectScenePostEffectRevisions[0] ?? activeProjectScenePostEffect.assets[0]?.revision ?? null);
+  const selectedScenePostEffect =
+    selectedProjectScenePostEffectRevision === null
+      ? null
+      : (scenePostEffects.find(
+          (effect) =>
+            effect.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 &&
+            effect.revision === selectedProjectScenePostEffectRevision,
+        ) ?? null);
+  const scenePostEffectNames = useMemo(
+    () =>
+      Object.fromEntries(activeProjectScenePostEffect.assets.map((asset) => [asset.revision, asset.name])) as Readonly<
+        Record<number, string>
+      >,
+    [activeProjectScenePostEffect.assets],
+  );
   const activeScenePostEffectRegistry = useMemo(
     () =>
       scenePostEffectRegistryV1Schema.parse({
-        effect:
-          activeProjectScenePostEffectRevision === null
-            ? null
-            : acceptedStudioScenePostEffectRegistrySourceV1(
-                activeProjectScenePostEffect,
-                activeProjectScenePostEffectRevision,
-              ),
+        effects: activeProjectScenePostEffectRevisions.flatMap((revision) => {
+          const source = acceptedStudioScenePostEffectRegistrySourceV1(activeProjectScenePostEffect, revision);
+          return source ? [source] : [];
+        }),
         schema: "poietra.scene-post-effect-registry",
         version: 1,
       }),
-    [activeProjectScenePostEffect, activeProjectScenePostEffectRevision],
+    [activeProjectScenePostEffect, activeProjectScenePostEffectRevisions],
   );
   const activeProjectNamedFragmentMaterials = useMemo(
     () =>
@@ -6902,7 +6919,7 @@ export function App({
     }
   }
 
-  function changeScenePostEffect(effect: StudioScenePostEffectV1 | null) {
+  function changeScenePostEffects(effects: readonly StudioScenePostEffectV1[]) {
     if (!draftBaseState) {
       setDraftError("Wait for the editable Scene before changing its post effect.");
       return false;
@@ -6912,14 +6929,15 @@ export function App({
       return false;
     }
     try {
+      const parsedEffects = scenePostEffectStackV1Schema.parse(effects);
       const owner = scenePostEffectProgramOwnerV1(appliedEdits);
       if (owner) {
-        if (JSON.stringify(owner.operation.effect) === JSON.stringify(effect)) return true;
+        if (JSON.stringify(owner.operation.effects) === JSON.stringify(parsedEffects)) return true;
         const preceding = sourceSceneBeforeAppliedProgram(owner.index);
         const editorOwner = appliedEdits[owner.index];
         if (!editorOwner) throw new Error("The Scene post-effect Program no longer exists.");
         const validation = replaceStudioScenePostEffectProgram({
-          effect,
+          effects: parsedEffects,
           owner: editorOwner,
           scene: preceding.scene,
         });
@@ -6930,10 +6948,10 @@ export function App({
           original: editorOwner,
         });
       }
-      if (effect === null) return true;
+      if (parsedEffects.length === 0) return true;
       const validation = createStudioScenePostEffectProgram({
         capturedPlayhead: appliedEdits.at(-1)?.program.anchor.resolvedSeconds ?? 0,
-        effect,
+        effects: parsedEffects,
         scene: draftBaseState.evaluatedScene,
         transactionId: `studio-scene-post-effect-${crypto.randomUUID()}`,
       });
@@ -6941,7 +6959,7 @@ export function App({
       if (validated.kind === "invalid") throw new Error(validated.message);
       return installCanonicalDraft(validated.record);
     } catch (error) {
-      setDraftError(error instanceof Error ? error.message : "The Scene post effect could not be changed.");
+      setDraftError(error instanceof Error ? error.message : "The Scene post-effect stack could not be changed.");
       return false;
     }
   }
@@ -7011,8 +7029,10 @@ export function App({
         sourceLanguage: input.sourceLanguage,
         ...(canonicalWgslSource === undefined ? {} : { canonicalWgslSource }),
       });
+      const acceptedSource = acceptedStudioScenePostEffectRegistrySourceV1(candidate, input.assetRevision);
+      if (!acceptedSource) throw new Error("The compiled Scene post effect has no accepted WGSL source.");
       const registry = scenePostEffectRegistryV1Schema.parse({
-        effect: acceptedStudioScenePostEffectRegistrySourceV1(candidate, input.assetRevision),
+        effects: [acceptedSource],
         schema: "poietra.scene-post-effect-registry",
         version: 1,
       });
@@ -10897,7 +10917,7 @@ export function App({
               onRemoveAudioTrack={nativeSceneActive ? () => void updateNativeProjectAudioTrack(null) : undefined}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onSceneBackgroundChange={(color) => void changeSceneBackground(color)}
-              onScenePostEffectChange={(effect) => void changeScenePostEffect(effect)}
+              onScenePostEffectsChange={(effects) => void changeScenePostEffects(effects)}
               onAddImageAsset={(asset) => {
                 setIsPlaying(false);
                 void insertEntitiesAt({ x: 320, y: 180 }, [
@@ -10946,7 +10966,8 @@ export function App({
                     : null
                   : "Scene background editing is available only in a Studio-native workspace."
               }
-              scenePostEffect={scenePostEffect}
+              scenePostEffectNames={scenePostEffectNames}
+              scenePostEffects={scenePostEffects}
               scenePostEffectAvailable={
                 !studioAuthoringLocked &&
                 !isPlaying &&
@@ -10960,7 +10981,7 @@ export function App({
                   : null
               }
               scenePostEffectSourceEditor={{
-                activeRevision: activeProjectScenePostEffectRevision,
+                activeRevisions: activeProjectScenePostEffectRevisions,
                 assets: activeProjectScenePostEffect.assets,
                 available:
                   !studioAuthoringLocked &&
@@ -10968,12 +10989,14 @@ export function App({
                   previewPaintAvailable &&
                   draftEdit === null &&
                   editingAppliedProgram === null,
-                onActivate: (assetRevision) => {
+                onAddToStack: (assetRevision) => {
                   const reference = acceptedStudioScenePostEffectReferenceV1(
                     activeProjectScenePostEffect,
                     assetRevision,
                   );
-                  if (reference) changeScenePostEffect(reference);
+                  if (reference && scenePostEffects.length < MAX_SCENE_POST_EFFECTS_V1) {
+                    changeScenePostEffects([...scenePostEffects, reference]);
+                  }
                 },
                 onCompile: compileProjectScenePostEffect,
                 onCreate: createProjectScenePostEffect,
@@ -10983,7 +11006,15 @@ export function App({
                     assetRevision,
                     parameters,
                   );
-                  if (reference) changeScenePostEffect(reference);
+                  if (reference) {
+                    changeScenePostEffects(
+                      scenePostEffects.map((effect) =>
+                        effect.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && effect.revision === assetRevision
+                          ? reference
+                          : effect,
+                      ),
+                    );
+                  }
                 },
                 onRemove: removeUncompiledProjectScenePostEffect,
                 onSelect: (assetRevision) => {
@@ -10993,10 +11024,7 @@ export function App({
                     [activeProjectId]: assetRevision,
                   }));
                 },
-                parameters:
-                  scenePostEffect?.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1
-                    ? scenePostEffect.parameters
-                    : null,
+                parameters: selectedScenePostEffect?.parameters ?? null,
                 selectedRevision: selectedProjectScenePostEffectRevision,
                 sourceAvailable:
                   !studioAuthoringLocked && !isPlaying && draftEdit === null && editingAppliedProgram === null,
