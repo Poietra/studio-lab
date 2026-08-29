@@ -185,7 +185,7 @@ import {
   type MaterialParameterKeyframe,
   type MaterialParameterKeyframeTrack,
   materialParameterIdentityEditBlocker,
-  materialParameterKeyframeTrackFromProgram,
+  materialParameterKeyframeTracksFromProgram,
   replaceMaterialParameterKeyframe,
   replaceMaterialParameterKeyframeProgram,
 } from "./studio/material-parameter-keyframe-edit";
@@ -2682,100 +2682,111 @@ export function App({
           return [];
         const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId];
         const materialName = activeProjectFragmentMaterials.namesByShaderId[assignment.shaderId] ?? assignment.shaderId;
-        const existing = materialParameterKeyframeTrackFromProgram(owner.program, 0);
-        if (!schema || (existing && JSON.stringify(existing.material) !== JSON.stringify(assignment))) return [];
+        const existingTracks = materialParameterKeyframeTracksFromProgram(owner.program, 0);
+        if (
+          !schema ||
+          existingTracks.some((existing) => JSON.stringify(existing.material) !== JSON.stringify(assignment))
+        ) {
+          return [];
+        }
         return studioFragmentMaterialParameterLayoutV1(schema).entries.flatMap(({ offset, parameter }) =>
-          parameter.type === "f32" &&
-          Number.isFinite(assignment.parameters[offset]) &&
-          (!existing || existing.name === parameter.name)
+          parameter.type === "f32" && Number.isFinite(assignment.parameters[offset])
             ? [{ entityId, materialName, name: parameter.name }]
             : [],
         );
       })
     : [];
   const staleMaterialParameterTracks = previewAppliedEdits.flatMap((record, programIndex) => {
-    const track = materialParameterKeyframeTrackFromProgram(record.program, programIndex);
-    if (!track) return [];
-    const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
-    const parameterSchema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
-    const parameterEntry = parameterSchema
-      ? studioFragmentMaterialParameterLayoutV1(parameterSchema).entries.find(
-          ({ offset }) => offset === track.parameterIndex,
-        )
-      : null;
-    const parameter = parameterEntry?.parameter.type === "f32" ? parameterEntry.parameter : null;
-    const materialOrSchemaChanged =
-      !assignment ||
-      JSON.stringify(assignment) !== JSON.stringify(track.material) ||
-      !parameter ||
-      parameter.name !== track.name;
-    return materialOrSchemaChanged ? [track] : [];
-  });
-  const materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = previewAppliedEdits.flatMap(
-    (record, programIndex) => {
-      const track = materialParameterKeyframeTrackFromProgram(record.program, programIndex);
-      if (!track || !workspaceCreationProjection) return [];
+    return materialParameterKeyframeTracksFromProgram(record.program, programIndex).filter((track) => {
       const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
-      const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
-      const parameterEntry = schema
-        ? studioFragmentMaterialParameterLayoutV1(schema).entries.find(({ offset }) => offset === track.parameterIndex)
+      const parameterSchema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
+      const parameterEntry = parameterSchema
+        ? studioFragmentMaterialParameterLayoutV1(parameterSchema).entries.find(
+            ({ offset }) => offset === track.parameterIndex,
+          )
         : null;
       const parameter = parameterEntry?.parameter.type === "f32" ? parameterEntry.parameter : null;
-      const assignmentChanged =
+      return (
         !assignment ||
         JSON.stringify(assignment) !== JSON.stringify(track.material) ||
         !parameter ||
-        parameter.name !== track.name;
-      const operations = record.program.operations.filter(
-        (operation) =>
-          operation.kind === "AnimateProperty" &&
-          operation.materialParameter !== undefined &&
-          operation.entityId === track.entityId,
+        parameter.name !== track.name
       );
-      const mutations = operations.map((operation) =>
-        workspaceCreationProjection.mutations.find(
-          (mutation) => mutation.kind === "material-parameter-keyframes" && mutation.operationId === operation.id,
-        ),
-      );
-      if (mutations.some((mutation) => !mutation)) return [];
-      const projectedMutations = mutations as readonly Extract<
-        (typeof workspaceCreationProjection.mutations)[number],
-        { kind: "material-parameter-keyframes" }
-      >[];
-      const workingTimes =
-        projectedMutations.length === 1 &&
-        Math.abs(projectedMutations[0]!.interval.end - projectedMutations[0]!.interval.start) < 0.0005
-          ? [projectedMutations[0]!.interval.start]
-          : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
-      if (workingTimes.length !== track.keyframes.length) return [];
-      const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
-      const baseline = track.material.parameters[track.parameterIndex] ?? 0;
-      return [
-        {
-          assignmentChanged,
-          entityId: track.entityId,
-          keyframes: track.keyframes.map((keyframe, index) => ({
-            ...keyframe,
-            sourceTime: keyframe.time,
-            time: workingTimes[index]!,
-          })),
-          label:
-            workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === track.entityId)
-              ?.label ?? track.entityId,
-          materialName:
-            activeProjectFragmentMaterials.namesByShaderId[track.material.shaderId] ?? track.material.shaderId,
-          parameterIndex: track.parameterIndex,
-          parameterName: track.name,
-          programIndex,
-          range: parameter?.name === track.name ? parameter.range : { max: baseline, min: baseline, step: 1 },
-          readOnlyReason: assignmentChanged
-            ? "The assigned material changed. Restore it or remove this track."
-            : draftEdit && !activeDraftIsThisTrack
-              ? "Apply or discard the current draft before editing this material track."
-              : null,
-          transactionId: track.transactionId,
-        },
-      ];
+    });
+  });
+  const materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = previewAppliedEdits.flatMap(
+    (record, programIndex) => {
+      if (!workspaceCreationProjection) return [];
+      return materialParameterKeyframeTracksFromProgram(record.program, programIndex).flatMap((track) => {
+        const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+        const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
+        const parameterEntry = schema
+          ? studioFragmentMaterialParameterLayoutV1(schema).entries.find(
+              ({ offset }) => offset === track.parameterIndex,
+            )
+          : null;
+        const parameter = parameterEntry?.parameter.type === "f32" ? parameterEntry.parameter : null;
+        const assignmentChanged =
+          !assignment ||
+          JSON.stringify(assignment) !== JSON.stringify(track.material) ||
+          !parameter ||
+          parameter.name !== track.name;
+        const operations = record.program.operations.filter(
+          (operation) =>
+            operation.kind === "AnimateProperty" &&
+            operation.materialParameter !== undefined &&
+            operation.entityId === track.entityId &&
+            operation.materialParameter.parameterIndex === track.parameterIndex &&
+            operation.materialParameter.material.shaderId === track.material.shaderId &&
+            operation.materialParameter.material.revision === track.material.revision,
+        );
+        const mutations = operations.map((operation) =>
+          workspaceCreationProjection.mutations.find(
+            (mutation) => mutation.kind === "material-parameter-keyframes" && mutation.operationId === operation.id,
+          ),
+        );
+        if (mutations.some((mutation) => !mutation)) return [];
+        const projectedMutations = mutations as readonly Extract<
+          (typeof workspaceCreationProjection.mutations)[number],
+          { kind: "material-parameter-keyframes" }
+        >[];
+        const workingTimes =
+          projectedMutations.length === 1 &&
+          Math.abs(projectedMutations[0]!.interval.end - projectedMutations[0]!.interval.start) < 0.0005
+            ? [projectedMutations[0]!.interval.start]
+            : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
+        if (workingTimes.length !== track.keyframes.length) return [];
+        const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
+        const baseline = track.material.parameters[track.parameterIndex] ?? 0;
+        return [
+          {
+            assignmentChanged,
+            entityId: track.entityId,
+            keyframes: track.keyframes.map((keyframe, index) => ({
+              ...keyframe,
+              sourceTime: keyframe.time,
+              time: workingTimes[index]!,
+            })),
+            label:
+              workspaceProjection?.projection.timeline.objectTracks.find(({ entityId }) => entityId === track.entityId)
+                ?.label ?? track.entityId,
+            materialName:
+              activeProjectFragmentMaterials.namesByShaderId[track.material.shaderId] ?? track.material.shaderId,
+            materialRevision: track.material.revision,
+            materialShaderId: track.material.shaderId,
+            parameterIndex: track.parameterIndex,
+            parameterName: track.name,
+            programIndex,
+            range: parameter?.name === track.name ? parameter.range : { max: baseline, min: baseline, step: 1 },
+            readOnlyReason: assignmentChanged
+              ? "The assigned material changed. Restore it or remove this track."
+              : draftEdit && !activeDraftIsThisTrack
+                ? "Apply or discard the current draft before editing this material track."
+                : null,
+            transactionId: track.transactionId,
+          },
+        ];
+      });
     },
   );
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
@@ -6155,6 +6166,25 @@ export function App({
     }
   }
 
+  function materialParameterTrackFor(
+    program: SceneEdit,
+    programIndex: number,
+    target: Readonly<{
+      entityId: string;
+      materialRevision: number;
+      materialShaderId: string;
+      parameterIndex: number;
+    }>,
+  ) {
+    return materialParameterKeyframeTracksFromProgram(program, programIndex).find(
+      (track) =>
+        track.entityId === target.entityId &&
+        track.material.shaderId === target.materialShaderId &&
+        track.material.revision === target.materialRevision &&
+        track.parameterIndex === target.parameterIndex,
+    );
+  }
+
   function addMaterialParameterKeyframe(entityId: string, name: string) {
     const owner = studioCreationProgramOwner(entityId);
     const assignment = activeSceneFragmentMaterials.assignments[entityId];
@@ -6172,13 +6202,14 @@ export function App({
     }
     try {
       const sourceTime = workingTimeToSourceTime(previewAppliedSceneEdits, currentTime);
-      const track = materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex);
-      if (track && (track.name !== name || track.entityId !== entityId)) {
-        throw new Error("This creation Program already owns another material parameter track.");
+      const existingTracks = materialParameterKeyframeTracksFromProgram(owner.record.program, owner.programIndex);
+      if (existingTracks.some((track) => JSON.stringify(track.material) !== JSON.stringify(assignment))) {
+        throw new Error("The assigned material changed. Restore it or remove the existing tracks first.");
       }
-      if (track && JSON.stringify(track.material) !== JSON.stringify(assignment)) {
-        throw new Error("The assigned material changed. Restore it or remove the existing track first.");
-      }
+      const track = existingTracks.find(
+        (candidate) => candidate.entityId === entityId && candidate.parameterIndex === parameterIndex,
+      );
+      if (track && track.name !== name) throw new Error("The selected material parameter metadata changed.");
       if (track?.keyframes.some((keyframe) => Math.abs(keyframe.time - sourceTime) < 0.0005)) {
         throw new Error("A material parameter keyframe already exists at the playhead.");
       }
@@ -6201,9 +6232,7 @@ export function App({
 
   function duplicateMaterialParameterKeyframe(track: StudioMaterialParameterTimelineTrack, index: number) {
     const owner = studioCreationProgramOwner(track.entityId);
-    const sourceTrack = owner
-      ? materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex)
-      : null;
+    const sourceTrack = owner ? materialParameterTrackFor(owner.record.program, owner.programIndex, track) : null;
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
     if (!owner || !sourceTrack || !assignment || owner.record.program.transactionId !== track.transactionId) {
       setDraftError("The material parameter track no longer matches the Studio-created object.");
@@ -6236,9 +6265,7 @@ export function App({
     patch: Partial<Pick<StudioMaterialParameterTimelineTrack["keyframes"][number], "easing" | "time" | "value">>,
   ) {
     const owner = studioCreationProgramOwner(track.entityId);
-    const sourceTrack = owner
-      ? materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex)
-      : null;
+    const sourceTrack = owner ? materialParameterTrackFor(owner.record.program, owner.programIndex, track) : null;
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
     if (!owner || !sourceTrack || !assignment || owner.record.program.transactionId !== track.transactionId) {
       setDraftError("The material parameter track no longer matches the Studio-created object.");
@@ -6272,9 +6299,7 @@ export function App({
 
   function deleteMaterialParameterKeyframe(track: StudioMaterialParameterTimelineTrack, index: number) {
     const owner = studioCreationProgramOwner(track.entityId);
-    const sourceTrack = owner
-      ? materialParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex)
-      : null;
+    const sourceTrack = owner ? materialParameterTrackFor(owner.record.program, owner.programIndex, track) : null;
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
     if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
       setDraftError("The material parameter track no longer matches the Studio-created object.");

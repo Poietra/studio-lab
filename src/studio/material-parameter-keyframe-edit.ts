@@ -1,4 +1,4 @@
-import { MAX_FINITE_F32 } from "../engine/primitives";
+import { MAX_FINITE_F32, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 } from "../engine/primitives";
 import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import { type DrawInFragmentMaterialAdmission, drawInUnavailableReason } from "./draw-in-edit";
 import type { StudioFragmentMaterialReferenceV1 } from "./fragment-material-authoring";
@@ -57,6 +57,7 @@ function trackOperations(
   transactionId: string,
 ): readonly SceneEditOperation[] {
   const metadata = { material, name, parameterIndex } as const;
+  const operationIdPrefix = `material-parameter-${parameterIndex}`;
   if (keyframes.length === 1) {
     const keyframe = keyframes[0]!;
     return [
@@ -65,7 +66,7 @@ function trackOperations(
         easing: keyframe.easing,
         entityId,
         from: keyframe.value,
-        id: operationId(transactionId, "material-parameter-keyframe-0"),
+        id: operationId(transactionId, `${operationIdPrefix}-keyframe-0`),
         interval: { end: keyframe.time, start: keyframe.time },
         key: "appearance",
         kind: "AnimateProperty",
@@ -82,7 +83,7 @@ function trackOperations(
       easing: from.easing,
       entityId,
       from: from.value,
-      id: operationId(transactionId, `material-parameter-segment-${index}`),
+      id: operationId(transactionId, `${operationIdPrefix}-segment-${index}`),
       interval: { end: to.time, start: from.time },
       key: "appearance",
       kind: "AnimateProperty",
@@ -91,6 +92,103 @@ function trackOperations(
       to: to.value,
     };
   });
+}
+
+type MaterialParameterOperation = Extract<SceneEditOperation, { kind: "AnimateProperty" }> &
+  Required<Pick<Extract<SceneEditOperation, { kind: "AnimateProperty" }>, "materialParameter">> &
+  Readonly<{ from: number; to: number }>;
+
+function hasMaterialParameter(operation: SceneEditOperation) {
+  return (
+    operation.kind === "AnimateProperty" && operation.key === "appearance" && operation.materialParameter !== undefined
+  );
+}
+
+function isMaterialParameterOperation(operation: SceneEditOperation): operation is MaterialParameterOperation {
+  return (
+    operation.kind === "AnimateProperty" &&
+    operation.key === "appearance" &&
+    operation.materialParameter !== undefined &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number"
+  );
+}
+
+function sameTrackTarget(
+  operation: MaterialParameterOperation,
+  target: Readonly<{
+    entityId: string;
+    material: StudioFragmentMaterialReferenceV1;
+    parameterIndex: number;
+  }>,
+) {
+  return (
+    operation.entityId === target.entityId &&
+    operation.materialParameter.parameterIndex === target.parameterIndex &&
+    operation.materialParameter.material.shaderId === target.material.shaderId &&
+    operation.materialParameter.material.revision === target.material.revision
+  );
+}
+
+function materialParameterTrackFromOperations(
+  operations: readonly MaterialParameterOperation[],
+  program: SceneEdit,
+  programIndex: number,
+): MaterialParameterKeyframeTrack | null {
+  const first = operations[0];
+  if (!first) return null;
+  const { material, name, parameterIndex } = first.materialParameter;
+  if (
+    operations.some(
+      (operation) =>
+        operation.entityId !== first.entityId ||
+        operation.materialParameter.name !== name ||
+        operation.materialParameter.parameterIndex !== parameterIndex ||
+        !sameMaterial(operation.materialParameter.material, material),
+    )
+  ) {
+    return null;
+  }
+  if (operations.length === 1 && first.interval.start === first.interval.end) {
+    if (Math.abs(first.from - first.to) > KEYFRAME_EPSILON) return null;
+    return {
+      entityId: first.entityId,
+      keyframes: [{ easing: first.easing, time: first.interval.start, value: first.to }],
+      material,
+      name,
+      parameterIndex,
+      programIndex,
+      transactionId: program.transactionId,
+    };
+  }
+  const keyframes: MaterialParameterKeyframe[] = [
+    { easing: first.easing, time: first.interval.start, value: first.from },
+  ];
+  for (const [index, operation] of operations.entries()) {
+    const previous = operations[index - 1];
+    if (
+      operation.interval.end <= operation.interval.start + KEYFRAME_EPSILON ||
+      (previous &&
+        (Math.abs(previous.interval.end - operation.interval.start) > KEYFRAME_EPSILON ||
+          Math.abs(previous.to - operation.from) > KEYFRAME_EPSILON))
+    ) {
+      return null;
+    }
+    keyframes.push({
+      easing: operations[index + 1]?.easing ?? "smooth",
+      time: operation.interval.end,
+      value: operation.to,
+    });
+  }
+  return {
+    entityId: first.entityId,
+    keyframes,
+    material,
+    name,
+    parameterIndex,
+    programIndex,
+    transactionId: program.transactionId,
+  };
 }
 
 export function replaceMaterialParameterKeyframeProgram(
@@ -156,27 +254,43 @@ export function replaceMaterialParameterKeyframeProgram(
   if (firstKeyframeTime !== undefined && firstKeyframeTime <= entranceEnd + KEYFRAME_EPSILON) {
     throw new TypeError("The first material keyframe must be after the object's initial entrance.");
   }
-  const existing = materialParameterKeyframeTrackFromProgram(input.baseProgram, 0);
+  const materialOperations = input.baseProgram.operations.filter(isMaterialParameterOperation);
+  const existingTracks = materialParameterKeyframeTracksFromProgram(input.baseProgram, 0);
   if (
-    input.keyframes.length > 0 &&
-    existing &&
-    (existing.entityId !== input.entityId ||
-      existing.name !== input.name ||
-      existing.parameterIndex !== input.parameterIndex ||
-      !sameMaterial(existing.material, input.material))
+    input.baseProgram.operations.filter(hasMaterialParameter).length !== materialOperations.length ||
+    (materialOperations.length > 0 && existingTracks.length === 0)
   ) {
-    throw new TypeError("A Studio creation Program can currently own one material parameter track.");
+    throw new TypeError("The Studio creation Program contains malformed material parameter tracks.");
   }
+  if (
+    existingTracks.some((track) => track.entityId !== input.entityId || !sameMaterial(track.material, input.material))
+  ) {
+    throw new TypeError("Material parameter tracks in one creation Program must target one object and material.");
+  }
+  const existingTarget = existingTracks.find((track) => track.parameterIndex === input.parameterIndex);
+  if (existingTarget && existingTarget.name !== input.name) {
+    throw new TypeError("The selected material parameter target has conflicting metadata.");
+  }
+  if (input.keyframes.length > 0 && !existingTarget && existingTracks.length >= MAX_FRAGMENT_MATERIAL_PARAMETERS_V1) {
+    throw new TypeError(
+      `A Studio creation Program accepts at most ${MAX_FRAGMENT_MATERIAL_PARAMETERS_V1} material tracks.`,
+    );
+  }
+  const target = {
+    entityId: input.entityId,
+    material: input.material,
+    parameterIndex: input.parameterIndex,
+  } as const;
+  const firstTargetOperationIndex = input.baseProgram.operations.findIndex(
+    (operation) => isMaterialParameterOperation(operation) && sameTrackTarget(operation, target),
+  );
   const retained = input.baseProgram.operations
-    .filter(
-      (operation) =>
-        !(operation.kind === "AnimateProperty" && operation.key === "appearance" && operation.materialParameter),
-    )
+    .filter((operation) => !(isMaterialParameterOperation(operation) && sameTrackTarget(operation, target)))
     .map((operation) => ({
       ...operation,
       provenance: { ...operation.provenance, origin: "direct-manipulation" as const },
     }));
-  const materialOperations = trackOperations(
+  const replacementOperations = trackOperations(
     input.entityId,
     input.material,
     input.name,
@@ -184,21 +298,26 @@ export function replaceMaterialParameterKeyframeProgram(
     input.keyframes,
     input.baseProgram.transactionId,
   );
-  const operations = [...retained, ...materialOperations];
+  const retainedInsertionIndex = firstTargetOperationIndex < 0 ? retained.length : firstTargetOperationIndex;
+  const operations = [
+    ...retained.slice(0, retainedInsertionIndex),
+    ...replacementOperations,
+    ...retained.slice(retainedInsertionIndex),
+  ];
+  const hasMaterialTracks = operations.some(isMaterialParameterOperation);
   const evidence = input.baseProgram.provenance.evidence.filter(
     (entry) => entry !== "Studio material f32 parameter keyframes",
   );
   return validateAndScheduleProgram(
     {
       ...input.baseProgram,
-      loweringStatus: materialOperations.length === 0 ? "supported" : "unsupported",
+      loweringStatus: hasMaterialTracks ? "unsupported" : "supported",
       operations,
       provenance: {
         ...input.baseProgram.provenance,
-        evidence:
-          materialOperations.length === 0
-            ? evidence
-            : [...new Set([...evidence, "Studio material f32 parameter keyframes"])],
+        evidence: !hasMaterialTracks
+          ? evidence
+          : [...new Set([...evidence, "Studio material f32 parameter keyframes"])],
         origin: "direct-manipulation",
       },
       requestedExecution: "sequence",
@@ -208,82 +327,41 @@ export function replaceMaterialParameterKeyframeProgram(
   );
 }
 
-export function materialParameterKeyframeTrackFromProgram(
+export function materialParameterKeyframeTracksFromProgram(
   program: SceneEdit,
   programIndex: number,
-): MaterialParameterKeyframeTrack | null {
-  if (program.provenance.origin !== "direct-manipulation" || program.requestedExecution !== "sequence") return null;
-  const operations = program.operations.filter(
-    (
-      operation,
-    ): operation is Extract<SceneEditOperation, { kind: "AnimateProperty" }> &
-      Required<Pick<Extract<SceneEditOperation, { kind: "AnimateProperty" }>, "materialParameter">> &
-      Readonly<{ from: number; to: number }> =>
-      operation.kind === "AnimateProperty" &&
-      operation.key === "appearance" &&
-      operation.materialParameter !== undefined &&
-      typeof operation.from === "number" &&
-      typeof operation.to === "number",
-  );
+): readonly MaterialParameterKeyframeTrack[] {
+  if (program.provenance.origin !== "direct-manipulation" || program.requestedExecution !== "sequence") return [];
+  const operations = program.operations.filter(isMaterialParameterOperation);
+  if (program.operations.filter(hasMaterialParameter).length !== operations.length) return [];
   const first = operations[0];
   if (
     !first ||
     !program.operations.some((operation) => operation.kind === "CreateEntity" && operation.entity.id === first.entityId)
   ) {
-    return null;
+    return [];
   }
-  const { material, name, parameterIndex } = first.materialParameter;
+  const material = first.materialParameter.material;
   if (
     operations.some(
       (operation) =>
-        operation.entityId !== first.entityId ||
-        operation.materialParameter.name !== name ||
-        operation.materialParameter.parameterIndex !== parameterIndex ||
-        !sameMaterial(operation.materialParameter.material, material),
+        operation.entityId !== first.entityId || !sameMaterial(operation.materialParameter.material, material),
     )
   ) {
-    return null;
+    return [];
   }
-  if (operations.length === 1 && first.interval.start === first.interval.end) {
-    if (Math.abs(first.from - first.to) > KEYFRAME_EPSILON) return null;
-    return {
-      entityId: first.entityId,
-      keyframes: [{ easing: first.easing, time: first.interval.start, value: first.to }],
-      material,
-      name,
-      parameterIndex,
-      programIndex,
-      transactionId: program.transactionId,
-    };
+  const grouped = new Map<number, MaterialParameterOperation[]>();
+  for (const operation of operations) {
+    const parameterIndex = operation.materialParameter.parameterIndex;
+    const group = grouped.get(parameterIndex) ?? [];
+    group.push(operation);
+    grouped.set(parameterIndex, group);
   }
-  const keyframes: MaterialParameterKeyframe[] = [
-    { easing: first.easing, time: first.interval.start, value: first.from },
-  ];
-  for (const [index, operation] of operations.entries()) {
-    const previous = operations[index - 1];
-    if (
-      operation.interval.end <= operation.interval.start + KEYFRAME_EPSILON ||
-      (previous &&
-        (Math.abs(previous.interval.end - operation.interval.start) > KEYFRAME_EPSILON ||
-          Math.abs(previous.to - operation.from) > KEYFRAME_EPSILON))
-    ) {
-      return null;
-    }
-    keyframes.push({
-      easing: operations[index + 1]?.easing ?? "smooth",
-      time: operation.interval.end,
-      value: operation.to,
-    });
-  }
-  return {
-    entityId: first.entityId,
-    keyframes,
-    material,
-    name,
-    parameterIndex,
-    programIndex,
-    transactionId: program.transactionId,
-  };
+  if (grouped.size > MAX_FRAGMENT_MATERIAL_PARAMETERS_V1) return [];
+  const tracks = [...grouped.values()]
+    .map((group) => materialParameterTrackFromOperations(group, program, programIndex))
+    .sort((left, right) => (left?.parameterIndex ?? 0) - (right?.parameterIndex ?? 0));
+  return tracks.every((track): track is MaterialParameterKeyframeTrack => track !== null) ? tracks : [];
 }
 
 export function replaceMaterialParameterKeyframe(
@@ -330,12 +408,11 @@ export function materialParameterIdentityEditBlocker(
   target: Readonly<{ entityId?: string; shaderId?: string }>,
 ) {
   const track = programs
-    .map((program, programIndex) => materialParameterKeyframeTrackFromProgram(program, programIndex))
+    .flatMap((program, programIndex) => materialParameterKeyframeTracksFromProgram(program, programIndex))
     .find(
       (candidate) =>
-        candidate !== null &&
-        ((target.entityId !== undefined && candidate.entityId === target.entityId) ||
-          (target.shaderId !== undefined && candidate.material.shaderId === target.shaderId)),
+        (target.entityId !== undefined && candidate.entityId === target.entityId) ||
+        (target.shaderId !== undefined && candidate.material.shaderId === target.shaderId),
     );
   return track ? `Remove the ${track.name} material parameter track before changing its material identity.` : null;
 }

@@ -259,12 +259,15 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain('tabindex="0"');
   });
 
-  it("renders a named material parameter picker and marker with the shared keyframe controls", () => {
+  it("renders only the selected named material track when one object owns multiple tracks", () => {
     const base = props();
     const markup = renderToStaticMarkup(
       <StudioTimeline
         {...base}
-        materialParameterOptions={[{ entityId: "circle", materialName: "Wave", name: "amplitude" }]}
+        materialParameterOptions={[
+          { entityId: "circle", materialName: "Wave", name: "amplitude" },
+          { entityId: "circle", materialName: "Wave", name: "bands" },
+        ]}
         materialParameterTracks={[
           {
             assignmentChanged: false,
@@ -272,6 +275,8 @@ describe("StudioTimeline opacity keyframes", () => {
             keyframes: [{ easing: "smooth", sourceTime: 2.5, time: 2.9, value: 0.35 }],
             label: "Circle",
             materialName: "Wave",
+            materialRevision: 1,
+            materialShaderId: "project-wave",
             parameterIndex: 0,
             parameterName: "amplitude",
             programIndex: 0,
@@ -279,13 +284,31 @@ describe("StudioTimeline opacity keyframes", () => {
             readOnlyReason: null,
             transactionId: "create-circle",
           },
+          {
+            assignmentChanged: false,
+            entityId: "circle",
+            keyframes: [{ easing: "linear", sourceTime: 2.5, time: 2.9, value: 8 }],
+            label: "Circle",
+            materialName: "Wave",
+            materialRevision: 1,
+            materialShaderId: "project-wave",
+            parameterIndex: 1,
+            parameterName: "bands",
+            programIndex: 0,
+            range: { max: 16, min: 1, step: 1 },
+            readOnlyReason: null,
+            transactionId: "create-circle",
+          },
         ]}
       />,
     );
 
-    expect(markup).toContain('data-property-keyframe="material"');
+    expect(markup.match(/data-property-keyframe="material"/g)).toHaveLength(1);
+    expect(markup).toContain('aria-label="amplitude material parameter keyframe 1 at 2.90 seconds"');
+    expect(markup).not.toContain('aria-label="bands material parameter keyframe 1 at 2.90 seconds"');
     expect(markup).toContain("Material parameter for Circle");
     expect(markup).toContain("amplitude");
+    expect(markup).toContain("bands");
   });
 
   it("renders uniform scale through the shared property marker lane", () => {
@@ -345,6 +368,8 @@ describe("StudioTimeline opacity keyframes", () => {
             keyframes: [{ easing: "smooth", sourceTime: 2.5, time: 2.9, value: 0.35 }],
             label: "Circle",
             materialName: "Wave",
+            materialRevision: 1,
+            materialShaderId: "project-wave",
             parameterIndex: 0,
             parameterName: "amplitude",
             programIndex: 0,

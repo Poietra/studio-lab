@@ -405,6 +405,8 @@ export type StudioMaterialParameterTimelineTrack = Readonly<{
   keyframes: readonly StudioMaterialParameterTimelineKeyframe[];
   label: string;
   materialName: string;
+  materialRevision: number;
+  materialShaderId: string;
   parameterIndex: number;
   parameterName: string;
   programIndex: number;
@@ -537,6 +539,14 @@ type SelectedOpacityKeyframe = Readonly<{
   transactionId: string;
 }>;
 
+type SelectedMaterialKeyframe = SelectedOpacityKeyframe &
+  Readonly<{
+    entityId: string;
+    materialRevision: number;
+    materialShaderId: string;
+    parameterIndex: number;
+  }>;
+
 const EMPTY_LIFETIME_CONTROLS: StudioLifetimeControls = {
   endTargets: [],
   moveTargets: [],
@@ -580,6 +590,7 @@ function PropertyKeyframeMarker({
   keyframe,
   kind,
   locked,
+  materialParameterName,
   onChange,
   onSelect,
   paintProperty,
@@ -590,6 +601,7 @@ function PropertyKeyframeMarker({
   keyframe: StudioOpacityTimelineKeyframe | StudioPaintColorTimelineKeyframe;
   kind: "material" | "opacity" | "paint-color" | "rotation" | "scale";
   locked: boolean;
+  materialParameterName?: string;
   onChange: (patch: Partial<Pick<StudioOpacityTimelineKeyframe, "time">>) => void;
   onSelect: () => void;
   paintProperty?: PaintColorProperty;
@@ -613,7 +625,9 @@ function PropertyKeyframeMarker({
   const displayedTime = previewTime ?? keyframe.time;
   const propertyLabel =
     kind === "material"
-      ? "Material parameter"
+      ? materialParameterName
+        ? `${materialParameterName} material parameter`
+        : "Material parameter"
       : kind === "paint-color"
         ? paintProperty === "strokeColor"
           ? "Stroke color"
@@ -1037,7 +1051,7 @@ export function StudioTimeline({
   const [selectedMaterialParameterByEntity, setSelectedMaterialParameterByEntity] = useState<
     Readonly<Record<string, string>>
   >({});
-  const [selectedMaterialKeyframe, setSelectedMaterialKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
+  const [selectedMaterialKeyframe, setSelectedMaterialKeyframe] = useState<SelectedMaterialKeyframe | null>(null);
   const [selectedOpacityKeyframe, setSelectedOpacityKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedPaintColorKeyframe, setSelectedPaintColorKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedRotationKeyframe, setSelectedRotationKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
@@ -1148,7 +1162,14 @@ export function StudioTimeline({
     : null;
   const selectedPaintColorMarker = selectedPaintColorTrack?.keyframes[selectedPaintColorKeyframe?.index ?? -1] ?? null;
   const selectedMaterialTrack = selectedMaterialKeyframe
-    ? (materialParameterTracks.find((track) => track.transactionId === selectedMaterialKeyframe.transactionId) ?? null)
+    ? (materialParameterTracks.find(
+        (track) =>
+          track.transactionId === selectedMaterialKeyframe.transactionId &&
+          track.entityId === selectedMaterialKeyframe.entityId &&
+          track.materialShaderId === selectedMaterialKeyframe.materialShaderId &&
+          track.materialRevision === selectedMaterialKeyframe.materialRevision &&
+          track.parameterIndex === selectedMaterialKeyframe.parameterIndex,
+      ) ?? null)
     : null;
   const selectedMaterialMarker = selectedMaterialTrack?.keyframes[selectedMaterialKeyframe?.index ?? -1] ?? null;
   const selectedScaleTrack = selectedScaleKeyframe
@@ -1981,7 +2002,7 @@ export function StudioTimeline({
           <label className="flex items-center gap-1 text-zinc-500">
             Time
             <input
-              aria-label="Material parameter keyframe time"
+              aria-label={`${selectedMaterialTrack.parameterName} material parameter keyframe time`}
               className="h-7 w-20 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-fuchsia-500"
               disabled={selectedMaterialLocked || selectedMaterialTrack.readOnlyReason !== null}
               max={duration}
@@ -2000,7 +2021,7 @@ export function StudioTimeline({
           <label className="flex items-center gap-1 text-zinc-500">
             Value
             <input
-              aria-label="Material parameter keyframe value"
+              aria-label={`${selectedMaterialTrack.parameterName} material parameter keyframe value`}
               className="h-7 w-24 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-fuchsia-500"
               disabled={
                 selectedMaterialLocked ||
@@ -2022,7 +2043,7 @@ export function StudioTimeline({
           <label className="flex items-center gap-1 text-zinc-500">
             Easing
             <select
-              aria-label="Material parameter segment easing"
+              aria-label={`${selectedMaterialTrack.parameterName} material parameter segment easing`}
               className="h-7 border border-zinc-700 bg-zinc-950 px-2 text-zinc-200 outline-none focus:border-fuchsia-500"
               disabled={
                 selectedMaterialLocked ||
@@ -2051,9 +2072,16 @@ export function StudioTimeline({
                 selectedMaterialKeyframe!.index,
               );
               if (index !== null)
-                setSelectedMaterialKeyframe({ index, transactionId: selectedMaterialTrack.transactionId });
+                setSelectedMaterialKeyframe({
+                  entityId: selectedMaterialTrack.entityId,
+                  index,
+                  materialRevision: selectedMaterialTrack.materialRevision,
+                  materialShaderId: selectedMaterialTrack.materialShaderId,
+                  parameterIndex: selectedMaterialTrack.parameterIndex,
+                  transactionId: selectedMaterialTrack.transactionId,
+                });
             }}
-            propertyLabel="material parameter"
+            propertyLabel={`${selectedMaterialTrack.parameterName} material parameter`}
           />
           <button
             className="h-7 border border-zinc-700 px-2 text-red-300 hover:bg-red-950 disabled:cursor-not-allowed disabled:text-zinc-600"
@@ -2429,6 +2457,7 @@ export function StudioTimeline({
                         className="h-5 max-w-20 border border-zinc-700 bg-zinc-950 px-1 text-[9px] text-fuchsia-300"
                         onChange={(event) => {
                           const parameterName = event.currentTarget.value;
+                          setSelectedMaterialKeyframe(null);
                           setSelectedMaterialParameterByEntity((current) => ({
                             ...current,
                             [track.entityId]: parameterName,
@@ -2592,35 +2621,49 @@ export function StudioTimeline({
                       }
                     />
                   ))}
-                  {materialTracks.flatMap((materialTrack) =>
-                    materialTrack.keyframes.map((keyframe, index) => (
-                      <PropertyKeyframeMarker
-                        duration={duration}
-                        index={index}
-                        key={`${materialTrack.transactionId}/${materialTrack.parameterName}/${index}`}
-                        keyframe={keyframe}
-                        kind="material"
-                        locked={mutationLocked || materialTrack.readOnlyReason !== null}
-                        onChange={(patch) => onMaterialParameterKeyframeChange(materialTrack, index, patch)}
-                        onSelect={() => {
-                          onSelectEntity(track.entityId);
-                          setSelectedOpacityKeyframe(null);
-                          setSelectedPaintColorKeyframe(null);
-                          setSelectedRotationKeyframe(null);
-                          setSelectedScaleKeyframe(null);
-                          setSelectedMaterialParameterByEntity((current) => ({
-                            ...current,
-                            [track.entityId]: materialTrack.parameterName,
-                          }));
-                          setSelectedMaterialKeyframe({ index, transactionId: materialTrack.transactionId });
-                        }}
-                        selected={
-                          selectedMaterialKeyframe?.transactionId === materialTrack.transactionId &&
-                          selectedMaterialKeyframe.index === index
-                        }
-                      />
-                    )),
-                  )}
+                  {materialTracks
+                    .filter((materialTrack) => materialTrack.parameterName === selectedMaterialName)
+                    .flatMap((materialTrack) =>
+                      materialTrack.keyframes.map((keyframe, index) => (
+                        <PropertyKeyframeMarker
+                          duration={duration}
+                          index={index}
+                          key={`${materialTrack.transactionId}/${materialTrack.entityId}/${materialTrack.materialShaderId}/${materialTrack.materialRevision}/${materialTrack.parameterIndex}/${index}`}
+                          keyframe={keyframe}
+                          kind="material"
+                          locked={mutationLocked || materialTrack.readOnlyReason !== null}
+                          materialParameterName={materialTrack.parameterName}
+                          onChange={(patch) => onMaterialParameterKeyframeChange(materialTrack, index, patch)}
+                          onSelect={() => {
+                            onSelectEntity(track.entityId);
+                            setSelectedOpacityKeyframe(null);
+                            setSelectedPaintColorKeyframe(null);
+                            setSelectedRotationKeyframe(null);
+                            setSelectedScaleKeyframe(null);
+                            setSelectedMaterialParameterByEntity((current) => ({
+                              ...current,
+                              [track.entityId]: materialTrack.parameterName,
+                            }));
+                            setSelectedMaterialKeyframe({
+                              entityId: materialTrack.entityId,
+                              index,
+                              materialRevision: materialTrack.materialRevision,
+                              materialShaderId: materialTrack.materialShaderId,
+                              parameterIndex: materialTrack.parameterIndex,
+                              transactionId: materialTrack.transactionId,
+                            });
+                          }}
+                          selected={
+                            selectedMaterialKeyframe?.transactionId === materialTrack.transactionId &&
+                            selectedMaterialKeyframe.entityId === materialTrack.entityId &&
+                            selectedMaterialKeyframe.materialShaderId === materialTrack.materialShaderId &&
+                            selectedMaterialKeyframe.materialRevision === materialTrack.materialRevision &&
+                            selectedMaterialKeyframe.parameterIndex === materialTrack.parameterIndex &&
+                            selectedMaterialKeyframe.index === index
+                          }
+                        />
+                      )),
+                    )}
                   {trackMotionClips.map((clip) => (
                     <TimelineMotionClip
                       clip={{
