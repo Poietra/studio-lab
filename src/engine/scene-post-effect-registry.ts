@@ -21,6 +21,7 @@ export const scenePostEffectSourceV1Schema = z
     revision: z.number().int().positive().max(0xffff_ffff),
     shaderId: z.literal(PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1),
     source: scenePostEffectWgslSourceV1Schema,
+    textureSlot: z.literal("texture2d").optional(),
   })
   .strict();
 

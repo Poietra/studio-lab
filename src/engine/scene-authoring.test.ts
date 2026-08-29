@@ -510,6 +510,42 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls).toEqual([command]);
   });
 
+  it("forwards a Scene post-effect project texture without widening the adapter", async () => {
+    const bundle = await fixtureBundle();
+    const command: ApplyStudioScenePostEffectWireCommandV1 = {
+      effects: [
+        {
+          parameters: [0.5],
+          revision: 2,
+          shaderId: "project-scene-post-effect",
+          texture: {
+            asset: { assetId: "fixture-png", sha256: "a".repeat(64) },
+            sampler: "nearest",
+          },
+        },
+      ],
+      expectedBaseRevision: "a".repeat(64),
+      nextRevision: "b".repeat(64),
+      schema: "poietra.apply-studio-scene-post-effect",
+      version: 1,
+    };
+    const calls: unknown[] = [];
+    const compile = createApplyStudioScenePostEffectCompiler(async () => ({
+      applyStudioScenePostEffectV1: (snapshotJson, commandJson) => {
+        const snapshot = JSON.parse(new TextDecoder().decode(snapshotJson));
+        const parsedCommand = JSON.parse(new TextDecoder().decode(commandJson));
+        calls.push(parsedCommand);
+        snapshot.scene.postEffects = parsedCommand.effects;
+        snapshot.scene.requiredCapabilities = [...snapshot.scene.requiredCapabilities, "scene-post-effect"];
+        snapshot.scene.source = { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: "b".repeat(64) };
+        return new TextEncoder().encode(JSON.stringify(snapshot));
+      },
+    }));
+
+    await expect(compile(bundle, command)).resolves.toMatchObject({ scene: { postEffects: command.effects } });
+    expect(calls).toEqual([command]);
+  });
+
   it("accepts Arrow in a Studio creation projection", async () => {
     const response = {
       durationTrimBarrierOperationIds: [],

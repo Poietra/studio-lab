@@ -281,6 +281,31 @@ describe("Poietra Engine v1 contracts", () => {
     expect(migrated).not.toHaveProperty("postEffect");
   });
 
+  it("admits one project PNG reference on a Scene post-effect pass", async () => {
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const texture = {
+      asset: { assetId: "image-asset", sha256: ASSET_HASH },
+      sampler: "nearest" as const,
+    };
+
+    const parsed = sceneIrV1Schema.parse({
+      ...validScene,
+      postEffects: [
+        {
+          parameters: [0.5],
+          revision: 3,
+          shaderId: "project-scene-post-effect",
+          texture,
+        },
+      ],
+      requiredCapabilities: [...validScene.requiredCapabilities, "scene-post-effect"],
+    });
+
+    expect(parsed.postEffects?.[0]?.texture).toEqual(texture);
+    await expect(parseVerifiedSceneIrBundleV1({ assets, scene: parsed })).resolves.toEqual({ assets, scene: parsed });
+  });
+
   it("delegates Scene semantic invariants to the Rust core", async () => {
     const assets = await manifest();
     const validScene = scene(assets);

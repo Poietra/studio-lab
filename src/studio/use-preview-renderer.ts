@@ -1943,15 +1943,24 @@ export async function compileStudioPreviewSceneV1(
   const referencedProjectEffects = operation.effects.filter(
     ({ shaderId }) => shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
   );
+  const builtInEffectHasTexture = operation.effects.some(
+    (effect) => effect.shaderId !== PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && effect.texture !== undefined,
+  );
   if (
+    builtInEffectHasTexture ||
     referencedProjectEffects.length !== registry.effects.length ||
     referencedProjectEffects.some((effect, index) => {
       const source = registry.effects[index];
-      return source?.shaderId !== effect.shaderId || source.revision !== effect.revision;
+      return (
+        source?.shaderId !== effect.shaderId ||
+        source.revision !== effect.revision ||
+        (source.textureSlot === "texture2d") !== (effect.texture !== undefined)
+      );
     })
   ) {
     return {
-      error: "The Scene post-effect stack does not have exactly the accepted project-local WGSL sources it references.",
+      error:
+        "The Scene post-effect stack does not have exactly the accepted project-local WGSL sources and texture slots it references.",
       kind: "unsupported",
     };
   }

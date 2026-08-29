@@ -1289,6 +1289,47 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(compilerCalls).toBe(0);
   });
 
+  it("rejects a custom source/reference texture-slot mismatch before calling the Rust core", async () => {
+    const base = await compilablePreviewInput();
+    const validation = createStudioScenePostEffectProgram({
+      capturedPlayhead: 0.5,
+      effects: [{ parameters: [0.5], revision: 7, shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 }],
+      scene: base.proposedState.base.runtimeSceneState,
+      transactionId: "missing-scene-effect-texture",
+    });
+    if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+    let compilerCalls = 0;
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioScenePostEffectCompiler: async (bundle) => {
+        compilerCalls += 1;
+        return bundle;
+      },
+      frame: { height: 9, width: 16 },
+      scenePostEffectRegistry: scenePostEffectRegistryV1Schema.parse({
+        effects: [
+          {
+            revision: 7,
+            shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+            source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+            textureSlot: "texture2d",
+          },
+        ],
+        schema: "poietra.scene-post-effect-registry",
+        version: 1,
+      }),
+      snapshot: base.snapshot,
+      workingState: {
+        ...base.proposedState.base,
+        appliedEdits: [programRecord(validation.program, validation)],
+      },
+      workingRevision: "studio-working-v1:missing-scene-effect-texture",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    expect(result).toMatchObject({ error: expect.stringContaining("texture slots"), kind: "unsupported" });
+    expect(compilerCalls).toBe(0);
+  });
+
   it("compiles a locally ingested PNG into ImageMobject on one exact native base", async () => {
     const documentKey = "d".repeat(64);
     const projectId = "native-project";
