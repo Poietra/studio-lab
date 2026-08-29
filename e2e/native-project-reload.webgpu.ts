@@ -501,8 +501,8 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
       (await source.inputValue()).replace(
         "return textureSample(scene_texture, scene_sampler, coordinate / viewport);",
         `let color = textureSample(scene_texture, scene_sampler, coordinate / viewport);
-    let pulse = 0.6 + 0.4 * sin(6.28318530718 * host.viewport_and_time.z * host.parameters_0.z);
-    return vec4<f32>(color.rgb * pulse, color.a);`,
+    let amplitude = clamp(host.parameters_0.x / 64.0, 0.0, 1.0);
+    return vec4<f32>(color.rgb * amplitude, color.a);`,
       ),
     );
     await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
@@ -559,11 +559,13 @@ test("authors one project-local WGSL Scene effect through Preview, reload, and M
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     const mp4 = await exportLocalMp4(page);
-    const stats = await decodedPixelStats(page, mp4, [2.25, 2.75]);
+    const stats = await decodedPixelStats(page, mp4, [2, 2.75]);
     expect(stats[0]?.count ?? 0).toBeGreaterThan(100);
     expect(stats[1]?.count ?? 0).toBeGreaterThan(100);
     expect(stats[1]?.commonPixelCountFromPrevious ?? 0).toBeGreaterThan(100);
-    expect(stats[1]?.commonColorDifferenceFromPrevious ?? 0).toBeGreaterThan(100);
+    expect(
+      (stats[1]?.commonColorDifferenceFromPrevious ?? 0) / (stats[1]?.commonPixelCountFromPrevious || 1),
+    ).toBeGreaterThan(8);
 
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");

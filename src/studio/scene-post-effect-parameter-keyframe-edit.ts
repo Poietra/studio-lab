@@ -2,6 +2,10 @@ import { MAX_FINITE_F32 } from "../engine/primitives";
 import type { StudioPropertyKeyframeEasing, StudioTimelineProjectionV1 } from "../engine/scene-authoring";
 import { replaceStudioScenePostEffectProgram } from "./authoring-commands";
 import type { ProgramRecord, RuntimeSceneState } from "./model";
+import {
+  sourceTimeToWorkingTime as sourceTimeToWorkingTimeWithoutTimeline,
+  workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline,
+} from "./program-composition";
 import type { SceneEditValidationResult } from "./program-validation";
 import {
   MAX_STUDIO_SCENE_POST_EFFECT_PARAMETER_KEYFRAMES,
@@ -9,7 +13,11 @@ import {
   type ScenePostEffectParameterTrack,
   type StudioScenePostEffectV1,
 } from "./scene-edit-contract";
-import { sourceTimeToWorkingTime, workingTimeToSourceTime } from "./timeline-projection";
+import { programsWithoutScenePostEffectV1 } from "./scene-post-effect-authoring";
+import {
+  sourceTimeToWorkingTime as sourceTimeToWorkingTimeFromProjection,
+  workingTimeToSourceTime as workingTimeToSourceTimeFromProjection,
+} from "./timeline-projection";
 
 const KEYFRAME_EPSILON = 0.0005;
 
@@ -18,6 +26,25 @@ export type ScenePostEffectParameterKeyframe = Readonly<{
   time: number;
   value: number;
 }>;
+
+type ScenePostEffectParameterTimeAuthority = Readonly<{
+  programs: readonly SceneEdit[];
+  timelineTransforms: StudioTimelineProjectionV1["transforms"] | null;
+}>;
+
+function scenePostEffectParameterTimeMappers(authority: ScenePostEffectParameterTimeAuthority) {
+  const programs = programsWithoutScenePostEffectV1(authority.programs);
+  const transforms = authority.timelineTransforms;
+  return transforms
+    ? {
+        toSourceTime: (time: number) => workingTimeToSourceTimeFromProjection(transforms, time),
+        toWorkingTime: (time: number) => sourceTimeToWorkingTimeFromProjection(transforms, time),
+      }
+    : {
+        toSourceTime: (time: number) => workingTimeToSourceTimeWithoutTimeline(programs, time),
+        toWorkingTime: (time: number) => sourceTimeToWorkingTimeWithoutTimeline(programs, time),
+      };
+}
 
 function scenePostEffectOperation(program: SceneEdit) {
   const operation = program.operations[0];
@@ -173,23 +200,30 @@ export function scenePostEffectParameterTrackMatchesEffects(
 
 export function scenePostEffectParameterTrackToWorkingTime(
   track: ScenePostEffectParameterTrack,
-  transforms: StudioTimelineProjectionV1["transforms"],
+  authority: ScenePostEffectParameterTimeAuthority,
 ): ScenePostEffectParameterTrack {
+  const { toWorkingTime } = scenePostEffectParameterTimeMappers(authority);
   return {
     ...track,
     keyframes: track.keyframes.map((keyframe) => ({
       ...keyframe,
-      time: sourceTimeToWorkingTime(transforms, keyframe.time),
+      time: toWorkingTime(keyframe.time),
     })),
   };
 }
 
 export function scenePostEffectParameterKeyframesToSourceTime(
   keyframes: readonly ScenePostEffectParameterKeyframe[],
-  transforms: StudioTimelineProjectionV1["transforms"],
+  authority: ScenePostEffectParameterTimeAuthority,
 ): readonly ScenePostEffectParameterKeyframe[] {
-  return keyframes.map((keyframe) => ({
-    ...keyframe,
-    time: workingTimeToSourceTime(transforms, keyframe.time),
-  }));
+  const { toSourceTime, toWorkingTime } = scenePostEffectParameterTimeMappers(authority);
+  return keyframes.map((keyframe) => {
+    const sourceTime = toSourceTime(keyframe.time);
+    if (Math.abs(toWorkingTime(sourceTime) - keyframe.time) > KEYFRAME_EPSILON) {
+      throw new RangeError(
+        "A Scene effect keyframe inside inserted timeline time cannot be saved without moving. Move it outside the inserted interval.",
+      );
+    }
+    return { ...keyframe, time: sourceTime };
+  });
 }

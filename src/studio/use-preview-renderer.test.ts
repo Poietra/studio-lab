@@ -1437,6 +1437,88 @@ describe("compileStudioPreviewSceneV1", () => {
     ]);
   });
 
+  it("projects Scene effect markers through legacy Program composition without a Rust timeline projection", async () => {
+    const base = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(base);
+    const motionValidation = validateMotionProgramFixture({
+      capturedPlayhead: 0.5,
+      controlOffset: { x: 32, y: 18 },
+      delta: { x: 64, y: -36 },
+      interval: { end: 1.5, start: 0.5 },
+      scene: workingBase.runtimeSceneState,
+      targetEntityIds: ["source:circle"],
+      transactionId: "legacy-motion-before-scene-effect-marker",
+    });
+    const effectValidation = createStudioScenePostEffectProgram({
+      capturedPlayhead: 0,
+      effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
+      parameterTrack: {
+        keyframes: [
+          { easing: "smooth", time: 0.25, value: 4 },
+          { easing: "linear", time: 1.5, value: 8 },
+        ],
+        name: "Offset",
+        parameterIndex: 0,
+        revision: 1,
+        shaderId: "rgb-split",
+      },
+      scene: workingBase.runtimeSceneState,
+      transactionId: "legacy-source-time-scene-effect-track",
+    });
+    if (motionValidation.kind !== "valid" || effectValidation.kind !== "valid") {
+      throw new Error(JSON.stringify([...motionValidation.issues, ...effectValidation.issues]));
+    }
+    const motion = motionValidation.program.operations[0];
+    if (motion?.kind !== "CreateMotion") throw new Error("Motion fixture is malformed.");
+    const effectCommands: ApplyStudioScenePostEffectWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioMotionEditCompiler: async (bundle) => bundle,
+      applyStudioScenePostEffectCompiler: async (bundle, command) => {
+        effectCommands.push(command);
+        return bundle;
+      },
+      frame: { height: 9, width: 16 },
+      projectStudioMotionCompiler: async () => ({
+        insertions: [{ at: 0.5, duration: 1, transactionId: motionValidation.program.transactionId }],
+        motions: [
+          {
+            control: { x: 384, y: 180 },
+            controlOffset: motion.controlOffset,
+            delta: motion.delta,
+            easing: motion.easing === "smooth" ? "manim-smooth" : "linear",
+            from: { x: 320, y: 180 },
+            interval: motion.interval,
+            operationId: motion.id,
+            orientToPath: false,
+            sourceInterval: motion.interval,
+            targetEntityId: "source:circle",
+            to: { x: 384, y: 144 },
+            transactionId: motionValidation.program.transactionId,
+          },
+        ],
+        projectedDuration: base.snapshot.snapshot.scene.duration + 1,
+      }),
+      snapshot: base.snapshot,
+      workingState: {
+        ...workingBase,
+        appliedEdits: [
+          programRecord(motionValidation.program, motionValidation),
+          programRecord(effectValidation.program, effectValidation),
+        ],
+      },
+      workingRevision: "studio-working-v1:legacy-source-time-scene-effect-track",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.timelineProjection).toBeUndefined();
+    expect(effectCommands[0]?.parameterTracks[0]?.keyframes).toEqual([
+      { easing: "smooth", time: 0.25, value: 4 },
+      { easing: "linear", time: 2.5, value: 8 },
+    ]);
+  });
+
   it("rejects a missing project-local source before calling the Rust core", async () => {
     const base = await compilablePreviewInput();
     const validation = createStudioScenePostEffectProgram({

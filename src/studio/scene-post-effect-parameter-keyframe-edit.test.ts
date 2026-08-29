@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createStudioScenePostEffectProgram } from "./authoring-commands";
 import { programRecord } from "./evaluator";
-import { STUDIO_FIXTURE_SCENE } from "./fixture";
+import { STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
 import {
   insertScenePostEffectParameterKeyframe,
   removeScenePostEffectParameterKeyframe,
@@ -28,6 +28,20 @@ function owner() {
 function parameterTrack(program: ReturnType<typeof owner>["program"]) {
   const operation = program.operations[0];
   return operation?.kind === "SetScenePostEffect" ? operation.parameterTrack : null;
+}
+
+function legacyInsertionProgram() {
+  const validation = validateMotionProgramFixture({
+    capturedPlayhead: 1,
+    controlOffset: { x: 20, y: 10 },
+    delta: { x: 40, y: 20 },
+    interval: { end: 2, start: 1 },
+    scene: STUDIO_FIXTURE_SCENE,
+    targetEntityIds: ["equation_1"],
+    transactionId: "legacy-insertion",
+  });
+  if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+  return validation.program;
 }
 
 describe("Scene post-effect parameter keyframe editing", () => {
@@ -214,10 +228,60 @@ describe("Scene post-effect parameter keyframe editing", () => {
         operationId: "insert-wait",
       },
     ];
-    const working = scenePostEffectParameterTrackToWorkingTime(track, transforms);
+    const authority = { programs: [], timelineTransforms: transforms };
+    const working = scenePostEffectParameterTrackToWorkingTime(track, authority);
 
     expect(working.keyframes.map(({ time }) => time)).toEqual([0.5, 2.5]);
-    expect(scenePostEffectParameterKeyframesToSourceTime(working.keyframes, transforms)).toEqual(track.keyframes);
+    expect(scenePostEffectParameterKeyframesToSourceTime(working.keyframes, authority)).toEqual(track.keyframes);
     expect(track.keyframes.map(({ time }) => time)).toEqual([0.5, 1.5]);
+  });
+
+  it("uses the legacy Program composition mapping when no Rust timeline transform exists", () => {
+    const track = {
+      keyframes: [
+        { easing: "smooth" as const, time: 0.5, value: 4 },
+        { easing: "linear" as const, time: 1.5, value: 8 },
+      ],
+      name: "Offset",
+      parameterIndex: 0,
+      revision: 1,
+      shaderId: "rgb-split",
+    };
+    const authority = { programs: [legacyInsertionProgram()], timelineTransforms: null };
+    const working = scenePostEffectParameterTrackToWorkingTime(track, authority);
+
+    expect(working.keyframes.map(({ time }) => time)).toEqual([0.5, 2.5]);
+    expect(scenePostEffectParameterKeyframesToSourceTime(working.keyframes, authority)).toEqual(track.keyframes);
+  });
+
+  it("rejects working markers inside inserted time for Rust and legacy mappings", () => {
+    const keyframes = [{ easing: "smooth" as const, time: 1.5, value: 4 }];
+    const boundaryKeyframes = [{ easing: "smooth" as const, time: 2, value: 4 }];
+    const timelineTransforms = [
+      {
+        interval: { end: 2, start: 1 },
+        kind: "insert" as const,
+        operationId: "insert-wait",
+      },
+    ];
+
+    expect(() =>
+      scenePostEffectParameterKeyframesToSourceTime(keyframes, { programs: [], timelineTransforms }),
+    ).toThrow(/inside inserted timeline time cannot be saved without moving/u);
+    expect(() =>
+      scenePostEffectParameterKeyframesToSourceTime(keyframes, {
+        programs: [legacyInsertionProgram()],
+        timelineTransforms: null,
+      }),
+    ).toThrow(/inside inserted timeline time cannot be saved without moving/u);
+    expect(
+      scenePostEffectParameterKeyframesToSourceTime(boundaryKeyframes, { programs: [], timelineTransforms }),
+    ).toEqual([{ easing: "smooth", time: 1, value: 4 }]);
+    expect(
+      scenePostEffectParameterKeyframesToSourceTime(boundaryKeyframes, {
+        programs: [legacyInsertionProgram()],
+        timelineTransforms: null,
+      }),
+    ).toEqual([{ easing: "smooth", time: 1, value: 4 }]);
   });
 });

@@ -1968,21 +1968,18 @@ export function App({
           timelineProjection: workspaceTimelineProjection,
         })
       : null;
+  const previewSceneEdits = previewEditRecords.map((record) => record.program);
   const previewAppliedSceneEdits = previewAppliedEdits.map((record) => record.program);
   const appliedCreationProjection = creationProjectionForPrograms(previewAppliedSceneEdits);
   const appliedTimelineProjection = timelineProjectionForPrograms(previewAppliedSceneEdits);
   const appliedTimelineTransforms = timelineTransformsForPrograms(previewAppliedSceneEdits);
+  const previewTimelineTransforms = timelineTransformsForPrograms(previewSceneEdits);
   const scenePostEffectParameterTrack =
-    scenePostEffectSourceParameterTrack && appliedTimelineTransforms !== undefined
-      ? appliedTimelineTransforms
-        ? scenePostEffectParameterTrackToWorkingTime(scenePostEffectSourceParameterTrack, appliedTimelineTransforms)
-        : {
-            ...scenePostEffectSourceParameterTrack,
-            keyframes: scenePostEffectSourceParameterTrack.keyframes.map((keyframe) => ({
-              ...keyframe,
-              time: sourceTimeToWorkingTimeWithoutTimeline(previewAppliedSceneEdits, keyframe.time),
-            })),
-          }
+    scenePostEffectSourceParameterTrack && previewTimelineTransforms !== undefined
+      ? scenePostEffectParameterTrackToWorkingTime(scenePostEffectSourceParameterTrack, {
+          programs: previewSceneEdits,
+          timelineTransforms: previewTimelineTransforms,
+        })
       : null;
   const sourceCurrentTime =
     appliedTimelineTransforms === undefined
@@ -7018,12 +7015,10 @@ export function App({
       const editorOwner = appliedEdits[owner.index];
       if (!editorOwner) throw new Error("The Scene post-effect Program no longer exists.");
       const preceding = sourceSceneBeforeAppliedProgram(owner.index);
-      const sourceKeyframes = appliedTimelineTransforms
-        ? scenePostEffectParameterKeyframesToSourceTime(input.keyframes, appliedTimelineTransforms)
-        : input.keyframes.map((keyframe) => ({
-            ...keyframe,
-            time: workingTimeToSourceTimeWithoutTimeline(previewAppliedSceneEdits, keyframe.time),
-          }));
+      const sourceKeyframes = scenePostEffectParameterKeyframesToSourceTime(input.keyframes, {
+        programs: previewAppliedSceneEdits,
+        timelineTransforms: appliedTimelineTransforms,
+      });
       const validation = replaceScenePostEffectParameterKeyframeProgram({
         ...input,
         keyframes: sourceKeyframes,

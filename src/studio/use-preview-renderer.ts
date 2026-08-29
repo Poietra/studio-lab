@@ -1972,11 +1972,12 @@ export async function compileStudioPreviewSceneV1(
     };
   }
   const installedRegistry = registry.effects.length === 0 ? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1 : registry;
+  const parameterTimePrograms = sourceEditRecords(route.workingState).map(({ program }) => program);
   const workingParameterTrack = operation.parameterTrack
-    ? scenePostEffectParameterTrackToWorkingTime(
-        operation.parameterTrack,
-        result.scene.timelineProjection?.transforms ?? [],
-      )
+    ? scenePostEffectParameterTrackToWorkingTime(operation.parameterTrack, {
+        programs: parameterTimePrograms,
+        timelineTransforms: result.scene.timelineProjection?.transforms ?? null,
+      })
     : null;
   const parameterTracks: ApplyStudioScenePostEffectWireCommandV1["parameterTracks"] = workingParameterTrack
     ? [
