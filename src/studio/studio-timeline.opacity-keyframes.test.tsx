@@ -88,6 +88,17 @@ function props(): StudioTimelineProps {
 }
 
 describe("StudioTimeline opacity keyframes", () => {
+  it("renders one fixed non-interactive project audio lane", () => {
+    const markup = renderToStaticMarkup(
+      <StudioTimeline {...props()} projectAudioTrack={{ fileName: "narration.wav" }} />,
+    );
+
+    expect(markup).toContain("data-project-audio-track");
+    expect(markup).toContain('aria-label="Audio track narration.wav, 0.00–5.00 seconds"');
+    expect(markup).toContain("narration.wav");
+    expect(markup).toContain("pointer-events-none");
+  });
+
   it("keeps the Draw control visible with a fragment material blocker", () => {
     const reason = "Draw does not support texture fragment materials.";
     const markup = renderToStaticMarkup(

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
+import { verifyExportMp4V1 } from "../src/engine/export-mp4-verification";
 import { importManimScene } from "../src/render-pipeline/source-import";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import { cleanupFixtureWorkspace } from "./workspace";
@@ -16,6 +17,27 @@ const PNG_2 = encodeRgbaPngV1(
   2,
   2,
 );
+
+function monoPcmWav48k(durationSeconds: number) {
+  const sampleCount = Math.round(48_000 * durationSeconds);
+  const bytes = Buffer.alloc(44 + sampleCount * 2);
+  bytes.write("RIFF", 0);
+  bytes.writeUInt32LE(bytes.byteLength - 8, 4);
+  bytes.write("WAVEfmt ", 8);
+  bytes.writeUInt32LE(16, 16);
+  bytes.writeUInt16LE(1, 20);
+  bytes.writeUInt16LE(1, 22);
+  bytes.writeUInt32LE(48_000, 24);
+  bytes.writeUInt32LE(96_000, 28);
+  bytes.writeUInt16LE(2, 32);
+  bytes.writeUInt16LE(16, 34);
+  bytes.write("data", 36);
+  bytes.writeUInt32LE(sampleCount * 2, 40);
+  for (let sample = 0; sample < sampleCount; sample += 1) {
+    bytes.writeInt16LE(Math.round(Math.sin((sample * Math.PI * 2 * 440) / 48_000) * 8_000), 44 + sample * 2);
+  }
+  return bytes;
+}
 
 async function dragBy(
   page: Page,
@@ -285,6 +307,76 @@ async function createBlankWorkspace(page: Page, name: string) {
   expect(createResponse.request().postDataJSON()).toEqual({ kind: "studio-native", name });
   return ((await createResponse.json()) as { project: { id: string } }).project.id;
 }
+
+test("persists one project WAV through Timeline and Opus MP4 export", async ({ page }) => {
+  test.setTimeout(120_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Project audio fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.getByLabel("Project WAV audio file").setInputFiles({
+      buffer: monoPcmWav48k(0.4),
+      mimeType: "audio/wav",
+      name: "tone.wav",
+    });
+    const audioLane = page.locator("[data-project-audio-track]");
+    await expect(audioLane).toContainText("tone.wav");
+    await expect(audioLane.getByLabel("Audio track tone.wav, 0.00–5.00 seconds")).toBeVisible();
+
+    const unsupportedWav = monoPcmWav48k(0.4);
+    unsupportedWav.writeUInt32LE(44_100, 24);
+    unsupportedWav.writeUInt32LE(88_200, 28);
+    await page.getByLabel("Project WAV audio file").setInputFiles({
+      buffer: unsupportedWav,
+      mimeType: "audio/wav",
+      name: "unsupported.wav",
+    });
+    await expect(page.getByRole("alert").filter({ hasText: "44100 Hz is not 48000 Hz" })).toBeVisible();
+    await expect(audioLane).toContainText("tone.wav");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Project audio fixture workspace" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await expect(audioLane).toContainText("tone.wav");
+
+    const mp4Base64 = await exportLocalMp4(page);
+    const mp4Bytes = Uint8Array.from(Buffer.from(mp4Base64, "base64"));
+    const verification = await verifyExportMp4V1(mp4Bytes);
+    if (verification.kind !== "verified") {
+      throw new Error(`The Rust verifier refused the project-audio MP4: ${verification.code}: ${verification.message}`);
+    }
+    expect(verification.structure.audio).toMatchObject({ channels: 1, sampleRate: 48_000 });
+    expect(verification.structure.audio?.sampleCount).toBeGreaterThan(0);
+
+    const decodedAudio = await page.evaluate(async (base64) => {
+      const binary = atob(base64);
+      const encoded = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      const context = new AudioContext();
+      try {
+        const decoded = await context.decodeAudioData(encoded.buffer);
+        let peak = 0;
+        for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+          for (const sample of decoded.getChannelData(channel)) peak = Math.max(peak, Math.abs(sample));
+        }
+        return { channels: decoded.numberOfChannels, duration: decoded.duration, peak };
+      } finally {
+        await context.close();
+      }
+    }, mp4Base64);
+    expect(decodedAudio.channels).toBe(1);
+    expect(decodedAudio.duration).toBeCloseTo(5, 1);
+    expect(decodedAudio.peak).toBeGreaterThan(0.01);
+
+    await page.getByRole("button", { name: "Remove WAV tone.wav" }).click();
+    await expect(audioLane).toHaveCount(0);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
 
 test("applies one Scene-wide RGB split through scrub, history, reload, and MP4 export", async ({ page }) => {
   test.setTimeout(180_000);

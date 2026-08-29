@@ -43,6 +43,7 @@ export type { StudioMp4ExportSourceV1 } from "./studio-export-publication";
  */
 
 export type StudioExportControlProps = Readonly<{
+  audioTrack?: Readonly<{ fileName: string; wavBytes: ArrayBuffer }> | null;
   client?: ClientExportPublicationClientV1;
   disabled?: boolean;
   /** Non-null only while the presented preview correlates with this exact Scene. */
@@ -150,6 +151,7 @@ export async function completeBrowserMp4ExportV1(
 }
 
 export function StudioExportControl({
+  audioTrack,
   client = defaultPublicationClient,
   disabled = false,
   exportSource,
@@ -157,8 +159,8 @@ export function StudioExportControl({
 }: StudioExportControlProps) {
   const [run, setRun] = useState<ExportRunStateV1>({ kind: "idle" });
   const [publicationRun, setPublicationRun] = useState<PublicationRunStateV1>({ kind: "idle" });
-  const [audioFile, setAudioFile] = useState<File | null>(null);
-  const [audioError, setAudioError] = useState<string | null>(null);
+  const [transientAudioFile, setTransientAudioFile] = useState<File | null>(null);
+  const [transientAudioError, setTransientAudioError] = useState<string | null>(null);
   const [exportFrameRate, setExportFrameRate] = useState<ExportProfileV1["frameRate"]>(
     DEFAULT_BROWSER_MP4_EXPORT_PROFILE.frameRate,
   );
@@ -166,7 +168,7 @@ export function StudioExportControl({
     DEFAULT_BROWSER_MP4_EXPORT_PROFILE.resolution,
   );
   const activeExport = useRef<AbortController | null>(null);
-  const audioInput = useRef<HTMLInputElement | null>(null);
+  const transientAudioInput = useRef<HTMLInputElement | null>(null);
   const pendingPublication = useRef<PreparedStudioExportPublicationV1 | null>(null);
   const selectedProfile = browserMp4ExportProfileV1({
     frameRate: exportFrameRate,
@@ -178,14 +180,11 @@ export function StudioExportControl({
   const running = run.kind === "running";
   const saving = run.kind === "saving";
   const publishing = publicationRun.kind === "publishing";
+  const hasAudio = audioTrack ? true : audioTrack === undefined && transientAudioFile !== null;
   const startBlocked = disabled || running || saving || publishing || exportSource === null;
   const publishBlocked =
-    disabled ||
-    audioFile !== null ||
-    publishing ||
-    publicationRun.kind === "published" ||
-    pendingPublication.current === null;
-  const publishUnavailableReason = audioFile
+    disabled || hasAudio || publishing || publicationRun.kind === "published" || pendingPublication.current === null;
+  const publishUnavailableReason = hasAudio
     ? "WAV audio exports are local-only in this release."
     : publicationRun.kind === "unavailable"
       ? publicationRun.reason
@@ -205,12 +204,14 @@ export function StudioExportControl({
     // Snapshot both inputs synchronously. Nothing below this point may read a
     // later preview or Editor Document revision for this artifact.
     const capturedSource = exportSource;
-    const capturedAudioFile = audioFile;
+    const capturedAudioTrack = audioTrack ?? null;
+    const capturedTransientAudioFile = audioTrack === undefined ? transientAudioFile : null;
+    const capturedHasAudio = capturedAudioTrack !== null || capturedTransientAudioFile !== null;
     const capturedAvailability = publication;
     const capturedProfile = selectedProfile;
     let capturedPublication: ReturnType<typeof captureStudioExportPublicationV1> = null;
     let publicationCaptureFailure: string | null = null;
-    if (!capturedAudioFile) {
+    if (!capturedHasAudio) {
       try {
         capturedPublication = captureStudioExportPublicationV1(capturedAvailability);
       } catch (error) {
@@ -225,7 +226,11 @@ export function StudioExportControl({
     setRun({ kind: "running", progress: null });
     try {
       const outcome = await runBrowserMp4ExportV1({
-        ...(capturedAudioFile ? { audioWav: await capturedAudioFile.arrayBuffer() } : {}),
+        ...(capturedAudioTrack
+          ? { audioWav: capturedAudioTrack.wavBytes.slice(0) }
+          : capturedTransientAudioFile
+            ? { audioWav: await capturedTransientAudioFile.arrayBuffer() }
+            : {}),
         assetPayloads: capturedSource.assetPayloads,
         fragmentMaterialRegistry: capturedSource.fragmentMaterialRegistry,
         onProgress: (progress) => {
@@ -250,7 +255,7 @@ export function StudioExportControl({
       const video = new Uint8Array(await outcome.mp4.arrayBuffer());
       const desktopSaved = await saveVideoFileWithDesktop(fileName, video);
       if (desktopSaved === null) {
-        if (capturedAudioFile) {
+        if (capturedHasAudio) {
           downloadMp4Blob(fileName, outcome.mp4);
           setPublicationRun({ kind: "unavailable", reason: "WAV audio exports are local-only in this release." });
           setRun({ fileName, kind: "done" });
@@ -285,21 +290,21 @@ export function StudioExportControl({
     }
   }
 
-  function selectAudio(file: File | undefined) {
+  function selectTransientAudio(file: File | undefined) {
     if (!file) return;
     if (file.size === 0 || file.size > MAX_EXPORT_WAV_BYTES) {
-      setAudioFile(null);
-      setAudioError(`Choose a non-empty WAV file no larger than ${MAX_EXPORT_WAV_BYTES / (1024 * 1024)} MiB.`);
+      setTransientAudioFile(null);
+      setTransientAudioError(`Choose a non-empty WAV file no larger than ${MAX_EXPORT_WAV_BYTES / (1024 * 1024)} MiB.`);
       return;
     }
-    setAudioFile(file);
-    setAudioError(null);
+    setTransientAudioFile(file);
+    setTransientAudioError(null);
   }
 
-  function removeAudio() {
-    setAudioFile(null);
-    setAudioError(null);
-    if (audioInput.current) audioInput.current.value = "";
+  function removeTransientAudio() {
+    setTransientAudioFile(null);
+    setTransientAudioError(null);
+    if (transientAudioInput.current) transientAudioInput.current.value = "";
   }
 
   function discardPendingPublicationForProfileChange() {
@@ -309,7 +314,7 @@ export function StudioExportControl({
 
   async function publishExport() {
     const artifact = pendingPublication.current;
-    if (disabled || audioFile || publicationRun.kind === "publishing" || !artifact) return;
+    if (disabled || hasAudio || publicationRun.kind === "publishing" || !artifact) return;
     setPublicationRun({ kind: "publishing" });
     try {
       await client.publish(artifact);
@@ -391,50 +396,57 @@ export function StudioExportControl({
       <div className="mt-4 border-y border-zinc-800 py-4">
         <h4 className="text-balance text-xs font-medium text-zinc-300">Audio</h4>
         <p className="mt-1 text-pretty text-xs leading-5 text-zinc-500" id="studio-export-audio-description">
-          Optionally attach one 48 kHz PCM WAV to this local export.
+          {audioTrack === undefined
+            ? "Optionally attach one 48 kHz PCM WAV to this imported Scene export."
+            : audioTrack
+              ? `The project track “${audioTrack.fileName}” will be attached to this local export.`
+              : "No project audio is attached. Import a WAV from Assets to include it."}
         </p>
-        <input
-          accept=".wav,audio/wav,audio/x-wav"
-          aria-describedby="studio-export-audio-description"
-          aria-label="WAV audio file"
-          className="sr-only"
-          disabled={disabled || running || saving || publishing}
-          id="studio-export-audio"
-          onChange={(event) => selectAudio(event.currentTarget.files?.[0])}
-          ref={audioInput}
-          type="file"
-        />
-        <div className="mt-3">
-          {audioFile ? (
-            <div className="flex min-w-0 items-center gap-2 text-xs text-zinc-400">
-              <span className="min-w-0 flex-1 truncate" title={audioFile.name}>
-                {audioFile.name}
-              </span>
-              <button
-                aria-label={`Remove WAV ${audioFile.name}`}
-                className={secondaryButtonClassName}
-                disabled={running || saving}
-                onClick={removeAudio}
-                type="button"
-              >
-                Remove
-              </button>
-            </div>
-          ) : (
-            <button
-              className={secondaryButtonClassName}
+        {audioTrack === undefined ? (
+          <>
+            <input
+              accept=".wav,audio/wav,audio/x-wav"
+              aria-describedby="studio-export-audio-description"
+              aria-label="WAV audio file"
+              className="sr-only"
               disabled={disabled || running || saving || publishing}
-              onClick={() => audioInput.current?.click()}
-              type="button"
-            >
-              Choose WAV
-            </button>
-          )}
-        </div>
-        {audioError ? (
-          <p className="mt-2 text-pretty text-xs leading-5 text-amber-300" role="alert">
-            {audioError}
-          </p>
+              onChange={(event) => selectTransientAudio(event.currentTarget.files?.[0])}
+              ref={transientAudioInput}
+              type="file"
+            />
+            <div className="mt-3">
+              {transientAudioFile ? (
+                <div className="flex min-w-0 items-center gap-2 text-xs text-zinc-400">
+                  <span className="min-w-0 flex-1 truncate" title={transientAudioFile.name}>
+                    {transientAudioFile.name}
+                  </span>
+                  <button
+                    aria-label={`Remove WAV ${transientAudioFile.name}`}
+                    className={secondaryButtonClassName}
+                    disabled={running || saving}
+                    onClick={removeTransientAudio}
+                    type="button"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className={secondaryButtonClassName}
+                  disabled={disabled || running || saving || publishing}
+                  onClick={() => transientAudioInput.current?.click()}
+                  type="button"
+                >
+                  Choose WAV
+                </button>
+              )}
+            </div>
+            {transientAudioError ? (
+              <p className="mt-2 text-pretty text-xs leading-5 text-amber-300" role="alert">
+                {transientAudioError}
+              </p>
+            ) : null}
+          </>
         ) : null}
       </div>
 

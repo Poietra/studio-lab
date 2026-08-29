@@ -162,6 +162,43 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("The PNG could not be decoded.");
   });
 
+  it("shows one project WAV with replace and remove actions", () => {
+    const markup = renderToStaticMarkup(
+      <WorkspaceSidebar
+        activeScene={activeScene()}
+        appliedProgramReadOnlyReasons={{}}
+        appliedEdits={[]}
+        appliedTransactionIds={new Set()}
+        audioImportError="The WAV sample rate is unsupported."
+        audioTrack={{ fileName: "narration.wav" }}
+        draftActive={false}
+        duration={1}
+        durationError={null}
+        durationMinimum={0.1}
+        editingAppliedTransactionId={null}
+        entities={[]}
+        nextScene={null}
+        onDurationChange={vi.fn()}
+        onEditAppliedProgram={vi.fn()}
+        onImportAudioFile={vi.fn()}
+        onRedo={vi.fn()}
+        onRemoveAudioTrack={vi.fn()}
+        onToggleEntity={vi.fn()}
+        onUndo={vi.fn()}
+        redoCount={0}
+        selectedIds={new Set()}
+        sourceImportOutcomes={[]}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Project WAV audio file"');
+    expect(markup).toContain('accept=".wav,audio/wav,audio/x-wav"');
+    expect(markup).toContain("narration.wav");
+    expect(markup).toContain("Replace WAV");
+    expect(markup).toContain('aria-label="Remove WAV narration.wav"');
+    expect(markup).toContain("The WAV sample rate is unsupported.");
+  });
+
   it("lists Rust-validated SVG paths with import and placement actions", () => {
     const markup = renderToStaticMarkup(
       <WorkspaceSidebar

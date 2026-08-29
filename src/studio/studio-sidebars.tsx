@@ -333,6 +333,9 @@ function DraftPositionRefinement({
 
 export function WorkspaceSidebar({
   activeScene,
+  audioImportError = null,
+  audioImportPending = false,
+  audioTrack = null,
   appliedProgramReadOnlyReasons,
   appliedEdits,
   appliedTransactionIds,
@@ -359,8 +362,10 @@ export function WorkspaceSidebar({
   lockedEntityIds = new Set(),
   nextScene,
   onGroup,
+  onImportAudioFile,
   onImportImageFiles,
   onImportSvgFiles,
+  onRemoveAudioTrack,
   onDurationChange,
   onSceneBackgroundChange,
   onScenePostEffectChange,
@@ -395,6 +400,9 @@ export function WorkspaceSidebar({
   undoAvailable = appliedEdits.length > 0,
 }: Readonly<{
   activeScene: AuthorableWorkspaceScene;
+  audioImportError?: string | null;
+  audioImportPending?: boolean;
+  audioTrack?: Readonly<{ fileName: string }> | null;
   appliedProgramReadOnlyReasons: Readonly<Record<string, string | null>>;
   appliedEdits: readonly ProgramRecord[];
   appliedTransactionIds: ReadonlySet<string>;
@@ -421,8 +429,10 @@ export function WorkspaceSidebar({
   lockedEntityIds?: ReadonlySet<string>;
   nextScene: AuthorableWorkspaceScene | null;
   onGroup?: () => void;
+  onImportAudioFile?: (file: File) => void;
   onImportImageFiles?: (files: readonly File[]) => void;
   onImportSvgFiles?: (files: readonly File[]) => void;
+  onRemoveAudioTrack?: () => void;
   onDurationChange: (duration: number) => void;
   onSceneBackgroundChange?: (color: string) => void;
   onScenePostEffectChange?: (effect: StudioScenePostEffectV1 | null) => void;
@@ -456,6 +466,7 @@ export function WorkspaceSidebar({
   sourceImportOutcomes: readonly ManimSourceImportOutcome[];
   undoAvailable?: boolean;
 }>) {
+  const audioFileInput = useRef<HTMLInputElement | null>(null);
   const imageFileInput = useRef<HTMLInputElement | null>(null);
   const svgFileInput = useRef<HTMLInputElement | null>(null);
   const [imageAssetSearchQuery, setImageAssetSearchQuery] = useState("");
@@ -488,7 +499,9 @@ export function WorkspaceSidebar({
             Assets
           </h2>
           <div className="flex items-center gap-2">
-            <span className="tabular-nums text-[10px] text-zinc-600">{imageAssets.length + svgAssets.length}</span>
+            <span className="tabular-nums text-[10px] text-zinc-600">
+              {imageAssets.length + svgAssets.length + (audioTrack ? 1 : 0)}
+            </span>
             {onImportImageFiles ? (
               <>
                 <input
@@ -541,6 +554,59 @@ export function WorkspaceSidebar({
             ) : null}
           </div>
         </div>
+        {onImportAudioFile || audioTrack ? (
+          <div className="mt-3 border border-zinc-800 p-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <h3 className="text-[10px] font-medium text-zinc-500">Audio</h3>
+                <p className="mt-1 truncate text-[10px] text-zinc-400" title={audioTrack?.fileName}>
+                  {audioTrack?.fileName ?? "No project audio"}
+                </p>
+              </div>
+              {onImportAudioFile ? (
+                <>
+                  <input
+                    accept=".wav,audio/wav,audio/x-wav"
+                    aria-label="Project WAV audio file"
+                    className="sr-only"
+                    disabled={!authoringAvailable || draftActive || audioImportPending}
+                    onChange={(event) => {
+                      const file = event.currentTarget.files?.[0];
+                      event.currentTarget.value = "";
+                      if (file) onImportAudioFile(file);
+                    }}
+                    ref={audioFileInput}
+                    type="file"
+                  />
+                  <button
+                    className="h-7 shrink-0 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                    disabled={!authoringAvailable || draftActive || audioImportPending}
+                    onClick={() => audioFileInput.current?.click()}
+                    type="button"
+                  >
+                    {audioImportPending ? "Importing…" : audioTrack ? "Replace WAV" : "+ Import WAV"}
+                  </button>
+                </>
+              ) : null}
+              {audioTrack && onRemoveAudioTrack ? (
+                <button
+                  aria-label={`Remove WAV ${audioTrack.fileName}`}
+                  className="h-7 shrink-0 border border-zinc-800 px-2 text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
+                  disabled={!authoringAvailable || draftActive || audioImportPending}
+                  onClick={onRemoveAudioTrack}
+                  type="button"
+                >
+                  Remove
+                </button>
+              ) : null}
+            </div>
+            {audioImportError ? (
+              <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-300" role="alert">
+                {audioImportError}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         <h3 className="mt-2 text-[10px] font-medium text-zinc-500">Images</h3>
         {imageAssets.length === 0 ? (
           <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">

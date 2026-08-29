@@ -155,6 +155,19 @@ pub fn compile_scene_post_effect_glsl(source: &str, entry_point: &str) -> Result
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
+/// Validates one WAV against the exact local browser-export audio profile.
+///
+/// # Errors
+///
+/// Returns the same diagnostic that the MP4 export path would return when the
+/// input is not 48 kHz signed 16-bit mono/stereo PCM in a RIFF/WAVE container.
+#[wasm_bindgen(js_name = validateExportAudioWavV1)]
+pub fn validate_export_audio_wav_v1(wav_bytes: &[u8]) -> Result<(), JsValue> {
+    audio_wav::parse_pcm_wav(wav_bytes)
+        .map(drop)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
 /// Opaque WASM handle owned by one dedicated browser worker.
 #[wasm_bindgen]
 #[derive(Debug)]

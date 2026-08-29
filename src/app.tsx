@@ -209,7 +209,7 @@ import {
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { ingestNativeProjectPngV1, type NativeProjectAssetStateV1 } from "./studio/native-project-assets";
-import { browserNativeProjectLocalStore } from "./studio/native-project-local-store";
+import { browserNativeProjectLocalStore, type NativeProjectLocalAudioTrack } from "./studio/native-project-local-store";
 import {
   type OpacityKeyframe,
   opacityKeyframeTrackFromProgram,
@@ -262,6 +262,8 @@ import {
   sourceTimeToWorkingTime as sourceTimeToWorkingTimeWithoutTimeline,
   workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline,
 } from "./studio/program-composition";
+import { useProjectAudioPlayback } from "./studio/project-audio-playback";
+import { ingestProjectAudioWav } from "./studio/project-audio-track";
 import { duplicatePropertyKeyframeAtTime } from "./studio/property-keyframe-duplicate";
 import { samplePropertyValue } from "./studio/property-sampling";
 import {
@@ -551,6 +553,7 @@ type CanvasRotationState = Readonly<{
 }>;
 type TabLocalNativeProjectState = NativeProjectAssetStateV1 &
   Readonly<{
+    audioTrack?: NativeProjectLocalAudioTrack;
     documentKey: string;
     fragmentMaterials: ProjectFragmentMaterialStateV1;
     projectId: string;
@@ -797,7 +800,9 @@ export function App({
   const [nativeProjectState, setNativeProjectState] = useState<TabLocalNativeProjectState | null>(null);
   const [nativeProjectAssetPending, setNativeProjectAssetPending] = useState(false);
   const [nativeProjectAssetError, setNativeProjectAssetError] = useState<string | null>(null);
-  const [nativeProjectAssetErrorKind, setNativeProjectAssetErrorKind] = useState<"image" | "svg" | null>(null);
+  const [nativeProjectAssetErrorKind, setNativeProjectAssetErrorKind] = useState<"audio" | "image" | "svg" | null>(
+    null,
+  );
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [coordinateInsertSettings, setCoordinateInsertSettings] = useState<CoordinateInsertSettings>({
     height: 4,
@@ -1300,6 +1305,10 @@ export function App({
       (event) => event.kind === "scene-boundary" && event.at !== undefined && event.at <= currentTime,
     ) ?? false;
   const nativeSceneActive = activeEditorScene !== null && isStudioNativeWorkspaceScene(activeEditorScene);
+  const projectAudioPlaybackError = useProjectAudioPlayback(
+    nativeSceneActive ? (nativeProjectState?.audioTrack ?? null) : null,
+    playbackClock,
+  );
   // Imported boundaries still gate the canvas directly. Studio-authored
   // boundaries are already fail-closed by their non-pristine revision.
   const sourceLifecycle = resolveEditorSourceLifecycle({
@@ -1529,14 +1538,13 @@ export function App({
       }
       if (nativeProjectAssetGeneration.current !== generation) return;
       const stateKey = tabLocalNativeProjectKey(projectId, documentKey);
-      const retained = nativeProjectStates.current.get(stateKey);
+      const retained = nativeProjectStates.current.get(stateKey) ?? nativeProjectState;
       const updated = {
+        ...retained,
         assetPayloads: result.assetPayloads,
         bundle: result.bundle,
         documentKey,
-        fragmentMaterials: retained?.fragmentMaterials ?? nativeProjectState.fragmentMaterials,
         projectId,
-        svgAssets: retained?.svgAssets ?? nativeProjectState.svgAssets,
       };
       await nativeProjectLocalStore?.save({ documentKey, projectId }, updated);
       if (nativeProjectAssetGeneration.current !== generation) return;
@@ -1584,6 +1592,44 @@ export function App({
       if (nativeProjectAssetGeneration.current !== generation) return;
       setNativeProjectAssetErrorKind("svg");
       setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not import the selected SVGs.");
+    } finally {
+      if (nativeProjectAssetGeneration.current === generation) setNativeProjectAssetPending(false);
+    }
+  }
+
+  async function updateNativeProjectAudioTrack(file: File | null) {
+    if (
+      !activeProjectId ||
+      !activeEditorScene ||
+      !isStudioNativeWorkspaceScene(activeEditorScene) ||
+      !nativeProjectState ||
+      nativeProjectState.projectId !== activeProjectId ||
+      nativeProjectState.documentKey !== activeEditorScene.identity.documentKey ||
+      nativeProjectAssetPending ||
+      !nativeProjectLocalStore
+    )
+      return;
+    const generation = nativeProjectAssetGeneration.current;
+    const projectId = activeProjectId;
+    const documentKey = activeEditorScene.identity.documentKey;
+    setNativeProjectAssetPending(true);
+    setNativeProjectAssetError(null);
+    setNativeProjectAssetErrorKind(null);
+    try {
+      const audioTrack = file ? await ingestProjectAudioWav(file) : undefined;
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      const stateKey = tabLocalNativeProjectKey(projectId, documentKey);
+      const retained = nativeProjectStates.current.get(stateKey) ?? nativeProjectState;
+      const { audioTrack: _removedAudioTrack, ...withoutAudioTrack } = retained;
+      const updated: TabLocalNativeProjectState = audioTrack ? { ...withoutAudioTrack, audioTrack } : withoutAudioTrack;
+      await nativeProjectLocalStore.save({ documentKey, projectId }, updated);
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      nativeProjectStates.current.set(stateKey, updated);
+      setNativeProjectState(updated);
+    } catch (cause) {
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      setNativeProjectAssetErrorKind("audio");
+      setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not update the project audio.");
     } finally {
       if (nativeProjectAssetGeneration.current === generation) setNativeProjectAssetPending(false);
     }
@@ -10487,6 +10533,7 @@ export function App({
               />
             ) : null}
             <StudioExportSettingsControl
+              audioTrack={nativeSceneActive ? (nativeProjectState?.audioTrack ?? null) : undefined}
               disabled={sessionTransitionPending}
               exportSource={studioExportSource}
               generateThumbnail={studioExportSource && previewRenderer ? previewRenderer.generateThumbnail : null}
@@ -10771,6 +10818,13 @@ export function App({
               appliedProgramReadOnlyReasons={appliedProgramReadOnlyReasons}
               appliedEdits={appliedEdits}
               appliedTransactionIds={appliedTransactionIds}
+              audioImportError={
+                nativeSceneActive && nativeProjectAssetErrorKind === "audio"
+                  ? nativeProjectAssetError
+                  : projectAudioPlaybackError
+              }
+              audioImportPending={nativeSceneActive && nativeProjectAssetPending}
+              audioTrack={nativeSceneActive ? (nativeProjectState?.audioTrack ?? null) : null}
               authoringAvailable={!studioAuthoringLocked && !isPlaying && previewMutationAvailable}
               className="order-2 min-h-64 md:order-1 md:col-start-1 md:row-start-1 md:min-h-0"
               draftActive={draftEdit !== null}
@@ -10798,8 +10852,10 @@ export function App({
               lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
               onGroup={groupLayerSelection}
+              onImportAudioFile={nativeSceneActive ? (file) => void updateNativeProjectAudioTrack(file) : undefined}
               onImportImageFiles={nativeSceneActive ? (files) => void importNativeProjectImageFiles(files) : undefined}
               onImportSvgFiles={nativeSceneActive ? (files) => void importNativeProjectSvgFiles(files) : undefined}
+              onRemoveAudioTrack={nativeSceneActive ? () => void updateNativeProjectAudioTrack(null) : undefined}
               onDurationChange={(duration) => void changeSceneDuration(duration)}
               onSceneBackgroundChange={(color) => void changeSceneBackground(color)}
               onScenePostEffectChange={(effect) => void changeScenePostEffect(effect)}
@@ -10943,6 +10999,7 @@ export function App({
               paintColorTracks={paintColorTracks}
               pathMorphClips={pathMorphClips}
               pathMotionUnavailableReason={penPathMotionTarget.kind === "blocked" ? penPathMotionTarget.reason : null}
+              projectAudioTrack={nativeSceneActive ? (nativeProjectState?.audioTrack ?? null) : null}
               rotationTrackEligibleIds={rotationTrackEligibleIds}
               rotationTracks={rotationTracks}
               resizeUnavailableIds={studioResizeUnavailableIds}

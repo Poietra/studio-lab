@@ -17,6 +17,7 @@ const DOCUMENT_KEY = "d".repeat(64);
 const IDENTITY = { documentKey: DOCUMENT_KEY, projectId: "project-a" } as const;
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const PNG_2 = new Uint8Array([...PNG, 1]);
+const WAV = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0x24, 0, 0, 0, 0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20]);
 
 function key(identity: NativeProjectLocalIdentity) {
   return `${identity.projectId}\0${identity.documentKey}`;
@@ -56,6 +57,16 @@ class DelayedFirstWriteAdapter extends MemoryAdapter {
     this.startedWrites += 1;
     if (this.startedWrites === 1) await this.firstWrite;
     await super.write(record);
+  }
+}
+
+class ReferenceMemoryAdapter extends MemoryAdapter {
+  override async read(identity: NativeProjectLocalIdentity) {
+    return this.records.get(key(identity)) ?? null;
+  }
+
+  override async write(record: Parameters<NativeProjectLocalStorageAdapter["write"]>[0]) {
+    this.records.set(key(record), record);
   }
 }
 
@@ -110,6 +121,39 @@ describe("Studio-native local project persistence", () => {
     }
     expect(restored?.fragmentMaterials).toEqual(state.fragmentMaterials);
     expect(restored?.svgAssets).toEqual(state.svgAssets);
+    expect(restored).not.toHaveProperty("audioTrack");
+  });
+
+  it("saves and restores one WAV track with independent exact byte copies", async () => {
+    const adapter = new ReferenceMemoryAdapter();
+    const store = new NativeProjectLocalStore(adapter, async () => ({ pixelHeight: 1, pixelWidth: 2 }));
+    const wavBytes = WAV.slice().buffer;
+    const state = {
+      ...(await authoredState()),
+      audioTrack: { fileName: "narration take 2.wav", wavBytes },
+    };
+    const expectedBytes = WAV.slice();
+
+    await store.save(IDENTITY, state);
+    const persisted = adapter.records.get(key(IDENTITY)) as {
+      audioTrack: { fileName: string; wavBytes: ArrayBuffer };
+      version: number;
+    };
+    expect(persisted.version).toBe(1);
+    expect(persisted.audioTrack.fileName).toBe("narration take 2.wav");
+    expect(persisted.audioTrack.wavBytes).not.toBe(wavBytes);
+    expect(new Uint8Array(persisted.audioTrack.wavBytes)).toEqual(expectedBytes);
+
+    new Uint8Array(wavBytes).fill(0);
+    expect(new Uint8Array(persisted.audioTrack.wavBytes)).toEqual(expectedBytes);
+
+    const restored = await store.restore(IDENTITY);
+    expect(restored?.audioTrack?.fileName).toBe("narration take 2.wav");
+    expect(restored?.audioTrack?.wavBytes).not.toBe(persisted.audioTrack.wavBytes);
+    expect(new Uint8Array(restored!.audioTrack!.wavBytes)).toEqual(expectedBytes);
+
+    new Uint8Array(restored!.audioTrack!.wavBytes).fill(0xff);
+    expect(new Uint8Array(persisted.audioTrack.wavBytes)).toEqual(expectedBytes);
   });
 
   it("isolates document keys and removes every local document for a deleted project", async () => {
