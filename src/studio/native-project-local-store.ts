@@ -11,6 +11,7 @@ import {
   type ProjectFragmentMaterialStateV1,
   projectFragmentMaterialStateV1Schema,
 } from "./fragment-material-authoring";
+import type { ProjectAudioTrack } from "./project-audio-track";
 import { parseStudioSvgPathAssets, restoreStudioSvgPathAssets, type StudioSvgPathAsset } from "./studio-svg-assets";
 
 const DATABASE_NAME = "poietra-studio-native-projects";
@@ -23,8 +24,11 @@ export type NativeProjectLocalIdentity = Readonly<{
   projectId: string;
 }>;
 
+export type NativeProjectLocalAudioTrack = ProjectAudioTrack;
+
 export type NativeProjectLocalState = Readonly<{
   assetPayloads: readonly CanvasPngAssetTransferV1[];
+  audioTrack?: NativeProjectLocalAudioTrack;
   bundle: SceneIrBundleV1;
   fragmentMaterials: ProjectFragmentMaterialStateV1;
   svgAssets: readonly StudioSvgPathAsset[];
@@ -55,8 +59,25 @@ function copyAssetPayloads(payloads: readonly CanvasPngAssetTransferV1[]) {
   );
 }
 
-/** Browser-local persistence for native PNGs and their material state. Editor
- * Programs remain in EditorSessionStore; raw image bytes only cross this
+function copyAudioTrack(value: unknown): NativeProjectLocalAudioTrack | undefined {
+  if (value === undefined) return undefined;
+  const audioTrack = value as Partial<NativeProjectLocalAudioTrack> | null;
+  if (
+    audioTrack === null ||
+    typeof audioTrack !== "object" ||
+    typeof audioTrack.fileName !== "string" ||
+    !(audioTrack.wavBytes instanceof ArrayBuffer)
+  ) {
+    throw new TypeError("The stored native project audio track is invalid.");
+  }
+  return {
+    fileName: audioTrack.fileName,
+    wavBytes: audioTrack.wavBytes.slice(0),
+  };
+}
+
+/** Browser-local persistence for native binary assets and their material state.
+ * Editor Programs remain in EditorSessionStore; raw asset bytes only cross this
  * IndexedDB-backed boundary. */
 export class NativeProjectLocalStore {
   private pendingMutation: Promise<void> = Promise.resolve();
@@ -91,8 +112,10 @@ export class NativeProjectLocalStore {
       manifest: bundle.assets,
       payloads: record.assetPayloads,
     });
+    const audioTrack = copyAudioTrack(record.audioTrack);
     return {
       assetPayloads: prepared.transfers,
+      ...(audioTrack === undefined ? {} : { audioTrack }),
       bundle,
       fragmentMaterials: projectFragmentMaterialStateV1Schema.parse(record.fragmentMaterials),
       svgAssets: await restoreStudioSvgPathAssets(record.svgAssets),
@@ -107,9 +130,11 @@ export class NativeProjectLocalStore {
     ) {
       throw new TypeError("Only the current native document can be stored locally.");
     }
+    const audioTrack = copyAudioTrack(state.audioTrack);
     const record = {
       ...identity,
       assetPayloads: copyAssetPayloads(state.assetPayloads),
+      ...(audioTrack === undefined ? {} : { audioTrack }),
       bundle: state.bundle,
       fragmentMaterials: projectFragmentMaterialStateV1Schema.parse(state.fragmentMaterials),
       svgAssets: parseStudioSvgPathAssets(state.svgAssets),
