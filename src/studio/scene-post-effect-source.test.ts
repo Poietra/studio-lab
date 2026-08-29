@@ -5,10 +5,13 @@ import {
   acceptedStudioScenePostEffectRegistrySourceV1,
   acceptStudioScenePostEffectSourceV1,
   createStudioScenePostEffectSourceV1,
-  EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1,
+  EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE,
+  findStudioScenePostEffectSourceV1,
+  listStudioScenePostEffectSourcesV1,
+  MAX_PROJECT_SCENE_POST_EFFECT_ASSETS,
   MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1,
   PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
-  projectScenePostEffectSourceStateV1Schema,
+  projectScenePostEffectLibraryStateSchema,
   rejectStudioScenePostEffectSourceV1,
   removeStudioScenePostEffectSourceV1,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
@@ -28,11 +31,23 @@ void main() {
 }
 `;
 
-describe("project Scene post-effect source state", () => {
-  it("creates one unaccepted Wave Distortion starter with the fixed ABI", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+function createAsset(name: string, state = EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE) {
+  return createStudioScenePostEffectSourceV1(state, { name });
+}
 
-    expect(created.asset).toMatchObject({
+describe("project Scene post-effect asset library", () => {
+  it("creates named Wave Distortion starters with stable, monotonic revisions", () => {
+    const first = createAsset("Wave Distortion");
+    const second = createAsset("Scan Lines", first.state);
+
+    expect(first.revision).toBe(1);
+    expect(second.revision).toBe(2);
+    expect(second.state.nextAssetRevision).toBe(3);
+    expect(listStudioScenePostEffectSourcesV1(second.state).map(({ name, revision }) => ({ name, revision }))).toEqual([
+      { name: "Wave Distortion", revision: 1 },
+      { name: "Scan Lines", revision: 2 },
+    ]);
+    expect(findStudioScenePostEffectSourceV1(second.state, first.revision)).toMatchObject({
       accepted: null,
       draft: {
         diagnostic: null,
@@ -40,191 +55,204 @@ describe("project Scene post-effect source state", () => {
         source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
         sourceLanguage: "wgsl",
       },
+      name: "Wave Distortion",
+      revision: 1,
     });
-    expect(created.asset?.draft.source).toContain("@group(0) @binding(0)");
-    expect(created.asset?.draft.source).toContain("@group(0) @binding(1)");
-    expect(created.asset?.draft.source).toContain("@fragment\nfn fs_main");
-    expect(created.asset?.draft.source).not.toContain("@vertex");
-    expect(() => createStudioScenePostEffectSourceV1(created)).toThrow(/exactly one custom Scene post effect/);
+    expect(findStudioScenePostEffectSourceV1(second.state, 99)).toBeNull();
   });
 
-  it("accepts a source, exposes only its reference to Scene IR, and revises material changes", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
+  it("enforces the library bound and validates semantic names", () => {
+    const first = createAsset("Effect 1");
+    expect(() => createAsset(" Effect 2 ", first.state)).toThrow(/surrounding whitespace/);
 
-    expect(accepted.asset?.accepted).toMatchObject({
-      generation: 1,
-      shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
-      source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
-    });
-    expect(accepted.asset?.accepted).not.toHaveProperty("originalGlslSource");
-    expect(acceptedStudioScenePostEffectReferenceV1(accepted)).toEqual({
-      parameters: [12, 64, 0.75],
-      revision: 1,
-      shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
-    });
-    expect(JSON.stringify(acceptedStudioScenePostEffectReferenceV1(accepted))).not.toContain("source");
-    expect(acceptedStudioScenePostEffectRegistrySourceV1(accepted)).toEqual({
-      revision: 1,
-      shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
-      source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
-    });
-
-    const repeated = acceptStudioScenePostEffectSourceV1(accepted, accepted.asset!.draft);
-    expect(repeated.asset?.accepted?.generation).toBe(1);
-    const edited = acceptStudioScenePostEffectSourceV1(repeated, {
-      ...repeated.asset!.draft,
-      source: `${repeated.asset!.draft.source}\n// accepted edit`,
-    });
-    expect(edited.asset?.accepted?.generation).toBe(2);
+    let state = first.state;
+    for (let index = 2; index <= MAX_PROJECT_SCENE_POST_EFFECT_ASSETS; index += 1) {
+      state = createAsset(`Effect ${index}`, state).state;
+    }
+    expect(state.assets).toHaveLength(MAX_PROJECT_SCENE_POST_EFFECT_ASSETS);
+    expect(() => createAsset("Effect 9", state)).toThrow(/at most 8/);
   });
 
-  it("stores original GLSL beside canonical WGSL without widening the renderer registry", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, {
+  it("accepts each asset independently and projects the selected stable revision", () => {
+    const first = createAsset("Wave Distortion");
+    const second = createAsset("GLSL Copy", first.state);
+    const firstAsset = findStudioScenePostEffectSourceV1(second.state, first.revision)!;
+    const firstAccepted = acceptStudioScenePostEffectSourceV1(second.state, first.revision, firstAsset.draft);
+    const secondAsset = findStudioScenePostEffectSourceV1(firstAccepted, second.revision)!;
+    const bothAccepted = acceptStudioScenePostEffectSourceV1(firstAccepted, second.revision, {
       canonicalWgslSource: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
-      parameterSchema: created.asset!.draft.parameterSchema,
+      parameterSchema: secondAsset.draft.parameterSchema,
       source: GLSL_SOURCE,
       sourceLanguage: "glsl",
     });
 
-    expect(accepted.asset?.accepted).toMatchObject({
+    expect(findStudioScenePostEffectSourceV1(bothAccepted, first.revision)?.accepted).toMatchObject({
+      generation: 1,
+      shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+    });
+    expect(findStudioScenePostEffectSourceV1(bothAccepted, second.revision)?.accepted).toMatchObject({
       generation: 1,
       originalGlslSource: GLSL_SOURCE,
-      source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
     });
-    expect(accepted.asset?.draft).toMatchObject({
-      diagnostic: null,
-      source: GLSL_SOURCE,
-      sourceLanguage: "glsl",
+    expect(acceptedStudioScenePostEffectReferenceV1(bothAccepted, second.revision)).toEqual({
+      parameters: [12, 64, 0.75],
+      revision: second.revision,
+      shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
     });
-    expect(acceptedStudioScenePostEffectRegistrySourceV1(accepted)).toEqual({
-      revision: 1,
+    expect(acceptedStudioScenePostEffectRegistrySourceV1(bothAccepted, second.revision)).toEqual({
+      revision: second.revision,
       shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
       source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
     });
-    expect(JSON.stringify(acceptedStudioScenePostEffectRegistrySourceV1(accepted))).not.toContain("#version 450");
-
-    const repeated = acceptStudioScenePostEffectSourceV1(accepted, {
-      canonicalWgslSource: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
-      parameterSchema: accepted.asset!.draft.parameterSchema,
-      source: GLSL_SOURCE,
-      sourceLanguage: "glsl",
-    });
-    expect(repeated.asset?.accepted?.generation).toBe(1);
-    const originalEdit = acceptStudioScenePostEffectSourceV1(repeated, {
-      canonicalWgslSource: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
-      parameterSchema: repeated.asset!.draft.parameterSchema,
-      source: `${GLSL_SOURCE}\n// accepted edit`,
-      sourceLanguage: "glsl",
-    });
-    expect(originalEdit.asset?.accepted?.generation).toBe(2);
-    expect(() =>
-      acceptStudioScenePostEffectSourceV1(created, {
-        parameterSchema: created.asset!.draft.parameterSchema,
-        source: GLSL_SOURCE,
-        sourceLanguage: "glsl",
-      }),
-    ).toThrow(/canonical WGSL/);
-  });
-
-  it("retains the last accepted source while preserving a rejected draft and diagnostic", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
-    const rejectedSource = "@fragment fn broken(";
-    const rejected = rejectStudioScenePostEffectSourceV1(accepted, {
-      diagnostic: "WGSL parse error at line 1",
-      parameterSchema: accepted.asset!.draft.parameterSchema,
-      source: rejectedSource,
-    });
-
-    expect(rejected.asset?.accepted).toEqual(accepted.asset?.accepted);
-    expect(rejected.asset?.draft).toMatchObject({
-      diagnostic: "WGSL parse error at line 1",
-      source: rejectedSource,
-      sourceLanguage: "wgsl",
-    });
-    expect(acceptedStudioScenePostEffectRegistrySourceV1(rejected)?.source).toBe(
-      STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+    expect(JSON.stringify(acceptedStudioScenePostEffectRegistrySourceV1(bothAccepted, second.revision))).not.toContain(
+      "#version 450",
     );
-    expect(acceptedStudioScenePostEffectReferenceV1(rejected)?.revision).toBe(1);
-
-    const repaired = acceptStudioScenePostEffectSourceV1(rejected, {
-      parameterSchema: rejected.asset!.draft.parameterSchema,
-      source: `${STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1}\n// repaired`,
-    });
-    expect(repaired.asset?.accepted?.generation).toBe(2);
-    expect(repaired.asset?.draft.diagnostic).toBeNull();
   });
 
-  it("retains accepted canonical WGSL while restoring a rejected GLSL draft", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
-    const rejected = rejectStudioScenePostEffectSourceV1(accepted, {
-      diagnostic: "post-effect.glsl:4: invalid binding",
-      parameterSchema: accepted.asset!.draft.parameterSchema,
-      source: `${GLSL_SOURCE}\nlayout(set = 1, binding = 4) uniform Bad { vec4 value; } bad;`,
-      sourceLanguage: "glsl",
+  it("keeps asset identity stable while accepted source generation changes", () => {
+    const created = createAsset("Editable");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const accepted = acceptStudioScenePostEffectSourceV1(created.state, created.revision, asset.draft);
+    const repeatedAsset = findStudioScenePostEffectSourceV1(accepted, created.revision)!;
+    const repeated = acceptStudioScenePostEffectSourceV1(accepted, created.revision, repeatedAsset.draft);
+    expect(findStudioScenePostEffectSourceV1(repeated, created.revision)?.accepted?.generation).toBe(1);
+
+    const editedAsset = findStudioScenePostEffectSourceV1(repeated, created.revision)!;
+    const edited = acceptStudioScenePostEffectSourceV1(repeated, created.revision, {
+      ...editedAsset.draft,
+      source: `${editedAsset.draft.source}\n// accepted edit`,
+    });
+    expect(findStudioScenePostEffectSourceV1(edited, created.revision)).toMatchObject({
+      accepted: { generation: 2 },
+      revision: created.revision,
+    });
+    expect(acceptedStudioScenePostEffectReferenceV1(edited, created.revision)?.revision).toBe(created.revision);
+  });
+
+  it("contains a rejected draft to one asset and retains its last accepted source", () => {
+    const first = createAsset("Stable");
+    const second = createAsset("Broken", first.state);
+    const firstAccepted = acceptStudioScenePostEffectSourceV1(
+      second.state,
+      first.revision,
+      findStudioScenePostEffectSourceV1(second.state, first.revision)!.draft,
+    );
+    const secondAccepted = acceptStudioScenePostEffectSourceV1(
+      firstAccepted,
+      second.revision,
+      findStudioScenePostEffectSourceV1(firstAccepted, second.revision)!.draft,
+    );
+    const rejected = rejectStudioScenePostEffectSourceV1(secondAccepted, second.revision, {
+      diagnostic: "WGSL parse error at line 1",
+      parameterSchema: findStudioScenePostEffectSourceV1(secondAccepted, second.revision)!.draft.parameterSchema,
+      source: "@fragment fn broken(",
     });
 
-    expect(rejected.asset?.accepted).toEqual(accepted.asset?.accepted);
-    expect(rejected.asset?.draft).toMatchObject({
-      diagnostic: "post-effect.glsl:4: invalid binding",
-      sourceLanguage: "glsl",
+    expect(findStudioScenePostEffectSourceV1(rejected, first.revision)).toEqual(
+      findStudioScenePostEffectSourceV1(secondAccepted, first.revision),
+    );
+    expect(findStudioScenePostEffectSourceV1(rejected, second.revision)).toMatchObject({
+      accepted: findStudioScenePostEffectSourceV1(secondAccepted, second.revision)!.accepted,
+      draft: { diagnostic: "WGSL parse error at line 1", source: "@fragment fn broken(" },
     });
-    expect(rejected.asset?.draft.source).toContain("set = 1");
-    expect(acceptedStudioScenePostEffectRegistrySourceV1(rejected)?.source).toBe(
+    expect(acceptedStudioScenePostEffectRegistrySourceV1(rejected, second.revision)?.source).toBe(
       STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
     );
   });
 
-  it("validates UTF-8 bytes, parameter shape, ranges, and exact values", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+  it("removes only uncompiled assets without reusing their revisions", () => {
+    const first = createAsset("Draft");
+    const second = createAsset("Accepted", first.state);
+    const accepted = acceptStudioScenePostEffectSourceV1(
+      second.state,
+      second.revision,
+      findStudioScenePostEffectSourceV1(second.state, second.revision)!.draft,
+    );
+
+    expect(() => removeStudioScenePostEffectSourceV1(accepted, second.revision)).toThrow(/Undo and Redo/);
+    const removed = removeStudioScenePostEffectSourceV1(accepted, first.revision);
+    expect(findStudioScenePostEffectSourceV1(removed, first.revision)).toBeNull();
+    const replacement = createAsset("Replacement", removed);
+    expect(replacement.revision).toBe(3);
+    expect(() => removeStudioScenePostEffectSourceV1(replacement.state, 99)).toThrow(/does not exist/);
+  });
+
+  it("migrates legacy singleton states without losing accepted source data", () => {
+    const legacy = {
+      asset: {
+        accepted: {
+          generation: 4,
+          parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
+          shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+        },
+        draft: {
+          diagnostic: null,
+          parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
+          source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+        },
+      },
+      schema: "poietra.scene-post-effect-source-state",
+      version: 1,
+    };
+
+    const migrated = projectScenePostEffectLibraryStateSchema.parse(legacy);
+    expect(migrated).toMatchObject({
+      assets: [
+        {
+          accepted: { generation: 4, source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1 },
+          draft: { sourceLanguage: "wgsl" },
+          name: "Custom Scene effect",
+          revision: 1,
+        },
+      ],
+      nextAssetRevision: 2,
+      schema: "poietra.scene-post-effect-library-state",
+      version: 1,
+    });
+    expect(acceptedStudioScenePostEffectReferenceV1(migrated, 1)?.revision).toBe(1);
+    expect(projectScenePostEffectLibraryStateSchema.parse({ ...legacy, asset: null })).toEqual(
+      EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE,
+    );
+  });
+
+  it("validates persisted library invariants, UTF-8 bytes, and exact parameter values", () => {
+    const created = createAsset("Validated");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
     expect(() =>
-      acceptStudioScenePostEffectSourceV1(created, {
-        parameterSchema: created.asset!.draft.parameterSchema,
+      acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+        parameterSchema: asset.draft.parameterSchema,
         source: "界".repeat(Math.ceil(MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1 / 3) + 1),
       }),
     ).toThrow(/UTF-8 bytes/);
     expect(() =>
-      acceptStudioScenePostEffectSourceV1(created, {
-        parameterSchema: Array.from({ length: 9 }, (_, index) => ({
-          default: 0,
-          name: `Parameter ${index}`,
-          range: { max: 1, min: 0, step: 0.1 },
-          type: "f32" as const,
-        })),
-        source: created.asset!.draft.source,
-      }),
-    ).toThrow();
-    expect(() =>
-      acceptStudioScenePostEffectSourceV1(created, {
+      acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
         parameterSchema: [
           { default: 0, name: "Amount", range: { max: 1, min: 0, step: 0.1 }, type: "f32" },
           { default: 0, name: "amount", range: { max: 1, min: 0, step: 0.1 }, type: "f32" },
         ],
-        source: created.asset!.draft.source,
+        source: asset.draft.source,
       }),
     ).toThrow(/Parameter names must be unique/);
 
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
-    expect(() => acceptedStudioScenePostEffectReferenceV1(accepted, [12, 64])).toThrow(/every declared parameter/);
-    expect(() => acceptedStudioScenePostEffectReferenceV1(accepted, [65, 64, 0.75])).toThrow(
+    const accepted = acceptStudioScenePostEffectSourceV1(created.state, created.revision, asset.draft);
+    expect(() => acceptedStudioScenePostEffectReferenceV1(accepted, created.revision, [12, 64])).toThrow(
+      /every declared parameter/,
+    );
+    expect(() => acceptedStudioScenePostEffectReferenceV1(accepted, created.revision, [65, 64, 0.75])).toThrow(
       /Amplitude must be between 0 and 64/,
     );
-  });
-
-  it("parses persisted state strictly and removes only an uncompiled custom asset", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
-    expect(projectScenePostEffectSourceStateV1Schema.parse(JSON.parse(JSON.stringify(accepted)))).toEqual(accepted);
-    const legacy = JSON.parse(JSON.stringify(accepted)) as {
-      asset: { draft: { sourceLanguage?: string } };
-    };
-    delete legacy.asset.draft.sourceLanguage;
-    expect(projectScenePostEffectSourceStateV1Schema.parse(legacy).asset?.draft.sourceLanguage).toBe("wgsl");
-    expect(projectScenePostEffectSourceStateV1Schema.safeParse({ ...accepted, extra: true }).success).toBe(false);
-    expect(() => removeStudioScenePostEffectSourceV1(accepted)).toThrow(/remains a project asset/);
-    expect(removeStudioScenePostEffectSourceV1(created)).toEqual(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    expect(
+      projectScenePostEffectLibraryStateSchema.safeParse({
+        ...accepted,
+        assets: [...accepted.assets, { ...accepted.assets[0], name: "Other", revision: accepted.assets[0]!.revision }],
+      }).success,
+    ).toBe(false);
+    expect(
+      projectScenePostEffectLibraryStateSchema.safeParse({
+        ...accepted,
+        nextAssetRevision: accepted.assets[0]!.revision,
+      }).success,
+    ).toBe(false);
   });
 });

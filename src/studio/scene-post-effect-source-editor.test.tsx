@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   acceptStudioScenePostEffectSourceV1,
   createStudioScenePostEffectSourceV1,
-  EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1,
+  EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE,
+  findStudioScenePostEffectSourceV1,
   MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1,
   PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
   rejectStudioScenePostEffectSourceV1,
@@ -31,14 +32,26 @@ const callbacks = () => ({
   onCreate: vi.fn(),
   onParametersChange: vi.fn(),
   onRemove: vi.fn(),
+  onSelect: vi.fn(),
+  selectedRevision: null,
 });
+
+function createAsset(name: string, state = EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE) {
+  return createStudioScenePostEffectSourceV1(state, { name });
+}
+
+function acceptAsset(created: ReturnType<typeof createAsset>) {
+  const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+  const state = acceptStudioScenePostEffectSourceV1(created.state, created.revision, asset.draft);
+  return { asset: findStudioScenePostEffectSourceV1(state, created.revision)!, state };
+}
 
 describe("ScenePostEffectSourceEditor", () => {
   it("offers one Wave Distortion starter when the project has no custom asset", () => {
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        active={false}
-        asset={null}
+        activeRevision={null}
+        assets={[]}
         available
         parameters={null}
         sourceAvailable
@@ -49,16 +62,42 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain('aria-label="Custom Scene post effect"');
     expect(markup).toContain("Wave Distortion");
     expect(markup).toContain("Create starter");
-    expect(markup).toContain("WGSL or import Vulkan GLSL 450");
+    expect(markup).toContain("Create a WGSL starter, then paste or import Vulkan GLSL 450 when needed.");
+  });
+
+  it("lists two named assets and selects the active revision", () => {
+    const first = createAsset("Wave Distortion");
+    const second = createAsset("Chromatic Shift", first.state);
+    const secondAsset = findStudioScenePostEffectSourceV1(second.state, second.revision)!;
+    const state = acceptStudioScenePostEffectSourceV1(second.state, second.revision, secondAsset.draft);
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        activeRevision={second.revision}
+        assets={state.assets}
+        available
+        parameters={[12, 64, 0.75]}
+        sourceAvailable
+        {...callbacks()}
+      />,
+    );
+
+    expect(markup).toContain("2 / 8 project effects");
+    expect(markup).toContain('aria-label="Edit Scene effect Wave Distortion, revision 1"');
+    expect(markup).toContain('aria-label="Edit Scene effect Chromatic Shift, revision 2" aria-pressed="true"');
+    expect(markup).toContain(`data-scene-post-effect-asset-revision="${first.revision}"`);
+    expect(markup).toContain(`data-scene-post-effect-asset-revision="${second.revision}"`);
+    expect(markup).toContain("Chromatic Shift · WGSL");
+    expect(markup).toContain("Active · generation 1");
+    expect(markup).toContain("Applied to Scene");
   });
 
   it("renders the accepted identity, fixed ABI, source editor, and live scalar controls", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
+    const created = createAsset("Wave Distortion");
+    const accepted = acceptAsset(created);
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        active
-        asset={accepted.asset}
+        activeRevision={created.revision}
+        assets={accepted.state.assets}
         available
         parameters={[18, 80, 1.25]}
         sourceAvailable
@@ -86,17 +125,18 @@ describe("ScenePostEffectSourceEditor", () => {
   });
 
   it("renders GLSL paste and bounded local file import while retaining canonical WGSL", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, {
+    const created = createAsset("Custom GLSL");
+    const createdAsset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const accepted = acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
       canonicalWgslSource: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
-      parameterSchema: created.asset!.draft.parameterSchema,
+      parameterSchema: createdAsset.draft.parameterSchema,
       source: GLSL_SOURCE,
       sourceLanguage: "glsl",
     });
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        active
-        asset={accepted.asset}
+        activeRevision={created.revision}
+        assets={accepted.assets}
         available
         parameters={[12, 64, 0.75]}
         sourceAvailable
@@ -118,17 +158,17 @@ describe("ScenePostEffectSourceEditor", () => {
   });
 
   it("shows a rejected draft while explaining that the accepted revision remains active", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
-    const rejected = rejectStudioScenePostEffectSourceV1(accepted, {
+    const created = createAsset("Broken WGSL");
+    const accepted = acceptAsset(created);
+    const rejected = rejectStudioScenePostEffectSourceV1(accepted.state, created.revision, {
       diagnostic: "post-effect.wgsl:7:4: expected expression",
-      parameterSchema: accepted.asset!.draft.parameterSchema,
+      parameterSchema: accepted.asset.draft.parameterSchema,
       source: "@fragment fn broken(",
     });
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        active
-        asset={rejected.asset}
+        activeRevision={created.revision}
+        assets={rejected.assets}
         available
         parameters={[12, 64, 0.75]}
         sourceAvailable
@@ -145,18 +185,18 @@ describe("ScenePostEffectSourceEditor", () => {
   });
 
   it("labels a rejected GLSL draft and keeps the last accepted generation available", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
-    const rejected = rejectStudioScenePostEffectSourceV1(accepted, {
+    const created = createAsset("Broken GLSL");
+    const accepted = acceptAsset(created);
+    const rejected = rejectStudioScenePostEffectSourceV1(accepted.state, created.revision, {
       diagnostic: "post-effect.glsl:8: binding 4 is unsupported",
-      parameterSchema: accepted.asset!.draft.parameterSchema,
+      parameterSchema: accepted.asset.draft.parameterSchema,
       source: GLSL_SOURCE,
       sourceLanguage: "glsl",
     });
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        active
-        asset={rejected.asset}
+        activeRevision={created.revision}
+        assets={rejected.assets}
         available
         parameters={[12, 64, 0.75]}
         sourceAvailable
@@ -172,12 +212,12 @@ describe("ScenePostEffectSourceEditor", () => {
   });
 
   it("keeps assignment controls unavailable without trapping source recovery", () => {
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
+    const created = createAsset("Unavailable");
+    const accepted = acceptAsset(created);
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
-        active
-        asset={accepted.asset}
+        activeRevision={created.revision}
+        assets={accepted.state.assets}
         available={false}
         parameters={[12]}
         sourceAvailable

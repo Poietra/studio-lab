@@ -27,7 +27,7 @@ import { programExecutionCapabilities } from "./operation-registry";
 import { isSceneDurationOperation } from "./operations";
 import { sourceTimeToWorkingTime } from "./program-composition";
 import { sceneEditSchema } from "./scene-edit-contract";
-import type { ProjectScenePostEffectSourceStateV1 } from "./scene-post-effect-source";
+import type { ProjectScenePostEffectLibraryState } from "./scene-post-effect-source";
 import type { StudioTool } from "./studio-toolbar";
 import type { InteractionMode } from "./studio-viewport";
 import { STUDIO_STYLE_PROFILE } from "./style-profile";
@@ -797,7 +797,7 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     [],
   );
 
-  const saveProjectScenePostEffect = useCallback((projectId: string, state: ProjectScenePostEffectSourceStateV1) => {
+  const saveProjectScenePostEffect = useCallback((projectId: string, state: ProjectScenePostEffectLibraryState) => {
     return sessionStore.current?.saveProjectScenePostEffect(projectId, state) ?? false;
   }, []);
 

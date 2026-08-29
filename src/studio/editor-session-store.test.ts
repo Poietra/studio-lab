@@ -38,7 +38,11 @@ import type { ProgramRecord } from "./model";
 import {
   acceptStudioScenePostEffectSourceV1,
   createStudioScenePostEffectSourceV1,
-  EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1,
+  EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE,
+  findStudioScenePostEffectSourceV1,
+  PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
+  STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
 } from "./scene-post-effect-source";
 import {
   applyEditorDraft,
@@ -577,17 +581,89 @@ describe("durable editor session storage", () => {
 
   it("restores the accepted project Scene post-effect source without requiring a Scene Program", () => {
     const adapter = new MemoryAdapter();
-    const created = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
-    const accepted = acceptStudioScenePostEffectSourceV1(created, created.asset!.draft);
+    const first = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE, {
+      name: "Wave Distortion",
+    });
+    const second = createStudioScenePostEffectSourceV1(first.state, { name: "Scan Lines" });
+    const firstAsset = findStudioScenePostEffectSourceV1(second.state, first.revision)!;
+    const firstAccepted = acceptStudioScenePostEffectSourceV1(second.state, first.revision, firstAsset.draft);
+    const secondAsset = findStudioScenePostEffectSourceV1(firstAccepted, second.revision)!;
+    const accepted = acceptStudioScenePostEffectSourceV1(firstAccepted, second.revision, {
+      canonicalWgslSource: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+      parameterSchema: secondAsset.draft.parameterSchema,
+      source: "#version 450\nvoid main() {}",
+      sourceLanguage: "glsl",
+    });
 
     expect(new EditorSessionStore(adapter).saveProjectScenePostEffect("project-a", accepted)).toBe(true);
     const restored = new EditorSessionStore(adapter).restoreProjectScenePostEffect("project-a");
 
     expect(restored).toEqual(accepted);
-    expect(restored.asset?.accepted).toMatchObject({ generation: 1, shaderId: "project-scene-post-effect" });
+    expect(restored.assets).toMatchObject([
+      { accepted: { generation: 1, shaderId: "project-scene-post-effect" }, name: "Wave Distortion", revision: 1 },
+      {
+        accepted: { generation: 1, originalGlslSource: "#version 450\nvoid main() {}" },
+        draft: { sourceLanguage: "glsl" },
+        name: "Scan Lines",
+        revision: 2,
+      },
+    ]);
     expect(JSON.parse(adapter.value!)).toMatchObject({
       scenePostEffects: { "project-a": { state: accepted } },
       version: EDITOR_SESSION_STORAGE_VERSION,
+    });
+  });
+
+  it("migrates a persisted singleton Scene post-effect into the named library", () => {
+    const legacyState = {
+      asset: {
+        accepted: {
+          generation: 3,
+          parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
+          shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+        },
+        draft: {
+          diagnostic: null,
+          parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
+          source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+        },
+      },
+      schema: "poietra.scene-post-effect-source-state",
+      version: 1,
+    };
+    const adapter = new MemoryAdapter(
+      JSON.stringify({
+        entries: [],
+        scenePostEffects: { "project-a": { sourceLanguage: "wgsl", state: legacyState } },
+        version: EDITOR_SESSION_STORAGE_VERSION,
+      }),
+    );
+
+    const restored = new EditorSessionStore(adapter).restoreProjectScenePostEffect("project-a");
+
+    expect(restored).toMatchObject({
+      assets: [
+        {
+          accepted: { generation: 3 },
+          draft: { sourceLanguage: "wgsl" },
+          name: "Custom Scene effect",
+          revision: 1,
+        },
+      ],
+      nextAssetRevision: 2,
+      schema: "poietra.scene-post-effect-library-state",
+      version: 1,
+    });
+    expect(JSON.parse(adapter.value!)).toMatchObject({
+      scenePostEffects: {
+        "project-a": {
+          state: {
+            assets: [{ name: "Custom Scene effect", revision: 1 }],
+            schema: "poietra.scene-post-effect-library-state",
+          },
+        },
+      },
     });
   });
 
@@ -940,10 +1016,13 @@ describe("durable editor session storage", () => {
     store.save(identity("other.py#Scene", "c".repeat(64), "project-b"), snapshot());
     store.save(nativeIdentity(), snapshot());
     store.saveProjectFragmentMaterials("project-a", assignedFragmentMaterials("scene-a", "circle"));
-    const createdEffect = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    const createdEffect = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE, {
+      name: "Project A effect",
+    });
+    const createdEffectAsset = findStudioScenePostEffectSourceV1(createdEffect.state, createdEffect.revision)!;
     store.saveProjectScenePostEffect(
       "project-a",
-      acceptStudioScenePostEffectSourceV1(createdEffect, createdEffect.asset!.draft),
+      acceptStudioScenePostEffectSourceV1(createdEffect.state, createdEffect.revision, createdEffectAsset.draft),
     );
 
     store.clearProject("project-a");
@@ -955,7 +1034,7 @@ describe("durable editor session storage", () => {
       kind: "restored",
     });
     expect(reloaded.restoreProjectFragmentMaterials("project-a")).toBe(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
-    expect(reloaded.restoreProjectScenePostEffect("project-a")).toBe(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    expect(reloaded.restoreProjectScenePostEffect("project-a")).toBe(EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE);
   });
 
   it("prunes unknown projects and keeps only the newest bounded session count", () => {
@@ -967,10 +1046,13 @@ describe("durable editor session storage", () => {
     }
     store.save(identity("other.py#Scene", "f".repeat(64), "project-b"), snapshot());
     store.saveProjectFragmentMaterials("project-b", assignedFragmentMaterials("scene-b", "circle"));
-    const createdEffect = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    const createdEffect = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE, {
+      name: "Project B effect",
+    });
+    const createdEffectAsset = findStudioScenePostEffectSourceV1(createdEffect.state, createdEffect.revision)!;
     store.saveProjectScenePostEffect(
       "project-b",
-      acceptStudioScenePostEffectSourceV1(createdEffect, createdEffect.asset!.draft),
+      acceptStudioScenePostEffectSourceV1(createdEffect.state, createdEffect.revision, createdEffectAsset.draft),
     );
     store.pruneProjects(new Set(["project-a"]));
 
@@ -979,7 +1061,7 @@ describe("durable editor session storage", () => {
     expect(envelope.entries.length).toBeLessThanOrEqual(MAX_STORED_EDITOR_SESSIONS);
     expect(new TextEncoder().encode(adapter.value!).byteLength).toBeLessThanOrEqual(MAX_EDITOR_SESSION_STORAGE_BYTES);
     expect(JSON.stringify(envelope)).not.toContain("project-b");
-    expect(store.restoreProjectScenePostEffect("project-b")).toBe(EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1);
+    expect(store.restoreProjectScenePostEffect("project-b")).toBe(EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE);
   });
 
   it("keeps the in-memory session usable when persistent storage throws", () => {
