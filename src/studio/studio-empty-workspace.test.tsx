@@ -34,6 +34,7 @@ describe("StudioEmptyWorkspace", () => {
         authoredObjectCount: 0,
         draftActive: false,
         nativeSceneActive: true,
+        scenePostEffectCount: 0,
       }),
     ).toBe(true);
     expect(
@@ -41,6 +42,7 @@ describe("StudioEmptyWorkspace", () => {
         authoredObjectCount: 1,
         draftActive: false,
         nativeSceneActive: true,
+        scenePostEffectCount: 0,
       }),
     ).toBe(false);
     expect(
@@ -48,6 +50,7 @@ describe("StudioEmptyWorkspace", () => {
         authoredObjectCount: 0,
         draftActive: true,
         nativeSceneActive: true,
+        scenePostEffectCount: 0,
       }),
     ).toBe(false);
     expect(
@@ -55,6 +58,15 @@ describe("StudioEmptyWorkspace", () => {
         authoredObjectCount: 0,
         draftActive: false,
         nativeSceneActive: false,
+        scenePostEffectCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      studioNativeWorkspaceOnboardingAvailable({
+        authoredObjectCount: 0,
+        draftActive: false,
+        nativeSceneActive: true,
+        scenePostEffectCount: 1,
       }),
     ).toBe(false);
   });

@@ -312,6 +312,7 @@ import {
   type ProjectScenePostEffectLibraryState,
   rejectStudioScenePostEffectSourceV1,
   removeStudioScenePostEffectSourceV1,
+  updateStudioScenePostEffectReferenceTextureV1,
 } from "./studio/scene-post-effect-source";
 import type { CompileStudioScenePostEffectSourceInputV1 } from "./studio/scene-post-effect-source-editor";
 import {
@@ -1543,7 +1544,7 @@ export function App({
     workingState: previewWorkingState,
   });
   const studioExportSource = previewRenderer?.canonicalScene ?? null;
-  const studioImageAssets = studioNativeImageAssetsV1(studioExportSource);
+  const studioImageAssets = useMemo(() => studioNativeImageAssetsV1(studioExportSource), [studioExportSource]);
   const studioSvgAssets = nativeProjectState?.svgAssets ?? [];
   const studioSvgPathFillState = (program: SceneEdit, entityId: string): boolean | null => {
     const create = program.operations.find(
@@ -3204,6 +3205,7 @@ export function App({
     authoredObjectCount: editableEntities.length,
     draftActive: draftEdit !== null,
     nativeSceneActive,
+    scenePostEffectCount: scenePostEffects.length,
   });
   const creationSourceAnchors = new Map(
     (workspaceCreationProjection?.entities ?? []).flatMap((entity) => {
@@ -7027,6 +7029,7 @@ export function App({
         parameterSchema: input.parameterSchema,
         source: input.source,
         sourceLanguage: input.sourceLanguage,
+        ...(input.textureSlot ? { textureSlot: input.textureSlot } : {}),
         ...(canonicalWgslSource === undefined ? {} : { canonicalWgslSource }),
       });
       const acceptedSource = acceptedStudioScenePostEffectRegistrySourceV1(candidate, input.assetRevision);
@@ -7054,6 +7057,7 @@ export function App({
         parameterSchema: input.parameterSchema,
         source: input.source,
         sourceLanguage: input.sourceLanguage,
+        ...(input.textureSlot ? { textureSlot: input.textureSlot } : {}),
       });
       if (!commitProjectScenePostEffect(projectId, rejected)) {
         throw new Error(
@@ -10989,10 +10993,13 @@ export function App({
                   previewPaintAvailable &&
                   draftEdit === null &&
                   editingAppliedProgram === null,
-                onAddToStack: (assetRevision) => {
+                imageAssets: studioImageAssets,
+                onAddToStack: (assetRevision, texture) => {
                   const reference = acceptedStudioScenePostEffectReferenceV1(
                     activeProjectScenePostEffect,
                     assetRevision,
+                    undefined,
+                    texture,
                   );
                   if (reference && scenePostEffects.length < MAX_SCENE_POST_EFFECTS_V1) {
                     changeScenePostEffects([...scenePostEffects, reference]);
@@ -11001,10 +11008,15 @@ export function App({
                 onCompile: compileProjectScenePostEffect,
                 onCreate: createProjectScenePostEffect,
                 onParametersChange: (assetRevision, parameters) => {
+                  const currentEffect = scenePostEffects.find(
+                    (effect) =>
+                      effect.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && effect.revision === assetRevision,
+                  );
                   const reference = acceptedStudioScenePostEffectReferenceV1(
                     activeProjectScenePostEffect,
                     assetRevision,
                     parameters,
+                    currentEffect?.texture,
                   );
                   if (reference) {
                     changeScenePostEffects(
@@ -11024,10 +11036,31 @@ export function App({
                     [activeProjectId]: assetRevision,
                   }));
                 },
+                onTextureChange: (assetRevision, texture) => {
+                  const currentEffect = scenePostEffects.find(
+                    (effect) =>
+                      effect.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && effect.revision === assetRevision,
+                  );
+                  if (!currentEffect) return;
+                  const reference = updateStudioScenePostEffectReferenceTextureV1(
+                    activeProjectScenePostEffect,
+                    assetRevision,
+                    currentEffect,
+                    texture,
+                  );
+                  changeScenePostEffects(
+                    scenePostEffects.map((effect) =>
+                      effect.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && effect.revision === assetRevision
+                        ? reference
+                        : effect,
+                    ),
+                  );
+                },
                 parameters: selectedScenePostEffect?.parameters ?? null,
                 selectedRevision: selectedProjectScenePostEffectRevision,
                 sourceAvailable:
                   !studioAuthoringLocked && !isPlaying && draftEdit === null && editingAppliedProgram === null,
+                texture: selectedScenePostEffect?.texture ?? null,
               }}
               selectedIds={selectedSet}
               selectedGroupId={selectedLayerGroup?.groupId ?? null}

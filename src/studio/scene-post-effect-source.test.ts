@@ -177,16 +177,16 @@ describe("project Scene post-effect asset library", () => {
     ).toThrow(/does not declare a texture slot/);
   });
 
-  it("increments accepted generation when the texture ABI declaration changes", () => {
+  it("keeps the texture ABI immutable after the first accepted generation", () => {
     const created = createAsset("ABI change");
     const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
     const accepted = acceptStudioScenePostEffectSourceV1(created.state, created.revision, asset.draft);
-    const withTexture = acceptStudioScenePostEffectSourceV1(accepted, created.revision, {
-      ...findStudioScenePostEffectSourceV1(accepted, created.revision)!.draft,
-      textureSlot: "texture2d",
-    });
-
-    expect(findStudioScenePostEffectSourceV1(withTexture, created.revision)?.accepted?.generation).toBe(2);
+    expect(() =>
+      acceptStudioScenePostEffectSourceV1(accepted, created.revision, {
+        ...findStudioScenePostEffectSourceV1(accepted, created.revision)!.draft,
+        textureSlot: "texture2d",
+      }),
+    ).toThrow(/texture-slot contract is immutable/);
   });
 
   it("contains a rejected draft to one asset and retains its last accepted source", () => {

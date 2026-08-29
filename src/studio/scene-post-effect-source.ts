@@ -312,6 +312,11 @@ export function acceptStudioScenePostEffectSourceV1(
   const originalGlslSource = sourceLanguage === "glsl" ? draftSource : undefined;
   const textureSlot = input.textureSlot;
   const currentAccepted = asset.accepted;
+  if (currentAccepted && currentAccepted.textureSlot !== textureSlot) {
+    throw new Error(
+      "A Scene post-effect texture-slot contract is immutable after its first acceptance. Create a new effect to change it.",
+    );
+  }
   const generation =
     currentAccepted?.source === source &&
     currentAccepted.originalGlslSource === originalGlslSource &&
