@@ -15,9 +15,9 @@ import {
 } from "./fragment-material-authoring";
 import type { SceneEditOperation } from "./scene-edit-contract";
 import {
-  EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1,
-  type ProjectScenePostEffectSourceStateV1,
-  projectScenePostEffectSourceStateV1Schema,
+  EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE,
+  type ProjectScenePostEffectLibraryState,
+  projectScenePostEffectLibraryStateSchema,
 } from "./scene-post-effect-source";
 
 export type {
@@ -181,7 +181,7 @@ const storedProjectFragmentMaterialSchema = z
 const storedProjectScenePostEffectSchema = z
   .object({
     sourceLanguage: z.literal("wgsl"),
-    state: projectScenePostEffectSourceStateV1Schema,
+    state: projectScenePostEffectLibraryStateSchema,
   })
   .strict();
 const storedEnvelopeSchema = z
@@ -374,7 +374,7 @@ export class EditorSessionStore {
   private readonly persistedNativeSessions = new Map<string, StoredNativeEntry>();
   private readonly persistedSessions = new Map<string, StoredEntry>();
   private readonly projectFragmentMaterials = new Map<string, ProjectFragmentMaterialStateV1>();
-  private readonly projectScenePostEffects = new Map<string, ProjectScenePostEffectSourceStateV1>();
+  private readonly projectScenePostEffects = new Map<string, ProjectScenePostEffectLibraryState>();
 
   constructor(
     private readonly adapter: EditorSessionStorageAdapter | null = null,
@@ -531,9 +531,9 @@ export class EditorSessionStore {
     return this.projectFragmentMaterials.get(projectId) ?? EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1;
   }
 
-  restoreProjectScenePostEffect(projectId: string): ProjectScenePostEffectSourceStateV1 {
-    if (!projectIdSchema.safeParse(projectId).success) return EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
-    return this.projectScenePostEffects.get(projectId) ?? EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1;
+  restoreProjectScenePostEffect(projectId: string): ProjectScenePostEffectLibraryState {
+    if (!projectIdSchema.safeParse(projectId).success) return EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE;
+    return this.projectScenePostEffects.get(projectId) ?? EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE;
   }
 
   projectHasMaterialParameterTrack(
@@ -588,13 +588,13 @@ export class EditorSessionStore {
     return false;
   }
 
-  saveProjectScenePostEffect(projectId: string, state: ProjectScenePostEffectSourceStateV1) {
+  saveProjectScenePostEffect(projectId: string, state: ProjectScenePostEffectLibraryState) {
     const parsedProjectId = projectIdSchema.safeParse(projectId);
-    const parsedState = projectScenePostEffectSourceStateV1Schema.safeParse(state);
+    const parsedState = projectScenePostEffectLibraryStateSchema.safeParse(state);
     if (!parsedProjectId.success || !parsedState.success) return false;
 
     const previous = this.projectScenePostEffects.get(parsedProjectId.data);
-    if (parsedState.data.asset === null) this.projectScenePostEffects.delete(parsedProjectId.data);
+    if (parsedState.data.assets.length === 0) this.projectScenePostEffects.delete(parsedProjectId.data);
     else this.projectScenePostEffects.set(parsedProjectId.data, parsedState.data);
 
     const envelope = JSON.stringify({

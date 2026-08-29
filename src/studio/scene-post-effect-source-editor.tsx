@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import {
+  MAX_PROJECT_SCENE_POST_EFFECT_ASSETS,
   MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1,
   PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
@@ -10,6 +11,7 @@ import {
 } from "./scene-post-effect-source";
 
 export type CompileStudioScenePostEffectSourceInputV1 = Readonly<{
+  assetRevision: number;
   expectedAcceptedGeneration: number | null;
   parameterSchema: StudioScenePostEffectParameterSchemaV1;
   source: string;
@@ -17,15 +19,17 @@ export type CompileStudioScenePostEffectSourceInputV1 = Readonly<{
 }>;
 
 export type ScenePostEffectSourceEditorProps = Readonly<{
-  active: boolean;
-  asset: StudioScenePostEffectSourceAssetV1 | null;
+  activeRevision: number | null;
+  assets: readonly StudioScenePostEffectSourceAssetV1[];
   available: boolean;
-  onActivate: () => void;
+  onActivate: (assetRevision: number) => void;
   onCompile: (input: CompileStudioScenePostEffectSourceInputV1) => Promise<void> | void;
-  onCreate: () => void;
-  onParametersChange: (parameters: readonly number[]) => void;
-  onRemove: () => void;
+  onCreate: (name: string) => boolean;
+  onParametersChange: (assetRevision: number, parameters: readonly number[]) => void;
+  onRemove: (assetRevision: number) => void;
+  onSelect: (assetRevision: number) => void;
   parameters: readonly number[] | null;
+  selectedRevision: number | null;
   sourceAvailable: boolean;
 }>;
 
@@ -55,19 +59,28 @@ export async function readStudioScenePostEffectGlslFileV1(file: StudioScenePostE
 }
 
 export function ScenePostEffectSourceEditor({
-  active,
-  asset,
+  activeRevision,
+  assets,
   available,
   onActivate,
   onCompile,
   onCreate,
   onParametersChange,
   onRemove,
+  onSelect,
   parameters,
+  selectedRevision,
   sourceAvailable,
 }: ScenePostEffectSourceEditorProps) {
+  const [newAssetName, setNewAssetName] = useState("Wave Distortion");
   const [pending, setPending] = useState(false);
   const [filePending, setFilePending] = useState(false);
+  const asset =
+    assets.find(({ revision }) => revision === selectedRevision) ??
+    assets.find(({ revision }) => revision === activeRevision) ??
+    assets[0] ??
+    null;
+  const active = asset?.revision === activeRevision;
   const [source, setSource] = useState(() => asset?.draft.source ?? STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1);
   const [sourceLanguage, setSourceLanguage] = useState<StudioScenePostEffectSourceLanguageV1>(
     () => asset?.draft.sourceLanguage ?? "wgsl",
@@ -79,36 +92,15 @@ export function ScenePostEffectSourceEditor({
     setSource(asset?.draft.source ?? STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1);
     setSourceLanguage(asset?.draft.sourceLanguage ?? "wgsl");
     setSubmitError(null);
-  }, [asset?.draft.source, asset?.draft.sourceLanguage]);
+  }, [asset?.draft.source, asset?.draft.sourceLanguage, asset?.revision]);
 
   useEffect(() => {
-    setParameterDraft(parameters ?? asset?.accepted?.parameterSchema.map((parameter) => parameter.default) ?? []);
-  }, [asset?.accepted?.parameterSchema, parameters]);
-
-  if (!asset) {
-    return (
-      <section className="mt-3 border border-zinc-800 p-2" aria-label="Custom Scene post effect">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <h4 className="text-[10px] font-medium text-sky-200">Wave Distortion</h4>
-            <p className="mt-0.5 text-pretty text-[10px] leading-4 text-zinc-500">
-              Start one project-local effect, then author it in WGSL or import Vulkan GLSL 450.
-            </p>
-          </div>
-          <button
-            className="shrink-0 border border-sky-800 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
-            disabled={!sourceAvailable}
-            onClick={onCreate}
-            type="button"
-          >
-            Create starter
-          </button>
-        </div>
-      </section>
+    setParameterDraft(
+      (active ? parameters : null) ?? asset?.accepted?.parameterSchema.map((parameter) => parameter.default) ?? [],
     );
-  }
+  }, [active, asset?.accepted?.parameterSchema, parameters]);
 
-  const accepted = asset.accepted;
+  const accepted = asset?.accepted ?? null;
   const sourceBusy = pending || filePending;
   const sourceLanguageLabel = sourceLanguage === "glsl" ? "GLSL" : "WGSL";
   const sourceBytes = sourceByteLength(source);
@@ -126,235 +118,327 @@ export function ScenePostEffectSourceEditor({
           value <= parameter.range.max
         );
       }));
-  const status = asset.draft.diagnostic
-    ? "Rejected draft"
-    : accepted
-      ? active
-        ? `Active · generation ${accepted.generation}`
-        : `Ready · generation ${accepted.generation}`
-      : "Not compiled";
+  const status = asset
+    ? asset.draft.diagnostic
+      ? "Rejected draft"
+      : accepted
+        ? active
+          ? `Active · generation ${accepted.generation}`
+          : `Ready · generation ${accepted.generation}`
+        : "Not compiled"
+    : null;
 
   return (
     <section className="mt-3 border border-zinc-800 p-2" aria-label="Custom Scene post effect">
       <div className="flex items-center justify-between gap-2">
         <div>
-          <h4 className="text-[10px] font-medium text-zinc-300">Custom {sourceLanguageLabel}</h4>
-          <p className="mt-0.5 font-mono text-[9px] text-zinc-600">{PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1}</p>
+          <h4 className="text-[10px] font-medium text-sky-200">Effect library</h4>
+          <p className="mt-0.5 text-[10px] text-zinc-600">
+            {assets.length} / {MAX_PROJECT_SCENE_POST_EFFECT_ASSETS} project effects
+          </p>
         </div>
-        <span className={asset.draft.diagnostic ? "text-[10px] text-red-300" : "text-[10px] text-sky-300"}>
-          {status}
-        </span>
       </div>
-
-      {sourceLanguage === "glsl" ? (
-        <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
-          Vulkan GLSL 450 fragment profile: entry point main; set 0 binding 0 is the host uniform and binding 1 is the
-          current Scene texture. The fullscreen vertex stage is renderer-owned.
-        </p>
-      ) : (
-        <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
-          Fixed ABI: binding 0 is viewport, sample time, and 8 scalar slots; binding 1 is the current Scene texture. The
-          fullscreen vertex stage is renderer-owned.
-        </p>
-      )}
-
-      <label className="mt-2 block text-[10px] font-medium text-zinc-500" htmlFor="scene-post-effect-source-language">
-        Source language
-      </label>
-      <select
-        aria-label="Scene post-effect source language"
-        className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
-        disabled={!sourceAvailable || sourceBusy}
-        id="scene-post-effect-source-language"
-        onChange={(event) => {
-          setSourceLanguage(event.currentTarget.value as StudioScenePostEffectSourceLanguageV1);
-          setSubmitError(null);
-        }}
-        value={sourceLanguage}
-      >
-        <option value="wgsl">WGSL</option>
-        <option value="glsl">Vulkan GLSL 450</option>
-      </select>
-
-      {sourceLanguage === "glsl" ? (
-        <>
-          <label className="mt-2 block text-[10px] font-medium text-zinc-500" htmlFor="scene-post-effect-glsl-file">
-            Local .frag/.glsl file
-          </label>
-          <input
-            accept=".frag,.glsl"
-            className="mt-1 block w-full text-[10px] text-zinc-500 file:mr-2 file:border file:border-zinc-700 file:bg-zinc-950 file:px-2 file:py-1 file:text-zinc-300 hover:file:bg-zinc-800 disabled:opacity-50"
-            disabled={!sourceAvailable || sourceBusy}
-            id="scene-post-effect-glsl-file"
-            onChange={(event) => {
-              const input = event.currentTarget;
-              const file = input.files?.[0];
-              input.value = "";
-              if (!file) return;
-              setFilePending(true);
-              setSubmitError(null);
-              void readStudioScenePostEffectGlslFileV1(file)
-                .then((loaded) => setSource(loaded))
-                .catch((caught: unknown) => {
-                  setSubmitError(caught instanceof Error ? caught.message : "The GLSL file could not be read.");
-                })
-                .finally(() => setFilePending(false));
-            }}
-            type="file"
-          />
-        </>
-      ) : null}
-
-      {asset.draft.diagnostic ? (
-        <div className="mt-2 border border-red-950 bg-red-950/20 p-2" role="alert">
-          <p className="text-[10px] font-medium text-red-300">{sourceLanguageLabel} was rejected</p>
-          <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[9px] leading-4 text-red-200">
-            {asset.draft.diagnostic}
-          </pre>
-          {accepted ? (
-            <p className="mt-1 text-[10px] text-zinc-500">
-              Last accepted generation {accepted.generation} remains active.
-            </p>
-          ) : (
-            <p className="mt-1 text-[10px] text-zinc-500">Compile a valid source before applying this effect.</p>
-          )}
-        </div>
-      ) : null}
-
-      {accepted ? (
-        <div className="mt-2 flex gap-2">
-          <button
-            className="h-7 flex-1 border border-sky-800 px-2 text-[10px] text-sky-200 hover:bg-sky-950/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700"
-            disabled={!available || active || sourceBusy}
-            onClick={onActivate}
-            type="button"
-          >
-            {active ? "Applied to Scene" : "Apply to Scene"}
-          </button>
-        </div>
-      ) : (
-        <button
-          className="mt-2 h-7 w-full border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:text-zinc-700"
-          disabled={!sourceAvailable || sourceBusy}
-          onClick={onRemove}
-          type="button"
-        >
-          Remove uncompiled asset
-        </button>
-      )}
-
-      {accepted?.parameterSchema.length ? (
-        <fieldset className="mt-3 space-y-2 border border-zinc-800 p-2" aria-label="Scene post-effect parameters">
-          <legend className="px-1 text-[10px] font-medium text-zinc-400">Scene parameters</legend>
-          {accepted.parameterSchema.map((parameter, index) => {
-            const value = parameterDraft[index] ?? parameter.default;
-            return (
-              <label className="block" key={parameter.name}>
-                <span className="flex justify-between gap-2 text-[10px] text-zinc-500">
-                  <span>{parameter.name}</span>
-                  <output>{value}</output>
-                </span>
-                <input
-                  aria-label={`${parameter.name} Scene post-effect parameter`}
-                  className="mt-1 w-full accent-sky-500"
-                  disabled={!available || !active || !parameterValuesMatch || sourceBusy}
-                  max={parameter.range.max}
-                  min={parameter.range.min}
-                  onChange={(event) => {
-                    const next = [...parameterDraft];
-                    next[index] = event.currentTarget.valueAsNumber;
-                    setParameterDraft(next);
-                  }}
-                  step={parameter.range.step}
-                  type="range"
-                  value={value}
-                />
-              </label>
-            );
-          })}
-          {!parameterValuesMatch ? (
-            <p className="text-pretty text-[10px] leading-4 text-red-300" role="alert">
-              The active Scene reference does not match the accepted parameter schema. Reapply the effect.
-            </p>
-          ) : null}
-          <button
-            className="h-7 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:text-zinc-700"
-            disabled={!available || !active || !parameterValuesMatch || sourceBusy}
-            onClick={() => onParametersChange(parameterDraft)}
-            type="button"
-          >
-            Update parameters
-          </button>
-        </fieldset>
-      ) : null}
-
       <form
-        className="mt-3"
+        className="mt-2 flex gap-1"
         onSubmit={(event) => {
           event.preventDefault();
-          if (sourceInvalid || sourceBusy) return;
-          setPending(true);
-          setSubmitError(null);
-          void Promise.resolve(
-            onCompile({
-              expectedAcceptedGeneration: accepted?.generation ?? null,
-              parameterSchema: asset.draft.parameterSchema,
-              source,
-              sourceLanguage,
-            }),
-          )
-            .catch((caught: unknown) => {
-              setSubmitError(
-                caught instanceof Error ? caught.message : `The Rust core rejected the ${sourceLanguageLabel} source.`,
-              );
-            })
-            .finally(() => setPending(false));
+          const name = newAssetName.trim();
+          if (!name) return;
+          if (onCreate(name)) setNewAssetName(`Wave Distortion ${assets.length + 2}`);
         }}
       >
-        <label className="block text-[10px] font-medium text-zinc-500" htmlFor="scene-post-effect-source">
-          Scene post-effect {sourceLanguageLabel} source
-        </label>
-        <textarea
-          aria-describedby="scene-post-effect-wgsl-byte-count"
-          aria-invalid={sourceInvalid ? true : undefined}
-          aria-label={`Scene post-effect ${sourceLanguageLabel} source`}
-          className="mt-1 h-44 w-full resize-y border border-zinc-700 bg-zinc-950 p-2 font-mono text-[10px] leading-4 text-zinc-300 outline-none focus:border-sky-500"
-          disabled={!sourceAvailable || sourceBusy}
-          id="scene-post-effect-source"
-          onChange={(event) => setSource(event.currentTarget.value)}
-          required
-          spellCheck={false}
-          value={source}
+        <input
+          aria-label="New Scene effect name"
+          className="h-7 min-w-0 flex-1 border border-zinc-700 bg-zinc-950 px-1.5 text-[10px] text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+          disabled={!sourceAvailable || sourceBusy || assets.length >= MAX_PROJECT_SCENE_POST_EFFECT_ASSETS}
+          maxLength={80}
+          onChange={(event) => setNewAssetName(event.currentTarget.value)}
+          value={newAssetName}
         />
-        <p
-          className={sourceInvalid ? "mt-1 text-[10px] text-red-300" : "mt-1 text-[10px] text-zinc-600"}
-          id="scene-post-effect-wgsl-byte-count"
+        <button
+          className="shrink-0 border border-sky-800 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+          disabled={
+            !sourceAvailable ||
+            sourceBusy ||
+            assets.length >= MAX_PROJECT_SCENE_POST_EFFECT_ASSETS ||
+            newAssetName.trim().length === 0
+          }
+          type="submit"
         >
-          {sourceBytes.toLocaleString()} / {MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1.toLocaleString()} UTF-8 bytes
-        </p>
-        {submitError ? (
-          <p className="mt-1 text-pretty text-[10px] leading-4 text-red-300" role="alert">
-            {submitError}
-          </p>
-        ) : null}
-        <div className="mt-2 flex gap-2">
-          <button
-            className="h-8 flex-1 border border-sky-800 bg-sky-950/50 text-xs text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700"
-            disabled={!sourceAvailable || sourceBusy || sourceInvalid}
-            type="submit"
-          >
-            {pending ? "Compiling…" : `Compile & accept ${sourceLanguageLabel}`}
-          </button>
-          <button
-            className="h-8 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:text-zinc-700"
-            disabled={!sourceAvailable || sourceBusy}
-            onClick={() => setSource(sourceLanguage === "wgsl" ? STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1 : "")}
-            type="button"
-          >
-            {sourceLanguage === "wgsl" ? "Reset source" : "Clear source"}
-          </button>
-        </div>
+          {assets.length === 0 ? "Create starter" : "Add effect"}
+        </button>
       </form>
+      {assets.length > 0 ? (
+        <div aria-label="Project Scene effect assets" className="mt-2 grid gap-1">
+          {assets.map((candidate) => {
+            const selected = candidate.revision === asset?.revision;
+            const candidateActive = candidate.revision === activeRevision;
+            return (
+              <button
+                aria-label={`Edit Scene effect ${candidate.name}, revision ${candidate.revision}`}
+                aria-pressed={selected}
+                className={
+                  selected
+                    ? "flex min-w-0 items-center justify-between gap-2 border border-sky-800 bg-sky-950/40 px-2 py-1 text-left text-[10px] text-sky-200"
+                    : "flex min-w-0 items-center justify-between gap-2 border border-zinc-800 px-2 py-1 text-left text-[10px] text-zinc-400 hover:bg-zinc-900"
+                }
+                data-scene-post-effect-asset-revision={candidate.revision}
+                disabled={sourceBusy}
+                key={candidate.revision}
+                onClick={() => onSelect(candidate.revision)}
+                type="button"
+              >
+                <span className="truncate">{candidate.name}</span>
+                <span className={candidateActive ? "shrink-0 text-sky-300" : "shrink-0 text-zinc-600"}>
+                  {candidateActive
+                    ? `Active · #${candidate.revision}`
+                    : candidate.accepted
+                      ? `Ready · #${candidate.revision}`
+                      : `Draft · #${candidate.revision}`}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-500">
+          Create a WGSL starter, then paste or import Vulkan GLSL 450 when needed.
+        </p>
+      )}
+
+      {asset ? (
+        <>
+          <div className="mt-3 flex items-center justify-between gap-2 border-t border-zinc-800 pt-2">
+            <div>
+              <h4 className="text-[10px] font-medium text-zinc-300">
+                {asset.name} · {sourceLanguageLabel}
+              </h4>
+              <p className="mt-0.5 font-mono text-[9px] text-zinc-600">
+                {PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1}@{asset.revision}
+              </p>
+            </div>
+            <span className={asset.draft.diagnostic ? "text-[10px] text-red-300" : "text-[10px] text-sky-300"}>
+              {status}
+            </span>
+          </div>
+
+          {sourceLanguage === "glsl" ? (
+            <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+              Vulkan GLSL 450 fragment profile: entry point main; set 0 binding 0 is the host uniform and binding 1 is
+              the current Scene texture. The fullscreen vertex stage is renderer-owned.
+            </p>
+          ) : (
+            <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
+              Fixed ABI: binding 0 is viewport, sample time, and 8 scalar slots; binding 1 is the current Scene texture.
+              The fullscreen vertex stage is renderer-owned.
+            </p>
+          )}
+
+          <label
+            className="mt-2 block text-[10px] font-medium text-zinc-500"
+            htmlFor="scene-post-effect-source-language"
+          >
+            Source language
+          </label>
+          <select
+            aria-label="Scene post-effect source language"
+            className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+            disabled={!sourceAvailable || sourceBusy}
+            id="scene-post-effect-source-language"
+            onChange={(event) => {
+              setSourceLanguage(event.currentTarget.value as StudioScenePostEffectSourceLanguageV1);
+              setSubmitError(null);
+            }}
+            value={sourceLanguage}
+          >
+            <option value="wgsl">WGSL</option>
+            <option value="glsl">Vulkan GLSL 450</option>
+          </select>
+
+          {sourceLanguage === "glsl" ? (
+            <>
+              <label className="mt-2 block text-[10px] font-medium text-zinc-500" htmlFor="scene-post-effect-glsl-file">
+                Local .frag/.glsl file
+              </label>
+              <input
+                accept=".frag,.glsl"
+                className="mt-1 block w-full text-[10px] text-zinc-500 file:mr-2 file:border file:border-zinc-700 file:bg-zinc-950 file:px-2 file:py-1 file:text-zinc-300 hover:file:bg-zinc-800 disabled:opacity-50"
+                disabled={!sourceAvailable || sourceBusy}
+                id="scene-post-effect-glsl-file"
+                onChange={(event) => {
+                  const input = event.currentTarget;
+                  const file = input.files?.[0];
+                  input.value = "";
+                  if (!file) return;
+                  setFilePending(true);
+                  setSubmitError(null);
+                  void readStudioScenePostEffectGlslFileV1(file)
+                    .then((loaded) => setSource(loaded))
+                    .catch((caught: unknown) => {
+                      setSubmitError(caught instanceof Error ? caught.message : "The GLSL file could not be read.");
+                    })
+                    .finally(() => setFilePending(false));
+                }}
+                type="file"
+              />
+            </>
+          ) : null}
+
+          {asset.draft.diagnostic ? (
+            <div className="mt-2 border border-red-950 bg-red-950/20 p-2" role="alert">
+              <p className="text-[10px] font-medium text-red-300">{sourceLanguageLabel} was rejected</p>
+              <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[9px] leading-4 text-red-200">
+                {asset.draft.diagnostic}
+              </pre>
+              {accepted ? (
+                <p className="mt-1 text-[10px] text-zinc-500">
+                  Last accepted generation {accepted.generation} remains active.
+                </p>
+              ) : (
+                <p className="mt-1 text-[10px] text-zinc-500">Compile a valid source before applying this effect.</p>
+              )}
+            </div>
+          ) : null}
+
+          {accepted ? (
+            <div className="mt-2 flex gap-2">
+              <button
+                className="h-7 flex-1 border border-sky-800 px-2 text-[10px] text-sky-200 hover:bg-sky-950/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700"
+                disabled={!available || active || sourceBusy}
+                onClick={() => onActivate(asset.revision)}
+                type="button"
+              >
+                {active ? "Applied to Scene" : "Apply to Scene"}
+              </button>
+            </div>
+          ) : (
+            <button
+              className="mt-2 h-7 w-full border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:text-zinc-700"
+              disabled={!sourceAvailable || sourceBusy}
+              onClick={() => onRemove(asset.revision)}
+              type="button"
+            >
+              Remove uncompiled asset
+            </button>
+          )}
+
+          {accepted?.parameterSchema.length ? (
+            <fieldset className="mt-3 space-y-2 border border-zinc-800 p-2" aria-label="Scene post-effect parameters">
+              <legend className="px-1 text-[10px] font-medium text-zinc-400">Scene parameters</legend>
+              {accepted.parameterSchema.map((parameter, index) => {
+                const value = parameterDraft[index] ?? parameter.default;
+                return (
+                  <label className="block" key={parameter.name}>
+                    <span className="flex justify-between gap-2 text-[10px] text-zinc-500">
+                      <span>{parameter.name}</span>
+                      <output>{value}</output>
+                    </span>
+                    <input
+                      aria-label={`${parameter.name} Scene post-effect parameter`}
+                      className="mt-1 w-full accent-sky-500"
+                      disabled={!available || !active || !parameterValuesMatch || sourceBusy}
+                      max={parameter.range.max}
+                      min={parameter.range.min}
+                      onChange={(event) => {
+                        const next = [...parameterDraft];
+                        next[index] = event.currentTarget.valueAsNumber;
+                        setParameterDraft(next);
+                      }}
+                      step={parameter.range.step}
+                      type="range"
+                      value={value}
+                    />
+                  </label>
+                );
+              })}
+              {!parameterValuesMatch ? (
+                <p className="text-pretty text-[10px] leading-4 text-red-300" role="alert">
+                  The active Scene reference does not match the accepted parameter schema. Reapply the effect.
+                </p>
+              ) : null}
+              <button
+                className="h-7 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:text-zinc-700"
+                disabled={!available || !active || !parameterValuesMatch || sourceBusy}
+                onClick={() => onParametersChange(asset.revision, parameterDraft)}
+                type="button"
+              >
+                Update parameters
+              </button>
+            </fieldset>
+          ) : null}
+
+          <form
+            className="mt-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (sourceInvalid || sourceBusy) return;
+              setPending(true);
+              setSubmitError(null);
+              void Promise.resolve(
+                onCompile({
+                  assetRevision: asset.revision,
+                  expectedAcceptedGeneration: accepted?.generation ?? null,
+                  parameterSchema: asset.draft.parameterSchema,
+                  source,
+                  sourceLanguage,
+                }),
+              )
+                .catch((caught: unknown) => {
+                  setSubmitError(
+                    caught instanceof Error
+                      ? caught.message
+                      : `The Rust core rejected the ${sourceLanguageLabel} source.`,
+                  );
+                })
+                .finally(() => setPending(false));
+            }}
+          >
+            <label className="block text-[10px] font-medium text-zinc-500" htmlFor="scene-post-effect-source">
+              Scene post-effect {sourceLanguageLabel} source
+            </label>
+            <textarea
+              aria-describedby="scene-post-effect-wgsl-byte-count"
+              aria-invalid={sourceInvalid ? true : undefined}
+              aria-label={`Scene post-effect ${sourceLanguageLabel} source`}
+              className="mt-1 h-44 w-full resize-y border border-zinc-700 bg-zinc-950 p-2 font-mono text-[10px] leading-4 text-zinc-300 outline-none focus:border-sky-500"
+              disabled={!sourceAvailable || sourceBusy}
+              id="scene-post-effect-source"
+              onChange={(event) => setSource(event.currentTarget.value)}
+              required
+              spellCheck={false}
+              value={source}
+            />
+            <p
+              className={sourceInvalid ? "mt-1 text-[10px] text-red-300" : "mt-1 text-[10px] text-zinc-600"}
+              id="scene-post-effect-wgsl-byte-count"
+            >
+              {sourceBytes.toLocaleString()} / {MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1.toLocaleString()} UTF-8 bytes
+            </p>
+            {submitError ? (
+              <p className="mt-1 text-pretty text-[10px] leading-4 text-red-300" role="alert">
+                {submitError}
+              </p>
+            ) : null}
+            <div className="mt-2 flex gap-2">
+              <button
+                className="h-8 flex-1 border border-sky-800 bg-sky-950/50 text-xs text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-700"
+                disabled={!sourceAvailable || sourceBusy || sourceInvalid}
+                type="submit"
+              >
+                {pending ? "Compiling…" : `Compile & accept ${sourceLanguageLabel}`}
+              </button>
+              <button
+                className="h-8 border border-zinc-700 px-2 text-[10px] text-zinc-400 hover:bg-zinc-800 disabled:text-zinc-700"
+                disabled={!sourceAvailable || sourceBusy}
+                onClick={() => setSource(sourceLanguage === "wgsl" ? STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1 : "")}
+                type="button"
+              >
+                {sourceLanguage === "wgsl" ? "Reset source" : "Clear source"}
+              </button>
+            </div>
+          </form>
+        </>
+      ) : null}
     </section>
   );
 }

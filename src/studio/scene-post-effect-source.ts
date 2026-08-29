@@ -15,6 +15,9 @@ import {
 
 export { MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1, PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 };
 
+export const MAX_PROJECT_SCENE_POST_EFFECT_ASSETS = 8;
+const MAX_SCENE_POST_EFFECT_ASSET_REVISION = 0xffff_ffff;
+
 const diagnosticSchema = z.string().min(1).max(MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1);
 export const scenePostEffectSourceLanguageV1Schema = z.enum(["wgsl", "glsl"]);
 const scenePostEffectEditableSourceV1Schema = z
@@ -30,6 +33,13 @@ const parameterNameSchema = z
   .max(40)
   .refine((name) => name === name.trim(), "Parameter names must not have surrounding whitespace.")
   .refine((name) => !/[\u0000-\u001f\u007f]/.test(name), "Parameter names must not contain control characters.");
+const scenePostEffectAssetNameSchema = z
+  .string()
+  .min(1, "Effect name must not be empty.")
+  .max(80)
+  .refine((name) => name === name.trim(), "Effect name must not have surrounding whitespace.")
+  .refine((name) => !/[\u0000-\u001f\u007f]/.test(name), "Effect name must not contain control characters.");
+const scenePostEffectAssetRevisionSchema = z.number().int().positive().max(MAX_SCENE_POST_EFFECT_ASSET_REVISION);
 
 const scenePostEffectParameterSchemaV1 = z
   .object({
@@ -99,16 +109,70 @@ const scenePostEffectSourceAssetSchemaV1 = z
   .object({
     accepted: acceptedScenePostEffectSourceSchemaV1.nullable(),
     draft: scenePostEffectSourceDraftSchemaV1,
+    name: scenePostEffectAssetNameSchema,
+    revision: scenePostEffectAssetRevisionSchema,
   })
   .strict();
 
-export const projectScenePostEffectSourceStateV1Schema = z
+const canonicalProjectScenePostEffectLibraryStateSchema = z
   .object({
-    asset: scenePostEffectSourceAssetSchemaV1.nullable(),
+    assets: z.array(scenePostEffectSourceAssetSchemaV1).max(MAX_PROJECT_SCENE_POST_EFFECT_ASSETS),
+    nextAssetRevision: z
+      .number()
+      .int()
+      .positive()
+      .max(MAX_SCENE_POST_EFFECT_ASSET_REVISION + 1),
+    schema: z.literal("poietra.scene-post-effect-library-state"),
+    version: z.literal(1),
+  })
+  .strict()
+  .superRefine((state, context) => {
+    const revisions = new Set<number>();
+    for (const [index, asset] of state.assets.entries()) {
+      if (revisions.has(asset.revision)) {
+        context.addIssue({
+          code: "custom",
+          message: "Effect asset revisions must be unique.",
+          path: ["assets", index, "revision"],
+        });
+      }
+      revisions.add(asset.revision);
+      if (asset.revision >= state.nextAssetRevision) {
+        context.addIssue({
+          code: "custom",
+          message: "The next effect asset revision must be newer than every asset.",
+          path: ["nextAssetRevision"],
+        });
+      }
+    }
+  });
+
+const legacyProjectScenePostEffectSourceStateSchema = z
+  .object({
+    asset: z
+      .object({
+        accepted: acceptedScenePostEffectSourceSchemaV1.nullable(),
+        draft: scenePostEffectSourceDraftSchemaV1,
+      })
+      .strict()
+      .nullable(),
     schema: z.literal("poietra.scene-post-effect-source-state"),
     version: z.literal(1),
   })
   .strict();
+
+/** Parses the canonical library and migrates the former singleton state in memory. */
+export const projectScenePostEffectLibraryStateSchema = z
+  .union([canonicalProjectScenePostEffectLibraryStateSchema, legacyProjectScenePostEffectSourceStateSchema])
+  .transform((state) => {
+    if (state.schema === "poietra.scene-post-effect-library-state") return state;
+    return canonicalProjectScenePostEffectLibraryStateSchema.parse({
+      assets: state.asset ? [{ ...state.asset, name: "Custom Scene effect", revision: 1 }] : [],
+      nextAssetRevision: state.asset ? 2 : 1,
+      schema: "poietra.scene-post-effect-library-state",
+      version: 1,
+    });
+  });
 
 export type StudioScenePostEffectParameterV1 = z.infer<typeof scenePostEffectParameterSchemaV1>;
 export type StudioScenePostEffectParameterSchemaV1 = z.infer<typeof scenePostEffectParameterSchemaListV1>;
@@ -116,7 +180,7 @@ export type StudioScenePostEffectSourceLanguageV1 = z.infer<typeof scenePostEffe
 export type StudioAcceptedScenePostEffectSourceV1 = z.infer<typeof acceptedScenePostEffectSourceSchemaV1>;
 export type StudioScenePostEffectSourceDraftV1 = z.infer<typeof scenePostEffectSourceDraftSchemaV1>;
 export type StudioScenePostEffectSourceAssetV1 = z.infer<typeof scenePostEffectSourceAssetSchemaV1>;
-export type ProjectScenePostEffectSourceStateV1 = z.infer<typeof projectScenePostEffectSourceStateV1Schema>;
+export type ProjectScenePostEffectLibraryState = z.output<typeof projectScenePostEffectLibraryStateSchema>;
 
 /**
  * Fragment-only starter for the fixed Scene post-effect host ABI.
@@ -145,19 +209,22 @@ export const STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1 = scenePostEffectP
   },
 ]);
 
-export const EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1: ProjectScenePostEffectSourceStateV1 = Object.freeze({
-  asset: null,
-  schema: "poietra.scene-post-effect-source-state",
+export const EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE: ProjectScenePostEffectLibraryState = Object.freeze({
+  assets: [],
+  nextAssetRevision: 1,
+  schema: "poietra.scene-post-effect-library-state",
   version: 1,
 });
 
-function parseState(state: ProjectScenePostEffectSourceStateV1) {
-  return projectScenePostEffectSourceStateV1Schema.parse(state);
+function parseState(state: ProjectScenePostEffectLibraryState) {
+  return projectScenePostEffectLibraryStateSchema.parse(state);
 }
 
-function requireAsset(state: ProjectScenePostEffectSourceStateV1) {
-  if (!state.asset) throw new Error("The custom Scene post effect does not exist.");
-  return state.asset;
+function requireAsset(state: ProjectScenePostEffectLibraryState, assetRevision: number) {
+  const revision = scenePostEffectAssetRevisionSchema.parse(assetRevision);
+  const asset = state.assets.find((candidate) => candidate.revision === revision);
+  if (!asset) throw new Error(`Scene post-effect asset revision ${revision} does not exist.`);
+  return asset;
 }
 
 function sameParameterSchema(
@@ -168,33 +235,65 @@ function sameParameterSchema(
 }
 
 export function createStudioScenePostEffectSourceV1(
-  state: ProjectScenePostEffectSourceStateV1,
-): ProjectScenePostEffectSourceStateV1 {
-  if (state.asset) throw new Error("A project accepts exactly one custom Scene post effect.");
-  return parseState({
-    ...state,
-    asset: {
-      accepted: null,
-      draft: {
-        diagnostic: null,
-        parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
-        source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
-        sourceLanguage: "wgsl",
+  state: ProjectScenePostEffectLibraryState,
+  input: Readonly<{ name: string }>,
+): Readonly<{ revision: number; state: ProjectScenePostEffectLibraryState }> {
+  const current = parseState(state);
+  if (current.assets.length >= MAX_PROJECT_SCENE_POST_EFFECT_ASSETS) {
+    throw new Error(`A project accepts at most ${MAX_PROJECT_SCENE_POST_EFFECT_ASSETS} Scene post-effect assets.`);
+  }
+  const name = scenePostEffectAssetNameSchema.parse(input.name);
+  if (current.nextAssetRevision > MAX_SCENE_POST_EFFECT_ASSET_REVISION) {
+    throw new Error("The Scene post-effect asset revision space is exhausted.");
+  }
+  const revision = current.nextAssetRevision;
+  const nextState = parseState({
+    ...current,
+    assets: [
+      ...current.assets,
+      {
+        accepted: null,
+        draft: {
+          diagnostic: null,
+          parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
+          source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+          sourceLanguage: "wgsl",
+        },
+        name,
+        revision,
       },
-    },
+    ],
+    nextAssetRevision: revision + 1,
   });
+  return { revision, state: nextState };
+}
+
+export function listStudioScenePostEffectSourcesV1(
+  state: ProjectScenePostEffectLibraryState,
+): readonly StudioScenePostEffectSourceAssetV1[] {
+  return parseState(state).assets;
+}
+
+export function findStudioScenePostEffectSourceV1(
+  state: ProjectScenePostEffectLibraryState,
+  assetRevision: number,
+): StudioScenePostEffectSourceAssetV1 | null {
+  const revision = scenePostEffectAssetRevisionSchema.parse(assetRevision);
+  return parseState(state).assets.find((asset) => asset.revision === revision) ?? null;
 }
 
 export function acceptStudioScenePostEffectSourceV1(
-  state: ProjectScenePostEffectSourceStateV1,
+  state: ProjectScenePostEffectLibraryState,
+  assetRevision: number,
   input: Readonly<{
     canonicalWgslSource?: string;
     parameterSchema: StudioScenePostEffectParameterSchemaV1;
     source: string;
     sourceLanguage?: StudioScenePostEffectSourceLanguageV1;
   }>,
-): ProjectScenePostEffectSourceStateV1 {
-  const asset = requireAsset(state);
+): ProjectScenePostEffectLibraryState {
+  const current = parseState(state);
+  const asset = requireAsset(current, assetRevision);
   const parameterSchema = scenePostEffectParameterSchemaListV1.parse(input.parameterSchema);
   const sourceLanguage = scenePostEffectSourceLanguageV1Schema.parse(input.sourceLanguage ?? "wgsl");
   const draftSource = scenePostEffectEditableSourceV1Schema.parse(input.source);
@@ -221,61 +320,84 @@ export function acceptStudioScenePostEffectSourceV1(
     source,
   });
   return parseState({
-    ...state,
-    asset: {
-      accepted,
-      draft: { diagnostic: null, parameterSchema, source: draftSource, sourceLanguage },
-    },
+    ...current,
+    assets: current.assets.map((candidate) =>
+      candidate.revision === asset.revision
+        ? {
+            ...candidate,
+            accepted,
+            draft: { diagnostic: null, parameterSchema, source: draftSource, sourceLanguage },
+          }
+        : candidate,
+    ),
   });
 }
 
 export function rejectStudioScenePostEffectSourceV1(
-  state: ProjectScenePostEffectSourceStateV1,
+  state: ProjectScenePostEffectLibraryState,
+  assetRevision: number,
   input: Readonly<{
     diagnostic: string;
     parameterSchema: StudioScenePostEffectParameterSchemaV1;
     source: string;
     sourceLanguage?: StudioScenePostEffectSourceLanguageV1;
   }>,
-): ProjectScenePostEffectSourceStateV1 {
-  const asset = requireAsset(state);
+): ProjectScenePostEffectLibraryState {
+  const current = parseState(state);
+  const asset = requireAsset(current, assetRevision);
   const sourceLanguage = scenePostEffectSourceLanguageV1Schema.parse(input.sourceLanguage ?? "wgsl");
   return parseState({
-    ...state,
-    asset: {
-      accepted: asset.accepted,
-      draft: {
-        diagnostic: input.diagnostic,
-        parameterSchema: input.parameterSchema,
-        source: input.source,
-        sourceLanguage,
-      },
-    },
+    ...current,
+    assets: current.assets.map((candidate) =>
+      candidate.revision === asset.revision
+        ? {
+            ...candidate,
+            accepted: asset.accepted,
+            draft: {
+              diagnostic: input.diagnostic,
+              parameterSchema: input.parameterSchema,
+              source: input.source,
+              sourceLanguage,
+            },
+          }
+        : candidate,
+    ),
   });
 }
 
 export function removeStudioScenePostEffectSourceV1(
-  state: ProjectScenePostEffectSourceStateV1,
-): ProjectScenePostEffectSourceStateV1 {
-  const asset = requireAsset(state);
+  state: ProjectScenePostEffectLibraryState,
+  assetRevision: number,
+): ProjectScenePostEffectLibraryState {
+  const current = parseState(state);
+  const asset = requireAsset(current, assetRevision);
   if (asset.accepted) {
     throw new Error("An accepted custom Scene post effect remains a project asset so Undo and Redo can resolve it.");
   }
-  return { ...EMPTY_PROJECT_SCENE_POST_EFFECT_SOURCE_STATE_V1 };
+  return parseState({
+    ...current,
+    assets: current.assets.filter((candidate) => candidate.revision !== asset.revision),
+  });
 }
 
 /** Projection consumed by the separate renderer registry wire contract. */
-export function acceptedStudioScenePostEffectRegistrySourceV1(state: ProjectScenePostEffectSourceStateV1) {
-  const accepted = state.asset?.accepted;
-  return accepted ? { revision: 1, shaderId: accepted.shaderId, source: accepted.source } : null;
+export function acceptedStudioScenePostEffectRegistrySourceV1(
+  state: ProjectScenePostEffectLibraryState,
+  assetRevision: number,
+) {
+  const asset = findStudioScenePostEffectSourceV1(state, assetRevision);
+  const accepted = asset?.accepted;
+  return accepted ? { revision: asset.revision, shaderId: accepted.shaderId, source: accepted.source } : null;
 }
 
 /** Creates the source-free Scene IR reference from the accepted asset. */
 export function acceptedStudioScenePostEffectReferenceV1(
-  state: ProjectScenePostEffectSourceStateV1,
+  state: ProjectScenePostEffectLibraryState,
+  assetRevision: number,
   parameters?: readonly number[],
 ): ScenePostEffectV1 | null {
-  const accepted = state.asset?.accepted;
+  const asset = findStudioScenePostEffectSourceV1(state, assetRevision);
+  const accepted = asset?.accepted;
   if (!accepted) return null;
   const values = parameters ? [...parameters] : accepted.parameterSchema.map((parameter) => parameter.default);
   if (values.length !== accepted.parameterSchema.length) {
@@ -290,7 +412,7 @@ export function acceptedStudioScenePostEffectReferenceV1(
   });
   return scenePostEffectV1Schema.parse({
     parameters: values,
-    revision: 1,
+    revision: asset.revision,
     shaderId: accepted.shaderId,
   });
 }
