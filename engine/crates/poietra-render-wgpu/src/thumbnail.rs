@@ -11,8 +11,10 @@ use poietra_scene_ir::{ExportResolutionV1, RenderPacketV1, SceneIrV1, ViewportV1
 
 use crate::export::{EXPORT_TARGET_FORMAT_V1, render_export_frame_rgba_v1};
 use crate::{
-    CreateRendererErrorV1, DecodedPngAssetResolverV1, PrepareFrameErrorV1, WgpuPaintRendererV1,
-    prepare_frame_with_assets_v1,
+    CreateRendererErrorV1, DecodedPngAssetResolverV1, FragmentMaterialRegistryErrorV1,
+    FragmentMaterialSourceV1, PrepareFrameErrorV1, PreparedGeometryCacheV1,
+    ScenePostEffectRegistryErrorV1, ScenePostEffectSourceV1, WgpuPaintRendererV1,
+    prepare_frame_with_cache_assets_and_shader_sources_v1,
 };
 
 pub const ENGINE_THUMBNAIL_WIDTH_PX: u32 = ExportResolutionV1::Sd854x480.width_px();
@@ -49,6 +51,10 @@ pub enum RenderThumbnailError {
     Prepare(#[from] PrepareFrameErrorV1),
     #[error(transparent)]
     Renderer(#[from] CreateRendererErrorV1),
+    #[error(transparent)]
+    FragmentMaterialRegistry(#[from] FragmentMaterialRegistryErrorV1),
+    #[error(transparent)]
+    ScenePostEffectRegistry(#[from] ScenePostEffectRegistryErrorV1),
     #[error("thumbnail offscreen readback failed: {0}")]
     Readback(String),
     #[error("thumbnail RGBA length is {actual}, expected {expected}")]
@@ -125,7 +131,8 @@ fn encode_thumbnail_png(rgba: &[u8]) -> Result<Vec<u8>, RenderThumbnailError> {
 ///
 /// The sampler must use the supplied time and viewport with the canonical
 /// evaluator. Image assets are resolved through the same verified registry as
-/// interactive canvas rendering.
+/// interactive canvas rendering. Project shader registries are installed into
+/// the offscreen renderer before the representative frame is prepared.
 ///
 /// # Errors
 ///
@@ -137,6 +144,8 @@ pub async fn render_thumbnail_png<SamplePacket>(
     queue: &wgpu::Queue,
     scene: &SceneIrV1,
     assets: &dyn DecodedPngAssetResolverV1,
+    fragment_materials: &[FragmentMaterialSourceV1],
+    scene_post_effects: &[ScenePostEffectSourceV1],
     mut sample_packet: SamplePacket,
 ) -> Result<Vec<u8>, RenderThumbnailError>
 where
@@ -163,8 +172,21 @@ where
             expected_width: viewport.width_px,
         });
     }
-    let prepared = prepare_frame_with_assets_v1(&packet, assets)?;
     let mut renderer = WgpuPaintRendererV1::new(device, EXPORT_TARGET_FORMAT_V1)?;
+    renderer
+        .replace_fragment_material_sources(device, fragment_materials)
+        .await?;
+    renderer
+        .replace_scene_post_effect_sources(device, scene_post_effects)
+        .await?;
+    let mut geometry_cache = PreparedGeometryCacheV1::default();
+    let prepared = prepare_frame_with_cache_assets_and_shader_sources_v1(
+        &packet,
+        &mut geometry_cache,
+        assets,
+        &renderer,
+        &renderer,
+    )?;
     let mut rgba = Vec::new();
     render_export_frame_rgba_v1(device, queue, &mut renderer, &prepared, &mut rgba)
         .await

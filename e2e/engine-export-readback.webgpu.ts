@@ -6,6 +6,7 @@ import {
   type FragmentMaterialRegistryV1,
   STUDIO_TEXTURE_FRAGMENT_SOURCE_V1,
 } from "../src/engine/fragment-material-registry";
+import type { ScenePostEffectRegistryV1 } from "../src/engine/scene-post-effect-registry";
 
 const VIEWPORT = { heightPx: 90, widthPx: 160 } as const;
 const FPS = 2;
@@ -232,6 +233,7 @@ async function renderPreviewAndDecodedMp4Pixels(
     fps: number;
     fragmentMaterialRegistry: FragmentMaterialRegistryV1;
     sampleFractions: readonly Readonly<{ fractionX: number; fractionY: number }>[];
+    scenePostEffectRegistry?: ScenePostEffectRegistryV1;
     snapshot: SceneIrBundleV1;
     viewport: Readonly<{ heightPx: number; widthPx: number }>;
   }>,
@@ -275,6 +277,7 @@ async function renderPreviewAndDecodedMp4Pixels(
         canvas: previewCanvas,
         fragmentMaterialRegistry: input.fragmentMaterialRegistry,
         revision,
+        scenePostEffectRegistry: input.scenePostEffectRegistry,
         snapshot: input.snapshot,
       });
       host.requestFrame({ sampleTime: 0, viewport: input.viewport });
@@ -292,6 +295,7 @@ async function renderPreviewAndDecodedMp4Pixels(
       assetPayloads,
       fragmentMaterialRegistry: input.fragmentMaterialRegistry,
       profile: browserExport.DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+      scenePostEffectRegistry: input.scenePostEffectRegistry,
       snapshot: input.snapshot,
     });
     if (outcome.kind === "refused") {
@@ -624,4 +628,106 @@ test("a project PNG material stays pixel-equivalent between Preview and decoded 
     // alpha edge; the nearest/linear semantic assertions above stay strict.
     expectPixelClose(proof.decodedPixels[index] ?? [], previewPixel, 6);
   }
+});
+
+test("an effect-only project PNG stays pixel-equivalent between Preview and decoded WebCodecs MP4", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  const [sceneFixture, pngFixture] = await Promise.all([
+    readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8"),
+    readFile("fixtures/engine-v1/png-alpha-edge-camera.json", "utf8"),
+  ]);
+  const base = JSON.parse(sceneFixture) as SceneIrBundleV1;
+  const png = JSON.parse(pngFixture) as Readonly<{
+    assetPayloads: readonly Readonly<{ assetId: string; encodedBytes: readonly number[] }>[];
+    assets: SceneIrBundleV1["assets"];
+  }>;
+  const asset = png.assets.assets[0];
+  const payload = png.assetPayloads[0];
+  if (!asset || !payload || asset.id !== payload.assetId) throw new Error("The PNG effect fixture is incomplete.");
+  const snapshot: SceneIrBundleV1 = {
+    assets: png.assets,
+    scene: {
+      ...base.scene,
+      animationChannels: [],
+      assetManifest: { manifestDigest: png.assets.manifestDigest, manifestId: png.assets.manifestId },
+      duration: FRAGMENT_EXPORT_DURATION,
+      entities: [],
+      postEffects: [
+        {
+          parameters: [],
+          revision: 1,
+          shaderId: "project-scene-post-effect",
+          texture: {
+            asset: { assetId: asset.id, sha256: asset.sha256 },
+            sampler: "nearest",
+          },
+        },
+      ],
+      requiredCapabilities: ["png-image", "scene-post-effect"],
+      sceneId: "fixture:textured-effect-export",
+      source: { ...base.scene.source, revisionHash: "d".repeat(64) },
+    },
+  };
+  const scenePostEffectRegistry = {
+    effects: [
+      {
+        revision: 1,
+        shaderId: "project-scene-post-effect",
+        source: `struct Host {
+  viewport_and_time: vec4<f32>,
+  parameters_0: vec4<f32>,
+  parameters_1: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@group(0) @binding(3) var auxiliary_texture: texture_2d<f32>;
+@group(0) @binding(4) var auxiliary_sampler: sampler;
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+  return textureSample(auxiliary_texture, auxiliary_sampler, vec2<f32>(0.25, 0.5));
+}`,
+        textureSlot: "texture2d",
+      },
+    ],
+    schema: "poietra.scene-post-effect-registry",
+    version: 1,
+  } satisfies ScenePostEffectRegistryV1;
+  const assetPayloads = [
+    {
+      assetId: asset.id,
+      byteLength: asset.byteLength,
+      encodedBytes: payload.encodedBytes,
+      mediaType: asset.mediaType,
+      pixelHeight: asset.pixelHeight,
+      pixelWidth: asset.pixelWidth,
+      sha256: asset.sha256,
+    },
+  ];
+
+  await page.goto("/");
+  const proof = await renderPreviewAndDecodedMp4Pixels(page, {
+    assetPayloads,
+    fps: FRAGMENT_EXPORT_FPS,
+    fragmentMaterialRegistry: {
+      materials: [],
+      schema: "poietra.fragment-material-registry",
+      version: 1,
+    },
+    sampleFractions: [{ fractionX: 0.5, fractionY: 0.5 }],
+    scenePostEffectRegistry,
+    snapshot,
+    viewport: FRAGMENT_READBACK_VIEWPORT,
+  });
+
+  test.skip(
+    proof.kind === "refused" && ["api-unavailable", "unsupported-codec"].includes(proof.reason),
+    proof.kind === "refused" ? `Chromium has no usable H.264 WebCodecs encoder: ${proof.message}` : undefined,
+  );
+  if (proof.kind === "refused") {
+    throw new Error(`Browser MP4 export refused with ${proof.reason}: ${proof.message}`);
+  }
+  expectPixelClose(proof.previewPixels[0] ?? [], [255, 0, 0, 255], 0);
+  expectPixelClose(proof.decodedPixels[0] ?? [], proof.previewPixels[0] ?? [], 6);
 });

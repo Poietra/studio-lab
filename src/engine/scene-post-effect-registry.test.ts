@@ -18,6 +18,7 @@ describe("Scene post-effect registry", () => {
           revision: 2,
           shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
           source: STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1,
+          textureSlot: "texture2d",
         },
       ],
       schema: "poietra.scene-post-effect-registry",
@@ -26,6 +27,7 @@ describe("Scene post-effect registry", () => {
 
     expect(STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1).toContain("@group(0) @binding(2)");
     expect(STUDIO_WAVE_SCENE_POST_EFFECT_SOURCE_V1).toContain("textureSample(scene_texture, scene_sampler");
+    expect(registry.effects[0]?.textureSlot).toBe("texture2d");
     expect(JSON.parse(new TextDecoder().decode(encodeScenePostEffectRegistryV1(registry)))).toEqual(registry);
   });
 

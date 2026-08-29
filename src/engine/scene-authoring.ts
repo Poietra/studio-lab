@@ -126,7 +126,15 @@ export type ApplyStudioFragmentMaterialsCompiler = (
 ) => Promise<SceneIrBundleV1>;
 
 export type ApplyStudioScenePostEffectWireCommandV1 = Readonly<{
-  effects: readonly Readonly<{ parameters: readonly number[]; revision: number; shaderId: string }>[];
+  effects: readonly Readonly<{
+    parameters: readonly number[];
+    revision: number;
+    shaderId: string;
+    texture?: Readonly<{
+      asset: Readonly<{ assetId: string; sha256: string }>;
+      sampler: "linear" | "nearest";
+    }>;
+  }>[];
   expectedBaseRevision: string;
   nextRevision: string;
   schema: "poietra.apply-studio-scene-post-effect";

@@ -15,6 +15,14 @@ struct ScenePostEffectSourceJsonV1 {
     revision: u32,
     shader_id: String,
     source: String,
+    #[serde(default)]
+    texture_slot: Option<ScenePostEffectTextureSlotJsonV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ScenePostEffectTextureSlotJsonV1 {
+    Texture2d,
 }
 
 #[derive(Debug, Deserialize)]
@@ -52,6 +60,7 @@ pub(crate) fn parse_scene_post_effect_registry_v1(
             revision: effect.revision,
             shader_id: effect.shader_id,
             source: effect.source,
+            texture_slot: effect.texture_slot.is_some(),
         })
         .collect::<Vec<_>>();
     if effects
@@ -113,6 +122,14 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
             vec![3, 4]
         );
         assert_eq!(parsed[0].source, VALID_SOURCE);
+        assert!(!parsed[0].texture_slot);
+
+        let textured = format!(
+            "{{\"effects\":[{{\"revision\":5,\"shaderId\":\"project-scene-post-effect\",\"source\":{encoded_source},\"textureSlot\":\"texture2d\"}}],\"schema\":\"poietra.scene-post-effect-registry\",\"version\":1}}"
+        );
+        assert!(parse_scene_post_effect_registry_v1(textured.as_bytes()).unwrap()[0].texture_slot);
+        let invalid_slot = textured.replace("texture2d", "cube");
+        assert!(parse_scene_post_effect_registry_v1(invalid_slot.as_bytes()).is_err());
 
         assert!(
             parse_scene_post_effect_registry_v1(

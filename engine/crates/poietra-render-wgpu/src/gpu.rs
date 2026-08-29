@@ -12,8 +12,9 @@ use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
     FragmentMaterialSupportV1, GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1,
     ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1, MANIM_CAIRO_SAMPLE_COUNT_V1,
-    PreparedFrameV1, PreparedRenderCommandV1, ScenePostEffectRegistryErrorV1,
-    ScenePostEffectSourceV1, ScenePostEffectSupportV1, build_gpu_upload_plan_v1,
+    PreparedFrameV1, PreparedRenderCommandV1, PreparedScenePostEffectV1,
+    ScenePostEffectRegistryErrorV1, ScenePostEffectSourceV1, ScenePostEffectSupportV1,
+    build_gpu_upload_plan_v1,
 };
 use poietra_scene_ir::{ImageSamplerV1, MAX_VIEWPORT_PIXELS_V1, RenderCompositingV1};
 use wgpu::util::DeviceExt;
@@ -1039,6 +1040,11 @@ impl ScenePostEffectSupportV1 for WgpuFillRendererV1 {
     fn supports_scene_post_effect(&self, shader_id: &str, revision: u32) -> bool {
         self.scene_post_effect_gpu.supports(shader_id, revision)
     }
+
+    fn has_scene_post_effect_texture_slot(&self, shader_id: &str, revision: u32) -> bool {
+        self.scene_post_effect_gpu
+            .has_texture_slot(shader_id, revision)
+    }
 }
 
 /// Exact logical byte counts for GPU resources retained by one renderer.
@@ -1473,19 +1479,44 @@ impl WgpuFillRendererV1 {
 
         if frame.scene_post_effects().is_empty() {
             self.scene_post_effect_gpu.clear_targets();
-        } else {
-            self.scene_post_effect_gpu.prepare(
-                device,
-                queue,
-                expected_target_format,
-                [target.width_px, target.height_px],
-                frame.sample_time(),
-                frame.scene_post_effects(),
-            );
         }
 
         let mut evidence = RenderStageEvidenceV1::empty();
         let has_geometry = !frame.indices().is_empty() || !frame.image_draws().is_empty();
+        let image_upload = build_image_geometry_upload_plan_v1(frame.image_draws())?;
+        let shader_textures = frame
+            .material_plan()
+            .materials()
+            .iter()
+            .filter_map(|material| material.fragment_material()?.texture())
+            .chain(
+                frame
+                    .scene_post_effects()
+                    .iter()
+                    .filter_map(PreparedScenePostEffectV1::texture),
+            )
+            .collect::<Vec<_>>();
+        let image_resources = if image_upload.is_some() || !shader_textures.is_empty() {
+            Some(preflight_image_and_material_resources_v1(
+                frame.image_draws(),
+                &shader_textures,
+                device.limits().max_texture_dimension_2d,
+            )?)
+        } else {
+            None
+        };
+        if let Some(image_resources) = image_resources.as_ref() {
+            evidence.image_texture_cache = self.image_texture_cache.prepare_frame(
+                device,
+                queue,
+                &self.image_pipeline,
+                image_resources,
+            )?;
+            evidence.upload_bytes = evidence
+                .upload_bytes
+                .checked_add(evidence.image_texture_cache.texture_upload_bytes())
+                .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)?;
+        }
         let mut fragment_material_frame = None;
         let mut image_frame = None;
         if has_geometry {
@@ -1496,36 +1527,8 @@ impl WgpuFillRendererV1 {
             } else {
                 Some(build_gpu_upload_plan_v1(frame)?.into_parts())
             };
-            let image_upload = build_image_geometry_upload_plan_v1(frame.image_draws())?;
-            let material_textures = frame
-                .material_plan()
-                .materials()
-                .iter()
-                .filter_map(|material| material.fragment_material()?.texture())
-                .collect::<Vec<_>>();
-            let image_resources = if image_upload.is_some() || !material_textures.is_empty() {
-                Some(preflight_image_and_material_resources_v1(
-                    frame.image_draws(),
-                    &material_textures,
-                    device.limits().max_texture_dimension_2d,
-                )?)
-            } else {
-                None
-            };
             evidence.vertex_index_encode_ms = stage_elapsed(clock, vertex_index_encode_started);
             let buffer_create_started = stage_started(clock);
-            if let Some(image_resources) = image_resources.as_ref() {
-                evidence.image_texture_cache = self.image_texture_cache.prepare_frame(
-                    device,
-                    queue,
-                    &self.image_pipeline,
-                    image_resources,
-                )?;
-                evidence.upload_bytes = evidence
-                    .upload_bytes
-                    .checked_add(evidence.image_texture_cache.texture_upload_bytes())
-                    .ok_or(GpuUploadPlanErrorV1::ByteAccountingOverflow)?;
-            }
             if let Some((vertex_bytes, index_bytes)) = path_upload {
                 let arena_stats = self
                     .arena
@@ -1597,6 +1600,24 @@ impl WgpuFillRendererV1 {
                 image_frame = Some(uploaded);
             }
             evidence.buffer_create_and_stage_ms = stage_elapsed(clock, buffer_create_started);
+        }
+
+        if !frame.scene_post_effects().is_empty() {
+            self.scene_post_effect_gpu
+                .prepare(
+                    device,
+                    queue,
+                    expected_target_format,
+                    [target.width_px, target.height_px],
+                    frame.sample_time(),
+                    frame.scene_post_effects(),
+                    &self.image_pipeline,
+                    &self.image_texture_cache,
+                    &self.fragment_material_fallback_texture_view,
+                )
+                .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                    "Scene post-effect texture was not retained by the image cache",
+                ))?;
         }
 
         let command_encode_started = stage_started(clock);

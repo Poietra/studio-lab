@@ -111,6 +111,7 @@ fn scene_post_effect_stack_is_bounded_capability_derived_and_packet_correlated()
         parameters: vec![4.0, 2.0, 1.5, 0.25],
         revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
         shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+        texture: None,
     };
     let mut scene = empty_scene();
     scene.post_effects = vec![effect.clone()];
@@ -158,6 +159,7 @@ fn scene_post_effect_stack_rejects_duplicates_and_more_than_four_passes() {
         parameters: Vec::new(),
         revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
         shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+        texture: None,
     };
     let mut scene = empty_scene();
     scene.required_capabilities = vec![SceneCapabilityV1::ScenePostEffect];
@@ -169,6 +171,7 @@ fn scene_post_effect_stack_rejects_duplicates_and_more_than_four_passes() {
             parameters: Vec::new(),
             revision: u32::try_from(index + 1).unwrap(),
             shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
         })
         .collect();
     assert!(validate_scene_ir_v1(&scene).is_err());
@@ -180,6 +183,7 @@ fn legacy_single_post_effect_reads_as_one_canonical_plural_pass() {
         parameters: vec![2.0],
         revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
         shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+        texture: None,
     };
     let mut scene = empty_scene();
     scene.post_effects = vec![effect.clone()];
@@ -1029,6 +1033,39 @@ fn engine_frame_checks_digest_and_cross_document_identity() {
     );
     v11.packet.compositing = RenderCompositingV1::ManimCairoSrgb;
     validate_engine_frame_v1(&v11).unwrap();
+
+    let mut missing_effect_texture = frame.clone();
+    let textured_effect = ScenePostEffectV1 {
+        parameters: Vec::new(),
+        revision: 7,
+        shader_id: PROJECT_SCENE_POST_EFFECT_SHADER_ID.to_owned(),
+        texture: Some(Box::new(FragmentMaterialTextureV1 {
+            asset: AssetReferenceV1 {
+                asset_id: "asset:missing-effect".to_owned(),
+                sha256: REVISION.to_owned(),
+            },
+            sampler: ImageSamplerV1::Nearest,
+        })),
+    };
+    missing_effect_texture.scene.post_effects = vec![textured_effect.clone()];
+    missing_effect_texture.scene.required_capabilities = vec![
+        SceneCapabilityV1::PngImage,
+        SceneCapabilityV1::ScenePostEffect,
+    ];
+    missing_effect_texture.packet.post_effects = vec![textured_effect];
+    missing_effect_texture.packet.required_capabilities = vec![
+        RenderCapabilityV1::PngImage,
+        RenderCapabilityV1::ScenePostEffect,
+    ];
+    let missing_errors = validate_engine_frame_v1(&missing_effect_texture).unwrap_err();
+    assert!(missing_errors.issues().iter().any(|issue| {
+        issue.path == "$.scene.postEffects[0].texture.asset"
+            && issue.message.contains("missing asset")
+    }));
+    assert!(missing_errors.issues().iter().any(|issue| {
+        issue.path == "$.packet.postEffects[0].texture.asset"
+            && issue.message.contains("missing asset")
+    }));
 
     let mut stale_digest = frame;
     stale_digest.assets.manifest_digest =

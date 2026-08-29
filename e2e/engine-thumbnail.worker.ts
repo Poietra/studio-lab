@@ -19,7 +19,11 @@ type WasmBindings = {
 };
 
 type ThumbnailRequest = Readonly<{
+  assetBytes?: readonly ArrayBuffer[];
+  assetMetadataJson?: ArrayBuffer;
+  fragmentMaterialRegistryJson?: ArrayBuffer;
   kind: "generate-engine-thumbnail";
+  scenePostEffectRegistryJson?: ArrayBuffer;
   snapshotJson: ArrayBuffer;
   wasmModuleUrl: string;
 }>;
@@ -44,11 +48,15 @@ self.addEventListener("message", (event: MessageEvent<ThumbnailRequest>) => {
       }
       const engine = await Engine.create(
         new Uint8Array(request.snapshotJson),
-        new TextEncoder().encode("[]"),
-        [],
+        request.assetMetadataJson ? new Uint8Array(request.assetMetadataJson) : new TextEncoder().encode("[]"),
+        (request.assetBytes ?? []).map((bytes) => new Uint8Array(bytes)),
         new OffscreenCanvas(160, 90),
-        EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON,
-        EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON,
+        request.fragmentMaterialRegistryJson
+          ? new Uint8Array(request.fragmentMaterialRegistryJson)
+          : EMPTY_FRAGMENT_MATERIAL_REGISTRY_JSON,
+        request.scenePostEffectRegistryJson
+          ? new Uint8Array(request.scenePostEffectRegistryJson)
+          : EMPTY_SCENE_POST_EFFECT_REGISTRY_JSON,
       );
       if (typeof engine.generateThumbnail !== "function") {
         throw new Error("The canvas engine does not expose thumbnail generation.");

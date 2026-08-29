@@ -73,12 +73,21 @@ fn filtering_sampler_matches(module: &naga::Module, variable: &naga::GlobalVaria
         )
 }
 
-pub(crate) fn validate_scene_post_effect_wgsl(source: &str) -> Result<(), String> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps the five fixed resource bindings and fragment interface in one admission pass"
+)]
+pub(crate) fn validate_scene_post_effect_wgsl(
+    source: &str,
+    texture_slot: bool,
+) -> Result<(), String> {
     let module = wgsl::parse_str(source).map_err(|error| error.emit_to_string(source))?;
     Validator::new(ValidationFlags::all(), Capabilities::empty())
         .validate(&module)
         .map_err(|error| format!("WGSL validation failed: {error}"))?;
     let mut host_uniforms = 0_usize;
+    let mut auxiliary_samplers = 0_usize;
+    let mut auxiliary_textures = 0_usize;
     let mut scene_samplers = 0_usize;
     let mut scene_textures = 0_usize;
     for (_, variable) in module.global_variables.iter() {
@@ -89,6 +98,8 @@ pub(crate) fn validate_scene_post_effect_wgsl(source: &str) -> Result<(), String
             (0, 0) if host_uniform_matches(&module, variable) => host_uniforms += 1,
             (0, 1) if scene_texture_matches(&module, variable) => scene_textures += 1,
             (0, 2) if filtering_sampler_matches(&module, variable) => scene_samplers += 1,
+            (0, 3) if scene_texture_matches(&module, variable) => auxiliary_textures += 1,
+            (0, 4) if filtering_sampler_matches(&module, variable) => auxiliary_samplers += 1,
             (0, 0) => {
                 return Err(
                     "group 0 binding 0 must be the fixed three-vec4 Poietra host uniform"
@@ -100,6 +111,12 @@ pub(crate) fn validate_scene_post_effect_wgsl(source: &str) -> Result<(), String
             }
             (0, 2) => {
                 return Err("group 0 binding 2 must be one non-comparison sampler".to_owned());
+            }
+            (0, 3) => {
+                return Err("group 0 binding 3 must be one sampled float texture_2d".to_owned());
+            }
+            (0, 4) => {
+                return Err("group 0 binding 4 must be one non-comparison sampler".to_owned());
             }
             _ => {
                 return Err(
@@ -113,6 +130,19 @@ pub(crate) fn validate_scene_post_effect_wgsl(source: &str) -> Result<(), String
             "Scene post effects require exactly group 0 binding 0 host uniform and binding 1 texture_2d<f32>, with at most one binding 2 sampler"
                 .to_owned(),
         );
+    }
+    let texture_slot_matches = if texture_slot {
+        auxiliary_textures == 1 && auxiliary_samplers == 1
+    } else {
+        auxiliary_textures == 0 && auxiliary_samplers == 0
+    };
+    if !texture_slot_matches {
+        return Err(if texture_slot {
+            "textured Scene post effects require exactly group 0 binding 3 texture_2d<f32> and binding 4 sampler"
+                .to_owned()
+        } else {
+            "untextured Scene post effects cannot declare group 0 bindings 3 or 4".to_owned()
+        });
     }
 
     let mut fragment_entry_points = 0_usize;
@@ -202,61 +232,91 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
 }
 ";
 
+    const VALID_TEXTURED: &str = r"
+struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_1: vec4<f32> };
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@group(0) @binding(3) var auxiliary_texture: texture_2d<f32>;
+@group(0) @binding(4) var auxiliary_sampler: sampler;
+@fragment fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let uv = position.xy / max(host.viewport_and_time.xy, vec2<f32>(1.0));
+    return textureSample(auxiliary_texture, auxiliary_sampler, uv);
+}
+";
+
     #[test]
     fn admits_only_the_fixed_scene_post_effect_abi() {
-        assert!(validate_scene_post_effect_wgsl(VALID).is_ok());
-        assert!(validate_scene_post_effect_wgsl(VALID_FILTERED).is_ok());
-        assert!(
-            validate_scene_post_effect_wgsl(&format!(
-                "{VALID}\n@group(1) @binding(0) var extra: texture_2d<f32>;"
-            ))
-            .is_err()
-        );
-        assert!(
-            validate_scene_post_effect_wgsl(&VALID.replace("texture_2d<f32>", "sampler")).is_err()
-        );
-        assert!(
-            validate_scene_post_effect_wgsl(&VALID_FILTERED.replace(
-                "var scene_sampler: sampler",
-                "var scene_sampler: sampler_comparison"
-            ),)
-            .is_err()
-        );
-        assert!(
-            validate_scene_post_effect_wgsl(&VALID_FILTERED.replace("@binding(2)", "@binding(3)"),)
-                .is_err()
-        );
-        assert!(
-            validate_scene_post_effect_wgsl(&VALID.replace("fs_main", "another_fragment")).is_err()
-        );
+        assert!(validate_scene_post_effect_wgsl(VALID, false).is_ok());
+        assert!(validate_scene_post_effect_wgsl(VALID_FILTERED, false).is_ok());
+        assert!(validate_scene_post_effect_wgsl(VALID_TEXTURED, true).is_ok());
+        assert!(validate_scene_post_effect_wgsl(VALID_TEXTURED, false).is_err());
+        assert!(validate_scene_post_effect_wgsl(VALID, true).is_err());
+        let incomplete_texture =
+            format!("{VALID}\n@group(0) @binding(3) var auxiliary_texture: texture_2d<f32>;");
+        assert!(validate_scene_post_effect_wgsl(&incomplete_texture, false).is_err());
+        assert!(validate_scene_post_effect_wgsl(&incomplete_texture, true).is_err());
         assert!(
             validate_scene_post_effect_wgsl(
-                &VALID.replace("@location(0) vec4<f32>", "@location(1) vec4<f32>"),
+                &format!("{VALID}\n@group(1) @binding(0) var extra: texture_2d<f32>;"),
+                false
             )
             .is_err()
         );
         assert!(
-            validate_scene_post_effect_wgsl(&format!(
-                "{VALID}\n@compute @workgroup_size(1) fn cs_main() {{}}"
-            ))
+            validate_scene_post_effect_wgsl(&VALID.replace("texture_2d<f32>", "sampler"), false)
+                .is_err()
+        );
+        assert!(
+            validate_scene_post_effect_wgsl(
+                &VALID_FILTERED.replace(
+                    "var scene_sampler: sampler",
+                    "var scene_sampler: sampler_comparison"
+                ),
+                false
+            )
+            .is_err()
+        );
+        assert!(
+            validate_scene_post_effect_wgsl(
+                &VALID_FILTERED.replace("@binding(2)", "@binding(3)"),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_scene_post_effect_wgsl(&VALID.replace("fs_main", "another_fragment"), false,)
+                .is_err()
+        );
+        assert!(
+            validate_scene_post_effect_wgsl(
+                &VALID.replace("@location(0) vec4<f32>", "@location(1) vec4<f32>"),
+                false,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_scene_post_effect_wgsl(
+                &format!("{VALID}\n@compute @workgroup_size(1) fn cs_main() {{}}"),
+                false
+            )
             .is_err()
         );
     }
 
     #[test]
     fn admits_naga_struct_wrappers_without_broadening_the_interface() {
-        assert!(validate_scene_post_effect_wgsl(VALID_STRUCT_INTERFACE).is_ok());
+        assert!(validate_scene_post_effect_wgsl(VALID_STRUCT_INTERFACE, false).is_ok());
 
         let extra_input = VALID_STRUCT_INTERFACE.replace(
             "@builtin(position) position: vec4<f32>,",
             "@builtin(position) position: vec4<f32>, @location(1) extra: vec4<f32>,",
         );
-        assert!(validate_scene_post_effect_wgsl(&extra_input).is_err());
+        assert!(validate_scene_post_effect_wgsl(&extra_input, false).is_err());
 
         let extra_output = VALID_STRUCT_INTERFACE.replace(
             "@location(0) color: vec4<f32>,",
             "@location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32,",
         );
-        assert!(validate_scene_post_effect_wgsl(&extra_output).is_err());
+        assert!(validate_scene_post_effect_wgsl(&extra_output, false).is_err());
     }
 }

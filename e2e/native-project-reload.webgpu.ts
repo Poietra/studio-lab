@@ -402,36 +402,34 @@ test("applies one Scene-wide RGB split through scrub, history, reload, and MP4 e
     };
     const blankRevision = await canvas.getAttribute("data-preview-revision");
     if (!blankRevision) throw new Error("The blank Scene did not expose its presented revision.");
-
     await playhead.fill("1");
-    await page.getByRole("button", { name: /Insert rectangle/ }).click();
-    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { exact: true, name: "Add Rectangle" }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
     const plainRevision = await waitForNewPresentedRevision(blankRevision);
     await playhead.fill("2");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
     const plainFrame = await previewCanvas.screenshot();
 
-    await page.getByRole("button", { name: "Enable RGB split" }).click();
+    await page.getByRole("button", { name: "Add RGB split" }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
-    await expect(page.getByText("RGB split", { exact: true })).toBeVisible();
+    await expect(page.getByText("RGB split parameters", { exact: true })).toBeVisible();
     const effectRevision = await waitForNewPresentedRevision(plainRevision);
     const effectFrame = await previewCanvas.screenshot();
     expect(effectFrame.equals(plainFrame)).toBe(false);
 
     await page.getByRole("button", { name: "Undo" }).click();
-    await expect(page.getByRole("button", { name: "Enable RGB split" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add RGB split" })).toBeVisible();
     const undoRevision = await waitForNewPresentedRevision(effectRevision);
     await playhead.fill("2");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
     await page.getByRole("button", { name: "Redo" }).click();
-    await expect(page.getByText("RGB split", { exact: true })).toBeVisible();
+    await expect(page.getByText("RGB split parameters", { exact: true })).toBeVisible();
     await waitForNewPresentedRevision(undoRevision);
 
     await page.reload();
     await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
     await page.getByRole("button", { name: "Open Scene post effect fixture workspace" }).click();
-    await expect(page.getByText("RGB split", { exact: true })).toBeVisible();
+    await expect(page.getByText("RGB split parameters", { exact: true })).toBeVisible();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     const reloadedEffectRevision = await canvas.getAttribute("data-preview-revision");
     if (!reloadedEffectRevision) throw new Error("The reloaded RGB split Scene did not expose its revision.");
@@ -458,7 +456,7 @@ test("applies one Scene-wide RGB split through scrub, history, reload, and MP4 e
     await playhead.fill("2");
     await page.getByRole("button", { name: "Remove" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
-    await expect(page.getByRole("button", { name: "Enable RGB split" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add RGB split" })).toBeVisible();
     await waitForNewPresentedRevision(updatedEffectRevision);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
@@ -708,6 +706,94 @@ void main() {
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(page.getByRole("button", { name: "Add to stack" })).toBeVisible();
     await waitForNewPresentedRevision(oneEffectRevision);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
+test("samples a project PNG from a WGSL Scene effect through Preview, history, reload, and MP4", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Textured Scene effect fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const waitForNewPresentedRevision = async (previous: string) => {
+      await expect
+        .poll(async () => {
+          if ((await canvas.getAttribute("data-preview-renderer")) !== "presented") return null;
+          const revision = await canvas.getAttribute("data-preview-revision");
+          return revision && revision !== previous ? revision : null;
+        })
+        .not.toBeNull();
+      const revision = await canvas.getAttribute("data-preview-revision");
+      if (!revision) throw new Error("The textured Scene did not expose its presented revision.");
+      return revision;
+    };
+    const blankRevision = await canvas.getAttribute("data-preview-revision");
+    if (!blankRevision) throw new Error("The blank Scene did not expose its presented revision.");
+    const emptyCanvas = page.getByRole("region", { name: "Empty canvas" });
+    await expect(emptyCanvas).toBeVisible();
+
+    const assets = page.getByRole("region", { name: "Assets" });
+    await assets.locator('input[accept="image/png,.png"]').setInputFiles({
+      buffer: Buffer.from(PNG),
+      mimeType: "image/png",
+      name: "effect-texture.png",
+    });
+    await expect(page.getByRole("list", { name: "Project images" }).getByRole("listitem")).toHaveCount(1);
+    // Manifest-only asset ingestion intentionally leaves the visible Scene revision unchanged.
+    const assetRevision = blankRevision;
+    await page.getByRole("textbox", { name: "New Scene effect name" }).fill("PNG Mix");
+    await page.getByRole("button", { name: "Create starter" }).click();
+    await page.getByRole("checkbox", { name: "Declare auxiliary Scene effect texture" }).check();
+    await page.getByRole("textbox", { name: "Scene post-effect WGSL source" }).fill(`struct ScenePostEffectHost {
+    viewport_and_time: vec4<f32>,
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> host: ScenePostEffectHost;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@group(0) @binding(2) var scene_sampler: sampler;
+@group(0) @binding(3) var project_texture: texture_2d<f32>;
+@group(0) @binding(4) var project_sampler: sampler;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let viewport = max(host.viewport_and_time.xy, vec2<f32>(1.0));
+    return textureSample(project_texture, project_sampler, position.xy / viewport);
+}`);
+    await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
+    await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
+    await page.getByRole("combobox", { name: "Auxiliary Scene effect image" }).selectOption({ index: 1 });
+    await page.getByRole("combobox", { name: "Auxiliary Scene effect sampler" }).selectOption("nearest");
+    await page.getByRole("button", { name: "Add to stack" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
+    const effectRevision = await waitForNewPresentedRevision(assetRevision);
+    await expect(emptyCanvas).toHaveCount(0);
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await expect(page.getByRole("button", { name: "Add to stack" })).toBeVisible();
+    const undoRevision = await waitForNewPresentedRevision(effectRevision);
+    await expect(emptyCanvas).toBeVisible();
+    await page.getByRole("button", { name: "Redo" }).click();
+    await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
+    await waitForNewPresentedRevision(undoRevision);
+    await expect(emptyCanvas).toHaveCount(0);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Textured Scene effect fixture workspace" }).click();
+    await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Auxiliary Scene effect sampler" })).toHaveValue("nearest");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await expect(emptyCanvas).toHaveCount(0);
+
+    const mp4 = await exportLocalMp4(page);
+    const [redPixels] = await decodedBrightPixelCounts(page, mp4, [1], "red-dominant");
+    expect(redPixels).toBeGreaterThan(100);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }

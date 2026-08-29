@@ -29,13 +29,16 @@ void main() {
 `;
 
 const callbacks = () => ({
+  imageAssets: [],
   onAddToStack: vi.fn(),
   onCompile: vi.fn(),
   onCreate: vi.fn(),
   onParametersChange: vi.fn(),
   onRemove: vi.fn(),
   onSelect: vi.fn(),
+  onTextureChange: vi.fn(),
   selectedRevision: null,
+  texture: null,
 });
 
 function createAsset(name: string, state = EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE) {
@@ -113,6 +116,7 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("binding 1 is the current Scene texture");
     expect(markup).toContain("binding 2 is the fixed linear clamp sampler");
     expect(markup).toContain("renderer-owned");
+    expect(markup).toContain("Create a new effect to change this accepted binding contract.");
     expect(markup).toContain('aria-label="Scene post-effect parameters"');
     expect(markup).toContain('aria-label="Amplitude Scene post-effect parameter"');
     expect(markup).toContain('aria-label="Wavelength Scene post-effect parameter"');
@@ -125,6 +129,48 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("Compile &amp; accept WGSL");
     expect(markup).toContain("Reset source");
     expect(markup).toContain("In Scene stack");
+  });
+
+  it("offers one verified project PNG and sampler for a declared auxiliary texture slot", () => {
+    const created = createAsset("PNG Mix");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const accepted = acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+      ...asset.draft,
+      textureSlot: "texture2d",
+    });
+    const imageAsset = {
+      byteLength: 4,
+      bytes: new ArrayBuffer(4),
+      image: {
+        asset: { assetId: "effect-texture", sha256: "a".repeat(64) },
+        localRect: { bottom: -1, left: -1, right: 1, top: 1 },
+        sampler: "linear" as const,
+      },
+      label: "effect-texture.png",
+      pixelHeight: 2,
+      pixelWidth: 2,
+    };
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        {...callbacks()}
+        activeRevisions={[created.revision]}
+        assets={accepted.assets}
+        available
+        imageAssets={[imageAsset]}
+        parameters={[12, 64, 0.75]}
+        sourceAvailable
+        texture={{ asset: imageAsset.image.asset, sampler: "nearest" }}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Declare auxiliary Scene effect texture"');
+    expect(markup).toMatch(/aria-label="Declare auxiliary Scene effect texture"[^>]*checked=""/);
+    expect(markup).toContain('aria-label="Auxiliary Scene effect texture"');
+    expect(markup).toContain('aria-label="Auxiliary Scene effect image"');
+    expect(markup).toContain("effect-texture.png · 2×2");
+    expect(markup).not.toContain("Choose a project PNG");
+    expect(markup).toContain('<option value="nearest" selected="">Nearest</option>');
+    expect(markup).toContain("Update auxiliary texture");
   });
 
   it("renders GLSL paste and bounded local file import while retaining canonical WGSL", () => {
@@ -168,6 +214,7 @@ describe("ScenePostEffectSourceEditor", () => {
       diagnostic: "post-effect.wgsl:7:4: expected expression",
       parameterSchema: accepted.asset.draft.parameterSchema,
       source: "@fragment fn broken(",
+      textureSlot: "texture2d",
     });
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
@@ -186,6 +233,8 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("Last accepted generation 1 remains active.");
     expect(markup).toContain("@fragment fn broken(");
     expect(markup).toContain("In Scene stack");
+    expect(markup).toMatch(/aria-label="Declare auxiliary Scene effect texture"[^>]*disabled=""[^>]*type="checkbox"/u);
+    expect(markup).not.toMatch(/aria-label="Declare auxiliary Scene effect texture"[^>]*checked=""/u);
   });
 
   it("labels a rejected GLSL draft and keeps the last accepted generation available", () => {

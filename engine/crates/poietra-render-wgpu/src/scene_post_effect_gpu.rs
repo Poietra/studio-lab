@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use poietra_scene_ir::{
-    MAX_SCENE_POST_EFFECTS_V1, PROJECT_SCENE_POST_EFFECT_SHADER_ID,
+    ImageSamplerV1, MAX_SCENE_POST_EFFECTS_V1, PROJECT_SCENE_POST_EFFECT_SHADER_ID,
     RGB_SPLIT_POST_EFFECT_SHADER_ID, RGB_SPLIT_POST_EFFECT_SHADER_REVISION, RenderCompositingV1,
 };
 use wgpu::util::DeviceExt;
@@ -12,6 +12,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::PreparedScenePostEffectV1;
+use crate::image_gpu::{ImagePipelineV1, ImageTextureCacheV1};
 use crate::scene_post_effect_wgsl::validate_scene_post_effect_wgsl;
 
 pub const MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1: usize = 16 * 1024;
@@ -21,6 +22,7 @@ pub struct ScenePostEffectSourceV1 {
     pub revision: u32,
     pub shader_id: String,
     pub source: String,
+    pub texture_slot: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -79,7 +81,7 @@ pub fn validate_scene_post_effect_source_v1(
             shader_id: source.shader_id.clone(),
         });
     }
-    validate_scene_post_effect_wgsl(&source.source).map_err(|message| {
+    validate_scene_post_effect_wgsl(&source.source, source.texture_slot).map_err(|message| {
         ScenePostEffectRegistryErrorV1::Compilation {
             message,
             revision: source.revision,
@@ -140,6 +142,7 @@ struct ProjectScenePostEffectPipelines {
     pipelines: ScenePostEffectPipelines,
     revision: u32,
     shader_id: String,
+    texture_slot: bool,
 }
 
 #[derive(Debug)]
@@ -185,9 +188,6 @@ impl SceneColorTargets {
 
 fn create_scene_color_target(
     device: &wgpu::Device,
-    bind_group_layout: &wgpu::BindGroupLayout,
-    linear_clamp_sampler: &wgpu::Sampler,
-    uniform_buffers: &[wgpu::Buffer],
     format: wgpu::TextureFormat,
     extent: [u32; 2],
     label: &str,
@@ -208,11 +208,45 @@ fn create_scene_color_target(
         view_formats: &[],
     });
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let bindings = uniform_buffers
+    SceneColorTarget {
+        bindings: Vec::new(),
+        format,
+        height_px,
+        _texture: texture,
+        view,
+        width_px,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_scene_post_effect_bindings(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    scene_sampler: &wgpu::Sampler,
+    uniform_buffers: &[wgpu::Buffer],
+    input_view: &wgpu::TextureView,
+    image_pipeline: &ImagePipelineV1,
+    image_texture_cache: &ImageTextureCacheV1,
+    fallback_texture_view: &wgpu::TextureView,
+    effects: &[PreparedScenePostEffectV1],
+) -> Option<Vec<wgpu::BindGroup>> {
+    effects
         .iter()
+        .zip(uniform_buffers)
         .enumerate()
-        .map(|(index, uniform_buffer)| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
+        .map(|(index, (effect, uniform_buffer))| {
+            let (auxiliary_view, auxiliary_sampler) = if let Some(texture) = effect.texture() {
+                (
+                    image_texture_cache.texture_view(texture.asset())?,
+                    image_pipeline.sampler(texture.sampler()),
+                )
+            } else {
+                (
+                    fallback_texture_view,
+                    image_pipeline.sampler(ImageSamplerV1::Linear),
+                )
+            };
+            Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some(&format!("poietra Scene post-effect input binding {index}")),
                 layout: bind_group_layout,
                 entries: &[
@@ -222,24 +256,24 @@ fn create_scene_color_target(
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: wgpu::BindingResource::TextureView(&view),
+                        resource: wgpu::BindingResource::TextureView(input_view),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
-                        resource: wgpu::BindingResource::Sampler(linear_clamp_sampler),
+                        resource: wgpu::BindingResource::Sampler(scene_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(auxiliary_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::Sampler(auxiliary_sampler),
                     },
                 ],
-            })
+            }))
         })
-        .collect();
-    SceneColorTarget {
-        bindings,
-        format,
-        height_px,
-        _texture: texture,
-        view,
-        width_px,
-    }
+        .collect()
 }
 
 fn create_scene_post_effect_pipeline(
@@ -324,6 +358,7 @@ fn create_project_scene_post_effect_pipelines_v1(
         },
         revision: source.revision,
         shader_id: source.shader_id.clone(),
+        texture_slot: source.texture_slot,
     }
 }
 
@@ -415,6 +450,22 @@ impl ScenePostEffectGpu {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
@@ -527,13 +578,20 @@ impl ScenePostEffectGpu {
                 .any(|custom| custom.shader_id == shader_id && custom.revision == revision)
     }
 
+    pub(crate) fn has_texture_slot(&self, shader_id: &str, revision: u32) -> bool {
+        self.custom.iter().any(|custom| {
+            custom.shader_id == shader_id && custom.revision == revision && custom.texture_slot
+        })
+    }
+
     pub(crate) fn clear_targets(&mut self) {
         self.targets = None;
     }
 
     #[allow(
         clippy::cast_precision_loss,
-        reason = "the fixed shader ABI exposes viewport dimensions as f32"
+        clippy::too_many_arguments,
+        reason = "keeps fixed pass resources explicit; the ABI exposes viewport dimensions as f32"
     )]
     pub(crate) fn prepare(
         &mut self,
@@ -543,7 +601,10 @@ impl ScenePostEffectGpu {
         viewport: [u32; 2],
         sample_time: f32,
         effects: &[PreparedScenePostEffectV1],
-    ) {
+        image_pipeline: &ImagePipelineV1,
+        image_texture_cache: &ImageTextureCacheV1,
+        fallback_texture_view: &wgpu::TextureView,
+    ) -> Option<()> {
         let [width_px, height_px] = viewport;
         let recreate_targets = self
             .targets
@@ -553,18 +614,12 @@ impl ScenePostEffectGpu {
             self.targets = Some(SceneColorTargets {
                 first: create_scene_color_target(
                     device,
-                    &self.bind_group_layout,
-                    &self.linear_clamp_sampler,
-                    &self.uniform_buffers,
                     format,
                     [width_px, height_px],
                     "poietra Scene post-effect ping target A",
                 ),
                 second: create_scene_color_target(
                     device,
-                    &self.bind_group_layout,
-                    &self.linear_clamp_sampler,
-                    &self.uniform_buffers,
                     format,
                     [width_px, height_px],
                     "poietra Scene post-effect pong target B",
@@ -584,6 +639,30 @@ impl ScenePostEffectGpu {
             }
             queue.write_buffer(uniform_buffer, 0, &bytes);
         }
+        let targets = self.targets.as_mut()?;
+        targets.first.bindings = create_scene_post_effect_bindings(
+            device,
+            &self.bind_group_layout,
+            &self.linear_clamp_sampler,
+            &self.uniform_buffers,
+            &targets.first.view,
+            image_pipeline,
+            image_texture_cache,
+            fallback_texture_view,
+            effects,
+        )?;
+        targets.second.bindings = create_scene_post_effect_bindings(
+            device,
+            &self.bind_group_layout,
+            &self.linear_clamp_sampler,
+            &self.uniform_buffers,
+            &targets.second.view,
+            image_pipeline,
+            image_texture_cache,
+            fallback_texture_view,
+            effects,
+        )?;
+        Some(())
     }
 
     pub(crate) fn scene_view(&self) -> Option<&wgpu::TextureView> {
@@ -672,6 +751,7 @@ struct Host { viewport_and_time: vec4<f32>, parameters_0: vec4<f32>, parameters_
             revision,
             shader_id: shader_id.to_owned(),
             source: wgsl.to_owned(),
+            texture_slot: false,
         }
     }
 

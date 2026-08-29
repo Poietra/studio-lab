@@ -3,7 +3,9 @@ import { z } from "zod";
 import {
   finiteF32V1Schema,
   MAX_FRAGMENT_MATERIAL_PARAMETERS_V1,
+  type SampledTextureV1,
   type ScenePostEffectV1,
+  sampledTextureV1Schema,
   scenePostEffectV1Schema,
 } from "../engine/primitives";
 import {
@@ -93,6 +95,7 @@ const acceptedScenePostEffectSourceSchemaV1 = z
     shaderId: z.literal(PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1),
     /** Canonical WGSL consumed by the renderer registry for every source language. */
     source: scenePostEffectWgslSourceV1Schema,
+    textureSlot: z.literal("texture2d").optional(),
   })
   .strict();
 
@@ -102,6 +105,7 @@ const scenePostEffectSourceDraftSchemaV1 = z
     parameterSchema: scenePostEffectParameterSchemaListV1,
     source: scenePostEffectEditableSourceV1Schema,
     sourceLanguage: scenePostEffectSourceLanguageV1Schema.default("wgsl"),
+    textureSlot: z.literal("texture2d").optional(),
   })
   .strict();
 
@@ -177,6 +181,7 @@ export const projectScenePostEffectLibraryStateSchema = z
 export type StudioScenePostEffectParameterV1 = z.infer<typeof scenePostEffectParameterSchemaV1>;
 export type StudioScenePostEffectParameterSchemaV1 = z.infer<typeof scenePostEffectParameterSchemaListV1>;
 export type StudioScenePostEffectSourceLanguageV1 = z.infer<typeof scenePostEffectSourceLanguageV1Schema>;
+export type StudioScenePostEffectTextureV1 = SampledTextureV1;
 export type StudioAcceptedScenePostEffectSourceV1 = z.infer<typeof acceptedScenePostEffectSourceSchemaV1>;
 export type StudioScenePostEffectSourceDraftV1 = z.infer<typeof scenePostEffectSourceDraftSchemaV1>;
 export type StudioScenePostEffectSourceAssetV1 = z.infer<typeof scenePostEffectSourceAssetSchemaV1>;
@@ -290,6 +295,7 @@ export function acceptStudioScenePostEffectSourceV1(
     parameterSchema: StudioScenePostEffectParameterSchemaV1;
     source: string;
     sourceLanguage?: StudioScenePostEffectSourceLanguageV1;
+    textureSlot?: "texture2d";
   }>,
 ): ProjectScenePostEffectLibraryState {
   const current = parseState(state);
@@ -304,10 +310,17 @@ export function acceptStudioScenePostEffectSourceV1(
     sourceLanguage === "glsl" ? input.canonicalWgslSource : draftSource,
   );
   const originalGlslSource = sourceLanguage === "glsl" ? draftSource : undefined;
+  const textureSlot = input.textureSlot;
   const currentAccepted = asset.accepted;
+  if (currentAccepted && currentAccepted.textureSlot !== textureSlot) {
+    throw new Error(
+      "A Scene post-effect texture-slot contract is immutable after its first acceptance. Create a new effect to change it.",
+    );
+  }
   const generation =
     currentAccepted?.source === source &&
     currentAccepted.originalGlslSource === originalGlslSource &&
+    currentAccepted.textureSlot === textureSlot &&
     sameParameterSchema(currentAccepted.parameterSchema, parameterSchema)
       ? currentAccepted.generation
       : (currentAccepted?.generation ?? 0) + 1;
@@ -318,6 +331,7 @@ export function acceptStudioScenePostEffectSourceV1(
     parameterSchema,
     shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
     source,
+    ...(textureSlot ? { textureSlot } : {}),
   });
   return parseState({
     ...current,
@@ -326,7 +340,13 @@ export function acceptStudioScenePostEffectSourceV1(
         ? {
             ...candidate,
             accepted,
-            draft: { diagnostic: null, parameterSchema, source: draftSource, sourceLanguage },
+            draft: {
+              diagnostic: null,
+              parameterSchema,
+              source: draftSource,
+              sourceLanguage,
+              ...(textureSlot ? { textureSlot } : {}),
+            },
           }
         : candidate,
     ),
@@ -341,6 +361,7 @@ export function rejectStudioScenePostEffectSourceV1(
     parameterSchema: StudioScenePostEffectParameterSchemaV1;
     source: string;
     sourceLanguage?: StudioScenePostEffectSourceLanguageV1;
+    textureSlot?: "texture2d";
   }>,
 ): ProjectScenePostEffectLibraryState {
   const current = parseState(state);
@@ -358,6 +379,7 @@ export function rejectStudioScenePostEffectSourceV1(
               parameterSchema: input.parameterSchema,
               source: input.source,
               sourceLanguage,
+              ...(input.textureSlot ? { textureSlot: input.textureSlot } : {}),
             },
           }
         : candidate,
@@ -387,7 +409,14 @@ export function acceptedStudioScenePostEffectRegistrySourceV1(
 ) {
   const asset = findStudioScenePostEffectSourceV1(state, assetRevision);
   const accepted = asset?.accepted;
-  return accepted ? { revision: asset.revision, shaderId: accepted.shaderId, source: accepted.source } : null;
+  return accepted
+    ? {
+        revision: asset.revision,
+        shaderId: accepted.shaderId,
+        source: accepted.source,
+        ...(accepted.textureSlot ? { textureSlot: accepted.textureSlot } : {}),
+      }
+    : null;
 }
 
 /** Creates the source-free Scene IR reference from the accepted asset. */
@@ -395,10 +424,18 @@ export function acceptedStudioScenePostEffectReferenceV1(
   state: ProjectScenePostEffectLibraryState,
   assetRevision: number,
   parameters?: readonly number[],
+  texture?: StudioScenePostEffectTextureV1,
 ): ScenePostEffectV1 | null {
   const asset = findStudioScenePostEffectSourceV1(state, assetRevision);
   const accepted = asset?.accepted;
   if (!accepted) return null;
+  if ((accepted.textureSlot === "texture2d") !== (texture !== undefined)) {
+    throw new Error(
+      accepted.textureSlot === "texture2d"
+        ? "The Scene post effect requires one project texture assignment."
+        : "The Scene post effect does not declare a texture slot.",
+    );
+  }
   const values = parameters ? [...parameters] : accepted.parameterSchema.map((parameter) => parameter.default);
   if (values.length !== accepted.parameterSchema.length) {
     throw new Error("The Scene post effect must contain every declared parameter value.");
@@ -414,5 +451,29 @@ export function acceptedStudioScenePostEffectReferenceV1(
     parameters: values,
     revision: asset.revision,
     shaderId: accepted.shaderId,
+    ...(texture ? { texture: sampledTextureV1Schema.parse(texture) } : {}),
   });
+}
+
+/** Rebuilds one accepted Scene reference while preserving its scalar parameters. */
+export function updateStudioScenePostEffectReferenceTextureV1(
+  state: ProjectScenePostEffectLibraryState,
+  assetRevision: number,
+  effect: ScenePostEffectV1,
+  texture: StudioScenePostEffectTextureV1 | null,
+): ScenePostEffectV1 {
+  if (
+    effect.shaderId !== PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 ||
+    effect.revision !== scenePostEffectAssetRevisionSchema.parse(assetRevision)
+  ) {
+    throw new Error("The Scene post-effect reference does not belong to the selected project effect asset.");
+  }
+  const updated = acceptedStudioScenePostEffectReferenceV1(
+    state,
+    assetRevision,
+    effect.parameters,
+    texture ?? undefined,
+  );
+  if (!updated) throw new Error("The selected Scene post-effect source has not been accepted.");
+  return updated;
 }

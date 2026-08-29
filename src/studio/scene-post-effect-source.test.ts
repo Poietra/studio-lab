@@ -16,7 +16,13 @@ import {
   removeStudioScenePostEffectSourceV1,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+  updateStudioScenePostEffectReferenceTextureV1,
 } from "./scene-post-effect-source";
+
+const PROJECT_TEXTURE = {
+  asset: { assetId: "project-image", sha256: "a".repeat(64) },
+  sampler: "linear" as const,
+};
 
 const GLSL_SOURCE = `#version 450
 layout(location = 0) out vec4 output_color;
@@ -127,6 +133,60 @@ describe("project Scene post-effect asset library", () => {
       revision: created.revision,
     });
     expect(acceptedStudioScenePostEffectReferenceV1(edited, created.revision)?.revision).toBe(created.revision);
+  });
+
+  it("keeps the auxiliary texture declaration aligned across source, registry, and Scene reference", () => {
+    const created = createAsset("Textured effect");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const accepted = acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+      ...asset.draft,
+      textureSlot: "texture2d",
+    });
+
+    expect(findStudioScenePostEffectSourceV1(accepted, created.revision)).toMatchObject({
+      accepted: { generation: 1, textureSlot: "texture2d" },
+      draft: { textureSlot: "texture2d" },
+    });
+    expect(acceptedStudioScenePostEffectRegistrySourceV1(accepted, created.revision)).toMatchObject({
+      revision: created.revision,
+      textureSlot: "texture2d",
+    });
+    expect(() => acceptedStudioScenePostEffectReferenceV1(accepted, created.revision)).toThrow(
+      /requires one project texture assignment/,
+    );
+    const reference = acceptedStudioScenePostEffectReferenceV1(accepted, created.revision, undefined, PROJECT_TEXTURE);
+    expect(reference?.texture).toEqual(PROJECT_TEXTURE);
+    expect(
+      updateStudioScenePostEffectReferenceTextureV1(accepted, created.revision, reference!, {
+        ...PROJECT_TEXTURE,
+        sampler: "nearest",
+      }).texture,
+    ).toEqual({ ...PROJECT_TEXTURE, sampler: "nearest" });
+    expect(() => updateStudioScenePostEffectReferenceTextureV1(accepted, created.revision, reference!, null)).toThrow(
+      /requires one project texture assignment/,
+    );
+  });
+
+  it("rejects a texture reference when the accepted source declares no auxiliary slot", () => {
+    const created = createAsset("No texture");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const accepted = acceptStudioScenePostEffectSourceV1(created.state, created.revision, asset.draft);
+
+    expect(() =>
+      acceptedStudioScenePostEffectReferenceV1(accepted, created.revision, undefined, PROJECT_TEXTURE),
+    ).toThrow(/does not declare a texture slot/);
+  });
+
+  it("keeps the texture ABI immutable after the first accepted generation", () => {
+    const created = createAsset("ABI change");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const accepted = acceptStudioScenePostEffectSourceV1(created.state, created.revision, asset.draft);
+    expect(() =>
+      acceptStudioScenePostEffectSourceV1(accepted, created.revision, {
+        ...findStudioScenePostEffectSourceV1(accepted, created.revision)!.draft,
+        textureSlot: "texture2d",
+      }),
+    ).toThrow(/texture-slot contract is immutable/);
   });
 
   it("contains a rejected draft to one asset and retains its last accepted source", () => {

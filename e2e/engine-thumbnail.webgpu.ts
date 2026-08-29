@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { expect, test } from "@playwright/test";
+import type { SceneIrBundleV1 } from "../src/engine/contracts";
 
 const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10] as const;
 const THUMBNAIL_WIDTH = 854;
@@ -73,4 +74,118 @@ test("renders the representative Scene frame as the durable PNG thumbnail shape"
   // proves the replacement for Manim `-s` selected the final Scene state.
   expect(result.finalCirclePixel[0]).toBeGreaterThan(245);
   expect(result.finalCirclePixel.slice(1)).toEqual([0, 0, 255]);
+});
+
+test("renders an effect-only project PNG through the canonical thumbnail path", async ({ page }) => {
+  test.setTimeout(120_000);
+  const [sceneFixture, pngFixture] = await Promise.all([
+    readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8"),
+    readFile("fixtures/engine-v1/png-alpha-edge-camera.json", "utf8"),
+  ]);
+  const base = JSON.parse(sceneFixture) as SceneIrBundleV1;
+  const png = JSON.parse(pngFixture) as Readonly<{
+    assetPayloads: readonly Readonly<{ assetId: string; encodedBytes: readonly number[] }>[];
+    assets: SceneIrBundleV1["assets"];
+  }>;
+  const asset = png.assets.assets[0];
+  const payload = png.assetPayloads[0];
+  if (!asset || !payload || asset.id !== payload.assetId) throw new Error("The PNG thumbnail fixture is incomplete.");
+  const snapshot: SceneIrBundleV1 = {
+    assets: png.assets,
+    scene: {
+      ...base.scene,
+      animationChannels: [],
+      assetManifest: {
+        manifestDigest: png.assets.manifestDigest,
+        manifestId: png.assets.manifestId,
+      },
+      entities: [],
+      postEffects: [
+        {
+          parameters: [],
+          revision: 1,
+          shaderId: "project-scene-post-effect",
+          texture: {
+            asset: { assetId: asset.id, sha256: asset.sha256 },
+            sampler: "nearest",
+          },
+        },
+      ],
+      requiredCapabilities: ["png-image", "scene-post-effect"],
+      sceneId: "fixture:textured-effect-thumbnail",
+      source: { ...base.scene.source, revisionHash: "b".repeat(64) },
+    },
+  };
+  const scenePostEffectRegistry = {
+    effects: [
+      {
+        revision: 1,
+        shaderId: "project-scene-post-effect",
+        source: `struct Host {
+  viewport_and_time: vec4<f32>,
+  parameters_0: vec4<f32>,
+  parameters_1: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> host: Host;
+@group(0) @binding(1) var scene_texture: texture_2d<f32>;
+@group(0) @binding(3) var auxiliary_texture: texture_2d<f32>;
+@group(0) @binding(4) var auxiliary_sampler: sampler;
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+  return textureSample(auxiliary_texture, auxiliary_sampler, vec2<f32>(0.25, 0.5));
+}`,
+        textureSlot: "texture2d",
+      },
+    ],
+    schema: "poietra.scene-post-effect-registry",
+    version: 1,
+  };
+
+  await page.goto("/");
+  const result = await page.evaluate(
+    async ({ asset, encodedBytes, scenePostEffectRegistry, snapshot }) => {
+      const worker = new Worker("/e2e/engine-thumbnail.worker.ts", { type: "module" });
+      const done = new Promise<{ bytes?: ArrayBuffer; kind: string; message?: string }>((resolve, reject) => {
+        worker.addEventListener("error", (event) => reject(new Error(event.message)), { once: true });
+        worker.addEventListener("message", (event) => resolve(event.data as never), { once: true });
+      });
+      const snapshotJson = new TextEncoder().encode(JSON.stringify(snapshot)).buffer;
+      const assetMetadataJson = new TextEncoder().encode(JSON.stringify([asset])).buffer;
+      const assetBytes = Uint8Array.from(encodedBytes).buffer;
+      const scenePostEffectRegistryJson = new TextEncoder().encode(JSON.stringify(scenePostEffectRegistry)).buffer;
+      worker.postMessage(
+        {
+          assetBytes: [assetBytes],
+          assetMetadataJson,
+          kind: "generate-engine-thumbnail",
+          scenePostEffectRegistryJson,
+          snapshotJson,
+          wasmModuleUrl: new URL("/engine-wasm/poietra_wasm.js", location.href).href,
+        },
+        [assetBytes, assetMetadataJson, scenePostEffectRegistryJson, snapshotJson],
+      );
+      const response = await done.finally(() => worker.terminate());
+      if (response.kind !== "engine-thumbnail-generated" || !response.bytes) {
+        throw new Error(response.message ?? "The textured thumbnail worker failed.");
+      }
+      const bitmap = await createImageBitmap(new Blob([response.bytes], { type: "image/png" }));
+      const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      if (!context) throw new Error("A textured thumbnail verification context is unavailable.");
+      context.drawImage(bitmap, 0, 0);
+      bitmap.close();
+      const rgba = context.getImageData(0, 0, canvas.width, canvas.height).data;
+      let redDominantPixels = 0;
+      for (let offset = 0; offset < rgba.length; offset += 4) {
+        const red = rgba[offset] ?? 0;
+        const green = rgba[offset + 1] ?? 0;
+        const blue = rgba[offset + 2] ?? 0;
+        if (red > 200 && red > green * 2 && red > blue * 2) redDominantPixels += 1;
+      }
+      return { redDominantPixels };
+    },
+    { asset, encodedBytes: payload.encodedBytes, scenePostEffectRegistry, snapshot },
+  );
+
+  expect(result.redDominantPixels).toBeGreaterThan(100_000);
 });

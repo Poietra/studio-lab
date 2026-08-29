@@ -151,6 +151,31 @@ pub enum PrepareFrameErrorV1 {
     },
     #[error("Scene post effect {shader_id}@{revision} is unsupported")]
     UnsupportedScenePostEffect { revision: u32, shader_id: String },
+    #[error(
+        "Scene post effect {shader_id}@{revision} texture assignment does not match its declared slot (expects texture: {expects_texture})"
+    )]
+    ScenePostEffectTextureMismatch {
+        expects_texture: bool,
+        revision: u32,
+        shader_id: String,
+    },
+    #[error(
+        "Scene post effect {shader_id}@{revision} references missing verified PNG digest {sha256}"
+    )]
+    MissingScenePostEffectTextureAsset {
+        revision: u32,
+        sha256: String,
+        shader_id: String,
+    },
+    #[error(
+        "Scene post effect {shader_id}@{revision} resolved PNG digest {actual_sha256}, expected {expected_sha256}"
+    )]
+    ResolvedScenePostEffectTextureDigestMismatch {
+        actual_sha256: String,
+        expected_sha256: String,
+        revision: u32,
+        shader_id: String,
+    },
 }
 
 /// Position-only prepared geometry. Material interleaving is deferred to the
@@ -196,6 +221,7 @@ pub struct PreparedScenePostEffectV1 {
     parameters: [f32; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1],
     revision: u32,
     shader_id: String,
+    texture: Option<PreparedFragmentMaterialTextureV1>,
 }
 
 /// One verified decoded PNG bound to the fixed material texture slot.
@@ -241,6 +267,11 @@ impl PreparedScenePostEffectV1 {
     #[must_use]
     pub fn shader_id(&self) -> &str {
         &self.shader_id
+    }
+
+    #[must_use]
+    pub const fn texture(&self) -> Option<&PreparedFragmentMaterialTextureV1> {
+        self.texture.as_ref()
     }
 }
 
@@ -1721,6 +1752,10 @@ pub trait FragmentMaterialSupportV1 {
 /// carries only the admitted identity; source compilation remains renderer-owned.
 pub trait ScenePostEffectSupportV1 {
     fn supports_scene_post_effect(&self, shader_id: &str, revision: u32) -> bool;
+
+    fn has_scene_post_effect_texture_slot(&self, _shader_id: &str, _revision: u32) -> bool {
+        false
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1955,6 +1990,7 @@ fn prepare_fragment_material(
 
 fn prepare_scene_post_effects(
     effects: &[ScenePostEffectV1],
+    assets: Option<&dyn DecodedPngAssetResolverV1>,
     support: &dyn ScenePostEffectSupportV1,
 ) -> Result<Vec<PreparedScenePostEffectV1>, PrepareFrameErrorV1> {
     effects
@@ -1966,6 +2002,42 @@ fn prepare_scene_post_effects(
                     shader_id: effect.shader_id.clone(),
                 });
             }
+            let has_texture_slot =
+                support.has_scene_post_effect_texture_slot(&effect.shader_id, effect.revision);
+            if has_texture_slot != effect.texture.is_some() {
+                return Err(PrepareFrameErrorV1::ScenePostEffectTextureMismatch {
+                    expects_texture: has_texture_slot,
+                    revision: effect.revision,
+                    shader_id: effect.shader_id.clone(),
+                });
+            }
+            let texture = effect
+                .texture
+                .as_ref()
+                .map(|texture| {
+                    let decoded = assets
+                        .and_then(|assets| assets.resolve_png_asset_v1(&texture.asset.sha256))
+                        .ok_or_else(|| PrepareFrameErrorV1::MissingScenePostEffectTextureAsset {
+                            revision: effect.revision,
+                            sha256: texture.asset.sha256.clone(),
+                            shader_id: effect.shader_id.clone(),
+                        })?;
+                    if decoded.sha256() != texture.asset.sha256 {
+                        return Err(
+                            PrepareFrameErrorV1::ResolvedScenePostEffectTextureDigestMismatch {
+                                actual_sha256: decoded.sha256().to_owned(),
+                                expected_sha256: texture.asset.sha256.clone(),
+                                revision: effect.revision,
+                                shader_id: effect.shader_id.clone(),
+                            },
+                        );
+                    }
+                    Ok(PreparedFragmentMaterialTextureV1 {
+                        asset: decoded,
+                        sampler: texture.sampler,
+                    })
+                })
+                .transpose()?;
             let mut parameters = [0.0; MAX_FRAGMENT_MATERIAL_PARAMETERS_V1];
             for (index, value) in effect.parameters.iter().enumerate() {
                 let parameter = parameters.get_mut(index).ok_or_else(|| {
@@ -1983,6 +2055,7 @@ fn prepare_scene_post_effects(
                 parameters,
                 revision: effect.revision,
                 shader_id: effect.shader_id.clone(),
+                texture,
             })
         })
         .collect()
@@ -3473,7 +3546,8 @@ fn tessellate_validated_frame_with_shader_sources_inner_v1(
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     let packet = validated.packet;
     validate_fragment_material_frame_v1(packet)?;
-    let scene_post_effects = prepare_scene_post_effects(&packet.post_effects, scene_post_effects)?;
+    let scene_post_effects =
+        prepare_scene_post_effects(&packet.post_effects, assets, scene_post_effects)?;
     if packet.compositing == RenderCompositingV1::ManimCairoSrgb
         && let Some(draw) = packet
             .draws

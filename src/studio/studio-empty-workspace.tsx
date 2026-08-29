@@ -18,9 +18,12 @@ export function studioNativeWorkspaceOnboardingAvailable(
     authoredObjectCount: number;
     draftActive: boolean;
     nativeSceneActive: boolean;
+    scenePostEffectCount: number;
   }>,
 ) {
-  return input.nativeSceneActive && input.authoredObjectCount === 0 && !input.draftActive;
+  return (
+    input.nativeSceneActive && input.authoredObjectCount === 0 && input.scenePostEffectCount === 0 && !input.draftActive
+  );
 }
 
 export function StudioEmptyWorkspace({
