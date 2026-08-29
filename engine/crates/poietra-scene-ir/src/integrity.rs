@@ -42,6 +42,49 @@ fn issue(issues: &mut Vec<ValidationIssue>, path: impl Into<String>, message: im
     push_validation_issue(issues, path, message);
 }
 
+fn packet_post_effects_match_scene(scene: &SceneIrV1, packet: &RenderPacketV1) -> bool {
+    if scene.post_effects.len() != packet.post_effects.len() {
+        return false;
+    }
+    let animated_parameters = scene
+        .animation_channels
+        .iter()
+        .filter_map(|channel| match channel {
+            AnimationChannelV1::ScenePostEffectParameter {
+                parameter_index,
+                revision,
+                shader_id,
+                ..
+            } => Some((shader_id.as_str(), *revision, *parameter_index)),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    scene
+        .post_effects
+        .iter()
+        .zip(&packet.post_effects)
+        .all(|(source_effect, sampled_effect)| {
+            source_effect.shader_id == sampled_effect.shader_id
+                && source_effect.revision == sampled_effect.revision
+                && source_effect.texture == sampled_effect.texture
+                && source_effect.parameters.len() == sampled_effect.parameters.len()
+                && source_effect
+                    .parameters
+                    .iter()
+                    .zip(&sampled_effect.parameters)
+                    .enumerate()
+                    .all(|(parameter_index, (source_value, sampled_value))| {
+                        u32::try_from(parameter_index).is_ok_and(|parameter_index| {
+                            animated_parameters.contains(&(
+                                source_effect.shader_id.as_str(),
+                                source_effect.revision,
+                                parameter_index,
+                            ))
+                        }) || source_value.to_bits() == sampled_value.to_bits()
+                    })
+        })
+}
+
 fn validate_manifest_reference(
     reference: &AssetManifestReferenceV1,
     manifest: &AssetManifestV1,
@@ -357,7 +400,7 @@ fn validate_render_packet_for_scene(
             "packet compositing does not match scene semantics",
         );
     }
-    if packet.post_effects != scene.post_effects {
+    if !packet_post_effects_match_scene(scene, packet) {
         issue(
             &mut issues,
             "$.packet.postEffects",

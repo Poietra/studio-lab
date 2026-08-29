@@ -306,6 +306,55 @@ describe("Poietra Engine v1 contracts", () => {
     await expect(parseVerifiedSceneIrBundleV1({ assets, scene: parsed })).resolves.toEqual({ assets, scene: parsed });
   });
 
+  it("decodes the renderer-neutral Scene post-effect scalar animation channel", async () => {
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const channel = {
+      id: "scene-effect-parameter",
+      keyframes: [
+        { at: 0, easingToNext: { kind: "smooth" }, value: 4 },
+        { at: 2, easingToNext: null, value: 8 },
+      ],
+      kind: "scene-post-effect-parameter",
+      parameterIndex: 0,
+      provenanceId: "fixture",
+      revision: 1,
+      shaderId: "rgb-split",
+    } as const;
+    const withTrack = {
+      ...validScene,
+      animationChannels: [...validScene.animationChannels, channel],
+      postEffects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
+      requiredCapabilities: [...validScene.requiredCapabilities, "scene-post-effect"],
+    };
+
+    expect(sceneIrV1Schema.safeParse(withTrack).success).toBe(true);
+    expect(
+      sceneIrV1Schema.safeParse({
+        ...withTrack,
+        animationChannels: [...validScene.animationChannels, { ...channel, keyframes: [channel.keyframes[0]] }],
+      }).success,
+    ).toBe(false);
+    expect(
+      sceneIrV1Schema.safeParse({
+        ...withTrack,
+        animationChannels: [...validScene.animationChannels, { ...channel, parameterIndex: 8 }],
+      }).success,
+    ).toBe(false);
+    expect(
+      sceneIrV1Schema.safeParse({
+        ...withTrack,
+        animationChannels: [
+          ...validScene.animationChannels,
+          {
+            ...channel,
+            keyframes: [channel.keyframes[0], { ...channel.keyframes[1], value: Number.MAX_VALUE }],
+          },
+        ],
+      }).success,
+    ).toBe(false);
+  });
+
   it("delegates Scene semantic invariants to the Rust core", async () => {
     const assets = await manifest();
     const validScene = scene(assets);

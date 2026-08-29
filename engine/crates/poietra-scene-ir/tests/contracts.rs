@@ -178,6 +178,88 @@ fn scene_post_effect_stack_rejects_duplicates_and_more_than_four_passes() {
 }
 
 #[test]
+fn scene_post_effect_parameter_tracks_are_closed_and_packet_correlated() {
+    let effect = ScenePostEffectV1 {
+        parameters: vec![4.0, 2.0],
+        revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+        shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+        texture: None,
+    };
+    let mut scene = empty_scene();
+    scene.post_effects = vec![effect.clone()];
+    scene.required_capabilities = vec![SceneCapabilityV1::ScenePostEffect];
+    scene
+        .animation_channels
+        .push(AnimationChannelV1::ScenePostEffectParameter {
+            id: "scene-post-effect-parameter:0".to_owned(),
+            keyframes: vec![
+                KeyframeV1 {
+                    at: 0.0,
+                    easing_to_next: Some(EasingV1::Linear {}),
+                    value: 4.0,
+                },
+                KeyframeV1 {
+                    at: 2.0,
+                    easing_to_next: None,
+                    value: 8.0,
+                },
+            ],
+            parameter_index: 0,
+            provenance_id: "fixture:root".to_owned(),
+            revision: RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+            shader_id: RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+        });
+    validate_scene_ir_v1(&scene).unwrap();
+
+    let mut packet = empty_packet();
+    packet.post_effects = vec![ScenePostEffectV1 {
+        parameters: vec![6.0, 2.0],
+        ..effect
+    }];
+    packet.required_capabilities = vec![RenderCapabilityV1::ScenePostEffect];
+    validate_engine_frame_v1(&EngineFrameV1 {
+        assets: empty_manifest(),
+        packet: packet.clone(),
+        scene: scene.clone(),
+    })
+    .unwrap();
+
+    packet.post_effects[0].parameters[1] = 3.0;
+    assert!(
+        validate_engine_frame_v1(&EngineFrameV1 {
+            assets: empty_manifest(),
+            packet,
+            scene: scene.clone(),
+        })
+        .unwrap_err()
+        .contains_message("post-effect stack does not match scene semantics")
+    );
+
+    let mut stale_baseline = scene.clone();
+    let AnimationChannelV1::ScenePostEffectParameter { keyframes, .. } =
+        &mut stale_baseline.animation_channels[0]
+    else {
+        unreachable!();
+    };
+    keyframes[0].value = 4.000_1;
+    assert!(
+        validate_scene_ir_v1(&stale_baseline)
+            .unwrap_err()
+            .contains_message("must exactly match the static Scene post-effect parameter baseline")
+    );
+
+    let mut duplicate = scene;
+    duplicate
+        .animation_channels
+        .push(duplicate.animation_channels[0].clone());
+    assert!(
+        validate_scene_ir_v1(&duplicate)
+            .unwrap_err()
+            .contains_message("duplicate animation channel target")
+    );
+}
+
+#[test]
 fn legacy_single_post_effect_reads_as_one_canonical_plural_pass() {
     let effect = ScenePostEffectV1 {
         parameters: vec![2.0],

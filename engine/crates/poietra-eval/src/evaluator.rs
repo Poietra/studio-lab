@@ -12,9 +12,9 @@ use poietra_scene_ir::{
     PathTrimParameterizationV1, RENDER_ASPECT_RELATIVE_TOLERANCE_V1, RenderCameraKindV1,
     RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketSchemaV1,
     RenderPacketV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1,
-    SceneGeometryV1, SceneIrBundleV1, SceneIrV1, StrokeStyleV1, VectorAppearanceValueV1,
-    ViewportV1, affine_transform_is_singular_v1, validate_render_packet_for_validated_scene_v1,
-    validate_scene_ir_with_assets_v1,
+    SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ScenePostEffectV1, StrokeStyleV1,
+    VectorAppearanceValueV1, ViewportV1, affine_transform_is_singular_v1,
+    validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
 };
 
 use crate::retained_index::{
@@ -693,6 +693,45 @@ fn sample_camera(
     )
 }
 
+fn sample_scene_post_effects(
+    scene: &SceneIrV1,
+    index: &RetainedSceneIndexV1,
+    time: f64,
+) -> Result<Vec<ScenePostEffectV1>, EvaluationError> {
+    let mut post_effects = scene.post_effects.clone();
+    for (effect_index, effect) in post_effects.iter_mut().enumerate() {
+        for (parameter_index, parameter) in effect.parameters.iter_mut().enumerate() {
+            let Some(channel_index) =
+                index.scene_post_effect_parameter_channel(effect_index, parameter_index)
+            else {
+                continue;
+            };
+            let Some(AnimationChannelV1::ScenePostEffectParameter {
+                keyframes,
+                parameter_index: channel_parameter_index,
+                revision,
+                shader_id,
+                ..
+            }) = scene.animation_channels.get(channel_index)
+            else {
+                return Err(EvaluationError::MalformedScene(
+                    "retained Scene post-effect parameter channel index has the wrong kind",
+                ));
+            };
+            if shader_id != &effect.shader_id
+                || *revision != effect.revision
+                || usize::try_from(*channel_parameter_index).ok() != Some(parameter_index)
+            {
+                return Err(EvaluationError::MalformedScene(
+                    "retained Scene post-effect parameter channel has the wrong target",
+                ));
+            }
+            *parameter = sample_keyframes(parameter, keyframes, time, interpolate_number)?.0;
+        }
+    }
+    Ok(post_effects)
+}
+
 fn render_capabilities(
     draws: &[RenderDrawV1],
     has_scene_post_effect: bool,
@@ -899,6 +938,7 @@ fn compile_render_packet_with_camera_fit_v1(
             fit_camera_view_to_viewport_v1(camera, &options.viewport)
         }
     };
+    let post_effects = sample_scene_post_effects(options.scene, index, state_sample_time)?;
     let packet = RenderPacketV1 {
         asset_manifest: options.scene.asset_manifest.clone(),
         camera: RenderCameraV1 {
@@ -913,12 +953,8 @@ fn compile_render_packet_with_camera_fit_v1(
         coordinate_space: options.scene.coordinate_space.clone(),
         required_capabilities: render_capabilities(
             &draws,
-            !options.scene.post_effects.is_empty(),
-            options
-                .scene
-                .post_effects
-                .iter()
-                .any(|effect| effect.texture.is_some()),
+            !post_effects.is_empty(),
+            post_effects.iter().any(|effect| effect.texture.is_some()),
         ),
         draws,
         evidence: if options.evidence.is_empty() {
@@ -927,7 +963,7 @@ fn compile_render_packet_with_camera_fit_v1(
             options.evidence.to_vec()
         },
         packet_id: options.packet_id.to_owned(),
-        post_effects: options.scene.post_effects.clone(),
+        post_effects,
         sample_time: options.sample_time,
         scene_contract_version: ContractVersionV1,
         scene_duration: options.scene.duration,

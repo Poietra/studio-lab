@@ -10,8 +10,10 @@ import {
   enginePointV1Schema,
   evidenceV1Schema,
   fillStyleV1Schema,
+  finiteF32V1Schema,
   finiteNumberV1Schema,
   MAX_COORDINATE,
+  MAX_FRAGMENT_MATERIAL_PARAMETERS_V1,
   normalizedNumberV1Schema,
   POIETRA_ENGINE_CONTRACT_VERSION,
   rgbaColorV1Schema,
@@ -290,6 +292,22 @@ const cameraChannelV1Schema = z
   })
   .strict();
 
+const scenePostEffectParameterChannelV1Schema = z
+  .object({
+    id: sourceIdentityV1Schema,
+    keyframes: z.array(keyframeV1Schema(finiteF32V1Schema)).min(2).max(MAX_KEYFRAMES),
+    kind: z.literal("scene-post-effect-parameter"),
+    parameterIndex: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 - 1),
+    provenanceId: sourceIdentityV1Schema,
+    revision: z.number().int().positive().max(0xffff_ffff),
+    shaderId: sourceIdentityV1Schema,
+  })
+  .strict();
+
 export const animationChannelV1Schema = z.discriminatedUnion("kind", [
   affineTransformChannelV1Schema,
   cameraChannelV1Schema,
@@ -298,6 +316,7 @@ export const animationChannelV1Schema = z.discriminatedUnion("kind", [
   pathMorphChannelV1Schema,
   pathTrimChannelV1Schema,
   rotationChannelV1Schema,
+  scenePostEffectParameterChannelV1Schema,
   vectorAppearanceChannelV1Schema,
 ]);
 

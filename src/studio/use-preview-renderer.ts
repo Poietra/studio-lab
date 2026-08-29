@@ -41,6 +41,7 @@ import {
   type ApplyStudioMathTexTransformEditWireCommandV1,
   type ApplyStudioMotionEditCompiler,
   type ApplyStudioScenePostEffectCompiler,
+  type ApplyStudioScenePostEffectWireCommandV1,
   type ApplyStudioTimelineEditCompiler,
   type ApplyStudioTimelineEditWireCommandV1,
   compileApplyStaticRootTransformEdit,
@@ -137,6 +138,7 @@ import {
   studioMotionStudioEntities,
 } from "./scene-authoring-wire";
 import { withoutScenePostEffectProgramsV1 } from "./scene-post-effect-authoring";
+import { scenePostEffectParameterTrackToWorkingTime } from "./scene-post-effect-parameter-keyframe-edit";
 import type { StudioPlaybackClock } from "./studio-playback-clock";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import {
@@ -1906,9 +1908,14 @@ function routeScenePostEffectProgramV1(
   }
 }
 
-async function digestScenePostEffectRevisionV1(baseRevision: string, effects: unknown, registry: unknown) {
+async function digestScenePostEffectRevisionV1(
+  baseRevision: string,
+  effects: unknown,
+  parameterTracks: ApplyStudioScenePostEffectWireCommandV1["parameterTracks"],
+  registry: unknown,
+) {
   const bytes = new TextEncoder().encode(
-    canonicalJsonV1(["poietra.studio-scene-post-effect", baseRevision, effects, registry]),
+    canonicalJsonV1(["poietra.studio-scene-post-effect", baseRevision, effects, parameterTracks, registry]),
   );
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -1965,9 +1972,36 @@ export async function compileStudioPreviewSceneV1(
     };
   }
   const installedRegistry = registry.effects.length === 0 ? EMPTY_SCENE_POST_EFFECT_REGISTRY_V1 : registry;
+  const workingParameterTrack = operation.parameterTrack
+    ? scenePostEffectParameterTrackToWorkingTime(
+        operation.parameterTrack,
+        result.scene.timelineProjection?.transforms ?? [],
+      )
+    : null;
+  const parameterTracks: ApplyStudioScenePostEffectWireCommandV1["parameterTracks"] = workingParameterTrack
+    ? [
+        {
+          keyframes: workingParameterTrack.keyframes.map((keyframe, index) => ({
+            ...keyframe,
+            value:
+              index === 0
+                ? (operation.effects.find(
+                    (effect) =>
+                      effect.shaderId === workingParameterTrack.shaderId &&
+                      effect.revision === workingParameterTrack.revision,
+                  )?.parameters[workingParameterTrack.parameterIndex] ?? keyframe.value)
+                : keyframe.value,
+          })),
+          parameterIndex: workingParameterTrack.parameterIndex,
+          revision: workingParameterTrack.revision,
+          shaderId: workingParameterTrack.shaderId,
+        },
+      ]
+    : [];
   const nextRevision = await digestScenePostEffectRevisionV1(
     result.scene.engineRevisionHash,
     operation.effects,
+    parameterTracks,
     installedRegistry,
   );
   try {
@@ -1977,6 +2011,7 @@ export async function compileStudioPreviewSceneV1(
         effects: operation.effects,
         expectedBaseRevision: result.scene.engineRevisionHash,
         nextRevision,
+        parameterTracks,
         schema: "poietra.apply-studio-scene-post-effect",
         version: 1,
       },

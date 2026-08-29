@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { studioCubicBezierPathSchema, studioCubicBezierSpecSchema } from "../engine/cubic-bezier-authoring";
-import { assetReferenceV1Schema, fragmentMaterialV1Schema, scenePostEffectV1Schema } from "../engine/primitives";
+import {
+  assetReferenceV1Schema,
+  fragmentMaterialV1Schema,
+  MAX_FINITE_F32,
+  MAX_FRAGMENT_MATERIAL_PARAMETERS_V1,
+  scenePostEffectV1Schema,
+} from "../engine/primitives";
 import { studioPropertyKeyframeEasingSchema } from "../engine/scene-authoring";
 import { MAX_SCENE_POST_EFFECTS_V1 } from "../engine/scene-post-effect-registry";
 import { styleProfileRefSchema } from "./style-profile";
@@ -8,7 +14,7 @@ import { styleProfileRefSchema } from "./style-profile";
 export const SCENE_EDIT_VERSION = 1 as const;
 export const canonicalRgbHexSchema = z.string().regex(/^#[0-9a-f]{6}$/u);
 export const studioScenePostEffectV1Schema = scenePostEffectV1Schema;
-export type StudioScenePostEffectV1 = z.infer<typeof studioScenePostEffectV1Schema>;
+export type StudioScenePostEffectV1 = DeepReadonly<z.infer<typeof studioScenePostEffectV1Schema>>;
 export const scenePostEffectStackV1Schema = z
   .array(studioScenePostEffectV1Schema)
   .max(MAX_SCENE_POST_EFFECTS_V1)
@@ -26,7 +32,33 @@ export const scenePostEffectStackV1Schema = z
       identities.add(identity);
     });
   });
-export type StudioScenePostEffectStackV1 = z.infer<typeof scenePostEffectStackV1Schema>;
+export type StudioScenePostEffectStackV1 = DeepReadonly<z.infer<typeof scenePostEffectStackV1Schema>>;
+
+export const MAX_STUDIO_SCENE_POST_EFFECT_PARAMETER_KEYFRAMES = 32;
+const scenePostEffectParameterKeyframeSchema = z
+  .object({
+    easing: studioPropertyKeyframeEasingSchema,
+    time: z.number().finite().nonnegative(),
+    value: z.number().finite().min(-MAX_FINITE_F32).max(MAX_FINITE_F32),
+  })
+  .strict();
+export const scenePostEffectParameterTrackSchema = z
+  .object({
+    keyframes: z
+      .array(scenePostEffectParameterKeyframeSchema)
+      .min(2)
+      .max(MAX_STUDIO_SCENE_POST_EFFECT_PARAMETER_KEYFRAMES),
+    name: z.string().trim().min(1).max(40),
+    parameterIndex: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 - 1),
+    revision: z.number().int().positive().max(0xffff_ffff),
+    shaderId: z.string().min(1),
+  })
+  .strict();
+export type ScenePostEffectParameterTrack = DeepReadonly<z.infer<typeof scenePostEffectParameterTrackSchema>>;
 
 export function isCanonicalRgbHex(value: unknown): value is string {
   return canonicalRgbHexSchema.safeParse(value).success;
@@ -310,6 +342,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
   operationBaseSchema.extend({
     effects: scenePostEffectStackV1Schema,
     kind: z.literal("SetScenePostEffect"),
+    parameterTrack: scenePostEffectParameterTrackSchema.nullable().default(null),
   }),
   operationBaseSchema.extend({
     easing: z.enum(["linear", "smooth"]),
@@ -332,6 +365,33 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
 ]);
 
 const canonicalSceneEditOperationSchema = sceneEditOperationStructureSchema.superRefine((operation, context) => {
+  if (operation.kind === "SetScenePostEffect" && operation.parameterTrack) {
+    const track = operation.parameterTrack;
+    const effect = operation.effects.find(
+      (candidate) => candidate.shaderId === track.shaderId && candidate.revision === track.revision,
+    );
+    const baseValue = effect?.parameters[track.parameterIndex];
+    if (baseValue === undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "The Scene post-effect parameter track must target an existing effect parameter.",
+        path: ["parameterTrack"],
+      });
+    } else if (Math.abs(track.keyframes[0]!.value - baseValue) > 0.0005) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "The first Scene post-effect keyframe must preserve the effect's static parameter value.",
+        path: ["parameterTrack", "keyframes", 0, "value"],
+      });
+    }
+    if (track.keyframes.slice(1).some((keyframe, index) => keyframe.time <= track.keyframes[index]!.time + 0.0005)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Scene post-effect parameter keyframes must be ordered and distinct.",
+        path: ["parameterTrack", "keyframes"],
+      });
+    }
+  }
   if (operation.kind === "SetProperty" && operation.value === null && operation.key !== "strokeDash") {
     context.addIssue({
       code: z.ZodIssueCode.custom,

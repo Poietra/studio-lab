@@ -698,6 +698,22 @@ pub enum AnimationChannelV1 {
         #[serde(rename = "provenanceId")]
         provenance_id: String,
     },
+    #[serde(rename = "scene-post-effect-parameter")]
+    ScenePostEffectParameter {
+        id: String,
+        keyframes: Vec<KeyframeV1<f64>>,
+        #[serde(
+            rename = "parameterIndex",
+            deserialize_with = "deserialize_js_safe_u32"
+        )]
+        parameter_index: u32,
+        #[serde(rename = "provenanceId")]
+        provenance_id: String,
+        #[serde(deserialize_with = "deserialize_js_safe_u32")]
+        revision: u32,
+        #[serde(rename = "shaderId")]
+        shader_id: String,
+    },
 }
 
 impl AnimationChannelV1 {
@@ -711,7 +727,8 @@ impl AnimationChannelV1 {
             | Self::PathMorph { id, .. }
             | Self::VectorAppearance { id, .. }
             | Self::MotionPath { id, .. }
-            | Self::Camera { id, .. } => id,
+            | Self::Camera { id, .. }
+            | Self::ScenePostEffectParameter { id, .. } => id,
         }
     }
 
@@ -725,7 +742,8 @@ impl AnimationChannelV1 {
             | Self::PathMorph { provenance_id, .. }
             | Self::VectorAppearance { provenance_id, .. }
             | Self::MotionPath { provenance_id, .. }
-            | Self::Camera { provenance_id, .. } => provenance_id,
+            | Self::Camera { provenance_id, .. }
+            | Self::ScenePostEffectParameter { provenance_id, .. } => provenance_id,
         }
     }
 
@@ -739,7 +757,7 @@ impl AnimationChannelV1 {
             | Self::PathMorph { entity_id, .. }
             | Self::VectorAppearance { entity_id, .. }
             | Self::MotionPath { entity_id, .. } => Some(entity_id),
-            Self::Camera { .. } => None,
+            Self::Camera { .. } | Self::ScenePostEffectParameter { .. } => None,
         }
     }
 
@@ -754,6 +772,7 @@ impl AnimationChannelV1 {
             Self::VectorAppearance { .. } => "vector-appearance",
             Self::MotionPath { .. } => "motion-path",
             Self::Camera { .. } => "camera",
+            Self::ScenePostEffectParameter { .. } => "scene-post-effect-parameter",
         }
     }
 }

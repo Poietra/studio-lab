@@ -29,15 +29,20 @@ void main() {
 `;
 
 const callbacks = () => ({
+  duration: 4,
   imageAssets: [],
   onAddToStack: vi.fn(),
   onCompile: vi.fn(),
   onCreate: vi.fn(),
   onParametersChange: vi.fn(),
+  onParameterTrackChange: vi.fn(),
   onRemove: vi.fn(),
   onSelect: vi.fn(),
   onTextureChange: vi.fn(),
+  parameterAnimationAvailable: true,
   selectedRevision: null,
+  parameterTrack: null,
+  playhead: 1,
   texture: null,
 });
 
@@ -129,6 +134,60 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("Compile &amp; accept WGSL");
     expect(markup).toContain("Reset source");
     expect(markup).toContain("In Scene stack");
+  });
+
+  it("renders the active parameter animation from the canonical Scene effect Program", () => {
+    const created = createAsset("Wave Distortion");
+    const accepted = acceptAsset(created);
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        {...callbacks()}
+        activeRevisions={[created.revision]}
+        assets={accepted.state.assets}
+        available
+        parameters={[18, 80, 1.25]}
+        parameterTrack={{
+          keyframes: [
+            { easing: "smooth", time: 0, value: 18 },
+            { easing: "linear", time: 2, value: 32 },
+          ],
+          name: "Amplitude",
+          parameterIndex: 0,
+          revision: created.revision,
+          shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+        }}
+        sourceAvailable
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Scene post-effect parameter animation"');
+    expect(markup).toContain("Amplitude · 2 keyframes");
+    expect(markup).toContain('aria-label="Amplitude keyframe 2 value"');
+    expect(markup).toContain("Update animation");
+    expect(markup).toContain("Remove animation");
+    expect(markup).toContain("Static parameters are locked while Amplitude has a Timeline track.");
+  });
+
+  it("disables parameter animation while the timeline projection is not ready", () => {
+    const created = createAsset("Wave Distortion");
+    const accepted = acceptAsset(created);
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        {...callbacks()}
+        activeRevisions={[created.revision]}
+        assets={accepted.state.assets}
+        available
+        parameterAnimationAvailable={false}
+        parameters={[18, 80, 1.25]}
+        sourceAvailable
+      />,
+    );
+
+    const animateControl = markup.match(/<button[^>]*disabled=""[^>]*>Animate from 0s to/u)?.[0];
+    expect(animateControl).toBeDefined();
+    const sourceControl = markup.match(/<textarea[^>]*aria-label="Scene post-effect WGSL source"[^>]*>/u)?.[0];
+    expect(sourceControl).toBeDefined();
+    expect(sourceControl).not.toContain("disabled");
   });
 
   it("offers one verified project PNG and sampler for a declared auxiliary texture slot", () => {

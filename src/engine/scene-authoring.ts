@@ -137,6 +137,16 @@ export type ApplyStudioScenePostEffectWireCommandV1 = Readonly<{
   }>[];
   expectedBaseRevision: string;
   nextRevision: string;
+  parameterTracks: readonly Readonly<{
+    keyframes: readonly Readonly<{
+      easing: StudioPropertyKeyframeEasing;
+      time: number;
+      value: number;
+    }>[];
+    parameterIndex: number;
+    revision: number;
+    shaderId: string;
+  }>[];
   schema: "poietra.apply-studio-scene-post-effect";
   version: 1;
 }>;

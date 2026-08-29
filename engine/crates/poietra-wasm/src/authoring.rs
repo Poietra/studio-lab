@@ -17,11 +17,11 @@ use poietra_eval::{
     StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
     StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
     StudioMotionEditInput, StudioMotionEntityIdentity, StudioMotionProjectionBatch,
-    StudioMotionSourceBinding, StudioSvgPathError, StudioTimelineEditInput,
-    extend_studio_cubic_bezier, inspect_studio_cubic_bezier, inspect_studio_svg_path_asset,
-    project_studio_creation_edits, project_studio_creation_edits_with_spatial_context,
-    project_studio_math_tex_transform_edits, project_studio_motion_edit,
-    project_studio_timeline_edits,
+    StudioMotionSourceBinding, StudioScenePostEffectParameterTrack, StudioSvgPathError,
+    StudioTimelineEditInput, extend_studio_cubic_bezier, inspect_studio_cubic_bezier,
+    inspect_studio_svg_path_asset, project_studio_creation_edits,
+    project_studio_creation_edits_with_spatial_context, project_studio_math_tex_transform_edits,
+    project_studio_motion_edit, project_studio_timeline_edits,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, PointV1, SceneIrBundleV1, ScenePostEffectV1,
@@ -368,6 +368,7 @@ struct ApplyStudioScenePostEffectCommandJsonV1 {
     effects: Vec<ScenePostEffectV1>,
     expected_base_revision: String,
     next_revision: String,
+    parameter_tracks: Vec<StudioScenePostEffectParameterTrack>,
     #[serde(rename = "schema")]
     _schema: ApplyStudioScenePostEffectSchemaV1,
     #[serde(rename = "version")]
@@ -380,6 +381,7 @@ impl From<ApplyStudioScenePostEffectCommandJsonV1> for ApplyStudioScenePostEffec
             effects: value.effects,
             expected_base_revision: value.expected_base_revision,
             next_revision: value.next_revision,
+            parameter_tracks: value.parameter_tracks,
         }
     }
 }
@@ -952,6 +954,56 @@ mod tests {
             "scene": fixture["scene"]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn scene_post_effect_wire_requires_and_applies_parameter_tracks() {
+        let command = json!({
+            "effects": [{
+                "parameters": [4.0, 2.0],
+                "revision": 1,
+                "shaderId": "rgb-split"
+            }],
+            "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "parameterTracks": [{
+                "keyframes": [{ "easing": "linear", "time": 0.0, "value": 4.0 },
+                              { "easing": "ease-in-out", "time": 2.0, "value": 8.0 }],
+                "parameterIndex": 0,
+                "revision": 1,
+                "shaderId": "rgb-split"
+            }],
+            "schema": "poietra.apply-studio-scene-post-effect",
+            "version": 1
+        });
+        let response = apply_studio_scene_post_effect_json(
+            &static_fixture_json(),
+            &serde_json::to_vec(&command).unwrap(),
+        )
+        .unwrap();
+        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        assert!(matches!(
+            bundle.scene.animation_channels.last(),
+            Some(AnimationChannelV1::ScenePostEffectParameter { keyframes, .. })
+                if keyframes.len() == 2
+                    && matches!(
+                        keyframes[0].easing_to_next.as_ref(),
+                        Some(poietra_scene_ir::EasingV1::Linear {})
+                    )
+        ));
+
+        let mut missing_tracks = command;
+        missing_tracks
+            .as_object_mut()
+            .unwrap()
+            .remove("parameterTracks");
+        assert!(matches!(
+            apply_studio_scene_post_effect_json(
+                &static_fixture_json(),
+                &serde_json::to_vec(&missing_tracks).unwrap(),
+            ),
+            Err(SceneAuthoringAdapterError::CommandJson { .. })
+        ));
     }
 
     fn math_tex_transform_edit_command_json() -> Vec<u8> {

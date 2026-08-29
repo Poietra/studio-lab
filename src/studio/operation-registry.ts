@@ -1758,6 +1758,15 @@ export const OPERATION_REGISTRY = {
           severity: "error",
         });
       }
+      if (operation.parameterTrack?.keyframes.some(({ time }) => time > scene.duration)) {
+        issues.push({
+          code: "schema-invalid",
+          field: "parameterTrack",
+          message: "Scene post-effect parameter keyframes must stay inside the Scene duration.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
       return issues;
     },
   } satisfies Capability<"SetScenePostEffect">,

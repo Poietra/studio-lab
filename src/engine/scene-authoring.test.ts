@@ -485,12 +485,23 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(creationEditCommand);
   });
 
-  it("forwards the exact built-in Scene post-effect assignment", async () => {
+  it("forwards the exact built-in Scene post-effect assignment and scalar track", async () => {
     const bundle = await fixtureBundle();
     const command: ApplyStudioScenePostEffectWireCommandV1 = {
       effects: [{ parameters: [4, 2, 1, 0], revision: 1, shaderId: "rgb-split" }],
       expectedBaseRevision: "a".repeat(64),
       nextRevision: "b".repeat(64),
+      parameterTracks: [
+        {
+          keyframes: [
+            { easing: "ease-in-out", time: 0, value: 4 },
+            { easing: "smooth", time: 2, value: 8 },
+          ],
+          parameterIndex: 0,
+          revision: 1,
+          shaderId: "rgb-split",
+        },
+      ],
       schema: "poietra.apply-studio-scene-post-effect",
       version: 1,
     };
@@ -526,6 +537,7 @@ describe("Scene authoring WASM adapter", () => {
       ],
       expectedBaseRevision: "a".repeat(64),
       nextRevision: "b".repeat(64),
+      parameterTracks: [],
       schema: "poietra.apply-studio-scene-post-effect",
       version: 1,
     };

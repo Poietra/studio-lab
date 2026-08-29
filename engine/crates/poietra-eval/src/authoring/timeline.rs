@@ -255,7 +255,8 @@ pub(super) fn insert_scene_time(
             AnimationChannelV1::Opacity { keyframes, .. }
             | AnimationChannelV1::Rotation { keyframes, .. }
             | AnimationChannelV1::PathTrim { keyframes, .. }
-            | AnimationChannelV1::MotionPath { keyframes, .. } => {
+            | AnimationChannelV1::MotionPath { keyframes, .. }
+            | AnimationChannelV1::ScenePostEffectParameter { keyframes, .. } => {
                 shift_keyframes_for_insertion(keyframes, insertion);
             }
             AnimationChannelV1::PathMorph { keyframes, .. } => {
@@ -299,7 +300,8 @@ fn remove_scene_time(scene: &mut poietra_scene_ir::SceneIrV1, start: f64, end: f
             AnimationChannelV1::Opacity { keyframes, .. }
             | AnimationChannelV1::Rotation { keyframes, .. }
             | AnimationChannelV1::PathTrim { keyframes, .. }
-            | AnimationChannelV1::MotionPath { keyframes, .. } => {
+            | AnimationChannelV1::MotionPath { keyframes, .. }
+            | AnimationChannelV1::ScenePostEffectParameter { keyframes, .. } => {
                 for keyframe in keyframes {
                     keyframe.at = time_after_removal(keyframe.at, start, end);
                 }
@@ -929,7 +931,7 @@ impl EngineSessionV1 {
 
 #[cfg(test)]
 mod tests {
-    use poietra_scene_ir::{EasingV1, RuntimeTraceVersionV1};
+    use poietra_scene_ir::{EasingV1, RuntimeTraceVersionV1, SceneCapabilityV1};
 
     use super::super::tests::{
         BASE_REVISION, NEXT_REVISION, fixture_bundle, imported_bundle, static_imported_bundle,
@@ -1494,6 +1496,60 @@ mod tests {
             AnimationChannelV1::Opacity { keyframes, .. }
                 if (keyframes[1].at - 11.0).abs() < f64::EPSILON
                     && (keyframes[2].at - 15.0).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn timeline_wait_insertion_shifts_scene_post_effect_parameter_keyframes() {
+        let mut bundle = timeline_bundle();
+        bundle.scene.post_effects = vec![poietra_scene_ir::ScenePostEffectV1 {
+            parameters: vec![1.0],
+            revision: poietra_scene_ir::RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+            shader_id: poietra_scene_ir::RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+            texture: None,
+        }];
+        bundle
+            .scene
+            .required_capabilities
+            .push(SceneCapabilityV1::ScenePostEffect);
+        bundle.scene.required_capabilities.sort_unstable();
+        bundle
+            .scene
+            .animation_channels
+            .push(AnimationChannelV1::ScenePostEffectParameter {
+                id: "scene-post-effect-parameter:0".to_owned(),
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: 0.0,
+                        easing_to_next: Some(EasingV1::Linear {}),
+                        value: 1.0,
+                    },
+                    KeyframeV1 {
+                        at: 8.0,
+                        easing_to_next: None,
+                        value: 2.0,
+                    },
+                ],
+                parameter_index: 0,
+                provenance_id: bundle.scene.provenance[0].id.clone(),
+                revision: poietra_scene_ir::RGB_SPLIT_POST_EFFECT_SHADER_REVISION,
+                shader_id: poietra_scene_ir::RGB_SPLIT_POST_EFFECT_SHADER_ID.to_owned(),
+            });
+        let command = timeline_command(vec![SceneTimelineEdit::InsertWait(
+            SceneTimelineInsertion {
+                at: 7.0,
+                duration: 3.0,
+            },
+        )]);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.edit_scene_timeline(command).unwrap();
+
+        assert!(matches!(
+            result.scene.animation_channels.last(),
+            Some(AnimationChannelV1::ScenePostEffectParameter { keyframes, .. })
+                if keyframes[0].at.to_bits() == 0.0_f64.to_bits()
+                    && keyframes[1].at.to_bits() == 11.0_f64.to_bits()
         ));
     }
 
