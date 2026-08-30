@@ -11193,6 +11193,7 @@ fn normalized_creation_applies_nondefault_text_layout_in_the_initial_entity() {
     let legacy_layout: StudioTextLayout =
         serde_json::from_str(r#"{"alignment":"left","lineHeight":1.2}"#).unwrap();
     assert_eq!(legacy_layout, StudioTextLayout::default());
+    assert_eq!(legacy_layout.wrap_width, None);
     let bundle = static_imported_bundle();
     let entity_id = "tx:create/entity:circle";
     let mut command = studio_text_creation_command(&bundle, "Before");
@@ -11209,6 +11210,7 @@ fn normalized_creation_applies_nondefault_text_layout_in_the_initial_entity() {
             font_size: 1.5,
             font_weight: StudioTextFontWeight::Bold,
             line_height: 1.8,
+            wrap_width: Some(4.5),
         },
         text: "Wide\ni".to_owned(),
     };
@@ -11225,6 +11227,10 @@ fn normalized_creation_applies_nondefault_text_layout_in_the_initial_entity() {
     let projection =
         project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
     assert_eq!(projection.entities[0].layout, Some(updated.layout));
+    assert_eq!(
+        serde_json::to_value(projection.entities[0].layout).unwrap()["wrapWidth"],
+        4.5
+    );
     assert_eq!(
         projection.entities[0].text.as_deref(),
         Some(updated.text.as_str())
@@ -11254,6 +11260,37 @@ fn normalized_creation_applies_nondefault_text_layout_in_the_initial_entity() {
         created.lifetimes,
         vec![projection.entities[0].created_lifetime.clone()]
     );
+}
+
+#[test]
+fn normalized_creation_rejects_nonpositive_or_nonfinite_text_wrap_width_atomically() {
+    let bundle = static_imported_bundle();
+    for wrap_width in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let mut command = studio_text_creation_command(&bundle, "Invalid wrap width");
+        command.programs.truncate(1);
+        let layout = StudioTextLayout {
+            wrap_width: Some(wrap_width),
+            ..StudioTextLayout::default()
+        };
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            unreachable!();
+        };
+        entity.layout = Some(layout);
+        command.text_outlines[0].layout = layout;
+
+        assert!(matches!(
+            project_studio_creation_edits(bundle.scene.duration, &command.programs),
+            Err(ProjectStudioCreationEditError::Unsupported)
+        ));
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &bundle.scene);
+    }
 }
 
 #[test]

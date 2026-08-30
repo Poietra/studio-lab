@@ -603,6 +603,7 @@ const studioTextLayoutV1Schema = z
     fontSize: finiteNumberSchema.positive(),
     fontWeight: z.enum(["bold", "regular"]),
     lineHeight: finiteNumberSchema.positive(),
+    wrapWidth: finiteNumberSchema.positive().optional(),
   })
   .strict();
 const studioTextContentV1Schema = z
@@ -1231,6 +1232,7 @@ type StudioTextContentV1 = Readonly<{
     fontSize: number;
     fontWeight: "bold" | "regular";
     lineHeight: number;
+    wrapWidth?: number;
   }>;
   text: string;
 }>;

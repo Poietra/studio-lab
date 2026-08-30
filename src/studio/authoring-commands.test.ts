@@ -451,6 +451,7 @@ describe("manual Studio authoring commands", () => {
         fontSize: 1.5,
         fontWeight: "bold" as const,
         lineHeight: 1.8,
+        wrapWidth: 6,
       },
     };
     expect(() =>
@@ -544,7 +545,9 @@ describe("manual Studio authoring commands", () => {
     expect(
       redone.appliedPrograms[0]?.program.operations.find((operation) => operation.kind === "CreateEntity"),
     ).toMatchObject({
-      entity: { content: { text: "Wide\ni", textLayout: { fontFamily: "mono", fontWeight: "bold" } } },
+      entity: {
+        content: { text: "Wide\ni", textLayout: { fontFamily: "mono", fontWeight: "bold", wrapWidth: 6 } },
+      },
     });
   });
 

@@ -150,6 +150,10 @@ function sameProjectionNumber(left: number, right: number) {
   );
 }
 
+function sameOptionalProjectionNumber(left: number | undefined, right: number | undefined) {
+  return left === undefined ? right === undefined : right !== undefined && sameProjectionNumber(left, right);
+}
+
 function sameProjectionCoordinateAxis(
   left: Readonly<{ maximum: number; minimum: number; step: number }>,
   right: Readonly<{ maximum: number; minimum: number; step: number }>,
@@ -598,7 +602,8 @@ function correlateCreationProjection(
           (expectedTextContent.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) ||
         !sameProjectionNumber(projectedLayout.fontSize, expectedTextContent.layout.fontSize) ||
         projectedLayout.fontWeight !== expectedTextContent.layout.fontWeight ||
-        !sameProjectionNumber(projectedLayout.lineHeight, expectedTextContent.layout.lineHeight)
+        !sameProjectionNumber(projectedLayout.lineHeight, expectedTextContent.layout.lineHeight) ||
+        !sameOptionalProjectionNumber(projectedLayout.wrapWidth, expectedTextContent.layout.wrapWidth)
       : entity.text !== undefined || entity.layout !== undefined;
     if (
       !expected ||
@@ -751,6 +756,7 @@ function correlateCreationProjection(
       sameProjectionNumber(mutation.content.layout.fontSize, expectedTextContent.layout.fontSize) &&
       mutation.content.layout.fontWeight === expectedTextContent.layout.fontWeight &&
       sameProjectionNumber(mutation.content.layout.lineHeight, expectedTextContent.layout.lineHeight) &&
+      sameOptionalProjectionNumber(mutation.content.layout.wrapWidth, expectedTextContent.layout.wrapWidth) &&
       sameProjectionNumber(mutation.interval.start, contentTransformInsertion.at) &&
       sameProjectionNumber(
         mutation.interval.end - mutation.interval.start,

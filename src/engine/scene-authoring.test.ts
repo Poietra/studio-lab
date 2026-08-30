@@ -612,6 +612,57 @@ describe("Scene authoring WASM adapter", () => {
     ).resolves.toEqual(response);
   });
 
+  it("accepts only positive finite Text wrap widths from the Rust creation projection", async () => {
+    const response = {
+      durationTrimBarrierOperationIds: [],
+      entities: [
+        {
+          createdLifetime: { end: 2, start: 0 },
+          entityId: "entity:text",
+          initialDimensions: {},
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "text",
+          layout: {
+            alignment: "left",
+            fontFamily: "sans",
+            fontSize: 1,
+            fontWeight: "regular",
+            lineHeight: 1.2,
+            wrapWidth: 4.5,
+          },
+          operationId: "create:text",
+          text: "A long line",
+          transactionId: "create:text",
+        },
+      ],
+      insertions: [],
+      motions: [],
+      mutations: [],
+      projectedDuration: 2,
+      removals: [],
+      timelineProjection: { programProjections: [], projectedDuration: 2, transforms: [] },
+    } as const;
+    const compilerFor = (value: unknown) =>
+      createProjectStudioCreationCompiler(async () => ({
+        projectStudioCreationEditV1: () => new TextEncoder().encode(JSON.stringify(value)),
+      }));
+    const command = {
+      baseDuration: 2,
+      programs: [],
+      schema: "poietra.project-studio-creation-edit" as const,
+      version: 1 as const,
+    };
+
+    await expect(compilerFor(response)(command)).resolves.toEqual(response);
+    await expect(
+      compilerFor({
+        ...response,
+        entities: [{ ...response.entities[0], layout: { ...response.entities[0].layout, wrapWidth: 0 } }],
+      })(command),
+    ).rejects.toThrow();
+  });
+
   it("accepts one strict projected multi-segment Pen path motion", async () => {
     const path = {
       closed: false,

@@ -558,6 +558,69 @@ describe("Studio workspace projection", () => {
     );
   });
 
+  it("correlates Text wrap width instead of trusting stale projection typography", () => {
+    const imported = workspaceScene("First", null);
+    const layout = {
+      alignment: "left" as const,
+      fontFamily: "sans" as const,
+      fontSize: 1,
+      fontWeight: "regular" as const,
+      lineHeight: 1.2,
+      wrapWidth: 4.5,
+    };
+    const authored = createStudioEntitiesProgram({
+      capturedPlayhead: 0,
+      entities: [
+        {
+          content: { displayLines: ["A long line"], text: "A long line", textLayout: layout },
+          position: { x: 320, y: 180 },
+          type: "Text",
+        },
+      ],
+      scene: imported.runtimeSceneState,
+      transactionId: "wrapped-text-correlation",
+    });
+    const create = authored.validation.program.operations.find(({ kind }) => kind === "CreateEntity");
+    if (create?.kind !== "CreateEntity") throw new Error("Wrapped Text creation fixture is incomplete.");
+    const program: CanonicalEditProgram = {
+      ...authored.validation.program,
+      intentCount: 1,
+      operations: [create],
+      schedule: { edges: [], mode: "parallel", order: [create.id] },
+    };
+    const projection: StudioCreationProjectionV1 = {
+      durationTrimBarrierOperationIds: [],
+      entities: [
+        {
+          createdLifetime: { end: imported.runtimeSceneState.duration, start: 0 },
+          entityId: create.entity.id,
+          initialDimensions: {},
+          initialRotation: 0,
+          initialScale: 1,
+          kind: "text",
+          layout,
+          operationId: create.id,
+          text: "A long line",
+          transactionId: program.transactionId,
+        },
+      ],
+      insertions: [],
+      motions: [],
+      mutations: [],
+      projectedDuration: imported.runtimeSceneState.duration,
+      removals: [],
+      timelineProjection: emptyCreationTimeline(imported.runtimeSceneState.duration),
+    };
+
+    expect(selectCreationProjection(imported.runtimeSceneState.duration, [program], projection)).toBe(projection);
+    expect(() =>
+      selectCreationProjection(imported.runtimeSceneState.duration, [program], {
+        ...projection,
+        entities: [{ ...projection.entities[0]!, layout: { ...layout, wrapWidth: 5 } }],
+      }),
+    ).toThrow(/not correlated/u);
+  });
+
   it("keeps Rust-projected SVG dimensions available to selection transforms", () => {
     const imported = workspaceScene("First", null);
     const authored = createStudioEntitiesProgram({

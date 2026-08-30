@@ -1,6 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { STUDIO_TEXT_DEFAULT_LAYOUT } from "./editable-content";
 import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
 import { projectProposedState } from "./evaluator";
 import { createFixtureProposedState } from "./fixture";
@@ -54,6 +55,7 @@ describe("Inspector field validation", () => {
     );
     expect(markup).toContain('aria-label="Text font weight of energy"');
     expect(markup).toContain('aria-label="Text font family of energy"');
+    expect(markup).toContain('aria-label="Text wrap width of energy"');
     expect(markup).toContain('<option value="sans" selected="">Sans</option>');
     expect(markup).toContain('<option value="mono">Mono</option>');
     expect(markup).toContain('<option value="regular" selected="">Regular</option>');
@@ -131,8 +133,9 @@ describe("Inspector field validation", () => {
     });
   });
 
-  it("validates Text size, alignment, real weight, and line height as one content edit", () => {
+  it("validates Text size, alignment, real weight, line height, and wrap width as one content edit", () => {
     const entity = studioTextEntity();
+    expect(initialInspectorEditValues(entity).textWrapWidth).toBe("");
     expect(
       validateInspectorEdits(
         entity,
@@ -142,6 +145,7 @@ describe("Inspector field validation", () => {
           textFontSize: "1.5",
           textFontWeight: "bold",
           textLineHeight: "1.8",
+          textWrapWidth: "5.5",
         }),
       ),
     ).toEqual({
@@ -156,6 +160,7 @@ describe("Inspector field validation", () => {
             fontSize: 1.5,
             fontWeight: "bold",
             lineHeight: 1.8,
+            wrapWidth: 5.5,
           },
         },
       },
@@ -169,10 +174,47 @@ describe("Inspector field validation", () => {
       errors: { textLineHeight: expect.stringMatching(/greater than zero/i) },
       kind: "invalid",
     });
+    expect(validateInspectorEdits(entity, values(entity, { textWrapWidth: "0" }))).toEqual({
+      errors: { textWrapWidth: expect.stringMatching(/greater than zero/i) },
+      kind: "invalid",
+    });
+    expect(validateInspectorEdits(entity, values(entity, { textWrapWidth: "Infinity" }))).toEqual({
+      errors: { textWrapWidth: expect.stringMatching(/finite number/i) },
+      kind: "invalid",
+    });
     const imported = fixtureEntity("label_1");
     expect(validateInspectorEdits(imported, values(imported, { textAlignment: "right" }))).toEqual({
       errors: { textAlignment: expect.stringMatching(/only for Studio-created Text/i) },
       kind: "invalid",
+    });
+    expect(validateInspectorEdits(imported, values(imported, { textWrapWidth: "5" }))).toEqual({
+      errors: { textWrapWidth: expect.stringMatching(/only for Studio-created Text/i) },
+      kind: "invalid",
+    });
+  });
+
+  it("clears an existing Text wrap width without inventing a zero-width box", () => {
+    const entity = studioTextEntity();
+    const wrapped = {
+      ...entity,
+      content: {
+        displayLines: ["energy"],
+        text: "energy",
+        textLayout: { ...STUDIO_TEXT_DEFAULT_LAYOUT, wrapWidth: 4 },
+      },
+    } satisfies ProjectedEntity;
+
+    expect(initialInspectorEditValues(wrapped).textWrapWidth).toBe("4.00");
+    expect(validateInspectorEdits(wrapped, values(wrapped, { textWrapWidth: "" }))).toEqual({
+      edits: {
+        content: {
+          displayLines: ["energy"],
+          label: undefined,
+          text: "energy",
+          textLayout: STUDIO_TEXT_DEFAULT_LAYOUT,
+        },
+      },
+      kind: "valid",
     });
   });
 

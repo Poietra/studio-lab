@@ -1730,6 +1730,10 @@ fn studio_text_content_is_canonical(content: &StudioTextContent) -> bool {
         && content.layout.font_size > 0.0
         && content.layout.line_height.is_finite()
         && content.layout.line_height > 0.0
+        && content
+            .layout
+            .wrap_width
+            .is_none_or(|wrap_width| wrap_width.is_finite() && wrap_width > 0.0)
 }
 
 fn studio_creation_spec_text_content(spec: &StudioCreationEntitySpec) -> Option<StudioTextContent> {

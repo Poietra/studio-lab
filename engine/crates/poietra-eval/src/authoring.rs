@@ -384,6 +384,8 @@ pub struct StudioTextLayout {
     #[serde(default)]
     pub font_weight: StudioTextFontWeight,
     pub line_height: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap_width: Option<f64>,
 }
 
 const fn default_studio_text_font_size() -> f64 {
@@ -398,6 +400,7 @@ impl Default for StudioTextLayout {
             font_size: default_studio_text_font_size(),
             font_weight: StudioTextFontWeight::Regular,
             line_height: 1.2,
+            wrap_width: None,
         }
     }
 }

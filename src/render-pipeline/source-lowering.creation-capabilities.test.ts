@@ -585,6 +585,39 @@ describe("Canonical EditProgram source lowering", () => {
     );
   });
 
+  it("rejects Text wrap width instead of exporting an unwrapped Python object", () => {
+    const create = canonicalProgram(
+      [
+        {
+          ...operationBase("create-wrapped-text", 7),
+          entity: {
+            content: {
+              displayLines: ["A long line"],
+              text: "A long line",
+              textLayout: {
+                alignment: "left",
+                fontFamily: "sans",
+                fontSize: 1,
+                fontWeight: "regular",
+                lineHeight: 1.2,
+                wrapWidth: 4,
+              },
+            },
+            id: "tx:wrapped-text/entity:label",
+            lifetime: { end: null, start: 7 },
+            type: "Text",
+          },
+          kind: "CreateEntity",
+        },
+      ],
+      "wrapped-text",
+    );
+
+    expect(() => lowerCanonicalProgramSource(source, request(create, []), { height: 8, width: 14.222 }, null)).toThrow(
+      /wrap width faithfully/i,
+    );
+  });
+
   it("lowers Studio-created shape colors in operation order with the current opacity", () => {
     const entityId = "tx:created-colors/entity:circle";
     const create = canonicalProgram(

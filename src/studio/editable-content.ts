@@ -10,13 +10,13 @@ const MAX_CONTENT_LENGTH = 2_000;
 const MAX_DISPLAY_LINES = 2_000;
 const MAX_MATHTEX_PARTS = 16;
 export const STUDIO_CREATION_TEXT_MAX_LENGTH = MAX_TEXT_OUTLINE_SCALARS;
-export const STUDIO_TEXT_DEFAULT_LAYOUT = Object.freeze({
+export const STUDIO_TEXT_DEFAULT_LAYOUT: TextLayout = Object.freeze({
   alignment: "left",
   fontFamily: "sans",
   fontSize: 1,
   fontWeight: "regular",
   lineHeight: 1.2,
-}) satisfies TextLayout;
+});
 export const STUDIO_CREATION_TEXT_CONTRACT =
   "Text accepts visible Unicode text of at most 256 scalars, 8 lines, and 128 scalars per line.";
 
@@ -31,7 +31,8 @@ function canonicalTextLayout(value: unknown): TextLayout | null {
         key === "fontFamily" ||
         key === "fontSize" ||
         key === "fontWeight" ||
-        key === "lineHeight",
+        key === "lineHeight" ||
+        key === "wrapWidth",
     )
   )
     return null;
@@ -44,7 +45,17 @@ function canonicalTextLayout(value: unknown): TextLayout | null {
   if (fontWeight !== "bold" && fontWeight !== "regular") return null;
   if (typeof record.lineHeight !== "number" || !Number.isFinite(record.lineHeight) || record.lineHeight <= 0)
     return null;
-  return { alignment: record.alignment, fontFamily, fontSize, fontWeight, lineHeight: record.lineHeight };
+  const wrapWidth = record.wrapWidth;
+  if (wrapWidth !== undefined && (typeof wrapWidth !== "number" || !Number.isFinite(wrapWidth) || wrapWidth <= 0))
+    return null;
+  return {
+    alignment: record.alignment,
+    fontFamily,
+    fontSize,
+    fontWeight,
+    lineHeight: record.lineHeight,
+    ...(wrapWidth === undefined ? {} : { wrapWidth }),
+  };
 }
 
 /**
