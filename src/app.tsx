@@ -182,12 +182,20 @@ import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE, magicEditCapabilities } from "./stu
 import { MagicEditPanel } from "./studio/magic-edit-panel";
 import {
   appendMaterialParameterKeyframe,
+  appendMaterialRgbParameterKeyframe,
   type MaterialParameterKeyframe,
   type MaterialParameterKeyframeTrack,
+  type MaterialRgbParameterKeyframe,
+  type MaterialRgbParameterKeyframeTrack,
   materialParameterIdentityEditBlocker,
   materialParameterKeyframeTracksFromProgram,
+  materialRgbFromHexColor,
+  materialRgbParameterKeyframeTrackFromProgram,
+  materialRgbToHexColor,
   replaceMaterialParameterKeyframe,
   replaceMaterialParameterKeyframeProgram,
+  replaceMaterialRgbParameterKeyframe,
+  replaceMaterialRgbParameterKeyframeProgram,
 } from "./studio/material-parameter-keyframe-edit";
 import type {
   DataSeries,
@@ -2689,15 +2697,17 @@ export function App({
         ) {
           return [];
         }
-        return studioFragmentMaterialParameterLayoutV1(schema).entries.flatMap(({ offset, parameter }) =>
-          parameter.type === "f32" && Number.isFinite(assignment.parameters[offset])
-            ? [{ entityId, materialName, name: parameter.name }]
-            : [],
-        );
+        return studioFragmentMaterialParameterLayoutV1(schema).entries.flatMap(({ offset, parameter }) => {
+          const parameterWidth = parameter.type === "rgb" ? 3 : 1;
+          return assignment.parameters.slice(offset, offset + parameterWidth).every((value) => Number.isFinite(value))
+            ? [{ entityId, materialName, name: parameter.name, parameterType: parameter.type }]
+            : [];
+        });
       })
     : [];
   const staleMaterialParameterTracks = previewAppliedEdits.flatMap((record, programIndex) => {
     return materialParameterKeyframeTracksFromProgram(record.program, programIndex).filter((track) => {
+      if (track.rgbComponent) return false;
       const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
       const parameterSchema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
       const parameterEntry = parameterSchema
@@ -2714,10 +2724,11 @@ export function App({
       );
     });
   });
-  const materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = previewAppliedEdits.flatMap(
+  const scalarMaterialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = previewAppliedEdits.flatMap(
     (record, programIndex) => {
       if (!workspaceCreationProjection) return [];
       return materialParameterKeyframeTracksFromProgram(record.program, programIndex).flatMap((track) => {
+        if (track.rgbComponent) return [];
         const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
         const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
         const parameterEntry = schema
@@ -2776,6 +2787,7 @@ export function App({
             materialShaderId: track.material.shaderId,
             parameterIndex: track.parameterIndex,
             parameterName: track.name,
+            parameterType: "f32",
             programIndex,
             range: parameter?.name === track.name ? parameter.range : { max: baseline, min: baseline, step: 1 },
             readOnlyReason: assignmentChanged
@@ -2789,6 +2801,96 @@ export function App({
       });
     },
   );
+  const rgbMaterialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = previewAppliedEdits.flatMap(
+    (record, programIndex) => {
+      if (!workspaceCreationProjection) return [];
+      return Object.entries(activeSceneFragmentMaterials.assignments).flatMap(([entityId, assignment]) => {
+        if (
+          !record.program.operations.some(
+            (operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId,
+          )
+        ) {
+          return [];
+        }
+        const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId];
+        if (!schema) return [];
+        return studioFragmentMaterialParameterLayoutV1(schema).entries.flatMap(({ offset, parameter }) => {
+          if (parameter.type !== "rgb") return [];
+          let track: MaterialRgbParameterKeyframeTrack | null;
+          try {
+            track = materialRgbParameterKeyframeTrackFromProgram(record.program, programIndex, {
+              entityId,
+              material: assignment,
+              name: parameter.name,
+              parameterIndex: offset,
+            });
+          } catch {
+            return [];
+          }
+          if (!track) return [];
+          const operations = record.program.operations.filter(
+            (operation) =>
+              operation.kind === "AnimateProperty" &&
+              operation.materialParameter?.rgbComponent === "r" &&
+              operation.entityId === entityId &&
+              operation.materialParameter.parameterIndex === offset &&
+              operation.materialParameter.material.shaderId === assignment.shaderId &&
+              operation.materialParameter.material.revision === assignment.revision,
+          );
+          const mutations = operations.map((operation) =>
+            workspaceCreationProjection.mutations.find(
+              (mutation) => mutation.kind === "material-parameter-keyframes" && mutation.operationId === operation.id,
+            ),
+          );
+          if (mutations.some((mutation) => !mutation)) return [];
+          const projectedMutations = mutations as readonly Extract<
+            (typeof workspaceCreationProjection.mutations)[number],
+            { kind: "material-parameter-keyframes" }
+          >[];
+          const workingTimes =
+            projectedMutations.length === 1 &&
+            Math.abs(projectedMutations[0]!.interval.end - projectedMutations[0]!.interval.start) < 0.0005
+              ? [projectedMutations[0]!.interval.start]
+              : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
+          if (workingTimes.length !== track.keyframes.length) return [];
+          const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
+          return [
+            {
+              assignmentChanged: false,
+              entityId,
+              keyframes: track.keyframes.map((keyframe, index) => ({
+                ...keyframe,
+                sourceTime: keyframe.time,
+                time: workingTimes[index]!,
+                value: materialRgbToHexColor(keyframe.value),
+              })),
+              label:
+                workspaceProjection?.projection.timeline.objectTracks.find(
+                  (candidate) => candidate.entityId === entityId,
+                )?.label ?? entityId,
+              materialName: activeProjectFragmentMaterials.namesByShaderId[assignment.shaderId] ?? assignment.shaderId,
+              materialRevision: assignment.revision,
+              materialShaderId: assignment.shaderId,
+              parameterIndex: offset,
+              parameterName: parameter.name,
+              parameterType: "rgb",
+              programIndex,
+              range: { max: 1, min: 0, step: 1 / 255 },
+              readOnlyReason:
+                draftEdit && !activeDraftIsThisTrack
+                  ? "Apply or discard the current draft before editing this material track."
+                  : null,
+              transactionId: track.transactionId,
+            },
+          ];
+        });
+      });
+    },
+  );
+  const materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = [
+    ...scalarMaterialParameterTracks,
+    ...rgbMaterialParameterTracks,
+  ];
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
   const runtimeTraceEditCandidates = previewRenderer?.runtimeTraceEditCandidates ?? [];
   const runtimeTraceEditCandidateFor = (entityId: string | null | undefined) =>
@@ -6166,6 +6268,63 @@ export function App({
     }
   }
 
+  function stageMaterialRgbParameterKeyframes(
+    track: Readonly<{
+      entityId: string;
+      keyframes: readonly MaterialRgbParameterKeyframe[];
+      material: NonNullable<(typeof activeSceneFragmentMaterials.assignments)[string]>;
+      name: string;
+      parameterIndex: number;
+      programIndex: number;
+      program: SceneEdit;
+    }>,
+  ) {
+    if (!projectedEditorScene) return false;
+    const original = appliedEdits[track.programIndex];
+    if (!original || original.program.transactionId !== track.program.transactionId) {
+      setDraftError("The material track no longer matches the applied Program history.");
+      return false;
+    }
+    try {
+      const hasEntrance =
+        sceneProgramsHaveDrawIn([track.program], track.entityId) ||
+        sceneProgramsHaveWriteIn([track.program], track.entityId);
+      const materialSource = activeSceneFragmentMaterials.registry.materials.find(
+        (material) => material.shaderId === track.material.shaderId && material.revision === track.material.revision,
+      );
+      if (track.keyframes.length > 0 && hasEntrance && !materialSource) {
+        throw new Error("The assigned fragment material is unavailable. Reassign it before editing its keyframes.");
+      }
+      const validation = replaceMaterialRgbParameterKeyframeProgram({
+        baseProgram: track.program,
+        entityId: track.entityId,
+        fragmentMaterial: {
+          texture: track.material.texture !== undefined || materialSource?.textureSlot === "texture2d",
+        },
+        keyframes: track.keyframes,
+        material: track.material,
+        name: track.name,
+        parameterIndex: track.parameterIndex,
+        scene: projectedEditorScene.runtimeSceneState,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") throw new Error(validated.message);
+      return stageDraft({
+        appliedEdit: { index: track.programIndex, original },
+        clearSuggestion: true,
+        currentTime,
+        operation: null,
+        record: validated.record,
+        selectedObjectIds: [track.entityId],
+        stopPlayback: true,
+      });
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The material color keyframe could not be edited.");
+      setIsPlaying(false);
+      return false;
+    }
+  }
+
   function materialParameterTrackFor(
     program: SceneEdit,
     programIndex: number,
@@ -6178,6 +6337,7 @@ export function App({
   ) {
     return materialParameterKeyframeTracksFromProgram(program, programIndex).find(
       (track) =>
+        !track.rgbComponent &&
         track.entityId === target.entityId &&
         track.material.shaderId === target.materialShaderId &&
         track.material.revision === target.materialRevision &&
@@ -6185,17 +6345,33 @@ export function App({
     );
   }
 
+  function materialRgbParameterTrackFor(
+    program: SceneEdit,
+    programIndex: number,
+    target: Pick<
+      StudioMaterialParameterTimelineTrack,
+      "entityId" | "materialRevision" | "materialShaderId" | "parameterIndex" | "parameterName"
+    >,
+    material: NonNullable<(typeof activeSceneFragmentMaterials.assignments)[string]>,
+  ) {
+    if (material.shaderId !== target.materialShaderId || material.revision !== target.materialRevision) return null;
+    return materialRgbParameterKeyframeTrackFromProgram(program, programIndex, {
+      entityId: target.entityId,
+      material,
+      name: target.parameterName,
+      parameterIndex: target.parameterIndex,
+    });
+  }
+
   function addMaterialParameterKeyframe(entityId: string, name: string) {
     const owner = studioCreationProgramOwner(entityId);
     const assignment = activeSceneFragmentMaterials.assignments[entityId];
     const schema = assignment ? activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId] : null;
     const parameterEntry = schema
-      ? studioFragmentMaterialParameterLayoutV1(schema).entries.find(
-          ({ parameter }) => parameter.type === "f32" && parameter.name === name,
-        )
+      ? studioFragmentMaterialParameterLayoutV1(schema).entries.find(({ parameter }) => parameter.name === name)
       : null;
     const parameterIndex = parameterEntry?.offset ?? -1;
-    const parameter = parameterEntry?.parameter.type === "f32" ? parameterEntry.parameter : null;
+    const parameter = parameterEntry?.parameter ?? null;
     if (!owner || !assignment || !parameter) {
       setDraftError("This Studio-created object no longer has that editable material parameter.");
       return;
@@ -6206,8 +6382,34 @@ export function App({
       if (existingTracks.some((track) => JSON.stringify(track.material) !== JSON.stringify(assignment))) {
         throw new Error("The assigned material changed. Restore it or remove the existing tracks first.");
       }
+      if (parameter.type === "rgb") {
+        const track = materialRgbParameterKeyframeTrackFromProgram(owner.record.program, owner.programIndex, {
+          entityId,
+          material: assignment,
+          name,
+          parameterIndex,
+        });
+        if (track?.keyframes.some((keyframe) => Math.abs(keyframe.time - sourceTime) < 0.0005)) {
+          throw new Error("A material color keyframe already exists at the playhead.");
+        }
+        const [red, green, blue] = assignment.parameters.slice(parameterIndex, parameterIndex + 3);
+        if (red === undefined || green === undefined || blue === undefined) {
+          throw new Error("The selected material color no longer exists.");
+        }
+        stageMaterialRgbParameterKeyframes({
+          entityId,
+          keyframes: appendMaterialRgbParameterKeyframe(track?.keyframes ?? [], sourceTime, [red, green, blue]),
+          material: assignment,
+          name,
+          parameterIndex,
+          program: owner.record.program,
+          programIndex: owner.programIndex,
+        });
+        return;
+      }
       const track = existingTracks.find(
-        (candidate) => candidate.entityId === entityId && candidate.parameterIndex === parameterIndex,
+        (candidate) =>
+          !candidate.rgbComponent && candidate.entityId === entityId && candidate.parameterIndex === parameterIndex,
       );
       if (track && track.name !== name) throw new Error("The selected material parameter metadata changed.");
       if (track?.keyframes.some((keyframe) => Math.abs(keyframe.time - sourceTime) < 0.0005)) {
@@ -6232,8 +6434,38 @@ export function App({
 
   function duplicateMaterialParameterKeyframe(track: StudioMaterialParameterTimelineTrack, index: number) {
     const owner = studioCreationProgramOwner(track.entityId);
-    const sourceTrack = owner ? materialParameterTrackFor(owner.record.program, owner.programIndex, track) : null;
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+    if (track.parameterType === "rgb") {
+      try {
+        const sourceTrack =
+          owner && assignment
+            ? materialRgbParameterTrackFor(owner.record.program, owner.programIndex, track, assignment)
+            : null;
+        return duplicateStudioPropertyKeyframe({
+          conflictReason: null,
+          index,
+          label: "material color",
+          mismatchMessage: "The material color track no longer matches the Studio-created object.",
+          owner,
+          sourceTrack,
+          stage: (keyframes, canonicalOwner, canonicalTrack) =>
+            stageMaterialRgbParameterKeyframes({
+              entityId: track.entityId,
+              keyframes,
+              material: canonicalTrack.material,
+              name: canonicalTrack.name,
+              parameterIndex: canonicalTrack.parameterIndex,
+              program: canonicalOwner.record.program,
+              programIndex: canonicalOwner.programIndex,
+            }),
+          track,
+        });
+      } catch (error) {
+        setDraftError(error instanceof Error ? error.message : "The material color keyframe could not be duplicated.");
+        return null;
+      }
+    }
+    const sourceTrack = owner ? materialParameterTrackFor(owner.record.program, owner.programIndex, track) : null;
     if (!owner || !sourceTrack || !assignment || owner.record.program.transactionId !== track.transactionId) {
       setDraftError("The material parameter track no longer matches the Studio-created object.");
       return null;
@@ -6265,8 +6497,44 @@ export function App({
     patch: Partial<Pick<StudioMaterialParameterTimelineTrack["keyframes"][number], "easing" | "time" | "value">>,
   ) {
     const owner = studioCreationProgramOwner(track.entityId);
-    const sourceTrack = owner ? materialParameterTrackFor(owner.record.program, owner.programIndex, track) : null;
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+    if (track.parameterType === "rgb") {
+      try {
+        const sourceTrack =
+          owner && assignment
+            ? materialRgbParameterTrackFor(owner.record.program, owner.programIndex, track, assignment)
+            : null;
+        if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+          throw new Error("The material color track no longer matches the Studio-created object.");
+        }
+        if (index === 0 && patch.value !== undefined) {
+          throw new Error("The first material color keyframe preserves the assigned parameter value.");
+        }
+        if (patch.value !== undefined && typeof patch.value !== "string") {
+          throw new Error("The material color keyframe value is invalid.");
+        }
+        const rgbValue = patch.value === undefined ? undefined : materialRgbFromHexColor(patch.value);
+        if (rgbValue === null) throw new Error("The material color keyframe value is invalid.");
+        const sourcePatch: Partial<MaterialRgbParameterKeyframe> = {
+          ...(patch.easing === undefined ? {} : { easing: patch.easing }),
+          ...(patch.time === undefined ? {} : { time: workingTimeToSourceTime(previewAppliedSceneEdits, patch.time) }),
+          ...(rgbValue === undefined ? {} : { value: rgbValue }),
+        };
+        stageMaterialRgbParameterKeyframes({
+          entityId: track.entityId,
+          keyframes: replaceMaterialRgbParameterKeyframe(sourceTrack.keyframes, index, sourcePatch),
+          material: sourceTrack.material,
+          name: sourceTrack.name,
+          parameterIndex: sourceTrack.parameterIndex,
+          program: owner.record.program,
+          programIndex: owner.programIndex,
+        });
+      } catch (error) {
+        setDraftError(error instanceof Error ? error.message : "The material color keyframe could not be changed.");
+      }
+      return;
+    }
+    const sourceTrack = owner ? materialParameterTrackFor(owner.record.program, owner.programIndex, track) : null;
     if (!owner || !sourceTrack || !assignment || owner.record.program.transactionId !== track.transactionId) {
       setDraftError("The material parameter track no longer matches the Studio-created object.");
       return;
@@ -6275,7 +6543,10 @@ export function App({
       if (index === 0 && patch.value !== undefined) {
         throw new Error("The first material keyframe preserves the assigned parameter value.");
       }
-      if (patch.value !== undefined && (patch.value < track.range.min || patch.value > track.range.max)) {
+      if (
+        patch.value !== undefined &&
+        (typeof patch.value !== "number" || patch.value < track.range.min || patch.value > track.range.max)
+      ) {
         throw new Error(`${track.parameterName} must be between ${track.range.min} and ${track.range.max}.`);
       }
       const sourcePatch: Partial<MaterialParameterKeyframe> = {
@@ -6299,8 +6570,34 @@ export function App({
 
   function deleteMaterialParameterKeyframe(track: StudioMaterialParameterTimelineTrack, index: number) {
     const owner = studioCreationProgramOwner(track.entityId);
-    const sourceTrack = owner ? materialParameterTrackFor(owner.record.program, owner.programIndex, track) : null;
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+    if (track.parameterType === "rgb") {
+      try {
+        const sourceTrack =
+          owner && assignment
+            ? materialRgbParameterTrackFor(owner.record.program, owner.programIndex, track, assignment)
+            : null;
+        if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+          throw new Error("The material color track no longer matches the Studio-created object.");
+        }
+        if (index === 0 && sourceTrack.keyframes.length > 1) {
+          throw new Error("Delete the later material color keyframes before deleting the fixed first marker.");
+        }
+        stageMaterialRgbParameterKeyframes({
+          entityId: track.entityId,
+          keyframes: sourceTrack.keyframes.filter((_, candidate) => candidate !== index),
+          material: sourceTrack.material,
+          name: sourceTrack.name,
+          parameterIndex: sourceTrack.parameterIndex,
+          program: owner.record.program,
+          programIndex: owner.programIndex,
+        });
+      } catch (error) {
+        setDraftError(error instanceof Error ? error.message : "The material color keyframe could not be deleted.");
+      }
+      return;
+    }
+    const sourceTrack = owner ? materialParameterTrackFor(owner.record.program, owner.programIndex, track) : null;
     if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
       setDraftError("The material parameter track no longer matches the Studio-created object.");
       return;
