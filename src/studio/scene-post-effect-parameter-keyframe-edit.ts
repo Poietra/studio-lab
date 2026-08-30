@@ -1,4 +1,4 @@
-import { MAX_FINITE_F32 } from "../engine/primitives";
+import { MAX_FINITE_F32, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 } from "../engine/primitives";
 import type { StudioPropertyKeyframeEasing, StudioTimelineProjectionV1 } from "../engine/scene-authoring";
 import { replaceStudioScenePostEffectProgram } from "./authoring-commands";
 import type { ProgramRecord, RuntimeSceneState } from "./model";
@@ -14,6 +14,7 @@ import {
   type StudioScenePostEffectV1,
 } from "./scene-edit-contract";
 import { programsWithoutScenePostEffectV1 } from "./scene-post-effect-authoring";
+import type { StudioScenePostEffectRgbV1 } from "./scene-post-effect-source";
 import {
   sourceTimeToWorkingTime as sourceTimeToWorkingTimeFromProjection,
   workingTimeToSourceTime as workingTimeToSourceTimeFromProjection,
@@ -21,10 +22,30 @@ import {
 
 const KEYFRAME_EPSILON = 0.0005;
 
-export type ScenePostEffectParameterKeyframe = Readonly<{
+type ScenePostEffectParameterKeyframeValue<Value> = Readonly<{
   easing: StudioPropertyKeyframeEasing;
   time: number;
-  value: number;
+  value: Value;
+}>;
+
+export type ScenePostEffectParameterKeyframe = ScenePostEffectParameterKeyframeValue<number>;
+
+export type ScenePostEffectRgbParameterKeyframe = ScenePostEffectParameterKeyframeValue<StudioScenePostEffectRgbV1>;
+
+export type ScenePostEffectRgbParameterTrack = Readonly<{
+  keyframes: readonly ScenePostEffectRgbParameterKeyframe[];
+  name: string;
+  parameterIndex: number;
+  revision: number;
+  shaderId: string;
+}>;
+
+export type ScenePostEffectRgbParameterTarget = Readonly<{
+  baseline: StudioScenePostEffectRgbV1;
+  name: string;
+  parameterIndex: number;
+  revision: number;
+  shaderId: string;
 }>;
 
 type ScenePostEffectParameterTimeAuthority = Readonly<{
@@ -76,6 +97,94 @@ function validKeyframes(keyframes: readonly ScenePostEffectParameterKeyframe[], 
     ) &&
     keyframes.slice(1).every((keyframe, index) => keyframe.time > keyframes[index]!.time + KEYFRAME_EPSILON)
   );
+}
+
+function validRgbValue(value: unknown): value is StudioScenePostEffectRgbV1 {
+  return (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    value.every((component) => Number.isFinite(component) && component >= 0 && component <= 1)
+  );
+}
+
+function requireRgbTarget(target: ScenePostEffectRgbParameterTarget) {
+  if (
+    !Number.isInteger(target.parameterIndex) ||
+    target.parameterIndex < 0 ||
+    target.parameterIndex + 2 >= MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 ||
+    !validRgbValue(target.baseline)
+  ) {
+    throw new TypeError("An RGB Scene effect parameter requires three consecutive finite unit-color components.");
+  }
+}
+
+function rgbComponentTarget(target: ScenePostEffectRgbParameterTarget, component: number) {
+  return {
+    parameterIndex: target.parameterIndex + component,
+    revision: target.revision,
+    shaderId: target.shaderId,
+  };
+}
+
+function validRgbKeyframes(keyframes: readonly ScenePostEffectRgbParameterKeyframe[], duration: number) {
+  return (
+    keyframes.length >= 2 &&
+    keyframes.length <= MAX_STUDIO_SCENE_POST_EFFECT_PARAMETER_KEYFRAMES &&
+    keyframes.every(
+      ({ time, value }) => Number.isFinite(time) && time >= 0 && time <= duration && validRgbValue(value),
+    ) &&
+    keyframes.slice(1).every((keyframe, index) => keyframe.time > keyframes[index]!.time + KEYFRAME_EPSILON)
+  );
+}
+
+/** Reconstructs one logical color track from exactly three aligned scalar tracks. */
+export function scenePostEffectRgbParameterTrackFromScalarTracks(
+  tracks: readonly ScenePostEffectParameterTrack[],
+  target: ScenePostEffectRgbParameterTarget,
+): ScenePostEffectRgbParameterTrack | null {
+  requireRgbTarget(target);
+  const components = [0, 1, 2].map((component) =>
+    tracks.filter((track) => sameTarget(track, rgbComponentTarget(target, component))),
+  );
+  if (components.every((matches) => matches.length === 0)) return null;
+  if (components.some((matches) => matches.length !== 1)) {
+    throw new TypeError("An RGB Scene effect parameter track requires exactly three complete scalar component tracks.");
+  }
+  const [red, green, blue] = components.map((matches) => matches[0]!);
+  if ([red, green, blue].some((track) => track.name !== target.name)) {
+    throw new TypeError("RGB Scene effect component tracks must share the declared parameter name.");
+  }
+  if (
+    green.keyframes.length !== red.keyframes.length ||
+    blue.keyframes.length !== red.keyframes.length ||
+    red.keyframes.some((keyframe, index) =>
+      [green.keyframes[index], blue.keyframes[index]].some(
+        (component) => component?.time !== keyframe.time || component.easing !== keyframe.easing,
+      ),
+    )
+  ) {
+    throw new TypeError("RGB Scene effect component tracks must use identical keyframe times and easing.");
+  }
+  const keyframes = red.keyframes.map((keyframe, index): ScenePostEffectRgbParameterKeyframe => {
+    const value = [keyframe.value, green.keyframes[index]!.value, blue.keyframes[index]!.value];
+    if (!validRgbValue(value)) {
+      throw new TypeError("RGB Scene effect component keyframes must contain finite unit-color values.");
+    }
+    return { easing: keyframe.easing, time: keyframe.time, value };
+  });
+  if (
+    keyframes[0] &&
+    keyframes[0].value.some((component, index) => Math.abs(component - target.baseline[index]!) > KEYFRAME_EPSILON)
+  ) {
+    throw new TypeError("The first RGB Scene effect keyframe must preserve the static parameter value.");
+  }
+  return {
+    keyframes,
+    name: target.name,
+    parameterIndex: target.parameterIndex,
+    revision: target.revision,
+    shaderId: target.shaderId,
+  };
 }
 
 export function replaceScenePostEffectParameterKeyframeProgram(
@@ -147,10 +256,83 @@ export function replaceScenePostEffectParameterKeyframeProgram(
   });
 }
 
-export function insertScenePostEffectParameterKeyframe(
-  keyframes: readonly ScenePostEffectParameterKeyframe[],
+/** Atomically replaces one logical RGB track as three existing scalar tracks. */
+export function replaceScenePostEffectRgbParameterKeyframeProgram(
+  input: Readonly<{
+    keyframes: readonly ScenePostEffectRgbParameterKeyframe[];
+    name: string;
+    owner: ProgramRecord;
+    parameterIndex: number;
+    revision: number;
+    scene: RuntimeSceneState;
+    shaderId: string;
+  }>,
+): SceneEditValidationResult {
+  const operation = scenePostEffectOperation(input.owner.program);
+  if (!operation || input.owner.program.loweringStatus !== "unsupported") {
+    throw new TypeError("Only one canonical Scene post-effect Program can own parameter tracks.");
+  }
+  const effect = operation.effects.find(
+    (candidate) => candidate.shaderId === input.shaderId && candidate.revision === input.revision,
+  );
+  const baseline = effect?.parameters.slice(input.parameterIndex, input.parameterIndex + 3);
+  if (!validRgbValue(baseline)) {
+    throw new TypeError("The selected RGB Scene post-effect parameter no longer exists.");
+  }
+  const target = {
+    baseline,
+    name: input.name,
+    parameterIndex: input.parameterIndex,
+    revision: input.revision,
+    shaderId: input.shaderId,
+  } satisfies ScenePostEffectRgbParameterTarget;
+  const existing = scenePostEffectRgbParameterTrackFromScalarTracks(operation.parameterTracks, target);
+  if (input.keyframes.length > 0 && !validRgbKeyframes(input.keyframes, input.scene.duration)) {
+    throw new TypeError("RGB Scene effect keyframes must be ordered, distinct, finite unit colors inside the Scene.");
+  }
+  if (
+    input.keyframes[0] &&
+    input.keyframes[0].value.some((component, index) => Math.abs(component - baseline[index]!) > KEYFRAME_EPSILON)
+  ) {
+    throw new TypeError("The first RGB Scene effect keyframe must preserve the static parameter value.");
+  }
+
+  const replacements = [0, 1, 2].map(
+    (component): ScenePostEffectParameterTrack => ({
+      keyframes: input.keyframes.map(({ easing, time, value }) => ({ easing, time, value: value[component]! })),
+      name: input.name,
+      parameterIndex: input.parameterIndex + component,
+      revision: input.revision,
+      shaderId: input.shaderId,
+    }),
+  );
+  const parameterTracks: ScenePostEffectParameterTrack[] = [];
+  let inserted = false;
+  for (const track of operation.parameterTracks) {
+    const component = [0, 1, 2].find((candidate) => sameTarget(track, rgbComponentTarget(target, candidate)));
+    if (component === undefined) {
+      parameterTracks.push(track);
+      continue;
+    }
+    if (!inserted && input.keyframes.length > 0) {
+      parameterTracks.push(...replacements);
+      inserted = true;
+    }
+  }
+  if (existing === null && input.keyframes.length > 0) parameterTracks.push(...replacements);
+
+  return replaceStudioScenePostEffectProgram({
+    effects: operation.effects,
+    owner: input.owner,
+    parameterTracks,
+    scene: input.scene,
+  });
+}
+
+export function insertScenePostEffectParameterKeyframe<Value>(
+  keyframes: readonly ScenePostEffectParameterKeyframeValue<Value>[],
   time: number,
-  baseValue: number,
+  baseValue: NoInfer<Value>,
 ) {
   if (!Number.isFinite(time) || time < 0) throw new RangeError("The Scene effect keyframe time must be finite.");
   if (keyframes.some((keyframe) => Math.abs(keyframe.time - time) <= KEYFRAME_EPSILON)) {
@@ -166,17 +348,17 @@ export function insertScenePostEffectParameterKeyframe(
   ];
 }
 
-export function replaceScenePostEffectParameterKeyframe(
-  keyframes: readonly ScenePostEffectParameterKeyframe[],
+export function replaceScenePostEffectParameterKeyframe<Value>(
+  keyframes: readonly ScenePostEffectParameterKeyframeValue<Value>[],
   index: number,
-  patch: Partial<ScenePostEffectParameterKeyframe>,
+  patch: Partial<ScenePostEffectParameterKeyframeValue<Value>>,
 ) {
   if (!keyframes[index]) throw new RangeError("The selected Scene effect keyframe no longer exists.");
   return keyframes.map((keyframe, candidate) => (candidate === index ? { ...keyframe, ...patch } : keyframe));
 }
 
-export function removeScenePostEffectParameterKeyframe(
-  keyframes: readonly ScenePostEffectParameterKeyframe[],
+export function removeScenePostEffectParameterKeyframe<Value>(
+  keyframes: readonly ScenePostEffectParameterKeyframeValue<Value>[],
   index: number,
 ) {
   if (!keyframes[index]) throw new RangeError("The selected Scene effect keyframe no longer exists.");
@@ -227,10 +409,10 @@ export function scenePostEffectParameterTracksToWorkingTime(
   return tracks.map((track) => scenePostEffectParameterTrackToWorkingTime(track, authority));
 }
 
-export function scenePostEffectParameterKeyframesToSourceTime(
-  keyframes: readonly ScenePostEffectParameterKeyframe[],
+function scenePostEffectKeyframesToSourceTime<T extends Readonly<{ time: number }>>(
+  keyframes: readonly T[],
   authority: ScenePostEffectParameterTimeAuthority,
-): readonly ScenePostEffectParameterKeyframe[] {
+): readonly T[] {
   const { toSourceTime, toWorkingTime } = scenePostEffectParameterTimeMappers(authority);
   return keyframes.map((keyframe) => {
     const sourceTime = toSourceTime(keyframe.time);
@@ -241,4 +423,18 @@ export function scenePostEffectParameterKeyframesToSourceTime(
     }
     return { ...keyframe, time: sourceTime };
   });
+}
+
+export function scenePostEffectParameterKeyframesToSourceTime(
+  keyframes: readonly ScenePostEffectParameterKeyframe[],
+  authority: ScenePostEffectParameterTimeAuthority,
+): readonly ScenePostEffectParameterKeyframe[] {
+  return scenePostEffectKeyframesToSourceTime(keyframes, authority);
+}
+
+export function scenePostEffectRgbParameterKeyframesToSourceTime(
+  keyframes: readonly ScenePostEffectRgbParameterKeyframe[],
+  authority: ScenePostEffectParameterTimeAuthority,
+): readonly ScenePostEffectRgbParameterKeyframe[] {
+  return scenePostEffectKeyframesToSourceTime(keyframes, authority);
 }

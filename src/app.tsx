@@ -310,11 +310,14 @@ import {
   recordsWithoutScenePostEffectProgramsV1,
   scenePostEffectProgramOwnerV1,
 } from "./studio/scene-post-effect-authoring";
+import type { ScenePostEffectParameterTrackChange } from "./studio/scene-post-effect-parameter-animation-editor";
 import {
   replaceScenePostEffectParameterKeyframeProgram,
+  replaceScenePostEffectRgbParameterKeyframeProgram,
   scenePostEffectParameterKeyframesToSourceTime,
   scenePostEffectParameterTracksMatchEffects,
   scenePostEffectParameterTracksToWorkingTime,
+  scenePostEffectRgbParameterKeyframesToSourceTime,
 } from "./studio/scene-post-effect-parameter-keyframe-edit";
 import {
   acceptedStudioScenePostEffectReferenceV1,
@@ -326,6 +329,7 @@ import {
   type ProjectScenePostEffectLibraryState,
   rejectStudioScenePostEffectSourceV1,
   removeStudioScenePostEffectSourceV1,
+  studioScenePostEffectParameterLayoutV1,
   updateStudioScenePostEffectReferenceTextureV1,
 } from "./studio/scene-post-effect-source";
 import type { CompileStudioScenePostEffectSourceInputV1 } from "./studio/scene-post-effect-source-editor";
@@ -7360,19 +7364,7 @@ export function App({
     }
   }
 
-  function changeScenePostEffectParameterTrack(
-    input: Readonly<{
-      assetRevision: number;
-      keyframes: readonly Readonly<{
-        easing: StudioPropertyKeyframeEasing;
-        time: number;
-        value: number;
-      }>[];
-      name: string;
-      parameterIndex: number;
-      range: Readonly<{ max: number; min: number }>;
-    }>,
-  ) {
+  function changeScenePostEffectParameterTrack(input: ScenePostEffectParameterTrackChange) {
     if (!draftBaseState) {
       setDraftError("Wait for the editable Scene before changing its post-effect animation.");
       return false;
@@ -7390,18 +7382,49 @@ export function App({
       const editorOwner = appliedEdits[owner.index];
       if (!editorOwner) throw new Error("The Scene post-effect Program no longer exists.");
       const preceding = sourceSceneBeforeAppliedProgram(owner.index);
-      const sourceKeyframes = scenePostEffectParameterKeyframesToSourceTime(input.keyframes, {
+      const asset = findStudioScenePostEffectSourceV1(activeProjectScenePostEffect, input.assetRevision);
+      const parameterEntry = asset?.accepted
+        ? studioScenePostEffectParameterLayoutV1(asset.accepted.parameterSchema).entries.find(
+            ({ offset }) => offset === input.parameterIndex,
+          )
+        : null;
+      if (
+        !parameterEntry ||
+        parameterEntry.parameter.type !== input.kind ||
+        parameterEntry.parameter.name !== input.name
+      ) {
+        throw new Error("The selected Scene post-effect parameter contract has changed. Reopen its animation editor.");
+      }
+      const timeAuthority = {
         programs: previewAppliedSceneEdits,
         timelineTransforms: appliedTimelineTransforms,
-      });
-      const validation = replaceScenePostEffectParameterKeyframeProgram({
-        ...input,
-        keyframes: sourceKeyframes,
-        owner: editorOwner,
-        revision: input.assetRevision,
-        scene: preceding.scene,
-        shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
-      });
+      };
+      const validation =
+        input.kind === "rgb"
+          ? replaceScenePostEffectRgbParameterKeyframeProgram({
+              keyframes: scenePostEffectRgbParameterKeyframesToSourceTime(input.keyframes, timeAuthority),
+              name: parameterEntry.parameter.name,
+              owner: editorOwner,
+              parameterIndex: parameterEntry.offset,
+              revision: input.assetRevision,
+              scene: preceding.scene,
+              shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+            })
+          : (() => {
+              if (parameterEntry.parameter.type !== "f32") {
+                throw new Error("The selected Scene post-effect parameter is no longer scalar.");
+              }
+              return replaceScenePostEffectParameterKeyframeProgram({
+                keyframes: scenePostEffectParameterKeyframesToSourceTime(input.keyframes, timeAuthority),
+                name: parameterEntry.parameter.name,
+                owner: editorOwner,
+                parameterIndex: parameterEntry.offset,
+                range: parameterEntry.parameter.range,
+                revision: input.assetRevision,
+                scene: preceding.scene,
+                shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+              });
+            })();
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
       return installCanonicalDraft(validated.record, [], preceding.canonical, null, {
