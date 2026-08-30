@@ -475,7 +475,7 @@ test("applies one Scene-wide RGB split through scrub, history, reload, and MP4 e
   }
 });
 
-test("authors a custom parameter schema and two animations through Preview, reload, and MP4 export", async ({
+test("authors scalar and RGB effect parameters with two animations through Preview, reload, and MP4 export", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -522,6 +522,12 @@ test("authors a custom parameter schema and two animations through Preview, relo
     await expect(parameterSchema.getByText("parameters_0.x", { exact: true })).toBeVisible();
     await expect(parameterSchema.getByText("parameters_0.y", { exact: true })).toBeVisible();
     await parameterSchema.getByRole("button", { name: "Remove parameter 3" }).click();
+    await parameterSchema.getByRole("button", { name: "Add color parameter" }).click();
+    await parameterSchema.getByLabel("Scene effect parameter 3 name").fill("Tint");
+    await parameterSchema.getByLabel("Scene effect parameter 3 default color").fill("#80ffff");
+    await expect(
+      parameterSchema.getByText("parameters_0.z, parameters_0.w, parameters_1.x", { exact: true }),
+    ).toBeVisible();
     const source = page.getByRole("textbox", { name: "Scene post-effect WGSL source" });
     await expect(source).toHaveValue(/@binding\(2\)[\s\S]*scene_sampler/u);
     await expect(source).toHaveValue(/textureSample\(scene_texture, scene_sampler/u);
@@ -530,7 +536,8 @@ test("authors a custom parameter schema and two animations through Preview, relo
         "return textureSample(scene_texture, scene_sampler, coordinate / viewport);",
         `let red_level = clamp(host.parameters_0.x, 0.0, 1.0);
     let green_level = clamp(host.parameters_0.y, 0.0, 1.0);
-    return vec4<f32>(red_level, green_level, 0.1, 1.0);`,
+    let tint = clamp(vec3<f32>(host.parameters_0.z, host.parameters_0.w, host.parameters_1.x), vec3<f32>(0.0), vec3<f32>(1.0));
+    return vec4<f32>(red_level * tint.r, green_level * tint.g, tint.b, 1.0);`,
       ),
     );
     await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
@@ -540,6 +547,7 @@ test("authors a custom parameter schema and two animations through Preview, relo
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     await expect(page.getByRole("slider", { name: "Red level Scene post-effect parameter" })).toHaveValue("0.2");
     await expect(page.getByRole("slider", { name: "Green level Scene post-effect parameter" })).toHaveValue("0.25");
+    await expect(page.getByLabel("Tint Scene post-effect color parameter")).toHaveValue("#80ffff");
     await expect(parameterSchema.getByLabel("Scene effect parameter 1 name")).toBeDisabled();
     const effectRevision = await waitForNewPresentedRevision(plainRevision);
 
@@ -551,6 +559,7 @@ test("authors a custom parameter schema and two animations through Preview, relo
     const redoRevision = await waitForNewPresentedRevision(undoRevision);
 
     await page.getByRole("slider", { name: "Red level Scene post-effect parameter" }).fill("0.3");
+    await page.getByLabel("Tint Scene post-effect color parameter").fill("#80ff80");
     await page.getByRole("button", { name: "Update parameters" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     const parameterRevision = await waitForNewPresentedRevision(redoRevision);
@@ -611,6 +620,9 @@ test("authors a custom parameter schema and two animations through Preview, relo
     await expect(parameterSchema.getByLabel("Scene effect parameter 1 max")).toHaveValue("1");
     await expect(parameterSchema.getByLabel("Scene effect parameter 2 name")).toHaveValue("Green level");
     await expect(parameterSchema.getByLabel("Scene effect parameter 2 default")).toHaveValue("0.25");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 3 name")).toHaveValue("Tint");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 3 default color")).toHaveValue("#80ffff");
+    await expect(page.getByLabel("Tint Scene post-effect color parameter")).toHaveValue("#80ff80");
     const parameterAnimation = page.getByRole("combobox", { name: "Scene effect parameter to animate" });
     await expect(parameterAnimation.getByRole("option", { name: "Red level · animated" })).toHaveCount(1);
     await expect(parameterAnimation.getByRole("option", { name: "Green level · animated" })).toHaveCount(1);
@@ -636,6 +648,7 @@ test("authors a custom parameter schema and two animations through Preview, relo
     const wavelengthRedDelta = (stats[3]?.averageRed ?? 0) - (stats[2]?.averageRed ?? 0);
     expect(wavelengthGreenDelta).toBeGreaterThan(30);
     expect(wavelengthGreenDelta).toBeGreaterThan(Math.abs(wavelengthRedDelta) * 2);
+    expect(stats.every(({ averageBlue }) => averageBlue > 170 && averageBlue < 215)).toBe(true);
 
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");

@@ -142,6 +142,35 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("In Scene stack");
   });
 
+  it("renders one logical RGB control over three flat Scene effect parameters", () => {
+    const created = createAsset("Color grade");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const state = acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+      ...asset.draft,
+      parameterSchema: [
+        { default: 0.4, name: "Strength", range: { max: 1, min: 0, step: 0.05 }, type: "f32" },
+        { default: [0.2, 0.55, 1], name: "Tint", type: "rgb" },
+      ],
+    });
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        {...callbacks()}
+        activeRevisions={[created.revision]}
+        assets={state.assets}
+        available
+        parameters={[0.4, 1, 0.25, 0.75]}
+        sourceAvailable
+      />,
+    );
+
+    expect(markup).toContain("4 / 8");
+    expect(markup).toContain("parameters_0.y, parameters_0.z, parameters_0.w");
+    expect(markup).toContain('aria-label="Tint Scene post-effect color parameter"');
+    expect(markup).toContain('type="color" value="#ff40bf"');
+    expect(markup).toContain("<output>#ff40bf</output>");
+    expect(markup).toContain("0 / 1 parameters animated");
+  });
+
   it("renders the active parameter animation from the canonical Scene effect Program", () => {
     const created = createAsset("Wave Distortion");
     const accepted = acceptAsset(created);

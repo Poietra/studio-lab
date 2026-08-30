@@ -43,7 +43,7 @@ const scenePostEffectAssetNameSchema = z
   .refine((name) => !/[\u0000-\u001f\u007f]/.test(name), "Effect name must not contain control characters.");
 const scenePostEffectAssetRevisionSchema = z.number().int().positive().max(MAX_SCENE_POST_EFFECT_ASSET_REVISION);
 
-const scenePostEffectParameterSchemaV1 = z
+const scenePostEffectF32ParameterSchemaV1 = z
   .object({
     default: finiteF32V1Schema,
     name: parameterNameSchema,
@@ -73,10 +73,25 @@ const scenePostEffectParameterSchemaV1 = z
     }
   });
 
+const unitF32Schema = finiteF32V1Schema.min(0).max(1);
+const scenePostEffectRgbParameterSchemaV1 = z
+  .object({
+    default: z.tuple([unitF32Schema, unitF32Schema, unitF32Schema]),
+    name: parameterNameSchema,
+    type: z.literal("rgb"),
+  })
+  .strict();
+
 export const scenePostEffectParameterSchemaListV1 = z
-  .array(scenePostEffectParameterSchemaV1)
+  .array(z.discriminatedUnion("type", [scenePostEffectF32ParameterSchemaV1, scenePostEffectRgbParameterSchemaV1]))
   .max(MAX_FRAGMENT_MATERIAL_PARAMETERS_V1)
   .superRefine((parameters, context) => {
+    if (studioScenePostEffectParameterLayoutV1(parameters).defaults.length > MAX_FRAGMENT_MATERIAL_PARAMETERS_V1) {
+      context.addIssue({
+        code: "custom",
+        message: `Parameter schema accepts at most ${MAX_FRAGMENT_MATERIAL_PARAMETERS_V1} scalar values.`,
+      });
+    }
     const names = new Set<string>();
     for (const [index, parameter] of parameters.entries()) {
       const folded = parameter.name.toLowerCase();
@@ -86,6 +101,24 @@ export const scenePostEffectParameterSchemaListV1 = z
       names.add(folded);
     }
   });
+
+export type StudioScenePostEffectF32ParameterV1 = z.infer<typeof scenePostEffectF32ParameterSchemaV1>;
+export type StudioScenePostEffectRgbV1 = readonly [number, number, number];
+export type StudioScenePostEffectRgbParameterV1 = z.infer<typeof scenePostEffectRgbParameterSchemaV1>;
+export type StudioScenePostEffectParameterV1 =
+  | StudioScenePostEffectF32ParameterV1
+  | StudioScenePostEffectRgbParameterV1;
+
+export function studioScenePostEffectParameterLayoutV1(schema: readonly StudioScenePostEffectParameterV1[]) {
+  const defaults: number[] = [];
+  const entries: Readonly<{ offset: number; parameter: StudioScenePostEffectParameterV1 }>[] = [];
+  for (const parameter of schema) {
+    entries.push({ offset: defaults.length, parameter });
+    if (parameter.type === "f32") defaults.push(parameter.default);
+    else defaults.push(...parameter.default);
+  }
+  return { defaults, entries } as const;
+}
 
 const acceptedScenePostEffectSourceSchemaV1 = z
   .object({
@@ -178,7 +211,6 @@ export const projectScenePostEffectLibraryStateSchema = z
     });
   });
 
-export type StudioScenePostEffectParameterV1 = z.infer<typeof scenePostEffectParameterSchemaV1>;
 export type StudioScenePostEffectParameterSchemaV1 = z.infer<typeof scenePostEffectParameterSchemaListV1>;
 export type StudioScenePostEffectSourceLanguageV1 = z.infer<typeof scenePostEffectSourceLanguageV1Schema>;
 export type StudioScenePostEffectTextureV1 = SampledTextureV1;
@@ -436,17 +468,24 @@ export function acceptedStudioScenePostEffectReferenceV1(
         : "The Scene post effect does not declare a texture slot.",
     );
   }
-  const values = parameters ? [...parameters] : accepted.parameterSchema.map((parameter) => parameter.default);
-  if (values.length !== accepted.parameterSchema.length) {
+  const layout = studioScenePostEffectParameterLayoutV1(accepted.parameterSchema);
+  const values = parameters ? [...parameters] : layout.defaults;
+  if (values.length !== layout.defaults.length) {
     throw new Error("The Scene post effect must contain every declared parameter value.");
   }
-  values.forEach((value, index) => {
-    const parameter = accepted.parameterSchema[index]!;
-    finiteF32V1Schema.parse(value);
-    if (value < parameter.range.min || value > parameter.range.max) {
-      throw new Error(`${parameter.name} must be between ${parameter.range.min} and ${parameter.range.max}.`);
+  for (const { offset, parameter } of layout.entries) {
+    const width = parameter.type === "f32" ? 1 : 3;
+    for (let component = 0; component < width; component += 1) {
+      const value = values[offset + component];
+      finiteF32V1Schema.parse(value);
+      if (parameter.type === "f32" && (value! < parameter.range.min || value! > parameter.range.max)) {
+        throw new Error(`${parameter.name} must be between ${parameter.range.min} and ${parameter.range.max}.`);
+      }
+      if (parameter.type === "rgb" && (value! < 0 || value! > 1)) {
+        throw new Error(`${parameter.name} RGB components must be between 0 and 1.`);
+      }
     }
-  });
+  }
   return scenePostEffectV1Schema.parse({
     parameters: values,
     revision: asset.revision,
