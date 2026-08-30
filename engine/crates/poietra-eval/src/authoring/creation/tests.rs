@@ -11294,6 +11294,23 @@ fn normalized_creation_rejects_nonpositive_or_nonfinite_text_wrap_width_atomical
 }
 
 #[test]
+fn normalized_text_admits_a_long_line_only_with_wrap_width() {
+    let text = "x".repeat(129);
+    let unwrapped = StudioTextContent {
+        layout: StudioTextLayout::default(),
+        text: text.clone(),
+    };
+    assert!(!studio_text_content_is_canonical(&unwrapped));
+    assert!(studio_text_content_is_canonical(&StudioTextContent {
+        layout: StudioTextLayout {
+            wrap_width: Some(4.0),
+            ..StudioTextLayout::default()
+        },
+        text,
+    }));
+}
+
+#[test]
 fn normalized_creation_keeps_text_motion_fade_and_delete_on_the_shared_planner() {
     let bundle = static_imported_bundle();
     let entity_id = "tx:create/entity:circle";

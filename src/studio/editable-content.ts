@@ -1,4 +1,8 @@
-import { canonicalTextOutlineInputV1, MAX_TEXT_OUTLINE_SCALARS } from "../engine/mathtex-outline";
+import {
+  canonicalTextOutlineInputV1,
+  MAX_TEXT_OUTLINE_SCALARS,
+  textOutlineRequestV1Schema,
+} from "../engine/mathtex-outline";
 import type { EntityContent, TextLayout } from "./model";
 
 export type EditableContentType = "MathTex" | "Text";
@@ -18,7 +22,7 @@ export const STUDIO_TEXT_DEFAULT_LAYOUT: TextLayout = Object.freeze({
   lineHeight: 1.2,
 });
 export const STUDIO_CREATION_TEXT_CONTRACT =
-  "Text accepts visible Unicode text of at most 256 scalars, 8 lines, and 128 scalars per line.";
+  "Text accepts visible Unicode text of at most 256 scalars and 8 explicit lines; unwrapped lines accept at most 128 scalars.";
 
 function canonicalTextLayout(value: unknown): TextLayout | null {
   if (value === undefined) return STUDIO_TEXT_DEFAULT_LAYOUT;
@@ -78,9 +82,30 @@ export function canonicalEditableContent(value: unknown, type: EditableContentTy
     return null;
 
   if (type === "Text") {
-    const text = canonicalTextOutlineInputV1(record.text);
     const textLayout = canonicalTextLayout(record.textLayout);
-    if (text === null || textLayout === null || record.texParts !== undefined) return null;
+    if (textLayout === null || record.texParts !== undefined) return null;
+    const wrappedRequest =
+      textLayout.wrapWidth === undefined
+        ? null
+        : textOutlineRequestV1Schema.safeParse({
+            layout: {
+              alignment: textLayout.alignment,
+              fontFamily: textLayout.fontFamily,
+              fontWeight: textLayout.fontWeight,
+              lineHeight: textLayout.lineHeight,
+              wrapWidthEm: textLayout.wrapWidth / textLayout.fontSize,
+            },
+            schema: "poietra.text-outline-request",
+            text: record.text,
+            version: 1,
+          });
+    const text =
+      wrappedRequest === null
+        ? canonicalTextOutlineInputV1(record.text)
+        : wrappedRequest.success
+          ? wrappedRequest.data.text
+          : null;
+    if (text === null) return null;
     return {
       displayLines: text.split("\n"),
       ...(typeof record.label === "string" ? { label: record.label.replaceAll("\r\n", "\n") } : {}),

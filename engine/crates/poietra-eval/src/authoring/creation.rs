@@ -1711,12 +1711,12 @@ fn studio_creation_motion_is_compatible(
         })
 }
 
-fn studio_creation_text_is_canonical(text: &str) -> bool {
+fn studio_creation_text_is_canonical(text: &str, wrapped: bool) -> bool {
     let lines = text.split('\n').collect::<Vec<_>>();
     !text.is_empty()
         && text.chars().count() <= 256
         && lines.len() <= 8
-        && lines.iter().all(|line| line.chars().count() <= 128)
+        && (wrapped || lines.iter().all(|line| line.chars().count() <= 128))
         && text
             .chars()
             .all(|character| character == '\n' || !character.is_control())
@@ -1725,7 +1725,7 @@ fn studio_creation_text_is_canonical(text: &str) -> bool {
 }
 
 fn studio_text_content_is_canonical(content: &StudioTextContent) -> bool {
-    studio_creation_text_is_canonical(&content.text)
+    studio_creation_text_is_canonical(&content.text, content.layout.wrap_width.is_some())
         && content.layout.font_size.is_finite()
         && content.layout.font_size > 0.0
         && content.layout.line_height.is_finite()
