@@ -475,9 +475,7 @@ test("applies one Scene-wide RGB split through scrub, history, reload, and MP4 e
   }
 });
 
-test("authors scalar and RGB effect parameters with two animations through Preview, reload, and MP4 export", async ({
-  page,
-}) => {
+test("authors scalar and RGB effect animations through Preview, reload, and MP4 export", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(15_000);
   let projectId: string | null = null;
@@ -583,14 +581,24 @@ test("authors scalar and RGB effect parameters with two animations through Previ
     await page.getByRole("button", { name: "Add animation" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     const bothTracksRevision = await waitForNewPresentedRevision(amplitudeRevision);
-    await expect(page.getByText("2 / 2 parameters animated", { exact: true })).toBeVisible();
+    await expect(page.getByText("2 / 3 parameters animated", { exact: true })).toBeVisible();
+
+    await page.getByRole("combobox", { name: "Scene effect parameter to animate" }).selectOption({ label: "Tint" });
+    await page.getByRole("button", { name: /Animate color from 0s to/u }).click();
+    await page.getByRole("spinbutton", { name: "Tint color keyframe 2 time" }).fill("2.75");
+    await page.getByLabel("Tint color keyframe 2 value").fill("#80ff20");
+    await page.getByRole("combobox", { name: "Tint color keyframe 1 easing" }).selectOption("linear");
+    await page.getByRole("button", { name: "Add color animation" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const allTracksRevision = await waitForNewPresentedRevision(bothTracksRevision);
+    await expect(page.getByText("3 / 3 parameters animated", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Undo" }).click();
-    await expect(page.getByText("1 / 2 parameters animated", { exact: true })).toBeVisible();
-    const undoOneTrackRevision = await waitForNewPresentedRevision(bothTracksRevision);
+    await expect(page.getByText("2 / 3 parameters animated", { exact: true })).toBeVisible();
+    const undoColorTrackRevision = await waitForNewPresentedRevision(allTracksRevision);
     await page.getByRole("button", { name: "Redo" }).click();
-    await expect(page.getByText("2 / 2 parameters animated", { exact: true })).toBeVisible();
-    await waitForNewPresentedRevision(undoOneTrackRevision);
+    await expect(page.getByText("3 / 3 parameters animated", { exact: true })).toBeVisible();
+    await waitForNewPresentedRevision(undoColorTrackRevision);
 
     await playhead.fill("1.25");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1.25, 1);
@@ -614,7 +622,7 @@ test("authors scalar and RGB effect parameters with two animations through Previ
     await page.getByRole("button", { name: "Open Custom WGSL effect fixture workspace" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     await expect(page.getByText("WGSL was rejected", { exact: true })).toBeVisible();
-    await expect(page.getByText("2 / 2 parameters animated", { exact: true })).toBeVisible();
+    await expect(page.getByText("3 / 3 parameters animated", { exact: true })).toBeVisible();
     await expect(parameterSchema.getByLabel("Scene effect parameter 1 name")).toHaveValue("Red level");
     await expect(parameterSchema.getByLabel("Scene effect parameter 1 default")).toHaveValue("0.2");
     await expect(parameterSchema.getByLabel("Scene effect parameter 1 max")).toHaveValue("1");
@@ -626,6 +634,7 @@ test("authors scalar and RGB effect parameters with two animations through Previ
     const parameterAnimation = page.getByRole("combobox", { name: "Scene effect parameter to animate" });
     await expect(parameterAnimation.getByRole("option", { name: "Red level · animated" })).toHaveCount(1);
     await expect(parameterAnimation.getByRole("option", { name: "Green level · animated" })).toHaveCount(1);
+    await expect(parameterAnimation.getByRole("option", { name: "Tint · animated" })).toHaveCount(1);
     await parameterAnimation.selectOption({ label: "Red level · animated" });
     await expect(page.getByText("Red level · 2 keyframes", { exact: true })).toBeVisible();
     await expect(page.getByRole("spinbutton", { name: "Red level keyframe 2 time" })).toHaveValue("2");
@@ -635,6 +644,12 @@ test("authors scalar and RGB effect parameters with two animations through Previ
     await expect(page.getByRole("spinbutton", { name: "Green level keyframe 1 time" })).toHaveValue("2");
     await expect(page.getByRole("spinbutton", { name: "Green level keyframe 2 time" })).toHaveValue("2.75");
     await expect(page.getByRole("spinbutton", { name: "Green level keyframe 2 value" })).toHaveValue("0.8");
+    await parameterAnimation.selectOption({ label: "Tint · animated" });
+    await expect(page.getByText("Tint · 2 color keyframes", { exact: true })).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "Tint color keyframe 2 time" })).toHaveValue("2.75");
+    await expect(page.getByLabel("Tint color keyframe 1 value")).toHaveValue("#80ff80");
+    await expect(page.getByLabel("Tint color keyframe 2 value")).toHaveValue("#80ff20");
+    await expect(page.getByRole("combobox", { name: "Tint color keyframe 1 easing" })).toHaveValue("linear");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     const mp4 = await exportLocalMp4(page);
@@ -648,13 +663,17 @@ test("authors scalar and RGB effect parameters with two animations through Previ
     const wavelengthRedDelta = (stats[3]?.averageRed ?? 0) - (stats[2]?.averageRed ?? 0);
     expect(wavelengthGreenDelta).toBeGreaterThan(30);
     expect(wavelengthGreenDelta).toBeGreaterThan(Math.abs(wavelengthRedDelta) * 2);
-    expect(stats.every(({ averageBlue }) => averageBlue > 170 && averageBlue < 215)).toBe(true);
+    expect((stats[0]?.averageBlue ?? 0) - (stats[3]?.averageBlue ?? 0)).toBeGreaterThan(50);
 
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");
+    await page.getByRole("button", { name: "Remove Tint animation" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    const twoTrackRevision = await waitForNewPresentedRevision(activeRevision);
+    await parameterAnimation.selectOption({ label: "Green level · animated" });
     await page.getByRole("button", { name: "Remove Green level animation" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
-    const oneTrackRevision = await waitForNewPresentedRevision(activeRevision);
+    const oneTrackRevision = await waitForNewPresentedRevision(twoTrackRevision);
     await parameterAnimation.selectOption({ label: "Red level · animated" });
     await page.getByRole("button", { name: "Remove Red level animation" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
