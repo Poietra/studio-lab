@@ -55,6 +55,7 @@ import {
   projectFragmentMaterialsForSceneV1,
   updateStudioFragmentMaterialParameterV1,
 } from "./fragment-material-authoring";
+import { replaceMaterialRgbParameterKeyframeProgram } from "./material-parameter-keyframe-edit";
 import { type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
 import { ingestNativeProjectPngV1 } from "./native-project-assets";
 import type { CanonicalEditProgram } from "./operations";
@@ -1833,6 +1834,65 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(correlateStudioPreviewFragmentMaterialInputV1(previous, next)).toBeNull();
     const presented = { fragmentMaterialInput: next };
     expect(correlateStudioPreviewFragmentMaterialInputV1(presented, next)).toBe(presented);
+  });
+
+  it("rejects an RGB material track whose project-local parameter schema became stale", async () => {
+    const base = await compilablePreviewInput();
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 0.5,
+      entities: [{ position: { x: 320, y: 180 }, type: "Arrow" }],
+      scene: base.proposedState.base.runtimeSceneState,
+      transactionId: "stale-rgb-material-schema",
+    });
+    const entityId = creation.entityIds[0]!;
+    const gradient = createStudioGradientFragmentMaterialPresetV1(EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1);
+    const sceneFragmentMaterials = projectFragmentMaterialsForSceneV1(
+      assignStudioFragmentMaterialV1(gradient.state, {
+        entityId,
+        sceneId: base.proposedState.base.runtimeSceneState.sceneId,
+        shaderId: gradient.shaderId,
+      }),
+      base.proposedState.base.runtimeSceneState.sceneId,
+    );
+    const material = sceneFragmentMaterials.assignments[entityId]!;
+    const tracked = replaceMaterialRgbParameterKeyframeProgram({
+      baseProgram: creation.validation.program,
+      entityId,
+      keyframes: [
+        { easing: "linear", time: 1, value: [0.2, 0.55, 1] },
+        { easing: "smooth", time: 1.5, value: [1, 0.3, 0.65] },
+      ],
+      material,
+      name: "Cool",
+      parameterIndex: 2,
+      scene: base.proposedState.base.runtimeSceneState,
+    });
+    const schema = sceneFragmentMaterials.parameterSchemasByShaderId[gradient.shaderId]!;
+    const staleInput = {
+      ...sceneFragmentMaterials,
+      parameterSchemasByShaderId: {
+        [gradient.shaderId]: schema.map((parameter) =>
+          parameter.name === "Cool" ? { ...parameter, name: "Tint" } : parameter,
+        ),
+      },
+    };
+
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      sceneFragmentMaterials: staleInput,
+      snapshot: base.snapshot,
+      workingState: {
+        ...base.proposedState.base,
+        appliedEdits: [programRecord(tracked.program, tracked)],
+      },
+      workingRevision: "studio-working-v1:stale-rgb-material-schema",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    expect(result).toEqual({
+      error: "RGB material parameter track Cool no longer matches its project parameter schema.",
+      kind: "unsupported",
+    });
   });
 
   it("resolves a source-bound fragment material through verified runtime identity before a colliding Scene ID", async () => {

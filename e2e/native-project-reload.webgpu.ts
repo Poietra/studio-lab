@@ -207,6 +207,7 @@ async function decodedPixelStats(
                 ? red > 32 && red > green * 1.5 && red > blue * 1.5
                 : red + green + blue > 90;
         const stats: Readonly<{
+          averageBlue: number;
           averageGreen: number;
           averageRed: number;
           commonColorDifferenceFromPrevious: number;
@@ -234,6 +235,7 @@ async function decodedPixelStats(
           let bright = 0;
           let commonColorDifferenceFromPrevious = 0;
           let commonPixelCountFromPrevious = 0;
+          let totalBlue = 0;
           let totalGreen = 0;
           let totalRed = 0;
           let totalX = 0;
@@ -256,6 +258,7 @@ async function decodedPixelStats(
             const blue = pixels[offset + 2] ?? 0;
             if (matchesMode(red, green, blue)) {
               bright += 1;
+              totalBlue += blue;
               totalGreen += green;
               totalRed += red;
               totalX += pixelX;
@@ -274,6 +277,7 @@ async function decodedPixelStats(
           }
           previousFrame = new Uint8ClampedArray(pixels);
           stats.push({
+            averageBlue: bright === 0 ? Number.NaN : totalBlue / bright,
             averageGreen: bright === 0 ? Number.NaN : totalGreen / bright,
             averageRed: bright === 0 ? Number.NaN : totalRed / bright,
             commonColorDifferenceFromPrevious,
@@ -2016,9 +2020,12 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await gradientPreset.getByRole("button", { name: "Create & apply" }).click();
     let equationMaterial = page.getByRole("combobox", { name: "Assigned fragment material" });
     await expect(equationMaterial).not.toHaveValue("");
+    await page.getByLabel("Cool material color").fill("#ff0000");
+    await page.getByLabel("Warm material color").fill("#000000");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     const scenePlayhead = page.getByRole("slider", { name: "Scene playhead" });
-    await page.getByRole("combobox", { name: "Material parameter for E = mc^2" }).selectOption("Angle");
+    const equationMaterialParameter = page.getByRole("combobox", { name: "Material parameter for E = mc^2" });
+    await equationMaterialParameter.selectOption("Angle");
     await scenePlayhead.fill("1.6");
     await page.getByRole("button", { name: "Add Angle material keyframe for E = mc^2" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
@@ -2033,6 +2040,27 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await equationMaterialStart.click();
     await page.getByRole("combobox", { name: "Angle material parameter segment easing" }).selectOption("linear");
     await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
+    await scenePlayhead.fill("1.6");
+    await page.getByRole("button", { name: "Add Cool material keyframe for E = mc^2" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
+    await scenePlayhead.fill("2.1");
+    await page.getByRole("button", { name: "Add Cool material keyframe for E = mc^2" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
+    let equationCoolEnd = page.getByRole("button", { name: /Cool material parameter keyframe 2 at/u });
+    await equationCoolEnd.click();
+    await page.getByLabel("Cool material parameter keyframe value").fill("#0000ff");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
+    let equationCoolStart = page.getByRole("button", { name: /Cool material parameter keyframe 1 at/u });
+    await equationCoolStart.click();
+    await page.getByRole("combobox", { name: "Cool material parameter segment easing" }).selectOption("linear");
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Angle");
+    await expect(equationMaterialStart).toBeVisible();
+    await expect(equationMaterialEnd).toBeVisible();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     await page.reload();
@@ -2050,10 +2078,28 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await expect(equationMaterialEnd).toBeVisible();
     const equationMaterialStartTime = await propertyKeyframeTime(equationMaterialStart);
     const equationMaterialEndTime = await propertyKeyframeTime(equationMaterialEnd);
+    await equationMaterialParameter.selectOption("Cool");
+    equationCoolStart = page.getByRole("button", { name: /Cool material parameter keyframe 1 at/u });
+    equationCoolEnd = page.getByRole("button", { name: /Cool material parameter keyframe 2 at/u });
+    await expect(equationCoolStart).toBeVisible();
+    await expect(equationCoolEnd).toBeVisible();
+    await equationCoolStart.click();
+    await expect(page.getByLabel("Cool material parameter keyframe value")).toHaveValue("#ff0000");
+    await equationCoolEnd.click();
+    await expect(page.getByLabel("Cool material parameter keyframe value")).toHaveValue("#0000ff");
+    const equationCoolStartTime = await propertyKeyframeTime(equationCoolStart);
+    const equationCoolEndTime = await propertyKeyframeTime(equationCoolEnd);
+    expect(equationCoolStartTime).toBeCloseTo(equationMaterialStartTime);
+    expect(equationCoolEndTime).toBeCloseTo(equationMaterialEndTime);
     await scenePlayhead.fill((equationMaterialStartTime + 0.05).toFixed(2));
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await scenePlayhead.fill(((equationCoolStartTime + equationCoolEndTime) / 2).toFixed(2));
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await scenePlayhead.fill((equationMaterialEndTime + 0.05).toFixed(2));
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await equationMaterialParameter.selectOption("Angle");
+    await expect(equationMaterialStart).toBeVisible();
+    await expect(equationMaterialEnd).toBeVisible();
 
     const [canvasBounds, equationBounds] = await Promise.all([canvas.boundingBox(), equationWrapper.boundingBox()]);
     if (!canvasBounds || !equationBounds) throw new Error("The MathTex bounds were unavailable for MP4 evidence.");
@@ -2067,13 +2113,25 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     const exportedMathTexStats = await decodedPixelStats(
       page,
       mp4,
-      [0.02, 0.75, equationMaterialStartTime + 0.05, equationMaterialEndTime + 0.05],
+      [
+        0.02,
+        0.75,
+        equationCoolStartTime + 0.05,
+        (equationCoolStartTime + equationCoolEndTime) / 2,
+        equationCoolEndTime + 0.05,
+      ],
       "bright",
       equationRegion,
     );
     expect(exportedMathTexStats[1]?.count ?? 0).toBeGreaterThan((exportedMathTexStats[0]?.count ?? 0) + 20);
     expect(exportedMathTexStats[2]?.count ?? 0).toBeGreaterThan(exportedMathTexStats[1]?.count ?? 0);
-    const changedMaterial = exportedMathTexStats[3];
+    const colorStart = exportedMathTexStats[2];
+    const colorMiddle = exportedMathTexStats[3];
+    const changedMaterial = exportedMathTexStats[4];
+    expect(colorStart?.averageRed ?? 0).toBeGreaterThan((colorStart?.averageBlue ?? 0) + 30);
+    expect(colorMiddle?.averageRed ?? 0).toBeGreaterThan(30);
+    expect(colorMiddle?.averageBlue ?? 0).toBeGreaterThan(30);
+    expect(changedMaterial?.averageBlue ?? 0).toBeGreaterThan((changedMaterial?.averageRed ?? 0) + 30);
     expect(changedMaterial?.commonPixelCountFromPrevious ?? 0).toBeGreaterThan(20);
     expect(
       (changedMaterial?.commonColorDifferenceFromPrevious ?? 0) / (changedMaterial?.commonPixelCountFromPrevious || 1),
@@ -2084,6 +2142,17 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await page.getByRole("button", { name: "Replace program" }).click();
     equationMaterialStart = page.getByRole("button", { name: /Angle material parameter keyframe 1 at/u });
     await equationMaterialStart.click();
+    await page.getByRole("button", { name: "Delete keyframe" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
+    await expect(equationCoolStart).toBeVisible();
+    await expect(equationCoolEnd).toBeVisible();
+    await equationCoolEnd.click();
+    await page.getByRole("button", { name: "Delete keyframe" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
+    equationCoolStart = page.getByRole("button", { name: /Cool material parameter keyframe 1 at/u });
+    await equationCoolStart.click();
     await page.getByRole("button", { name: "Delete keyframe" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(page.locator('[data-property-keyframe="material"]')).toHaveCount(0);

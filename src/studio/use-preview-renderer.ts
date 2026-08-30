@@ -1819,6 +1819,7 @@ async function compileStudioPreviewSceneWithoutPostEffectV1(
   const materialTrackBlocker = materialParameterAssignmentBlocker(
     sourceEditRecords(input.workingState).map(({ program }) => program),
     sceneMaterials.assignments,
+    sceneMaterials.parameterSchemasByShaderId,
   );
   if (materialTrackBlocker) {
     return {

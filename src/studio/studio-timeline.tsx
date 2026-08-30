@@ -361,7 +361,12 @@ function paintColorPropertyLabel(property: PaintColorProperty) {
   return property === "fillColor" ? "Fill color" : "Stroke color";
 }
 
-export type StudioMaterialParameterTimelineKeyframe = StudioOpacityTimelineKeyframe;
+export type StudioMaterialParameterTimelineKeyframe = Readonly<{
+  easing: StudioPropertyKeyframeEasing;
+  sourceTime: number;
+  time: number;
+  value: number | string;
+}>;
 export type StudioRotationTimelineKeyframe = StudioOpacityTimelineKeyframe;
 export type StudioScaleTimelineKeyframe = StudioOpacityTimelineKeyframe;
 
@@ -409,6 +414,7 @@ export type StudioMaterialParameterTimelineTrack = Readonly<{
   materialShaderId: string;
   parameterIndex: number;
   parameterName: string;
+  parameterType: "f32" | "rgb";
   programIndex: number;
   range: Readonly<{ max: number; min: number; step: number }>;
   readOnlyReason: string | null;
@@ -419,6 +425,7 @@ export type StudioMaterialParameterTimelineOption = Readonly<{
   entityId: string;
   materialName: string;
   name: string;
+  parameterType: "f32" | "rgb";
 }>;
 
 const STATIC_PLAYBACK_CLOCK_SNAPSHOT = { currentTime: 0, playing: false };
@@ -598,7 +605,7 @@ function PropertyKeyframeMarker({
 }: Readonly<{
   duration: number;
   index: number;
-  keyframe: StudioOpacityTimelineKeyframe | StudioPaintColorTimelineKeyframe;
+  keyframe: StudioMaterialParameterTimelineKeyframe | StudioOpacityTimelineKeyframe | StudioPaintColorTimelineKeyframe;
   kind: "material" | "opacity" | "paint-color" | "rotation" | "scale";
   locked: boolean;
   materialParameterName?: string;
@@ -711,7 +718,9 @@ function PropertyKeyframeMarker({
         if (Math.abs(time - keyframe.time) > 0.0005) onChange({ time });
       }}
       style={{
-        ...(kind === "paint-color" && typeof keyframe.value === "string" ? { backgroundColor: keyframe.value } : {}),
+        ...((kind === "material" || kind === "paint-color") && typeof keyframe.value === "string"
+          ? { backgroundColor: keyframe.value }
+          : {}),
         left: `${timelinePositionPercent(displayedTime, duration)}%`,
         touchAction: "none",
       }}
@@ -2018,28 +2027,47 @@ export function StudioTimeline({
             />
             s
           </label>
-          <label className="flex items-center gap-1 text-zinc-500">
-            Value
-            <input
-              aria-label={`${selectedMaterialTrack.parameterName} material parameter keyframe value`}
-              className="h-7 w-24 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-fuchsia-500"
-              disabled={
-                selectedMaterialLocked ||
-                selectedMaterialTrack.readOnlyReason !== null ||
-                selectedMaterialKeyframe!.index === 0
-              }
-              max={selectedMaterialTrack.range.max}
-              min={selectedMaterialTrack.range.min}
-              onChange={(event) =>
-                onMaterialParameterKeyframeChange(selectedMaterialTrack, selectedMaterialKeyframe!.index, {
-                  value: Number(event.currentTarget.value),
-                })
-              }
-              step={selectedMaterialTrack.range.step}
-              type="number"
-              value={selectedMaterialMarker.value}
-            />
-          </label>
+          <div className="flex items-center gap-1 text-zinc-500">
+            <span>Value</span>
+            {selectedMaterialTrack.parameterType === "rgb" ? (
+              <input
+                aria-label={`${selectedMaterialTrack.parameterName} material parameter keyframe value`}
+                className="h-7 w-12 border border-zinc-700 bg-zinc-950 p-0.5 outline-none focus:border-fuchsia-500"
+                disabled={
+                  selectedMaterialLocked ||
+                  selectedMaterialTrack.readOnlyReason !== null ||
+                  selectedMaterialKeyframe!.index === 0
+                }
+                onChange={(event) =>
+                  onMaterialParameterKeyframeChange(selectedMaterialTrack, selectedMaterialKeyframe!.index, {
+                    value: event.currentTarget.value,
+                  })
+                }
+                type="color"
+                value={typeof selectedMaterialMarker.value === "string" ? selectedMaterialMarker.value : "#000000"}
+              />
+            ) : (
+              <input
+                aria-label={`${selectedMaterialTrack.parameterName} material parameter keyframe value`}
+                className="h-7 w-24 border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-zinc-200 outline-none focus:border-fuchsia-500"
+                disabled={
+                  selectedMaterialLocked ||
+                  selectedMaterialTrack.readOnlyReason !== null ||
+                  selectedMaterialKeyframe!.index === 0
+                }
+                max={selectedMaterialTrack.range.max}
+                min={selectedMaterialTrack.range.min}
+                onChange={(event) =>
+                  onMaterialParameterKeyframeChange(selectedMaterialTrack, selectedMaterialKeyframe!.index, {
+                    value: Number(event.currentTarget.value),
+                  })
+                }
+                step={selectedMaterialTrack.range.step}
+                type="number"
+                value={typeof selectedMaterialMarker.value === "number" ? selectedMaterialMarker.value : 0}
+              />
+            )}
+          </div>
           <label className="flex items-center gap-1 text-zinc-500">
             Easing
             <select

@@ -265,8 +265,8 @@ describe("StudioTimeline opacity keyframes", () => {
       <StudioTimeline
         {...base}
         materialParameterOptions={[
-          { entityId: "circle", materialName: "Wave", name: "amplitude" },
-          { entityId: "circle", materialName: "Wave", name: "bands" },
+          { entityId: "circle", materialName: "Wave", name: "amplitude", parameterType: "f32" },
+          { entityId: "circle", materialName: "Wave", name: "bands", parameterType: "f32" },
         ]}
         materialParameterTracks={[
           {
@@ -279,6 +279,7 @@ describe("StudioTimeline opacity keyframes", () => {
             materialShaderId: "project-wave",
             parameterIndex: 0,
             parameterName: "amplitude",
+            parameterType: "f32",
             programIndex: 0,
             range: { max: 1, min: 0, step: 0.05 },
             readOnlyReason: null,
@@ -294,6 +295,7 @@ describe("StudioTimeline opacity keyframes", () => {
             materialShaderId: "project-wave",
             parameterIndex: 1,
             parameterName: "bands",
+            parameterType: "f32",
             programIndex: 0,
             range: { max: 16, min: 1, step: 1 },
             readOnlyReason: null,
@@ -309,6 +311,45 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain("Material parameter for Circle");
     expect(markup).toContain("amplitude");
     expect(markup).toContain("bands");
+  });
+
+  it("renders one logical color track for an RGB material parameter", () => {
+    const base = props();
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...base}
+        materialParameterOptions={[
+          { entityId: "circle", materialName: "Gradient", name: "Cool", parameterType: "rgb" },
+        ]}
+        materialParameterTracks={[
+          {
+            assignmentChanged: false,
+            entityId: "circle",
+            keyframes: [
+              { easing: "linear", sourceTime: 1, time: 1, value: "#0ea5e9" },
+              { easing: "smooth", sourceTime: 3, time: 3, value: "#f97316" },
+            ],
+            label: "Circle",
+            materialName: "Gradient",
+            materialRevision: 1,
+            materialShaderId: "project-gradient",
+            parameterIndex: 2,
+            parameterName: "Cool",
+            parameterType: "rgb",
+            programIndex: 0,
+            range: { max: 1, min: 0, step: 0.01 },
+            readOnlyReason: null,
+            transactionId: "create-circle",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup.match(/data-property-keyframe="material"/g)).toHaveLength(2);
+    expect(markup).toContain('aria-label="Cool material parameter keyframe 1 at 1.00 seconds"');
+    expect(markup).toContain('aria-label="Cool material parameter keyframe 2 at 3.00 seconds"');
+    expect(markup).toContain("background-color:#0ea5e9");
+    expect(markup).toContain("background-color:#f97316");
   });
 
   it("renders uniform scale through the shared property marker lane", () => {
@@ -372,6 +413,7 @@ describe("StudioTimeline opacity keyframes", () => {
             materialShaderId: "project-wave",
             parameterIndex: 0,
             parameterName: "amplitude",
+            parameterType: "f32",
             programIndex: 0,
             range: { max: 1, min: 0, step: 0.05 },
             readOnlyReason: "The assigned material changed. Restore it or remove this track.",
