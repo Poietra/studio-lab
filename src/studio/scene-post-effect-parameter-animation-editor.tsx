@@ -147,7 +147,7 @@ function SelectedParameterTrackEditor({
       </p>
       <div className="space-y-2">
         {draft.keyframes.map((keyframe, index) => (
-          <div className="grid grid-cols-[4rem_1fr_5.5rem_auto] items-end gap-1" key={`${keyframe.time}/${index}`}>
+          <div className="grid grid-cols-[4rem_1fr_5.5rem_auto] items-end gap-1" key={index}>
             <label className="text-[9px] text-zinc-600">
               Time
               <input
@@ -401,7 +401,7 @@ function SelectedRgbParameterTrackEditor({
       </p>
       <div className="space-y-2">
         {draft.keyframes.map((keyframe, index) => (
-          <div className="grid grid-cols-[4rem_1fr_5.5rem_auto] items-end gap-1" key={`${keyframe.time}/${index}`}>
+          <div className="grid grid-cols-[4rem_1fr_5.5rem_auto] items-end gap-1" key={index}>
             <label className="text-[9px] text-zinc-600">
               Time
               <input
