@@ -2048,10 +2048,12 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await scenePlayhead.fill("2.1");
     await page.getByRole("button", { name: "Add Cool material keyframe for E = mc^2" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
     let equationCoolEnd = page.getByRole("button", { name: /Cool material parameter keyframe 2 at/u });
     await equationCoolEnd.click();
     await page.getByLabel("Cool material parameter keyframe value").fill("#0000ff");
     await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
     let equationCoolStart = page.getByRole("button", { name: /Cool material parameter keyframe 1 at/u });
     await equationCoolStart.click();
     await page.getByRole("combobox", { name: "Cool material parameter segment easing" }).selectOption("linear");
@@ -2148,6 +2150,7 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await equationCoolEnd.click();
     await page.getByRole("button", { name: "Delete keyframe" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
     equationCoolStart = page.getByRole("button", { name: /Cool material parameter keyframe 1 at/u });
     await equationCoolStart.click();
     await page.getByRole("button", { name: "Delete keyframe" }).click();
