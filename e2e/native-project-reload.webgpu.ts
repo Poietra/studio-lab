@@ -2044,6 +2044,7 @@ test("writes a Studio MathTex through scrub, history, reload, and MP4 export", a
     await scenePlayhead.fill("1.6");
     await page.getByRole("button", { name: "Add Cool material keyframe for E = mc^2" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
+    await equationMaterialParameter.selectOption("Cool");
     await scenePlayhead.fill("2.1");
     await page.getByRole("button", { name: "Add Cool material keyframe for E = mc^2" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
