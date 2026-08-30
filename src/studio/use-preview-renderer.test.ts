@@ -3978,6 +3978,7 @@ describe("compileStudioPreviewSceneV1", () => {
         fontSize: 1.5,
         fontWeight: "bold" as const,
         lineHeight: 1.8,
+        wrapWidth: 3,
       },
       text,
     };
@@ -3994,6 +3995,7 @@ describe("compileStudioPreviewSceneV1", () => {
               fontSize: 1.5,
               fontWeight: "bold",
               lineHeight: 1.8,
+              wrapWidth: 3,
             },
           },
           position: { x: 320, y: 180 },
@@ -4122,7 +4124,13 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.kind).toBe("compiled");
     expect(compilerInputs).toEqual([
       {
-        layout: { alignment: "right", fontFamily: "mono", fontWeight: "bold", lineHeight: 1.8 },
+        layout: {
+          alignment: "right",
+          fontFamily: "mono",
+          fontWeight: "bold",
+          lineHeight: 1.8,
+          wrapWidthEm: 2,
+        },
         text: textContent.text,
       },
     ]);

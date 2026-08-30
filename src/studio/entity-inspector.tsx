@@ -304,6 +304,7 @@ export function EntityInspectorEditor({
           "textFontSize",
           "textFontWeight",
           "textLineHeight",
+          "textWrapWidth",
           "radius",
           "width",
           "height",
@@ -582,6 +583,25 @@ export function EntityInspectorEditor({
                       value={values.textLineHeight ?? ""}
                     />
                     <FieldError entityId={entity.id} error={errors.textLineHeight} field="textLineHeight" />
+                  </label>
+                  <label className="text-[10px] text-zinc-500">
+                    Wrap width (scene units)
+                    <input
+                      aria-label={`Text wrap width of ${entityLabel(entity)}`}
+                      aria-describedby={errors.textWrapWidth ? fieldErrorId(entity.id, "textWrapWidth") : undefined}
+                      aria-invalid={errors.textWrapWidth ? "true" : undefined}
+                      className={cn(inputClass, errors.textWrapWidth && "border-red-800")}
+                      data-inspector-field="textWrapWidth"
+                      inputMode="decimal"
+                      min="0.1"
+                      onChange={(event) => update("textWrapWidth", event.currentTarget.value)}
+                      placeholder="No wrap"
+                      ref={restoreFieldRef("textWrapWidth", restoreFocus, onFocusRestored)}
+                      step="0.1"
+                      type="number"
+                      value={values.textWrapWidth ?? ""}
+                    />
+                    <FieldError entityId={entity.id} error={errors.textWrapWidth} field="textWrapWidth" />
                   </label>
                 </div>
               ) : null}
