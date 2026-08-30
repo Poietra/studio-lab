@@ -12,6 +12,7 @@ import { MAX_SCENE_POST_EFFECTS_V1 } from "../engine/scene-post-effect-registry"
 import { styleProfileRefSchema } from "./style-profile";
 
 export const SCENE_EDIT_VERSION = 1 as const;
+export const MAX_SCENE_EDIT_OPERATIONS = 64;
 export const canonicalRgbHexSchema = z.string().regex(/^#[0-9a-f]{6}$/u);
 export const studioScenePostEffectV1Schema = scenePostEffectV1Schema;
 export type StudioScenePostEffectV1 = DeepReadonly<z.infer<typeof studioScenePostEffectV1Schema>>;
@@ -617,7 +618,7 @@ export const sceneEditSchema = z.object({
   anchor: resolvedAnchorSchema,
   intentCount: z.number().int().min(1).max(16),
   loweringStatus: z.enum(["illustrative", "supported", "unsupported"]),
-  operations: z.array(sceneEditOperationSchema).min(1).max(64),
+  operations: z.array(sceneEditOperationSchema).min(1).max(MAX_SCENE_EDIT_OPERATIONS),
   provenance: z.object({
     evidence: z.array(z.string().max(500)).max(64),
     origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
@@ -635,7 +636,7 @@ export const sceneEditSchema = z.object({
       )
       .max(256),
     mode: z.enum(["dependency-dag", "parallel", "sequence"]),
-    order: z.array(z.string()).min(1).max(64),
+    order: z.array(z.string()).min(1).max(MAX_SCENE_EDIT_OPERATIONS),
   }),
   transactionId: z.string().min(1).max(160),
   version: z.literal(SCENE_EDIT_VERSION),
@@ -676,7 +677,7 @@ export const sceneEditDraftSchema = z
       .strict(),
     intentCount: z.number().int().min(0).max(16),
     loweringStatus: z.enum(["illustrative", "supported", "unsupported"]),
-    operations: z.array(sceneEditOperationSchema).max(64),
+    operations: z.array(sceneEditOperationSchema).max(MAX_SCENE_EDIT_OPERATIONS),
     provenance: z
       .object({
         evidence: draftEvidenceSchema,
@@ -699,7 +700,7 @@ export const sceneEditDraftSchema = z
           )
           .max(256),
         mode: z.enum(["dependency-dag", "parallel", "sequence"]),
-        order: z.array(draftBoundedIdSchema).max(64),
+        order: z.array(draftBoundedIdSchema).max(MAX_SCENE_EDIT_OPERATIONS),
       })
       .strict(),
     transactionId: z.string().min(1).max(160),

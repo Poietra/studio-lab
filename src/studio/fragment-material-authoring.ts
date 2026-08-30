@@ -35,6 +35,7 @@ export type StudioFragmentMaterialTextureV1 = Readonly<{
 
 export type SceneFragmentMaterialStateV1 = Readonly<{
   assignments: Readonly<Record<string, StudioFragmentMaterialReferenceV1>>;
+  parameterSchemasByShaderId: Readonly<Record<string, StudioFragmentMaterialParameterSchemaV1>>;
   registry: FragmentMaterialRegistryV1;
 }>;
 
@@ -374,6 +375,7 @@ export const EMPTY_PROJECT_FRAGMENT_MATERIAL_STATE_V1: ProjectFragmentMaterialSt
 
 export const EMPTY_SCENE_FRAGMENT_MATERIAL_STATE_V1: SceneFragmentMaterialStateV1 = Object.freeze({
   assignments: Object.freeze({}),
+  parameterSchemasByShaderId: Object.freeze({}),
   registry: EMPTY_FRAGMENT_MATERIAL_REGISTRY_V1,
 });
 
@@ -881,8 +883,15 @@ export function projectFragmentMaterialsForSceneV1(
   const referencedMaterials = new Set(
     Object.values(assignments).map((assignment) => `${assignment.shaderId}\0${assignment.revision}`),
   );
+  const referencedShaderIds = new Set(Object.values(assignments).map(({ shaderId }) => shaderId));
   return {
     assignments,
+    parameterSchemasByShaderId: Object.fromEntries(
+      [...referencedShaderIds].flatMap((shaderId) => {
+        const schema = state.parameterSchemasByShaderId[shaderId];
+        return schema ? [[shaderId, schema] as const] : [];
+      }),
+    ),
     registry:
       referencedMaterials.size > 0
         ? {

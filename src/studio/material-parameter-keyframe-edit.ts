@@ -1,12 +1,17 @@
 import { MAX_FINITE_F32, MAX_FRAGMENT_MATERIAL_PARAMETERS_V1 } from "../engine/primitives";
 import type { StudioPropertyKeyframeEasing } from "../engine/scene-authoring";
 import { type DrawInFragmentMaterialAdmission, drawInUnavailableReason } from "./draw-in-edit";
-import type { StudioFragmentMaterialReferenceV1, StudioFragmentMaterialRgbV1 } from "./fragment-material-authoring";
+import {
+  type StudioFragmentMaterialParameterSchemaV1,
+  type StudioFragmentMaterialReferenceV1,
+  type StudioFragmentMaterialRgbV1,
+  studioFragmentMaterialParameterLayoutV1,
+} from "./fragment-material-authoring";
 import type { RuntimeSceneState } from "./model";
 import { initialAppearanceEnd, operationId } from "./operations";
 import { sourceTimeToWorkingTime } from "./program-composition";
 import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
-import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
+import { MAX_SCENE_EDIT_OPERATIONS, type SceneEdit, type SceneEditOperation } from "./scene-edit-contract";
 import { writeInUnavailableReason } from "./write-in-edit";
 
 const KEYFRAME_EPSILON = 0.0005;
@@ -373,6 +378,9 @@ function replaceMaterialParameterKeyframeProgramInternal(
     ...replacementOperations,
     ...retained.slice(retainedInsertionIndex),
   ];
+  if (operations.length > MAX_SCENE_EDIT_OPERATIONS) {
+    throw new TypeError(`A Studio EditProgram accepts at most ${MAX_SCENE_EDIT_OPERATIONS} operations.`);
+  }
   const hasMaterialTracks = operations.some(isMaterialParameterOperation);
   const evidence = input.baseProgram.provenance.evidence.filter(
     (entry) => entry !== "Studio material f32 parameter keyframes",
@@ -676,6 +684,7 @@ export function appendMaterialParameterKeyframe(
 export function materialParameterAssignmentBlocker(
   programs: readonly SceneEdit[],
   assignments: Readonly<Record<string, StudioFragmentMaterialReferenceV1>>,
+  parameterSchemasByShaderId?: Readonly<Record<string, StudioFragmentMaterialParameterSchemaV1>>,
 ) {
   for (const program of programs) {
     const rgbTargets = new Map<string, MaterialRgbParameterTarget>();
@@ -702,6 +711,16 @@ export function materialParameterAssignmentBlocker(
         return error instanceof Error
           ? `RGB material parameter track ${target.name} is malformed: ${error.message}`
           : `RGB material parameter track ${target.name} is malformed.`;
+      }
+      if (parameterSchemasByShaderId) {
+        const parameter = parameterSchemasByShaderId[target.material.shaderId]
+          ? studioFragmentMaterialParameterLayoutV1(parameterSchemasByShaderId[target.material.shaderId]).entries.find(
+              ({ offset }) => offset === target.parameterIndex,
+            )?.parameter
+          : null;
+        if (!parameter || parameter.type !== "rgb" || parameter.name !== target.name) {
+          return `RGB material parameter track ${target.name} no longer matches its project parameter schema.`;
+        }
       }
     }
     for (const operation of program.operations) {

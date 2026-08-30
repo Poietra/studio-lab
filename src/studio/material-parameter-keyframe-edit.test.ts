@@ -21,7 +21,12 @@ import { opacityKeyframeTrackFromProgram, replaceOpacityKeyframeProgram } from "
 import { insertedProgramDuration } from "./program-composition";
 import { duplicatePropertyKeyframeAtTime } from "./property-keyframe-duplicate";
 import { buildStudioCreationProjectionCommand } from "./scene-authoring-wire";
-import { type SceneEdit, sceneEditOperationSchema } from "./scene-edit-contract";
+import {
+  MAX_SCENE_EDIT_OPERATIONS,
+  type SceneEdit,
+  type SceneEditOperation,
+  sceneEditOperationSchema,
+} from "./scene-edit-contract";
 import { replaceWriteInProgram, writeInClipFromProgram } from "./write-in-edit";
 
 const material = {
@@ -316,6 +321,80 @@ describe("material parameter keyframe editing", () => {
     expect(removed.program.provenance.evidence).toContain("Studio material f32 parameter keyframes");
   });
 
+  it("rejects an RGB track before its scalar expansion exceeds the persisted operation capacity", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Arrow" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "material-rgb-capacity",
+    });
+    const entityId = creation.entityIds[0]!;
+    const wait = {
+      dependsOn: [],
+      eventKind: "wait",
+      id: "material-rgb-capacity/operation/wait",
+      interval: { end: 1.25, start: 1 },
+      kind: "InsertTimelineEvent",
+      label: "Wait before material animation",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+    } satisfies SceneEditOperation;
+    const baseProgram: SceneEdit = {
+      ...creation.validation.program,
+      intentCount: 2,
+      operations: [...creation.validation.program.operations, wait],
+      schedule: {
+        edges: [],
+        mode: "sequence",
+        order: [...creation.validation.program.schedule.order, wait.id],
+      },
+    };
+    const withScalar = replaceMaterialParameterKeyframeProgram({
+      baseProgram,
+      entityId,
+      keyframes: [{ easing: "smooth", time: 2, value: 0.35 }],
+      material: rgbMaterial,
+      name: "Speed",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(withScalar.kind, JSON.stringify(withScalar.issues)).toBe("valid");
+    const retainedOperations = withScalar.program.operations;
+    const maximumRgbKeyframes = Math.floor((MAX_SCENE_EDIT_OPERATIONS - retainedOperations.length) / 3) + 1;
+    const rgbKeyframes = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        easing: "smooth" as const,
+        time: 2.5 + index * 0.1,
+        value: [0.2, 0.55, 1] as const,
+      }));
+    const target = { entityId, material: rgbMaterial, name: "Cool", parameterIndex: 2 } as const;
+    const atCapacity = replaceMaterialRgbParameterKeyframeProgram({
+      ...target,
+      baseProgram: withScalar.program,
+      keyframes: rgbKeyframes(maximumRgbKeyframes),
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(atCapacity.kind, JSON.stringify(atCapacity.issues)).toBe("valid");
+    expect(atCapacity.program.operations).toHaveLength(retainedOperations.length + (maximumRgbKeyframes - 1) * 3);
+    expect(atCapacity.program.operations).toContainEqual(wait);
+    expect(
+      atCapacity.program.operations.filter(
+        (operation) => operation.kind === "AnimateProperty" && operation.materialParameter?.parameterIndex === 0,
+      ),
+    ).toEqual(
+      retainedOperations.filter(
+        (operation) => operation.kind === "AnimateProperty" && operation.materialParameter?.parameterIndex === 0,
+      ),
+    );
+    expect(() =>
+      replaceMaterialRgbParameterKeyframeProgram({
+        ...target,
+        baseProgram: withScalar.program,
+        keyframes: rgbKeyframes(maximumRgbKeyframes + 1),
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/at most 64 operations/i);
+  });
+
   it("rejects partial or desynchronized RGB components before editing or preview compilation", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
@@ -334,6 +413,31 @@ describe("material parameter keyframe editing", () => {
       ],
       scene: STUDIO_FIXTURE_SCENE,
     });
+    const correctSchema = [
+      { default: 0.35, name: "Speed", range: { max: 2, min: -2, step: 0.05 }, type: "f32" as const },
+      { default: 8, name: "Bands", range: { max: 24, min: 1, step: 1 }, type: "f32" as const },
+      { default: [0.2, 0.55, 1] as const, name: "Cool", type: "rgb" as const },
+    ];
+    expect(
+      materialParameterAssignmentBlocker(
+        [complete.program],
+        { [entityId]: rgbMaterial },
+        { [rgbMaterial.shaderId]: correctSchema },
+      ),
+    ).toBeNull();
+    for (const staleSchema of [
+      [...correctSchema.slice(0, 2), { ...correctSchema[2]!, name: "Tint" }],
+      [...correctSchema.slice(0, 2), { ...correctSchema[0]!, name: "Cool" }],
+      [correctSchema[0]!, correctSchema[2]!],
+    ]) {
+      expect(
+        materialParameterAssignmentBlocker(
+          [complete.program],
+          { [entityId]: rgbMaterial },
+          { [rgbMaterial.shaderId]: staleSchema },
+        ),
+      ).toMatch(/project parameter schema/i);
+    }
     const partial = {
       ...complete.program,
       operations: complete.program.operations.filter(

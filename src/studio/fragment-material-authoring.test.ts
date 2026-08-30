@@ -307,9 +307,9 @@ describe("project-local fragment material authoring", () => {
       sceneId: "scene-a",
       shaderId: created.shaderId,
     });
-    expect(projectFragmentMaterialsForSceneV1(assigned, "scene-a").assignments.circle?.parameters).toEqual([
-      0.4, 3, 0.2, 0.4, 0.8,
-    ]);
+    const projected = projectFragmentMaterialsForSceneV1(assigned, "scene-a");
+    expect(projected.assignments.circle?.parameters).toEqual([0.4, 3, 0.2, 0.4, 0.8]);
+    expect(projected.parameterSchemasByShaderId).toEqual({ [created.shaderId]: parameterSchema });
     expect(() =>
       updateStudioFragmentMaterialParameterSchemaV1(assigned, {
         parameterSchema: parameterSchema.slice(0, 1),
@@ -466,6 +466,7 @@ describe("project-local fragment material authoring", () => {
     });
     expect(projectFragmentMaterialsForSceneV1(edited, "scene-c")).toEqual({
       assignments: {},
+      parameterSchemasByShaderId: {},
       registry: { materials: [], schema: "poietra.fragment-material-registry", version: 1 },
     });
   });
