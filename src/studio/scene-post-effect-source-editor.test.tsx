@@ -212,6 +212,46 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toMatch(/aria-label="Tint Scene post-effect color parameter"[^>]*disabled=""/u);
   });
 
+  it("uses the flattened offset for a scalar animation after RGB", () => {
+    const created = createAsset("Color grade");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const state = acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+      ...asset.draft,
+      parameterSchema: [
+        { default: [0.2, 0.55, 1], name: "Tint", type: "rgb" },
+        { default: 0.4, name: "Strength", range: { max: 1, min: 0, step: 0.05 }, type: "f32" },
+      ],
+    });
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        {...callbacks()}
+        activeRevisions={[created.revision]}
+        assets={state.assets}
+        available
+        parameters={[0.2, 0.55, 1, 0.4]}
+        parameterTracks={[
+          {
+            keyframes: [
+              { easing: "linear", time: 0, value: 0.4 },
+              { easing: "smooth", time: 2, value: 0.8 },
+            ],
+            name: "Strength",
+            parameterIndex: 3,
+            revision: created.revision,
+            shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          },
+        ]}
+        sourceAvailable
+      />,
+    );
+
+    expect(markup).toContain("1 / 2 parameters animated");
+    expect(markup).toContain("Strength · animated");
+    expect(markup).toContain('data-scene-post-effect-parameter-index="3"');
+    expect(markup).toMatch(/aria-label="Strength Scene post-effect parameter"[^>]*disabled=""/u);
+    expect(markup).not.toMatch(/aria-label="Tint Scene post-effect color parameter"[^>]*disabled=""/u);
+  });
+
   it("fails closed without crashing when an RGB component track is missing", () => {
     const created = createAsset("Color grade");
     const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
