@@ -687,6 +687,57 @@ test("authors scalar and RGB effect animations through Preview, reload, and MP4 
   }
 });
 
+test("creates the Color Tint starter through Preview, reload, and decoded MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Color Tint preset fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.getByRole("combobox", { name: "Starter preset" }).selectOption("color-tint");
+    await expect(page.getByRole("textbox", { name: "New Scene effect name" })).toHaveValue("Color Tint");
+    await page.getByRole("button", { name: "Create starter" }).click();
+    const parameterSchema = page.getByRole("group", { name: "Scene post-effect parameter schema" });
+    await expect(parameterSchema.getByLabel("Scene effect parameter 1 name")).toHaveValue("Tint");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 2 name")).toHaveValue("Mix");
+    await expect(page.getByRole("textbox", { name: "Scene post-effect WGSL source" })).toHaveValue(
+      /color\.rgb \* tint/u,
+    );
+    await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
+    await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Add to stack" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
+
+    await page.getByLabel("Tint Scene post-effect color parameter").fill("#2040ff");
+    await page.getByRole("slider", { name: "Mix Scene post-effect parameter" }).fill("1");
+    await page.getByRole("button", { name: "Update parameters" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Color Tint preset fixture workspace" }).click();
+    await expect(page.getByRole("button", { name: /Edit Scene effect Color Tint/u })).toContainText("In stack");
+    await expect(page.getByLabel("Tint Scene post-effect color parameter")).toHaveValue("#2040ff");
+    await expect(page.getByRole("slider", { name: "Mix Scene post-effect parameter" })).toHaveValue("1");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const [tintedFrame] = await decodedPixelStats(page, await exportLocalMp4(page), [1], "blue-dominant");
+    expect(tintedFrame?.count ?? 0).toBeGreaterThan(100);
+    expect(tintedFrame?.averageBlue ?? 0).toBeGreaterThan((tintedFrame?.averageGreen ?? 0) * 1.5);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("stacks and reorders named WGSL and GLSL Scene effects through Preview, history, reload, and MP4", async ({
   page,
 }) => {

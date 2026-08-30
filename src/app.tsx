@@ -329,6 +329,7 @@ import {
   type ProjectScenePostEffectLibraryState,
   rejectStudioScenePostEffectSourceV1,
   removeStudioScenePostEffectSourceV1,
+  type StudioScenePostEffectPresetId,
   studioScenePostEffectParameterLayoutV1,
   updateStudioScenePostEffectReferenceTextureV1,
 } from "./studio/scene-post-effect-source";
@@ -7451,10 +7452,10 @@ export function App({
     return true;
   }
 
-  function createProjectScenePostEffect(name: string) {
+  function createProjectScenePostEffect(input: Readonly<{ name: string; presetId: StudioScenePostEffectPresetId }>) {
     if (!activeProjectId) return false;
     try {
-      const created = createStudioScenePostEffectSourceV1(activeProjectScenePostEffect, { name });
+      const created = createStudioScenePostEffectSourceV1(activeProjectScenePostEffect, input);
       if (commitProjectScenePostEffect(activeProjectId, created.state)) {
         setProjectScenePostEffectSelections((current) => ({ ...current, [activeProjectId]: created.revision }));
         return true;
