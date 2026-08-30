@@ -2021,6 +2021,73 @@ test("writes Japanese multiline Studio Text through reload and MP4 export", asyn
   }
 });
 
+test("wraps Studio Text through Inspector, history, reload, and MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(10_000);
+  let projectId: string | null = null;
+  try {
+    const workspaceName = "Text auto-wrap fixture";
+    const content = "Poietra makes animated explanations easier to read";
+    projectId = await createBlankWorkspace(page, workspaceName);
+    const canvas = page.locator("[data-studio-canvas]");
+
+    await page.getByRole("button", { name: /Insert text/ }).click();
+    await page.getByRole("textbox", { name: "Text content" }).fill(content);
+    await canvas.click({ position: { x: 400, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    const text = page.getByRole("button", { exact: true, name: `Move ${content}` });
+    const textId = await text.getAttribute("data-studio-entity");
+    if (!textId) throw new Error("The auto-wrap Text did not expose its logical root id.");
+    const wrapper = page.locator(`[data-studio-entity-wrapper="${textId}"]`);
+    const playhead = page.getByRole("slider", { name: "Scene playhead" });
+    await playhead.fill("1");
+    await expect(canvas).toHaveAttribute("data-preview-sample-time", "1");
+    const initial = await preparedDimensions(wrapper);
+    const wrapWidth = page.getByRole("spinbutton", { name: `Text wrap width of ${content}` });
+
+    await wrapWidth.fill("8");
+    await page.getByRole("button", { name: "Create draft" }).click();
+    await expect(page.getByRole("button", { name: "Replace program" })).toBeEnabled({ timeout: 30_000 });
+    await playhead.fill("1");
+    await expect(canvas).toHaveAttribute("data-preview-sample-time", "1");
+    await expect
+      .poll(async () => (await preparedDimensions(wrapper)).height, { timeout: 30_000 })
+      .toBeGreaterThan(initial.height * 1.5);
+    const wrapped = await preparedDimensions(wrapper);
+    expect(wrapped.width).toBeLessThan(initial.width * 0.8);
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(wrapWidth).toHaveValue("8.00");
+
+    await page.getByRole("button", { name: "Undo" }).click();
+    await playhead.fill("1");
+    await expect(wrapWidth).toHaveValue("");
+    await expect.poll(async () => (await preparedDimensions(wrapper)).width).toBeGreaterThan(wrapped.width * 1.25);
+    await page.getByRole("button", { name: "Redo" }).click();
+    await playhead.fill("1");
+    await expect(wrapWidth).toHaveValue("8.00");
+    await expect.poll(async () => (await preparedDimensions(wrapper)).height).toBeGreaterThan(initial.height * 1.5);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: `Open ${workspaceName} workspace` }).click();
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("1");
+    await expect(canvas).toHaveAttribute("data-preview-sample-time", "1");
+    const restoredText = page.getByRole("button", { exact: true, name: `Move ${content}` });
+    await restoredText.click();
+    await expect(page.getByRole("spinbutton", { name: `Text wrap width of ${content}` })).toHaveValue("8.00");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const sceneDuration = Number(await page.getByRole("slider", { name: "Scene playhead" }).getAttribute("max"));
+    const pixels = await decodedBrightPixelCounts(page, await exportLocalMp4(page), [
+      Math.max(0, sceneDuration - 0.05),
+    ]);
+    expect(pixels[0] ?? 0).toBeGreaterThan(50);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("writes a Studio MathTex through scrub, history, reload, and MP4 export", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(10_000);
