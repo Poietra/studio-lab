@@ -3,6 +3,11 @@ import { MAX_SCENE_POST_EFFECTS_V1 } from "../engine/scene-post-effect-registry"
 import type { ScenePostEffectParameterTrack } from "./scene-edit-contract";
 import { ScenePostEffectParameterAnimationEditor } from "./scene-post-effect-parameter-animation-editor";
 import type { ScenePostEffectParameterKeyframe } from "./scene-post-effect-parameter-keyframe-edit";
+import {
+  parseScenePostEffectParameterSchemaDraftV1,
+  scenePostEffectParameterSchemaDraftV1,
+} from "./scene-post-effect-parameter-schema-draft";
+import { ScenePostEffectParameterSchemaEditor } from "./scene-post-effect-parameter-schema-editor";
 
 import {
   MAX_PROJECT_SCENE_POST_EFFECT_ASSETS,
@@ -114,6 +119,9 @@ export function ScenePostEffectSourceEditor({
   const [sourceLanguage, setSourceLanguage] = useState<StudioScenePostEffectSourceLanguageV1>(
     () => asset?.draft.sourceLanguage ?? "wgsl",
   );
+  const [parameterSchemaDraft, setParameterSchemaDraft] = useState(() =>
+    scenePostEffectParameterSchemaDraftV1(asset?.draft.parameterSchema ?? []),
+  );
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [parameterDraft, setParameterDraft] = useState<readonly number[]>(() => parameters ?? []);
   const [textureSlot, setTextureSlot] = useState(() => asset?.draft.textureSlot === "texture2d");
@@ -122,9 +130,16 @@ export function ScenePostEffectSourceEditor({
   useEffect(() => {
     setSource(asset?.draft.source ?? STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1);
     setSourceLanguage(asset?.draft.sourceLanguage ?? "wgsl");
+    setParameterSchemaDraft(scenePostEffectParameterSchemaDraftV1(asset?.draft.parameterSchema ?? []));
     setTextureSlot(asset?.draft.textureSlot === "texture2d");
     setSubmitError(null);
-  }, [asset?.draft.source, asset?.draft.sourceLanguage, asset?.draft.textureSlot, asset?.revision]);
+  }, [
+    asset?.draft.parameterSchema,
+    asset?.draft.source,
+    asset?.draft.sourceLanguage,
+    asset?.draft.textureSlot,
+    asset?.revision,
+  ]);
 
   useEffect(() => {
     setParameterDraft(
@@ -152,6 +167,20 @@ export function ScenePostEffectSourceEditor({
       )
     : [];
   const animatedParameterIndices = new Set(activeParameterTracks.map((track) => track.parameterIndex));
+  const parsedParameterSchemaDraft = parseScenePostEffectParameterSchemaDraftV1(parameterSchemaDraft);
+  const parameterSchemaMatchesAccepted =
+    accepted !== null &&
+    parsedParameterSchemaDraft.ok &&
+    JSON.stringify(parsedParameterSchemaDraft.schema) === JSON.stringify(accepted.parameterSchema);
+  const parameterSchemaDisabledReason = active
+    ? "Remove this effect from the Scene stack before changing its parameter contract."
+    : activeParameterTracks.length > 0
+      ? "Remove this effect's parameter animation before changing its parameter contract."
+      : !sourceAvailable
+        ? "Custom Scene effect source editing is unavailable."
+        : sourceBusy
+          ? "Wait for the current source operation to finish."
+          : null;
   const acceptedUsesTexture = accepted?.textureSlot === "texture2d";
   const declaredTextureSlot = accepted ? acceptedUsesTexture : textureSlot;
   const sourceLanguageLabel = sourceLanguage === "glsl" ? "GLSL" : "WGSL";
@@ -459,6 +488,7 @@ export function ScenePostEffectSourceEditor({
                   active ||
                   sourceBusy ||
                   activeRevisions.length >= MAX_SCENE_POST_EFFECTS_V1 ||
+                  !parameterSchemaMatchesAccepted ||
                   (acceptedUsesTexture && textureDraft === null)
                 }
                 onClick={() =>
@@ -468,9 +498,11 @@ export function ScenePostEffectSourceEditor({
               >
                 {active
                   ? "In Scene stack"
-                  : activeRevisions.length >= MAX_SCENE_POST_EFFECTS_V1
-                    ? "Stack is full"
-                    : "Add to stack"}
+                  : !parameterSchemaMatchesAccepted
+                    ? "Compile parameter changes"
+                    : activeRevisions.length >= MAX_SCENE_POST_EFFECTS_V1
+                      ? "Stack is full"
+                      : "Add to stack"}
               </button>
             </div>
           ) : (
@@ -483,6 +515,15 @@ export function ScenePostEffectSourceEditor({
               Remove uncompiled asset
             </button>
           )}
+
+          <ScenePostEffectParameterSchemaEditor
+            disabledReason={parameterSchemaDisabledReason}
+            draft={parameterSchemaDraft}
+            onChange={(next) => {
+              setParameterSchemaDraft(next);
+              setSubmitError(null);
+            }}
+          />
 
           {accepted?.parameterSchema.length ? (
             <fieldset className="mt-3 space-y-2 border border-zinc-800 p-2" aria-label="Scene post-effect parameters">
@@ -565,13 +606,18 @@ export function ScenePostEffectSourceEditor({
             onSubmit={(event) => {
               event.preventDefault();
               if (sourceInvalid || sourceBusy) return;
+              const parsedParameterSchema = parseScenePostEffectParameterSchemaDraftV1(parameterSchemaDraft);
+              if (!parsedParameterSchema.ok) {
+                setSubmitError(parsedParameterSchema.message);
+                return;
+              }
               setPending(true);
               setSubmitError(null);
               void Promise.resolve(
                 onCompile({
                   assetRevision: asset.revision,
                   expectedAcceptedGeneration: accepted?.generation ?? null,
-                  parameterSchema: asset.draft.parameterSchema,
+                  parameterSchema: parsedParameterSchema.schema,
                   source,
                   sourceLanguage,
                   ...(declaredTextureSlot ? { textureSlot: "texture2d" as const } : {}),
