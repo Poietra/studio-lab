@@ -176,6 +176,8 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("1 / 3 parameters animated");
     expect(markup).toContain("Amplitude · animated");
     expect(markup).toContain("Animated parameters keep their static baseline locked.");
+    expect(markup).toContain("Remove this effect");
+    expect(markup).toContain("parameter animation before changing its parameter contract.");
     expect(markup).toMatch(/aria-label="Amplitude Scene post-effect parameter"[^>]*disabled=""/u);
     expect(markup).not.toMatch(/aria-label="Wavelength Scene post-effect parameter"[^>]*disabled=""/u);
   });

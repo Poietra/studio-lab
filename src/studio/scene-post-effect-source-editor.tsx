@@ -172,15 +172,16 @@ export function ScenePostEffectSourceEditor({
     accepted !== null &&
     parsedParameterSchemaDraft.ok &&
     JSON.stringify(parsedParameterSchemaDraft.schema) === JSON.stringify(accepted.parameterSchema);
-  const parameterSchemaDisabledReason = active
-    ? "Remove this effect from the Scene stack before changing its parameter contract."
-    : activeParameterTracks.length > 0
+  const parameterSchemaDisabledReason =
+    activeParameterTracks.length > 0
       ? "Remove this effect's parameter animation before changing its parameter contract."
-      : !sourceAvailable
-        ? "Custom Scene effect source editing is unavailable."
-        : sourceBusy
-          ? "Wait for the current source operation to finish."
-          : null;
+      : active
+        ? "Remove this effect from the Scene stack before changing its parameter contract."
+        : !sourceAvailable
+          ? "Custom Scene effect source editing is unavailable."
+          : sourceBusy
+            ? "Wait for the current source operation to finish."
+            : null;
   const acceptedUsesTexture = accepted?.textureSlot === "texture2d";
   const declaredTextureSlot = accepted ? acceptedUsesTexture : textureSlot;
   const sourceLanguageLabel = sourceLanguage === "glsl" ? "GLSL" : "WGSL";

@@ -7464,24 +7464,25 @@ export function App({
     if ((expectedAsset.accepted?.generation ?? null) !== input.expectedAcceptedGeneration) {
       throw new Error("The custom Scene post effect changed while its source was compiling. Review it and try again.");
     }
+    const parameterSchemaChanged =
+      expectedAsset.accepted !== null &&
+      JSON.stringify(expectedAsset.accepted.parameterSchema) !== JSON.stringify(input.parameterSchema);
     if (
+      parameterSchemaChanged &&
+      scenePostEffectSourceParameterTracks.some(
+        (track) => track.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && track.revision === input.assetRevision,
+      )
+    ) {
+      throw new Error("Remove the Scene effect parameter animation before changing its parameter schema.");
+    }
+    if (
+      parameterSchemaChanged &&
       scenePostEffects.some(
         (effect) =>
           effect.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && effect.revision === input.assetRevision,
-      ) &&
-      expectedAsset.accepted &&
-      JSON.stringify(expectedAsset.accepted.parameterSchema) !== JSON.stringify(input.parameterSchema)
+      )
     ) {
       throw new Error("Remove the Scene effect from the stack before changing its parameter schema.");
-    }
-    if (
-      scenePostEffectSourceParameterTracks.some(
-        (track) => track.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && track.revision === input.assetRevision,
-      ) &&
-      expectedAsset.accepted &&
-      JSON.stringify(expectedAsset.accepted.parameterSchema) !== JSON.stringify(input.parameterSchema)
-    ) {
-      throw new Error("Remove the Scene effect parameter animation before changing its parameter schema.");
     }
     let candidate: ProjectScenePostEffectLibraryState;
     try {
