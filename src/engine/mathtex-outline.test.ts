@@ -258,6 +258,31 @@ describe("plain Text outline input", () => {
     };
 
     expect(textOutlineResponseV1Schema.safeParse(response).success).toBe(true);
+    const wrappedSubpath = {
+      ...subpath,
+      segments: subpath.segments.map((segment) => ({
+        control1: { x: segment.control1.x, y: segment.control1.y * 2 },
+        control2: { x: segment.control2.x, y: segment.control2.y * 2 },
+        end: { x: segment.end.x, y: segment.end.y * 2 },
+      })),
+      start: { x: subpath.start.x, y: subpath.start.y * 2 },
+    };
+    const wrappedResponse = {
+      ...response,
+      result: {
+        ...response.result,
+        bounds: { bottom: -1, left: -0.5, right: 0.5, top: 1 },
+        fragments: [{ ...response.result.fragments[0], path: { subpaths: [wrappedSubpath] } }],
+        path: { subpaths: [wrappedSubpath] },
+      },
+    };
+    expect(textOutlineResponseV1Schema.parse(wrappedResponse)).toEqual(wrappedResponse);
+    expect(
+      textOutlineResponseV1Schema.safeParse({
+        ...wrappedResponse,
+        result: { ...wrappedResponse.result, bounds: { bottom: -0.75, left: -0.5, right: 0.5, top: 1.25 } },
+      }).success,
+    ).toBe(false);
     expect(
       textOutlineResponseV1Schema.safeParse({
         ...response,

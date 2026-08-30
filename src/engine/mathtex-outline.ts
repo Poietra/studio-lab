@@ -503,11 +503,10 @@ export const textOutlineArtifactV1Schema = z
       context.addIssue({ code: "custom", message: "Text outline contours must be closed." });
     }
     if (
-      Math.abs(bounds.top - bounds.bottom - 1) > MATHTEX_NORMALIZATION_TOLERANCE ||
       Math.abs(bounds.left + bounds.right) > MATHTEX_NORMALIZATION_TOLERANCE ||
       Math.abs(bounds.bottom + bounds.top) > MATHTEX_NORMALIZATION_TOLERANCE
     ) {
-      context.addIssue({ code: "custom", message: "Text outline bounds must use canonical centered unit height." });
+      context.addIssue({ code: "custom", message: "Text outline bounds must use canonical centered coordinates." });
     }
     fragments.forEach((fragment, index) => {
       if (fragment.order !== index) {
