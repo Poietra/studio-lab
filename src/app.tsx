@@ -2705,6 +2705,40 @@ export function App({
         });
       })
     : [];
+  const persistedRgbMaterialParameterTracks = previewAppliedEdits.flatMap((record, programIndex) => {
+    const redComponents = materialParameterKeyframeTracksFromProgram(record.program, programIndex).filter(
+      (track) => track.rgbComponent === "r",
+    );
+    return redComponents.flatMap((redComponent) => {
+      try {
+        const track = materialRgbParameterKeyframeTrackFromProgram(record.program, programIndex, {
+          entityId: redComponent.entityId,
+          material: redComponent.material,
+          name: redComponent.name,
+          parameterIndex: redComponent.parameterIndex,
+        });
+        return track ? [track] : [];
+      } catch {
+        return [];
+      }
+    });
+  });
+  function rgbMaterialParameterAssignmentMatches(track: MaterialRgbParameterKeyframeTrack) {
+    const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
+    const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[track.material.shaderId];
+    const parameterEntry = schema
+      ? studioFragmentMaterialParameterLayoutV1(schema).entries.find(({ offset }) => offset === track.parameterIndex)
+      : null;
+    return (
+      assignment !== undefined &&
+      JSON.stringify(assignment) === JSON.stringify(track.material) &&
+      parameterEntry?.parameter.type === "rgb" &&
+      parameterEntry.parameter.name === track.name
+    );
+  }
+  const staleRgbMaterialParameterTracks = persistedRgbMaterialParameterTracks.filter(
+    (track) => !rgbMaterialParameterAssignmentMatches(track),
+  );
   const staleMaterialParameterTracks = previewAppliedEdits.flatMap((record, programIndex) => {
     return materialParameterKeyframeTracksFromProgram(record.program, programIndex).filter((track) => {
       if (track.rgbComponent) return false;
@@ -2801,92 +2835,70 @@ export function App({
       });
     },
   );
-  const rgbMaterialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = previewAppliedEdits.flatMap(
-    (record, programIndex) => {
+  const rgbMaterialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] =
+    persistedRgbMaterialParameterTracks.flatMap((track) => {
       if (!workspaceCreationProjection) return [];
-      return Object.entries(activeSceneFragmentMaterials.assignments).flatMap(([entityId, assignment]) => {
-        if (
-          !record.program.operations.some(
-            (operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId,
-          )
-        ) {
-          return [];
-        }
-        const schema = activeProjectFragmentMaterials.parameterSchemasByShaderId[assignment.shaderId];
-        if (!schema) return [];
-        return studioFragmentMaterialParameterLayoutV1(schema).entries.flatMap(({ offset, parameter }) => {
-          if (parameter.type !== "rgb") return [];
-          let track: MaterialRgbParameterKeyframeTrack | null;
-          try {
-            track = materialRgbParameterKeyframeTrackFromProgram(record.program, programIndex, {
-              entityId,
-              material: assignment,
-              name: parameter.name,
-              parameterIndex: offset,
-            });
-          } catch {
-            return [];
-          }
-          if (!track) return [];
-          const operations = record.program.operations.filter(
-            (operation) =>
-              operation.kind === "AnimateProperty" &&
-              operation.materialParameter?.rgbComponent === "r" &&
-              operation.entityId === entityId &&
-              operation.materialParameter.parameterIndex === offset &&
-              operation.materialParameter.material.shaderId === assignment.shaderId &&
-              operation.materialParameter.material.revision === assignment.revision,
-          );
-          const mutations = operations.map((operation) =>
-            workspaceCreationProjection.mutations.find(
-              (mutation) => mutation.kind === "material-parameter-keyframes" && mutation.operationId === operation.id,
-            ),
-          );
-          if (mutations.some((mutation) => !mutation)) return [];
-          const projectedMutations = mutations as readonly Extract<
-            (typeof workspaceCreationProjection.mutations)[number],
-            { kind: "material-parameter-keyframes" }
-          >[];
-          const workingTimes =
-            projectedMutations.length === 1 &&
-            Math.abs(projectedMutations[0]!.interval.end - projectedMutations[0]!.interval.start) < 0.0005
-              ? [projectedMutations[0]!.interval.start]
-              : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
-          if (workingTimes.length !== track.keyframes.length) return [];
-          const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
-          return [
-            {
-              assignmentChanged: false,
-              entityId,
-              keyframes: track.keyframes.map((keyframe, index) => ({
-                ...keyframe,
-                sourceTime: keyframe.time,
-                time: workingTimes[index]!,
-                value: materialRgbToHexColor(keyframe.value),
-              })),
-              label:
-                workspaceProjection?.projection.timeline.objectTracks.find(
-                  (candidate) => candidate.entityId === entityId,
-                )?.label ?? entityId,
-              materialName: activeProjectFragmentMaterials.namesByShaderId[assignment.shaderId] ?? assignment.shaderId,
-              materialRevision: assignment.revision,
-              materialShaderId: assignment.shaderId,
-              parameterIndex: offset,
-              parameterName: parameter.name,
-              parameterType: "rgb",
-              programIndex,
-              range: { max: 1, min: 0, step: 1 / 255 },
-              readOnlyReason:
-                draftEdit && !activeDraftIsThisTrack
-                  ? "Apply or discard the current draft before editing this material track."
-                  : null,
-              transactionId: track.transactionId,
-            },
-          ];
-        });
-      });
-    },
-  );
+      const record = previewAppliedEdits[track.programIndex];
+      if (!record || record.program.transactionId !== track.transactionId) return [];
+      const assignmentChanged = !rgbMaterialParameterAssignmentMatches(track);
+      const operations = record.program.operations.filter(
+        (operation) =>
+          operation.kind === "AnimateProperty" &&
+          operation.materialParameter?.rgbComponent === "r" &&
+          operation.entityId === track.entityId &&
+          operation.materialParameter.parameterIndex === track.parameterIndex &&
+          operation.materialParameter.name === track.name &&
+          JSON.stringify(operation.materialParameter.material) === JSON.stringify(track.material),
+      );
+      const mutations = operations.map((operation) =>
+        workspaceCreationProjection.mutations.find(
+          (mutation) => mutation.kind === "material-parameter-keyframes" && mutation.operationId === operation.id,
+        ),
+      );
+      if (mutations.some((mutation) => !mutation)) return [];
+      const projectedMutations = mutations as readonly Extract<
+        (typeof workspaceCreationProjection.mutations)[number],
+        { kind: "material-parameter-keyframes" }
+      >[];
+      const workingTimes =
+        projectedMutations.length === 1 &&
+        Math.abs(projectedMutations[0]!.interval.end - projectedMutations[0]!.interval.start) < 0.0005
+          ? [projectedMutations[0]!.interval.start]
+          : [projectedMutations[0]!.interval.start, ...projectedMutations.map(({ interval }) => interval.end)];
+      if (workingTimes.length !== track.keyframes.length) return [];
+      const activeDraftIsThisTrack = editingAppliedProgram?.original.program.transactionId === track.transactionId;
+      return [
+        {
+          assignmentChanged,
+          entityId: track.entityId,
+          keyframes: track.keyframes.map((keyframe, index) => ({
+            ...keyframe,
+            sourceTime: keyframe.time,
+            time: workingTimes[index]!,
+            value: materialRgbToHexColor(keyframe.value),
+          })),
+          label:
+            workspaceProjection?.projection.timeline.objectTracks.find(
+              (candidate) => candidate.entityId === track.entityId,
+            )?.label ?? track.entityId,
+          materialName:
+            activeProjectFragmentMaterials.namesByShaderId[track.material.shaderId] ?? track.material.shaderId,
+          materialRevision: track.material.revision,
+          materialShaderId: track.material.shaderId,
+          parameterIndex: track.parameterIndex,
+          parameterName: track.name,
+          parameterType: "rgb",
+          programIndex: track.programIndex,
+          range: { max: 1, min: 0, step: 1 / 255 },
+          readOnlyReason: assignmentChanged
+            ? "The assigned material or RGB parameter schema changed. Restore it or remove this track."
+            : draftEdit && !activeDraftIsThisTrack
+              ? "Apply or discard the current draft before editing this material track."
+              : null,
+          transactionId: track.transactionId,
+        },
+      ];
+    });
   const materialParameterTracks: readonly StudioMaterialParameterTimelineTrack[] = [
     ...scalarMaterialParameterTracks,
     ...rgbMaterialParameterTracks,
@@ -6352,12 +6364,20 @@ export function App({
       StudioMaterialParameterTimelineTrack,
       "entityId" | "materialRevision" | "materialShaderId" | "parameterIndex" | "parameterName"
     >,
-    material: NonNullable<(typeof activeSceneFragmentMaterials.assignments)[string]>,
   ) {
-    if (material.shaderId !== target.materialShaderId || material.revision !== target.materialRevision) return null;
+    const redComponent = materialParameterKeyframeTracksFromProgram(program, programIndex).find(
+      (track) =>
+        track.rgbComponent === "r" &&
+        track.entityId === target.entityId &&
+        track.material.shaderId === target.materialShaderId &&
+        track.material.revision === target.materialRevision &&
+        track.parameterIndex === target.parameterIndex &&
+        track.name === target.parameterName,
+    );
+    if (!redComponent) return null;
     return materialRgbParameterKeyframeTrackFromProgram(program, programIndex, {
       entityId: target.entityId,
-      material,
+      material: redComponent.material,
       name: target.parameterName,
       parameterIndex: target.parameterIndex,
     });
@@ -6437,12 +6457,15 @@ export function App({
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
     if (track.parameterType === "rgb") {
       try {
-        const sourceTrack =
-          owner && assignment
-            ? materialRgbParameterTrackFor(owner.record.program, owner.programIndex, track, assignment)
-            : null;
+        const sourceTrack = owner
+          ? materialRgbParameterTrackFor(owner.record.program, owner.programIndex, track)
+          : null;
+        const assignmentMatches =
+          sourceTrack && assignment && JSON.stringify(assignment) === JSON.stringify(sourceTrack.material);
         return duplicateStudioPropertyKeyframe({
-          conflictReason: null,
+          conflictReason: assignmentMatches
+            ? null
+            : "Restore the assigned material before duplicating this color track.",
           index,
           label: "material color",
           mismatchMessage: "The material color track no longer matches the Studio-created object.",
@@ -6500,11 +6523,17 @@ export function App({
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
     if (track.parameterType === "rgb") {
       try {
-        const sourceTrack =
-          owner && assignment
-            ? materialRgbParameterTrackFor(owner.record.program, owner.programIndex, track, assignment)
-            : null;
-        if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
+        const sourceTrack = owner
+          ? materialRgbParameterTrackFor(owner.record.program, owner.programIndex, track)
+          : null;
+        if (
+          !owner ||
+          !sourceTrack ||
+          !assignment ||
+          JSON.stringify(assignment) !== JSON.stringify(sourceTrack.material) ||
+          track.assignmentChanged ||
+          owner.record.program.transactionId !== track.transactionId
+        ) {
           throw new Error("The material color track no longer matches the Studio-created object.");
         }
         if (index === 0 && patch.value !== undefined) {
@@ -6573,12 +6602,17 @@ export function App({
     const assignment = activeSceneFragmentMaterials.assignments[track.entityId];
     if (track.parameterType === "rgb") {
       try {
-        const sourceTrack =
-          owner && assignment
-            ? materialRgbParameterTrackFor(owner.record.program, owner.programIndex, track, assignment)
-            : null;
+        const sourceTrack = owner
+          ? materialRgbParameterTrackFor(owner.record.program, owner.programIndex, track)
+          : null;
         if (!owner || !sourceTrack || owner.record.program.transactionId !== track.transactionId) {
           throw new Error("The material color track no longer matches the Studio-created object.");
+        }
+        const assignmentChanged =
+          track.assignmentChanged || !assignment || JSON.stringify(assignment) !== JSON.stringify(sourceTrack.material);
+        if (assignmentChanged) {
+          removeMaterialRgbParameterTrack(sourceTrack);
+          return;
         }
         if (index === 0 && sourceTrack.keyframes.length > 1) {
           throw new Error("Delete the later material color keyframes before deleting the fixed first marker.");
@@ -6630,6 +6664,23 @@ export function App({
       return;
     }
     stageMaterialParameterKeyframes({
+      entityId: sourceTrack.entityId,
+      keyframes: [],
+      material: sourceTrack.material,
+      name: sourceTrack.name,
+      parameterIndex: sourceTrack.parameterIndex,
+      program: owner.record.program,
+      programIndex: owner.programIndex,
+    });
+  }
+
+  function removeMaterialRgbParameterTrack(sourceTrack: MaterialRgbParameterKeyframeTrack) {
+    const owner = studioCreationProgramOwner(sourceTrack.entityId);
+    if (!owner || owner.record.program.transactionId !== sourceTrack.transactionId) {
+      setDraftError("The material color track no longer matches the Studio-created object.");
+      return;
+    }
+    stageMaterialRgbParameterKeyframes({
       entityId: sourceTrack.entityId,
       keyframes: [],
       material: sourceTrack.material,
@@ -11218,7 +11269,7 @@ export function App({
                 The canonical Rust core has not accepted the current timeline edit yet. Retry the preview, or remove the
                 edit that cannot be projected.
               </p>
-              {staleMaterialParameterTracks.length > 0 ? (
+              {staleMaterialParameterTracks.length > 0 || staleRgbMaterialParameterTracks.length > 0 ? (
                 <div className="mt-4 flex flex-wrap gap-2">
                   {staleMaterialParameterTracks.map((track) => (
                     <button
@@ -11228,6 +11279,16 @@ export function App({
                       type="button"
                     >
                       Remove stale {track.name} track
+                    </button>
+                  ))}
+                  {staleRgbMaterialParameterTracks.map((track) => (
+                    <button
+                      className="border border-red-800 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-950/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
+                      key={`${track.transactionId}/${track.parameterIndex}`}
+                      onClick={() => removeMaterialRgbParameterTrack(track)}
+                      type="button"
+                    >
+                      Remove stale {track.name} color track
                     </button>
                   ))}
                 </div>
