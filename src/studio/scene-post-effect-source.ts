@@ -246,6 +246,129 @@ export const STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1 = scenePostEffectP
   },
 ]);
 
+export const STUDIO_VIGNETTE_POST_EFFECT_SOURCE_V1 =
+  scenePostEffectWgslSourceV1Schema.parse(`struct ScenePostEffectHost {
+    viewport_and_time: vec4<f32>,
+    // x = strength, y = softness.
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> host: ScenePostEffectHost;
+
+@group(0) @binding(1)
+var scene_texture: texture_2d<f32>;
+
+@group(0) @binding(2)
+var scene_sampler: sampler;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let viewport = max(host.viewport_and_time.xy, vec2<f32>(1.0));
+    let coordinate = position.xy / viewport;
+    let color = textureSample(scene_texture, scene_sampler, coordinate);
+    let distance_from_center = length((coordinate - vec2<f32>(0.5)) * 2.0);
+    let strength = clamp(host.parameters_0.x, 0.0, 1.0);
+    let softness = clamp(host.parameters_0.y, 0.05, 1.0);
+    let edge = smoothstep(1.0 - softness, 1.0, distance_from_center);
+    return vec4<f32>(color.rgb * (1.0 - strength * edge), color.a);
+}
+`);
+
+export const STUDIO_VIGNETTE_POST_EFFECT_PARAMETERS_V1 = scenePostEffectParameterSchemaListV1.parse([
+  {
+    default: 0.55,
+    name: "Strength",
+    range: { max: 1, min: 0, step: 0.05 },
+    type: "f32",
+  },
+  {
+    default: 0.45,
+    name: "Softness",
+    range: { max: 1, min: 0.05, step: 0.05 },
+    type: "f32",
+  },
+]);
+
+export const STUDIO_COLOR_TINT_POST_EFFECT_SOURCE_V1 =
+  scenePostEffectWgslSourceV1Schema.parse(`struct ScenePostEffectHost {
+    viewport_and_time: vec4<f32>,
+    // xyz = tint color, w = mix.
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> host: ScenePostEffectHost;
+
+@group(0) @binding(1)
+var scene_texture: texture_2d<f32>;
+
+@group(0) @binding(2)
+var scene_sampler: sampler;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let viewport = max(host.viewport_and_time.xy, vec2<f32>(1.0));
+    let coordinate = position.xy / viewport;
+    let color = textureSample(scene_texture, scene_sampler, coordinate);
+    let tint = clamp(host.parameters_0.xyz, vec3<f32>(0.0), vec3<f32>(1.0));
+    let mix_amount = clamp(host.parameters_0.w, 0.0, 1.0);
+    return vec4<f32>(mix(color.rgb, color.rgb * tint, mix_amount), color.a);
+}
+`);
+
+export const STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1 = scenePostEffectParameterSchemaListV1.parse([
+  {
+    default: [0.2, 0.55, 1],
+    name: "Tint",
+    type: "rgb",
+  },
+  {
+    default: 0.4,
+    name: "Mix",
+    range: { max: 1, min: 0, step: 0.05 },
+    type: "f32",
+  },
+]);
+
+export const studioScenePostEffectPresetIdSchema = z.enum(["wave-distortion", "vignette", "color-tint"]);
+export type StudioScenePostEffectPresetId = z.infer<typeof studioScenePostEffectPresetIdSchema>;
+
+export const STUDIO_SCENE_POST_EFFECT_PRESETS: readonly Readonly<{
+  id: StudioScenePostEffectPresetId;
+  name: string;
+  parameterSchema: StudioScenePostEffectParameterSchemaV1;
+  source: string;
+}>[] = [
+  {
+    id: "wave-distortion",
+    name: "Wave Distortion",
+    parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
+    source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+  },
+  {
+    id: "vignette",
+    name: "Vignette",
+    parameterSchema: STUDIO_VIGNETTE_POST_EFFECT_PARAMETERS_V1,
+    source: STUDIO_VIGNETTE_POST_EFFECT_SOURCE_V1,
+  },
+  {
+    id: "color-tint",
+    name: "Color Tint",
+    parameterSchema: STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1,
+    source: STUDIO_COLOR_TINT_POST_EFFECT_SOURCE_V1,
+  },
+];
+
+export function studioScenePostEffectPreset(presetId: StudioScenePostEffectPresetId) {
+  const id = studioScenePostEffectPresetIdSchema.parse(presetId);
+  const preset = STUDIO_SCENE_POST_EFFECT_PRESETS.find((candidate) => candidate.id === id);
+  if (!preset) throw new Error(`Unknown Scene post-effect preset: ${id}`);
+  return preset;
+}
+
 export const EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE: ProjectScenePostEffectLibraryState = Object.freeze({
   assets: [],
   nextAssetRevision: 1,
@@ -273,13 +396,14 @@ function sameParameterSchema(
 
 export function createStudioScenePostEffectSourceV1(
   state: ProjectScenePostEffectLibraryState,
-  input: Readonly<{ name: string }>,
+  input: Readonly<{ name: string; presetId?: StudioScenePostEffectPresetId }>,
 ): Readonly<{ revision: number; state: ProjectScenePostEffectLibraryState }> {
   const current = parseState(state);
   if (current.assets.length >= MAX_PROJECT_SCENE_POST_EFFECT_ASSETS) {
     throw new Error(`A project accepts at most ${MAX_PROJECT_SCENE_POST_EFFECT_ASSETS} Scene post-effect assets.`);
   }
   const name = scenePostEffectAssetNameSchema.parse(input.name);
+  const preset = studioScenePostEffectPreset(input.presetId ?? "wave-distortion");
   if (current.nextAssetRevision > MAX_SCENE_POST_EFFECT_ASSET_REVISION) {
     throw new Error("The Scene post-effect asset revision space is exhausted.");
   }
@@ -292,8 +416,8 @@ export function createStudioScenePostEffectSourceV1(
         accepted: null,
         draft: {
           diagnostic: null,
-          parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
-          source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+          parameterSchema: preset.parameterSchema,
+          source: preset.source,
           sourceLanguage: "wgsl",
         },
         name,

@@ -17,12 +17,16 @@ import {
   MAX_PROJECT_SCENE_POST_EFFECT_ASSETS,
   MAX_SCENE_POST_EFFECT_SOURCE_BYTES_V1,
   PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  STUDIO_SCENE_POST_EFFECT_PRESETS,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
   type StudioScenePostEffectParameterSchemaV1,
+  type StudioScenePostEffectPresetId,
   type StudioScenePostEffectSourceAssetV1,
   type StudioScenePostEffectSourceLanguageV1,
   type StudioScenePostEffectTextureV1,
   studioScenePostEffectParameterLayoutV1,
+  studioScenePostEffectPreset,
+  studioScenePostEffectPresetIdSchema,
 } from "./scene-post-effect-source";
 import type { StudioNativeImageAssetV1 } from "./studio-image-assets";
 
@@ -43,7 +47,7 @@ export type ScenePostEffectSourceEditorProps = Readonly<{
   imageAssets: readonly StudioNativeImageAssetV1[];
   onAddToStack: (assetRevision: number, texture?: StudioScenePostEffectTextureV1) => void;
   onCompile: (input: CompileStudioScenePostEffectSourceInputV1) => Promise<void> | void;
-  onCreate: (name: string) => boolean;
+  onCreate: (input: Readonly<{ name: string; presetId: StudioScenePostEffectPresetId }>) => boolean;
   onParametersChange: (assetRevision: number, parameters: readonly number[]) => void;
   onParameterTrackChange: (input: ScenePostEffectParameterTrackChange) => void;
   onRemove: (assetRevision: number) => void;
@@ -105,6 +109,7 @@ export function ScenePostEffectSourceEditor({
   sourceAvailable,
   texture,
 }: ScenePostEffectSourceEditorProps) {
+  const [newAssetPresetId, setNewAssetPresetId] = useState<StudioScenePostEffectPresetId>("wave-distortion");
   const [newAssetName, setNewAssetName] = useState("Wave Distortion");
   const [pending, setPending] = useState(false);
   const [filePending, setFilePending] = useState(false);
@@ -212,6 +217,7 @@ export function ScenePostEffectSourceEditor({
           : `Ready · generation ${accepted.generation}`
         : "Not compiled"
     : null;
+  const selectedPreset = studioScenePostEffectPreset(newAssetPresetId);
 
   return (
     <section className="mt-3 border border-zinc-800 p-2" aria-label="Custom Scene post effect">
@@ -224,34 +230,58 @@ export function ScenePostEffectSourceEditor({
         </div>
       </div>
       <form
-        className="mt-2 flex gap-1"
+        className="mt-2 grid gap-1"
         onSubmit={(event) => {
           event.preventDefault();
           const name = newAssetName.trim();
           if (!name) return;
-          if (onCreate(name)) setNewAssetName(`Wave Distortion ${assets.length + 2}`);
+          if (onCreate({ name, presetId: newAssetPresetId })) {
+            setNewAssetName(`${selectedPreset.name} ${assets.length + 2}`);
+          }
         }}
       >
-        <input
-          aria-label="New Scene effect name"
-          className="h-7 min-w-0 flex-1 border border-zinc-700 bg-zinc-950 px-1.5 text-[10px] text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+        <label className="text-[10px] text-zinc-500" htmlFor="scene-post-effect-starter-preset">
+          Starter preset
+        </label>
+        <select
+          className="h-7 w-full border border-zinc-700 bg-zinc-950 px-1.5 text-[10px] text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
           disabled={!sourceAvailable || sourceBusy || assets.length >= MAX_PROJECT_SCENE_POST_EFFECT_ASSETS}
-          maxLength={80}
-          onChange={(event) => setNewAssetName(event.currentTarget.value)}
-          value={newAssetName}
-        />
-        <button
-          className="shrink-0 border border-sky-800 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
-          disabled={
-            !sourceAvailable ||
-            sourceBusy ||
-            assets.length >= MAX_PROJECT_SCENE_POST_EFFECT_ASSETS ||
-            newAssetName.trim().length === 0
-          }
-          type="submit"
+          id="scene-post-effect-starter-preset"
+          onChange={(event) => {
+            const presetId = studioScenePostEffectPresetIdSchema.parse(event.currentTarget.value);
+            setNewAssetPresetId(presetId);
+            setNewAssetName(studioScenePostEffectPreset(presetId).name);
+          }}
+          value={newAssetPresetId}
         >
-          {assets.length === 0 ? "Create starter" : "Add effect"}
-        </button>
+          {STUDIO_SCENE_POST_EFFECT_PRESETS.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.name}
+            </option>
+          ))}
+        </select>
+        <div className="flex gap-1">
+          <input
+            aria-label="New Scene effect name"
+            className="h-7 min-w-0 flex-1 border border-zinc-700 bg-zinc-950 px-1.5 text-[10px] text-zinc-300 outline-none focus:border-sky-500 disabled:text-zinc-700"
+            disabled={!sourceAvailable || sourceBusy || assets.length >= MAX_PROJECT_SCENE_POST_EFFECT_ASSETS}
+            maxLength={80}
+            onChange={(event) => setNewAssetName(event.currentTarget.value)}
+            value={newAssetName}
+          />
+          <button
+            className="shrink-0 border border-sky-800 bg-sky-950/50 px-2 py-1 text-[10px] text-sky-200 hover:bg-sky-900/50 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-transparent disabled:text-zinc-700"
+            disabled={
+              !sourceAvailable ||
+              sourceBusy ||
+              assets.length >= MAX_PROJECT_SCENE_POST_EFFECT_ASSETS ||
+              newAssetName.trim().length === 0
+            }
+            type="submit"
+          >
+            {assets.length === 0 ? "Create starter" : "Add effect"}
+          </button>
+        </div>
       </form>
       {assets.length > 0 ? (
         <div aria-label="Project Scene effect assets" className="mt-2 grid gap-1">
@@ -287,7 +317,7 @@ export function ScenePostEffectSourceEditor({
         </div>
       ) : (
         <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-500">
-          Create a WGSL starter, then paste or import Vulkan GLSL 450 when needed.
+          Choose a code-free WGSL starter, then edit its source or import Vulkan GLSL 450 when needed.
         </p>
       )}
 

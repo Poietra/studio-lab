@@ -57,7 +57,7 @@ function acceptAsset(created: ReturnType<typeof createAsset>) {
 }
 
 describe("ScenePostEffectSourceEditor", () => {
-  it("offers one Wave Distortion starter when the project has no custom asset", () => {
+  it("offers the bounded starter preset catalog when the project has no custom asset", () => {
     const markup = renderToStaticMarkup(
       <ScenePostEffectSourceEditor
         activeRevisions={[]}
@@ -71,8 +71,12 @@ describe("ScenePostEffectSourceEditor", () => {
 
     expect(markup).toContain('aria-label="Custom Scene post effect"');
     expect(markup).toContain("Wave Distortion");
+    expect(markup).toContain('<option value="vignette">Vignette</option>');
+    expect(markup).toContain('<option value="color-tint">Color Tint</option>');
     expect(markup).toContain("Create starter");
-    expect(markup).toContain("Create a WGSL starter, then paste or import Vulkan GLSL 450 when needed.");
+    expect(markup).toContain(
+      "Choose a code-free WGSL starter, then edit its source or import Vulkan GLSL 450 when needed.",
+    );
   });
 
   it("lists two named assets and selects the active revision", () => {

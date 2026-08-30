@@ -14,6 +14,11 @@ import {
   projectScenePostEffectLibraryStateSchema,
   rejectStudioScenePostEffectSourceV1,
   removeStudioScenePostEffectSourceV1,
+  STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1,
+  STUDIO_COLOR_TINT_POST_EFFECT_SOURCE_V1,
+  STUDIO_SCENE_POST_EFFECT_PRESETS,
+  STUDIO_VIGNETTE_POST_EFFECT_PARAMETERS_V1,
+  STUDIO_VIGNETTE_POST_EFFECT_SOURCE_V1,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
   type StudioScenePostEffectParameterSchemaV1,
@@ -67,6 +72,57 @@ describe("project Scene post-effect asset library", () => {
       revision: 1,
     });
     expect(findStudioScenePostEffectSourceV1(second.state, 99)).toBeNull();
+  });
+
+  it("creates each bounded preset with its matching name, WGSL source, and logical parameter schema", () => {
+    expect(STUDIO_SCENE_POST_EFFECT_PRESETS.map(({ id, name }) => ({ id, name }))).toEqual([
+      { id: "wave-distortion", name: "Wave Distortion" },
+      { id: "vignette", name: "Vignette" },
+      { id: "color-tint", name: "Color Tint" },
+    ]);
+
+    const wave = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE, {
+      name: "Wave Distortion",
+      presetId: "wave-distortion",
+    });
+    const vignette = createStudioScenePostEffectSourceV1(wave.state, {
+      name: "Vignette",
+      presetId: "vignette",
+    });
+    const colorTint = createStudioScenePostEffectSourceV1(vignette.state, {
+      name: "Color Tint",
+      presetId: "color-tint",
+    });
+
+    expect(colorTint.state.assets.map(({ draft, name }) => ({ name, ...draft }))).toEqual([
+      {
+        diagnostic: null,
+        name: "Wave Distortion",
+        parameterSchema: STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
+        source: STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+        sourceLanguage: "wgsl",
+      },
+      {
+        diagnostic: null,
+        name: "Vignette",
+        parameterSchema: STUDIO_VIGNETTE_POST_EFFECT_PARAMETERS_V1,
+        source: STUDIO_VIGNETTE_POST_EFFECT_SOURCE_V1,
+        sourceLanguage: "wgsl",
+      },
+      {
+        diagnostic: null,
+        name: "Color Tint",
+        parameterSchema: STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1,
+        source: STUDIO_COLOR_TINT_POST_EFFECT_SOURCE_V1,
+        sourceLanguage: "wgsl",
+      },
+    ]);
+    expect(studioScenePostEffectParameterLayoutV1(STUDIO_VIGNETTE_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([
+      0.55, 0.45,
+    ]);
+    expect(studioScenePostEffectParameterLayoutV1(STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([
+      0.2, 0.55, 1, 0.4,
+    ]);
   });
 
   it("enforces the library bound and validates semantic names", () => {
