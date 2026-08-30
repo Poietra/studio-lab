@@ -5,22 +5,35 @@ import { drawInClipFromProgram, replaceDrawInProgram } from "./draw-in-edit";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import {
   appendMaterialParameterKeyframe,
+  appendMaterialRgbParameterKeyframe,
   type MaterialParameterKeyframe,
   materialParameterAssignmentBlocker,
   materialParameterIdentityEditBlocker,
   materialParameterKeyframeTracksFromProgram,
+  materialRgbFromHexColor,
+  materialRgbParameterKeyframeTrackFromProgram,
+  materialRgbToHexColor,
   replaceMaterialParameterKeyframeProgram,
+  replaceMaterialRgbParameterKeyframe,
+  replaceMaterialRgbParameterKeyframeProgram,
 } from "./material-parameter-keyframe-edit";
 import { opacityKeyframeTrackFromProgram, replaceOpacityKeyframeProgram } from "./opacity-keyframe-edit";
 import { insertedProgramDuration } from "./program-composition";
 import { duplicatePropertyKeyframeAtTime } from "./property-keyframe-duplicate";
-import type { SceneEdit } from "./scene-edit-contract";
+import { buildStudioCreationProjectionCommand } from "./scene-authoring-wire";
+import { type SceneEdit, sceneEditOperationSchema } from "./scene-edit-contract";
 import { replaceWriteInProgram, writeInClipFromProgram } from "./write-in-edit";
 
 const material = {
   parameters: [0.35, 8],
   revision: 1,
   shaderId: "project-wave",
+} as const;
+
+const rgbMaterial = {
+  parameters: [0.35, 8, 0.2, 0.55, 1],
+  revision: 1,
+  shaderId: "project-gradient",
 } as const;
 
 describe("material parameter keyframe editing", () => {
@@ -189,6 +202,169 @@ describe("material parameter keyframe editing", () => {
       { name: "Bands", parameterIndex: 1 },
     ]);
     expect(withoutSpeed.program.provenance.evidence).toContain("Studio material f32 parameter keyframes");
+  });
+
+  it("round-trips one logical RGB track through three scalar operations while preserving its scalar sibling", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Arrow" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "material-rgb-track",
+    });
+    const entityId = creation.entityIds[0]!;
+    const withSpeed = replaceMaterialParameterKeyframeProgram({
+      baseProgram: creation.validation.program,
+      entityId,
+      keyframes: [
+        { easing: "smooth", time: 2, value: 0.35 },
+        { easing: "linear", time: 4, value: 0.8 },
+      ],
+      material: rgbMaterial,
+      name: "Speed",
+      parameterIndex: 0,
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    const scalarOperations = withSpeed.program.operations.filter(
+      (operation) => operation.kind === "AnimateProperty" && operation.materialParameter?.parameterIndex === 0,
+    );
+    const target = { entityId, material: rgbMaterial, name: "Cool", parameterIndex: 2 } as const;
+    const withRgb = replaceMaterialRgbParameterKeyframeProgram({
+      ...target,
+      baseProgram: withSpeed.program,
+      keyframes: [
+        { easing: "ease-out", time: 2.5, value: [0.2, 0.55, 1] },
+        { easing: "smooth", time: 4.5, value: [1, 0.3, 0.65] },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+
+    expect(withRgb.kind, JSON.stringify(withRgb.issues)).toBe("valid");
+    expect(materialRgbParameterKeyframeTrackFromProgram(withRgb.program, 0, target)).toMatchObject({
+      ...target,
+      keyframes: [
+        { easing: "ease-out", time: 2.5, value: [0.2, 0.55, 1] },
+        { easing: "smooth", time: 4.5, value: [1, 0.3, 0.65] },
+      ],
+      parameterType: "rgb",
+    });
+    const componentMetadata = withRgb.program.operations.flatMap((operation) =>
+      operation.kind === "AnimateProperty" && operation.materialParameter?.rgbComponent
+        ? [
+            {
+              parameterIndex: operation.materialParameter.parameterIndex,
+              rgbComponent: operation.materialParameter.rgbComponent,
+            },
+          ]
+        : [],
+    );
+    expect(componentMetadata).toEqual([
+      { parameterIndex: 2, rgbComponent: "r" },
+      { parameterIndex: 3, rgbComponent: "g" },
+      { parameterIndex: 4, rgbComponent: "b" },
+    ]);
+    const persisted = sceneEditOperationSchema.parse(
+      withRgb.program.operations.find(
+        (operation) => operation.kind === "AnimateProperty" && operation.materialParameter?.rgbComponent === "g",
+      ),
+    );
+    expect(persisted.kind === "AnimateProperty" ? persisted.materialParameter?.rgbComponent : null).toBe("g");
+    const wire = buildStudioCreationProjectionCommand({
+      baseDuration: STUDIO_FIXTURE_SCENE.duration,
+      programs: [withRgb.program],
+    });
+    const rgbWireOperations = wire.programs[0]!.operations.filter(
+      (operation) => operation.kind === "material-parameter-keyframes" && operation.parameterIndex >= 2,
+    );
+    expect(rgbWireOperations).toHaveLength(3);
+    expect(rgbWireOperations.every((operation) => !("rgbComponent" in operation))).toBe(true);
+
+    const logical = materialRgbParameterKeyframeTrackFromProgram(withRgb.program, 0, target)!;
+    const edited = replaceMaterialRgbParameterKeyframeProgram({
+      ...target,
+      baseProgram: withRgb.program,
+      keyframes: replaceMaterialRgbParameterKeyframe(logical.keyframes, 1, {
+        easing: "ease-in",
+        time: 4,
+        value: [0.1, 0.4, 0.8],
+      }),
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(
+      edited.program.operations.filter(
+        (operation) => operation.kind === "AnimateProperty" && operation.materialParameter?.parameterIndex === 0,
+      ),
+    ).toEqual(scalarOperations);
+    expect(materialRgbParameterKeyframeTrackFromProgram(edited.program, 0, target)?.keyframes[1]).toEqual({
+      easing: "smooth",
+      time: 4,
+      value: [0.1, 0.4, 0.8],
+    });
+    expect(materialRgbToHexColor([1, 0.3, 0.65])).toBe("#ff4da6");
+    expect(materialRgbFromHexColor("#ff4da6")).toEqual([1, 77 / 255, 166 / 255]);
+    expect(appendMaterialRgbParameterKeyframe(logical.keyframes, 5, [0.2, 0.55, 1])).toHaveLength(3);
+
+    const removed = replaceMaterialRgbParameterKeyframeProgram({
+      ...target,
+      baseProgram: edited.program,
+      keyframes: [],
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    expect(materialRgbParameterKeyframeTrackFromProgram(removed.program, 0, target)).toBeNull();
+    expect(materialParameterKeyframeTracksFromProgram(removed.program, 0)).toMatchObject([
+      { name: "Speed", parameterIndex: 0 },
+    ]);
+    expect(removed.program.provenance.evidence).toContain("Studio material f32 parameter keyframes");
+  });
+
+  it("rejects partial or desynchronized RGB components before editing or preview compilation", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ content: undefined, position: { x: 320, y: 180 }, type: "Arrow" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "material-rgb-corrupt",
+    });
+    const entityId = creation.entityIds[0]!;
+    const target = { entityId, material: rgbMaterial, name: "Cool", parameterIndex: 2 } as const;
+    const complete = replaceMaterialRgbParameterKeyframeProgram({
+      ...target,
+      baseProgram: creation.validation.program,
+      keyframes: [
+        { easing: "smooth", time: 2, value: [0.2, 0.55, 1] },
+        { easing: "linear", time: 4, value: [1, 0.3, 0.65] },
+      ],
+      scene: STUDIO_FIXTURE_SCENE,
+    });
+    const partial = {
+      ...complete.program,
+      operations: complete.program.operations.filter(
+        (operation) => operation.kind !== "AnimateProperty" || operation.materialParameter?.rgbComponent !== "b",
+      ),
+    } as SceneEdit;
+    expect(() => materialRgbParameterKeyframeTrackFromProgram(partial, 0, target)).toThrow(/exactly r, g, and b/i);
+    expect(() =>
+      replaceMaterialRgbParameterKeyframeProgram({
+        ...target,
+        baseProgram: partial,
+        keyframes: [],
+        scene: STUDIO_FIXTURE_SCENE,
+      }),
+    ).toThrow(/exactly r, g, and b/i);
+    expect(materialParameterAssignmentBlocker([partial], { [entityId]: rgbMaterial })).toMatch(/RGB.*r, g, and b/i);
+
+    const desynchronized = {
+      ...complete.program,
+      operations: complete.program.operations.map((operation) =>
+        operation.kind === "AnimateProperty" && operation.materialParameter?.rgbComponent === "g"
+          ? { ...operation, easing: "ease-in" as const }
+          : operation,
+      ),
+    } as SceneEdit;
+    expect(() => materialRgbParameterKeyframeTrackFromProgram(desynchronized, 0, target)).toThrow(
+      /identical keyframe times and easing/i,
+    );
+    expect(materialParameterAssignmentBlocker([desynchronized], { [entityId]: rgbMaterial })).toMatch(
+      /identical keyframe times and easing/i,
+    );
   });
 
   it("coexists with opacity and fails closed when the assigned material changes", () => {

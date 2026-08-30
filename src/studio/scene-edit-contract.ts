@@ -244,6 +244,7 @@ const sceneEditOperationStructureSchema = z.discriminatedUnion("kind", [
         material: fragmentMaterialV1Schema,
         name: z.string().min(1).max(40),
         parameterIndex: z.number().int().nonnegative().max(7),
+        rgbComponent: z.enum(["r", "g", "b"]).optional(),
       })
       .strict()
       .optional(),
@@ -489,6 +490,17 @@ const canonicalSceneEditOperationSchema = sceneEditOperationStructureSchema.supe
         code: z.ZodIssueCode.custom,
         message: `${operation.key} animation supports only linear or smooth easing.`,
         path: ["easing"],
+      });
+    }
+  }
+  if (operation.kind === "AnimateProperty" && operation.materialParameter?.rgbComponent) {
+    const componentOffset = { b: 2, g: 1, r: 0 }[operation.materialParameter.rgbComponent];
+    const rootParameterIndex = operation.materialParameter.parameterIndex - componentOffset;
+    if (rootParameterIndex < 0 || rootParameterIndex + 2 >= MAX_FRAGMENT_MATERIAL_PARAMETERS_V1) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "An RGB material component must belong to three consecutive host slots.",
+        path: ["materialParameter", "parameterIndex"],
       });
     }
   }
