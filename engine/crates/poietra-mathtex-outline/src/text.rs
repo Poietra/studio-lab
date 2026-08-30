@@ -1,10 +1,13 @@
-use poietra_scene_ir::{CubicPathV1, CubicSubpathV1, FillRuleV1};
+use poietra_scene_ir::{CubicPathV1, CubicSubpathV1, FillRuleV1, validate_cubic_path_v1};
 use serde::{Deserialize, Serialize};
 use ttf_parser::{Face, GlyphId};
 use unicode_normalization::UnicodeNormalization;
 
 use crate::MathTexOutlineBoundsV1;
-use crate::outline::{OutlineFailureV1, glyph_outline_subpaths, normalize_outline_subpaths};
+use crate::outline::{
+    OutlineFailureV1, glyph_outline_subpaths, normalize_outline_subpaths,
+    normalize_outline_subpaths_with_raw_height,
+};
 
 /// Exact request schema literal accepted by the plain-text compiler.
 pub const TEXT_OUTLINE_REQUEST_SCHEMA_V1: &str = "poietra.text-outline-request";
@@ -68,6 +71,8 @@ pub struct TextOutlineLayoutV1 {
     #[serde(default)]
     pub font_weight: TextFontWeightV1,
     pub line_height: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrap_width_em: Option<f64>,
 }
 
 impl Default for TextOutlineLayoutV1 {
@@ -77,6 +82,7 @@ impl Default for TextOutlineLayoutV1 {
             font_family: TextFontFamilyV1::Sans,
             font_weight: TextFontWeightV1::Regular,
             line_height: DEFAULT_TEXT_LINE_HEIGHT_EM,
+            wrap_width_em: None,
         }
     }
 }
@@ -215,14 +221,24 @@ pub fn compile_text_outline_v1(request: &TextOutlineRequestV1) -> TextOutlineRes
 fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1, CompileFailure> {
     let text = validate_request(request)?;
     let faces = TextFaces::new(request.layout.font_family, request.layout.font_weight)?;
-    let shaped_lines = text
-        .split('\n')
-        .map(|line| shape_ltr_line(&faces, line))
-        .collect::<Result<Vec<_>, _>>()?;
-    let maximum_line_width = shaped_lines
+    let shaped_lines = match request.layout.wrap_width_em {
+        Some(wrap_width_em) => shape_wrapped_lines(&faces, &text, wrap_width_em)?,
+        None => text
+            .split('\n')
+            .map(|line| shape_ltr_line(&faces, line))
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    let maximum_shaped_line_width = shaped_lines
         .iter()
         .map(|line| line.advance)
         .fold(0.0_f64, f64::max);
+    let maximum_line_width = request
+        .layout
+        .wrap_width_em
+        .map(|wrap_width_em| wrap_width_em * faces.em_units)
+        .filter(|width| width.is_finite())
+        .unwrap_or(maximum_shaped_line_width)
+        .max(maximum_shaped_line_width);
     let mut subpaths = Vec::new();
     let mut glyph_subpath_ranges = Vec::new();
     let mut segment_count = 0usize;
@@ -260,7 +276,23 @@ fn compile_inner(request: &TextOutlineRequestV1) -> Result<TextOutlineArtifactV1
         }
     }
 
-    let (path, bounds) = normalize_outline_subpaths(subpaths).map_err(map_outline_failure)?;
+    let (path, bounds) = if request.layout.wrap_width_em.is_some() {
+        let (mut path, bounds, raw_height) =
+            normalize_outline_subpaths_with_raw_height(subpaths).map_err(map_outline_failure)?;
+        let scale = raw_height / faces.em_units;
+        scale_path(&mut path, scale)?;
+        (
+            path,
+            TextOutlineBoundsV1 {
+                left: bounds.left * scale,
+                right: bounds.right * scale,
+                bottom: bounds.bottom * scale,
+                top: bounds.top * scale,
+            },
+        )
+    } else {
+        normalize_outline_subpaths(subpaths).map_err(map_outline_failure)?
+    };
     let fragments = glyph_subpath_ranges
         .into_iter()
         .enumerate()
@@ -407,6 +439,90 @@ fn shape_ltr_line(faces: &TextFaces, line: &str) -> Result<ShapedLine, CompileFa
     })
 }
 
+fn shape_wrapped_lines(
+    faces: &TextFaces,
+    text: &str,
+    wrap_width_em: f64,
+) -> Result<Vec<ShapedLine>, CompileFailure> {
+    let mut lines = Vec::new();
+    for explicit_line in text.split('\n') {
+        for line in wrap_ltr_line(faces, explicit_line, wrap_width_em)? {
+            if lines.len() == MAX_TEXT_LINES_V1 {
+                return Err(CompileFailure::new(
+                    TextOutlineUnsupportedCodeV1::RequestTooLarge,
+                    "Text outline requests accept at most 8 lines after wrapping",
+                ));
+            }
+            if line.chars().count() > MAX_TEXT_LINE_CHARACTERS_V1 {
+                return Err(CompileFailure::new(
+                    TextOutlineUnsupportedCodeV1::RequestTooLarge,
+                    "Text outline requests accept at most 128 Unicode scalars per wrapped line",
+                ));
+            }
+            lines.push(shape_ltr_line(faces, &line)?);
+        }
+    }
+    Ok(lines)
+}
+
+fn wrap_ltr_line(
+    faces: &TextFaces,
+    line: &str,
+    wrap_width_em: f64,
+) -> Result<Vec<String>, CompileFailure> {
+    let scalars = line.chars().collect::<Vec<_>>();
+    if scalars.is_empty() {
+        return Ok(vec![String::new()]);
+    }
+
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    while start < scalars.len() {
+        let mut end = start;
+        let mut last_whitespace = None;
+        loop {
+            if scalars[end].is_whitespace() {
+                last_whitespace = match last_whitespace {
+                    Some((whitespace_start, whitespace_end)) if whitespace_end == end => {
+                        Some((whitespace_start, end + 1))
+                    }
+                    _ => Some((end, end + 1)),
+                };
+            }
+
+            let candidate = scalars[start..=end].iter().collect::<String>();
+            let candidate_width_em = shape_ltr_line(faces, &candidate)?.advance / faces.em_units;
+            if candidate_width_em <= wrap_width_em {
+                end += 1;
+                if end == scalars.len() {
+                    lines.push(candidate);
+                    start = scalars.len();
+                    break;
+                }
+                continue;
+            }
+
+            if let Some((whitespace_start, whitespace_end)) = last_whitespace
+                && whitespace_start > start
+            {
+                lines.push(scalars[start..whitespace_start].iter().collect());
+                start = whitespace_end;
+                break;
+            }
+            if end > start {
+                lines.push(scalars[start..end].iter().collect());
+                start = end;
+                break;
+            }
+
+            lines.push(candidate);
+            start = end + 1;
+            break;
+        }
+    }
+    Ok(lines)
+}
+
 fn append_glyph(
     faces: &TextFaces,
     glyph: PositionedGlyph,
@@ -452,11 +568,43 @@ fn append_glyph(
     Ok(())
 }
 
+fn scale_path(path: &mut CubicPathV1, scale: f64) -> Result<(), CompileFailure> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return Err(CompileFailure::new(
+            TextOutlineUnsupportedCodeV1::OutlineInvalid,
+            "The wrapped Text outline scale is invalid",
+        ));
+    }
+    for subpath in &mut path.subpaths {
+        subpath.start.x *= scale;
+        subpath.start.y *= scale;
+        for segment in &mut subpath.segments {
+            segment.control1.x *= scale;
+            segment.control1.y *= scale;
+            segment.control2.x *= scale;
+            segment.control2.y *= scale;
+            segment.end.x *= scale;
+            segment.end.y *= scale;
+        }
+    }
+    validate_cubic_path_v1(path).map_err(|_| {
+        CompileFailure::new(
+            TextOutlineUnsupportedCodeV1::OutlineInvalid,
+            "The wrapped Text outline violates the cubic path contract",
+        )
+    })?;
+    Ok(())
+}
+
 fn validate_request(request: &TextOutlineRequestV1) -> Result<String, CompileFailure> {
     if request.version != TEXT_OUTLINE_VERSION_V1
         || request.text.is_empty()
         || !request.layout.line_height.is_finite()
         || request.layout.line_height <= 0.0
+        || request
+            .layout
+            .wrap_width_em
+            .is_some_and(|width| !width.is_finite() || width <= 0.0)
     {
         return Err(CompileFailure::new(
             TextOutlineUnsupportedCodeV1::InvalidRequest,
@@ -490,21 +638,23 @@ fn validate_request(request: &TextOutlineRequestV1) -> Result<String, CompileFai
             "Text outline requests accept at most 256 Unicode scalars",
         ));
     }
-    let lines = normalized.split('\n').collect::<Vec<_>>();
-    if lines.len() > MAX_TEXT_LINES_V1 {
-        return Err(CompileFailure::new(
-            TextOutlineUnsupportedCodeV1::RequestTooLarge,
-            "Text outline requests accept at most 8 lines",
-        ));
-    }
-    if lines
-        .iter()
-        .any(|line| line.chars().count() > MAX_TEXT_LINE_CHARACTERS_V1)
-    {
-        return Err(CompileFailure::new(
-            TextOutlineUnsupportedCodeV1::RequestTooLarge,
-            "Text outline requests accept at most 128 Unicode scalars per line",
-        ));
+    if request.layout.wrap_width_em.is_none() {
+        let lines = normalized.split('\n').collect::<Vec<_>>();
+        if lines.len() > MAX_TEXT_LINES_V1 {
+            return Err(CompileFailure::new(
+                TextOutlineUnsupportedCodeV1::RequestTooLarge,
+                "Text outline requests accept at most 8 lines",
+            ));
+        }
+        if lines
+            .iter()
+            .any(|line| line.chars().count() > MAX_TEXT_LINE_CHARACTERS_V1)
+        {
+            return Err(CompileFailure::new(
+                TextOutlineUnsupportedCodeV1::RequestTooLarge,
+                "Text outline requests accept at most 128 Unicode scalars per line",
+            ));
+        }
     }
     if normalized.chars().all(char::is_whitespace) {
         return Err(CompileFailure::new(
@@ -547,8 +697,6 @@ const fn outline_limit_exceeded() -> CompileFailure {
 
 #[cfg(test)]
 mod tests {
-    use poietra_scene_ir::validate_cubic_path_v1;
-
     use super::*;
 
     fn compiled(text: &str) -> TextOutlineArtifactV1 {
@@ -568,6 +716,13 @@ mod tests {
             TextOutlineResultV1::Unsupported(unsupported) => {
                 panic!("expected compiled text, got {unsupported:?}")
             }
+        }
+    }
+
+    fn wrapping_layout(wrap_width_em: f64) -> TextOutlineLayoutV1 {
+        TextOutlineLayoutV1 {
+            wrap_width_em: Some(wrap_width_em),
+            ..TextOutlineLayoutV1::default()
         }
     }
 
@@ -703,6 +858,97 @@ mod tests {
     }
 
     #[test]
+    fn legacy_requests_omit_wrap_width_and_keep_the_unit_height_geometry() {
+        let request = TextOutlineRequestV1::new("Legacy Text");
+        assert_eq!(
+            serde_json::to_string(&request).unwrap(),
+            r#"{"layout":{"alignment":"left","fontFamily":"sans","fontWeight":"regular","lineHeight":1.2},"schema":"poietra.text-outline-request","version":1,"text":"Legacy Text"}"#
+        );
+        assert_eq!(
+            compiled("Legacy Text"),
+            compiled_with_layout("Legacy Text", request.layout)
+        );
+        let artifact = compiled("Legacy Text");
+        assert!((artifact.bounds.top - artifact.bounds.bottom - 1.0).abs() <= 0.000_002);
+    }
+
+    #[test]
+    fn wraps_at_whitespace_and_keeps_each_line_at_em_scale() {
+        let faces = TextFaces::new(TextFontFamilyV1::Sans, TextFontWeightV1::Regular).unwrap();
+        let hello_width = shape_ltr_line(&faces, "Hello").unwrap().advance;
+        let world_width = shape_ltr_line(&faces, "world").unwrap().advance;
+        let full_width = shape_ltr_line(&faces, "Hello world").unwrap().advance;
+        let widest_word = hello_width.max(world_width);
+        assert!(widest_word < full_width);
+        let wrap_width_em = (widest_word + full_width) / 2.0 / faces.em_units;
+        let layout = wrapping_layout(wrap_width_em);
+
+        let wrapped = compiled_with_layout("Hello world", layout);
+        let explicit = compiled_with_layout("Hello\nworld", layout);
+        assert_eq!(wrapped, explicit);
+        assert_eq!(
+            fragment_source_keys(&wrapped),
+            ["H", "e", "l", "l", "o", "w", "o", "r", "l", "d"]
+        );
+        assert!(wrapped.bounds.right - wrapped.bounds.left <= wrap_width_em + 0.000_002);
+
+        let single_line = compiled_with_layout("Hello", wrapping_layout(wrap_width_em));
+        assert!(
+            wrapped.bounds.top - wrapped.bounds.bottom
+                > single_line.bounds.top - single_line.bounds.bottom
+        );
+    }
+
+    #[test]
+    fn wraps_japanese_at_scalar_boundaries_and_preserves_explicit_lf() {
+        let faces = TextFaces::new(TextFontFamilyV1::Sans, TextFontWeightV1::Regular).unwrap();
+        let two_scalars = shape_ltr_line(&faces, "日本").unwrap().advance;
+        let three_scalars = shape_ltr_line(&faces, "日本語").unwrap().advance;
+        let wrap_width_em = (two_scalars + three_scalars) / 2.0 / faces.em_units;
+        let layout = wrapping_layout(wrap_width_em);
+
+        assert_eq!(
+            compiled_with_layout("日本語動画", layout),
+            compiled_with_layout("日本\n語動\n画", layout)
+        );
+        let explicit_lines = shape_wrapped_lines(&faces, "A\n\nB", 100.0).unwrap();
+        assert_eq!(explicit_lines.len(), 3);
+        assert!(explicit_lines[1].glyphs.is_empty());
+    }
+
+    #[test]
+    fn rejects_invalid_wrap_width_and_more_than_eight_wrapped_lines() {
+        for wrap_width_em in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let mut request = TextOutlineRequestV1::new("Text");
+            request.layout.wrap_width_em = Some(wrap_width_em);
+            assert!(matches!(
+                compile_text_outline_v1(&request),
+                TextOutlineResultV1::Unsupported(TextOutlineUnsupportedV1 {
+                    code: TextOutlineUnsupportedCodeV1::InvalidRequest,
+                    ..
+                })
+            ));
+        }
+
+        let mut request = TextOutlineRequestV1::new("ABCDEFGHI");
+        request.layout.wrap_width_em = Some(0.01);
+        assert!(matches!(
+            compile_text_outline_v1(&request),
+            TextOutlineResultV1::Unsupported(TextOutlineUnsupportedV1 {
+                code: TextOutlineUnsupportedCodeV1::RequestTooLarge,
+                ..
+            })
+        ));
+
+        let mut long_wrapped_line = TextOutlineRequestV1::new("A".repeat(129));
+        long_wrapped_line.layout.wrap_width_em = Some(20.0);
+        assert!(matches!(
+            compile_text_outline_v1(&long_wrapped_line),
+            TextOutlineResultV1::Compiled(_)
+        ));
+    }
+
+    #[test]
     fn alignment_and_line_height_change_multiline_geometry_in_rust() {
         let left = compiled_with_layout("Wide\ni", TextOutlineLayoutV1::default());
         assert_eq!(left, compiled("Wide\ni"));
@@ -722,6 +968,7 @@ mod tests {
                 font_family: TextFontFamilyV1::Sans,
                 font_weight: TextFontWeightV1::Regular,
                 line_height: DEFAULT_TEXT_LINE_HEIGHT_EM,
+                wrap_width_em: None,
             },
         );
         let right = compiled_with_layout(
@@ -731,6 +978,7 @@ mod tests {
                 font_family: TextFontFamilyV1::Sans,
                 font_weight: TextFontWeightV1::Regular,
                 line_height: 2.0,
+                wrap_width_em: None,
             },
         );
         assert_ne!(left.path, center.path);
@@ -744,6 +992,7 @@ mod tests {
                     font_family: TextFontFamilyV1::Sans,
                     font_weight: TextFontWeightV1::Regular,
                     line_height: 2.0,
+                    wrap_width_em: None,
                 },
             )
         );

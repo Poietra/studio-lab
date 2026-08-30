@@ -814,8 +814,15 @@ fn normalize_outline_subpaths_with_evidence(
 pub(crate) fn normalize_outline_subpaths(
     subpaths: Vec<CubicSubpathV1>,
 ) -> Result<(CubicPathV1, MathTexOutlineBoundsV1), OutlineFailureV1> {
-    let (path, bounds, _, _) = normalize_outline_subpaths_with_evidence(subpaths)?;
+    let (path, bounds, _) = normalize_outline_subpaths_with_raw_height(subpaths)?;
     Ok((path, bounds))
+}
+
+pub(crate) fn normalize_outline_subpaths_with_raw_height(
+    subpaths: Vec<CubicSubpathV1>,
+) -> Result<(CubicPathV1, MathTexOutlineBoundsV1, f64), OutlineFailureV1> {
+    let (path, bounds, _, raw_height) = normalize_outline_subpaths_with_evidence(subpaths)?;
+    Ok((path, bounds, raw_height))
 }
 
 fn extract_normalized_outline_evidence_v1(
