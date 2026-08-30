@@ -123,6 +123,12 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("renderer-owned");
     expect(markup).toContain("Create a new effect to change this accepted binding contract.");
     expect(markup).toContain('aria-label="Scene post-effect parameters"');
+    expect(markup).toContain('aria-label="Scene post-effect parameter schema"');
+    expect(markup).toContain("3 / 8");
+    expect(markup).toContain("parameters_0.x");
+    expect(markup).toContain("parameters_0.z");
+    expect(markup).toMatch(/aria-label="Scene effect parameter 1 name"[^>]*disabled=""/u);
+    expect(markup).toContain("Remove this effect from the Scene stack before changing its parameter contract.");
     expect(markup).toContain('aria-label="Amplitude Scene post-effect parameter"');
     expect(markup).toContain('aria-label="Wavelength Scene post-effect parameter"');
     expect(markup).toContain('aria-label="Speed Scene post-effect parameter"');
@@ -170,6 +176,8 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("1 / 3 parameters animated");
     expect(markup).toContain("Amplitude · animated");
     expect(markup).toContain("Animated parameters keep their static baseline locked.");
+    expect(markup).toContain("Remove this effect");
+    expect(markup).toContain("parameter animation before changing its parameter contract.");
     expect(markup).toMatch(/aria-label="Amplitude Scene post-effect parameter"[^>]*disabled=""/u);
     expect(markup).not.toMatch(/aria-label="Wavelength Scene post-effect parameter"[^>]*disabled=""/u);
   });
@@ -345,6 +353,34 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("In Scene stack");
     expect(markup).toMatch(/aria-label="Declare auxiliary Scene effect texture"[^>]*disabled=""[^>]*type="checkbox"/u);
     expect(markup).not.toMatch(/aria-label="Declare auxiliary Scene effect texture"[^>]*checked=""/u);
+  });
+
+  it("keeps an inactive accepted effect off the stack until its changed schema compiles", () => {
+    const created = createAsset("Schema draft");
+    const accepted = acceptAsset(created);
+    const rejected = rejectStudioScenePostEffectSourceV1(accepted.state, created.revision, {
+      diagnostic: "post-effect.wgsl:8: expected expression",
+      parameterSchema: [
+        { default: 0.25, name: "Red level", range: { max: 1, min: 0, step: 0.05 }, type: "f32" },
+        { default: 0.5, name: "Green level", range: { max: 1, min: 0, step: 0.05 }, type: "f32" },
+      ],
+      source: "@fragment fn broken(",
+    });
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        activeRevisions={[]}
+        assets={rejected.assets}
+        available
+        parameters={null}
+        sourceAvailable
+        {...callbacks()}
+      />,
+    );
+
+    expect(markup).toContain('value="Red level"');
+    expect(markup).toContain('value="Green level"');
+    expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Compile parameter changes<\/button>/u);
+    expect(markup).toContain("Last accepted generation 1 remains active.");
   });
 
   it("labels a rejected GLSL draft and keeps the last accepted generation available", () => {
