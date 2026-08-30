@@ -475,7 +475,7 @@ test("applies one Scene-wide RGB split through scrub, history, reload, and MP4 e
   }
 });
 
-test("authors two animated parameters on one WGSL Scene effect through Preview, reload, and MP4 export", async ({
+test("authors a custom parameter schema and two animations through Preview, reload, and MP4 export", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -508,15 +508,29 @@ test("authors two animated parameters on one WGSL Scene effect through Preview, 
     const plainRevision = await waitForNewPresentedRevision(blankRevision);
 
     await page.getByRole("button", { name: "Create starter" }).click();
+    const parameterSchema = page.getByRole("group", { name: "Scene post-effect parameter schema" });
+    await parameterSchema.getByLabel("Scene effect parameter 1 name").fill("Red level");
+    await parameterSchema.getByLabel("Scene effect parameter 1 default").fill("0.2");
+    await parameterSchema.getByLabel("Scene effect parameter 1 min").fill("0");
+    await parameterSchema.getByLabel("Scene effect parameter 1 max").fill("1");
+    await parameterSchema.getByLabel("Scene effect parameter 1 step").fill("0.05");
+    await parameterSchema.getByLabel("Scene effect parameter 2 name").fill("Green level");
+    await parameterSchema.getByLabel("Scene effect parameter 2 default").fill("0.25");
+    await parameterSchema.getByLabel("Scene effect parameter 2 min").fill("0");
+    await parameterSchema.getByLabel("Scene effect parameter 2 max").fill("1");
+    await parameterSchema.getByLabel("Scene effect parameter 2 step").fill("0.05");
+    await expect(parameterSchema.getByText("parameters_0.x", { exact: true })).toBeVisible();
+    await expect(parameterSchema.getByText("parameters_0.y", { exact: true })).toBeVisible();
+    await parameterSchema.getByRole("button", { name: "Remove parameter 3" }).click();
     const source = page.getByRole("textbox", { name: "Scene post-effect WGSL source" });
     await expect(source).toHaveValue(/@binding\(2\)[\s\S]*scene_sampler/u);
     await expect(source).toHaveValue(/textureSample\(scene_texture, scene_sampler/u);
     await source.fill(
       (await source.inputValue()).replace(
         "return textureSample(scene_texture, scene_sampler, coordinate / viewport);",
-        `let amplitude = clamp(host.parameters_0.x / 64.0, 0.0, 1.0);
-    let wavelength_level = clamp(host.parameters_0.y / 512.0, 0.0, 1.0);
-    return vec4<f32>(amplitude, wavelength_level, 0.1, 1.0);`,
+        `let red_level = clamp(host.parameters_0.x, 0.0, 1.0);
+    let green_level = clamp(host.parameters_0.y, 0.0, 1.0);
+    return vec4<f32>(red_level, green_level, 0.1, 1.0);`,
       ),
     );
     await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
@@ -524,6 +538,9 @@ test("authors two animated parameters on one WGSL Scene effect through Preview, 
     await page.getByRole("button", { name: "Add to stack" }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
+    await expect(page.getByRole("slider", { name: "Red level Scene post-effect parameter" })).toHaveValue("0.2");
+    await expect(page.getByRole("slider", { name: "Green level Scene post-effect parameter" })).toHaveValue("0.25");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 1 name")).toBeDisabled();
     const effectRevision = await waitForNewPresentedRevision(plainRevision);
 
     await page.getByRole("button", { name: "Undo" }).click();
@@ -533,37 +550,37 @@ test("authors two animated parameters on one WGSL Scene effect through Preview, 
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     const redoRevision = await waitForNewPresentedRevision(undoRevision);
 
-    await page.getByRole("slider", { name: "Amplitude Scene post-effect parameter" }).fill("20");
+    await page.getByRole("slider", { name: "Red level Scene post-effect parameter" }).fill("0.3");
     await page.getByRole("button", { name: "Update parameters" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     const parameterRevision = await waitForNewPresentedRevision(redoRevision);
 
     await page.getByRole("button", { name: /Animate from 0s to/u }).click();
-    await page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" }).fill("2");
-    await page.getByRole("spinbutton", { name: "Amplitude keyframe 2 value" }).fill("60");
-    await page.getByRole("combobox", { name: "Amplitude keyframe 1 easing" }).selectOption("linear");
+    await page.getByRole("spinbutton", { name: "Red level keyframe 2 time" }).fill("2");
+    await page.getByRole("spinbutton", { name: "Red level keyframe 2 value" }).fill("0.9");
+    await page.getByRole("combobox", { name: "Red level keyframe 1 easing" }).selectOption("linear");
     await page.getByRole("button", { name: "Add animation" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     const amplitudeRevision = await waitForNewPresentedRevision(parameterRevision);
 
     await page
       .getByRole("combobox", { name: "Scene effect parameter to animate" })
-      .selectOption({ label: "Wavelength" });
+      .selectOption({ label: "Green level" });
     await page.getByRole("button", { name: /Animate from 0s to/u }).click();
-    await page.getByRole("spinbutton", { name: "Wavelength keyframe 1 time" }).fill("2");
-    await page.getByRole("spinbutton", { name: "Wavelength keyframe 2 time" }).fill("2.75");
-    await page.getByRole("spinbutton", { name: "Wavelength keyframe 2 value" }).fill("448");
-    await page.getByRole("combobox", { name: "Wavelength keyframe 1 easing" }).selectOption("linear");
+    await page.getByRole("spinbutton", { name: "Green level keyframe 1 time" }).fill("2");
+    await page.getByRole("spinbutton", { name: "Green level keyframe 2 time" }).fill("2.75");
+    await page.getByRole("spinbutton", { name: "Green level keyframe 2 value" }).fill("0.8");
+    await page.getByRole("combobox", { name: "Green level keyframe 1 easing" }).selectOption("linear");
     await page.getByRole("button", { name: "Add animation" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     const bothTracksRevision = await waitForNewPresentedRevision(amplitudeRevision);
-    await expect(page.getByText("2 / 3 parameters animated", { exact: true })).toBeVisible();
+    await expect(page.getByText("2 / 2 parameters animated", { exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: "Undo" }).click();
-    await expect(page.getByText("1 / 3 parameters animated", { exact: true })).toBeVisible();
+    await expect(page.getByText("1 / 2 parameters animated", { exact: true })).toBeVisible();
     const undoOneTrackRevision = await waitForNewPresentedRevision(bothTracksRevision);
     await page.getByRole("button", { name: "Redo" }).click();
-    await expect(page.getByText("2 / 3 parameters animated", { exact: true })).toBeVisible();
+    await expect(page.getByText("2 / 2 parameters animated", { exact: true })).toBeVisible();
     await waitForNewPresentedRevision(undoOneTrackRevision);
 
     await playhead.fill("1.25");
@@ -588,19 +605,24 @@ test("authors two animated parameters on one WGSL Scene effect through Preview, 
     await page.getByRole("button", { name: "Open Custom WGSL effect fixture workspace" }).click();
     await expect(page.getByText("Custom Scene effect active", { exact: true })).toBeVisible();
     await expect(page.getByText("WGSL was rejected", { exact: true })).toBeVisible();
-    await expect(page.getByText("2 / 3 parameters animated", { exact: true })).toBeVisible();
+    await expect(page.getByText("2 / 2 parameters animated", { exact: true })).toBeVisible();
+    await expect(parameterSchema.getByLabel("Scene effect parameter 1 name")).toHaveValue("Red level");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 1 default")).toHaveValue("0.2");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 1 max")).toHaveValue("1");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 2 name")).toHaveValue("Green level");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 2 default")).toHaveValue("0.25");
     const parameterAnimation = page.getByRole("combobox", { name: "Scene effect parameter to animate" });
-    await expect(parameterAnimation.getByRole("option", { name: "Amplitude · animated" })).toHaveCount(1);
-    await expect(parameterAnimation.getByRole("option", { name: "Wavelength · animated" })).toHaveCount(1);
-    await parameterAnimation.selectOption({ label: "Amplitude · animated" });
-    await expect(page.getByText("Amplitude · 2 keyframes", { exact: true })).toBeVisible();
-    await expect(page.getByRole("spinbutton", { name: "Amplitude keyframe 2 time" })).toHaveValue("2");
-    await expect(page.getByRole("spinbutton", { name: "Amplitude keyframe 2 value" })).toHaveValue("60");
-    await parameterAnimation.selectOption({ label: "Wavelength · animated" });
-    await expect(page.getByText("Wavelength · 2 keyframes", { exact: true })).toBeVisible();
-    await expect(page.getByRole("spinbutton", { name: "Wavelength keyframe 1 time" })).toHaveValue("2");
-    await expect(page.getByRole("spinbutton", { name: "Wavelength keyframe 2 time" })).toHaveValue("2.75");
-    await expect(page.getByRole("spinbutton", { name: "Wavelength keyframe 2 value" })).toHaveValue("448");
+    await expect(parameterAnimation.getByRole("option", { name: "Red level · animated" })).toHaveCount(1);
+    await expect(parameterAnimation.getByRole("option", { name: "Green level · animated" })).toHaveCount(1);
+    await parameterAnimation.selectOption({ label: "Red level · animated" });
+    await expect(page.getByText("Red level · 2 keyframes", { exact: true })).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "Red level keyframe 2 time" })).toHaveValue("2");
+    await expect(page.getByRole("spinbutton", { name: "Red level keyframe 2 value" })).toHaveValue("0.9");
+    await parameterAnimation.selectOption({ label: "Green level · animated" });
+    await expect(page.getByText("Green level · 2 keyframes", { exact: true })).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "Green level keyframe 1 time" })).toHaveValue("2");
+    await expect(page.getByRole("spinbutton", { name: "Green level keyframe 2 time" })).toHaveValue("2.75");
+    await expect(page.getByRole("spinbutton", { name: "Green level keyframe 2 value" })).toHaveValue("0.8");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     const mp4 = await exportLocalMp4(page);
@@ -617,11 +639,11 @@ test("authors two animated parameters on one WGSL Scene effect through Preview, 
 
     const activeRevision = await canvas.getAttribute("data-preview-revision");
     if (!activeRevision) throw new Error("The exported custom WGSL Scene did not expose its revision.");
-    await page.getByRole("button", { name: "Remove Wavelength animation" }).click();
+    await page.getByRole("button", { name: "Remove Green level animation" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     const oneTrackRevision = await waitForNewPresentedRevision(activeRevision);
-    await parameterAnimation.selectOption({ label: "Amplitude · animated" });
-    await page.getByRole("button", { name: "Remove Amplitude animation" }).click();
+    await parameterAnimation.selectOption({ label: "Red level · animated" });
+    await page.getByRole("button", { name: "Remove Red level animation" }).click();
     await page.getByRole("button", { name: "Replace program" }).click();
     const staticRevision = await waitForNewPresentedRevision(oneTrackRevision);
     await page.getByRole("button", { name: "Remove Wave Distortion effect from stack" }).click();
