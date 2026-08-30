@@ -13,7 +13,9 @@ import {
 } from "./scene-post-effect-parameter-keyframe-edit";
 import {
   PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+  type StudioScenePostEffectF32ParameterV1,
   type StudioScenePostEffectParameterSchemaV1,
+  studioScenePostEffectParameterLayoutV1,
 } from "./scene-post-effect-source";
 
 type ParameterTrackChange = Readonly<{
@@ -41,7 +43,7 @@ type SelectedParameterTrackEditorProps = Readonly<{
   available: boolean;
   duration: number;
   onChange: (input: ParameterTrackChange) => void;
-  parameter: StudioScenePostEffectParameterSchemaV1[number];
+  parameter: StudioScenePostEffectF32ParameterV1;
   parameterIndex: number;
   parameters: readonly number[];
   playhead: number;
@@ -292,9 +294,17 @@ export function ScenePostEffectParameterAnimationEditor({
   const effectTracks = parameterTracks.filter(
     (track) => track.shaderId === PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1 && track.revision === assetRevision,
   );
-  const [parameterIndex, setParameterIndex] = useState(effectTracks[0]?.parameterIndex ?? 0);
-  const selectedParameterIndex = parameterSchema[parameterIndex] ? parameterIndex : 0;
-  const selectedParameter = parameterSchema[selectedParameterIndex];
+  const scalarParameters = studioScenePostEffectParameterLayoutV1(parameterSchema).entries.filter(
+    (entry): entry is Readonly<{ offset: number; parameter: StudioScenePostEffectF32ParameterV1 }> =>
+      entry.parameter.type === "f32",
+  );
+  const editableEffectTracks = effectTracks.filter((track) =>
+    scalarParameters.some(({ offset }) => offset === track.parameterIndex),
+  );
+  const [parameterIndex, setParameterIndex] = useState(editableEffectTracks[0]?.parameterIndex ?? 0);
+  const selectedEntry = scalarParameters.find(({ offset }) => offset === parameterIndex) ?? scalarParameters[0];
+  const selectedParameterIndex = selectedEntry?.offset ?? 0;
+  const selectedParameter = selectedEntry?.parameter;
   const activeTrack = effectTracks.find((track) => track.parameterIndex === selectedParameterIndex) ?? null;
   const trackLimitReached =
     activeTrack === null && parameterTracks.length >= MAX_STUDIO_SCENE_POST_EFFECT_PARAMETER_TRACKS;
@@ -305,7 +315,7 @@ export function ScenePostEffectParameterAnimationEditor({
     <fieldset aria-label="Scene post-effect parameter animation" className="mt-3 space-y-2 border border-zinc-800 p-2">
       <legend className="px-1 text-[10px] font-medium text-zinc-400">Parameter animation</legend>
       <p className="text-[10px] tabular-nums text-zinc-500">
-        {effectTracks.length} / {parameterSchema.length} parameters animated
+        {editableEffectTracks.length} / {scalarParameters.length} parameters animated
       </p>
       <label className="block text-[10px] text-zinc-500">
         Parameter
@@ -316,10 +326,10 @@ export function ScenePostEffectParameterAnimationEditor({
           onChange={(event) => setParameterIndex(Number(event.currentTarget.value))}
           value={selectedParameterIndex}
         >
-          {parameterSchema.map((parameter, index) => {
-            const animated = effectTracks.some((track) => track.parameterIndex === index);
+          {scalarParameters.map(({ offset, parameter }) => {
+            const animated = effectTracks.some((track) => track.parameterIndex === offset);
             return (
-              <option key={`${index}/${parameter.name}`} value={index}>
+              <option key={`${offset}/${parameter.name}`} value={offset}>
                 {parameter.name}
                 {animated ? " · animated" : ""}
               </option>

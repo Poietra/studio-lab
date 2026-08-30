@@ -5,7 +5,9 @@ import { ScenePostEffectParameterAnimationEditor } from "./scene-post-effect-par
 import type { ScenePostEffectParameterKeyframe } from "./scene-post-effect-parameter-keyframe-edit";
 import {
   parseScenePostEffectParameterSchemaDraftV1,
+  scenePostEffectHexColorToRgbV1,
   scenePostEffectParameterSchemaDraftV1,
+  scenePostEffectRgbToHexColorV1,
 } from "./scene-post-effect-parameter-schema-draft";
 import { ScenePostEffectParameterSchemaEditor } from "./scene-post-effect-parameter-schema-editor";
 
@@ -18,6 +20,7 @@ import {
   type StudioScenePostEffectSourceAssetV1,
   type StudioScenePostEffectSourceLanguageV1,
   type StudioScenePostEffectTextureV1,
+  studioScenePostEffectParameterLayoutV1,
 } from "./scene-post-effect-source";
 import type { StudioNativeImageAssetV1 } from "./studio-image-assets";
 
@@ -143,7 +146,8 @@ export function ScenePostEffectSourceEditor({
 
   useEffect(() => {
     setParameterDraft(
-      (active ? parameters : null) ?? asset?.accepted?.parameterSchema.map((parameter) => parameter.default) ?? [],
+      (active ? parameters : null) ??
+        (asset?.accepted ? studioScenePostEffectParameterLayoutV1(asset.accepted.parameterSchema).defaults : []),
     );
   }, [active, asset?.accepted?.parameterSchema, parameters]);
 
@@ -160,6 +164,7 @@ export function ScenePostEffectSourceEditor({
   }, [active, imageAssets, texture]);
 
   const accepted = asset?.accepted ?? null;
+  const acceptedParameterLayout = accepted ? studioScenePostEffectParameterLayoutV1(accepted.parameterSchema) : null;
   const sourceBusy = pending || filePending;
   const activeParameterTracks = asset
     ? parameterTracks.filter(
@@ -190,14 +195,16 @@ export function ScenePostEffectSourceEditor({
   const parameterValuesMatch =
     !active ||
     (parameters !== null &&
-      parameters.length === accepted?.parameterSchema.length &&
-      parameters.every((value, index) => {
-        const parameter = accepted?.parameterSchema[index];
+      parameters.length === acceptedParameterLayout?.defaults.length &&
+      acceptedParameterLayout.entries.every(({ offset, parameter }) => {
+        if (parameter.type === "rgb") {
+          return parameters
+            .slice(offset, offset + 3)
+            .every((value) => Number.isFinite(value) && value >= 0 && value <= 1);
+        }
+        const value = parameters[offset];
         return (
-          parameter !== undefined &&
-          Number.isFinite(value) &&
-          value >= parameter.range.min &&
-          value <= parameter.range.max
+          value !== undefined && Number.isFinite(value) && value >= parameter.range.min && value <= parameter.range.max
         );
       }));
   const status = asset
@@ -526,13 +533,47 @@ export function ScenePostEffectSourceEditor({
             }}
           />
 
-          {accepted?.parameterSchema.length ? (
+          {acceptedParameterLayout?.entries.length ? (
             <fieldset className="mt-3 space-y-2 border border-zinc-800 p-2" aria-label="Scene post-effect parameters">
               <legend className="px-1 text-[10px] font-medium text-zinc-400">Scene parameters</legend>
-              {accepted.parameterSchema.map((parameter, index) => {
-                const value = parameterDraft[index] ?? parameter.default;
+              {acceptedParameterLayout.entries.map(({ offset, parameter }) => {
+                const width = parameter.type === "rgb" ? 3 : 1;
+                const animated = Array.from({ length: width }, (_, component) => offset + component).some((index) =>
+                  animatedParameterIndices.has(index),
+                );
+                if (parameter.type === "rgb") {
+                  const candidate = parameterDraft.slice(offset, offset + 3);
+                  const value =
+                    candidate.length === 3 &&
+                    candidate.every((component) => Number.isFinite(component) && component >= 0 && component <= 1)
+                      ? ([candidate[0]!, candidate[1]!, candidate[2]!] as const)
+                      : parameter.default;
+                  return (
+                    <label className="block" key={`${parameter.type}/${parameter.name}/${offset}`}>
+                      <span className="flex justify-between gap-2 text-[10px] text-zinc-500">
+                        <span>{parameter.name}</span>
+                        <output>{scenePostEffectRgbToHexColorV1(value)}</output>
+                      </span>
+                      <input
+                        aria-label={`${parameter.name} Scene post-effect color parameter`}
+                        className="mt-1 h-8 w-full cursor-pointer border border-zinc-700 bg-zinc-950 p-1 disabled:cursor-not-allowed"
+                        disabled={!available || !active || !parameterValuesMatch || sourceBusy || animated}
+                        onChange={(event) => {
+                          const rgb = scenePostEffectHexColorToRgbV1(event.currentTarget.value);
+                          if (!rgb) return;
+                          const next = [...parameterDraft];
+                          next.splice(offset, 3, ...rgb);
+                          setParameterDraft(next);
+                        }}
+                        type="color"
+                        value={scenePostEffectRgbToHexColorV1(value)}
+                      />
+                    </label>
+                  );
+                }
+                const value = parameterDraft[offset] ?? parameter.default;
                 return (
-                  <label className="block" key={parameter.name}>
+                  <label className="block" key={`${parameter.type}/${parameter.name}/${offset}`}>
                     <span className="flex justify-between gap-2 text-[10px] text-zinc-500">
                       <span>{parameter.name}</span>
                       <output>{value}</output>
@@ -540,18 +581,12 @@ export function ScenePostEffectSourceEditor({
                     <input
                       aria-label={`${parameter.name} Scene post-effect parameter`}
                       className="mt-1 w-full accent-sky-500"
-                      disabled={
-                        !available ||
-                        !active ||
-                        !parameterValuesMatch ||
-                        sourceBusy ||
-                        animatedParameterIndices.has(index)
-                      }
+                      disabled={!available || !active || !parameterValuesMatch || sourceBusy || animated}
                       max={parameter.range.max}
                       min={parameter.range.min}
                       onChange={(event) => {
                         const next = [...parameterDraft];
-                        next[index] = event.currentTarget.valueAsNumber;
+                        next[offset] = event.currentTarget.valueAsNumber;
                         setParameterDraft(next);
                       }}
                       step={parameter.range.step}
@@ -578,7 +613,12 @@ export function ScenePostEffectSourceEditor({
                   !active ||
                   !parameterValuesMatch ||
                   sourceBusy ||
-                  accepted.parameterSchema.every((_, index) => animatedParameterIndices.has(index))
+                  acceptedParameterLayout.entries.every(({ offset, parameter }) =>
+                    Array.from(
+                      { length: parameter.type === "rgb" ? 3 : 1 },
+                      (_, component) => offset + component,
+                    ).every((index) => animatedParameterIndices.has(index)),
+                  )
                 }
                 onClick={() => onParametersChange(asset.revision, parameterDraft)}
                 type="button"
@@ -588,14 +628,16 @@ export function ScenePostEffectSourceEditor({
             </fieldset>
           ) : null}
 
-          {accepted?.parameterSchema.length && active && parameters ? (
+          {acceptedParameterLayout?.entries.some(({ parameter }) => parameter.type === "f32") &&
+          active &&
+          parameters ? (
             <ScenePostEffectParameterAnimationEditor
               assetRevision={asset.revision}
               available={available && parameterAnimationAvailable && !sourceBusy}
               duration={duration}
               key={asset.revision}
               onChange={onParameterTrackChange}
-              parameterSchema={accepted.parameterSchema}
+              parameterSchema={accepted?.parameterSchema ?? []}
               parameters={parameters}
               parameterTracks={parameterTracks}
               playhead={playhead}

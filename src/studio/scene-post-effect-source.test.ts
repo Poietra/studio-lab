@@ -16,6 +16,8 @@ import {
   removeStudioScenePostEffectSourceV1,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_SOURCE_V1,
+  type StudioScenePostEffectParameterSchemaV1,
+  studioScenePostEffectParameterLayoutV1,
   updateStudioScenePostEffectReferenceTextureV1,
 } from "./scene-post-effect-source";
 
@@ -314,5 +316,49 @@ describe("project Scene post-effect asset library", () => {
         nextAssetRevision: accepted.assets[0]!.revision,
       }).success,
     ).toBe(false);
+  });
+
+  it("flattens logical RGB parameters into three existing host slots", () => {
+    const created = createAsset("Color grade");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const parameterSchema: StudioScenePostEffectParameterSchemaV1 = [
+      { default: 0.4, name: "Strength", range: { max: 1, min: 0, step: 0.05 }, type: "f32" as const },
+      { default: [0.2, 0.55, 1], name: "Tint", type: "rgb" as const },
+    ];
+    expect(studioScenePostEffectParameterLayoutV1(parameterSchema)).toEqual({
+      defaults: [0.4, 0.2, 0.55, 1],
+      entries: [
+        { offset: 0, parameter: parameterSchema[0] },
+        { offset: 1, parameter: parameterSchema[1] },
+      ],
+    });
+
+    const accepted = acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+      ...asset.draft,
+      parameterSchema,
+    });
+    expect(acceptedStudioScenePostEffectReferenceV1(accepted, created.revision)?.parameters).toEqual([
+      0.4, 0.2, 0.55, 1,
+    ]);
+    expect(
+      acceptedStudioScenePostEffectReferenceV1(accepted, created.revision, [0.5, 1, 0.25, 0.75])?.parameters,
+    ).toEqual([0.5, 1, 0.25, 0.75]);
+    expect(() => acceptedStudioScenePostEffectReferenceV1(accepted, created.revision, [0.5, 1.01, 0.25, 0.75])).toThrow(
+      /Tint RGB components must be between 0 and 1/,
+    );
+    expect(() =>
+      acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+        ...asset.draft,
+        parameterSchema: [
+          ...Array.from({ length: 6 }, (_, index) => ({
+            default: 0,
+            name: `Scalar ${index + 1}`,
+            range: { max: 1, min: 0, step: 0.1 },
+            type: "f32" as const,
+          })),
+          { default: [0, 0, 0] as const, name: "Too wide", type: "rgb" as const },
+        ],
+      }),
+    ).toThrow(/at most 8 scalar values/);
   });
 });
