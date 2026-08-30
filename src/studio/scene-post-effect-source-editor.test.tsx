@@ -168,7 +168,116 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain('aria-label="Tint Scene post-effect color parameter"');
     expect(markup).toContain('type="color" value="#ff40bf"');
     expect(markup).toContain("<output>#ff40bf</output>");
-    expect(markup).toContain("0 / 1 parameters animated");
+    expect(markup).toContain("0 / 2 parameters animated");
+    expect(markup).toContain("Tint");
+  });
+
+  it("reconstructs three aligned scalar tracks as one logical RGB animation", () => {
+    const created = createAsset("Color grade");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const state = acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+      ...asset.draft,
+      parameterSchema: [
+        { default: 0.4, name: "Strength", range: { max: 1, min: 0, step: 0.05 }, type: "f32" },
+        { default: [0.2, 0.55, 1], name: "Tint", type: "rgb" },
+      ],
+    });
+    const parameterTracks = [0.2, 0.55, 1].map((base, component) => ({
+      keyframes: [
+        { easing: "linear" as const, time: 0, value: base },
+        { easing: "smooth" as const, time: 2, value: component === 2 ? 0.25 : base },
+      ],
+      name: "Tint",
+      parameterIndex: component + 1,
+      revision: created.revision,
+      shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+    }));
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        {...callbacks()}
+        activeRevisions={[created.revision]}
+        assets={state.assets}
+        available
+        parameters={[0.4, 0.2, 0.55, 1]}
+        parameterTracks={parameterTracks}
+        sourceAvailable
+      />,
+    );
+
+    expect(markup).toContain("1 / 2 parameters animated");
+    expect(markup).toContain("Tint · animated");
+    expect(markup).toContain("Tint · 2 color keyframes");
+    expect(markup).toContain('aria-label="Tint color keyframe 2 value"');
+    expect(markup).toContain('type="color" value="#338c40"');
+    expect(markup).toMatch(/aria-label="Tint Scene post-effect color parameter"[^>]*disabled=""/u);
+  });
+
+  it("fails closed without crashing when an RGB component track is missing", () => {
+    const created = createAsset("Color grade");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const state = acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+      ...asset.draft,
+      parameterSchema: [{ default: [0.2, 0.55, 1], name: "Tint", type: "rgb" }],
+    });
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        {...callbacks()}
+        activeRevisions={[created.revision]}
+        assets={state.assets}
+        available
+        parameters={[0.2, 0.55, 1]}
+        parameterTracks={[
+          {
+            keyframes: [
+              { easing: "linear", time: 0, value: 0.2 },
+              { easing: "smooth", time: 2, value: 0.5 },
+            ],
+            name: "Tint",
+            parameterIndex: 0,
+            revision: created.revision,
+            shaderId: PROJECT_SCENE_POST_EFFECT_SHADER_ID_V1,
+          },
+        ]}
+        sourceAvailable
+      />,
+    );
+
+    expect(markup).toContain("Tint · invalid animation");
+    expect(markup).toContain("requires exactly three complete scalar component tracks");
+    expect(markup).not.toContain("Animate color from");
+  });
+
+  it("reserves three scalar tracks before offering a new RGB animation", () => {
+    const created = createAsset("Color grade");
+    const asset = findStudioScenePostEffectSourceV1(created.state, created.revision)!;
+    const state = acceptStudioScenePostEffectSourceV1(created.state, created.revision, {
+      ...asset.draft,
+      parameterSchema: [{ default: [0.2, 0.55, 1], name: "Tint", type: "rgb" }],
+    });
+    const occupiedTracks = Array.from({ length: 30 }, (_, index) => ({
+      keyframes: [
+        { easing: "linear" as const, time: 0, value: 0 },
+        { easing: "smooth" as const, time: 2, value: 1 },
+      ],
+      name: `Other ${index}`,
+      parameterIndex: index % 8,
+      revision: created.revision + index + 1,
+      shaderId: `other-${index}`,
+    }));
+    const markup = renderToStaticMarkup(
+      <ScenePostEffectSourceEditor
+        {...callbacks()}
+        activeRevisions={[created.revision]}
+        assets={state.assets}
+        available
+        parameters={[0.2, 0.55, 1]}
+        parameterTracks={occupiedTracks}
+        sourceAvailable
+      />,
+    );
+
+    expect(markup).toContain("It uses three of the 32 scalar tracks.");
+    expect(markup).toMatch(/disabled=""[^>]*>Animate color from 0s to 1\.00s/u);
   });
 
   it("renders the active parameter animation from the canonical Scene effect Program", () => {

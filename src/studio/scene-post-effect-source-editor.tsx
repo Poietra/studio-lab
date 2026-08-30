@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { MAX_SCENE_POST_EFFECTS_V1 } from "../engine/scene-post-effect-registry";
 import type { ScenePostEffectParameterTrack } from "./scene-edit-contract";
-import { ScenePostEffectParameterAnimationEditor } from "./scene-post-effect-parameter-animation-editor";
-import type { ScenePostEffectParameterKeyframe } from "./scene-post-effect-parameter-keyframe-edit";
+import {
+  ScenePostEffectParameterAnimationEditor,
+  type ScenePostEffectParameterTrackChange,
+} from "./scene-post-effect-parameter-animation-editor";
 import {
   parseScenePostEffectParameterSchemaDraftV1,
   scenePostEffectHexColorToRgbV1,
@@ -43,13 +45,7 @@ export type ScenePostEffectSourceEditorProps = Readonly<{
   onCompile: (input: CompileStudioScenePostEffectSourceInputV1) => Promise<void> | void;
   onCreate: (name: string) => boolean;
   onParametersChange: (assetRevision: number, parameters: readonly number[]) => void;
-  onParameterTrackChange: (input: {
-    assetRevision: number;
-    keyframes: readonly ScenePostEffectParameterKeyframe[];
-    name: string;
-    parameterIndex: number;
-    range: Readonly<{ max: number; min: number }>;
-  }) => void;
+  onParameterTrackChange: (input: ScenePostEffectParameterTrackChange) => void;
   onRemove: (assetRevision: number) => void;
   onSelect: (assetRevision: number) => void;
   onTextureChange: (assetRevision: number, texture: StudioScenePostEffectTextureV1) => void;
@@ -628,9 +624,7 @@ export function ScenePostEffectSourceEditor({
             </fieldset>
           ) : null}
 
-          {acceptedParameterLayout?.entries.some(({ parameter }) => parameter.type === "f32") &&
-          active &&
-          parameters ? (
+          {acceptedParameterLayout?.entries.length && active && parameters ? (
             <ScenePostEffectParameterAnimationEditor
               assetRevision={asset.revision}
               available={available && parameterAnimationAvailable && !sourceBusy}
