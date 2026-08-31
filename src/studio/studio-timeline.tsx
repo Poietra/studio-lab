@@ -15,7 +15,12 @@ import type { Interval, MotionEasing, TimelineEvent, TimelineObjectTrack } from 
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
 import type { PaintColorKeyframeEasing, PaintColorProperty } from "./paint-color-keyframe-edit";
 import type { PathMorphEasing } from "./path-morph-clip-edit";
-import { PROJECT_AUDIO_SAMPLE_RATE_HZ } from "./project-audio-track";
+import {
+  PROJECT_AUDIO_SAMPLE_RATE_HZ,
+  type ProjectAudioTimelineGesture,
+  type ProjectAudioTimingSeconds,
+  projectAudioTimelineTimingAtDelta,
+} from "./project-audio-track";
 import {
   type ShapeTransformEasing,
   type ShapeTransformKind,
@@ -72,6 +77,7 @@ export type StudioTimelineProps = Readonly<{
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
   onAppliedMotionClipDelete?: (clip: AppliedMotionClip) => void;
   onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
+  onAudioTimingChange?: (timing: ProjectAudioTimingSeconds) => void;
   onCameraClipChange?: (clip: StudioCameraTimelineClip, change: StudioCameraClipChange) => void;
   onCameraClipDelete?: (clip: StudioCameraTimelineClip) => void;
   onCameraClipSelect?: (clip: StudioCameraTimelineClip) => void;
@@ -154,6 +160,15 @@ export type StudioProjectAudioTimelineTrack = Readonly<{
   trimStartSampleFrames: number;
 }>;
 
+type ActiveProjectAudioGesture = Readonly<{
+  duration: number;
+  kind: ProjectAudioTimelineGesture;
+  laneWidth: number;
+  pointerId: number;
+  startClientX: number;
+  track: StudioProjectAudioTimelineTrack;
+}>;
+
 export function projectAudioTimelineInterval(track: StudioProjectAudioTimelineTrack, sceneDuration: number): Interval {
   const start = track.timelineOffsetSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ;
   const sourceEnd = track.trimEndSampleFrames ?? track.sourceSampleFrames;
@@ -165,6 +180,30 @@ export function projectAudioTimelineInterval(track: StudioProjectAudioTimelineTr
     end: Math.min(sceneDuration, Math.max(0, end)),
     start: Math.min(sceneDuration, Math.max(0, start)),
   };
+}
+
+function projectAudioTimelineTrackAtTiming(
+  track: StudioProjectAudioTimelineTrack,
+  timing: ProjectAudioTimingSeconds,
+): StudioProjectAudioTimelineTrack {
+  return {
+    ...track,
+    timelineOffsetSampleFrames: Math.round(timing.offset * PROJECT_AUDIO_SAMPLE_RATE_HZ),
+    trimEndSampleFrames: timing.trimEnd === null ? null : Math.round(timing.trimEnd * PROJECT_AUDIO_SAMPLE_RATE_HZ),
+    trimStartSampleFrames: Math.round(timing.trimStart * PROJECT_AUDIO_SAMPLE_RATE_HZ),
+  };
+}
+
+function projectAudioTimelineTiming(track: StudioProjectAudioTimelineTrack): ProjectAudioTimingSeconds {
+  return {
+    offset: track.timelineOffsetSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ,
+    trimEnd: track.trimEndSampleFrames === null ? null : track.trimEndSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ,
+    trimStart: track.trimStartSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ,
+  };
+}
+
+function sameProjectAudioTiming(left: ProjectAudioTimingSeconds, right: ProjectAudioTimingSeconds) {
+  return left.offset === right.offset && left.trimStart === right.trimStart && left.trimEnd === right.trimEnd;
 }
 
 export type StudioDrawInTimelineClip = Readonly<{
@@ -1022,6 +1061,7 @@ export function StudioTimeline({
   onAppliedMotionClipChange,
   onAppliedMotionClipDelete,
   onAppliedMotionClipSelect,
+  onAudioTimingChange,
   onCameraClipChange,
   onCameraClipDelete,
   onCameraClipSelect,
@@ -1074,7 +1114,6 @@ export function StudioTimeline({
 }: StudioTimelineProps) {
   markStudioRenderBoundary("timeline");
   const intervalEvents = events.flatMap((event) => (event.interval ? [{ event, interval: event.interval }] : []));
-  const projectAudioInterval = projectAudioTrack ? projectAudioTimelineInterval(projectAudioTrack, duration) : null;
   const [selectedLifetime, setSelectedLifetime] = useState<SelectedLifetime | null>(null);
   const [selectedMaterialParameterByEntity, setSelectedMaterialParameterByEntity] = useState<
     Readonly<Record<string, string>>
@@ -1085,6 +1124,71 @@ export function StudioTimeline({
   const [selectedRotationKeyframe, setSelectedRotationKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [selectedScaleKeyframe, setSelectedScaleKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [pathMotionEasing, setPathMotionEasing] = useState<MotionEasing>("smooth");
+  const activeProjectAudioGesture = useRef<ActiveProjectAudioGesture | null>(null);
+  const [projectAudioTimingPreview, setProjectAudioTimingPreview] = useState<ProjectAudioTimingSeconds | null>(null);
+  const displayedProjectAudioTrack =
+    projectAudioTrack && projectAudioTimingPreview
+      ? projectAudioTimelineTrackAtTiming(projectAudioTrack, projectAudioTimingPreview)
+      : projectAudioTrack;
+  const projectAudioInterval = displayedProjectAudioTrack
+    ? projectAudioTimelineInterval(displayedProjectAudioTrack, duration)
+    : null;
+  const audioTimingDisabled = readOnly || onAudioTimingChange === undefined;
+
+  function projectAudioTimingForPointer(gesture: ActiveProjectAudioGesture, clientX: number) {
+    const deltaSeconds = ((clientX - gesture.startClientX) / gesture.laneWidth) * gesture.duration;
+    return projectAudioTimelineTimingAtDelta(gesture.track, gesture.duration, deltaSeconds, gesture.kind);
+  }
+
+  function beginProjectAudioGesture(event: PointerEvent<HTMLButtonElement>, kind: ProjectAudioTimelineGesture) {
+    if (audioTimingDisabled || !projectAudioTrack) return;
+    const lane = event.currentTarget.closest<HTMLElement>("[data-timeline-audio-lane]");
+    const laneWidth = lane?.getBoundingClientRect().width ?? 0;
+    if (!Number.isFinite(laneWidth) || laneWidth <= 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const gesture = {
+      duration,
+      kind,
+      laneWidth,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      track: projectAudioTrack,
+    } as const;
+    activeProjectAudioGesture.current = gesture;
+    setProjectAudioTimingPreview(projectAudioTimelineTiming(projectAudioTrack));
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveProjectAudioGesture(event: PointerEvent<HTMLButtonElement>) {
+    const gesture = activeProjectAudioGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const timing = projectAudioTimingForPointer(gesture, event.clientX);
+    if (timing) setProjectAudioTimingPreview(timing);
+  }
+
+  function cancelProjectAudioGesture(event: PointerEvent<HTMLButtonElement>) {
+    if (activeProjectAudioGesture.current?.pointerId !== event.pointerId) return;
+    activeProjectAudioGesture.current = null;
+    setProjectAudioTimingPreview(null);
+  }
+
+  function finishProjectAudioGesture(event: PointerEvent<HTMLButtonElement>) {
+    const gesture = activeProjectAudioGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const timing = projectAudioTimingForPointer(gesture, event.clientX);
+    activeProjectAudioGesture.current = null;
+    setProjectAudioTimingPreview(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId))
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    if (timing && !sameProjectAudioTiming(timing, projectAudioTimelineTiming(gesture.track))) {
+      onAudioTimingChange?.(timing);
+    }
+  }
   const selectedLifetimeTrack =
     selectedLifetime && selectedIds.has(selectedLifetime.entityId)
       ? objectTracks.find((track) => track.entityId === selectedLifetime.entityId)
@@ -2262,20 +2366,67 @@ export function StudioTimeline({
               <TimelinePlayhead currentTime={currentTime} duration={duration} playbackClock={playbackClock} />
             </div>
           </div>
-          {projectAudioTrack && projectAudioInterval ? (
+          {displayedProjectAudioTrack && projectAudioInterval ? (
             <div
               className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]"
               data-project-audio-track
             >
               <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-emerald-300">Audio</div>
-              <div className="pointer-events-none relative h-8 min-w-0 overflow-hidden" data-timeline-audio-lane>
+              <div className="relative h-8 min-w-0 overflow-hidden" data-timeline-audio-lane>
                 <div
-                  aria-label={`Audio track ${projectAudioTrack.fileName}, ${projectAudioInterval.start.toFixed(2)}–${projectAudioInterval.end.toFixed(2)} seconds`}
-                  className="absolute top-1 h-5 min-w-px border border-emerald-800 bg-emerald-950 px-1 text-[9px] leading-4 text-emerald-300"
+                  aria-label={`Audio track ${displayedProjectAudioTrack.fileName}, ${projectAudioInterval.start.toFixed(2)}–${projectAudioInterval.end.toFixed(2)} seconds`}
+                  className="absolute top-1 h-5 min-w-px"
+                  data-audio-preview-offset={projectAudioTimingPreview?.offset}
+                  data-audio-preview-trim-end={projectAudioTimingPreview?.trimEnd ?? undefined}
+                  data-audio-preview-trim-start={projectAudioTimingPreview?.trimStart}
+                  data-project-audio-clip
                   style={timelineIntervalStyle(projectAudioInterval, duration)}
-                  title={`${projectAudioTrack.fileName} · ${projectAudioInterval.start.toFixed(2)}–${projectAudioInterval.end.toFixed(2)}s`}
                 >
-                  <span className="block truncate">{projectAudioTrack.fileName}</span>
+                  <button
+                    aria-label={`Move audio track ${displayedProjectAudioTrack.fileName}`}
+                    className="absolute inset-0 w-full cursor-grab touch-none border border-emerald-800 bg-emerald-950 px-1 text-left text-[9px] leading-4 text-emerald-300 hover:bg-emerald-900 active:cursor-grabbing disabled:cursor-not-allowed disabled:border-zinc-700 disabled:bg-zinc-900 disabled:text-zinc-600"
+                    data-project-audio-clip-body
+                    disabled={audioTimingDisabled}
+                    onLostPointerCapture={cancelProjectAudioGesture}
+                    onPointerCancel={cancelProjectAudioGesture}
+                    onPointerDown={(event) => beginProjectAudioGesture(event, "body")}
+                    onPointerMove={moveProjectAudioGesture}
+                    onPointerUp={finishProjectAudioGesture}
+                    title={
+                      audioTimingDisabled
+                        ? "Audio timing is unavailable while the Timeline is read-only."
+                        : `${displayedProjectAudioTrack.fileName} · drag to move the clip`
+                    }
+                    type="button"
+                  >
+                    <span className="block truncate">{displayedProjectAudioTrack.fileName}</span>
+                  </button>
+                  <button
+                    aria-label={`Trim audio track ${displayedProjectAudioTrack.fileName} start`}
+                    className="absolute bottom-0 left-0 top-0 z-10 w-2 cursor-ew-resize touch-none border-l border-emerald-300 bg-emerald-400/20 hover:bg-emerald-300/40 disabled:cursor-not-allowed disabled:border-zinc-600 disabled:bg-zinc-800"
+                    data-project-audio-trim-start-handle
+                    disabled={audioTimingDisabled}
+                    onLostPointerCapture={cancelProjectAudioGesture}
+                    onPointerCancel={cancelProjectAudioGesture}
+                    onPointerDown={(event) => beginProjectAudioGesture(event, "left")}
+                    onPointerMove={moveProjectAudioGesture}
+                    onPointerUp={finishProjectAudioGesture}
+                    title="Drag to change clip start and trim-in together"
+                    type="button"
+                  />
+                  <button
+                    aria-label={`Trim audio track ${displayedProjectAudioTrack.fileName} end`}
+                    className="absolute bottom-0 right-0 top-0 z-10 w-2 cursor-ew-resize touch-none border-r border-emerald-300 bg-emerald-400/20 hover:bg-emerald-300/40 disabled:cursor-not-allowed disabled:border-zinc-600 disabled:bg-zinc-800"
+                    data-project-audio-trim-end-handle
+                    disabled={audioTimingDisabled}
+                    onLostPointerCapture={cancelProjectAudioGesture}
+                    onPointerCancel={cancelProjectAudioGesture}
+                    onPointerDown={(event) => beginProjectAudioGesture(event, "right")}
+                    onPointerMove={moveProjectAudioGesture}
+                    onPointerUp={finishProjectAudioGesture}
+                    title="Drag to change trim-out"
+                    type="button"
+                  />
                 </div>
                 <TimelinePlayhead currentTime={currentTime} duration={duration} playbackClock={playbackClock} />
               </div>
