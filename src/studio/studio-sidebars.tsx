@@ -34,6 +34,7 @@ import { FragmentMaterialEditor, type FragmentMaterialEditorItem } from "./fragm
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity, StrokeDash, StrokeJoin } from "./model";
+import { NATIVE_PROJECT_IMAGE_FILE_ACCEPT_V1 } from "./native-project-assets";
 import {
   type ProjectAudioMixSettings,
   type ProjectAudioTimingSeconds,
@@ -553,7 +554,33 @@ export function WorkspaceSidebar({
   const matchingSvgAssets = studioSvgPathAssetsMatchingQuery(svgAssets, svgAssetSearchQuery);
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
-      <section className="mb-4 border-b border-zinc-800 pb-4" aria-labelledby="studio-assets-heading">
+      <section
+        className="mb-4 border-b border-zinc-800 pb-4"
+        aria-labelledby="studio-assets-heading"
+        onDragOver={(event) => {
+          const fileItems = Array.from(event.dataTransfer.items).filter((item) => item.kind === "file");
+          if (
+            !onImportImageFiles ||
+            !authoringAvailable ||
+            draftActive ||
+            imageImportPending ||
+            fileItems.length === 0 ||
+            fileItems.every((item) => item.type.length > 0 && !item.type.startsWith("image/"))
+          )
+            return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }}
+        onDrop={(event) => {
+          if (!onImportImageFiles || !authoringAvailable || draftActive || imageImportPending) return;
+          const files = Array.from(event.dataTransfer.files).filter(
+            (file) => file.type.startsWith("image/") || /[.](?:jpe?g|png|webp)$/iu.test(file.name),
+          );
+          if (files.length === 0) return;
+          event.preventDefault();
+          onImportImageFiles(files);
+        }}
+      >
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-balance text-xs font-medium text-zinc-300" id="studio-assets-heading">
             Assets
@@ -565,7 +592,8 @@ export function WorkspaceSidebar({
             {onImportImageFiles ? (
               <>
                 <input
-                  accept="image/png,.png"
+                  accept={NATIVE_PROJECT_IMAGE_FILE_ACCEPT_V1}
+                  aria-label="Project image files"
                   className="sr-only"
                   disabled={!authoringAvailable || draftActive || imageImportPending}
                   onChange={(event) => {
@@ -583,7 +611,7 @@ export function WorkspaceSidebar({
                   onClick={() => imageFileInput.current?.click()}
                   type="button"
                 >
-                  {imageImportPending ? "Importing…" : "+ Import PNG"}
+                  {imageImportPending ? "Importing…" : "+ Import image"}
                 </button>
               </>
             ) : null}
@@ -856,7 +884,8 @@ export function WorkspaceSidebar({
           </>
         )}
         <p className="mt-2 text-pretty text-[10px] leading-4 text-zinc-600">
-          Studio-native Images use canonical Preview and MP4 export. Manim source export is unsupported.
+          PNG, JPEG, and WebP are stored as canonical PNG for Preview and MP4 export. Manim source export is
+          unsupported.
         </p>
         {imageImportError ? (
           <p className="mt-2 text-pretty text-[10px] leading-4 text-red-300" role="alert">

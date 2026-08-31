@@ -218,7 +218,11 @@ import {
 } from "./studio/motion-clip-edit";
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
-import { ingestNativeProjectPngV1, type NativeProjectAssetStateV1 } from "./studio/native-project-assets";
+import {
+  ingestNativeProjectPngV1,
+  type NativeProjectAssetStateV1,
+  normalizeNativeProjectImageFileV1,
+} from "./studio/native-project-assets";
 import { browserNativeProjectLocalStore, type NativeProjectLocalAudioTrack } from "./studio/native-project-local-store";
 import {
   type OpacityKeyframe,
@@ -1622,7 +1626,7 @@ export function App({
       let result: NativeProjectAssetStateV1 = nativeProjectState;
       for (const file of files) {
         result = await ingestNativeProjectPngV1({
-          source: { file, kind: "file" },
+          source: await normalizeNativeProjectImageFileV1(file),
           state: result,
         });
       }
@@ -1643,7 +1647,9 @@ export function App({
     } catch (cause) {
       if (nativeProjectAssetGeneration.current !== generation) return;
       setNativeProjectAssetErrorKind("image");
-      setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not import the selected PNGs.");
+      setNativeProjectAssetError(
+        cause instanceof Error ? cause.message : "Studio could not import the selected images.",
+      );
     } finally {
       if (nativeProjectAssetGeneration.current === generation) setNativeProjectAssetPending(false);
     }

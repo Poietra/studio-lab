@@ -16,8 +16,11 @@ import {
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 
 export const MAX_NATIVE_PROJECT_PNG_BYTES_V1 = 16 * 1024 * 1024;
+export const NATIVE_PROJECT_IMAGE_FILE_ACCEPT_V1 = "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp";
 
 const PNG_MEDIA_TYPE = "image/png";
+const JPEG_MEDIA_TYPE = "image/jpeg";
+const WEBP_MEDIA_TYPE = "image/webp";
 const PNG_SIGNATURE = Object.freeze([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const ZERO_SHA256 = "0".repeat(64);
 
@@ -48,6 +51,90 @@ export class NativeProjectAssetValidationError extends Error {
     super(message, options);
     this.name = "NativeProjectAssetValidationError";
   }
+}
+
+type SupportedBrowserImageKind = "jpeg" | "png" | "webp";
+
+function supportedBrowserImageKind(file: Pick<File, "name" | "type">): SupportedBrowserImageKind | null {
+  const mediaType = file.type.trim().toLowerCase();
+  if (mediaType === PNG_MEDIA_TYPE) return "png";
+  if (mediaType === JPEG_MEDIA_TYPE || mediaType === "image/jpg") return "jpeg";
+  if (mediaType === WEBP_MEDIA_TYPE) return "webp";
+  if (mediaType.length > 0) return null;
+  const name = file.name.toLowerCase();
+  if (name.endsWith(".png")) return "png";
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "jpeg";
+  if (name.endsWith(".webp")) return "webp";
+  return null;
+}
+
+async function browserImageFileAsPngBytesV1(file: File) {
+  if (typeof createImageBitmap !== "function" || typeof document === "undefined") {
+    throw new NativeProjectAssetValidationError("This browser cannot decode JPEG or WebP images for Studio.");
+  }
+  let bitmap: ImageBitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+  } catch (cause) {
+    throw new NativeProjectAssetValidationError("Studio could not decode the selected JPEG or WebP image.", {
+      cause,
+    });
+  }
+  try {
+    if (
+      !Number.isSafeInteger(bitmap.width) ||
+      !Number.isSafeInteger(bitmap.height) ||
+      bitmap.width <= 0 ||
+      bitmap.height <= 0 ||
+      bitmap.width * bitmap.height > MAX_IMAGE_PIXELS
+    ) {
+      throw new NativeProjectAssetValidationError(
+        `A decoded Studio-native image must contain between 1 and ${MAX_IMAGE_PIXELS} pixels.`,
+      );
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new NativeProjectAssetValidationError("This browser cannot create a canvas for Studio image import.");
+    }
+    context.drawImage(bitmap, 0, 0);
+    const png = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(
+        (blob) =>
+          blob
+            ? resolve(blob)
+            : reject(new NativeProjectAssetValidationError("Studio could not encode the decoded image as PNG.")),
+        PNG_MEDIA_TYPE,
+      ),
+    );
+    return await png.arrayBuffer();
+  } catch (cause) {
+    if (cause instanceof NativeProjectAssetValidationError) throw cause;
+    throw new NativeProjectAssetValidationError("Studio could not normalize the selected image as PNG.", { cause });
+  } finally {
+    bitmap.close();
+  }
+}
+
+/** Keeps PNG input byte-identical and normalizes JPEG/WebP through the
+ * browser's decoder before entering the existing canonical PNG pipeline. */
+export async function normalizeNativeProjectImageFileV1(
+  file: File,
+  transcode: (file: File) => Promise<ArrayBuffer> = browserImageFileAsPngBytesV1,
+): Promise<NativeProjectPngSourceV1> {
+  const kind = supportedBrowserImageKind(file);
+  if (!kind) {
+    throw new NativeProjectAssetValidationError("Studio image import supports PNG, JPEG, and WebP files.");
+  }
+  if (!Number.isSafeInteger(file.size) || file.size <= 0 || file.size > MAX_NATIVE_PROJECT_PNG_BYTES_V1) {
+    throw new NativeProjectAssetValidationError(
+      `A Studio image input must contain between 1 and ${MAX_NATIVE_PROJECT_PNG_BYTES_V1} bytes.`,
+    );
+  }
+  if (kind === "png") return { file, kind: "file" };
+  return { bytes: await transcode(file), kind: "bytes", mediaType: PNG_MEDIA_TYPE };
 }
 
 function copyFixedBytes(bytes: ArrayBuffer) {

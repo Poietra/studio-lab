@@ -155,8 +155,9 @@ describe("WorkspaceSidebar Layers", () => {
       />,
     );
 
-    expect(markup).toContain("+ Import PNG");
-    expect(markup).toContain('accept="image/png,.png"');
+    expect(markup).toContain("+ Import image");
+    expect(markup).toContain('accept="image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp"');
+    expect(markup).toContain('aria-label="Project image files"');
     expect(markup).toContain('multiple=""');
     expect(markup).toContain('role="alert"');
     expect(markup).toContain("The PNG could not be decoded.");
