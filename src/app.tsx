@@ -91,6 +91,7 @@ import {
   replaceDrawInProgram,
   sceneProgramsHaveDrawIn,
 } from "./studio/draw-in-edit";
+import { studioCreationTextContent } from "./studio/editable-content";
 import {
   editorProgramsMatchAuthorityV1,
   materializeAuthoritativeEditorProgramsV1,
@@ -450,6 +451,11 @@ import {
   createDirectManipulationVisibilityProgram,
 } from "./studio/suggestion-program";
 import {
+  createTextWrapResizeGesture,
+  resolveTextWrapWidth,
+  type TextWrapResizeGesture,
+} from "./studio/text-wrap-resize-gesture";
+import {
   isSceneDurationProgramBatch,
   sceneDurationTrimAvailabilityFromProjection,
   selectTimelineProgramBatchProjection,
@@ -549,13 +555,13 @@ type CanvasResizeBase = Readonly<{
   direction: ResizeHandleDirection;
   entityId: string;
   pointerId: number;
-  sourceAnchor: number;
   start: Readonly<{ x: number; y: number }>;
 }>;
 type CanvasScaleResizeState = CanvasResizeBase &
   Readonly<{
     gesture: SingleScaleResizeGesture;
     mode: "scale";
+    sourceAnchor: number;
   }>;
 type CanvasShapeResizeState = CanvasResizeBase &
   Readonly<{
@@ -565,8 +571,15 @@ type CanvasShapeResizeState = CanvasResizeBase &
     mode: "shape";
     scale: number;
     shape: ShapeResizeKind;
+    sourceAnchor: number;
   }>;
-type CanvasResizeState = CanvasScaleResizeState | CanvasShapeResizeState;
+type CanvasTextWrapResizeState = CanvasResizeBase &
+  Readonly<{
+    gesture: TextWrapResizeGesture;
+    mode: "text-wrap";
+    position: Point;
+  }>;
+type CanvasResizeState = CanvasScaleResizeState | CanvasShapeResizeState | CanvasTextWrapResizeState;
 type CanvasRotationState = Readonly<{
   center: Point;
   entityId: string;
@@ -8453,6 +8466,23 @@ export function App({
     gesturePreviewStore.clear();
   }
 
+  function installTextWrapWidthDraft(entity: ProjectedEntity, wrapWidth: number) {
+    if (entity.type !== "Text" || !Number.isFinite(wrapWidth) || wrapWidth <= 0) return false;
+    const validation = validateInspectorEdits(entity, {
+      ...initialInspectorEditValues(entity),
+      textWrapWidth: String(wrapWidth),
+    });
+    if (validation.kind === "invalid" || !validation.edits.content) {
+      setDraftError(
+        validation.kind === "invalid"
+          ? (validation.errors.textWrapWidth ?? "The Text wrap width is invalid.")
+          : "The Text wrap width did not change.",
+      );
+      return false;
+    }
+    return editEntityFromInspector(entity.id, validation.edits, "textWrapWidth");
+  }
+
   function beginEntityResize(
     event: PointerEvent<HTMLButtonElement>,
     entityId: string,
@@ -8476,7 +8506,6 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return;
     }
-    if (blockTransformWhileTransformTrackExists([entityId], "resizing it")) return;
     const runtimeTraceEditCandidate = runtimeTraceEditCandidateFor(entityId);
     if (runtimeTraceEditCandidate && !runtimeTraceEditCandidate.capabilities.uniformScale) {
       setSelectedObjectIds([entityId]);
@@ -8494,6 +8523,15 @@ export function App({
       entity.present &&
       (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
+    const textContent = entity.type === "Text" ? studioCreationTextContent(entity.content) : null;
+    const textWrapResize =
+      interactionMode === "position" &&
+      (direction === "e" || direction === "w") &&
+      entity.type === "Text" &&
+      entity.sourceIdentity.kind === "unknown" &&
+      Boolean(entity.transactionId) &&
+      textContent !== null;
+    if (!textWrapResize && blockTransformWhileTransformTrackExists([entityId], "resizing it")) return;
     if (studioResizeUnavailableIds.has(entity.id)) {
       setSelectedObjectIds([entity.id]);
       setDraftError(
@@ -8520,6 +8558,55 @@ export function App({
       preparedResizeBasis.entityIds[0] === entityId;
     if (!shapeResizeAvailable && !preparedScaleResizeAvailable) {
       setDraftError(`Studio cannot resize ${entityLabel(entity)} until its prepared WebGPU bounds are available.`);
+      return;
+    }
+    if (textWrapResize) {
+      if (!preparedResizeBasis) return;
+      if (draftEdit) {
+        setDraftError("Apply or discard the current draft before changing Text wrap width.");
+        return;
+      }
+      const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]")?.getBoundingClientRect();
+      if (!canvasBounds) return;
+      const frame = workspace?.frame ?? { height: 8, width: 14.222 };
+      const gesture = createTextWrapResizeGesture({
+        cameraScale: Math.max(projection?.camera.scale ?? 1, Number.EPSILON),
+        ...(textContent.layout.wrapWidth === undefined ? {} : { configuredWidth: textContent.layout.wrapWidth }),
+        direction,
+        entityScale: entity.scale,
+        frame,
+        preparedBounds: preparedResizeBasis.bounds,
+        startClientX: event.clientX,
+        surfaceWidth: canvasBounds.width,
+        viewport: STUDIO_VIEWPORT,
+      });
+      if (!gesture) {
+        setDraftError(
+          `Studio cannot change ${entityLabel(entity)} wrap width until its prepared bounds are available.`,
+        );
+        return;
+      }
+      setSelectedObjectIds([entityId]);
+      setIsPlaying(false);
+      canvasResize.current = {
+        canvasScale: {
+          x: STUDIO_VIEWPORT.width / canvasBounds.width,
+          y: STUDIO_VIEWPORT.height / canvasBounds.height,
+        },
+        direction,
+        entityId,
+        gesture,
+        mode: "text-wrap",
+        pointerId: event.pointerId,
+        position: entity.position,
+        start: { x: event.clientX, y: event.clientY },
+      };
+      gesturePreviewStore.setGeometryPreview({
+        dimensions: { height: gesture.fromHeight, width: gesture.fromWidth },
+        entityId,
+        position: entity.position,
+      });
+      event.currentTarget.setPointerCapture(event.pointerId);
       return;
     }
     const gestureContext = directGestureContext();
@@ -8555,7 +8642,6 @@ export function App({
       direction,
       entityId,
       pointerId: event.pointerId,
-      sourceAnchor: anchor.sourceTime,
       start: { x: event.clientX, y: event.clientY },
     } as const;
     if (shapeResizeAvailable && shape && entity.geometry.dimensions.kind === "known") {
@@ -8567,6 +8653,7 @@ export function App({
         mode: "shape",
         scale: entity.scale,
         shape,
+        sourceAnchor: anchor.sourceTime,
       };
       gesturePreviewStore.setGeometryPreview({
         dimensions: entity.geometry.dimensions.value,
@@ -8593,6 +8680,7 @@ export function App({
         ...base,
         gesture,
         mode: "scale",
+        sourceAnchor: anchor.sourceTime,
       };
       gesturePreviewStore.setScalePreview({ entityId, guides: [], scale: entity.scale });
     }
@@ -8603,7 +8691,15 @@ export function App({
     event.stopPropagation();
     const resize = canvasResize.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
-    if (resize.mode === "shape") {
+    if (resize.mode === "text-wrap") {
+      const width = resolveTextWrapWidth(resize.gesture, event.clientX);
+      if (width === null) return;
+      gesturePreviewStore.setGeometryPreview({
+        dimensions: { height: resize.gesture.fromHeight, width },
+        entityId: resize.entityId,
+        position: resize.position,
+      });
+    } else if (resize.mode === "shape") {
       const geometry = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY }, event.shiftKey);
       gesturePreviewStore.setGeometryPreview({ ...geometry, entityId: resize.entityId });
     } else {
@@ -8621,6 +8717,13 @@ export function App({
     if (!resize || resize.pointerId !== event.pointerId) return;
     canvasResize.current = null;
     gesturePreviewStore.clear();
+    if (resize.mode === "text-wrap") {
+      const wrapWidth = resolveTextWrapWidth(resize.gesture, event.clientX);
+      if (wrapWidth === null) return;
+      const entity = editableEntities.find((candidate) => candidate.id === resize.entityId && candidate.present);
+      if (entity) installTextWrapWidthDraft(entity, wrapWidth);
+      return;
+    }
     if (resize.mode === "shape") {
       const target = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY }, event.shiftKey);
       if (sameShapeGeometry(target, resize.from)) return;
@@ -9155,7 +9258,12 @@ export function App({
     rotateEntityFromInspector(entityId, event.key === "ArrowLeft" ? stepRadians : -stepRadians);
   }
 
-  function nudgeEntityResize(event: KeyboardEvent<HTMLButtonElement>, entityId: string, handle: ResizeHandleDirection) {
+  function nudgeEntityResize(
+    event: KeyboardEvent<HTMLButtonElement>,
+    entityId: string,
+    handle: ResizeHandleDirection,
+    preparedResizeBasis: PreparedMoveSnapBasis | null,
+  ) {
     const delta = NUDGE_DELTAS[event.key];
     if (!delta) return;
     event.preventDefault();
@@ -9178,6 +9286,34 @@ export function App({
     if (!resizeHandleUsesDelta(handle, delta)) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return;
+    const textContent = entity.type === "Text" ? studioCreationTextContent(entity.content) : null;
+    const textWrapResize =
+      interactionMode === "position" &&
+      (handle === "e" || handle === "w") &&
+      entity.type === "Text" &&
+      entity.sourceIdentity.kind === "unknown" &&
+      Boolean(entity.transactionId) &&
+      textContent !== null;
+    if (textWrapResize) {
+      if (!preparedResizeBasis) return;
+      const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-studio-canvas]")?.getBoundingClientRect();
+      if (!canvasBounds) return;
+      const gesture = createTextWrapResizeGesture({
+        cameraScale: Math.max(projection?.camera.scale ?? 1, Number.EPSILON),
+        ...(textContent.layout.wrapWidth === undefined ? {} : { configuredWidth: textContent.layout.wrapWidth }),
+        direction: handle,
+        entityScale: entity.scale,
+        frame: workspace?.frame ?? { height: 8, width: 14.222 },
+        preparedBounds: preparedResizeBasis.bounds,
+        startClientX: 0,
+        surfaceWidth: canvasBounds.width,
+        viewport: STUDIO_VIEWPORT,
+      });
+      const amount = event.shiftKey ? 5 : 1;
+      const wrapWidth = gesture ? resolveTextWrapWidth(gesture, delta.x * amount) : null;
+      if (wrapWidth !== null) installTextWrapWidthDraft(entity, wrapWidth);
+      return;
+    }
     if (studioResizeUnavailableIds.has(entity.id)) {
       setSelectedObjectIds([entity.id]);
       setDraftError(

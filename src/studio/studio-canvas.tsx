@@ -3,6 +3,7 @@ import { type DragEvent, type KeyboardEvent, type PointerEvent, useState } from 
 import type { StudioCubicBezierPointRef } from "../engine/cubic-bezier-authoring";
 import { cn } from "../lib/cn";
 import type { CanvasSelectionMode } from "./canvas-selection";
+import { studioCreationTextContent } from "./editable-content";
 import type {
   AlignmentGuide,
   FrameAlignmentGuide,
@@ -92,6 +93,7 @@ export type StudioCanvasProps = Readonly<{
     event: KeyboardEvent<HTMLButtonElement>,
     entityId: string,
     direction: ResizeHandleDirection,
+    basis: PreparedMoveSnapBasis | null,
   ) => void;
   onEntityResizePointerDown: (
     event: PointerEvent<HTMLButtonElement>,
@@ -446,14 +448,19 @@ function EntityResizeHandles({
   onPointerDown,
   onPointerMove,
   onPointerUp,
-  shape,
+  mode,
 }: Readonly<{
   basis: PreparedMoveSnapBasis | null;
   cameraScale: number;
   displayedScale: number;
   entity: ProjectedEntity;
   onCancel: (event: PointerEvent<HTMLButtonElement>) => void;
-  onKeyDown: (event: KeyboardEvent<HTMLButtonElement>, entityId: string, direction: ResizeHandleDirection) => void;
+  onKeyDown: (
+    event: KeyboardEvent<HTMLButtonElement>,
+    entityId: string,
+    direction: ResizeHandleDirection,
+    basis: PreparedMoveSnapBasis | null,
+  ) => void;
   onPointerDown: (
     event: PointerEvent<HTMLButtonElement>,
     entityId: string,
@@ -462,11 +469,18 @@ function EntityResizeHandles({
   ) => void;
   onPointerMove: (event: PointerEvent<HTMLButtonElement>) => void;
   onPointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
-  shape: "circle" | "rectangle" | null;
+  mode: "circle" | "rectangle" | "text-wrap" | "uniform";
 }>) {
   const handles =
-    shape === "rectangle" ? RESIZE_HANDLES : RESIZE_HANDLES.filter((handle) => handle.direction.length === 2);
+    mode === "rectangle"
+      ? RESIZE_HANDLES
+      : mode === "text-wrap"
+        ? RESIZE_HANDLES.filter(
+            (handle) => handle.direction.length === 2 || handle.direction === "e" || handle.direction === "w",
+          )
+        : RESIZE_HANDLES.filter((handle) => handle.direction.length === 2);
   return handles.map((handle) => {
+    const textWrapHandle = mode === "text-wrap" && (handle.direction === "e" || handle.direction === "w");
     const arrowKeys =
       handle.direction.length === 2
         ? "ArrowUp ArrowDown ArrowLeft ArrowRight"
@@ -474,26 +488,34 @@ function EntityResizeHandles({
           ? "ArrowLeft ArrowRight"
           : "ArrowUp ArrowDown";
     const aspectRatioHint =
-      shape === "rectangle" && handle.direction.length === 2 ? " · Hold Shift to preserve aspect ratio" : "";
+      mode === "rectangle" && handle.direction.length === 2 ? " · Hold Shift to preserve aspect ratio" : "";
+    const label = textWrapHandle
+      ? `Change ${entityLabel(entity)} wrap width from ${handle.label}`
+      : `Resize ${entityLabel(entity)} from ${handle.label}`;
     return (
       <button
         aria-keyshortcuts={arrowKeys}
-        aria-label={`Resize ${entityLabel(entity)} from ${handle.label}`}
+        aria-label={label}
         className={cn(
           "absolute z-30 size-6 touch-none bg-transparent outline-none after:absolute after:left-1/2 after:top-1/2 after:size-2.5 after:-translate-x-1/2 after:-translate-y-1/2 after:border-2 after:border-sky-950 after:bg-sky-400 focus-visible:ring-2 focus-visible:ring-sky-300",
           handle.className,
         )}
         data-resize-direction={handle.direction}
         data-studio-resize-handle={entity.id}
+        data-studio-text-wrap-handle={textWrapHandle ? entity.id : undefined}
         key={handle.direction}
-        onKeyDown={(event) => onKeyDown(event, entity.id, handle.direction)}
+        onKeyDown={(event) => onKeyDown(event, entity.id, handle.direction, basis)}
         onLostPointerCapture={onCancel}
         onPointerCancel={onCancel}
         onPointerDown={(event) => onPointerDown(event, entity.id, handle.direction, basis)}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         style={{ scale: inverseResizeHandleScale(displayedScale, cameraScale) }}
-        title={`Drag ${handle.label} to resize${aspectRatioHint}${shape === null ? " · Hold Alt/Option to bypass snapping" : ""} · ${arrowKeys.replaceAll("Arrow", "")} adjust precisely`}
+        title={
+          textWrapHandle
+            ? `Drag ${handle.label} to change wrap width · ${arrowKeys.replaceAll("Arrow", "")} adjust precisely`
+            : `Drag ${handle.label} to resize${aspectRatioHint}${mode === "uniform" || mode === "text-wrap" ? " · Hold Alt/Option to bypass snapping" : ""} · ${arrowKeys.replaceAll("Arrow", "")} adjust precisely`
+        }
         type="button"
       />
     );
@@ -1199,6 +1221,12 @@ export function StudioCanvas({
               !dimensionsUnknown &&
               !positionUnknown &&
               !scaleUnknown;
+            const textWrapResizeAvailable =
+              interactionMode === "position" &&
+              entity.type === "Text" &&
+              entity.sourceIdentity.kind === "unknown" &&
+              Boolean(entity.transactionId) &&
+              studioCreationTextContent(entity.content) !== null;
             const resizeAvailable =
               !resizeUnavailableIds.has(entity.id) &&
               !scaleUnknown &&
@@ -1324,7 +1352,7 @@ export function StudioCanvas({
                       onPointerDown={onEntityResizePointerDown}
                       onPointerMove={onEntityResizePointerMove}
                       onPointerUp={onEntityResizePointerUp}
-                      shape={shapeResizeAvailable ? shape : null}
+                      mode={textWrapResizeAvailable ? "text-wrap" : shapeResizeAvailable && shape ? shape : "uniform"}
                     />
                   ) : null}
                   {selected && selectedIds.size === 1 && !mutationLocked && rotationHandleEntityId === entity.id ? (

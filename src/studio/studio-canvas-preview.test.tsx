@@ -1383,10 +1383,67 @@ describe("StudioCanvas retained preview layer", () => {
             ],
           ]),
         )}
+        selectedIds={new Set([textEntity.id])}
       />,
     );
     expect(markup).toMatch(/<button[^>]*style="height:10cqh;width:10cqw"/);
+    expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(4);
+    expect(markup).not.toContain("data-studio-text-wrap-handle");
     expect(markup).not.toContain("data-studio-semantic-paint");
+  });
+
+  it("exposes only horizontal wrap handles for Studio-created Text in position mode", () => {
+    const textEntity: ProjectedEntity = {
+      ...TEXT_ENTITY,
+      content: {
+        displayLines: ["Poietra makes math clear"],
+        text: "Poietra makes math clear",
+        textLayout: {
+          alignment: "left",
+          fontFamily: "sans",
+          fontSize: 1,
+          fontWeight: "regular",
+          lineHeight: 1.2,
+        },
+      },
+      id: "tx:create-text/entity:text",
+    };
+    const renderText = (interactionMode: "animate" | "position") =>
+      renderToStaticMarkup(
+        <StudioCanvas
+          {...baseProps()}
+          appliedTransactionIds={new Set(["create-text"])}
+          entities={[textEntity]}
+          interactionMode={interactionMode}
+          preview={previewView(
+            {
+              frame: {
+                packetId: `canvas:text-wrap-${interactionMode}`,
+                revision: "a".repeat(64),
+                sampleTime: 1,
+                viewport: { heightPx: 360, widthPx: 640 },
+              },
+              phase: "presented",
+            },
+            new Map([[textEntity.id, { dimensions: { height: 1, width: 8 }, position: { x: 320, y: 180 } }]]),
+          )}
+          selectedIds={new Set([textEntity.id])}
+        />,
+      );
+
+    const positionMarkup = renderText("position");
+    expect(positionMarkup.match(/data-studio-text-wrap-handle=/g)).toHaveLength(2);
+    expect(positionMarkup.match(/data-studio-resize-handle=/g)).toHaveLength(6);
+    expect(positionMarkup).toContain(`aria-label="Change Poietra makes math clear wrap width from left edge"`);
+    expect(positionMarkup).toContain(`aria-label="Change Poietra makes math clear wrap width from right edge"`);
+    expect(positionMarkup).toContain('aria-label="Resize Poietra makes math clear from top-left corner"');
+    expect(positionMarkup).toContain('aria-label="Resize Poietra makes math clear from bottom-right corner"');
+    expect(positionMarkup).not.toContain('data-resize-direction="n"');
+    expect(positionMarkup).not.toContain('data-resize-direction="s"');
+
+    const animateMarkup = renderText("animate");
+    expect(animateMarkup).not.toContain("data-studio-text-wrap-handle");
+    expect(animateMarkup.match(/data-studio-resize-handle=/g)).toHaveLength(4);
   });
 
   it("opens the shared inline editor from an editable Text hit target", () => {
