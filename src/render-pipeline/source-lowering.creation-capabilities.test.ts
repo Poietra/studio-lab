@@ -91,6 +91,28 @@ describe("Canonical EditProgram source lowering", () => {
     }
   });
 
+  it("rejects rounded Rectangle creation instead of exporting a sharp-cornered Rectangle", () => {
+    const create: CanonicalEditOperation = {
+      ...operationBase("create-rounded-rectangle", 7),
+      entity: {
+        dimensions: { cornerRadius: 0.5, height: 2, width: 4 },
+        id: "tx:rounded-rectangle/entity:rectangle",
+        lifetime: { end: null, start: 7 },
+        type: "Rectangle",
+      },
+      kind: "CreateEntity",
+    };
+
+    expect(() =>
+      lowerCanonicalProgramSource(
+        source,
+        request(canonicalProgram([create], "rounded-rectangle"), []),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/Rounded Rectangle creation.*not Manim source export/i);
+  });
+
   it("lowers static opacity and rotation follow-ups onto one Studio-created variable", () => {
     const entityId = "tx:created-appearance/entity:circle";
     const create = canonicalProgram(

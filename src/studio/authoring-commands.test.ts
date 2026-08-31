@@ -661,6 +661,32 @@ describe("manual Studio authoring commands", () => {
     ]);
   });
 
+  it("canonicalizes Studio Rectangle corner radius and rejects imported ownership", () => {
+    const creation = createStudioEntitiesProgram({
+      capturedPlayhead: 5,
+      entities: [{ position: { x: 180, y: 120 }, type: "Rectangle" }],
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "rounded-rectangle-source",
+    });
+    expect(creation.validation.program.operations).toContainEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({ dimensions: { cornerRadius: 0, height: 2, width: 4 } }),
+        kind: "CreateEntity",
+      }),
+    );
+
+    expect(() =>
+      createInspectorEntityEditProgram({
+        capturedPlayhead: 5,
+        edits: { dimensions: { cornerRadius: 0.5, height: 2, width: 4 } },
+        entityId: "proof_box",
+        from: { dimensions: { height: 2, width: 4 }, position: { x: 450, y: 180 }, scale: 1 },
+        scene: STUDIO_FIXTURE_SCENE,
+        transactionId: "imported-rounded-rectangle",
+      }),
+    ).toThrow(/only Studio-created Rectangles/u);
+  });
+
   it("fails closed when Inspector content targets an imported entity without source identity", () => {
     const scene = {
       ...STUDIO_FIXTURE_SCENE,

@@ -7,6 +7,7 @@ import {
   type InspectorEditField,
   type InspectorEditValues,
   initialInspectorEditValues,
+  studioRectangleCornerRadiusIsEditable,
   type ValidatedInspectorEdits,
   validateInspectorEdits,
 } from "./inspector-edit";
@@ -209,6 +210,13 @@ function firstChangedField(entity: ProjectedEntity, edits: ValidatedInspectorEdi
   if (edits.content) return "content";
   if (edits.position) return "x";
   if (edits.dimensions?.radius !== undefined) return "radius";
+  if (
+    edits.dimensions?.cornerRadius !== undefined &&
+    entity.geometry.dimensions.kind === "known" &&
+    edits.dimensions.cornerRadius !== (entity.geometry.dimensions.value.cornerRadius ?? 0)
+  ) {
+    return "cornerRadius";
+  }
   if (edits.dimensions?.width !== undefined) return "width";
   if (edits.dimensions?.height !== undefined) return "height";
   return entity.type === "Text" || entity.type === "MathTex" ? "content" : "x";
@@ -264,6 +272,7 @@ export function EntityInspectorEditor({
     entity.geometry.position.kind === "known" &&
     entity.geometry.scale.kind === "known" &&
     (entity.type === "Circle" || entity.type === "Rectangle");
+  const cornerRadiusAvailable = dimensionsAvailable && studioRectangleCornerRadiusIsEditable(entity);
 
   useEffect(() => {
     if (!shapeTransform) return;
@@ -306,6 +315,7 @@ export function EntityInspectorEditor({
           "textLineHeight",
           "textWrapWidth",
           "radius",
+          "cornerRadius",
           "width",
           "height",
         ] as const
@@ -710,6 +720,26 @@ export function EntityInspectorEditor({
                   <FieldError entityId={entity.id} error={errors[field]} field={field} />
                 </label>
               ))}
+              {cornerRadiusAvailable ? (
+                <label className="col-span-2 text-[10px] text-zinc-500">
+                  Corner radius
+                  <input
+                    aria-label={`Corner radius of ${entityLabel(entity)}`}
+                    aria-describedby={errors.cornerRadius ? fieldErrorId(entity.id, "cornerRadius") : undefined}
+                    aria-invalid={errors.cornerRadius ? "true" : undefined}
+                    className={cn(inputClass, errors.cornerRadius && "border-red-800")}
+                    data-inspector-field="cornerRadius"
+                    inputMode="decimal"
+                    min="0"
+                    onChange={(event) => update("cornerRadius", event.currentTarget.value)}
+                    ref={restoreFieldRef("cornerRadius", restoreFocus, onFocusRestored)}
+                    step="0.1"
+                    type="number"
+                    value={values.cornerRadius ?? ""}
+                  />
+                  <FieldError entityId={entity.id} error={errors.cornerRadius} field="cornerRadius" />
+                </label>
+              ) : null}
             </div>
           ) : (
             <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-300">

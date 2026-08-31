@@ -175,6 +175,7 @@ function sameProjectionDimensions(left: EntityDimensions, right: EntityDimension
   });
   return (
     scalarDimensionsMatch &&
+    sameProjectionNumber(left.cornerRadius ?? 0, right.cornerRadius ?? 0) &&
     (left.angles === undefined || right.angles === undefined
       ? left.angles === right.angles
       : sameProjectionNumber(left.angles.start, right.angles.start) &&

@@ -82,6 +82,37 @@ describe("shape-aware resize geometry", () => {
     });
   });
 
+  it("keeps an absolute corner radius while growing and clamps it only when the short edge shrinks", () => {
+    const from = {
+      dimensions: { cornerRadius: 0.75, height: 2, width: 4 },
+      position: { x: 400, y: 200 },
+    };
+    expect(
+      resizeShapeByViewportDelta({
+        cameraScale: 1,
+        direction: "e",
+        frame,
+        from,
+        scale: 1,
+        shape: "rectangle",
+        viewport,
+        viewportDelta: { x: 100, y: 0 },
+      }).dimensions,
+    ).toEqual({ cornerRadius: 0.75, height: 2, width: 6 });
+    expect(
+      resizeShapeByViewportDelta({
+        cameraScale: 1,
+        direction: "s",
+        frame,
+        from,
+        scale: 1,
+        shape: "rectangle",
+        viewport,
+        viewportDelta: { x: 0, y: -75 },
+      }).dimensions,
+    ).toEqual({ cornerRadius: 0.25, height: 0.5, width: 4 });
+  });
+
   it("changes Rectangle width and height independently from a corner", () => {
     expect(
       resizeShapeByViewportDelta({

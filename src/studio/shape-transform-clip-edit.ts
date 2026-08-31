@@ -79,19 +79,28 @@ function studioShapeRoot(scene: RuntimeSceneState, entityId: string) {
 }
 
 function validateShapeState(state: ShapeTransformState) {
-  const { angles, coordinateSystem, height, radius, sides, width } = state.dimensions;
+  const { angles, coordinateSystem, cornerRadius, height, radius, sides, width } = state.dimensions;
   const positive = (value: unknown): value is number =>
     typeof value === "number" && Number.isFinite(value) && value > 0;
   const noUnrelatedDimensions = angles === undefined && coordinateSystem === undefined;
   const valid =
     noUnrelatedDimensions &&
     (state.shape === "circle"
-      ? positive(radius) && height === undefined && sides === undefined && width === undefined
+      ? positive(radius) &&
+        cornerRadius === undefined &&
+        height === undefined &&
+        sides === undefined &&
+        width === undefined
       : state.shape === "ellipse" || state.shape === "rectangle"
-        ? positive(height) && positive(width) && radius === undefined && sides === undefined
+        ? positive(height) &&
+          positive(width) &&
+          (state.shape === "rectangle" ? (cornerRadius ?? 0) === 0 : cornerRadius === undefined) &&
+          radius === undefined &&
+          sides === undefined
         : state.shape === "triangle"
-          ? positive(radius) && sides === 3 && height === undefined && width === undefined
+          ? positive(radius) && cornerRadius === undefined && sides === 3 && height === undefined && width === undefined
           : positive(radius) &&
+            cornerRadius === undefined &&
             Number.isInteger(sides) &&
             sides !== undefined &&
             sides >= 3 &&

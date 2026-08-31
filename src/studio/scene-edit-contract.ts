@@ -122,6 +122,7 @@ const dimensionsSchema = z
   .object({
     angles: anglePairSchema.optional(),
     coordinateSystem: coordinateSystemSchema.optional(),
+    cornerRadius: z.number().finite().nonnegative().optional(),
     height: z.number().positive().optional(),
     radius: z.number().positive().optional(),
     sides: z.number().int().min(3).max(32).optional(),

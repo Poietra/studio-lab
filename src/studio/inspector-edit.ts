@@ -7,9 +7,11 @@ import {
   studioCreationTextContent,
 } from "./editable-content";
 import type { EntityContent, EntityDimensions, Point, ProjectedEntity, TextLayout } from "./model";
+import { clampRectangleCornerRadius } from "./shape-resize";
 
 export type InspectorEditField =
   | "content"
+  | "cornerRadius"
   | "height"
   | "radius"
   | "textAlignment"
@@ -24,6 +26,7 @@ export type InspectorEditField =
 
 export type InspectorEditValues = Readonly<{
   content: string | null;
+  cornerRadius: string | null;
   height: string | null;
   radius: string | null;
   textAlignment: "center" | "left" | "right" | null;
@@ -110,6 +113,10 @@ function currentContentValue(entity: ProjectedEntity) {
   return null;
 }
 
+export function studioRectangleCornerRadiusIsEditable(entity: ProjectedEntity) {
+  return entity.type === "Rectangle" && entity.sourceIdentity.kind === "unknown" && Boolean(entity.transactionId);
+}
+
 function validateContent(
   entity: ProjectedEntity,
   value: string,
@@ -170,6 +177,9 @@ export function initialInspectorEditValues(entity: ProjectedEntity): InspectorEd
   const textContent = entity.type === "Text" ? studioCreationTextContent(entity.content) : null;
   return {
     content: currentContentValue(entity),
+    cornerRadius: studioRectangleCornerRadiusIsEditable(entity)
+      ? formattedNumber(dimensions.cornerRadius ?? 0, 2)
+      : null,
     height: dimensions.height === undefined ? null : formattedNumber(dimensions.height, 2),
     radius: dimensions.radius === undefined ? null : formattedNumber(dimensions.radius, 2),
     textAlignment:
@@ -320,19 +330,44 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
     } else {
       const width = parseFiniteNumber(values.width, "width", errors);
       const height = parseFiniteNumber(values.height, "height", errors);
+      const cornerRadius =
+        values.cornerRadius === null ? null : parseFiniteNumber(values.cornerRadius, "cornerRadius", errors);
       if (width !== null && width < MIN_SHAPE_SIZE) errors.width = `Width must be at least ${MIN_SHAPE_SIZE}.`;
       if (height !== null && height < MIN_SHAPE_SIZE) errors.height = `Height must be at least ${MIN_SHAPE_SIZE}.`;
+      if (cornerRadius !== null && !studioRectangleCornerRadiusIsEditable(entity)) {
+        errors.cornerRadius = "Corner radius editing is available only for Studio-created Rectangles.";
+      }
       if (
         width !== null &&
         height !== null &&
         errors.width === undefined &&
         errors.height === undefined &&
+        errors.cornerRadius === undefined &&
+        cornerRadius !== null
+      ) {
+        const canonicalCornerRadius = clampRectangleCornerRadius(cornerRadius, width, height);
+        if (
+          entity.geometry.dimensions.value.width === undefined ||
+          entity.geometry.dimensions.value.height === undefined ||
+          changed(width, entity.geometry.dimensions.value.width) ||
+          changed(height, entity.geometry.dimensions.value.height) ||
+          changed(canonicalCornerRadius, entity.geometry.dimensions.value.cornerRadius ?? 0)
+        ) {
+          edits.dimensions = { cornerRadius: canonicalCornerRadius, height, width };
+        }
+      } else if (
+        width !== null &&
+        height !== null &&
+        errors.width === undefined &&
+        errors.height === undefined &&
+        values.cornerRadius === null &&
         (entity.geometry.dimensions.value.width === undefined ||
           entity.geometry.dimensions.value.height === undefined ||
           changed(width, entity.geometry.dimensions.value.width) ||
           changed(height, entity.geometry.dimensions.value.height))
-      )
+      ) {
         edits.dimensions = { height, width };
+      }
     }
   }
 

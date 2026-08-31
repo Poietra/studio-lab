@@ -28,31 +28,33 @@ function creationProgram(type: string): SceneEdit {
             ? { dimensions: { radius: 1, sides: 3 } }
             : type === "RegularPolygon"
               ? { dimensions: { radius: 1, sides: 6 } }
-              : type === "Ellipse"
-                ? { dimensions: { height: 2, width: 3 } }
-                : type === "Arc" || type === "Sector"
-                  ? { dimensions: { angles: { start: 0, sweep: Math.PI / 2 }, radius: 1 } }
-                  : type === "CubicBezier"
-                    ? { dimensions: { height: 2, width: 4 } }
-                    : type === "NumberLine"
-                      ? {
-                          dimensions: {
-                            coordinateSystem: { x: { maximum: 5, minimum: -5, step: 1 } },
-                            width: 6,
-                          },
-                        }
-                      : type === "Axes" || type === "DataPlot" || type === "NumberPlane"
+              : type === "Rectangle"
+                ? { dimensions: { cornerRadius: 0.5, height: 2, width: 3 } }
+                : type === "Ellipse"
+                  ? { dimensions: { height: 2, width: 3 } }
+                  : type === "Arc" || type === "Sector"
+                    ? { dimensions: { angles: { start: 0, sweep: Math.PI / 2 }, radius: 1 } }
+                    : type === "CubicBezier"
+                      ? { dimensions: { height: 2, width: 4 } }
+                      : type === "NumberLine"
                         ? {
                             dimensions: {
-                              coordinateSystem: {
-                                x: { maximum: 5, minimum: -5, step: 1 },
-                                y: { maximum: 3, minimum: -3, step: 1 },
-                              },
-                              height: 4,
+                              coordinateSystem: { x: { maximum: 5, minimum: -5, step: 1 } },
                               width: 6,
                             },
                           }
-                        : {}),
+                        : type === "Axes" || type === "DataPlot" || type === "NumberPlane"
+                          ? {
+                              dimensions: {
+                                coordinateSystem: {
+                                  x: { maximum: 5, minimum: -5, step: 1 },
+                                  y: { maximum: 3, minimum: -3, step: 1 },
+                                },
+                                height: 4,
+                                width: 6,
+                              },
+                            }
+                          : {}),
           ...(type === "DataPlot"
             ? {
                 dataSeries: {
@@ -141,6 +143,21 @@ function followupProgram(transactionId: string, operation: SceneEdit["operations
 }
 
 describe("Studio creation wire", () => {
+  it("preserves a Rectangle corner radius in the Rust authoring command", () => {
+    const command = buildStudioCreationProjectionCommand({
+      baseDuration: 2,
+      programs: [creationProgram("Rectangle")],
+    });
+
+    expect(command.programs[0]?.operations[0]).toMatchObject({
+      entity: {
+        dimensions: { cornerRadius: 0.5, height: 2, width: 3 },
+        kind: "rectangle",
+      },
+      kind: "create",
+    });
+  });
+
   it("normalizes one opaque Scene background without an entity target", () => {
     const program = createStudioSceneBackgroundProgram({
       color: "#123456",
