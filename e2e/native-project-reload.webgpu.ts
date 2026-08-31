@@ -18,6 +18,31 @@ const PNG_2 = encodeRgbaPngV1(
   2,
 );
 
+async function browserEncodedImage(page: Page, mediaType: "image/jpeg" | "image/webp", rgba: readonly number[]) {
+  return Buffer.from(
+    await page.evaluate(
+      async ({ mediaType, rgba }) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 2;
+        canvas.height = 2;
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("The E2E browser cannot create an image fixture canvas.");
+        context.putImageData(new ImageData(Uint8ClampedArray.from(rgba), 2, 2), 0, 0);
+        const blob = await new Promise<Blob>((resolve, reject) =>
+          canvas.toBlob(
+            (candidate) => (candidate ? resolve(candidate) : reject(new Error(`Could not encode ${mediaType}.`))),
+            mediaType,
+            0.9,
+          ),
+        );
+        if (blob.type !== mediaType) throw new Error(`The E2E browser encoded ${blob.type}, not ${mediaType}.`);
+        return Array.from(new Uint8Array(await blob.arrayBuffer()));
+      },
+      { mediaType, rgba },
+    ),
+  );
+}
+
 function monoPcmWav48k(durationSeconds: number) {
   const sampleCount = Math.round(48_000 * durationSeconds);
   const bytes = Buffer.alloc(44 + sampleCount * 2);
@@ -1254,7 +1279,7 @@ test("samples a project PNG from a WGSL Scene effect through Preview, history, r
     await expect(emptyCanvas).toBeVisible();
 
     const assets = page.getByRole("region", { name: "Assets" });
-    await assets.locator('input[accept="image/png,.png"]').setInputFiles({
+    await assets.getByLabel("Project image files").setInputFiles({
       buffer: Buffer.from(PNG),
       mimeType: "image/png",
       name: "effect-texture.png",
@@ -1534,22 +1559,78 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(2, 1);
 
     const assets = page.getByRole("region", { name: "Assets" });
-    await expect(assets.getByRole("button", { name: "+ Import PNG" })).toBeEnabled();
-    await assets.locator('input[accept="image/png,.png"]').setInputFiles([
+    const imageInput = assets.getByLabel("Project image files");
+    await expect(assets.getByRole("button", { name: "+ Import image" })).toBeEnabled();
+    await imageInput.setInputFiles({ buffer: Buffer.from([1, 2, 3]), mimeType: "image/jpeg", name: "broken.jpg" });
+    await expect(assets.getByRole("alert")).toContainText("could not decode the selected JPEG or WebP image");
+
+    const webp = await browserEncodedImage(
+      page,
+      "image/webp",
+      [16, 160, 240, 255, 240, 120, 16, 255, 120, 240, 16, 255, 240, 16, 160, 255],
+    );
+    const jpeg = await browserEncodedImage(
+      page,
+      "image/jpeg",
+      [220, 48, 48, 255, 48, 220, 48, 255, 48, 48, 220, 255, 220, 220, 48, 255],
+    );
+    await imageInput.setInputFiles([
       { buffer: Buffer.from(PNG), mimeType: "image/png", name: "first.png" },
       { buffer: Buffer.from(PNG_2), mimeType: "image/png", name: "second.png" },
+      { buffer: webp, mimeType: "image/webp", name: "third.webp" },
     ]);
     const projectImages = page.getByRole("list", { name: "Project images" });
-    await expect(projectImages.getByRole("listitem")).toHaveCount(2);
-    await projectImages.getByRole("button", { name: "+ Add" }).nth(0).click();
-    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-    await page.getByRole("button", { name: "Apply program" }).click();
-    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toBeVisible();
+    await expect(projectImages.getByRole("listitem")).toHaveCount(3);
+    await assets.evaluate(
+      (element, bytes) => {
+        const transfer = new DataTransfer();
+        transfer.items.add(new File([Uint8Array.from(bytes)], "fourth.jpg", { type: "image/jpeg" }));
+        element.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+        element.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+      },
+      [...jpeg],
+    );
+    await expect(projectImages.getByRole("listitem")).toHaveCount(4);
+    expect(
+      (await projectImages.getByRole("listitem").allTextContents()).every((label) =>
+        /image-[0-9a-f]{8}[.]png/u.test(label),
+      ),
+    ).toBe(true);
+    for (let index = 0; index < 4; index += 1) {
+      await projectImages.getByRole("button", { name: "+ Add" }).nth(index).click();
+      await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+      await page.getByRole("button", { name: "Apply program" }).click();
+    }
+    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toHaveCount(4);
     await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
-    await projectImages.getByRole("button", { name: "+ Add" }).nth(1).click();
-    await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("3.7");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(3.7, 1);
+    const editableImage = page.locator('button[aria-label="Move insert-0"][aria-pressed="true"]');
+    await expect(editableImage).toHaveCount(1);
+    await page.getByRole("button", { name: "Set position" }).click();
+    await dragBy(page, editableImage, { x: -60, y: 25 });
     await page.getByRole("button", { name: "Apply program" }).click();
-    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toHaveCount(2);
+    const editableImageId = await editableImage.getAttribute("data-studio-entity");
+    if (!editableImageId) throw new Error("The normalized browser image did not expose its Studio entity id.");
+    const editableImageWrapper = page.locator(`[data-studio-entity-wrapper="${editableImageId}"]`);
+    const imageSizeBefore = await preparedDimensions(editableImageWrapper);
+    const imageScaleBefore = Number(await editableImageWrapper.getAttribute("data-studio-entity-scale"));
+    await dragBy(page, page.locator(`[data-studio-resize-handle="${editableImageId}"][data-resize-direction="se"]`), {
+      x: 30,
+      y: 30,
+    });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const imageSizeAfter = await preparedDimensions(editableImageWrapper);
+    expect(imageSizeAfter).toEqual(imageSizeBefore);
+    await expect
+      .poll(async () => Number(await editableImageWrapper.getAttribute("data-studio-entity-scale")))
+      .toBeGreaterThan(imageScaleBefore);
+    const imageScaleAfter = Number(await editableImageWrapper.getAttribute("data-studio-entity-scale"));
+    const imagePlacementAfter = await editableImageWrapper.evaluate((element) => ({
+      left: (element as HTMLElement).style.left,
+      top: (element as HTMLElement).style.top,
+    }));
 
     const localStorageText = await page.evaluate(() =>
       Object.keys(localStorage)
@@ -1562,14 +1643,29 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
     await page.getByRole("button", { name: "Open Native reload fixture workspace" }).click();
     await expect(page.getByLabel("Current workspace")).toHaveText("Native reload fixture");
-    await expect(page.getByRole("list", { name: "Project images" }).getByRole("listitem")).toHaveCount(2);
-    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toHaveCount(2);
-    await expect(page.getByRole("button", { name: "Move insert-0" })).toHaveCount(2);
+    await expect(page.getByRole("list", { name: "Project images" }).getByRole("listitem")).toHaveCount(4);
+    await expect(page.getByRole("checkbox", { name: "Select insert-0" })).toHaveCount(4);
+    await expect(page.getByRole("button", { name: "Move insert-0" })).toHaveCount(4);
+    const restoredEditedImageWrapper = page.locator(`[data-studio-entity-wrapper="${editableImageId}"]`);
+    await expect(restoredEditedImageWrapper).toBeVisible();
+    expect(await preparedDimensions(restoredEditedImageWrapper)).toEqual(imageSizeAfter);
+    await expect
+      .poll(async () => Number(await restoredEditedImageWrapper.getAttribute("data-studio-entity-scale")))
+      .toBeCloseTo(imageScaleAfter, 3);
+    await expect
+      .poll(() =>
+        restoredEditedImageWrapper.evaluate((element) => ({
+          left: (element as HTMLElement).style.left,
+          top: (element as HTMLElement).style.top,
+        })),
+      )
+      .toEqual(imagePlacementAfter);
     await expect(page.getByRole("button", { name: "Move Poietra", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Move Rectangle", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Move Rectangle", exact: true }).click();
     await expect(page.getByRole("spinbutton", { name: "Corner radius of Rectangle" })).toHaveValue("0.80");
-    await page.getByRole("button", { name: "Move Poietra", exact: true }).click();
+    await page.getByRole("checkbox", { name: "Select Rectangle" }).uncheck();
+    await page.getByRole("checkbox", { name: "Select Poietra" }).check();
     await expect(page.getByLabel("Fill color Poietra")).toHaveValue("#22c55e");
     await expect(page.getByLabel("Fill color Poietra")).toBeDisabled();
     const restoredTextColorStart = page.getByRole("button", { name: /Fill color keyframe 1 at/u });
