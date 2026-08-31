@@ -134,6 +134,26 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).not.toMatch(/aria-label="Move audio track trimmed.wav"[^>]* disabled=""/u);
   });
 
+  it("disables gesture controls when a legacy audio track has no effective source end", () => {
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...props()}
+        onAudioTimingChange={vi.fn()}
+        projectAudioTrack={{
+          fileName: "legacy.wav",
+          sourceSampleFrames: null,
+          timelineOffsetSampleFrames: 0,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+        }}
+      />,
+    );
+
+    expect(markup).toMatch(/<button[^>]*aria-label="Move audio track legacy.wav"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track legacy.wav start"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track legacy.wav end"[^>]* disabled=""/u);
+  });
+
   it("keeps the Draw control visible with a fragment material blocker", () => {
     const reason = "Draw does not support texture fragment materials.";
     const markup = renderToStaticMarkup(

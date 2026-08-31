@@ -120,6 +120,22 @@ describe("project audio track", () => {
     });
   });
 
+  it("keeps the original timing when the left edge has no safe Scene range", () => {
+    expect(
+      projectAudioTimelineTimingAtDelta(
+        {
+          sourceSampleFrames: 96_000,
+          timelineOffsetSampleFrames: 96_000,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+        },
+        1,
+        -0.5,
+        "left",
+      ),
+    ).toEqual({ offset: 2, trimEnd: null, trimStart: 0 });
+  });
+
   it("clamps the right edge to the source and Scene bounds", () => {
     const track = {
       sourceSampleFrames: 96_000,

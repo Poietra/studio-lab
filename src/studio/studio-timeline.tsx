@@ -1133,7 +1133,10 @@ export function StudioTimeline({
   const projectAudioInterval = displayedProjectAudioTrack
     ? projectAudioTimelineInterval(displayedProjectAudioTrack, duration)
     : null;
-  const audioTimingDisabled = readOnly || onAudioTimingChange === undefined;
+  const audioTimingDisabled =
+    readOnly ||
+    onAudioTimingChange === undefined ||
+    (projectAudioTrack?.sourceSampleFrames === null && projectAudioTrack.trimEndSampleFrames === null);
 
   function projectAudioTimingForPointer(gesture: ActiveProjectAudioGesture, clientX: number) {
     const deltaSeconds = ((clientX - gesture.startClientX) / gesture.laneWidth) * gesture.duration;
