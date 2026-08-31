@@ -1453,6 +1453,19 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     await page.getByRole("button", { name: "Apply program" }).click();
     const rectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
     await expect(rectangle).toBeVisible();
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("0.5");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(0.5, 1);
+    const cornerRadius = page.getByRole("spinbutton", { name: "Corner radius of Rectangle" });
+    await cornerRadius.fill("0.8");
+    await cornerRadius.press("Enter");
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(cornerRadius).toHaveValue("0.80");
+    await page.getByRole("button", { name: "Undo" }).click();
+    await page.getByRole("checkbox", { name: "Select Rectangle" }).check();
+    await expect(cornerRadius).toHaveValue("0.00");
+    await page.getByRole("button", { name: "Redo" }).click();
+    await page.getByRole("checkbox", { name: "Select Rectangle" }).check();
+    await expect(cornerRadius).toHaveValue("0.80");
 
     await page.getByRole("button", { name: /Insert text/ }).click();
     await page.getByRole("textbox", { name: "Text content" }).fill("Poietra");
@@ -1554,6 +1567,8 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     await expect(page.getByRole("button", { name: "Move insert-0" })).toHaveCount(2);
     await expect(page.getByRole("button", { name: "Move Poietra", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Move Rectangle", exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Move Rectangle", exact: true }).click();
+    await expect(page.getByRole("spinbutton", { name: "Corner radius of Rectangle" })).toHaveValue("0.80");
     await page.getByRole("button", { name: "Move Poietra", exact: true }).click();
     await expect(page.getByLabel("Fill color Poietra")).toHaveValue("#22c55e");
     await expect(page.getByLabel("Fill color Poietra")).toBeDisabled();
@@ -1572,9 +1587,39 @@ test("authors Text, shape, spinning motion, and Images in a blank workspace and 
     expect(restoredTurningDimensions.height).toBeGreaterThan(restoredTurningDimensions.width);
     await expect(page.getByText(/1[.] 1 intents · studio-insert-/u)).toBeVisible();
 
+    await page.getByRole("slider", { name: "Scene playhead" }).fill("0.75");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(0.75, 1);
+    const [previewBounds, rectangleBounds] = await Promise.all([
+      canvas.locator("canvas[data-studio-preview-canvas]").boundingBox(),
+      restoredSpinningRectangleWrapper.boundingBox(),
+    ]);
+    if (!previewBounds || !rectangleBounds) throw new Error("The rounded Rectangle bounds are unavailable.");
+    const normalizedRectangleRegion = (left: number, right: number, top: number, bottom: number) => ({
+      bottom: (rectangleBounds.y - previewBounds.y + rectangleBounds.height * bottom) / previewBounds.height,
+      left: (rectangleBounds.x - previewBounds.x + rectangleBounds.width * left) / previewBounds.width,
+      right: (rectangleBounds.x - previewBounds.x + rectangleBounds.width * right) / previewBounds.width,
+      top: (rectangleBounds.y - previewBounds.y + rectangleBounds.height * top) / previewBounds.height,
+    });
     const textColorStartTime = await propertyKeyframeTime(restoredTextColorStart);
     const textColorEndTime = await propertyKeyframeTime(restoredTextColorEnd);
     const mp4 = await exportLocalMp4(page);
+    const [plainCorner, roundedCorner] = await decodedPixelStats(
+      page,
+      mp4,
+      [0.45, 0.75],
+      "bright",
+      normalizedRectangleRegion(0, 0.06, 0, 0.08),
+    );
+    const [roundedTopEdge] = await decodedPixelStats(
+      page,
+      mp4,
+      [0.75],
+      "bright",
+      normalizedRectangleRegion(0.4, 0.6, 0, 0.15),
+    );
+    expect(plainCorner?.count ?? 0).toBeGreaterThan(20);
+    expect(roundedCorner?.count ?? Number.POSITIVE_INFINITY).toBeLessThan(10);
+    expect(roundedTopEdge?.count ?? 0).toBeGreaterThan(20);
     const [greenPixels] = await decodedBrightPixelCounts(page, mp4, [textColorStartTime], "green-dominant");
     const [bluePixels] = await decodedBrightPixelCounts(page, mp4, [textColorEndTime + 0.05], "blue-dominant");
     expect(greenPixels).toBeGreaterThan(0);
