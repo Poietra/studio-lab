@@ -20,7 +20,11 @@ import {
 } from "./manim-render-session-policy";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
-import { authorizeSnapshotProgramWithSnapshot, type SnapshotProgramLookup } from "./manim-snapshot-program-authorizer";
+import {
+  authorizeSnapshotProgramWithSnapshot,
+  type SnapshotProgramLookup,
+  type SnapshotProgramRun,
+} from "./manim-snapshot-program-authorizer";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import {
   type CreateDurableRenderSessionInputV1,
@@ -39,6 +43,7 @@ export type DurableManimRenderServiceOptionsV1 = Readonly<{
   executionTimeoutMs?: number;
   frame?: Readonly<{ height: number; width: number }>;
   snapshotLookup?: SnapshotProgramLookup;
+  snapshotRun?: SnapshotProgramRun;
   repository: RenderSessionRepositoryV1;
   sessionIdFactory?: () => string;
   sourceRepository: WorkspaceSourceRepositoryV1;
@@ -101,6 +106,7 @@ export class DurableManimRenderServiceV1 {
   readonly #repository: RenderSessionRepositoryV1;
   readonly #sessionIdFactory: () => string;
   readonly #snapshotLookup: SnapshotProgramLookup | undefined;
+  readonly #snapshotRun: SnapshotProgramRun | undefined;
   readonly #sourceRepository: WorkspaceSourceRepositoryV1;
   readonly #tenantId: string;
   #closeRequest: Promise<void> | null = null;
@@ -131,6 +137,7 @@ export class DurableManimRenderServiceV1 {
     this.#blobs = options.blobs;
     this.#sessionIdFactory = options.sessionIdFactory ?? randomUUID;
     this.#snapshotLookup = options.snapshotLookup;
+    this.#snapshotRun = options.snapshotRun;
   }
 
   async ready(signal?: AbortSignal) {
@@ -167,7 +174,7 @@ export class DurableManimRenderServiceV1 {
       frame: this.#frame,
       originalSource,
       snapshotProgramAuthorizer: this.#snapshotLookup
-        ? (input) => authorizeSnapshotProgramWithSnapshot(input, this.#snapshotLookup!, signal)
+        ? (input) => authorizeSnapshotProgramWithSnapshot(input, this.#snapshotLookup!, signal, this.#snapshotRun)
         : null,
       projectId: request.projectId,
       request,

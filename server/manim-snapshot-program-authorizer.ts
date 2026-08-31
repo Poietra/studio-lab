@@ -27,13 +27,22 @@ import {
   studioMotionStudioEntities,
 } from "../src/studio/scene-authoring-wire";
 import { fastManimRuntimeTraceSceneIdV1 } from "./fast-manim-runtime-trace-contract";
-import type { FastManimSnapshotQueryV1, FastManimSnapshotRunViewV1 } from "./fast-manim-snapshot-contract";
+import type {
+  FastManimSnapshotQueryV1,
+  FastManimSnapshotRunRequestV1,
+  FastManimSnapshotRunViewV1,
+} from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import type { SnapshotProgramAuthorizer } from "./manim-render-request-lowering";
 
 export type SnapshotProgramLookup = (
   projectId: string,
   query: FastManimSnapshotQueryV1,
+  signal?: AbortSignal,
+) => Promise<FastManimSnapshotRunViewV1>;
+
+export type SnapshotProgramRun = (
+  request: FastManimSnapshotRunRequestV1,
   signal?: AbortSignal,
 ) => Promise<FastManimSnapshotRunViewV1>;
 
@@ -212,13 +221,29 @@ export async function authorizeSnapshotProgramWithSnapshot(
   input: Parameters<SnapshotProgramAuthorizer>[0],
   snapshotLookup: SnapshotProgramLookup,
   signal?: AbortSignal,
+  snapshotRun?: SnapshotProgramRun,
 ) {
   signal?.throwIfAborted();
-  const published = await snapshotLookup(
-    input.projectId,
-    { sceneName: input.request.sceneName, sourcePath: input.request.sourcePath },
-    signal,
-  );
+  let published: FastManimSnapshotRunViewV1;
+  try {
+    published = await snapshotLookup(
+      input.projectId,
+      { sceneName: input.request.sceneName, sourcePath: input.request.sourcePath },
+      signal,
+    );
+  } catch (error) {
+    if (!snapshotRun || !(error instanceof HttpError) || error.status !== 404) throw error;
+    published = await snapshotRun(
+      {
+        projectId: input.projectId,
+        requestId: randomUUID(),
+        sceneName: input.request.sceneName,
+        sourceHash: input.request.sourceHash,
+        sourcePath: input.request.sourcePath,
+      },
+      signal,
+    );
+  }
   signal?.throwIfAborted();
   if (published.status !== "verified") {
     throw new HttpError("This Program requires a currently verified Scene snapshot.", 409);

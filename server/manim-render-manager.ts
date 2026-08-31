@@ -888,6 +888,7 @@ export class ManimRenderManager {
             input,
             (_projectId, query) => this.snapshotRunner.snapshot(query),
             signal,
+            (request, runSignal) => this.snapshotRunner.run(request, runSignal),
           );
           return;
         } catch (error) {

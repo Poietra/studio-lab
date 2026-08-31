@@ -696,6 +696,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       frame,
       repository: renderRepository,
       snapshotLookup: (projectId, query, lookupSignal) => snapshots!.snapshot(projectId, query, lookupSignal),
+      snapshotRun: (request, runSignal) => snapshots!.run(request, runSignal),
       sourceRepository: repository,
       tenantId: options.tenantId,
     });

@@ -6,6 +6,7 @@ import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { MathTexOutlineResponseV1 } from "../src/engine/mathtex-outline";
 import { createInspectorEntityEditProgram, createStudioEntitiesProgram } from "../src/studio/authoring-commands";
 import { fastManimRuntimeTraceSceneIdV1 } from "./fast-manim-runtime-trace-contract";
+import { HttpError } from "./http/json";
 import {
   createCircleProgram,
   mathTexTransformProgram,
@@ -27,6 +28,11 @@ const compilers = vi.hoisted(() => ({
   outline: vi.fn(),
   staticRoot: vi.fn(),
   textOutline: vi.fn(),
+}));
+
+const snapshots = vi.hoisted(() => ({
+  lookup: vi.fn(),
+  run: vi.fn(),
 }));
 
 vi.mock("../src/engine/contracts", async (importOriginal) => {
@@ -57,7 +63,11 @@ const sourceWithZeroAnchor = sceneSource.replace(
   "        self.add(equation)\n        # poietra:anchor 0.000\n",
 );
 
-async function lowerContent(transactionId: string, outlineResult: MathTexOutlineResponseV1["result"] | "compiled") {
+async function lowerContent(
+  transactionId: string,
+  outlineResult: MathTexOutlineResponseV1["result"] | "compiled",
+  snapshotState: "published" | "missing" | "lookup-failed" = "published",
+) {
   const runtimeSceneState = sceneView(
     importSourceSnapshot(sourceWithZeroAnchor, "scene.py", frame).view,
     "GroupedEquation",
@@ -80,6 +90,12 @@ async function lowerContent(transactionId: string, outlineResult: MathTexOutline
   };
   const snapshot = await verifiedSnapshotView(request, "equation");
   if (snapshot.status !== "verified") throw new Error("The snapshot authorization fixture is not verified.");
+  snapshots.lookup.mockImplementation(async () => {
+    if (snapshotState === "missing") throw new HttpError("No verified Scene snapshot has been published.", 404);
+    if (snapshotState === "lookup-failed") throw new HttpError("Snapshot storage is unavailable.", 503);
+    return snapshot;
+  });
+  snapshots.run.mockResolvedValue(snapshot);
   if (outlineResult === "compiled") {
     const bundle = snapshot.snapshot.bundle as SceneIrBundleV1;
     const entity = bundle.scene.entities.find(({ geometry }) => geometry.kind === "cubic-path");
@@ -109,7 +125,8 @@ async function lowerContent(transactionId: string, outlineResult: MathTexOutline
     originalSource: sourceWithZeroAnchor,
     projectId: request.projectId,
     request,
-    snapshotProgramAuthorizer: (input) => authorizeSnapshotProgramWithSnapshot(input, async () => snapshot),
+    snapshotProgramAuthorizer: (input) =>
+      authorizeSnapshotProgramWithSnapshot(input, snapshots.lookup, undefined, snapshots.run),
   });
 }
 
@@ -159,6 +176,8 @@ describe("snapshot MathTex authorization", () => {
     compilers.outline.mockReset();
     compilers.staticRoot.mockReset();
     compilers.textOutline.mockReset();
+    snapshots.lookup.mockReset();
+    snapshots.run.mockReset();
   });
 
   it("keeps canonical Text size out of unit-outline compilation and in the Rust creation command", async () => {
@@ -377,6 +396,36 @@ describe("snapshot MathTex authorization", () => {
       version: 1,
     });
     expect(result.lowered.source).toContain('equation.become(MathTex("F", "=", "m", "a")');
+    expect(snapshots.run).not.toHaveBeenCalled();
+  });
+
+  it("runs one fresh verified snapshot when imported MathTex Apply has no publication", async () => {
+    compilers.staticRoot.mockResolvedValue({});
+
+    const result = await lowerContent("lazy-snapshot-content", "compiled", "missing");
+
+    expect(result.lowered.source).toContain('equation.become(MathTex("F", "=", "m", "a")');
+    expect(snapshots.lookup).toHaveBeenCalledOnce();
+    expect(snapshots.run).toHaveBeenCalledOnce();
+    expect(snapshots.run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: "default",
+        sceneName: "GroupedEquation",
+        sourceHash: createHash("sha256").update(sourceWithZeroAnchor).digest("hex"),
+        sourcePath: "scene.py",
+      }),
+      undefined,
+    );
+    expect(compilers.staticRoot).toHaveBeenCalledOnce();
+  });
+
+  it("does not run a snapshot when publication lookup fails for another reason", async () => {
+    await expect(lowerContent("failed-snapshot-lookup", "compiled", "lookup-failed")).rejects.toMatchObject({
+      message: "Snapshot storage is unavailable.",
+      status: 503,
+    });
+    expect(snapshots.run).not.toHaveBeenCalled();
+    expect(compilers.staticRoot).not.toHaveBeenCalled();
   });
 
   it("returns the outline compiler's unsupported result as a client error", async () => {
