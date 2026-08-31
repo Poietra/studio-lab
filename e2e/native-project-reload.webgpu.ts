@@ -828,6 +828,63 @@ test("creates the Color Tint starter through Preview, reload, and decoded MP4 ex
   }
 });
 
+test("creates Duotone through Preview, reload, and decoded MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Duotone preset fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const fillColor = page.getByLabel("Fill color Rectangle");
+    await fillColor.fill("#ffffff");
+    await fillColor.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const plainFrame = await canvas.screenshot();
+
+    await page.getByRole("combobox", { name: "Starter preset" }).selectOption("duotone");
+    await expect(page.getByRole("textbox", { name: "New Scene effect name" })).toHaveValue("Duotone");
+    await page.getByRole("button", { name: "Create starter" }).click();
+    const parameterSchema = page.getByRole("group", { name: "Scene post-effect parameter schema" });
+    await expect(parameterSchema.getByLabel("Scene effect parameter 1 name")).toHaveValue("Shadow");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 2 name")).toHaveValue("Highlight");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 3 name")).toHaveValue("Mix");
+    await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
+    await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Add to stack" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    await page.getByLabel("Shadow Scene post-effect color parameter").fill("#1020a0");
+    await page.getByLabel("Highlight Scene post-effect color parameter").fill("#ff4010");
+    await page.getByRole("slider", { name: "Mix Scene post-effect parameter" }).fill("1");
+    await page.getByRole("button", { name: "Update parameters" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    expect((await canvas.screenshot()).equals(plainFrame)).toBe(false);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Duotone preset fixture workspace" }).click();
+    await expect(page.getByRole("button", { name: /Edit Scene effect Duotone/u })).toContainText("In stack");
+    await expect(page.getByLabel("Shadow Scene post-effect color parameter")).toHaveValue("#1020a0");
+    await expect(page.getByLabel("Highlight Scene post-effect color parameter")).toHaveValue("#ff4010");
+    await expect(page.getByRole("slider", { name: "Mix Scene post-effect parameter" })).toHaveValue("1");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const mp4 = await exportLocalMp4(page);
+    const [shadow] = await decodedPixelStats(page, mp4, [1], "blue-dominant");
+    const [highlight] = await decodedPixelStats(page, mp4, [1], "red-dominant");
+    expect(shadow?.count ?? 0).toBeGreaterThan(100);
+    expect(highlight?.count ?? 0).toBeGreaterThan(100);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("creates Pixelate and Chromatic Shift through reload, WebGPU, and decoded MP4 export", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(15_000);
