@@ -662,7 +662,7 @@ class GroupedEquation(Scene):
       sourceHash: createHash("sha256").update(staticContentSource).digest("hex"),
     };
     const snapshotRunner = Reflect.get(manager, "snapshotRunner") as {
-      run: (request: ProgramRenderRequest) => Promise<unknown>;
+      run: (request: Readonly<{ requestId: string }>) => Promise<unknown>;
       snapshot: () => Promise<unknown>;
     };
     let snapshotRuns = 0;
@@ -675,9 +675,15 @@ class GroupedEquation(Scene):
     });
     Object.defineProperty(snapshotRunner, "run", {
       configurable: true,
-      value: async () => {
+      value: async (snapshotRequest: Readonly<{ requestId: string }>) => {
         snapshotRuns += 1;
-        return verifiedSnapshotView(renderRequest, "equation");
+        const view = await verifiedSnapshotView(renderRequest, "equation");
+        if (view.status !== "verified") throw new Error("The lazy snapshot fixture did not verify.");
+        return {
+          ...view,
+          requestId: snapshotRequest.requestId,
+          snapshot: { ...view.snapshot, requestId: snapshotRequest.requestId },
+        };
       },
       writable: true,
     });

@@ -225,6 +225,7 @@ export async function authorizeSnapshotProgramWithSnapshot(
 ) {
   signal?.throwIfAborted();
   let published: FastManimSnapshotRunViewV1;
+  let freshRequestId: string | null = null;
   try {
     published = await snapshotLookup(
       input.projectId,
@@ -232,11 +233,20 @@ export async function authorizeSnapshotProgramWithSnapshot(
       signal,
     );
   } catch (error) {
-    if (!snapshotRun || !(error instanceof HttpError) || error.status !== 404) throw error;
+    if (
+      !snapshotRun ||
+      input.authorizationKind !== "snapshot" ||
+      !isExactStudioMathTexContentProgramBatch(input.programs) ||
+      !(error instanceof HttpError) ||
+      error.status !== 404
+    ) {
+      throw error;
+    }
+    freshRequestId = randomUUID();
     published = await snapshotRun(
       {
         projectId: input.projectId,
-        requestId: randomUUID(),
+        requestId: freshRequestId,
         sceneName: input.request.sceneName,
         sourceHash: input.request.sourceHash,
         sourcePath: input.request.sourcePath,
@@ -245,6 +255,9 @@ export async function authorizeSnapshotProgramWithSnapshot(
     );
   }
   signal?.throwIfAborted();
+  if (freshRequestId !== null && published.requestId !== freshRequestId) {
+    throw new HttpError("The fresh verified Scene snapshot has stale request correlation.", 409);
+  }
   if (published.status !== "verified") {
     throw new HttpError("This Program requires a currently verified Scene snapshot.", 409);
   }
