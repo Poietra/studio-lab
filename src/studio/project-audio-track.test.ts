@@ -4,6 +4,7 @@ import { MAX_EXPORT_WAV_BYTES } from "../engine/export-worker-protocol";
 import {
   cloneProjectAudioTrack,
   ingestProjectAudioWav,
+  projectAudioTimelineTimingAtDelta,
   projectAudioTimingSeconds,
   updateProjectAudioTiming,
 } from "./project-audio-track";
@@ -77,5 +78,152 @@ describe("project audio track", () => {
       "later than trim in",
     );
     expect(() => updateProjectAudioTiming(track, { offset: 0, trimEnd: 1.01, trimStart: 0 })).toThrow("cannot exceed");
+  });
+
+  it("moves a Timeline clip start within the Scene without changing its source trim", () => {
+    const track = {
+      sourceSampleFrames: 96_000,
+      timelineOffsetSampleFrames: 24_000,
+      trimEndSampleFrames: 60_000,
+      trimStartSampleFrames: 12_000,
+    };
+
+    expect(projectAudioTimelineTimingAtDelta(track, 2, 1, "body")).toEqual({
+      offset: 1.5,
+      trimEnd: 1.25,
+      trimStart: 0.25,
+    });
+    expect(projectAudioTimelineTimingAtDelta(track, 2, -1, "body")).toEqual({
+      offset: 0,
+      trimEnd: 1.25,
+      trimStart: 0.25,
+    });
+  });
+
+  it("moves audio longer than the Scene and clamps only its start", () => {
+    const track = {
+      sourceSampleFrames: 96_000,
+      timelineOffsetSampleFrames: 0,
+      trimEndSampleFrames: null,
+      trimStartSampleFrames: 0,
+    };
+
+    expect(projectAudioTimelineTimingAtDelta(track, 1, 0.25, "body")).toEqual({
+      offset: 0.25,
+      trimEnd: null,
+      trimStart: 0,
+    });
+    expect(projectAudioTimelineTimingAtDelta(track, 1, 2, "body")).toEqual({
+      offset: 47_999 / 48_000,
+      trimEnd: null,
+      trimStart: 0,
+    });
+  });
+
+  it("links the left edge offset and trim-in while keeping the Timeline end fixed", () => {
+    const track = {
+      sourceSampleFrames: 96_000,
+      timelineOffsetSampleFrames: 24_000,
+      trimEndSampleFrames: 60_000,
+      trimStartSampleFrames: 12_000,
+    };
+
+    expect(projectAudioTimelineTimingAtDelta(track, 2, 0.2, "left")).toEqual({
+      offset: 0.7,
+      trimEnd: 1.25,
+      trimStart: 0.45,
+    });
+    expect(projectAudioTimelineTimingAtDelta(track, 2, -0.4, "left")).toEqual({
+      offset: 0.25,
+      trimEnd: 1.25,
+      trimStart: 0,
+    });
+  });
+
+  it("keeps the original timing when the left edge has no safe Scene range", () => {
+    expect(
+      projectAudioTimelineTimingAtDelta(
+        {
+          sourceSampleFrames: 96_000,
+          timelineOffsetSampleFrames: 96_000,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+        },
+        1,
+        -0.5,
+        "left",
+      ),
+    ).toEqual({ offset: 2, trimEnd: null, trimStart: 0 });
+  });
+
+  it("clamps the right edge to the source and Scene bounds", () => {
+    const track = {
+      sourceSampleFrames: 96_000,
+      timelineOffsetSampleFrames: 24_000,
+      trimEndSampleFrames: 60_000,
+      trimStartSampleFrames: 12_000,
+    };
+
+    expect(projectAudioTimelineTimingAtDelta(track, 2, 2, "right")).toEqual({
+      offset: 0.5,
+      trimEnd: 1.75,
+      trimStart: 0.25,
+    });
+    expect(projectAudioTimelineTimingAtDelta(track, 2, -2, "right")).toEqual({
+      offset: 0.5,
+      trimEnd: 12_001 / 48_000,
+      trimStart: 0.25,
+    });
+    expect(projectAudioTimelineTimingAtDelta({ ...track, trimEndSampleFrames: null }, 3, 0, "right")).toEqual({
+      offset: 0.5,
+      trimEnd: null,
+      trimStart: 0.25,
+    });
+    expect(
+      projectAudioTimelineTimingAtDelta(
+        {
+          sourceSampleFrames: 96_000,
+          timelineOffsetSampleFrames: 48_000,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+        },
+        0.5,
+        0,
+        "right",
+      ),
+    ).toEqual({ offset: 1, trimEnd: null, trimStart: 0 });
+    expect(
+      projectAudioTimelineTimingAtDelta(
+        {
+          sourceSampleFrames: 96_000,
+          timelineOffsetSampleFrames: 48_000,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+        },
+        0.5,
+        -0.25,
+        "right",
+      ),
+    ).toEqual({ offset: 1, trimEnd: null, trimStart: 0 });
+  });
+
+  it("moves the visible right handle when the source clip extends past the Scene", () => {
+    const track = {
+      sourceSampleFrames: 96_000,
+      timelineOffsetSampleFrames: 24_000,
+      trimEndSampleFrames: null,
+      trimStartSampleFrames: 0,
+    };
+
+    expect(projectAudioTimelineTimingAtDelta(track, 1, -0.1, "right")).toEqual({
+      offset: 0.5,
+      trimEnd: 0.4,
+      trimStart: 0,
+    });
+    expect(projectAudioTimelineTimingAtDelta(track, 1, 0.1, "right")).toEqual({
+      offset: 0.5,
+      trimEnd: null,
+      trimStart: 0,
+    });
   });
 });

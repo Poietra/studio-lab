@@ -88,7 +88,7 @@ function props(): StudioTimelineProps {
 }
 
 describe("StudioTimeline opacity keyframes", () => {
-  it("renders one fixed non-interactive project audio lane", () => {
+  it("renders one project audio lane with disabled gesture controls when no mutation callback exists", () => {
     const markup = renderToStaticMarkup(
       <StudioTimeline
         {...props()}
@@ -105,13 +105,16 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain("data-project-audio-track");
     expect(markup).toContain('aria-label="Audio track narration.wav, 0.00–5.00 seconds"');
     expect(markup).toContain("narration.wav");
-    expect(markup).toContain("pointer-events-none");
+    expect(markup).toMatch(/<button[^>]*aria-label="Move audio track narration.wav"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track narration.wav start"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track narration.wav end"[^>]* disabled=""/u);
   });
 
-  it("places the trimmed project audio interval without making the lane interactive", () => {
+  it("places the trimmed project audio interval and enables all three gesture controls", () => {
     const markup = renderToStaticMarkup(
       <StudioTimeline
         {...props()}
+        onAudioTimingChange={vi.fn()}
         projectAudioTrack={{
           fileName: "trimmed.wav",
           sourceSampleFrames: 96_000,
@@ -125,7 +128,30 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain('aria-label="Audio track trimmed.wav, 1.00–2.00 seconds"');
     expect(markup).toContain("left:20%");
     expect(markup).toContain("width:20%");
-    expect(markup).toContain("pointer-events-none");
+    expect(markup).toContain('data-project-audio-clip-body="true"');
+    expect(markup).toContain('data-project-audio-trim-start-handle="true"');
+    expect(markup).toContain('data-project-audio-trim-end-handle="true"');
+    expect(markup).not.toMatch(/aria-label="Move audio track trimmed.wav"[^>]* disabled=""/u);
+  });
+
+  it("disables gesture controls when a legacy audio track has no effective source end", () => {
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...props()}
+        onAudioTimingChange={vi.fn()}
+        projectAudioTrack={{
+          fileName: "legacy.wav",
+          sourceSampleFrames: null,
+          timelineOffsetSampleFrames: 0,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+        }}
+      />,
+    );
+
+    expect(markup).toMatch(/<button[^>]*aria-label="Move audio track legacy.wav"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track legacy.wav start"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track legacy.wav end"[^>]* disabled=""/u);
   });
 
   it("keeps the Draw control visible with a fragment material blocker", () => {

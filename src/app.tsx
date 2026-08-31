@@ -11816,6 +11816,15 @@ export function App({
               onAppliedMotionClipChange={changeAppliedMotionClip}
               onAppliedMotionClipDelete={deleteAppliedMotionClip}
               onAppliedMotionClipSelect={editAppliedMotionClip}
+              onAudioTimingChange={
+                nativeSceneActive &&
+                !studioAuthoringLocked &&
+                !isPlaying &&
+                draftEdit === null &&
+                !nativeProjectAssetPending
+                  ? (timing) => void updateNativeProjectAudioTiming(timing)
+                  : undefined
+              }
               onCameraClipChange={stageCameraClip}
               onCameraClipDelete={deleteCameraClip}
               onCameraClipSelect={(clip) => void stageCameraClip(clip)}
