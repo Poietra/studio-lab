@@ -70,8 +70,31 @@ function copyAudioTrack(value: unknown): NativeProjectLocalAudioTrack | undefine
   ) {
     throw new TypeError("The stored native project audio track is invalid.");
   }
+  const sourceSampleFrames = audioTrack.sourceSampleFrames === undefined ? null : audioTrack.sourceSampleFrames;
+  const timelineOffsetSampleFrames = audioTrack.timelineOffsetSampleFrames ?? 0;
+  const trimStartSampleFrames = audioTrack.trimStartSampleFrames ?? 0;
+  const trimEndSampleFrames =
+    audioTrack.trimEndSampleFrames === undefined ? sourceSampleFrames : audioTrack.trimEndSampleFrames;
+  if (
+    (sourceSampleFrames !== null && (!Number.isSafeInteger(sourceSampleFrames) || sourceSampleFrames < 1)) ||
+    !Number.isSafeInteger(timelineOffsetSampleFrames) ||
+    timelineOffsetSampleFrames < 0 ||
+    !Number.isSafeInteger(trimStartSampleFrames) ||
+    trimStartSampleFrames < 0 ||
+    (trimEndSampleFrames !== null &&
+      (!Number.isSafeInteger(trimEndSampleFrames) ||
+        trimEndSampleFrames <= trimStartSampleFrames ||
+        (sourceSampleFrames !== null && trimEndSampleFrames > sourceSampleFrames))) ||
+    (sourceSampleFrames !== null && trimStartSampleFrames >= sourceSampleFrames)
+  ) {
+    throw new TypeError("The stored native project audio timing is invalid.");
+  }
   return {
     fileName: audioTrack.fileName,
+    sourceSampleFrames,
+    timelineOffsetSampleFrames,
+    trimEndSampleFrames,
+    trimStartSampleFrames,
     wavBytes: audioTrack.wavBytes.slice(0),
   };
 }

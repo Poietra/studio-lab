@@ -19,6 +19,7 @@ import {
 } from "../engine/export-worker-protocol";
 import { cn } from "../lib/cn";
 import { saveVideoFileWithDesktop } from "../shell/desktop-bridge";
+import type { ProjectAudioTrack } from "./project-audio-track";
 import {
   captureStudioExportPublicationV1,
   type PreparedStudioExportPublicationV1,
@@ -43,7 +44,7 @@ export type { StudioMp4ExportSourceV1 } from "./studio-export-publication";
  */
 
 export type StudioExportControlProps = Readonly<{
-  audioTrack?: Readonly<{ fileName: string; wavBytes: ArrayBuffer }> | null;
+  audioTrack?: ProjectAudioTrack | null;
   client?: ClientExportPublicationClientV1;
   disabled?: boolean;
   /** Non-null only while the presented preview correlates with this exact Scene. */
@@ -227,7 +228,14 @@ export function StudioExportControl({
     try {
       const outcome = await runBrowserMp4ExportV1({
         ...(capturedAudioTrack
-          ? { audioWav: capturedAudioTrack.wavBytes.slice(0) }
+          ? {
+              audioTiming: {
+                timelineOffsetSampleFrames: capturedAudioTrack.timelineOffsetSampleFrames,
+                trimEndSampleFrames: capturedAudioTrack.trimEndSampleFrames,
+                trimStartSampleFrames: capturedAudioTrack.trimStartSampleFrames,
+              },
+              audioWav: capturedAudioTrack.wavBytes.slice(0),
+            }
           : capturedTransientAudioFile
             ? { audioWav: await capturedTransientAudioFile.arrayBuffer() }
             : {}),

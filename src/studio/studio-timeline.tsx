@@ -15,6 +15,7 @@ import type { Interval, MotionEasing, TimelineEvent, TimelineObjectTrack } from 
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
 import type { PaintColorKeyframeEasing, PaintColorProperty } from "./paint-color-keyframe-edit";
 import type { PathMorphEasing } from "./path-morph-clip-edit";
+import { PROJECT_AUDIO_SAMPLE_RATE_HZ } from "./project-audio-track";
 import {
   type ShapeTransformEasing,
   type ShapeTransformKind,
@@ -147,7 +148,24 @@ export type StudioTimelineProps = Readonly<{
 
 export type StudioProjectAudioTimelineTrack = Readonly<{
   fileName: string;
+  sourceSampleFrames: number | null;
+  timelineOffsetSampleFrames: number;
+  trimEndSampleFrames: number | null;
+  trimStartSampleFrames: number;
 }>;
+
+export function projectAudioTimelineInterval(track: StudioProjectAudioTimelineTrack, sceneDuration: number): Interval {
+  const start = track.timelineOffsetSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ;
+  const sourceEnd = track.trimEndSampleFrames ?? track.sourceSampleFrames;
+  const end =
+    sourceEnd === null
+      ? sceneDuration
+      : start + (sourceEnd - track.trimStartSampleFrames) / PROJECT_AUDIO_SAMPLE_RATE_HZ;
+  return {
+    end: Math.min(sceneDuration, Math.max(0, end)),
+    start: Math.min(sceneDuration, Math.max(0, start)),
+  };
+}
 
 export type StudioDrawInTimelineClip = Readonly<{
   easing: DrawInEasing;
@@ -1056,6 +1074,7 @@ export function StudioTimeline({
 }: StudioTimelineProps) {
   markStudioRenderBoundary("timeline");
   const intervalEvents = events.flatMap((event) => (event.interval ? [{ event, interval: event.interval }] : []));
+  const projectAudioInterval = projectAudioTrack ? projectAudioTimelineInterval(projectAudioTrack, duration) : null;
   const [selectedLifetime, setSelectedLifetime] = useState<SelectedLifetime | null>(null);
   const [selectedMaterialParameterByEntity, setSelectedMaterialParameterByEntity] = useState<
     Readonly<Record<string, string>>
@@ -2243,7 +2262,7 @@ export function StudioTimeline({
               <TimelinePlayhead currentTime={currentTime} duration={duration} playbackClock={playbackClock} />
             </div>
           </div>
-          {projectAudioTrack ? (
+          {projectAudioTrack && projectAudioInterval ? (
             <div
               className="grid grid-cols-[6rem_minmax(0,1fr)] border-b border-zinc-800 sm:grid-cols-[8rem_minmax(0,1fr)]"
               data-project-audio-track
@@ -2251,10 +2270,10 @@ export function StudioTimeline({
               <div className="flex min-w-0 items-center px-2 text-[10px] font-medium text-emerald-300">Audio</div>
               <div className="pointer-events-none relative h-8 min-w-0 overflow-hidden" data-timeline-audio-lane>
                 <div
-                  aria-label={`Audio track ${projectAudioTrack.fileName}, 0.00–${duration.toFixed(2)} seconds`}
+                  aria-label={`Audio track ${projectAudioTrack.fileName}, ${projectAudioInterval.start.toFixed(2)}–${projectAudioInterval.end.toFixed(2)} seconds`}
                   className="absolute top-1 h-5 min-w-px border border-emerald-800 bg-emerald-950 px-1 text-[9px] leading-4 text-emerald-300"
-                  style={timelineIntervalStyle({ end: duration, start: 0 }, duration)}
-                  title={`${projectAudioTrack.fileName} · 0.00–${duration.toFixed(2)}s`}
+                  style={timelineIntervalStyle(projectAudioInterval, duration)}
+                  title={`${projectAudioTrack.fileName} · ${projectAudioInterval.start.toFixed(2)}–${projectAudioInterval.end.toFixed(2)}s`}
                 >
                   <span className="block truncate">{projectAudioTrack.fileName}</span>
                 </div>

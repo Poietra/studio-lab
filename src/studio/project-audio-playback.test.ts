@@ -6,24 +6,65 @@ function snapshot(currentTime: number, playing: boolean): StudioPlaybackClockSna
   return { currentTime, duration: 4, playing, sceneKey: "scene" };
 }
 
+const track = {
+  sourceSampleFrames: 48_000,
+  timelineOffsetSampleFrames: 4_800,
+  trimEndSampleFrames: 28_800,
+  trimStartSampleFrames: 9_600,
+  wavBytes: new ArrayBuffer(1),
+} as const;
+
 describe("project audio playback alignment", () => {
   it("seeks and pauses with the stopped Studio clock", () => {
     const audio = { currentTime: 0, pause: vi.fn(), paused: false, play: vi.fn() };
 
-    expect(alignProjectAudioElement(audio, snapshot(1.25, false))).toBe(false);
+    expect(alignProjectAudioElement(audio, snapshot(0.25, false), track)).toBe(false);
 
     expect(audio.pause).toHaveBeenCalledOnce();
-    expect(audio.currentTime).toBe(1.25);
+    expect(audio.currentTime).toBeCloseTo(0.35);
   });
 
   it("starts a paused element and only corrects material playback drift", () => {
     const audio = { currentTime: 1, pause: vi.fn(), paused: true, play: vi.fn() };
 
-    expect(alignProjectAudioElement(audio, snapshot(1.05, true))).toBe(true);
-    expect(audio.currentTime).toBe(1);
+    expect(alignProjectAudioElement(audio, snapshot(0.25, true), track)).toBe(true);
+    expect(audio.currentTime).toBeCloseTo(0.35);
 
     audio.paused = false;
-    expect(alignProjectAudioElement(audio, snapshot(1.25, true))).toBe(false);
+    expect(alignProjectAudioElement(audio, snapshot(0.45, true), track)).toBe(false);
+    expect(audio.currentTime).toBeCloseTo(0.55);
+  });
+
+  it("seeks a paused element to trim in before starting playback", () => {
+    const audio = { currentTime: 0, pause: vi.fn(), paused: true, play: vi.fn() };
+    const shortTrim = {
+      ...track,
+      timelineOffsetSampleFrames: 0,
+      trimStartSampleFrames: 4_800,
+    };
+
+    expect(alignProjectAudioElement(audio, snapshot(0, true), shortTrim)).toBe(true);
+    expect(audio.currentTime).toBeCloseTo(0.1);
+  });
+
+  it("pauses outside the placed interval and keeps the legacy full-source mapping", () => {
+    const audio = { currentTime: 0.4, pause: vi.fn(), paused: false, play: vi.fn() };
+
+    expect(alignProjectAudioElement(audio, snapshot(0.05, true), track)).toBe(false);
+    expect(audio.pause).toHaveBeenCalledOnce();
+    audio.paused = false;
+    expect(alignProjectAudioElement(audio, snapshot(0.51, true), track)).toBe(false);
+    expect(audio.pause).toHaveBeenCalledTimes(2);
+
+    const legacy = {
+      sourceSampleFrames: null,
+      timelineOffsetSampleFrames: 0,
+      trimEndSampleFrames: null,
+      trimStartSampleFrames: 0,
+      wavBytes: new ArrayBuffer(1),
+    } as const;
+    audio.paused = true;
+    expect(alignProjectAudioElement(audio, snapshot(1.25, false), legacy)).toBe(false);
     expect(audio.currentTime).toBe(1.25);
   });
 });

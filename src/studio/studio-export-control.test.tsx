@@ -186,7 +186,14 @@ describe("StudioExportControl", () => {
   it("reports the project audio that will be attached", () => {
     const markup = renderToStaticMarkup(
       <StudioExportControl
-        audioTrack={{ fileName: "narration.wav", wavBytes: new ArrayBuffer(44) }}
+        audioTrack={{
+          fileName: "narration.wav",
+          sourceSampleFrames: 48_000,
+          timelineOffsetSampleFrames: 0,
+          trimEndSampleFrames: 48_000,
+          trimStartSampleFrames: 0,
+          wavBytes: new ArrayBuffer(44),
+        }}
         exportSource={exportSource}
         publication={unavailablePublication}
       />,

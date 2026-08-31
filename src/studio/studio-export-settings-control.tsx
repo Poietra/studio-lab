@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { StudioNativeManimSourceExportRequest } from "../render-pipeline/contracts";
+import type { ProjectAudioTrack } from "./project-audio-track";
 import { StudioExportControl, type StudioMp4ExportSourceV1 } from "./studio-export-control";
 import type { StudioExportPublicationAvailabilityV1 } from "./studio-export-publication";
 import { StudioManimSourceExportControl } from "./studio-manim-source-export-control";
@@ -17,7 +18,7 @@ export function StudioExportSettingsControl({
   manimSourceExport = null,
   publication,
 }: Readonly<{
-  audioTrack?: Readonly<{ fileName: string; wavBytes: ArrayBuffer }> | null;
+  audioTrack?: ProjectAudioTrack | null;
   disabled?: boolean;
   exportSource: StudioMp4ExportSourceV1 | null;
   generateThumbnail: ((signal?: AbortSignal) => Promise<Uint8Array<ArrayBuffer>>) | null;

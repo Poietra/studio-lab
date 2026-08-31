@@ -35,6 +35,11 @@ import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-ed
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity, StrokeDash, StrokeJoin } from "./model";
 import {
+  type ProjectAudioTimingSeconds,
+  type ProjectAudioTrack,
+  projectAudioTimingSeconds,
+} from "./project-audio-track";
+import {
   type StudioScenePostEffectV1,
   studioEntityTypeSupportsStrokeCap,
   studioEntityTypeSupportsStrokeWidth,
@@ -410,6 +415,7 @@ export function WorkspaceSidebar({
   nextScene,
   onGroup,
   onImportAudioFile,
+  onAudioTimingChange,
   onImportImageFiles,
   onImportSvgFiles,
   onRemoveAudioTrack,
@@ -450,7 +456,7 @@ export function WorkspaceSidebar({
   activeScene: AuthorableWorkspaceScene;
   audioImportError?: string | null;
   audioImportPending?: boolean;
-  audioTrack?: Readonly<{ fileName: string }> | null;
+  audioTrack?: ProjectAudioTrack | null;
   appliedProgramReadOnlyReasons: Readonly<Record<string, string | null>>;
   appliedEdits: readonly ProgramRecord[];
   appliedTransactionIds: ReadonlySet<string>;
@@ -477,6 +483,7 @@ export function WorkspaceSidebar({
   lockedEntityIds?: ReadonlySet<string>;
   nextScene: AuthorableWorkspaceScene | null;
   onGroup?: () => void;
+  onAudioTimingChange?: (timing: ProjectAudioTimingSeconds) => void;
   onImportAudioFile?: (file: File) => void;
   onImportImageFiles?: (files: readonly File[]) => void;
   onImportSvgFiles?: (files: readonly File[]) => void;
@@ -649,6 +656,58 @@ export function WorkspaceSidebar({
                 </button>
               ) : null}
             </div>
+            {audioTrack && onAudioTimingChange ? (
+              <form
+                className="mt-2 grid grid-cols-3 gap-2 border-t border-zinc-800 pt-2"
+                key={`${audioTrack.timelineOffsetSampleFrames}:${audioTrack.trimStartSampleFrames}:${audioTrack.trimEndSampleFrames ?? "end"}`}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const data = new FormData(event.currentTarget);
+                  const offset = Number(data.get("audioOffset"));
+                  const trimStart = Number(data.get("audioTrimStart"));
+                  const trimEndValue = String(data.get("audioTrimEnd") ?? "").trim();
+                  const trimEnd = trimEndValue === "" ? null : Number(trimEndValue);
+                  if (
+                    Number.isFinite(offset) &&
+                    Number.isFinite(trimStart) &&
+                    (trimEnd === null || Number.isFinite(trimEnd))
+                  ) {
+                    onAudioTimingChange({ offset, trimEnd, trimStart });
+                  }
+                }}
+              >
+                {(
+                  [
+                    ["Offset", "audioOffset", projectAudioTimingSeconds(audioTrack).offset],
+                    ["Trim in", "audioTrimStart", projectAudioTimingSeconds(audioTrack).trimStart],
+                    ["Trim out", "audioTrimEnd", projectAudioTimingSeconds(audioTrack).trimEnd ?? ""],
+                  ] as const
+                ).map(([label, name, value]) => (
+                  <label className="text-[9px] text-zinc-500" key={name}>
+                    {label} (s)
+                    <input
+                      aria-label={`Audio ${label.toLowerCase()} seconds`}
+                      className="mt-1 h-7 w-full border border-zinc-700 bg-zinc-950 px-1.5 text-[10px] tabular-nums text-zinc-300 outline-none focus:border-sky-500"
+                      defaultValue={value}
+                      disabled={!authoringAvailable || draftActive || audioImportPending}
+                      min="0"
+                      name={name}
+                      placeholder={name === "audioTrimEnd" ? "End" : undefined}
+                      required={name !== "audioTrimEnd"}
+                      step="0.01"
+                      type="number"
+                    />
+                  </label>
+                ))}
+                <button
+                  className="col-span-3 h-7 border border-zinc-700 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
+                  disabled={!authoringAvailable || draftActive || audioImportPending}
+                  type="submit"
+                >
+                  Apply audio timing
+                </button>
+              </form>
+            ) : null}
             {audioImportError ? (
               <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-300" role="alert">
                 {audioImportError}
