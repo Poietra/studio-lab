@@ -14,8 +14,12 @@ import {
   projectScenePostEffectLibraryStateSchema,
   rejectStudioScenePostEffectSourceV1,
   removeStudioScenePostEffectSourceV1,
+  STUDIO_CHROMATIC_SHIFT_POST_EFFECT_PARAMETERS_V1,
+  STUDIO_CHROMATIC_SHIFT_POST_EFFECT_SOURCE_V1,
   STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1,
   STUDIO_COLOR_TINT_POST_EFFECT_SOURCE_V1,
+  STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1,
+  STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1,
   STUDIO_SCENE_POST_EFFECT_PRESETS,
   STUDIO_VIGNETTE_POST_EFFECT_PARAMETERS_V1,
   STUDIO_VIGNETTE_POST_EFFECT_SOURCE_V1,
@@ -79,6 +83,8 @@ describe("project Scene post-effect asset library", () => {
       { id: "wave-distortion", name: "Wave Distortion" },
       { id: "vignette", name: "Vignette" },
       { id: "color-tint", name: "Color Tint" },
+      { id: "pixelate", name: "Pixelate" },
+      { id: "chromatic-shift", name: "Chromatic Shift" },
     ]);
 
     const wave = createStudioScenePostEffectSourceV1(EMPTY_PROJECT_SCENE_POST_EFFECT_LIBRARY_STATE, {
@@ -93,8 +99,16 @@ describe("project Scene post-effect asset library", () => {
       name: "Color Tint",
       presetId: "color-tint",
     });
+    const pixelate = createStudioScenePostEffectSourceV1(colorTint.state, {
+      name: "Pixelate",
+      presetId: "pixelate",
+    });
+    const chromaticShift = createStudioScenePostEffectSourceV1(pixelate.state, {
+      name: "Chromatic Shift",
+      presetId: "chromatic-shift",
+    });
 
-    expect(colorTint.state.assets.map(({ draft, name }) => ({ name, ...draft }))).toEqual([
+    expect(chromaticShift.state.assets.map(({ draft, name }) => ({ name, ...draft }))).toEqual([
       {
         diagnostic: null,
         name: "Wave Distortion",
@@ -116,12 +130,30 @@ describe("project Scene post-effect asset library", () => {
         source: STUDIO_COLOR_TINT_POST_EFFECT_SOURCE_V1,
         sourceLanguage: "wgsl",
       },
+      {
+        diagnostic: null,
+        name: "Pixelate",
+        parameterSchema: STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1,
+        source: STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1,
+        sourceLanguage: "wgsl",
+      },
+      {
+        diagnostic: null,
+        name: "Chromatic Shift",
+        parameterSchema: STUDIO_CHROMATIC_SHIFT_POST_EFFECT_PARAMETERS_V1,
+        source: STUDIO_CHROMATIC_SHIFT_POST_EFFECT_SOURCE_V1,
+        sourceLanguage: "wgsl",
+      },
     ]);
     expect(studioScenePostEffectParameterLayoutV1(STUDIO_VIGNETTE_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([
       0.55, 0.45,
     ]);
     expect(studioScenePostEffectParameterLayoutV1(STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([
       0.2, 0.55, 1, 0.4,
+    ]);
+    expect(studioScenePostEffectParameterLayoutV1(STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([16]);
+    expect(studioScenePostEffectParameterLayoutV1(STUDIO_CHROMATIC_SHIFT_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([
+      6,
     ]);
   });
 

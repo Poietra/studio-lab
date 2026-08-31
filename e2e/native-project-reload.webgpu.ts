@@ -760,6 +760,84 @@ test("creates the Color Tint starter through Preview, reload, and decoded MP4 ex
   }
 });
 
+test("creates Pixelate and Chromatic Shift through reload, WebGPU, and decoded MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Pixel effect preset fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const fillColor = page.getByLabel("Fill color Rectangle");
+    await fillColor.fill("#ffffff");
+    await fillColor.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(fillColor).toHaveValue("#ffffff");
+    const unfilteredFrame = await canvas.screenshot();
+
+    const preset = page.getByRole("combobox", { name: "Starter preset" });
+    const name = page.getByRole("textbox", { name: "New Scene effect name" });
+    const source = page.getByRole("textbox", { name: "Scene post-effect WGSL source" });
+    const parameterSchema = page.getByRole("group", { name: "Scene post-effect parameter schema" });
+
+    await preset.selectOption("pixelate");
+    await expect(name).toHaveValue("Pixelate");
+    await page.getByRole("button", { name: "Create starter" }).click();
+    await expect(parameterSchema.getByLabel("Scene effect parameter 1 name")).toHaveValue("Block size");
+    await expect(source).toHaveValue(/block_center/u);
+    await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
+    await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Add to stack" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await page.getByRole("slider", { name: "Block size Scene post-effect parameter" }).fill("24");
+    await page.getByRole("button", { name: "Update parameters" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await preset.selectOption("chromatic-shift");
+    await expect(name).toHaveValue("Chromatic Shift");
+    await page.getByRole("button", { name: "Add effect" }).click();
+    await expect(parameterSchema.getByLabel("Scene effect parameter 1 name")).toHaveValue("Pixel offset");
+    await expect(source).toHaveValue(/channel_offset/u);
+    await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
+    await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Add to stack" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await page.getByRole("slider", { name: "Pixel offset Scene post-effect parameter" }).fill("18");
+    await page.getByRole("button", { name: "Update parameters" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const filteredFrame = await canvas.screenshot();
+    expect(filteredFrame.equals(unfilteredFrame)).toBe(false);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Pixel effect preset fixture workspace" }).click();
+    const pixelate = page.getByRole("button", { name: /Edit Scene effect Pixelate/u });
+    const chromaticShift = page.getByRole("button", { name: /Edit Scene effect Chromatic Shift/u });
+    await expect(pixelate).toContainText("In stack");
+    await expect(chromaticShift).toContainText("In stack");
+    await pixelate.click();
+    await expect(page.getByRole("slider", { name: "Block size Scene post-effect parameter" })).toHaveValue("24");
+    await chromaticShift.click();
+    await expect(page.getByRole("slider", { name: "Pixel offset Scene post-effect parameter" })).toHaveValue("18");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const exportedMp4 = await exportLocalMp4(page);
+    const [redShift] = await decodedPixelStats(page, exportedMp4, [1], "red-dominant");
+    const [blueShift] = await decodedPixelStats(page, exportedMp4, [1], "blue-dominant");
+    expect(redShift?.count ?? 0).toBeGreaterThan(100);
+    expect(blueShift?.count ?? 0).toBeGreaterThan(100);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("stacks and reorders named WGSL and GLSL Scene effects through Preview, history, reload, and MP4", async ({
   page,
 }) => {
