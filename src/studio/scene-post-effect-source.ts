@@ -392,6 +392,101 @@ export const STUDIO_DUOTONE_POST_EFFECT_PARAMETERS_V1 = scenePostEffectParameter
   },
 ]);
 
+export const STUDIO_SOFT_BLUR_POST_EFFECT_SOURCE_V1 =
+  scenePostEffectWgslSourceV1Schema.parse(`struct ScenePostEffectHost {
+    viewport_and_time: vec4<f32>,
+    // x = radius in pixels, y = mix.
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> host: ScenePostEffectHost;
+
+@group(0) @binding(1)
+var scene_texture: texture_2d<f32>;
+
+@group(0) @binding(2)
+var scene_sampler: sampler;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let viewport = max(host.viewport_and_time.xy, vec2<f32>(1.0));
+    let coordinate = position.xy / viewport;
+    let center = textureSample(scene_texture, scene_sampler, coordinate);
+    let radius = clamp(host.parameters_0.x, 0.0, 16.0);
+    if radius == 0.0 {
+        return center;
+    }
+
+    let offset = vec2<f32>(radius) / viewport;
+    let minimum_coordinate = vec2<f32>(0.5) / viewport;
+    let maximum_coordinate = vec2<f32>(1.0) - minimum_coordinate;
+    let top_left = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate + offset * vec2<f32>(-1.0, -1.0), minimum_coordinate, maximum_coordinate),
+    );
+    let top = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate + offset * vec2<f32>(0.0, -1.0), minimum_coordinate, maximum_coordinate),
+    );
+    let top_right = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate + offset * vec2<f32>(1.0, -1.0), minimum_coordinate, maximum_coordinate),
+    );
+    let left = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate + offset * vec2<f32>(-1.0, 0.0), minimum_coordinate, maximum_coordinate),
+    );
+    let right = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate + offset * vec2<f32>(1.0, 0.0), minimum_coordinate, maximum_coordinate),
+    );
+    let bottom_left = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate + offset * vec2<f32>(-1.0, 1.0), minimum_coordinate, maximum_coordinate),
+    );
+    let bottom = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate + offset * vec2<f32>(0.0, 1.0), minimum_coordinate, maximum_coordinate),
+    );
+    let bottom_right = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate + offset * vec2<f32>(1.0, 1.0), minimum_coordinate, maximum_coordinate),
+    );
+    let blurred = (
+        center * 4.0 +
+        (top + left + right + bottom) * 2.0 +
+        top_left + top_right + bottom_left + bottom_right
+    ) / 16.0;
+    let mix_amount = clamp(host.parameters_0.y, 0.0, 1.0);
+    return mix(center, blurred, mix_amount);
+}
+`);
+
+export const STUDIO_SOFT_BLUR_POST_EFFECT_PARAMETERS_V1 = scenePostEffectParameterSchemaListV1.parse([
+  {
+    default: 4,
+    name: "Radius (px)",
+    range: { max: 16, min: 0, step: 1 },
+    type: "f32",
+  },
+  {
+    default: 1,
+    name: "Mix",
+    range: { max: 1, min: 0, step: 0.05 },
+    type: "f32",
+  },
+]);
+
 export const STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1 =
   scenePostEffectWgslSourceV1Schema.parse(`struct ScenePostEffectHost {
     viewport_and_time: vec4<f32>,
@@ -483,6 +578,7 @@ export const studioScenePostEffectPresetIdSchema = z.enum([
   "vignette",
   "color-tint",
   "duotone",
+  "soft-blur",
   "pixelate",
   "chromatic-shift",
 ]);
@@ -517,6 +613,12 @@ export const STUDIO_SCENE_POST_EFFECT_PRESETS: readonly Readonly<{
     name: "Duotone",
     parameterSchema: STUDIO_DUOTONE_POST_EFFECT_PARAMETERS_V1,
     source: STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1,
+  },
+  {
+    id: "soft-blur",
+    name: "Soft Blur",
+    parameterSchema: STUDIO_SOFT_BLUR_POST_EFFECT_PARAMETERS_V1,
+    source: STUDIO_SOFT_BLUR_POST_EFFECT_SOURCE_V1,
   },
   {
     id: "pixelate",

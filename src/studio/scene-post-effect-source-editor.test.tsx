@@ -74,6 +74,7 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain('<option value="vignette">Vignette</option>');
     expect(markup).toContain('<option value="color-tint">Color Tint</option>');
     expect(markup).toContain('<option value="duotone">Duotone</option>');
+    expect(markup).toContain('<option value="soft-blur">Soft Blur</option>');
     expect(markup).toContain('<option value="pixelate">Pixelate</option>');
     expect(markup).toContain('<option value="chromatic-shift">Chromatic Shift</option>');
     expect(markup).toContain("Create starter");

@@ -909,6 +909,101 @@ test("creates Duotone through Preview, reload, and decoded MP4 export", async ({
   }
 });
 
+test("animates Soft Blur through Preview, reload, and decoded MP4 export", async ({ page }) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(15_000);
+  let projectId: string | null = null;
+  try {
+    projectId = await createBlankWorkspace(page, "Soft Blur preset fixture");
+    const canvas = page.locator("[data-studio-canvas]");
+    const playhead = page.getByRole("slider", { name: "Scene playhead" });
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await canvas.click({ position: { x: 360, y: 220 } });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    const fillColor = page.getByLabel("Fill color Rectangle");
+    await fillColor.fill("#ffffff");
+    await fillColor.locator("xpath=..").getByRole("button", { name: "Set" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    await page.getByRole("combobox", { name: "Starter preset" }).selectOption("soft-blur");
+    await expect(page.getByRole("textbox", { name: "New Scene effect name" })).toHaveValue("Soft Blur");
+    await page.getByRole("button", { name: "Create starter" }).click();
+    const parameterSchema = page.getByRole("group", { name: "Scene post-effect parameter schema" });
+    await expect(parameterSchema.getByLabel("Scene effect parameter 1 name")).toHaveValue("Radius (px)");
+    await expect(parameterSchema.getByLabel("Scene effect parameter 2 name")).toHaveValue("Mix");
+    await page.getByRole("button", { name: "Compile & accept WGSL" }).click();
+    await expect(page.getByText("Ready · generation 1", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Add to stack" }).click();
+    await page.getByRole("button", { name: "Apply program" }).click();
+
+    const radius = page.getByRole("slider", { name: "Radius (px) Scene post-effect parameter" });
+    const waitForNewPresentedRevision = async (previous: string) => {
+      await expect.poll(async () => canvas.getAttribute("data-preview-revision")).not.toBe(previous);
+      return (await canvas.getAttribute("data-preview-revision"))!;
+    };
+    let previousRevision = (await canvas.getAttribute("data-preview-revision"))!;
+    await radius.fill("0");
+    await page.getByRole("button", { name: "Update parameters" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    previousRevision = await waitForNewPresentedRevision(previousRevision);
+    await playhead.fill("1.25");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1.25, 1);
+    const sharpFrame = await canvas.screenshot();
+    await radius.fill("16");
+    await page.getByRole("button", { name: "Update parameters" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    previousRevision = await waitForNewPresentedRevision(previousRevision);
+    expect((await canvas.screenshot()).equals(sharpFrame)).toBe(false);
+    await radius.fill("0");
+    await page.getByRole("button", { name: "Update parameters" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await waitForNewPresentedRevision(previousRevision);
+
+    await page.getByRole("button", { name: /Animate from 0s to/u }).click();
+    await page.getByRole("spinbutton", { name: "Radius (px) keyframe 1 time" }).fill("1.25");
+    await page.getByRole("spinbutton", { name: "Radius (px) keyframe 2 time" }).fill("2.25");
+    await page.getByRole("spinbutton", { name: "Radius (px) keyframe 2 value" }).fill("16");
+    await playhead.fill("3.25");
+    await page.getByRole("button", { name: "Add at 3.25s" }).click();
+    await page.getByRole("spinbutton", { name: "Radius (px) keyframe 3 value" }).fill("0");
+    await expect(page.getByRole("spinbutton", { name: "Radius (px) keyframe 3 value" })).toHaveValue("0");
+    await page.getByRole("button", { name: "Add animation" }).click();
+    await page.getByRole("button", { name: "Replace program" }).click();
+
+    await playhead.fill("1.25");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1.25, 1);
+    const sharpPacket = await canvas.getAttribute("data-preview-packet-id");
+    await playhead.fill("1.75");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(1.75, 1);
+    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(sharpPacket);
+    const blurredPacket = await canvas.getAttribute("data-preview-packet-id");
+    await playhead.fill("3.25");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(3.25, 1);
+    await expect.poll(async () => canvas.getAttribute("data-preview-packet-id")).not.toBe(blurredPacket);
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await page.getByRole("button", { name: "Open Soft Blur preset fixture workspace" }).click();
+    await expect(page.getByRole("button", { name: /Edit Scene effect Soft Blur/u })).toContainText("In stack");
+    await expect(page.getByText("Radius (px) · 3 keyframes", { exact: true })).toBeVisible();
+    await expect(page.getByRole("spinbutton", { name: "Radius (px) keyframe 2 value" })).toHaveValue("16");
+    await expect(page.getByRole("spinbutton", { name: "Radius (px) keyframe 3 value" })).toHaveValue("0");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+
+    const [sharpStart, blurred, sharpEnd] = await decodedPixelStats(
+      page,
+      await exportLocalMp4(page),
+      [1.25, 2.25, 3.25],
+    );
+    expect(blurred?.count ?? 0).toBeGreaterThan((sharpStart?.count ?? 0) + 100);
+    expect(blurred?.count ?? 0).toBeGreaterThan((sharpEnd?.count ?? 0) + 100);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
+});
+
 test("creates Pixelate and Chromatic Shift through reload, WebGPU, and decoded MP4 export", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(15_000);
