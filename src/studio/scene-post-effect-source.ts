@@ -333,6 +333,65 @@ export const STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1 = scenePostEffectParame
   },
 ]);
 
+export const STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1 =
+  scenePostEffectWgslSourceV1Schema.parse(`struct ScenePostEffectHost {
+    viewport_and_time: vec4<f32>,
+    // p0.xyz = shadow, p0.w/p1.xy = highlight, p1.z = mix.
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> host: ScenePostEffectHost;
+
+@group(0) @binding(1)
+var scene_texture: texture_2d<f32>;
+
+@group(0) @binding(2)
+var scene_sampler: sampler;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let viewport = max(host.viewport_and_time.xy, vec2<f32>(1.0));
+    let coordinate = position.xy / viewport;
+    let color = textureSample(scene_texture, scene_sampler, coordinate);
+    let straight_rgb = clamp(
+        color.rgb / max(color.a, 0.000001),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0),
+    );
+    let luminance = dot(straight_rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let shadow = clamp(host.parameters_0.xyz, vec3<f32>(0.0), vec3<f32>(1.0));
+    let highlight = clamp(
+        vec3<f32>(host.parameters_0.w, host.parameters_1.x, host.parameters_1.y),
+        vec3<f32>(0.0),
+        vec3<f32>(1.0),
+    );
+    let mix_amount = clamp(host.parameters_1.z, 0.0, 1.0);
+    let duotone = mix(shadow, highlight, luminance);
+    return vec4<f32>(mix(color.rgb, duotone * color.a, mix_amount), color.a);
+}
+`);
+
+export const STUDIO_DUOTONE_POST_EFFECT_PARAMETERS_V1 = scenePostEffectParameterSchemaListV1.parse([
+  {
+    default: [0.05, 0.1, 0.3],
+    name: "Shadow",
+    type: "rgb",
+  },
+  {
+    default: [1, 0.72, 0.25],
+    name: "Highlight",
+    type: "rgb",
+  },
+  {
+    default: 1,
+    name: "Mix",
+    range: { max: 1, min: 0, step: 0.05 },
+    type: "f32",
+  },
+]);
+
 export const STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1 =
   scenePostEffectWgslSourceV1Schema.parse(`struct ScenePostEffectHost {
     viewport_and_time: vec4<f32>,
@@ -423,6 +482,7 @@ export const studioScenePostEffectPresetIdSchema = z.enum([
   "wave-distortion",
   "vignette",
   "color-tint",
+  "duotone",
   "pixelate",
   "chromatic-shift",
 ]);
@@ -451,6 +511,12 @@ export const STUDIO_SCENE_POST_EFFECT_PRESETS: readonly Readonly<{
     name: "Color Tint",
     parameterSchema: STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1,
     source: STUDIO_COLOR_TINT_POST_EFFECT_SOURCE_V1,
+  },
+  {
+    id: "duotone",
+    name: "Duotone",
+    parameterSchema: STUDIO_DUOTONE_POST_EFFECT_PARAMETERS_V1,
+    source: STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1,
   },
   {
     id: "pixelate",

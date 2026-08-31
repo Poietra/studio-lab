@@ -18,6 +18,8 @@ import {
   STUDIO_CHROMATIC_SHIFT_POST_EFFECT_SOURCE_V1,
   STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1,
   STUDIO_COLOR_TINT_POST_EFFECT_SOURCE_V1,
+  STUDIO_DUOTONE_POST_EFFECT_PARAMETERS_V1,
+  STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1,
   STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1,
   STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1,
   STUDIO_SCENE_POST_EFFECT_PRESETS,
@@ -83,6 +85,7 @@ describe("project Scene post-effect asset library", () => {
       { id: "wave-distortion", name: "Wave Distortion" },
       { id: "vignette", name: "Vignette" },
       { id: "color-tint", name: "Color Tint" },
+      { id: "duotone", name: "Duotone" },
       { id: "pixelate", name: "Pixelate" },
       { id: "chromatic-shift", name: "Chromatic Shift" },
     ]);
@@ -99,7 +102,11 @@ describe("project Scene post-effect asset library", () => {
       name: "Color Tint",
       presetId: "color-tint",
     });
-    const pixelate = createStudioScenePostEffectSourceV1(colorTint.state, {
+    const duotone = createStudioScenePostEffectSourceV1(colorTint.state, {
+      name: "Duotone",
+      presetId: "duotone",
+    });
+    const pixelate = createStudioScenePostEffectSourceV1(duotone.state, {
       name: "Pixelate",
       presetId: "pixelate",
     });
@@ -132,6 +139,13 @@ describe("project Scene post-effect asset library", () => {
       },
       {
         diagnostic: null,
+        name: "Duotone",
+        parameterSchema: STUDIO_DUOTONE_POST_EFFECT_PARAMETERS_V1,
+        source: STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1,
+        sourceLanguage: "wgsl",
+      },
+      {
+        diagnostic: null,
         name: "Pixelate",
         parameterSchema: STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1,
         source: STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1,
@@ -151,6 +165,17 @@ describe("project Scene post-effect asset library", () => {
     expect(studioScenePostEffectParameterLayoutV1(STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([
       0.2, 0.55, 1, 0.4,
     ]);
+    expect(studioScenePostEffectParameterLayoutV1(STUDIO_DUOTONE_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([
+      0.05, 0.1, 0.3, 1, 0.72, 0.25, 1,
+    ]);
+    expect(STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1.match(/textureSample\(/gu)).toHaveLength(1);
+    expect(STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1).toContain("color.rgb / max(color.a, 0.000001)");
+    expect(STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1).toContain("host.parameters_0.xyz");
+    expect(STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1).toContain(
+      "vec3<f32>(host.parameters_0.w, host.parameters_1.x, host.parameters_1.y)",
+    );
+    expect(STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1).toContain("host.parameters_1.z");
+    expect(STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1).toContain("duotone * color.a");
     expect(studioScenePostEffectParameterLayoutV1(STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([16]);
     expect(studioScenePostEffectParameterLayoutV1(STUDIO_CHROMATIC_SHIFT_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([
       6,
