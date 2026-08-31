@@ -60,6 +60,7 @@ export type StudioCanvasProps = Readonly<{
   cubicBezierPenPoints?: readonly Point[];
   dragPreview: EntityDragPreview | null;
   editableMotionIds: ReadonlySet<string>;
+  editorViewport?: StudioEditorViewport | null;
   entities: readonly ProjectedEntity[];
   frame: Readonly<{ height: number; width: number }>;
   geometryPreview: EntityGeometryPreview | null;
@@ -142,6 +143,15 @@ export type StudioCanvasProps = Readonly<{
   scalePreview: EntityScalePreview | null;
   selectedIds: ReadonlySet<string>;
   uniformScaleResizeOnlyIds: ReadonlySet<string>;
+}>;
+
+export type StudioEditorViewport = Readonly<{
+  canvasSize: Readonly<{ height: number; width: number }> | null;
+  onFit: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+  viewportRef: (element: HTMLDivElement | null) => void;
+  zoom: number;
 }>;
 
 export type StudioCubicBezierCanvasControls = Readonly<{
@@ -724,6 +734,7 @@ export function StudioCanvas({
   cubicBezierPenPoints = [],
   dragPreview,
   editableMotionIds,
+  editorViewport = null,
   entities,
   frame,
   geometryPreview,
@@ -977,9 +988,16 @@ export function StudioCanvas({
           (!entity.provisional || Boolean(entity.transactionId && appliedTransactionIds.has(entity.transactionId))),
       );
   return (
-    <div className="grid min-h-0 flex-1 place-items-center overflow-auto p-4">
+    <div
+      className="grid min-h-0 flex-1 place-items-center overflow-auto p-4"
+      data-studio-editor-viewport={editorViewport ? "" : undefined}
+      ref={editorViewport?.viewportRef}
+    >
       <div
-        className="relative aspect-video w-full max-w-5xl overflow-hidden border border-zinc-700 bg-black [container-type:size]"
+        className={cn(
+          "relative aspect-video overflow-hidden border border-zinc-700 bg-black [container-type:size]",
+          !editorViewport?.canvasSize && "w-full max-w-5xl",
+        )}
         data-studio-canvas
         data-preview-fallback-reason={preview?.state.phase === "fallback" ? preview.state.reason : undefined}
         data-preview-packet-id={preview?.state.phase === "presented" ? preview.state.frame.packetId : undefined}
@@ -997,6 +1015,15 @@ export function StudioCanvas({
         data-proposed-state-sample={sampleId}
         data-scene-phase={boundaryActive ? "incoming" : "outgoing"}
         aria-label="Animation canvas"
+        style={
+          editorViewport?.canvasSize
+            ? {
+                height: editorViewport.canvasSize.height,
+                width: editorViewport.canvasSize.width,
+                zoom: editorViewport.zoom,
+              }
+            : undefined
+        }
         onDragOver={(event: DragEvent<HTMLDivElement>) => {
           if (
             !imageAssetDropAvailable ||

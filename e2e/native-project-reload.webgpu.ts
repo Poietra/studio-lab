@@ -1409,7 +1409,7 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
 
     await playhead.fill("4");
     await duration.fill("7.4");
-    await page.getByRole("button", { name: "Update" }).click();
+    await duration.locator("xpath=..").getByRole("button", { name: "Update" }).click();
     await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(duration).toHaveValue("7.40");
@@ -1419,13 +1419,72 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
     await canvas.click({ position: { x: 500, y: 280 } });
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(duration).toHaveValue("7.80");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    const fitCanvasBounds = await canvas.boundingBox();
+    if (!fitCanvasBounds) throw new Error("The fitted Studio canvas is not visible.");
+    const previewRevision = await canvas.getAttribute("data-preview-revision");
+    if (!previewRevision) throw new Error("The fitted Studio canvas did not expose its Scene revision.");
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    await expect(page.locator("[data-studio-editor-zoom]"), "editor zoom control").toHaveAttribute(
+      "data-studio-editor-zoom",
+      "125",
+    );
+    await expect
+      .poll(async () => ((await canvas.boundingBox())?.width ?? 0) / fitCanvasBounds.width)
+      .toBeCloseTo(1.25, 1);
+    await expect(canvas).toHaveAttribute("data-preview-revision", previewRevision);
     await expect(
       page.getByText("Later authored content follows the Studio-added wait, so shortening it would cut content."),
     ).toBeVisible();
     await playhead.fill("6.4");
     const rectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
     await page.getByRole("button", { name: "Set position" }).click();
+    const zoomedCanvasBounds = await canvas.boundingBox();
+    if (!zoomedCanvasBounds) throw new Error("The zoomed Studio canvas is not visible.");
+    const positionX = Number(await page.getByRole("spinbutton", { name: "X position of Rectangle" }).inputValue());
+    const positionY = Number(await page.getByRole("spinbutton", { name: "Y position of Rectangle" }).inputValue());
+    await page.keyboard.down("Alt");
     await dragBy(page, rectangle, { x: 40, y: -20 });
+    await page.keyboard.up("Alt");
+    await expect
+      .poll(async () =>
+        Number(await page.getByRole("spinbutton", { name: "X draft position of Rectangle" }).inputValue()),
+      )
+      .toBeCloseTo(positionX + (40 / zoomedCanvasBounds.width) * 640, 3);
+    await expect
+      .poll(async () =>
+        Number(await page.getByRole("spinbutton", { name: "Y draft position of Rectangle" }).inputValue()),
+      )
+      .toBeCloseTo(positionY - (20 / zoomedCanvasBounds.height) * 360, 3);
+    await page.getByRole("button", { name: "Fit canvas" }).click();
+    await expect(page.locator("[data-studio-editor-zoom]")).toHaveAttribute("data-studio-editor-zoom", "100");
+    const editorViewport = page.locator("[data-studio-editor-viewport]");
+    const [fittedBounds, editorViewportBounds] = await Promise.all([
+      canvas.boundingBox(),
+      editorViewport.boundingBox(),
+    ]);
+    if (!fittedBounds || !editorViewportBounds) throw new Error("The fitted editor viewport is not visible.");
+    expect(fittedBounds.width).toBeLessThanOrEqual(editorViewportBounds.width);
+    expect(fittedBounds.height).toBeLessThanOrEqual(editorViewportBounds.height);
+    const browserViewportWidth = await page.evaluate(() => window.innerWidth);
+    await editorViewport.hover();
+    await page.keyboard.down("Control");
+    await page.mouse.wheel(0, -100);
+    await page.keyboard.up("Control");
+    await expect(page.locator("[data-studio-editor-zoom]")).toHaveAttribute("data-studio-editor-zoom", "125");
+    expect(await page.evaluate(() => window.innerWidth)).toBe(browserViewportWidth);
+    await expect
+      .poll(() =>
+        editorViewport.evaluate(
+          (element) => element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight,
+        ),
+      )
+      .toBe(true);
+    await editorViewport.evaluate((element) => element.scrollTo({ left: 40, top: 20 }));
+    expect(await editorViewport.evaluate((element) => Math.max(element.scrollLeft, element.scrollTop))).toBeGreaterThan(
+      0,
+    );
+    await page.getByRole("button", { name: "Fit canvas" }).click();
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 

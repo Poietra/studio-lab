@@ -36,5 +36,7 @@ describe("StudioViewport", () => {
     );
 
     expect(markup).toContain('data-image-asset-drop="forwarded"');
+    expect(markup).toContain('data-studio-editor-zoom="100"');
+    expect(markup).toContain('aria-label="Fit canvas"');
   });
 });

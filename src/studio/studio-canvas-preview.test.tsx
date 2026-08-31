@@ -398,6 +398,25 @@ function previewView(
 }
 
 describe("StudioCanvas retained preview layer", () => {
+  it("scales only the editor surface without changing its preview contract", () => {
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        editorViewport={{
+          canvasSize: { height: 450, width: 800 },
+          onFit: vi.fn(),
+          onZoomIn: vi.fn(),
+          onZoomOut: vi.fn(),
+          viewportRef: vi.fn(),
+          zoom: 1.25,
+        }}
+      />,
+    );
+
+    expect(markup).toContain('data-studio-editor-viewport=""');
+    expect(markup).toContain("height:450px;width:800px;zoom:1.25");
+  });
+
   it("places a canonical image drag at the dropped canvas point", () => {
     const onImageAssetDrop = vi.fn();
     const surface = findCanvasSurface(
