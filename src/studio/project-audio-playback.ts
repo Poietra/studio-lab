@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
 
+import { PROJECT_AUDIO_SAMPLE_RATE_HZ } from "./project-audio-track";
 import type { StudioPlaybackClock, StudioPlaybackClockSnapshot } from "./studio-playback-clock";
 
 type ProjectAudioPlaybackTrack = Readonly<{
+  sourceSampleFrames: number | null;
+  timelineOffsetSampleFrames: number;
+  trimEndSampleFrames: number | null;
+  trimStartSampleFrames: number;
   wavBytes: ArrayBuffer;
 }>;
 
@@ -10,14 +15,34 @@ type ProjectAudioElement = Pick<HTMLAudioElement, "currentTime" | "pause" | "pau
 
 const MAX_AUDIO_CLOCK_DRIFT_SECONDS = 0.12;
 
-export function alignProjectAudioElement(element: ProjectAudioElement, snapshot: StudioPlaybackClockSnapshot) {
-  if (!snapshot.playing) {
+export function projectAudioSourceTime(track: ProjectAudioPlaybackTrack, sceneTime: number): number | null {
+  const timelineOffset = track.timelineOffsetSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ;
+  const elapsed = sceneTime - timelineOffset;
+  if (elapsed < 0) return null;
+  const sourceTime = track.trimStartSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ + elapsed;
+  const endSampleFrames = track.trimEndSampleFrames ?? track.sourceSampleFrames;
+  if (endSampleFrames !== null && sourceTime >= endSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ) return null;
+  return sourceTime;
+}
+
+export function alignProjectAudioElement(
+  element: ProjectAudioElement,
+  snapshot: StudioPlaybackClockSnapshot,
+  track: ProjectAudioPlaybackTrack,
+) {
+  const sourceTime = projectAudioSourceTime(track, snapshot.currentTime);
+  if (sourceTime === null) {
     if (!element.paused) element.pause();
-    if (Math.abs(element.currentTime - snapshot.currentTime) > 0.001) element.currentTime = snapshot.currentTime;
     return false;
   }
-  if (Math.abs(element.currentTime - snapshot.currentTime) > MAX_AUDIO_CLOCK_DRIFT_SECONDS) {
-    element.currentTime = snapshot.currentTime;
+  if (!snapshot.playing) {
+    if (!element.paused) element.pause();
+    if (Math.abs(element.currentTime - sourceTime) > 0.001) element.currentTime = sourceTime;
+    return false;
+  }
+  const allowedDrift = element.paused ? 0.001 : MAX_AUDIO_CLOCK_DRIFT_SECONDS;
+  if (Math.abs(element.currentTime - sourceTime) > allowedDrift) {
+    element.currentTime = sourceTime;
   }
   return element.paused;
 }
@@ -40,16 +65,16 @@ export function useProjectAudioPlayback(track: ProjectAudioPlaybackTrack | null,
       const snapshot = clock.getSnapshot();
       let shouldPlay = false;
       try {
-        shouldPlay = alignProjectAudioElement(audio, snapshot);
+        shouldPlay = alignProjectAudioElement(audio, snapshot, track);
       } catch (cause) {
         if (!disposed) setError(cause instanceof Error ? cause.message : "The project audio could not seek.");
         return;
       }
-      if (!snapshot.playing) {
+      if (!shouldPlay) {
         playAttempted = false;
         return;
       }
-      if (!shouldPlay || playAttempted) return;
+      if (playAttempted) return;
       playAttempted = true;
       void audio.play().catch((cause: unknown) => {
         if (!disposed) setError(cause instanceof Error ? cause.message : "The project audio could not play.");

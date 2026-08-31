@@ -78,7 +78,7 @@ pub use canvas::PoietraCanvasEngineV1;
 pub use export_encoder::{PoietraExportEncoderSessionV1, probe_export_encoder_h264_v1};
 
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
-pub const POIETRA_ENGINE_ABI_VERSION: u32 = 41;
+pub const POIETRA_ENGINE_ABI_VERSION: u32 = 42;
 /// `OffscreenCanvas` render ABI version, independent of worker packet sampling.
 pub const POIETRA_CANVAS_ABI_VERSION: u32 = 10;
 
@@ -162,9 +162,13 @@ pub fn compile_scene_post_effect_glsl(source: &str, entry_point: &str) -> Result
 /// Returns the same diagnostic that the MP4 export path would return when the
 /// input is not 48 kHz signed 16-bit mono/stereo PCM in a RIFF/WAVE container.
 #[wasm_bindgen(js_name = validateExportAudioWavV1)]
-pub fn validate_export_audio_wav_v1(wav_bytes: &[u8]) -> Result<(), JsValue> {
+pub fn validate_export_audio_wav_v1(wav_bytes: &[u8]) -> Result<u32, JsValue> {
     audio_wav::parse_pcm_wav(wav_bytes)
-        .map(drop)
+        .and_then(|wav| {
+            u32::try_from(wav.sample_frames()).map_err(|_| {
+                audio_wav::WavRefusal::Invalid("the WAV sample-frame count exceeds u32")
+            })
+        })
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -228,7 +232,7 @@ void main() {
 
     #[test]
     fn exported_abi_versions_are_explicit() {
-        assert_eq!(poietra_engine_abi_version(), 41);
+        assert_eq!(poietra_engine_abi_version(), 42);
         assert_eq!(poietra_canvas_abi_version(), 10);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
         assert_eq!(poietra_export_encoder_abi_version(), 1);

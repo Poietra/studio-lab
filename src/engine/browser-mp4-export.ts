@@ -8,9 +8,11 @@ import {
   parseExportProfileV1,
 } from "./export-profile";
 import {
+  type ExportAudioTimingV1,
   type ExportProgressV1,
   type ExportRefusalReasonV1,
   type ExportWorkerRequestV1,
+  exportAudioTimingV1Schema,
   exportWorkerResponseV1Schema,
   MAX_EXPORT_WAV_BYTES,
 } from "./export-worker-protocol";
@@ -53,6 +55,7 @@ export class BrowserMp4ExportRefused extends Error {
 }
 
 export type BrowserMp4ExportInput = Readonly<{
+  audioTiming?: ExportAudioTimingV1;
   /** Optional local WAV attachment. It is transferred to, validated, and encoded in the worker. */
   audioWav?: ArrayBuffer;
   assetPayloads?: readonly CanvasPngAssetTransferV1[];
@@ -108,7 +111,19 @@ export async function runBrowserMp4ExportV1(input: BrowserMp4ExportInput): Promi
   if (input.audioWav && (input.audioWav.byteLength === 0 || input.audioWav.byteLength > MAX_EXPORT_WAV_BYTES)) {
     throw new BrowserMp4ExportRefused(`The WAV attachment must be between 1 byte and ${MAX_EXPORT_WAV_BYTES} bytes.`);
   }
+  if (input.audioTiming && !input.audioWav) {
+    throw new BrowserMp4ExportRefused("Audio timeline timing requires a WAV attachment.");
+  }
+  const audioTiming = input.audioTiming ? exportAudioTimingV1Schema.parse(input.audioTiming) : undefined;
+  if (
+    audioTiming &&
+    audioTiming.trimEndSampleFrames !== null &&
+    audioTiming.trimEndSampleFrames <= audioTiming.trimStartSampleFrames
+  ) {
+    throw new BrowserMp4ExportRefused("Audio trim out must be later than trim in.");
+  }
   const request: ExportWorkerRequestV1 = {
+    ...(audioTiming ? { audioTiming } : {}),
     ...(input.audioWav ? { audioWav: input.audioWav } : {}),
     assetPayloads: [...(input.assetPayloads ?? [])],
     fragmentMaterialRegistryJson,

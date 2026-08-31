@@ -19,7 +19,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::POIETRA_ENGINE_ABI_VERSION;
 use crate::audio_encoder::{FinishedOpusOutput, encode_opus};
-use crate::audio_wav::{PcmWav, parse_pcm_wav};
+use crate::audio_wav::{PcmTimelineTiming, PcmWav, parse_pcm_timeline_timing, parse_pcm_wav};
 use crate::bounded_writer::BoundedWriter;
 use crate::browser_export_protocol::{
     BROWSER_EXPORT_CANCELLED_REASON_V1, BrowserExportProgressV1,
@@ -222,6 +222,7 @@ pub async fn export_scene_mp4_v1(
         fragment_material_registry_json,
         scene_post_effect_registry_json,
         None,
+        None,
         progress,
     )
     .await
@@ -249,6 +250,7 @@ pub async fn export_scene_mp4_with_wav_v1(
     progress: Option<js_sys::Function>,
     fragment_material_registry_json: &[u8],
     scene_post_effect_registry_json: &[u8],
+    audio_timing_json: Option<Vec<u8>>,
 ) -> Result<js_sys::Uint8Array, JsValue> {
     export_scene_mp4(
         snapshot_json,
@@ -258,6 +260,7 @@ pub async fn export_scene_mp4_with_wav_v1(
         fragment_material_registry_json,
         scene_post_effect_registry_json,
         Some(wav_bytes),
+        audio_timing_json.as_deref(),
         progress,
     )
     .await
@@ -276,8 +279,26 @@ async fn export_scene_mp4(
     fragment_material_registry_json: &[u8],
     scene_post_effect_registry_json: &[u8],
     wav_bytes: Option<&[u8]>,
+    audio_timing_json: Option<&[u8]>,
     progress: Option<js_sys::Function>,
 ) -> Result<js_sys::Uint8Array, JsValue> {
+    if audio_timing_json.is_some() && wav_bytes.is_none() {
+        return Err(refused(
+            "invalid-request",
+            "audio timeline timing requires a WAV attachment",
+        ));
+    }
+    if audio_timing_json.is_some_and(|bytes| bytes.len() > 1_024) {
+        return Err(refused(
+            "invalid-request",
+            "audio timeline timing is oversized",
+        ));
+    }
+    let audio_timing = audio_timing_json
+        .map(parse_pcm_timeline_timing)
+        .transpose()
+        .map_err(|error| refused("invalid-request", error))?
+        .unwrap_or_default();
     let wav = wav_bytes
         .map(parse_pcm_wav)
         .transpose()
@@ -401,7 +422,7 @@ async fn export_scene_mp4(
     let encoded_output = video_encoder
         .take_finished_output()
         .map_err(|failure| refused(failure.reason.wire_name(), failure.message))?;
-    let audio_output = encode_audio(wav, frame_count, fps).await?;
+    let audio_output = encode_audio(wav, frame_count, fps, audio_timing).await?;
     let color = color_parameters(&encoded_output.color_space)?;
     let video_sample_count = u32::try_from(frame_count)
         .map_err(|_| refused("mux-failed", "frame count exceeds the MP4 sample bound"))?;
@@ -511,12 +532,13 @@ async fn encode_audio(
     wav: Option<PcmWav>,
     frame_count: u64,
     frames_per_second: u32,
+    timing: PcmTimelineTiming,
 ) -> Result<Option<FinishedOpusOutput>, JsValue> {
     let Some(wav) = wav else {
         return Ok(None);
     };
     let pcm = wav
-        .fit_to_video(frame_count, frames_per_second)
+        .fit_to_video(frame_count, frames_per_second, timing)
         .map_err(|error| refused(error.wire_name(), error))?;
     encode_opus(&pcm)
         .await

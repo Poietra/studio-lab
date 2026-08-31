@@ -273,7 +273,11 @@ import {
   workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline,
 } from "./studio/program-composition";
 import { useProjectAudioPlayback } from "./studio/project-audio-playback";
-import { ingestProjectAudioWav } from "./studio/project-audio-track";
+import {
+  ingestProjectAudioWav,
+  type ProjectAudioTimingSeconds,
+  updateProjectAudioTiming,
+} from "./studio/project-audio-track";
 import { duplicatePropertyKeyframeAtTime } from "./studio/property-keyframe-duplicate";
 import { samplePropertyValue } from "./studio/property-sampling";
 import {
@@ -1714,6 +1718,42 @@ export function App({
       if (nativeProjectAssetGeneration.current !== generation) return;
       setNativeProjectAssetErrorKind("audio");
       setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not update the project audio.");
+    } finally {
+      if (nativeProjectAssetGeneration.current === generation) setNativeProjectAssetPending(false);
+    }
+  }
+
+  async function updateNativeProjectAudioTiming(timing: ProjectAudioTimingSeconds) {
+    if (
+      !activeProjectId ||
+      !activeEditorScene ||
+      !isStudioNativeWorkspaceScene(activeEditorScene) ||
+      !nativeProjectState?.audioTrack ||
+      nativeProjectState.projectId !== activeProjectId ||
+      nativeProjectState.documentKey !== activeEditorScene.identity.documentKey ||
+      nativeProjectAssetPending ||
+      !nativeProjectLocalStore
+    )
+      return;
+    const generation = nativeProjectAssetGeneration.current;
+    const projectId = activeProjectId;
+    const documentKey = activeEditorScene.identity.documentKey;
+    setNativeProjectAssetPending(true);
+    setNativeProjectAssetError(null);
+    setNativeProjectAssetErrorKind(null);
+    try {
+      const audioTrack = updateProjectAudioTiming(nativeProjectState.audioTrack, timing);
+      const stateKey = tabLocalNativeProjectKey(projectId, documentKey);
+      const retained = nativeProjectStates.current.get(stateKey) ?? nativeProjectState;
+      const updated: TabLocalNativeProjectState = { ...retained, audioTrack };
+      await nativeProjectLocalStore.save({ documentKey, projectId }, updated);
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      nativeProjectStates.current.set(stateKey, updated);
+      setNativeProjectState(updated);
+    } catch (cause) {
+      if (nativeProjectAssetGeneration.current !== generation) return;
+      setNativeProjectAssetErrorKind("audio");
+      setNativeProjectAssetError(cause instanceof Error ? cause.message : "Studio could not update the audio timing.");
     } finally {
       if (nativeProjectAssetGeneration.current === generation) setNativeProjectAssetPending(false);
     }
@@ -11553,6 +11593,9 @@ export function App({
               lockedEntityIds={lockedEntityIdSet}
               nextScene={nextScene}
               onGroup={groupLayerSelection}
+              onAudioTimingChange={
+                nativeSceneActive ? (timing) => void updateNativeProjectAudioTiming(timing) : undefined
+              }
               onImportAudioFile={nativeSceneActive ? (file) => void updateNativeProjectAudioTrack(file) : undefined}
               onImportImageFiles={nativeSceneActive ? (files) => void importNativeProjectImageFiles(files) : undefined}
               onImportSvgFiles={nativeSceneActive ? (files) => void importNativeProjectSvgFiles(files) : undefined}

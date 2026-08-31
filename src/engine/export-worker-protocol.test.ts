@@ -97,7 +97,24 @@ describe("export worker messages", () => {
       version: 1,
       wasmModuleUrl: "https://studio.example/engine-wasm/poietra_wasm.js",
     } as const;
-    expect(exportWorkerRequestV1Schema.safeParse({ ...base, audioWav: new ArrayBuffer(44) }).success).toBe(true);
+    expect(
+      exportWorkerRequestV1Schema.safeParse({
+        ...base,
+        audioTiming: {
+          timelineOffsetSampleFrames: 4_800,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 2_400,
+        },
+        audioWav: new ArrayBuffer(44),
+      }).success,
+    ).toBe(true);
+    expect(
+      exportWorkerRequestV1Schema.safeParse({
+        ...base,
+        audioTiming: { timelineOffsetSampleFrames: -1, trimEndSampleFrames: null, trimStartSampleFrames: 0 },
+        audioWav: new ArrayBuffer(44),
+      }).success,
+    ).toBe(false);
     expect(exportWorkerRequestV1Schema.safeParse({ ...base, audioWav: new ArrayBuffer(0) }).success).toBe(false);
     expect(
       exportWorkerRequestV1Schema.safeParse({ ...base, audioWav: new ArrayBuffer(MAX_EXPORT_WAV_BYTES + 1) }).success,

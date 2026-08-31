@@ -22,12 +22,12 @@ function monoPcmWav(sampleRate = 48_000) {
 
 describe("export WAV validation", () => {
   it("uses the production Rust/WASM parser", async () => {
-    await expect(validateExportAudioWav(monoPcmWav())).resolves.toBeUndefined();
+    await expect(validateExportAudioWav(monoPcmWav())).resolves.toBe(1);
     await expect(validateExportAudioWav(monoPcmWav(44_100))).rejects.toThrow("44100 Hz is not 48000 Hz");
   });
 
   it("passes exact bytes to the canonical Rust validator", async () => {
-    const validateExportAudioWavV1 = vi.fn();
+    const validateExportAudioWavV1 = vi.fn((_bytes: Uint8Array) => 12);
     const validate = createExportAudioWavValidator(async () => ({ validateExportAudioWavV1 }));
     const wavBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46]).buffer;
 

@@ -336,7 +336,11 @@ test("persists one project WAV through Timeline and Opus MP4 export", async ({ p
     });
     const audioLane = page.locator("[data-project-audio-track]");
     await expect(audioLane).toContainText("tone.wav");
-    await expect(audioLane.getByLabel("Audio track tone.wav, 0.00–5.00 seconds")).toBeVisible();
+    await page.getByLabel("Audio offset seconds").fill("0.5");
+    await page.getByLabel("Audio trim in seconds").fill("0.1");
+    await page.getByLabel("Audio trim out seconds").fill("0.3");
+    await page.getByRole("button", { name: "Apply audio timing" }).click();
+    await expect(audioLane.getByLabel("Audio track tone.wav, 0.50–0.70 seconds")).toBeVisible();
 
     const unsupportedWav = monoPcmWav48k(0.4);
     unsupportedWav.writeUInt32LE(44_100, 24);
@@ -354,6 +358,10 @@ test("persists one project WAV through Timeline and Opus MP4 export", async ({ p
     await page.getByRole("button", { name: "Open Project audio fixture workspace" }).click();
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await expect(audioLane).toContainText("tone.wav");
+    await expect(audioLane.getByLabel("Audio track tone.wav, 0.50–0.70 seconds")).toBeVisible();
+    await expect(page.getByLabel("Audio offset seconds")).toHaveValue("0.5");
+    await expect(page.getByLabel("Audio trim in seconds")).toHaveValue("0.1");
+    await expect(page.getByLabel("Audio trim out seconds")).toHaveValue("0.3");
 
     const mp4Base64 = await exportLocalMp4(page);
     const mp4Bytes = Uint8Array.from(Buffer.from(mp4Base64, "base64"));
@@ -370,18 +378,32 @@ test("persists one project WAV through Timeline and Opus MP4 export", async ({ p
       const context = new AudioContext();
       try {
         const decoded = await context.decodeAudioData(encoded.buffer);
-        let peak = 0;
-        for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
-          for (const sample of decoded.getChannelData(channel)) peak = Math.max(peak, Math.abs(sample));
-        }
-        return { channels: decoded.numberOfChannels, duration: decoded.duration, peak };
+        const peakBetween = (start: number, end: number) => {
+          let peak = 0;
+          const first = Math.ceil(start * decoded.sampleRate);
+          const last = Math.min(decoded.length, Math.floor(end * decoded.sampleRate));
+          for (let channel = 0; channel < decoded.numberOfChannels; channel += 1) {
+            const samples = decoded.getChannelData(channel);
+            for (let sample = first; sample < last; sample += 1) peak = Math.max(peak, Math.abs(samples[sample] ?? 0));
+          }
+          return peak;
+        };
+        return {
+          activePeak: peakBetween(0.53, 0.65),
+          afterPeak: peakBetween(0.9, 1.1),
+          beforePeak: peakBetween(0.1, 0.3),
+          channels: decoded.numberOfChannels,
+          duration: decoded.duration,
+        };
       } finally {
         await context.close();
       }
     }, mp4Base64);
     expect(decodedAudio.channels).toBe(1);
     expect(decodedAudio.duration).toBeCloseTo(5, 1);
-    expect(decodedAudio.peak).toBeGreaterThan(0.01);
+    expect(decodedAudio.beforePeak).toBeLessThan(0.01);
+    expect(decodedAudio.activePeak).toBeGreaterThan(0.05);
+    expect(decodedAudio.afterPeak).toBeLessThan(0.01);
 
     await page.getByRole("button", { name: "Remove WAV tone.wav" }).click();
     await expect(audioLane).toHaveCount(0);

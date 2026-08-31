@@ -170,7 +170,14 @@ describe("WorkspaceSidebar Layers", () => {
         appliedEdits={[]}
         appliedTransactionIds={new Set()}
         audioImportError="The WAV sample rate is unsupported."
-        audioTrack={{ fileName: "narration.wav" }}
+        audioTrack={{
+          fileName: "narration.wav",
+          sourceSampleFrames: 48_000,
+          timelineOffsetSampleFrames: 0,
+          trimEndSampleFrames: 48_000,
+          trimStartSampleFrames: 0,
+          wavBytes: new ArrayBuffer(44),
+        }}
         draftActive={false}
         duration={1}
         durationError={null}
@@ -178,6 +185,7 @@ describe("WorkspaceSidebar Layers", () => {
         editingAppliedTransactionId={null}
         entities={[]}
         nextScene={null}
+        onAudioTimingChange={vi.fn()}
         onDurationChange={vi.fn()}
         onEditAppliedProgram={vi.fn()}
         onImportAudioFile={vi.fn()}
@@ -196,6 +204,10 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("narration.wav");
     expect(markup).toContain("Replace WAV");
     expect(markup).toContain('aria-label="Remove WAV narration.wav"');
+    expect(markup).toContain('aria-label="Audio offset seconds"');
+    expect(markup).toContain('aria-label="Audio trim in seconds"');
+    expect(markup).toContain('aria-label="Audio trim out seconds"');
+    expect(markup).toContain("Apply audio timing");
     expect(markup).toContain("The WAV sample rate is unsupported.");
   });
 

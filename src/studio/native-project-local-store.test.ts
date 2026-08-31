@@ -130,17 +130,37 @@ describe("Studio-native local project persistence", () => {
     const wavBytes = WAV.slice().buffer;
     const state = {
       ...(await authoredState()),
-      audioTrack: { fileName: "narration take 2.wav", wavBytes },
+      audioTrack: {
+        fileName: "narration take 2.wav",
+        sourceSampleFrames: 24_000,
+        timelineOffsetSampleFrames: 4_800,
+        trimEndSampleFrames: 19_200,
+        trimStartSampleFrames: 2_400,
+        wavBytes,
+      },
     };
     const expectedBytes = WAV.slice();
 
     await store.save(IDENTITY, state);
     const persisted = adapter.records.get(key(IDENTITY)) as {
-      audioTrack: { fileName: string; wavBytes: ArrayBuffer };
+      audioTrack: {
+        fileName: string;
+        sourceSampleFrames: number;
+        timelineOffsetSampleFrames: number;
+        trimEndSampleFrames: number;
+        trimStartSampleFrames: number;
+        wavBytes: ArrayBuffer;
+      };
       version: number;
     };
     expect(persisted.version).toBe(1);
     expect(persisted.audioTrack.fileName).toBe("narration take 2.wav");
+    expect(persisted.audioTrack).toMatchObject({
+      sourceSampleFrames: 24_000,
+      timelineOffsetSampleFrames: 4_800,
+      trimEndSampleFrames: 19_200,
+      trimStartSampleFrames: 2_400,
+    });
     expect(persisted.audioTrack.wavBytes).not.toBe(wavBytes);
     expect(new Uint8Array(persisted.audioTrack.wavBytes)).toEqual(expectedBytes);
 
@@ -149,11 +169,38 @@ describe("Studio-native local project persistence", () => {
 
     const restored = await store.restore(IDENTITY);
     expect(restored?.audioTrack?.fileName).toBe("narration take 2.wav");
+    expect(restored?.audioTrack).toMatchObject({
+      sourceSampleFrames: 24_000,
+      timelineOffsetSampleFrames: 4_800,
+      trimEndSampleFrames: 19_200,
+      trimStartSampleFrames: 2_400,
+    });
     expect(restored?.audioTrack?.wavBytes).not.toBe(persisted.audioTrack.wavBytes);
     expect(new Uint8Array(restored!.audioTrack!.wavBytes)).toEqual(expectedBytes);
 
     new Uint8Array(restored!.audioTrack!.wavBytes).fill(0xff);
     expect(new Uint8Array(persisted.audioTrack.wavBytes)).toEqual(expectedBytes);
+  });
+
+  it("restores a legacy byte-only WAV as an untrimmed track at Scene time zero", async () => {
+    const adapter = new ReferenceMemoryAdapter();
+    const store = new NativeProjectLocalStore(adapter, async () => ({ pixelHeight: 1, pixelWidth: 2 }));
+    await store.save(IDENTITY, await authoredState());
+    const record = adapter.records.get(key(IDENTITY)) as Record<string, unknown>;
+    adapter.records.set(key(IDENTITY), {
+      ...record,
+      audioTrack: { fileName: "legacy.wav", wavBytes: WAV.slice().buffer },
+    });
+
+    await expect(store.restore(IDENTITY)).resolves.toMatchObject({
+      audioTrack: {
+        fileName: "legacy.wav",
+        sourceSampleFrames: null,
+        timelineOffsetSampleFrames: 0,
+        trimEndSampleFrames: null,
+        trimStartSampleFrames: 0,
+      },
+    });
   });
 
   it("isolates document keys and removes every local document for a deleted project", async () => {

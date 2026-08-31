@@ -6,6 +6,8 @@
 
 use std::fmt;
 
+use serde::Deserialize;
+
 const RIFF_HEADER_BYTES: usize = 12;
 const CHUNK_HEADER_BYTES: usize = 8;
 const PCM_FORMAT_TAG: u16 = 1;
@@ -14,6 +16,23 @@ const BYTES_PER_SAMPLE: u16 = 2;
 
 pub(crate) const MAX_WAV_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const AUDIO_FRAME_SAMPLES: usize = 960; // 20 ms at 48 kHz.
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PcmTimelineTiming {
+    #[serde(rename = "timelineOffsetSampleFrames")]
+    pub(crate) timeline_offset: u64,
+    #[serde(rename = "trimEndSampleFrames")]
+    pub(crate) trim_end: Option<u64>,
+    #[serde(rename = "trimStartSampleFrames")]
+    pub(crate) trim_start: u64,
+}
+
+pub(crate) fn parse_pcm_timeline_timing(
+    bytes: &[u8],
+) -> Result<PcmTimelineTiming, serde_json::Error> {
+    serde_json::from_slice(bytes)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum WavRefusal {
@@ -77,12 +96,18 @@ pub(crate) struct PcmWav {
 }
 
 impl PcmWav {
+    pub(crate) fn sample_frames(&self) -> u64 {
+        let bytes_per_frame = u64::from(self.channels) * u64::from(BYTES_PER_SAMPLE);
+        u64::try_from(self.interleaved_s16_le.len()).unwrap_or(u64::MAX) / bytes_per_frame
+    }
+
     /// Trims or zero-pads the admitted PCM to the exact video frame-grid
     /// duration. Both supported video rates divide 48 kHz exactly.
     pub(crate) fn fit_to_video(
-        mut self,
+        self,
         video_frame_count: u64,
         frames_per_second: u32,
+        timing: PcmTimelineTiming,
     ) -> Result<PreparedPcm, WavRefusal> {
         let sample_frames = video_frame_count
             .checked_mul(u64::from(SAMPLE_RATE_HZ))
@@ -96,16 +121,38 @@ impl PcmWav {
                 "the video duration is not representable on the 48 kHz audio grid",
             ));
         }
-        let target_bytes = sample_frames
-            .checked_mul(u64::from(self.channels))
-            .and_then(|samples| samples.checked_mul(u64::from(BYTES_PER_SAMPLE)))
-            .and_then(|bytes| usize::try_from(bytes).ok())
-            .ok_or(WavRefusal::Invalid("the audio buffer length overflowed"))?;
-        self.interleaved_s16_le.truncate(target_bytes);
+        let source_sample_frames = self.sample_frames();
+        let trim_end_sample_frames = timing.trim_end.unwrap_or(source_sample_frames);
+        if timing.trim_start >= trim_end_sample_frames {
+            return Err(WavRefusal::Invalid(
+                "audio trim out must be later than trim in",
+            ));
+        }
+        if trim_end_sample_frames > source_sample_frames {
+            return Err(WavRefusal::Invalid(
+                "audio trim out exceeds the WAV duration",
+            ));
+        }
+        let content_sample_frames = trim_end_sample_frames
+            .saturating_sub(timing.trim_start)
+            .min(sample_frames.saturating_sub(timing.timeline_offset));
+        let bytes_per_frame = u64::from(self.channels) * u64::from(BYTES_PER_SAMPLE);
+        let byte_start = timing
+            .trim_start
+            .checked_mul(bytes_per_frame)
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(WavRefusal::Invalid("the audio trim start overflowed"))?;
+        let byte_end = timing
+            .trim_start
+            .checked_add(content_sample_frames)
+            .and_then(|value| value.checked_mul(bytes_per_frame))
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or(WavRefusal::Invalid("the audio trim end overflowed"))?;
         Ok(PreparedPcm {
             channels: self.channels,
-            interleaved_s16_le: self.interleaved_s16_le,
+            interleaved_s16_le: self.interleaved_s16_le[byte_start..byte_end].to_vec(),
             sample_frames,
+            timeline_start_sample: timing.timeline_offset.min(sample_frames),
         })
     }
 }
@@ -115,6 +162,7 @@ pub(crate) struct PreparedPcm {
     channels: u8,
     interleaved_s16_le: Vec<u8>,
     sample_frames: u64,
+    timeline_start_sample: u64,
 }
 
 impl PreparedPcm {
@@ -145,20 +193,33 @@ impl Iterator for PreparedPcmChunks<'_> {
         }
         let source_sample_frames = remaining.min(AUDIO_FRAME_SAMPLES as u64);
         let bytes_per_frame = usize::from(self.pcm.channels) * usize::from(BYTES_PER_SAMPLE);
-        let byte_start = usize::try_from(self.first_sample)
-            .ok()?
-            .checked_mul(bytes_per_frame)?;
         let byte_len = AUDIO_FRAME_SAMPLES.checked_mul(bytes_per_frame)?;
         let mut bytes = vec![0; byte_len];
-        if byte_start < self.pcm.interleaved_s16_le.len() {
-            let source_byte_len = usize::try_from(source_sample_frames)
+        let content_sample_frames = u64::try_from(self.pcm.interleaved_s16_le.len())
+            .ok()?
+            .checked_div(u64::try_from(bytes_per_frame).ok()?)?;
+        let chunk_end = self.first_sample.checked_add(source_sample_frames)?;
+        let content_end = self
+            .pcm
+            .timeline_start_sample
+            .checked_add(content_sample_frames)?;
+        let overlap_start = self.first_sample.max(self.pcm.timeline_start_sample);
+        let overlap_end = chunk_end.min(content_end);
+        if overlap_start < overlap_end {
+            let source_byte_start = usize::try_from(overlap_start - self.pcm.timeline_start_sample)
                 .ok()?
                 .checked_mul(bytes_per_frame)?;
-            let available = (self.pcm.interleaved_s16_le.len() - byte_start)
-                .min(source_byte_len)
-                .min(byte_len);
-            bytes[..available]
-                .copy_from_slice(&self.pcm.interleaved_s16_le[byte_start..byte_start + available]);
+            let destination_byte_start = usize::try_from(overlap_start - self.first_sample)
+                .ok()?
+                .checked_mul(bytes_per_frame)?;
+            let overlap_byte_len = usize::try_from(overlap_end - overlap_start)
+                .ok()?
+                .checked_mul(bytes_per_frame)?;
+            bytes[destination_byte_start..destination_byte_start + overlap_byte_len]
+                .copy_from_slice(
+                    &self.pcm.interleaved_s16_le
+                        [source_byte_start..source_byte_start + overlap_byte_len],
+                );
         }
         let chunk = PcmChunk {
             bytes,
@@ -432,7 +493,9 @@ mod tests {
     #[test]
     fn trims_and_pads_to_exact_video_duration() {
         let short = parse_pcm_wav(&wav(2, SAMPLE_RATE_HZ, 16, 100)).unwrap();
-        let padded = short.fit_to_video(30, 30).unwrap();
+        let padded = short
+            .fit_to_video(30, 30, PcmTimelineTiming::default())
+            .unwrap();
         assert_eq!(padded.sample_frames, 48_000);
         assert_eq!(padded.interleaved_s16_le.len(), 400);
         assert_eq!(padded.chunks().count(), 50);
@@ -440,12 +503,73 @@ mod tests {
         assert!(last.bytes.iter().all(|byte| *byte == 0));
 
         let long = parse_pcm_wav(&wav(1, SAMPLE_RATE_HZ, 16, 2_000)).unwrap();
-        let trimmed = long.fit_to_video(1, 60).unwrap();
+        let trimmed = long
+            .fit_to_video(1, 60, PcmTimelineTiming::default())
+            .unwrap();
         assert_eq!(trimmed.sample_frames, 800);
         assert_eq!(trimmed.interleaved_s16_le.len(), 1_600);
         let chunk = trimmed.chunks().next().unwrap();
         assert_eq!(chunk.sample_frames, 960);
         assert_eq!(chunk.bytes.len(), 1_920);
         assert!(chunk.bytes[1_600..].iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn places_one_trimmed_source_interval_on_the_video_timeline() {
+        let source = parse_pcm_wav(&wav(1, SAMPLE_RATE_HZ, 16, 24_000)).unwrap();
+        let prepared = source
+            .fit_to_video(
+                30,
+                30,
+                PcmTimelineTiming {
+                    timeline_offset: 4_800,
+                    trim_end: Some(14_400),
+                    trim_start: 4_800,
+                },
+            )
+            .unwrap();
+        let chunks = prepared.chunks().collect::<Vec<_>>();
+        assert!(
+            chunks[..5]
+                .iter()
+                .all(|chunk| chunk.bytes.iter().all(|byte| *byte == 0))
+        );
+        assert_eq!(chunks[5].bytes[0], u8::try_from((4_800 * 2) % 251).unwrap());
+        assert!(
+            chunks[15..]
+                .iter()
+                .all(|chunk| chunk.bytes.iter().all(|byte| *byte == 0))
+        );
+    }
+
+    #[test]
+    fn rejects_an_empty_or_out_of_bounds_trim() {
+        let source = parse_pcm_wav(&wav(1, SAMPLE_RATE_HZ, 16, 960)).unwrap();
+        assert!(
+            source
+                .clone()
+                .fit_to_video(
+                    30,
+                    30,
+                    PcmTimelineTiming {
+                        trim_end: Some(100),
+                        trim_start: 100,
+                        ..PcmTimelineTiming::default()
+                    },
+                )
+                .is_err()
+        );
+        assert!(
+            source
+                .fit_to_video(
+                    30,
+                    30,
+                    PcmTimelineTiming {
+                        trim_end: Some(961),
+                        ..PcmTimelineTiming::default()
+                    },
+                )
+                .is_err()
+        );
     }
 }

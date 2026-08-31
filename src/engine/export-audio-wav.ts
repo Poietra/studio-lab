@@ -1,7 +1,7 @@
 import { loadPoietraWasmModule } from "./poietra-wasm-module";
 
 type ExportAudioWavBindings = Readonly<{
-  validateExportAudioWavV1: (wavBytes: Uint8Array) => void;
+  validateExportAudioWavV1: (wavBytes: Uint8Array) => number;
 }>;
 
 function errorMessage(error: unknown) {
@@ -13,7 +13,7 @@ export function createExportAudioWavValidator(getBindings: () => Promise<ExportA
   return async (wavBytes: ArrayBuffer) => {
     const bindings = await getBindings();
     try {
-      bindings.validateExportAudioWavV1(new Uint8Array(wavBytes));
+      return bindings.validateExportAudioWavV1(new Uint8Array(wavBytes));
     } catch (error) {
       throw new Error(errorMessage(error));
     }

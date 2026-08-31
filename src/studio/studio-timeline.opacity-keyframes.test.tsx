@@ -90,12 +90,41 @@ function props(): StudioTimelineProps {
 describe("StudioTimeline opacity keyframes", () => {
   it("renders one fixed non-interactive project audio lane", () => {
     const markup = renderToStaticMarkup(
-      <StudioTimeline {...props()} projectAudioTrack={{ fileName: "narration.wav" }} />,
+      <StudioTimeline
+        {...props()}
+        projectAudioTrack={{
+          fileName: "narration.wav",
+          sourceSampleFrames: 240_000,
+          timelineOffsetSampleFrames: 0,
+          trimEndSampleFrames: 240_000,
+          trimStartSampleFrames: 0,
+        }}
+      />,
     );
 
     expect(markup).toContain("data-project-audio-track");
     expect(markup).toContain('aria-label="Audio track narration.wav, 0.00–5.00 seconds"');
     expect(markup).toContain("narration.wav");
+    expect(markup).toContain("pointer-events-none");
+  });
+
+  it("places the trimmed project audio interval without making the lane interactive", () => {
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...props()}
+        projectAudioTrack={{
+          fileName: "trimmed.wav",
+          sourceSampleFrames: 96_000,
+          timelineOffsetSampleFrames: 48_000,
+          trimEndSampleFrames: 72_000,
+          trimStartSampleFrames: 24_000,
+        }}
+      />,
+    );
+
+    expect(markup).toContain('aria-label="Audio track trimmed.wav, 1.00–2.00 seconds"');
+    expect(markup).toContain("left:20%");
+    expect(markup).toContain("width:20%");
     expect(markup).toContain("pointer-events-none");
   });
 
