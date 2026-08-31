@@ -102,8 +102,7 @@ export function projectAudioTimelineTimingAtDelta(
   let trimStart = track.trimStartSampleFrames;
   let trimEnd = sourceEnd;
   if (gesture === "body") {
-    const clipFrames = sourceEnd - trimStart;
-    offset = Math.min(Math.max(0, sceneFrames - clipFrames), Math.max(0, offset + deltaFrames));
+    offset = Math.min(sceneFrames - 1, Math.max(0, offset + deltaFrames));
   } else if (gesture === "left") {
     const minimumDelta = Math.max(-offset, -trimStart);
     const maximumDelta = Math.min(sourceEnd - trimStart - 1, sceneFrames - offset - 1);

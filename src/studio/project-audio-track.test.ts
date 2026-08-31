@@ -80,7 +80,7 @@ describe("project audio track", () => {
     expect(() => updateProjectAudioTiming(track, { offset: 0, trimEnd: 1.01, trimStart: 0 })).toThrow("cannot exceed");
   });
 
-  it("moves a Timeline clip within the Scene without changing its source trim", () => {
+  it("moves a Timeline clip start within the Scene without changing its source trim", () => {
     const track = {
       sourceSampleFrames: 96_000,
       timelineOffsetSampleFrames: 24_000,
@@ -89,7 +89,7 @@ describe("project audio track", () => {
     };
 
     expect(projectAudioTimelineTimingAtDelta(track, 2, 1, "body")).toEqual({
-      offset: 1,
+      offset: 1.5,
       trimEnd: 1.25,
       trimStart: 0.25,
     });
@@ -97,6 +97,26 @@ describe("project audio track", () => {
       offset: 0,
       trimEnd: 1.25,
       trimStart: 0.25,
+    });
+  });
+
+  it("moves audio longer than the Scene and clamps only its start", () => {
+    const track = {
+      sourceSampleFrames: 96_000,
+      timelineOffsetSampleFrames: 0,
+      trimEndSampleFrames: null,
+      trimStartSampleFrames: 0,
+    };
+
+    expect(projectAudioTimelineTimingAtDelta(track, 1, 0.25, "body")).toEqual({
+      offset: 0.25,
+      trimEnd: null,
+      trimStart: 0,
+    });
+    expect(projectAudioTimelineTimingAtDelta(track, 1, 2, "body")).toEqual({
+      offset: 47_999 / 48_000,
+      trimEnd: null,
+      trimStart: 0,
     });
   });
 
