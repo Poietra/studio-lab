@@ -171,6 +171,8 @@ describe("WorkspaceSidebar Layers", () => {
         appliedTransactionIds={new Set()}
         audioImportError="The WAV sample rate is unsupported."
         audioTrack={{
+          fadeInSampleFrames: 4_800,
+          fadeOutSampleFrames: 9_600,
           fileName: "narration.wav",
           sourceSampleFrames: 48_000,
           timelineOffsetSampleFrames: 0,
@@ -186,8 +188,8 @@ describe("WorkspaceSidebar Layers", () => {
         editingAppliedTransactionId={null}
         entities={[]}
         nextScene={null}
+        onAudioMixChange={vi.fn()}
         onAudioTimingChange={vi.fn()}
-        onAudioVolumeChange={vi.fn()}
         onDurationChange={vi.fn()}
         onEditAppliedProgram={vi.fn()}
         onImportAudioFile={vi.fn()}
@@ -212,7 +214,11 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("Apply audio timing");
     expect(markup).toContain('aria-label="Audio volume percent"');
     expect(markup).toContain('value="50"');
-    expect(markup).toContain("Apply volume");
+    expect(markup).toContain('aria-label="Audio fade in seconds"');
+    expect(markup).toContain('value="0.1"');
+    expect(markup).toContain('aria-label="Audio fade out seconds"');
+    expect(markup).toContain('value="0.2"');
+    expect(markup).toContain("Apply audio mix");
     expect(markup).toContain("The WAV sample rate is unsupported.");
   });
 

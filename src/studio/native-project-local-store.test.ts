@@ -131,6 +131,8 @@ describe("Studio-native local project persistence", () => {
     const state = {
       ...(await authoredState()),
       audioTrack: {
+        fadeInSampleFrames: 1_200,
+        fadeOutSampleFrames: 2_400,
         fileName: "narration take 2.wav",
         sourceSampleFrames: 24_000,
         timelineOffsetSampleFrames: 4_800,
@@ -145,6 +147,8 @@ describe("Studio-native local project persistence", () => {
     await store.save(IDENTITY, state);
     const persisted = adapter.records.get(key(IDENTITY)) as {
       audioTrack: {
+        fadeInSampleFrames: number;
+        fadeOutSampleFrames: number;
         fileName: string;
         sourceSampleFrames: number;
         timelineOffsetSampleFrames: number;
@@ -158,6 +162,8 @@ describe("Studio-native local project persistence", () => {
     expect(persisted.version).toBe(1);
     expect(persisted.audioTrack.fileName).toBe("narration take 2.wav");
     expect(persisted.audioTrack).toMatchObject({
+      fadeInSampleFrames: 1_200,
+      fadeOutSampleFrames: 2_400,
       sourceSampleFrames: 24_000,
       timelineOffsetSampleFrames: 4_800,
       trimEndSampleFrames: 19_200,
@@ -173,6 +179,8 @@ describe("Studio-native local project persistence", () => {
     const restored = await store.restore(IDENTITY);
     expect(restored?.audioTrack?.fileName).toBe("narration take 2.wav");
     expect(restored?.audioTrack).toMatchObject({
+      fadeInSampleFrames: 1_200,
+      fadeOutSampleFrames: 2_400,
       sourceSampleFrames: 24_000,
       timelineOffsetSampleFrames: 4_800,
       trimEndSampleFrames: 19_200,
@@ -198,6 +206,8 @@ describe("Studio-native local project persistence", () => {
 
     await expect(store.restore(IDENTITY)).resolves.toMatchObject({
       audioTrack: {
+        fadeInSampleFrames: 0,
+        fadeOutSampleFrames: 0,
         fileName: "legacy.wav",
         sourceSampleFrames: null,
         timelineOffsetSampleFrames: 0,

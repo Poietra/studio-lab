@@ -101,6 +101,8 @@ describe("export worker messages", () => {
       exportWorkerRequestV1Schema.safeParse({
         ...base,
         audioTiming: {
+          fadeInSampleFrames: 2_400,
+          fadeOutSampleFrames: 4_800,
           timelineOffsetSampleFrames: 4_800,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 2_400,
@@ -119,11 +121,27 @@ describe("export worker messages", () => {
       audioWav: new ArrayBuffer(44),
     });
     expect(legacyTiming.kind === "export-mp4" ? legacyTiming.audioTiming?.volumePercent : undefined).toBe(100);
+    expect(legacyTiming.kind === "export-mp4" ? legacyTiming.audioTiming?.fadeInSampleFrames : undefined).toBe(0);
+    expect(legacyTiming.kind === "export-mp4" ? legacyTiming.audioTiming?.fadeOutSampleFrames : undefined).toBe(0);
     expect(
       exportWorkerRequestV1Schema.safeParse({
         ...base,
         audioTiming: {
           timelineOffsetSampleFrames: -1,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+          volumePercent: 100,
+        },
+        audioWav: new ArrayBuffer(44),
+      }).success,
+    ).toBe(false);
+    expect(
+      exportWorkerRequestV1Schema.safeParse({
+        ...base,
+        audioTiming: {
+          fadeInSampleFrames: -1,
+          fadeOutSampleFrames: 0,
+          timelineOffsetSampleFrames: 0,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 0,
           volumePercent: 100,

@@ -373,6 +373,8 @@ describe("runBrowserMp4ExportV1", () => {
     const audioWav = new Uint8Array([0x52, 0x49, 0x46, 0x46]).buffer;
     const outcomePromise = runBrowserMp4ExportV1({
       audioTiming: {
+        fadeInSampleFrames: 2_400,
+        fadeOutSampleFrames: 4_800,
         timelineOffsetSampleFrames: 4_800,
         trimEndSampleFrames: 14_400,
         trimStartSampleFrames: 2_400,
@@ -387,6 +389,8 @@ describe("runBrowserMp4ExportV1", () => {
     const request = exportWorkerRequestV1Schema.parse(worker.posted[0]);
     if (request.kind !== "export-mp4") throw new Error("missing export request");
     expect(request.audioTiming).toEqual({
+      fadeInSampleFrames: 2_400,
+      fadeOutSampleFrames: 4_800,
       timelineOffsetSampleFrames: 4_800,
       trimEndSampleFrames: 14_400,
       trimStartSampleFrames: 2_400,

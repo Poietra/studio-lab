@@ -179,6 +179,8 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
       ) => {
         expect(wav).toEqual(new Uint8Array([0x52, 0x49, 0x46, 0x46]));
         expect(JSON.parse(new TextDecoder().decode(audioTiming))).toEqual({
+          fadeInSampleFrames: 2_400,
+          fadeOutSampleFrames: 4_800,
           timelineOffsetSampleFrames: 4_800,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 2_400,
@@ -191,6 +193,8 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
     await runtime.accept(
       exportRequest({
         audioTiming: {
+          fadeInSampleFrames: 2_400,
+          fadeOutSampleFrames: 4_800,
           timelineOffsetSampleFrames: 4_800,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 2_400,
@@ -219,6 +223,8 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
     await runtime.accept(
       exportRequest({
         audioTiming: {
+          fadeInSampleFrames: 0,
+          fadeOutSampleFrames: 0,
           timelineOffsetSampleFrames: 4_800,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 0,
@@ -372,7 +378,7 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
     return {
       default: async () => undefined,
       exportSceneMp4V1: async () => new Uint8Array([1]),
-      poietraEngineAbiVersion: () => 43,
+      poietraEngineAbiVersion: () => 44,
       ...overrides,
     };
   }
@@ -404,6 +410,6 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
   it("rejects a stale engine ABI before calling an incompatible export signature", async () => {
     await expect(
       initializeBrowserMp4ExportBindingsV1(wasmModule({ poietraEngineAbiVersion: () => 31 })),
-    ).rejects.toThrow(/engine ABI 43/);
+    ).rejects.toThrow(/engine ABI 44/);
   });
 });

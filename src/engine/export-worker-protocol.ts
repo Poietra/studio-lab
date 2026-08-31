@@ -79,6 +79,8 @@ const nonNegativeCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTE
 
 export const exportAudioTimingV1Schema = z
   .object({
+    fadeInSampleFrames: nonNegativeCount.default(0),
+    fadeOutSampleFrames: nonNegativeCount.default(0),
     timelineOffsetSampleFrames: nonNegativeCount,
     trimEndSampleFrames: nonNegativeCount.positive().nullable(),
     trimStartSampleFrames: nonNegativeCount,
