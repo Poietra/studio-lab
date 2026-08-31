@@ -8,6 +8,7 @@ import {
   MAX_NATIVE_PROJECT_PNG_BYTES_V1,
   type NativeProjectAssetStateV1,
   nativeProjectPngAssetIdV1,
+  normalizeNativeProjectImageFileV1,
 } from "./native-project-assets";
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
@@ -66,6 +67,57 @@ async function emptyNativeState(): Promise<NativeProjectAssetStateV1> {
 const dimensions = vi.fn(async () => ({ pixelHeight: 16, pixelWidth: 32 }));
 
 describe("Studio-native project PNG ingress", () => {
+  it("keeps PNG input byte-identical and normalizes JPEG and WebP to PNG bytes", async () => {
+    const pngFile = new File([PNG], "source.png", { type: "image/png" });
+    const transcode = vi.fn(async () => PNG_2.slice().buffer);
+
+    await expect(normalizeNativeProjectImageFileV1(pngFile, transcode)).resolves.toEqual({
+      file: pngFile,
+      kind: "file",
+    });
+    expect(transcode).not.toHaveBeenCalled();
+
+    for (const [name, type] of [
+      ["photo.jpg", "image/jpeg"],
+      ["graphic.webp", "image/webp"],
+    ] as const) {
+      const file = new File([Uint8Array.of(1, 2, 3)], name, { type });
+      await expect(normalizeNativeProjectImageFileV1(file, transcode)).resolves.toEqual({
+        bytes: PNG_2.buffer,
+        kind: "bytes",
+        mediaType: "image/png",
+      });
+    }
+    expect(transcode).toHaveBeenCalledTimes(2);
+  });
+
+  it("falls back to PNG and JPEG extensions for generic browser MIME types", async () => {
+    const pngFile = new File([PNG], "source.png", { type: "application/octet-stream" });
+    const jpegFile = new File([Uint8Array.of(1, 2, 3)], "photo.jpeg", { type: "application/octet-stream" });
+    const transcode = vi.fn(async () => PNG_2.slice().buffer);
+
+    await expect(normalizeNativeProjectImageFileV1(pngFile, transcode)).resolves.toEqual({
+      file: pngFile,
+      kind: "file",
+    });
+    await expect(normalizeNativeProjectImageFileV1(jpegFile, transcode)).resolves.toEqual({
+      bytes: PNG_2.buffer,
+      kind: "bytes",
+      mediaType: "image/png",
+    });
+    expect(transcode).toHaveBeenCalledOnce();
+    expect(transcode).toHaveBeenCalledWith(jpegFile);
+  });
+
+  it("rejects unsupported browser image input before entering PNG ingestion", async () => {
+    await expect(
+      normalizeNativeProjectImageFileV1(new File([Uint8Array.of(1)], "photo.gif", { type: "image/gif" })),
+    ).rejects.toThrow(/supports PNG, JPEG, and WebP/i);
+    await expect(normalizeNativeProjectImageFileV1(new File([], "empty.webp", { type: "image/webp" }))).rejects.toThrow(
+      /between 1/i,
+    );
+  });
+
   it("atomically adds copied PNG bytes to the canonical manifest and Scene reference", async () => {
     const state = await emptyNativeState();
     const inputBytes = PNG.slice().buffer;
