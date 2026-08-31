@@ -23,6 +23,8 @@ import {
   STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1,
   STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1,
   STUDIO_SCENE_POST_EFFECT_PRESETS,
+  STUDIO_SOFT_BLUR_POST_EFFECT_PARAMETERS_V1,
+  STUDIO_SOFT_BLUR_POST_EFFECT_SOURCE_V1,
   STUDIO_VIGNETTE_POST_EFFECT_PARAMETERS_V1,
   STUDIO_VIGNETTE_POST_EFFECT_SOURCE_V1,
   STUDIO_WAVE_DISTORTION_POST_EFFECT_PARAMETERS_V1,
@@ -86,6 +88,7 @@ describe("project Scene post-effect asset library", () => {
       { id: "vignette", name: "Vignette" },
       { id: "color-tint", name: "Color Tint" },
       { id: "duotone", name: "Duotone" },
+      { id: "soft-blur", name: "Soft Blur" },
       { id: "pixelate", name: "Pixelate" },
       { id: "chromatic-shift", name: "Chromatic Shift" },
     ]);
@@ -106,7 +109,11 @@ describe("project Scene post-effect asset library", () => {
       name: "Duotone",
       presetId: "duotone",
     });
-    const pixelate = createStudioScenePostEffectSourceV1(duotone.state, {
+    const softBlur = createStudioScenePostEffectSourceV1(duotone.state, {
+      name: "Soft Blur",
+      presetId: "soft-blur",
+    });
+    const pixelate = createStudioScenePostEffectSourceV1(softBlur.state, {
       name: "Pixelate",
       presetId: "pixelate",
     });
@@ -146,6 +153,13 @@ describe("project Scene post-effect asset library", () => {
       },
       {
         diagnostic: null,
+        name: "Soft Blur",
+        parameterSchema: STUDIO_SOFT_BLUR_POST_EFFECT_PARAMETERS_V1,
+        source: STUDIO_SOFT_BLUR_POST_EFFECT_SOURCE_V1,
+        sourceLanguage: "wgsl",
+      },
+      {
+        diagnostic: null,
         name: "Pixelate",
         parameterSchema: STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1,
         source: STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1,
@@ -176,6 +190,11 @@ describe("project Scene post-effect asset library", () => {
     );
     expect(STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1).toContain("host.parameters_1.z");
     expect(STUDIO_DUOTONE_POST_EFFECT_SOURCE_V1).toContain("duotone * color.a");
+    expect(studioScenePostEffectParameterLayoutV1(STUDIO_SOFT_BLUR_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([4, 1]);
+    expect(STUDIO_SOFT_BLUR_POST_EFFECT_SOURCE_V1.match(/textureSample\(/gu)).toHaveLength(9);
+    expect(STUDIO_SOFT_BLUR_POST_EFFECT_SOURCE_V1).toContain("if radius == 0.0");
+    expect(STUDIO_SOFT_BLUR_POST_EFFECT_SOURCE_V1).toContain("return center;");
+    expect(STUDIO_SOFT_BLUR_POST_EFFECT_SOURCE_V1).toContain("return mix(center, blurred, mix_amount);");
     expect(studioScenePostEffectParameterLayoutV1(STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([16]);
     expect(studioScenePostEffectParameterLayoutV1(STUDIO_CHROMATIC_SHIFT_POST_EFFECT_PARAMETERS_V1).defaults).toEqual([
       6,
