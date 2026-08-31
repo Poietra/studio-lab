@@ -159,5 +159,51 @@ describe("project audio track", () => {
       trimEnd: null,
       trimStart: 0.25,
     });
+    expect(
+      projectAudioTimelineTimingAtDelta(
+        {
+          sourceSampleFrames: 96_000,
+          timelineOffsetSampleFrames: 48_000,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+        },
+        0.5,
+        0,
+        "right",
+      ),
+    ).toEqual({ offset: 1, trimEnd: null, trimStart: 0 });
+    expect(
+      projectAudioTimelineTimingAtDelta(
+        {
+          sourceSampleFrames: 96_000,
+          timelineOffsetSampleFrames: 48_000,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+        },
+        0.5,
+        -0.25,
+        "right",
+      ),
+    ).toEqual({ offset: 1, trimEnd: null, trimStart: 0 });
+  });
+
+  it("moves the visible right handle when the source clip extends past the Scene", () => {
+    const track = {
+      sourceSampleFrames: 96_000,
+      timelineOffsetSampleFrames: 24_000,
+      trimEndSampleFrames: null,
+      trimStartSampleFrames: 0,
+    };
+
+    expect(projectAudioTimelineTimingAtDelta(track, 1, -0.1, "right")).toEqual({
+      offset: 0.5,
+      trimEnd: 0.4,
+      trimStart: 0,
+    });
+    expect(projectAudioTimelineTimingAtDelta(track, 1, 0.1, "right")).toEqual({
+      offset: 0.5,
+      trimEnd: null,
+      trimStart: 0,
+    });
   });
 });

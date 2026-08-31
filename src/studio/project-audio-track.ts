@@ -91,6 +91,13 @@ export function projectAudioTimelineTimingAtDelta(
   )
     return null;
 
+  const originalTiming: ProjectAudioTimingSeconds = {
+    offset: framesToSeconds(track.timelineOffsetSampleFrames),
+    trimEnd: track.trimEndSampleFrames === null ? null : framesToSeconds(track.trimEndSampleFrames),
+    trimStart: framesToSeconds(track.trimStartSampleFrames),
+  };
+  if (deltaFrames === 0) return originalTiming;
+
   let offset = track.timelineOffsetSampleFrames;
   let trimStart = track.trimStartSampleFrames;
   let trimEnd = sourceEnd;
@@ -100,19 +107,18 @@ export function projectAudioTimelineTimingAtDelta(
   } else if (gesture === "left") {
     const minimumDelta = Math.max(-offset, -trimStart);
     const maximumDelta = Math.min(sourceEnd - trimStart - 1, sceneFrames - offset - 1);
-    if (maximumDelta < minimumDelta) {
-      return {
-        offset: framesToSeconds(offset),
-        trimEnd: track.trimEndSampleFrames === null ? null : framesToSeconds(track.trimEndSampleFrames),
-        trimStart: framesToSeconds(trimStart),
-      };
-    }
+    if (maximumDelta < minimumDelta) return originalTiming;
     const appliedDelta = Math.min(maximumDelta, Math.max(minimumDelta, deltaFrames));
     offset += appliedDelta;
     trimStart += appliedDelta;
   } else {
-    const maximumEnd = Math.min(track.sourceSampleFrames ?? sourceEnd, trimStart + Math.max(1, sceneFrames - offset));
-    trimEnd = Math.min(maximumEnd, Math.max(trimStart + 1, sourceEnd + deltaFrames));
+    if (offset >= sceneFrames) return originalTiming;
+    const visibleTimelineEnd = Math.min(sceneFrames, offset + sourceEnd - trimStart);
+    const maximumTimelineEnd = Math.min(sceneFrames, offset + (track.sourceSampleFrames ?? sourceEnd) - trimStart);
+    if (maximumTimelineEnd <= offset) return originalTiming;
+    const timelineEnd = Math.min(maximumTimelineEnd, Math.max(offset + 1, visibleTimelineEnd + deltaFrames));
+    if (timelineEnd === visibleTimelineEnd) return originalTiming;
+    trimEnd = trimStart + timelineEnd - offset;
   }
 
   return {
