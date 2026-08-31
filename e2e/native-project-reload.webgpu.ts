@@ -2021,7 +2021,7 @@ test("writes Japanese multiline Studio Text through reload and MP4 export", asyn
   }
 });
 
-test("wraps Studio Text through Inspector, history, reload, and MP4 export", async ({ page }) => {
+test("resizes Studio Text wrap width from both handles through history, reload, and MP4 export", async ({ page }) => {
   test.setTimeout(180_000);
   page.setDefaultTimeout(10_000);
   let projectId: string | null = null;
@@ -2059,13 +2059,30 @@ test("wraps Studio Text through Inspector, history, reload, and MP4 export", asy
     await page.getByRole("button", { name: "Replace program" }).click();
     await expect(wrapWidth).toHaveValue("8.00");
 
+    await page.getByRole("button", { name: "Set position" }).click();
+    await playhead.fill("1");
+    const rightHandle = page.getByRole("button", { name: `Change ${content} wrap width from right edge` });
+    await dragBy(page, rightHandle, { x: -25, y: 0 });
+    await expect(page.getByRole("button", { name: "Replace program" })).toBeEnabled({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await playhead.fill("1");
+    await expect.poll(async () => Number(await wrapWidth.inputValue())).toBeLessThan(8);
+    const rightHandleWidth = Number(await wrapWidth.inputValue());
+
+    const leftHandle = page.getByRole("button", { name: `Change ${content} wrap width from left edge` });
+    await dragBy(page, leftHandle, { x: -20, y: 0 });
+    await expect(page.getByRole("button", { name: "Replace program" })).toBeEnabled({ timeout: 30_000 });
+    await page.getByRole("button", { name: "Replace program" }).click();
+    await playhead.fill("1");
+    await expect.poll(async () => Number(await wrapWidth.inputValue())).toBeGreaterThan(rightHandleWidth);
+    const finalHandleWidth = Number(await wrapWidth.inputValue());
+
     await page.getByRole("button", { name: "Undo" }).click();
     await playhead.fill("1");
-    await expect(wrapWidth).toHaveValue("");
-    await expect.poll(async () => (await preparedDimensions(wrapper)).width).toBeGreaterThan(wrapped.width * 1.25);
+    await expect.poll(async () => Number(await wrapWidth.inputValue())).toBeCloseTo(rightHandleWidth, 4);
     await page.getByRole("button", { name: "Redo" }).click();
     await playhead.fill("1");
-    await expect(wrapWidth).toHaveValue("8.00");
+    await expect.poll(async () => Number(await wrapWidth.inputValue())).toBeCloseTo(finalHandleWidth, 4);
     await expect.poll(async () => (await preparedDimensions(wrapper)).height).toBeGreaterThan(initial.height * 1.5);
 
     await page.reload();
@@ -2075,7 +2092,11 @@ test("wraps Studio Text through Inspector, history, reload, and MP4 export", asy
     await expect(canvas).toHaveAttribute("data-preview-sample-time", "1");
     const restoredText = page.getByRole("button", { exact: true, name: `Move ${content}` });
     await restoredText.click();
-    await expect(page.getByRole("spinbutton", { name: `Text wrap width of ${content}` })).toHaveValue("8.00");
+    await expect
+      .poll(async () =>
+        Number(await page.getByRole("spinbutton", { name: `Text wrap width of ${content}` }).inputValue()),
+      )
+      .toBeCloseTo(finalHandleWidth, 4);
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
     const sceneDuration = Number(await page.getByRole("slider", { name: "Scene playhead" }).getAttribute("max"));
