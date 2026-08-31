@@ -80,6 +80,21 @@ async function dragBy(
   await page.mouse.up();
 }
 
+async function dragCanvasMarquee(
+  page: Page,
+  canvas: Locator,
+  start: Readonly<{ x: number; y: number }>,
+  end: Readonly<{ x: number; y: number }>,
+) {
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 4 });
+  if (start.x !== end.x || start.y !== end.y) {
+    await expect(canvas.locator("[data-studio-selection-marquee]")).toBeVisible();
+  }
+  await page.mouse.up();
+}
+
 async function dragTimelineControlBySeconds(
   page: Page,
   control: Locator,
@@ -1420,6 +1435,8 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(duration).toHaveValue("7.80");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await playhead.fill("6.4");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(6.4, 1);
     const fitCanvasBounds = await canvas.boundingBox();
     if (!fitCanvasBounds) throw new Error("The fitted Studio canvas is not visible.");
     const previewRevision = await canvas.getAttribute("data-preview-revision");
@@ -1433,11 +1450,59 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
       .poll(async () => ((await canvas.boundingBox())?.width ?? 0) / fitCanvasBounds.width)
       .toBeCloseTo(1.25, 1);
     await expect(canvas).toHaveAttribute("data-preview-revision", previewRevision);
+    const editorViewport = page.locator("[data-studio-editor-viewport]");
+    await expect
+      .poll(() =>
+        editorViewport.evaluate(
+          (element) => element.scrollWidth > element.clientWidth || element.scrollHeight > element.clientHeight,
+        ),
+      )
+      .toBe(true);
+    await editorViewport.evaluate((element) => element.scrollTo({ left: 40, top: 20 }));
+    const circle = page.getByRole("button", { name: "Move Circle", exact: true });
+    const rectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
+    const [circleBounds, rectangleBounds, marqueeCanvasBounds] = await Promise.all([
+      circle.boundingBox(),
+      rectangle.boundingBox(),
+      canvas.boundingBox(),
+    ]);
+    if (!circleBounds || !rectangleBounds || !marqueeCanvasBounds) {
+      throw new Error("The zoomed Studio objects are not visible for marquee selection.");
+    }
+    const marqueeStart = {
+      x: Math.max(marqueeCanvasBounds.x + 2, Math.min(circleBounds.x, rectangleBounds.x) - 6),
+      y: Math.max(marqueeCanvasBounds.y + 2, Math.min(circleBounds.y, rectangleBounds.y) - 6),
+    };
+    const blankClickEnd = { x: marqueeStart.x + 2, y: marqueeStart.y + 2 };
+    await dragCanvasMarquee(page, canvas, marqueeStart, {
+      x: Math.max(circleBounds.x + circleBounds.width / 2, rectangleBounds.x + rectangleBounds.width / 2),
+      y: Math.max(circleBounds.y + circleBounds.height / 2, rectangleBounds.y + rectangleBounds.height / 2),
+    });
+    await expect(page.locator('[data-studio-composite-selection="2"]')).toBeVisible();
+    await dragCanvasMarquee(page, canvas, marqueeStart, blankClickEnd);
+    await expect(page.locator("[data-studio-composite-selection]")).toHaveCount(0);
+    await dragCanvasMarquee(
+      page,
+      canvas,
+      { x: circleBounds.x - 6, y: circleBounds.y - 6 },
+      { x: circleBounds.x + circleBounds.width / 2, y: circleBounds.y + circleBounds.height / 2 },
+    );
+    await expect(circle).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.down("Shift");
+    await dragCanvasMarquee(
+      page,
+      canvas,
+      { x: rectangleBounds.x - 6, y: rectangleBounds.y - 6 },
+      { x: rectangleBounds.x + rectangleBounds.width / 2, y: rectangleBounds.y + rectangleBounds.height / 2 },
+    );
+    await page.keyboard.up("Shift");
+    await expect(page.locator('[data-studio-composite-selection="2"]')).toBeVisible();
+    await expect(canvas).toHaveAttribute("data-preview-revision", previewRevision);
+    await dragCanvasMarquee(page, canvas, marqueeStart, blankClickEnd);
+    await page.getByRole("checkbox", { name: "Select Rectangle" }).check();
     await expect(
       page.getByText("Later authored content follows the Studio-added wait, so shortening it would cut content."),
     ).toBeVisible();
-    await playhead.fill("6.4");
-    const rectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
     await page.getByRole("button", { name: "Set position" }).click();
     const zoomedCanvasBounds = await canvas.boundingBox();
     if (!zoomedCanvasBounds) throw new Error("The zoomed Studio canvas is not visible.");
@@ -1458,7 +1523,6 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
       .toBeCloseTo(positionY - (20 / zoomedCanvasBounds.height) * 360, 3);
     await page.getByRole("button", { name: "Fit canvas" }).click();
     await expect(page.locator("[data-studio-editor-zoom]")).toHaveAttribute("data-studio-editor-zoom", "100");
-    const editorViewport = page.locator("[data-studio-editor-viewport]");
     const [fittedBounds, editorViewportBounds] = await Promise.all([
       canvas.boundingBox(),
       editorViewport.boundingBox(),

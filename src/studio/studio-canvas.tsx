@@ -2,7 +2,7 @@ import { type DragEvent, type KeyboardEvent, type PointerEvent, useState } from 
 
 import type { StudioCubicBezierPointRef } from "../engine/cubic-bezier-authoring";
 import { cn } from "../lib/cn";
-import type { CanvasSelectionMode } from "./canvas-selection";
+import { type CanvasSelectionMode, canvasMarqueeIntersects, canvasMarqueeRect } from "./canvas-selection";
 import { studioCreationTextContent } from "./editable-content";
 import type {
   AlignmentGuide,
@@ -133,6 +133,7 @@ export type StudioCanvasProps = Readonly<{
   onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
   onPresenceCursorChange?: (cursor: Readonly<{ x: number; y: number }> | null) => void;
   onSelectEntity: (entityId: string, mode?: CanvasSelectionMode) => void;
+  onSelectEntities?: (entityIds: readonly string[], mode: "add" | "replace") => void;
   presenceParticipants?: readonly StudioPresenceParticipantV1[];
   preview?: StudioPreviewRendererView | null;
   readOnly: boolean;
@@ -162,6 +163,43 @@ export type StudioCubicBezierCanvasControls = Readonly<{
 
 export function entityLabel(entity: ProjectedEntity) {
   return entity.content?.label ?? entity.content?.text ?? entity.id.split(":").at(-1) ?? entity.id;
+}
+
+const MARQUEE_MINIMUM_CLIENT_DISTANCE = 4;
+
+function marqueeOverlay(canvas: HTMLDivElement) {
+  return canvas.querySelector<HTMLElement>("[data-studio-selection-marquee]");
+}
+
+function updateMarqueeOverlay(canvas: HTMLDivElement, currentClientPoint: Point) {
+  const startClientPoint = {
+    x: Number(canvas.dataset.studioMarqueeStartClientX),
+    y: Number(canvas.dataset.studioMarqueeStartClientY),
+  };
+  if (!Number.isFinite(startClientPoint.x) || !Number.isFinite(startClientPoint.y)) return;
+  const bounds = canvas.getBoundingClientRect();
+  const rect = canvasMarqueeRect(
+    clientPointToViewport(bounds, startClientPoint),
+    clientPointToViewport(bounds, currentClientPoint),
+  );
+  const overlay = marqueeOverlay(canvas);
+  if (!overlay) return;
+  overlay.style.left = `${(rect.left / STUDIO_VIEWPORT.width) * 100}%`;
+  overlay.style.top = `${(rect.top / STUDIO_VIEWPORT.height) * 100}%`;
+  overlay.style.width = `${((rect.right - rect.left) / STUDIO_VIEWPORT.width) * 100}%`;
+  overlay.style.height = `${((rect.bottom - rect.top) / STUDIO_VIEWPORT.height) * 100}%`;
+}
+
+function clearMarquee(canvas: HTMLDivElement) {
+  delete canvas.dataset.studioMarqueeAdditive;
+  delete canvas.dataset.studioMarqueePointerId;
+  delete canvas.dataset.studioMarqueeStartClientX;
+  delete canvas.dataset.studioMarqueeStartClientY;
+  const overlay = marqueeOverlay(canvas);
+  if (overlay) {
+    overlay.style.height = "0";
+    overlay.style.width = "0";
+  }
 }
 
 function dimensionSize(dimensions: EntityDimensions) {
@@ -785,6 +823,7 @@ export function StudioCanvas({
   onMotionControlChange,
   onPresenceCursorChange = () => undefined,
   onSelectEntity,
+  onSelectEntities,
   preview = null,
   presenceParticipants = [],
   readOnly,
@@ -1057,8 +1096,45 @@ export function StudioCanvas({
             x: Math.min(1, Math.max(0, point.x / STUDIO_VIEWPORT.width)),
             y: Math.min(1, Math.max(0, point.y / STUDIO_VIEWPORT.height)),
           });
+          if (event.currentTarget.dataset.studioMarqueePointerId === String(event.pointerId)) {
+            event.preventDefault();
+            updateMarqueeOverlay(event.currentTarget, { x: event.clientX, y: event.clientY });
+          }
+        }}
+        onLostPointerCapture={(event) => {
+          if (event.currentTarget.dataset.studioMarqueePointerId === String(event.pointerId)) {
+            clearMarquee(event.currentTarget);
+          }
+        }}
+        onPointerCancel={(event) => {
+          if (event.currentTarget.dataset.studioMarqueePointerId === String(event.pointerId)) {
+            clearMarquee(event.currentTarget);
+          }
         }}
         onPointerDown={(event) => {
+          const interactionTarget = isCanvasInteractionTarget(event.target);
+          if (
+            event.button === 0 &&
+            onSelectEntities &&
+            !readOnly &&
+            showingCanvasPixels &&
+            !displayOnlyPreview &&
+            insertTool === "select" &&
+            inlineTextEditor === null &&
+            !boundaryActive &&
+            !cubicBezierExtensionActive &&
+            !interactionTarget
+          ) {
+            event.preventDefault();
+            event.currentTarget.dataset.studioMarqueePointerId = String(event.pointerId);
+            event.currentTarget.dataset.studioMarqueeStartClientX = String(event.clientX);
+            event.currentTarget.dataset.studioMarqueeStartClientY = String(event.clientY);
+            event.currentTarget.dataset.studioMarqueeAdditive =
+              event.shiftKey || event.metaKey || event.ctrlKey ? "true" : "false";
+            event.currentTarget.setPointerCapture(event.pointerId);
+            updateMarqueeOverlay(event.currentTarget, { x: event.clientX, y: event.clientY });
+            return;
+          }
           if (
             !showingCanvasPixels ||
             displayOnlyPreview ||
@@ -1066,7 +1142,7 @@ export function StudioCanvas({
             (insertTool === "select" && !cubicBezierExtensionActive) ||
             inlineTextEditor !== null ||
             boundaryActive ||
-            (!cubicBezierExtensionActive && isCanvasInteractionTarget(event.target))
+            (!cubicBezierExtensionActive && interactionTarget)
           )
             return;
           const point = clientPointToViewport(event.currentTarget.getBoundingClientRect(), {
@@ -1079,8 +1155,44 @@ export function StudioCanvas({
               : point,
           );
         }}
+        onPointerUp={(event) => {
+          const canvas = event.currentTarget;
+          if (canvas.dataset.studioMarqueePointerId !== String(event.pointerId) || !onSelectEntities) return;
+          const start = {
+            x: Number(canvas.dataset.studioMarqueeStartClientX),
+            y: Number(canvas.dataset.studioMarqueeStartClientY),
+          };
+          const current = { x: event.clientX, y: event.clientY };
+          const additive = canvas.dataset.studioMarqueeAdditive === "true";
+          const distance = Math.hypot(current.x - start.x, current.y - start.y);
+          const selectionRect = canvasMarqueeRect(start, current);
+          const selectedEntityIds =
+            distance < MARQUEE_MINIMUM_CLIENT_DISTANCE
+              ? []
+              : Array.from(canvas.querySelectorAll<HTMLButtonElement>("button[data-studio-entity]"))
+                  .filter((entity) => {
+                    if (entity.disabled) return false;
+                    const bounds = entity.getBoundingClientRect();
+                    return canvasMarqueeIntersects(selectionRect, {
+                      bottom: bounds.bottom,
+                      left: bounds.left,
+                      right: bounds.right,
+                      top: bounds.top,
+                    });
+                  })
+                  .flatMap((entity) => (entity.dataset.studioEntity ? [entity.dataset.studioEntity] : []));
+          event.preventDefault();
+          clearMarquee(canvas);
+          onSelectEntities(selectedEntityIds, additive ? "add" : "replace");
+          if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+        }}
         role="group"
       >
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute z-30 size-0 border border-sky-400 bg-sky-400/10"
+          data-studio-selection-marquee=""
+        />
         {preview ? (
           <canvas
             className={cn("pointer-events-none absolute inset-0 z-0 size-full", !canvasSurfaceVisible && "invisible")}

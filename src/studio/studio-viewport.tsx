@@ -307,6 +307,7 @@ export function StudioViewport({
   onSelectionRotationPointerMove,
   onSelectionRotationPointerUp,
   onSelectEntity,
+  onSelectEntities,
   onSelectionLayout,
   onTimeChange,
   onTogglePlayback,
@@ -453,6 +454,7 @@ export function StudioViewport({
         onSelectionRotationPointerMove={onSelectionRotationPointerMove}
         onSelectionRotationPointerUp={onSelectionRotationPointerUp}
         onSelectEntity={onSelectEntity}
+        onSelectEntities={onSelectEntities}
         preview={preview}
         presenceParticipants={presenceParticipants}
         readOnly={readOnly}
