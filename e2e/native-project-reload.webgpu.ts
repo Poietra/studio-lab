@@ -17,6 +17,10 @@ const PNG_2 = encodeRgbaPngV1(
   2,
   2,
 );
+const MP3_44K_MONO = Buffer.from(
+  "//sQxAAABHQTVVSQgDCmCa83GiACAAGtOUAAAVk6PVBQCAYJAfB8HwfKAgCAYRB8H9QIOxOH+INwBJP2wGA4HA4AAAAAACiJKpkUZAjpAkgWo/eFAfATG/AilC+oGhL8JA0qCgAYMAD/+xLEAoPFWB0gHeAAKJsD40GvaEzMCQC8QASGAOB4Z+72pmMDlmHEESYMAH5gQgYGBSBMYF4DxZq0lYeYIIZk+cS0YX4opqvUomp+KKYYQMxz3pn0pmjxm45iQriU4Ju+qjDQ4w4dMdP/+xDEA4PFBB8YDfsiQK2EYoG/bEiDPoMwrxvjUM4cNOsbQwngbTXMAgZuqHV+awbJpaHP1/QkQYmImbHBu8aYlw7RwV9cG/wO4YmoT5wjIZ4jGZn5mTwYsLMHjFPgH/q+ijChEw8cMf/7EsQDA8UAHxgN+yJAqwQigb9sSKOzPYYwphyTTb5rNLgb8wlwcDSRAQRvJnb4a4TNZ4N/r+hH8xQOM5NTeoQxNRxzhW4hOCMckxOgmjhWUztHMwPjL30xUXXRL6gOfs+6MLEDDB8xk//7EMQDg8UAHxgN+yJApwQiga9sSMM4iTCfHSNKTrQ0hRyDCMB1M1QDCnCgd3JsAs2nQ5+n6EkDLjTdMD+/zE6GwOH/YI4ShtDE/CVOGYjOkgy9BMsfjEhhdcozBP93qjDCzDljIMzV//sSxAQDxNAfGg17IkCQg6TCugAF9jCAGfM+HSMzxBlTBxBmMJEMCNok56gNMzWeM/p+ySpHmBYAmBweGIxQHmHanaaimUY1mJYKmAoRmDoLmDYMpzy8tQAALbaLQLRQIAAAAAALEAcR//sQxAiABrhpZbj1ABB0AF0rghAEXvxt7L0+/fPwJ0gThDG5gA4F/noCwPBv/FglJiVP8ekQlOfaZAAA9KCgAAgaKgqoFToNBUN1HoieVyM70f4ind5VTEFNRTMuMTAwVVVVVVVVVVU=",
+  "base64",
+);
 
 async function browserEncodedImage(page: Page, mediaType: "image/jpeg" | "image/webp", rgba: readonly number[]) {
   return Buffer.from(
@@ -385,7 +389,7 @@ async function createBlankWorkspace(page: Page, name: string) {
   return ((await createResponse.json()) as { project: { id: string } }).project.id;
 }
 
-test("persists project WAV timing, volume, and fades through Timeline and Opus MP4 export", async ({ page }) => {
+test("imports MP3 and persists project audio timing, volume, and fades through Opus MP4 export", async ({ page }) => {
   test.setTimeout(120_000);
   page.setDefaultTimeout(15_000);
   let projectId: string | null = null;
@@ -394,12 +398,22 @@ test("persists project WAV timing, volume, and fades through Timeline and Opus M
     const canvas = page.locator("[data-studio-canvas]");
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
 
-    await page.getByLabel("Project WAV audio file").setInputFiles({
+    const audioLane = page.locator("[data-project-audio-track]");
+    await page.getByLabel("Project audio file").setInputFiles({
+      buffer: MP3_44K_MONO,
+      mimeType: "audio/mpeg",
+      name: "tone-44k.mp3",
+    });
+    await expect(audioLane).toContainText("tone-44k.mp3");
+    await expect
+      .poll(async () => Number(await page.getByLabel("Audio trim out seconds").inputValue()))
+      .toBeGreaterThan(0.1);
+
+    await page.getByLabel("Project audio file").setInputFiles({
       buffer: monoPcmWav48k(0.4),
       mimeType: "audio/wav",
       name: "tone.wav",
     });
-    const audioLane = page.locator("[data-project-audio-track]");
     await expect(audioLane).toContainText("tone.wav");
     const offsetInput = page.getByLabel("Audio offset seconds");
     const trimStartInput = page.getByLabel("Audio trim in seconds");
@@ -469,7 +483,7 @@ test("persists project WAV timing, volume, and fades through Timeline and Opus M
     const unsupportedWav = monoPcmWav48k(0.4);
     unsupportedWav.writeUInt32LE(44_100, 24);
     unsupportedWav.writeUInt32LE(88_200, 28);
-    await page.getByLabel("Project WAV audio file").setInputFiles({
+    await page.getByLabel("Project audio file").setInputFiles({
       buffer: unsupportedWav,
       mimeType: "audio/wav",
       name: "unsupported.wav",
@@ -537,7 +551,7 @@ test("persists project WAV timing, volume, and fades through Timeline and Opus M
     expect(decodedAudio.fadeOutPeak).toBeLessThan(decodedAudio.centerPeak * 0.65);
     expect(decodedAudio.afterPeak).toBeLessThan(0.01);
 
-    await page.getByRole("button", { name: "Remove WAV tone.wav" }).click();
+    await page.getByRole("button", { name: "Remove audio tone.wav" }).click();
     await expect(audioLane).toHaveCount(0);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
