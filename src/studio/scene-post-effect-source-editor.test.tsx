@@ -73,6 +73,8 @@ describe("ScenePostEffectSourceEditor", () => {
     expect(markup).toContain("Wave Distortion");
     expect(markup).toContain('<option value="vignette">Vignette</option>');
     expect(markup).toContain('<option value="color-tint">Color Tint</option>');
+    expect(markup).toContain('<option value="pixelate">Pixelate</option>');
+    expect(markup).toContain('<option value="chromatic-shift">Chromatic Shift</option>');
     expect(markup).toContain("Create starter");
     expect(markup).toContain(
       "Choose a code-free WGSL starter, then edit its source or import Vulkan GLSL 450 when needed.",

@@ -333,7 +333,99 @@ export const STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1 = scenePostEffectParame
   },
 ]);
 
-export const studioScenePostEffectPresetIdSchema = z.enum(["wave-distortion", "vignette", "color-tint"]);
+export const STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1 =
+  scenePostEffectWgslSourceV1Schema.parse(`struct ScenePostEffectHost {
+    viewport_and_time: vec4<f32>,
+    // x = block size in pixels.
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> host: ScenePostEffectHost;
+
+@group(0) @binding(1)
+var scene_texture: texture_2d<f32>;
+
+@group(0) @binding(2)
+var scene_sampler: sampler;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let viewport = max(host.viewport_and_time.xy, vec2<f32>(1.0));
+    let block_size = max(host.parameters_0.x, 1.0);
+    let texel_center = floor(block_size * 0.5) + 0.5;
+    let block_center = floor(position.xy / block_size) * block_size + vec2<f32>(texel_center);
+    let sample_pixel = clamp(block_center, vec2<f32>(0.5), viewport - vec2<f32>(0.5));
+    return textureSample(scene_texture, scene_sampler, sample_pixel / viewport);
+}
+`);
+
+export const STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1 = scenePostEffectParameterSchemaListV1.parse([
+  {
+    default: 16,
+    name: "Block size",
+    range: { max: 128, min: 1, step: 1 },
+    type: "f32",
+  },
+]);
+
+export const STUDIO_CHROMATIC_SHIFT_POST_EFFECT_SOURCE_V1 =
+  scenePostEffectWgslSourceV1Schema.parse(`struct ScenePostEffectHost {
+    viewport_and_time: vec4<f32>,
+    // x = horizontal channel offset in pixels.
+    parameters_0: vec4<f32>,
+    parameters_1: vec4<f32>,
+};
+
+@group(0) @binding(0)
+var<uniform> host: ScenePostEffectHost;
+
+@group(0) @binding(1)
+var scene_texture: texture_2d<f32>;
+
+@group(0) @binding(2)
+var scene_sampler: sampler;
+
+@fragment
+fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let viewport = max(host.viewport_and_time.xy, vec2<f32>(1.0));
+    let coordinate = position.xy / viewport;
+    let pixel_offset = max(host.parameters_0.x, 0.0);
+    let channel_offset = vec2<f32>(pixel_offset / viewport.x, 0.0);
+    let minimum_coordinate = vec2<f32>(0.5) / viewport;
+    let maximum_coordinate = vec2<f32>(1.0) - minimum_coordinate;
+    let center = textureSample(scene_texture, scene_sampler, coordinate);
+    let red = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate + channel_offset, minimum_coordinate, maximum_coordinate),
+    ).r;
+    let blue = textureSample(
+        scene_texture,
+        scene_sampler,
+        clamp(coordinate - channel_offset, minimum_coordinate, maximum_coordinate),
+    ).b;
+    return vec4<f32>(red, center.g, blue, center.a);
+}
+`);
+
+export const STUDIO_CHROMATIC_SHIFT_POST_EFFECT_PARAMETERS_V1 = scenePostEffectParameterSchemaListV1.parse([
+  {
+    default: 6,
+    name: "Pixel offset",
+    range: { max: 64, min: 0, step: 1 },
+    type: "f32",
+  },
+]);
+
+export const studioScenePostEffectPresetIdSchema = z.enum([
+  "wave-distortion",
+  "vignette",
+  "color-tint",
+  "pixelate",
+  "chromatic-shift",
+]);
 export type StudioScenePostEffectPresetId = z.infer<typeof studioScenePostEffectPresetIdSchema>;
 
 export const STUDIO_SCENE_POST_EFFECT_PRESETS: readonly Readonly<{
@@ -359,6 +451,18 @@ export const STUDIO_SCENE_POST_EFFECT_PRESETS: readonly Readonly<{
     name: "Color Tint",
     parameterSchema: STUDIO_COLOR_TINT_POST_EFFECT_PARAMETERS_V1,
     source: STUDIO_COLOR_TINT_POST_EFFECT_SOURCE_V1,
+  },
+  {
+    id: "pixelate",
+    name: "Pixelate",
+    parameterSchema: STUDIO_PIXELATE_POST_EFFECT_PARAMETERS_V1,
+    source: STUDIO_PIXELATE_POST_EFFECT_SOURCE_V1,
+  },
+  {
+    id: "chromatic-shift",
+    name: "Chromatic Shift",
+    parameterSchema: STUDIO_CHROMATIC_SHIFT_POST_EFFECT_PARAMETERS_V1,
+    source: STUDIO_CHROMATIC_SHIFT_POST_EFFECT_SOURCE_V1,
   },
 ];
 
