@@ -74,7 +74,11 @@ import {
   createCameraProgram,
   replaceCameraProgram,
 } from "./studio/camera-clip-edit";
-import { canvasDragTargetEntityIds, toggleCanvasEntitySelection } from "./studio/canvas-selection";
+import {
+  applyCanvasBatchSelection,
+  canvasDragTargetEntityIds,
+  toggleCanvasEntitySelection,
+} from "./studio/canvas-selection";
 import { commandForShortcut, isEditableShortcutTarget, type StudioCommandId } from "./studio/commands";
 import {
   type ContentTransformEasing,
@@ -12007,6 +12011,9 @@ export function App({
                 setSelectedObjectIds((selection) =>
                   mode === "toggle" ? toggleCanvasEntitySelection(selection, entityId) : [entityId],
                 )
+              }
+              onSelectEntities={(entityIds, mode) =>
+                setSelectedObjectIds((selection) => applyCanvasBatchSelection(selection, entityIds, mode))
               }
               onTimeChange={(time) => {
                 playbackSeekPendingRef.current = playbackClock.getSnapshot().playing;
