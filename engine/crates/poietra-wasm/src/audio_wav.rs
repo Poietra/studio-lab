@@ -17,7 +17,7 @@ const BYTES_PER_SAMPLE: u16 = 2;
 pub(crate) const MAX_WAV_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const AUDIO_FRAME_SAMPLES: usize = 960; // 20 ms at 48 kHz.
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PcmTimelineTiming {
     #[serde(rename = "timelineOffsetSampleFrames")]
@@ -26,6 +26,40 @@ pub(crate) struct PcmTimelineTiming {
     pub(crate) trim_end: Option<u64>,
     #[serde(rename = "trimStartSampleFrames")]
     pub(crate) trim_start: u64,
+    #[serde(
+        rename = "volumePercent",
+        default = "full_volume_percent",
+        deserialize_with = "deserialize_volume_percent"
+    )]
+    pub(crate) volume_percent: u8,
+}
+
+impl Default for PcmTimelineTiming {
+    fn default() -> Self {
+        Self {
+            timeline_offset: 0,
+            trim_end: None,
+            trim_start: 0,
+            volume_percent: full_volume_percent(),
+        }
+    }
+}
+
+const fn full_volume_percent() -> u8 {
+    100
+}
+
+fn deserialize_volume_percent<'de, D>(deserializer: D) -> Result<u8, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let volume_percent = u8::deserialize(deserializer)?;
+    if volume_percent > 100 {
+        return Err(serde::de::Error::custom(
+            "audio volumePercent must be between 0 and 100",
+        ));
+    }
+    Ok(volume_percent)
 }
 
 pub(crate) fn parse_pcm_timeline_timing(
@@ -109,6 +143,11 @@ impl PcmWav {
         frames_per_second: u32,
         timing: PcmTimelineTiming,
     ) -> Result<PreparedPcm, WavRefusal> {
+        if timing.volume_percent > 100 {
+            return Err(WavRefusal::Invalid(
+                "audio volumePercent must be between 0 and 100",
+            ));
+        }
         let sample_frames = video_frame_count
             .checked_mul(u64::from(SAMPLE_RATE_HZ))
             .and_then(|samples| samples.checked_div(u64::from(frames_per_second)))
@@ -148,12 +187,32 @@ impl PcmWav {
             .and_then(|value| value.checked_mul(bytes_per_frame))
             .and_then(|value| usize::try_from(value).ok())
             .ok_or(WavRefusal::Invalid("the audio trim end overflowed"))?;
+        let mut interleaved_s16_le = self.interleaved_s16_le[byte_start..byte_end].to_vec();
+        scale_pcm_volume(&mut interleaved_s16_le, timing.volume_percent);
         Ok(PreparedPcm {
             channels: self.channels,
-            interleaved_s16_le: self.interleaved_s16_le[byte_start..byte_end].to_vec(),
+            interleaved_s16_le,
             sample_frames,
             timeline_start_sample: timing.timeline_offset.min(sample_frames),
         })
+    }
+}
+
+fn scale_pcm_volume(interleaved_s16_le: &mut [u8], volume_percent: u8) {
+    if volume_percent == 100 {
+        return;
+    }
+    for sample_bytes in interleaved_s16_le.chunks_exact_mut(2) {
+        let sample = i16::from_le_bytes([sample_bytes[0], sample_bytes[1]]);
+        let product = i32::from(sample) * i32::from(volume_percent);
+        let rounded = match product.cmp(&0) {
+            std::cmp::Ordering::Less => product - 50,
+            std::cmp::Ordering::Equal => 0,
+            std::cmp::Ordering::Greater => product + 50,
+        } / 100;
+        let scaled = rounded.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
+        let scaled = i16::try_from(scaled).expect("the clamped PCM sample fits signed 16-bit");
+        sample_bytes.copy_from_slice(&scaled.to_le_bytes());
     }
 }
 
@@ -422,6 +481,46 @@ mod tests {
         bytes
     }
 
+    fn sample_bytes(samples: &[i16]) -> Vec<u8> {
+        samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn defaults_legacy_timing_to_full_volume_and_rejects_boost() {
+        assert_eq!(PcmTimelineTiming::default().volume_percent, 100);
+        assert_eq!(
+            parse_pcm_timeline_timing(
+                br#"{"timelineOffsetSampleFrames":0,"trimEndSampleFrames":null,"trimStartSampleFrames":0}"#,
+            )
+            .unwrap()
+            .volume_percent,
+            100
+        );
+        assert!(parse_pcm_timeline_timing(
+            br#"{"timelineOffsetSampleFrames":0,"trimEndSampleFrames":null,"trimStartSampleFrames":0,"volumePercent":101}"#,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn scales_signed_pcm_at_zero_half_and_full_volume() {
+        let original = sample_bytes(&[i16::MIN, -1_001, 0, 1_001, i16::MAX]);
+        let mut muted = original.clone();
+        scale_pcm_volume(&mut muted, 0);
+        assert_eq!(muted, sample_bytes(&[0, 0, 0, 0, 0]));
+
+        let mut half = original.clone();
+        scale_pcm_volume(&mut half, 50);
+        assert_eq!(half, sample_bytes(&[-16_384, -501, 0, 501, 16_384]));
+
+        let mut full = original.clone();
+        scale_pcm_volume(&mut full, 100);
+        assert_eq!(full, original);
+    }
+
     #[test]
     fn admits_mono_and_stereo_pcm() {
         for channels in [1, 2] {
@@ -525,6 +624,7 @@ mod tests {
                     timeline_offset: 4_800,
                     trim_end: Some(14_400),
                     trim_start: 4_800,
+                    volume_percent: 100,
                 },
             )
             .unwrap();

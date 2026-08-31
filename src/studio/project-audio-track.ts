@@ -7,10 +7,12 @@ export type ProjectAudioTrack = Readonly<{
   timelineOffsetSampleFrames: number;
   trimEndSampleFrames: number | null;
   trimStartSampleFrames: number;
+  volumePercent: number;
   wavBytes: ArrayBuffer;
 }>;
 
 export const PROJECT_AUDIO_SAMPLE_RATE_HZ = 48_000;
+export const DEFAULT_PROJECT_AUDIO_VOLUME_PERCENT = 100;
 
 export type ProjectAudioTimingSeconds = Readonly<{
   offset: number;
@@ -56,6 +58,13 @@ export function updateProjectAudioTiming(
     }
   }
   return { ...track, timelineOffsetSampleFrames, trimEndSampleFrames, trimStartSampleFrames };
+}
+
+export function updateProjectAudioVolume(track: ProjectAudioTrack, volumePercent: number): ProjectAudioTrack {
+  if (!Number.isSafeInteger(volumePercent) || volumePercent < 0 || volumePercent > 100) {
+    throw new TypeError("Audio volume must be an integer from 0 to 100 percent.");
+  }
+  return { ...track, volumePercent };
 }
 
 function framesToSeconds(value: number) {
@@ -145,6 +154,7 @@ export async function ingestProjectAudioWav(
     timelineOffsetSampleFrames: 0,
     trimEndSampleFrames: sourceSampleFrames,
     trimStartSampleFrames: 0,
+    volumePercent: DEFAULT_PROJECT_AUDIO_VOLUME_PERCENT,
     wavBytes,
   };
 }

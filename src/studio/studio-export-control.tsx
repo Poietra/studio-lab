@@ -233,6 +233,7 @@ export function StudioExportControl({
                 timelineOffsetSampleFrames: capturedAudioTrack.timelineOffsetSampleFrames,
                 trimEndSampleFrames: capturedAudioTrack.trimEndSampleFrames,
                 trimStartSampleFrames: capturedAudioTrack.trimStartSampleFrames,
+                volumePercent: capturedAudioTrack.volumePercent,
               },
               audioWav: capturedAudioTrack.wavBytes.slice(0),
             }

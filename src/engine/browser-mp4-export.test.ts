@@ -376,6 +376,7 @@ describe("runBrowserMp4ExportV1", () => {
         timelineOffsetSampleFrames: 4_800,
         trimEndSampleFrames: 14_400,
         trimStartSampleFrames: 2_400,
+        volumePercent: 50,
       },
       audioWav,
       profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
@@ -389,6 +390,7 @@ describe("runBrowserMp4ExportV1", () => {
       timelineOffsetSampleFrames: 4_800,
       trimEndSampleFrames: 14_400,
       trimStartSampleFrames: 2_400,
+      volumePercent: 50,
     });
     expect(new Uint8Array(request.audioWav ?? new ArrayBuffer(0))).toEqual(new Uint8Array(audioWav));
     expect(worker.transfers[0]).toEqual([

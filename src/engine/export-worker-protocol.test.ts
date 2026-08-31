@@ -104,14 +104,42 @@ describe("export worker messages", () => {
           timelineOffsetSampleFrames: 4_800,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 2_400,
+          volumePercent: 50,
         },
         audioWav: new ArrayBuffer(44),
       }).success,
     ).toBe(true);
+    const legacyTiming = exportWorkerRequestV1Schema.parse({
+      ...base,
+      audioTiming: {
+        timelineOffsetSampleFrames: 0,
+        trimEndSampleFrames: null,
+        trimStartSampleFrames: 0,
+      },
+      audioWav: new ArrayBuffer(44),
+    });
+    expect(legacyTiming.kind === "export-mp4" ? legacyTiming.audioTiming?.volumePercent : undefined).toBe(100);
     expect(
       exportWorkerRequestV1Schema.safeParse({
         ...base,
-        audioTiming: { timelineOffsetSampleFrames: -1, trimEndSampleFrames: null, trimStartSampleFrames: 0 },
+        audioTiming: {
+          timelineOffsetSampleFrames: -1,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+          volumePercent: 100,
+        },
+        audioWav: new ArrayBuffer(44),
+      }).success,
+    ).toBe(false);
+    expect(
+      exportWorkerRequestV1Schema.safeParse({
+        ...base,
+        audioTiming: {
+          timelineOffsetSampleFrames: 0,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+          volumePercent: 101,
+        },
         audioWav: new ArrayBuffer(44),
       }).success,
     ).toBe(false);

@@ -182,6 +182,7 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
           timelineOffsetSampleFrames: 4_800,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 2_400,
+          volumePercent: 50,
         });
         return new Uint8Array([1, 2, 3]);
       },
@@ -193,6 +194,7 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
           timelineOffsetSampleFrames: 4_800,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 2_400,
+          volumePercent: 50,
         },
         audioWav: new Uint8Array([0x52, 0x49, 0x46, 0x46]).buffer,
       }),
@@ -220,6 +222,7 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
           timelineOffsetSampleFrames: 4_800,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 0,
+          volumePercent: 100,
         },
       }),
     );
@@ -369,7 +372,7 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
     return {
       default: async () => undefined,
       exportSceneMp4V1: async () => new Uint8Array([1]),
-      poietraEngineAbiVersion: () => 42,
+      poietraEngineAbiVersion: () => 43,
       ...overrides,
     };
   }
@@ -401,6 +404,6 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
   it("rejects a stale engine ABI before calling an incompatible export signature", async () => {
     await expect(
       initializeBrowserMp4ExportBindingsV1(wasmModule({ poietraEngineAbiVersion: () => 31 })),
-    ).rejects.toThrow(/engine ABI 42/);
+    ).rejects.toThrow(/engine ABI 43/);
   });
 });
