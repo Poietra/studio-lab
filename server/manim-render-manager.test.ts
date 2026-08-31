@@ -15,6 +15,7 @@ import {
   createDirectManipulationPositionProgram,
   createDirectManipulationScaleProgram,
 } from "../src/studio/suggestion-program";
+import { HttpError } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest } from "./manim-render-http";
@@ -34,6 +35,7 @@ import {
   sceneSource,
   temporalMetadataSource,
   temporaryRoots,
+  verifiedSnapshotView,
   waitForTerminal,
   waitUntil,
 } from "./manim-render-pipeline-test-fixtures";
@@ -645,6 +647,45 @@ class GroupedEquation(Scene):
     expect(exported.source).toContain('# poietra:content {"content":');
     expect(exported.source).toContain('MathTex("F", "=", "m", "a")');
     expect(exported.source).toContain(".match_style(equation).match_height(equation).move_to(equation.get_center())");
+  });
+
+  it("lazily verifies imported MathTex content when Runtime Trace preview published no snapshot", async () => {
+    const staticContentSource = sceneSource.replace(
+      "        self.add(equation)\n",
+      "        self.add(equation)\n        # poietra:anchor 0.000\n",
+    );
+    const { manager, projectRoot } = await fixture();
+    await writeFile(join(projectRoot, "scene.py"), staticContentSource, "utf8");
+    const program = importedMathTexContentProgram();
+    const renderRequest = {
+      ...batchRequest([program]),
+      sourceHash: createHash("sha256").update(staticContentSource).digest("hex"),
+    };
+    const snapshotRunner = Reflect.get(manager, "snapshotRunner") as {
+      run: (request: ProgramRenderRequest) => Promise<unknown>;
+      snapshot: () => Promise<unknown>;
+    };
+    let snapshotRuns = 0;
+    Object.defineProperty(snapshotRunner, "snapshot", {
+      configurable: true,
+      value: async () => {
+        throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
+      },
+      writable: true,
+    });
+    Object.defineProperty(snapshotRunner, "run", {
+      configurable: true,
+      value: async () => {
+        snapshotRuns += 1;
+        return verifiedSnapshotView(renderRequest, "equation");
+      },
+      writable: true,
+    });
+
+    const exported = await manager.exportSource(renderRequest);
+
+    expect(snapshotRuns).toBe(1);
+    expect(exported.source).toContain('MathTex("F", "=", "m", "a")');
   });
 
   it("exports and commits shifted temporal metadata while Undo restores the exact source", async () => {

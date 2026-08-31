@@ -560,6 +560,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
               input,
               (projectId, query, lookupSignal) => this.#snapshots!.snapshot(projectId, query, lookupSignal),
               signal,
+              (request, runSignal) => this.#snapshots!.run(request, runSignal),
             )
         : null,
       projectId: request.projectId,
