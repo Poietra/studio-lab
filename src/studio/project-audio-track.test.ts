@@ -7,6 +7,7 @@ import {
   projectAudioTimelineTimingAtDelta,
   projectAudioTimingSeconds,
   updateProjectAudioTiming,
+  updateProjectAudioVolume,
 } from "./project-audio-track";
 
 describe("project audio track", () => {
@@ -22,6 +23,7 @@ describe("project audio track", () => {
       timelineOffsetSampleFrames: 0,
       trimEndSampleFrames: 19_200,
       trimStartSampleFrames: 0,
+      volumePercent: 100,
     });
     expect(new Uint8Array(track.wavBytes)).toEqual(new Uint8Array([0x52, 0x49, 0x46, 0x46]));
     expect(validate).toHaveBeenCalledOnce();
@@ -48,6 +50,7 @@ describe("project audio track", () => {
       timelineOffsetSampleFrames: 0,
       trimEndSampleFrames: 3,
       trimStartSampleFrames: 0,
+      volumePercent: 100,
       wavBytes: new Uint8Array([1, 2, 3]).buffer,
     };
     const copy = cloneProjectAudioTrack(source);
@@ -63,6 +66,7 @@ describe("project audio track", () => {
       timelineOffsetSampleFrames: 0,
       trimEndSampleFrames: 48_000,
       trimStartSampleFrames: 0,
+      volumePercent: 100,
       wavBytes: new ArrayBuffer(1),
     };
 
@@ -78,6 +82,25 @@ describe("project audio track", () => {
       "later than trim in",
     );
     expect(() => updateProjectAudioTiming(track, { offset: 0, trimEnd: 1.01, trimStart: 0 })).toThrow("cannot exceed");
+  });
+
+  it("updates only integer volume from 0 to 100 percent", () => {
+    const track = {
+      fileName: "voice.wav",
+      sourceSampleFrames: 48_000,
+      timelineOffsetSampleFrames: 0,
+      trimEndSampleFrames: 48_000,
+      trimStartSampleFrames: 0,
+      volumePercent: 100,
+      wavBytes: new ArrayBuffer(1),
+    };
+
+    expect(updateProjectAudioVolume(track, 0).volumePercent).toBe(0);
+    expect(updateProjectAudioVolume(track, 50).volumePercent).toBe(50);
+    expect(updateProjectAudioVolume(track, 100).volumePercent).toBe(100);
+    expect(() => updateProjectAudioVolume(track, -1)).toThrow("0 to 100");
+    expect(() => updateProjectAudioVolume(track, 101)).toThrow("0 to 100");
+    expect(() => updateProjectAudioVolume(track, 50.5)).toThrow("integer");
   });
 
   it("moves a Timeline clip start within the Scene without changing its source trim", () => {

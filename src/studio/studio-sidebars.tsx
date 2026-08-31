@@ -416,6 +416,7 @@ export function WorkspaceSidebar({
   onGroup,
   onImportAudioFile,
   onAudioTimingChange,
+  onAudioVolumeChange,
   onImportImageFiles,
   onImportSvgFiles,
   onRemoveAudioTrack,
@@ -484,6 +485,7 @@ export function WorkspaceSidebar({
   nextScene: AuthorableWorkspaceScene | null;
   onGroup?: () => void;
   onAudioTimingChange?: (timing: ProjectAudioTimingSeconds) => void;
+  onAudioVolumeChange?: (volumePercent: number) => void;
   onImportAudioFile?: (file: File) => void;
   onImportImageFiles?: (files: readonly File[]) => void;
   onImportSvgFiles?: (files: readonly File[]) => void;
@@ -705,6 +707,42 @@ export function WorkspaceSidebar({
                   type="submit"
                 >
                   Apply audio timing
+                </button>
+              </form>
+            ) : null}
+            {audioTrack && onAudioVolumeChange ? (
+              <form
+                className="mt-2 flex items-end gap-2"
+                key={audioTrack.volumePercent}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const volumePercent = Number(new FormData(event.currentTarget).get("audioVolumePercent"));
+                  if (Number.isSafeInteger(volumePercent) && volumePercent >= 0 && volumePercent <= 100) {
+                    onAudioVolumeChange(volumePercent);
+                  }
+                }}
+              >
+                <label className="min-w-0 flex-1 text-[9px] text-zinc-500">
+                  Volume (%)
+                  <input
+                    aria-label="Audio volume percent"
+                    className="mt-1 h-7 w-full border border-zinc-700 bg-zinc-950 px-1.5 text-[10px] tabular-nums text-zinc-300 outline-none focus:border-sky-500"
+                    defaultValue={audioTrack.volumePercent}
+                    disabled={!authoringAvailable || draftActive || audioImportPending}
+                    max="100"
+                    min="0"
+                    name="audioVolumePercent"
+                    required
+                    step="1"
+                    type="number"
+                  />
+                </label>
+                <button
+                  className="h-7 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
+                  disabled={!authoringAvailable || draftActive || audioImportPending}
+                  type="submit"
+                >
+                  Apply volume
                 </button>
               </form>
             ) : null}

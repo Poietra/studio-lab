@@ -11,7 +11,7 @@ import {
   type ProjectFragmentMaterialStateV1,
   projectFragmentMaterialStateV1Schema,
 } from "./fragment-material-authoring";
-import type { ProjectAudioTrack } from "./project-audio-track";
+import { DEFAULT_PROJECT_AUDIO_VOLUME_PERCENT, type ProjectAudioTrack } from "./project-audio-track";
 import { parseStudioSvgPathAssets, restoreStudioSvgPathAssets, type StudioSvgPathAsset } from "./studio-svg-assets";
 
 const DATABASE_NAME = "poietra-studio-native-projects";
@@ -75,6 +75,7 @@ function copyAudioTrack(value: unknown): NativeProjectLocalAudioTrack | undefine
   const trimStartSampleFrames = audioTrack.trimStartSampleFrames ?? 0;
   const trimEndSampleFrames =
     audioTrack.trimEndSampleFrames === undefined ? sourceSampleFrames : audioTrack.trimEndSampleFrames;
+  const volumePercent = audioTrack.volumePercent ?? DEFAULT_PROJECT_AUDIO_VOLUME_PERCENT;
   if (
     (sourceSampleFrames !== null && (!Number.isSafeInteger(sourceSampleFrames) || sourceSampleFrames < 1)) ||
     !Number.isSafeInteger(timelineOffsetSampleFrames) ||
@@ -85,9 +86,12 @@ function copyAudioTrack(value: unknown): NativeProjectLocalAudioTrack | undefine
       (!Number.isSafeInteger(trimEndSampleFrames) ||
         trimEndSampleFrames <= trimStartSampleFrames ||
         (sourceSampleFrames !== null && trimEndSampleFrames > sourceSampleFrames))) ||
-    (sourceSampleFrames !== null && trimStartSampleFrames >= sourceSampleFrames)
+    (sourceSampleFrames !== null && trimStartSampleFrames >= sourceSampleFrames) ||
+    !Number.isSafeInteger(volumePercent) ||
+    volumePercent < 0 ||
+    volumePercent > 100
   ) {
-    throw new TypeError("The stored native project audio timing is invalid.");
+    throw new TypeError("The stored native project audio track is invalid.");
   }
   return {
     fileName: audioTrack.fileName,
@@ -95,6 +99,7 @@ function copyAudioTrack(value: unknown): NativeProjectLocalAudioTrack | undefine
     timelineOffsetSampleFrames,
     trimEndSampleFrames,
     trimStartSampleFrames,
+    volumePercent,
     wavBytes: audioTrack.wavBytes.slice(0),
   };
 }

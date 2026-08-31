@@ -82,6 +82,7 @@ export const exportAudioTimingV1Schema = z
     timelineOffsetSampleFrames: nonNegativeCount,
     trimEndSampleFrames: nonNegativeCount.positive().nullable(),
     trimStartSampleFrames: nonNegativeCount,
+    volumePercent: z.number().int().min(0).max(100).default(100),
   })
   .strict();
 

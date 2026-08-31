@@ -136,6 +136,7 @@ describe("Studio-native local project persistence", () => {
         timelineOffsetSampleFrames: 4_800,
         trimEndSampleFrames: 19_200,
         trimStartSampleFrames: 2_400,
+        volumePercent: 50,
         wavBytes,
       },
     };
@@ -149,6 +150,7 @@ describe("Studio-native local project persistence", () => {
         timelineOffsetSampleFrames: number;
         trimEndSampleFrames: number;
         trimStartSampleFrames: number;
+        volumePercent: number;
         wavBytes: ArrayBuffer;
       };
       version: number;
@@ -160,6 +162,7 @@ describe("Studio-native local project persistence", () => {
       timelineOffsetSampleFrames: 4_800,
       trimEndSampleFrames: 19_200,
       trimStartSampleFrames: 2_400,
+      volumePercent: 50,
     });
     expect(persisted.audioTrack.wavBytes).not.toBe(wavBytes);
     expect(new Uint8Array(persisted.audioTrack.wavBytes)).toEqual(expectedBytes);
@@ -174,6 +177,7 @@ describe("Studio-native local project persistence", () => {
       timelineOffsetSampleFrames: 4_800,
       trimEndSampleFrames: 19_200,
       trimStartSampleFrames: 2_400,
+      volumePercent: 50,
     });
     expect(restored?.audioTrack?.wavBytes).not.toBe(persisted.audioTrack.wavBytes);
     expect(new Uint8Array(restored!.audioTrack!.wavBytes)).toEqual(expectedBytes);
@@ -199,6 +203,7 @@ describe("Studio-native local project persistence", () => {
         timelineOffsetSampleFrames: 0,
         trimEndSampleFrames: null,
         trimStartSampleFrames: 0,
+        volumePercent: 100,
       },
     });
   });

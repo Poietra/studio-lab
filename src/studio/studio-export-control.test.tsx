@@ -192,6 +192,7 @@ describe("StudioExportControl", () => {
           timelineOffsetSampleFrames: 0,
           trimEndSampleFrames: 48_000,
           trimStartSampleFrames: 0,
+          volumePercent: 100,
           wavBytes: new ArrayBuffer(44),
         }}
         exportSource={exportSource}

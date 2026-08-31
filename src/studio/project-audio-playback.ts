@@ -8,10 +8,11 @@ type ProjectAudioPlaybackTrack = Readonly<{
   timelineOffsetSampleFrames: number;
   trimEndSampleFrames: number | null;
   trimStartSampleFrames: number;
+  volumePercent: number;
   wavBytes: ArrayBuffer;
 }>;
 
-type ProjectAudioElement = Pick<HTMLAudioElement, "currentTime" | "pause" | "paused" | "play">;
+type ProjectAudioElement = Pick<HTMLAudioElement, "currentTime" | "pause" | "paused" | "play" | "volume">;
 
 const MAX_AUDIO_CLOCK_DRIFT_SECONDS = 0.12;
 
@@ -30,6 +31,8 @@ export function alignProjectAudioElement(
   snapshot: StudioPlaybackClockSnapshot,
   track: ProjectAudioPlaybackTrack,
 ) {
+  const volume = track.volumePercent / 100;
+  if (element.volume !== volume) element.volume = volume;
   const sourceTime = projectAudioSourceTime(track, snapshot.currentTime);
   if (sourceTime === null) {
     if (!element.paused) element.pause();

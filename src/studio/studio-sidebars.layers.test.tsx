@@ -176,6 +176,7 @@ describe("WorkspaceSidebar Layers", () => {
           timelineOffsetSampleFrames: 0,
           trimEndSampleFrames: 48_000,
           trimStartSampleFrames: 0,
+          volumePercent: 50,
           wavBytes: new ArrayBuffer(44),
         }}
         draftActive={false}
@@ -186,6 +187,7 @@ describe("WorkspaceSidebar Layers", () => {
         entities={[]}
         nextScene={null}
         onAudioTimingChange={vi.fn()}
+        onAudioVolumeChange={vi.fn()}
         onDurationChange={vi.fn()}
         onEditAppliedProgram={vi.fn()}
         onImportAudioFile={vi.fn()}
@@ -208,6 +210,9 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain('aria-label="Audio trim in seconds"');
     expect(markup).toContain('aria-label="Audio trim out seconds"');
     expect(markup).toContain("Apply audio timing");
+    expect(markup).toContain('aria-label="Audio volume percent"');
+    expect(markup).toContain('value="50"');
+    expect(markup).toContain("Apply volume");
     expect(markup).toContain("The WAV sample rate is unsupported.");
   });
 
