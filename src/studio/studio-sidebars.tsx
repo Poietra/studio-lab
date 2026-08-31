@@ -647,8 +647,8 @@ export function WorkspaceSidebar({
               {onImportAudioFile ? (
                 <>
                   <input
-                    accept=".wav,audio/wav,audio/x-wav"
-                    aria-label="Project WAV audio file"
+                    accept=".wav,.mp3,audio/wav,audio/x-wav,audio/mpeg,audio/mp3"
+                    aria-label="Project audio file"
                     className="sr-only"
                     disabled={!authoringAvailable || draftActive || audioImportPending}
                     onChange={(event) => {
@@ -665,13 +665,13 @@ export function WorkspaceSidebar({
                     onClick={() => audioFileInput.current?.click()}
                     type="button"
                   >
-                    {audioImportPending ? "Importing…" : audioTrack ? "Replace WAV" : "+ Import WAV"}
+                    {audioImportPending ? "Importing…" : audioTrack ? "Replace audio" : "+ Import audio"}
                   </button>
                 </>
               ) : null}
               {audioTrack && onRemoveAudioTrack ? (
                 <button
-                  aria-label={`Remove WAV ${audioTrack.fileName}`}
+                  aria-label={`Remove audio ${audioTrack.fileName}`}
                   className="h-7 shrink-0 border border-zinc-800 px-2 text-[10px] text-zinc-500 hover:bg-zinc-800 hover:text-zinc-100 disabled:opacity-50"
                   disabled={!authoringAvailable || draftActive || audioImportPending}
                   onClick={onRemoveAudioTrack}
