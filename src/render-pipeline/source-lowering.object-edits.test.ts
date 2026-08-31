@@ -118,35 +118,18 @@ class GroupedEquation(Scene):
     ).toEqual(expect.objectContaining({ text: "force" }));
   });
 
-  it.each([
-    [
-      "SetProperty",
-      {
-        ...operationBase("set-unicode-content", 7),
-        entityId: "label_1",
-        key: "content",
-        kind: "SetProperty",
-        value: { displayLines: ["日本語"], text: "日本語" },
-      },
-    ],
-    [
-      "TransformContent",
-      {
-        ...operationBase("transform-unicode-content", 7, 8),
-        kind: "TransformContent",
-        replacement: { displayLines: ["日本語"], text: "日本語" },
-        sourceEntityId: "label_1",
-        strategy: "replacement-transform",
-        targetEntityId: "tx:unicode-content/entity:target",
-        targetType: "Text",
-      },
-    ],
-  ] satisfies readonly (readonly [string, CanonicalEditOperation])[])(
-    "rejects Unicode Text Python export through %s",
-    (_label, operation) => {
-      expect(() =>
-        lowerCanonicalProgramSource(
-          `from manim import *
+  it("rejects Unicode Text Python export through SetProperty", () => {
+    const operation: CanonicalEditOperation = {
+      ...operationBase("set-unicode-content", 7),
+      entityId: "label_1",
+      key: "content",
+      kind: "SetProperty",
+      value: { displayLines: ["日本語"], text: "日本語" },
+    };
+
+    expect(() =>
+      lowerCanonicalProgramSource(
+        `from manim import *
 
 class GroupedEquation(Scene):
     def construct(self):
@@ -156,15 +139,46 @@ class GroupedEquation(Scene):
         # poietra:anchor 7.000
         self.wait(1)
 `,
-          request(canonicalProgram([operation], `unicode-${operation.kind}`), [
-            { entityId: "label_1", sourceVariable: "label" },
-          ]),
-          { height: 8, width: 14.222 },
-          null,
-        ),
-      ).toThrow(/Python export would not preserve it faithfully/i);
-    },
-  );
+        request(canonicalProgram([operation], "unicode-SetProperty"), [
+          { entityId: "label_1", sourceVariable: "label" },
+        ]),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/Python export would not preserve it faithfully/i);
+  });
+
+  it("rejects client-only Text TransformContent before inspecting replacement content", () => {
+    const operation: CanonicalEditOperation = {
+      ...operationBase("transform-text-content", 7, 8),
+      kind: "TransformContent",
+      replacement: { displayLines: ["after"], text: "after" },
+      sourceEntityId: "label_1",
+      strategy: "replacement-transform",
+      targetEntityId: "tx:text-content/entity:target",
+      targetType: "Text",
+    };
+
+    expect(() =>
+      lowerCanonicalProgramSource(
+        `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        label = Text("before")
+        self.add(label)
+        self.wait(7)
+        # poietra:anchor 7.000
+        self.wait(1)
+`,
+        request(canonicalProgram([operation], "text-TransformContent"), [
+          { entityId: "label_1", sourceVariable: "label" },
+        ]),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/TransformContent has no truthful source lowering/i);
+  });
 
   it.each([
     ["constructor typography", 'Text("before", font="Noto Sans", weight=BOLD)', /constructor keyword arguments/i],
