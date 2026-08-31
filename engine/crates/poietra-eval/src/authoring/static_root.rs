@@ -2112,6 +2112,7 @@ mod tests {
                 dimensions: StaticRootTransformDimensions {
                     angles: None,
                     coordinate_system: None,
+                    corner_radius: None,
                     height: None,
                     radius: Some(1.0),
                     sides: None,
@@ -2623,6 +2624,7 @@ mod tests {
         command.studio_entities[0].dimensions = StaticRootTransformDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: Some(0.5),
             sides: Some(5),
@@ -2992,6 +2994,7 @@ mod tests {
             from_dimensions: StaticRootTransformDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: None,
                 radius: Some(0.5),
                 sides: None,
@@ -3003,6 +3006,7 @@ mod tests {
             to_dimensions: StaticRootTransformDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: None,
                 radius: Some(1.0),
                 sides: None,
@@ -3023,6 +3027,7 @@ mod tests {
                         from_dimensions: StaticRootTransformDimensions {
                             angles: None,
                             coordinate_system: None,
+                            corner_radius: None,
                             height: None,
                             radius: Some(0.5),
                             sides: None,
@@ -3036,6 +3041,7 @@ mod tests {
                         to_dimensions: StaticRootTransformDimensions {
                             angles: None,
                             coordinate_system: None,
+                            corner_radius: None,
                             height: None,
                             radius: Some(1.0),
                             sides: None,
@@ -3111,6 +3117,7 @@ mod tests {
             dimensions: StaticRootTransformDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: None,
                 radius: None,
                 sides: None,

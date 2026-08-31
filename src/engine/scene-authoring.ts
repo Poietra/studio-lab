@@ -176,6 +176,7 @@ type StudioCoordinateAxisV1 = Readonly<{ maximum: number; minimum: number; step:
 type StaticRootTransformDimensions = Readonly<{
   angles?: StudioAnglePairV1;
   coordinateSystem?: Readonly<{ x: StudioCoordinateAxisV1; y?: StudioCoordinateAxisV1 }>;
+  cornerRadius?: number;
   height?: number;
   radius?: number;
   sides?: number;
@@ -590,6 +591,7 @@ const studioStaticRootDimensionsV1Schema = z
       })
       .strict()
       .optional(),
+    cornerRadius: finiteNumberSchema.nonnegative().optional(),
     height: finiteNumberSchema.optional(),
     radius: finiteNumberSchema.optional(),
     sides: z.number().int().min(3).max(32).optional(),

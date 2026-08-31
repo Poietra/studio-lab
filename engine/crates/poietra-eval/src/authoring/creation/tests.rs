@@ -73,6 +73,7 @@ fn shape_transform_wire_uses_the_bounded_flat_contract() {
         from_dimensions: StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: Some(2.0),
             radius: None,
             sides: None,
@@ -82,6 +83,7 @@ fn shape_transform_wire_uses_the_bounded_flat_contract() {
         to_dimensions: StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: Some(1.0),
             sides: None,
@@ -671,6 +673,7 @@ fn studio_creation_command(bundle: &SceneIrBundleV1) -> ApplyStudioCreationEditC
                                 dimensions: StudioAuthoringDimensions {
                                     angles: None,
                                     coordinate_system: None,
+                                    corner_radius: None,
                                     height: None,
                                     radius: Some(1.0),
                                     sides: None,
@@ -739,6 +742,7 @@ fn studio_creation_command(bundle: &SceneIrBundleV1) -> ApplyStudioCreationEditC
                         from_dimensions: StudioAuthoringDimensions {
                             angles: None,
                             coordinate_system: None,
+                            corner_radius: None,
                             height: None,
                             radius: Some(1.0),
                             sides: None,
@@ -750,6 +754,7 @@ fn studio_creation_command(bundle: &SceneIrBundleV1) -> ApplyStudioCreationEditC
                         to_dimensions: StudioAuthoringDimensions {
                             angles: None,
                             coordinate_system: None,
+                            corner_radius: None,
                             height: None,
                             radius: Some(2.0),
                             sides: None,
@@ -1393,6 +1398,7 @@ fn studio_svg_path_creation_command(
     entity.dimensions = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: Some(2.0),
         radius: None,
         sides: None,
@@ -1430,6 +1436,7 @@ fn studio_regular_polygon_creation_command(
     entity.dimensions = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: None,
         radius: Some(radius),
         sides: Some(sides),
@@ -1785,6 +1792,7 @@ fn studio_shape_transform_chain_command(
             entity.dimensions = StudioAuthoringDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: Some(2.0),
                 radius: None,
                 sides: None,
@@ -1795,6 +1803,7 @@ fn studio_shape_transform_chain_command(
     let rectangle = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: Some(2.0),
         radius: None,
         sides: None,
@@ -1803,6 +1812,7 @@ fn studio_shape_transform_chain_command(
     let ellipse = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: Some(1.5),
         radius: None,
         sides: None,
@@ -1811,6 +1821,7 @@ fn studio_shape_transform_chain_command(
     let triangle = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: None,
         radius: Some(1.25),
         sides: Some(3),
@@ -1819,6 +1830,7 @@ fn studio_shape_transform_chain_command(
     let polygon = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: None,
         radius: Some(1.25),
         sides: Some(6),
@@ -1827,6 +1839,7 @@ fn studio_shape_transform_chain_command(
     let circle = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: None,
         radius: Some(1.0),
         sides: None,
@@ -2693,6 +2706,7 @@ fn second_group_resize_creation(first: &StudioCreationEditInput) -> StudioCreati
                 entity.dimensions = StudioAuthoringDimensions {
                     angles: None,
                     coordinate_system: None,
+                    corner_radius: None,
                     height: Some(1.0),
                     radius: None,
                     sides: None,
@@ -3742,6 +3756,7 @@ fn normalized_creation_rejects_shape_resize_after_static_rotation_atomically() {
             from_dimensions: StudioAuthoringDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: Some(1.0),
                 radius: None,
                 sides: None,
@@ -3753,6 +3768,7 @@ fn normalized_creation_rejects_shape_resize_after_static_rotation_atomically() {
             to_dimensions: StudioAuthoringDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: Some(1.5),
                 radius: None,
                 sides: None,
@@ -3780,6 +3796,7 @@ fn normalized_creation_rejects_shape_resize_after_static_rotation_atomically() {
             from_dimensions: StudioAuthoringDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: Some(1.5),
                 radius: None,
                 sides: None,
@@ -3791,6 +3808,7 @@ fn normalized_creation_rejects_shape_resize_after_static_rotation_atomically() {
             to_dimensions: StudioAuthoringDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: Some(1.0),
                 radius: None,
                 sides: None,
@@ -4264,6 +4282,7 @@ fn normalized_creation_projects_and_applies_a_regular_polygon_as_one_closed_cubi
         StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: Some(2.0),
             sides: Some(5),
@@ -4364,6 +4383,7 @@ fn normalized_creation_rejects_invalid_regular_polygon_payloads_atomically() {
         StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: Some(1.0),
             sides: None,
@@ -4372,6 +4392,7 @@ fn normalized_creation_rejects_invalid_regular_polygon_payloads_atomically() {
         StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: Some(1.0),
             sides: Some(2),
@@ -4380,6 +4401,7 @@ fn normalized_creation_rejects_invalid_regular_polygon_payloads_atomically() {
         StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: Some(1.0),
             sides: Some(33),
@@ -4388,6 +4410,7 @@ fn normalized_creation_rejects_invalid_regular_polygon_payloads_atomically() {
         StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: None,
             sides: Some(6),
@@ -4396,6 +4419,7 @@ fn normalized_creation_rejects_invalid_regular_polygon_payloads_atomically() {
         StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: Some(0.0),
             sides: Some(6),
@@ -4404,6 +4428,7 @@ fn normalized_creation_rejects_invalid_regular_polygon_payloads_atomically() {
         StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: Some(f64::INFINITY),
             sides: Some(6),
@@ -4412,6 +4437,7 @@ fn normalized_creation_rejects_invalid_regular_polygon_payloads_atomically() {
         StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: None,
             radius: Some(1.0),
             sides: Some(6),
@@ -4421,6 +4447,7 @@ fn normalized_creation_rejects_invalid_regular_polygon_payloads_atomically() {
     invalid_dimensions.push(StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: None,
         radius: Some(f64::NAN),
         sides: Some(6),
@@ -7297,6 +7324,7 @@ fn normalized_closed_primitive_chain_uses_one_root_owned_path_morph() {
     let triangle_dimensions = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: None,
         radius: Some(1.25),
         sides: Some(3),
@@ -7316,6 +7344,7 @@ fn normalized_closed_primitive_chain_uses_one_root_owned_path_morph() {
             StudioAuthoringDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: Some(1.5),
                 radius: None,
                 sides: None,
@@ -7367,6 +7396,7 @@ fn normalized_shape_transform_rejects_broken_state_or_unsupported_kind() {
     *from_dimensions = StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: None,
         radius: Some(2.0),
         sides: None,
@@ -7429,6 +7459,7 @@ fn normalized_shape_transform_allows_a_later_resize_on_the_logical_root() {
                 from_dimensions: StudioAuthoringDimensions {
                     angles: None,
                     coordinate_system: None,
+                    corner_radius: None,
                     height: Some(2.0),
                     radius: None,
                     sides: None,
@@ -7440,6 +7471,7 @@ fn normalized_shape_transform_allows_a_later_resize_on_the_logical_root() {
                 to_dimensions: StudioAuthoringDimensions {
                     angles: None,
                     coordinate_system: None,
+                    corner_radius: None,
                     height: Some(3.0),
                     radius: None,
                     sides: None,
@@ -8497,6 +8529,342 @@ fn normalized_creation_animates_circle_and_rectangle_resize() {
         dimensions(None, Some(4.0), Some(3.0)),
         (2.0, 3.0),
     );
+}
+
+#[test]
+fn normalized_creation_clamps_rounded_rectangle_and_materializes_cubic_path() {
+    let bundle = static_imported_bundle();
+    let mut command = studio_creation_command(&bundle);
+    command.programs.truncate(1);
+    let StudioCreationOperationKind::Create { entity } =
+        &mut command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    entity.kind = StudioAuthoringEntityKind::Rectangle;
+    entity.dimensions = StudioAuthoringDimensions {
+        corner_radius: Some(9.0),
+        height: Some(1.0),
+        width: Some(2.0),
+        ..StudioAuthoringDimensions::default()
+    };
+
+    let projection =
+        project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+    assert_eq!(
+        projection.entities[0].initial_dimensions.corner_radius,
+        Some(0.5)
+    );
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let scene = session
+        .apply_studio_creation_edit(command)
+        .unwrap()
+        .bundle
+        .scene;
+    assert!(scene.entities.iter().any(|entity| matches!(
+        &entity.geometry,
+        SceneGeometryV1::CubicPath { path }
+            if entity.id == "tx:create/entity:circle"
+                && path.subpaths[0].segments.len() == 8
+    )));
+}
+
+#[test]
+fn normalized_creation_composes_inspector_rounded_resize_with_motion_spin() {
+    let bundle = static_imported_bundle();
+    let rectangle = |corner_radius, width, height| StudioAuthoringDimensions {
+        corner_radius,
+        height: Some(height),
+        width: Some(width),
+        ..StudioAuthoringDimensions::default()
+    };
+    let mut command = studio_creation_command(&bundle);
+    let StudioCreationOperationKind::Create { entity } =
+        &mut command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    entity.kind = StudioAuthoringEntityKind::Rectangle;
+    entity.dimensions = rectangle(None, 4.0, 2.0);
+    let StudioCreationOperationKind::Resize {
+        from_dimensions,
+        from_position,
+        shape,
+        to_dimensions,
+        to_position,
+        ..
+    } = &mut command.programs[1].operations[0].kind
+    else {
+        unreachable!();
+    };
+    *shape = StudioAuthoringEntityKind::Rectangle;
+    *from_dimensions = rectangle(None, 4.0, 2.0);
+    *to_dimensions = rectangle(Some(0.8), 4.0, 2.0);
+    *to_position = from_position.clone();
+    command.programs[1].origin = StudioAuthoringOrigin::StudioDefault;
+    command.programs[1].operations[0].origin = StudioAuthoringOrigin::StudioDefault;
+    let mut motion = studio_created_motion_edit_input(vec!["tx:create/entity:circle".to_owned()]);
+    let StudioCreationOperationKind::CreateMotion {
+        rotation_delta_radians,
+        ..
+    } = &mut motion.operations[0].kind
+    else {
+        unreachable!();
+    };
+    *rotation_delta_radians = Some(2.0 * PI);
+    command.programs.push(motion);
+
+    let projection =
+        project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+    assert_eq!(
+        projection.entities[0].initial_dimensions.corner_radius,
+        Some(0.0)
+    );
+    assert!(projection.mutations.iter().any(|mutation| matches!(
+        &mutation.kind,
+        StudioCreationProjectedMutationKind::Resize {
+            from_dimensions,
+            to_dimensions,
+            ..
+        } if from_dimensions.corner_radius == Some(0.0)
+            && to_dimensions.corner_radius == Some(0.8)
+    )));
+
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let scene = session
+        .apply_studio_creation_edit(command)
+        .unwrap()
+        .bundle
+        .scene;
+    let created = scene
+        .entities
+        .iter()
+        .find(|entity| entity.id == "tx:create/entity:circle")
+        .unwrap();
+    assert!(matches!(
+        &created.geometry,
+        SceneGeometryV1::CubicPath { path }
+            if path.subpaths[0].segments.len() == 8
+    ));
+    let path_keyframes = scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::PathMorph {
+                entity_id,
+                keyframes,
+                ..
+            } if entity_id == "tx:create/entity:circle" => Some(keyframes),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(path_keyframes.len(), 2);
+    assert!((path_keyframes[0].at - 1.25).abs() < 1e-12);
+    assert_eq!(path_keyframes[0].value, path_keyframes[1].value);
+    assert_eq!(path_keyframes[0].value.subpaths[0].segments.len(), 8);
+    assert!(scene.animation_channels.iter().any(|channel| matches!(
+        channel,
+        AnimationChannelV1::MotionPath { entity_id, .. }
+            if entity_id == "tx:create/entity:circle"
+    )));
+    assert!(scene.animation_channels.iter().any(|channel| matches!(
+        channel,
+        AnimationChannelV1::Rotation { entity_id, .. }
+            if entity_id == "tx:create/entity:circle"
+    )));
+    assert!(!scene.animation_channels.iter().any(|channel| matches!(
+        channel,
+        AnimationChannelV1::AffineTransform { entity_id, .. }
+            if entity_id == "tx:create/entity:circle"
+    )));
+}
+
+#[test]
+fn normalized_creation_animates_plain_to_rounded_rectangle_without_affine_stretch() {
+    let bundle = static_imported_bundle();
+    let rectangle = |corner_radius, width, height| StudioAuthoringDimensions {
+        corner_radius,
+        height: Some(height),
+        width: Some(width),
+        ..StudioAuthoringDimensions::default()
+    };
+    let command = animated_shape_resize_command(
+        &bundle,
+        StudioAuthoringEntityKind::Rectangle,
+        rectangle(None, 2.0, 1.0),
+        rectangle(Some(0.8), 4.0, 3.0),
+    );
+    let projection =
+        project_studio_creation_edits(bundle.scene.duration, &command.programs).unwrap();
+    assert_eq!(
+        projection.entities[0].initial_dimensions.corner_radius,
+        Some(0.0)
+    );
+    assert!(projection.mutations.iter().any(|mutation| matches!(
+        &mutation.kind,
+        StudioCreationProjectedMutationKind::Resize {
+            from_dimensions,
+            to_dimensions,
+            ..
+        } if from_dimensions.corner_radius == Some(0.0)
+            && to_dimensions.corner_radius == Some(0.8)
+    )));
+
+    let mut session = EngineSessionV1::new(bundle).unwrap();
+    let scene = session
+        .apply_studio_creation_edit(command)
+        .unwrap()
+        .bundle
+        .scene;
+    let path_keyframes = scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::PathMorph {
+                entity_id,
+                keyframes,
+                ..
+            } if entity_id == "tx:create/entity:circle" => Some(keyframes),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(path_keyframes.len(), 2);
+    assert!(
+        path_keyframes
+            .iter()
+            .all(|keyframe| keyframe.value.subpaths[0].segments.len() == 8)
+    );
+    let transform_keyframes = scene
+        .animation_channels
+        .iter()
+        .find_map(|channel| match channel {
+            AnimationChannelV1::AffineTransform {
+                entity_id,
+                keyframes,
+                ..
+            } if entity_id == "tx:create/entity:circle" => Some(keyframes),
+            _ => None,
+        })
+        .unwrap();
+    assert!(transform_keyframes.iter().all(|keyframe| {
+        (keyframe.value.m11 - 1.0).abs() < 1e-12 && (keyframe.value.m22 - 1.0).abs() < 1e-12
+    }));
+}
+
+fn assert_semantic_rounded_rectangle_path(
+    path: &CubicPathV1,
+    width: f64,
+    height: f64,
+    corner_radius: f64,
+) {
+    let subpath = &path.subpaths[0];
+    assert_eq!(subpath.segments.len(), 8);
+    let assert_point = |actual: &PointV1, expected_x: f64, expected_y: f64| {
+        assert!((actual.x - expected_x).abs() < 1e-12);
+        assert!((actual.y - expected_y).abs() < 1e-12);
+    };
+    let left = -width / 2.0;
+    let right = width / 2.0;
+    let bottom = -height / 2.0;
+    let top = height / 2.0;
+    assert_point(&subpath.start, right - corner_radius, bottom);
+    for (segment, (x, y)) in subpath.segments.iter().zip([
+        (left + corner_radius, bottom),
+        (left, bottom + corner_radius),
+        (left, top - corner_radius),
+        (left + corner_radius, top),
+        (right - corner_radius, top),
+        (right, top - corner_radius),
+        (right, bottom + corner_radius),
+        (right - corner_radius, bottom),
+    ]) {
+        assert_point(&segment.end, x, y);
+    }
+    if corner_radius == 0.0 {
+        for segment in subpath.segments.iter().skip(1).step_by(2) {
+            assert_eq!(segment.control1, segment.end);
+            assert_eq!(segment.control2, segment.end);
+        }
+    }
+}
+
+#[test]
+fn animated_rounded_rectangle_resize_preserves_corner_semantics_in_both_directions() {
+    let rectangle = |corner_radius, width, height| StudioAuthoringDimensions {
+        corner_radius: Some(corner_radius),
+        height: Some(height),
+        width: Some(width),
+        ..StudioAuthoringDimensions::default()
+    };
+    let plain = rectangle(0.0, 2.0, 1.0);
+    let rounded = rectangle(0.8, 4.0, 3.0);
+
+    for (from, to) in [(plain, rounded), (rounded, plain)] {
+        let bundle = static_imported_bundle();
+        let command =
+            animated_shape_resize_command(&bundle, StudioAuthoringEntityKind::Rectangle, from, to);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let scene = session
+            .apply_studio_creation_edit(command)
+            .unwrap()
+            .bundle
+            .scene;
+        let keyframes = scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::PathMorph {
+                    entity_id,
+                    keyframes,
+                    ..
+                } if entity_id == "tx:create/entity:circle" => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        let (from_radius, from_width, from_height, to_radius, to_width, to_height) =
+            if from.corner_radius == Some(0.0) {
+                (0.0, 2.0, 1.0, 0.8, 4.0, 3.0)
+            } else {
+                (0.8, 4.0, 3.0, 0.0, 2.0, 1.0)
+            };
+        assert_semantic_rounded_rectangle_path(
+            &keyframes[0].value,
+            from_width,
+            from_height,
+            from_radius,
+        );
+        assert_semantic_rounded_rectangle_path(&keyframes[1].value, to_width, to_height, to_radius);
+        let midpoint = poietra_geometry::interpolate_cubic_path_v1(
+            &keyframes[0].value,
+            &keyframes[1].value,
+            0.5,
+        )
+        .unwrap();
+        assert_semantic_rounded_rectangle_path(&midpoint, 3.0, 2.0, 0.4);
+    }
+}
+
+#[test]
+fn normalized_creation_rejects_rounded_rectangle_shape_transform() {
+    let bundle = static_imported_bundle();
+    let mut command = studio_shape_transform_chain_command(&bundle);
+    let StudioCreationOperationKind::Create { entity } =
+        &mut command.programs[0].operations[0].kind
+    else {
+        unreachable!();
+    };
+    entity.dimensions.corner_radius = Some(0.5);
+    let StudioCreationOperationKind::TransformShape {
+        from_dimensions, ..
+    } = &mut command.programs[1].operations[0].kind
+    else {
+        unreachable!();
+    };
+    from_dimensions.corner_radius = Some(0.5);
+    assert!(matches!(
+        project_studio_creation_edits(bundle.scene.duration, &command.programs),
+        Err(ProjectStudioCreationEditError::Unsupported)
+    ));
 }
 
 #[test]
@@ -9927,6 +10295,7 @@ fn normalized_creation_rebases_same_anchor_order_lifetimes_and_followup_time() {
                         dimensions: StudioAuthoringDimensions {
                             angles: None,
                             coordinate_system: None,
+                            corner_radius: None,
                             height: Some(1.0),
                             radius: None,
                             sides: None,

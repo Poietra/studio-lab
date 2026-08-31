@@ -1149,11 +1149,11 @@ class GroupedEquation(Scene):
     const resize: CanonicalEditOperation = {
       ...operationBase("resize-rectangle", 7),
       entityId: "rectangle_1",
-      from: { dimensions: { height: 2, width: 4 }, position: { x: 640, y: 360 } },
+      from: { dimensions: { cornerRadius: 0, height: 2, width: 4 }, position: { x: 640, y: 360 } },
       kind: "ResizeEntity",
       scale: 1,
       shape: "rectangle",
-      to: { dimensions: { height: 3, width: 6 }, position: { x: 730, y: 405 } },
+      to: { dimensions: { cornerRadius: 0, height: 3, width: 6 }, position: { x: 730, y: 405 } },
     };
     const lowered = lowerCanonicalProgramSource(
       rectangleSource,
@@ -1170,6 +1170,7 @@ class GroupedEquation(Scene):
     const entityId = "source:examples/relativity.py#GroupedEquation:shape";
 
     expect(lowered.insertedCode).toContain('# poietra:dimensions {"kind":"exact"');
+    expect(lowered.insertedCode).not.toContain("cornerRadius");
     expect(lowered.insertedCode).toContain("shape.stretch_to_fit_width(6).stretch_to_fit_height(3).move_to(");
     expect(imported?.runtimeSceneState.propertyChannels[`${entityId}/dimensions`]?.samples.at(-1)).toMatchObject({
       interval: { end: 8, start: 7 },
@@ -1180,6 +1181,29 @@ class GroupedEquation(Scene):
       kind: "exact",
       value: { x: 365, y: 202.5 },
     });
+  });
+
+  it("rejects a Rectangle resize carrying corner radius instead of dropping it from Manim source", () => {
+    const resize: CanonicalEditOperation = {
+      ...operationBase("resize-rounded-rectangle", 7),
+      entityId: "rectangle_1",
+      from: { dimensions: { cornerRadius: 0, height: 2, width: 4 }, position: { x: 640, y: 360 } },
+      kind: "ResizeEntity",
+      scale: 1,
+      shape: "rectangle",
+      to: { dimensions: { cornerRadius: 0.5, height: 3, width: 6 }, position: { x: 730, y: 405 } },
+    };
+
+    expect(() =>
+      lowerCanonicalProgramSource(
+        source,
+        request(canonicalProgram([resize], "resize-rounded-rectangle"), [
+          { entityId: "rectangle_1", sourceVariable: "shape" },
+        ]),
+        { height: 8, width: 14.222 },
+        null,
+      ),
+    ).toThrow(/Rounded Rectangle resize.*not Manim source export/i);
   });
 
   it("keeps Circle aspect while lowering and reimporting an animated geometry resize", () => {

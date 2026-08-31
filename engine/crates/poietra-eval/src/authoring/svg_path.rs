@@ -559,6 +559,7 @@ pub(crate) fn normalize_studio_svg_path_asset(
         dimensions: StudioAuthoringDimensions {
             angles: None,
             coordinate_system: None,
+            corner_radius: None,
             height: Some(view_box.h * scale),
             radius: None,
             sides: None,
@@ -610,6 +611,7 @@ mod tests {
             StudioAuthoringDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: Some(1.5),
                 radius: None,
                 sides: None,

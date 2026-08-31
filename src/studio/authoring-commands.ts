@@ -74,7 +74,7 @@ export function defaultEntityDimensions(
   type: InsertEntityType | "DataPlot" | "ImageMobject" | "SvgPath",
 ): EntityDimensions | undefined {
   if (type === "Circle") return { radius: 1 };
-  if (type === "Rectangle") return { height: 2, width: 4 };
+  if (type === "Rectangle") return { cornerRadius: 0, height: 2, width: 4 };
   if (type === "Ellipse") return { height: 2, width: 3 };
   if (type === "Arc" || type === "Sector") {
     return { angles: { start: 0, sweep: Math.PI / 2 }, radius: 1 };
@@ -364,7 +364,11 @@ export function createStudioEntitiesProgram(
     const createId = operationId(input.transactionId, `create-${index}`);
     const positionId = operationId(input.transactionId, `position-${index}`);
     const appearId = operationId(input.transactionId, `appear-${index}`);
-    const dimensions = entity.dimensions ?? defaultEntityDimensions(entity.type);
+    const requestedDimensions = entity.dimensions ?? defaultEntityDimensions(entity.type);
+    const dimensions =
+      entity.type === "Rectangle" && requestedDimensions
+        ? { ...requestedDimensions, cornerRadius: requestedDimensions.cornerRadius ?? 0 }
+        : requestedDimensions;
     entityIds.push(entityId);
     return [
       {
@@ -448,6 +452,12 @@ export function createInspectorEntityEditProgram(
   }
   if (input.edits.dimensions && !input.from.dimensions) {
     throw new Error("Shape geometry editing requires known current dimensions.");
+  }
+  if (
+    input.edits.dimensions?.cornerRadius !== undefined &&
+    (entity.type !== "Rectangle" || entity.sourceIdentity.kind !== "unknown" || !entity.transactionId)
+  ) {
+    throw new Error("Corner radius editing supports only Studio-created Rectangles.");
   }
   if (input.edits.content && entity.type !== "Text" && entity.type !== "MathTex") {
     throw new Error(`${entity.type} does not support content editing.`);
@@ -1063,8 +1073,17 @@ export function createSceneDurationProgram(
 
 function duplicatedEntityDimensions(type: string, dimensions: EntityDimensions | null) {
   if (dimensions === null) return undefined;
-  const { angles, coordinateSystem, height, radius, sides, width } = dimensions;
-  if (type === "Circle" && radius !== undefined && !angles && !coordinateSystem && !height && !sides && !width) {
+  const { angles, coordinateSystem, cornerRadius, height, radius, sides, width } = dimensions;
+  if (
+    type === "Circle" &&
+    radius !== undefined &&
+    !angles &&
+    !coordinateSystem &&
+    cornerRadius === undefined &&
+    !height &&
+    !sides &&
+    !width
+  ) {
     return { radius };
   }
   if (
@@ -1076,7 +1095,7 @@ function duplicatedEntityDimensions(type: string, dimensions: EntityDimensions |
     !radius &&
     !sides
   ) {
-    return { height, width };
+    return { cornerRadius: cornerRadius ?? 0, height, width };
   }
   if (
     (type === "Triangle" || type === "RegularPolygon") &&
@@ -1084,6 +1103,7 @@ function duplicatedEntityDimensions(type: string, dimensions: EntityDimensions |
     sides !== undefined &&
     !angles &&
     !coordinateSystem &&
+    cornerRadius === undefined &&
     !height &&
     !width
   ) {
@@ -1095,6 +1115,7 @@ function duplicatedEntityDimensions(type: string, dimensions: EntityDimensions |
     width !== undefined &&
     !angles &&
     !coordinateSystem &&
+    cornerRadius === undefined &&
     !radius &&
     !sides
   ) {
@@ -1105,6 +1126,7 @@ function duplicatedEntityDimensions(type: string, dimensions: EntityDimensions |
     angles &&
     radius !== undefined &&
     !coordinateSystem &&
+    cornerRadius === undefined &&
     !height &&
     !sides &&
     !width
@@ -1117,6 +1139,7 @@ function duplicatedEntityDimensions(type: string, dimensions: EntityDimensions |
     !coordinateSystem.y &&
     width !== undefined &&
     !angles &&
+    cornerRadius === undefined &&
     !height &&
     !radius &&
     !sides
@@ -1129,6 +1152,7 @@ function duplicatedEntityDimensions(type: string, dimensions: EntityDimensions |
     height !== undefined &&
     width !== undefined &&
     !angles &&
+    cornerRadius === undefined &&
     !radius &&
     !sides
   ) {

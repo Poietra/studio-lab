@@ -272,6 +272,8 @@ pub struct StudioAuthoringDimensions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coordinate_system: Option<StudioAuthoringCoordinateSystem>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub corner_radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub radius: Option<f64>,
@@ -469,36 +471,62 @@ fn studio_authoring_shape_size(
     kind: StudioAuthoringEntityKind,
     dimensions: StudioAuthoringDimensions,
 ) -> Option<StudioAuthoringSize> {
+    if kind == StaticRootTransformEntityKind::Rectangle {
+        let canonical = canonical_studio_rectangle_dimensions(dimensions)?;
+        return Some(StudioAuthoringSize {
+            height: canonical.height?,
+            width: canonical.width?,
+        });
+    }
     match (
         kind,
         dimensions.angles,
         dimensions.coordinate_system,
+        dimensions.corner_radius,
         dimensions.radius,
         dimensions.sides,
         dimensions.width,
         dimensions.height,
     ) {
-        (StaticRootTransformEntityKind::Circle, None, None, Some(radius), None, None, None)
-            if radius.is_finite() && radius > 0.0 =>
-        {
-            Some(StudioAuthoringSize {
-                height: radius * 2.0,
-                width: radius * 2.0,
-            })
-        }
         (
-            StaticRootTransformEntityKind::Rectangle,
+            StaticRootTransformEntityKind::Circle,
             None,
             None,
             None,
+            Some(radius),
             None,
-            Some(width),
-            Some(height),
-        ) if width.is_finite() && width > 0.0 && height.is_finite() && height > 0.0 => {
-            Some(StudioAuthoringSize { height, width })
-        }
+            None,
+            None,
+        ) if radius.is_finite() && radius > 0.0 => Some(StudioAuthoringSize {
+            height: radius * 2.0,
+            width: radius * 2.0,
+        }),
         _ => None,
     }
+}
+
+fn canonical_studio_rectangle_dimensions(
+    mut dimensions: StudioAuthoringDimensions,
+) -> Option<StudioAuthoringDimensions> {
+    let width = dimensions.width?;
+    let height = dimensions.height?;
+    if dimensions.angles.is_some()
+        || dimensions.coordinate_system.is_some()
+        || dimensions.radius.is_some()
+        || dimensions.sides.is_some()
+        || !width.is_finite()
+        || width <= 0.0
+        || !height.is_finite()
+        || height <= 0.0
+    {
+        return None;
+    }
+    let corner_radius = dimensions.corner_radius.unwrap_or(0.0);
+    if !corner_radius.is_finite() {
+        return None;
+    }
+    dimensions.corner_radius = Some(corner_radius.clamp(0.0, width.min(height) / 2.0));
+    Some(dimensions)
 }
 
 fn studio_point_to_scene_point(
@@ -1201,6 +1229,7 @@ mod tests {
                 dimensions: StaticRootTransformDimensions {
                     angles: None,
                     coordinate_system: None,
+                    corner_radius: None,
                     height: None,
                     radius: Some(0.5),
                     sides: None,
@@ -1354,6 +1383,7 @@ mod tests {
             from_dimensions: StaticRootTransformDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: None,
                 radius: Some(0.5),
                 sides: None,
@@ -1365,6 +1395,7 @@ mod tests {
             to_dimensions: StaticRootTransformDimensions {
                 angles: None,
                 coordinate_system: None,
+                corner_radius: None,
                 height: None,
                 radius: Some(1.0),
                 sides: None,

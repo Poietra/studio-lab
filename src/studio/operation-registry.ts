@@ -438,6 +438,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
   if (type === "Rectangle") return exactShapeDimensions("rectangle", dimensions);
   if (type === "Ellipse") {
     return (
+      dimensions.cornerRadius === undefined &&
       dimensions.height !== undefined &&
       dimensions.width !== undefined &&
       dimensions.angles === undefined &&
@@ -453,6 +454,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       Number.isFinite(dimensions.angles.sweep) &&
       Math.abs(dimensions.angles.sweep) >= MIN_CURVE_SWEEP_RADIANS &&
       Math.abs(dimensions.angles.sweep) <= Math.PI * 2 &&
+      dimensions.cornerRadius === undefined &&
       dimensions.radius !== undefined &&
       Number.isFinite(dimensions.radius) &&
       dimensions.radius > 0 &&
@@ -464,6 +466,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
   }
   if (type === "Triangle" || type === "RegularPolygon") {
     return (
+      dimensions.cornerRadius === undefined &&
       dimensions.radius !== undefined &&
       Number.isFinite(dimensions.radius) &&
       dimensions.radius > 0 &&
@@ -507,12 +510,14 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       (type === "NumberLine" ||
         (dimensions.height !== undefined && Number.isFinite(dimensions.height) && dimensions.height > 0)) &&
       dimensions.angles === undefined &&
+      dimensions.cornerRadius === undefined &&
       dimensions.radius === undefined &&
       dimensions.sides === undefined
     );
   }
   if (type === "SvgPath") {
     return (
+      dimensions.cornerRadius === undefined &&
       dimensions.height !== undefined &&
       Number.isFinite(dimensions.height) &&
       dimensions.height > 0 &&
@@ -532,6 +537,7 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
       dimensions.width !== 0 &&
       dimensions.angles === undefined &&
       dimensions.coordinateSystem === undefined &&
+      dimensions.cornerRadius === undefined &&
       dimensions.radius === undefined &&
       dimensions.sides === undefined
     );
@@ -539,16 +545,29 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
   return false;
 }
 
+function validRectangleCornerRadius(dimensions: EntityDimensions) {
+  const cornerRadius = dimensions.cornerRadius ?? 0;
+  return (
+    Number.isFinite(cornerRadius) &&
+    cornerRadius >= 0 &&
+    dimensions.width !== undefined &&
+    dimensions.height !== undefined &&
+    cornerRadius <= Math.min(dimensions.width, dimensions.height) / 2
+  );
+}
+
 function exactShapeDimensions(shape: "circle" | "rectangle", dimensions: EntityDimensions) {
   return shape === "circle"
     ? dimensions.radius !== undefined &&
         dimensions.angles === undefined &&
         dimensions.coordinateSystem === undefined &&
+        dimensions.cornerRadius === undefined &&
         dimensions.height === undefined &&
         dimensions.sides === undefined &&
         dimensions.width === undefined
     : dimensions.height !== undefined &&
         dimensions.width !== undefined &&
+        validRectangleCornerRadius(dimensions) &&
         dimensions.angles === undefined &&
         dimensions.coordinateSystem === undefined &&
         dimensions.radius === undefined &&
@@ -607,7 +626,8 @@ function matchingResizeStart(
         operation.from.dimensions.width !== undefined &&
         operation.from.dimensions.height !== undefined &&
         closeEnough(dimensions.width, operation.from.dimensions.width) &&
-        closeEnough(dimensions.height, operation.from.dimensions.height);
+        closeEnough(dimensions.height, operation.from.dimensions.height) &&
+        closeEnough(dimensions.cornerRadius ?? 0, operation.from.dimensions.cornerRadius ?? 0);
   return (
     dimensionsMatch &&
     exactShapeDimensions(operation.shape, operation.from.dimensions) &&
@@ -1455,21 +1475,36 @@ export const OPERATION_REGISTRY = {
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
       const dimensionsAreValid = (endpoint: typeof operation.from) => {
-        const { angles, coordinateSystem, height, radius, sides, width } = endpoint.dimensions;
+        const { angles, coordinateSystem, cornerRadius, height, radius, sides, width } = endpoint.dimensions;
         const positive = (value: unknown): value is number =>
           typeof value === "number" && Number.isFinite(value) && value > 0;
         if (angles !== undefined || coordinateSystem !== undefined) return false;
         if (endpoint.shape === "circle") {
-          return positive(radius) && height === undefined && sides === undefined && width === undefined;
+          return (
+            positive(radius) &&
+            cornerRadius === undefined &&
+            height === undefined &&
+            sides === undefined &&
+            width === undefined
+          );
         }
         if (endpoint.shape === "ellipse" || endpoint.shape === "rectangle") {
-          return positive(height) && positive(width) && radius === undefined && sides === undefined;
+          return (
+            positive(height) &&
+            positive(width) &&
+            (endpoint.shape === "rectangle" ? (cornerRadius ?? 0) === 0 : cornerRadius === undefined) &&
+            radius === undefined &&
+            sides === undefined
+          );
         }
         if (endpoint.shape === "triangle") {
-          return positive(radius) && sides === 3 && height === undefined && width === undefined;
+          return (
+            positive(radius) && cornerRadius === undefined && sides === 3 && height === undefined && width === undefined
+          );
         }
         return (
           positive(radius) &&
+          cornerRadius === undefined &&
           sides !== undefined &&
           Number.isInteger(sides) &&
           sides >= 3 &&

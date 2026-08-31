@@ -5517,6 +5517,13 @@ export function App({
     ) {
       return "Shape Transform supports only Studio-created closed primitive objects.";
     }
+    if (
+      entity.type === "Rectangle" &&
+      entity.geometry.dimensions.kind === "known" &&
+      (entity.geometry.dimensions.value.cornerRadius ?? 0) > 0
+    ) {
+      return "Shape Transform is unavailable until this Rectangle's corner radius is reset to 0.";
+    }
     if (previewRenderer?.state.phase !== "presented" || !workspaceCreationProjection || !workspaceProjection) {
       return "Wait for the canonical WebGPU preview before creating Shape Transform.";
     }

@@ -36,6 +36,7 @@ export type EntityDimensions = Readonly<{
     x: Readonly<{ maximum: number; minimum: number; step: number }>;
     y?: Readonly<{ maximum: number; minimum: number; step: number }>;
   }>;
+  cornerRadius?: number;
   height?: number;
   radius?: number;
   sides?: number;

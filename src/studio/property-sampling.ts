@@ -78,6 +78,7 @@ export function isEntityDimensionsValue(value: unknown): value is EntityDimensio
       (key) =>
         key === "angles" ||
         key === "coordinateSystem" ||
+        key === "cornerRadius" ||
         key === "height" ||
         key === "radius" ||
         key === "sides" ||
@@ -95,7 +96,7 @@ export function isEntityDimensionsValue(value: unknown): value is EntityDimensio
 
 function interpolateDimensions(from: EntityDimensions, to: EntityDimensions, progress: number) {
   const interpolated = Object.fromEntries(
-    (["height", "radius", "width"] as const).flatMap((key) => {
+    (["cornerRadius", "height", "radius", "width"] as const).flatMap((key) => {
       const start = from[key];
       const end = to[key];
       return typeof start === "number" && typeof end === "number"

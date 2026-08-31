@@ -10,6 +10,7 @@ import {
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
 import {
   type EntityContent,
+  type EntityDimensions,
   isMotionEasing,
   type MotionEasing,
   type StrokeDash,
@@ -1037,11 +1038,22 @@ function resizeMarkerEntry(
   operation: Extract<SceneEditOperation, { kind: "ResizeEntity" }>,
   viewport: Readonly<{ height: number; width: number }>,
 ) {
+  const markerDimensions = (dimensions: EntityDimensions) => ({
+    ...(dimensions.height === undefined ? {} : { height: dimensions.height }),
+    ...(dimensions.radius === undefined ? {} : { radius: dimensions.radius }),
+    ...(dimensions.width === undefined ? {} : { width: dimensions.width }),
+  });
   return {
-    from: { dimensions: operation.from.dimensions, position: markerPoint(operation.from.position, viewport) },
+    from: {
+      dimensions: markerDimensions(operation.from.dimensions),
+      position: markerPoint(operation.from.position, viewport),
+    },
     scale: operation.scale,
     shape: operation.shape,
-    to: { dimensions: operation.to.dimensions, position: markerPoint(operation.to.position, viewport) },
+    to: {
+      dimensions: markerDimensions(operation.to.dimensions),
+      position: markerPoint(operation.to.position, viewport),
+    },
     variable,
   } as const;
 }
@@ -1054,6 +1066,12 @@ function assertLoweringSupported(
   currentGeneratedMathTexLifetimes: ReadonlyMap<string, Readonly<{ end: number | null; start: number }>>,
 ) {
   if (operation.kind === "CreateEntity") {
+    if (operation.entity.type === "Rectangle" && (operation.entity.dimensions?.cornerRadius ?? 0) > 0) {
+      throw new ProgramLoweringError(
+        "operation-unsupported",
+        "Rounded Rectangle creation is available in Preview and MP4 export, but not Manim source export.",
+      );
+    }
     if (
       operation.entity.lifetime.end !== null &&
       !operation.entity.type.startsWith("TransitionOverlay:") &&
@@ -1064,6 +1082,15 @@ function assertLoweringSupported(
         "A finite created lifetime must be lowered through the batch source pipeline.",
       );
     }
+  }
+  if (
+    operation.kind === "ResizeEntity" &&
+    ((operation.from.dimensions.cornerRadius ?? 0) > 0 || (operation.to.dimensions.cornerRadius ?? 0) > 0)
+  ) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Rounded Rectangle resize is available in Preview and MP4 export, but not Manim source export.",
+    );
   }
   if (operation.kind === "SetProperty" && operation.key === "content" && contentTarget(operation.value)) return;
   if (operation.kind === "SetProperty" && operation.key === "appearance") {

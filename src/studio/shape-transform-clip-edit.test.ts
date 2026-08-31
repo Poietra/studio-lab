@@ -12,7 +12,7 @@ const ROOT_ID = "tx:create-shape/entity:shape";
 
 function studioScene(
   type = "Rectangle",
-  dimensions: Readonly<{ height?: number; radius?: number; sides?: number; width?: number }> = {
+  dimensions: Readonly<{ cornerRadius?: number; height?: number; radius?: number; sides?: number; width?: number }> = {
     height: 2,
     width: 4,
   },
@@ -198,6 +198,19 @@ describe("Studio Shape Transform clip editing", () => {
   });
 
   it("rejects mismatched dimensions and out-of-range polygon sides", () => {
+    expect(() =>
+      createShapeTransformProgram({
+        capturedPlayhead: 2,
+        easing: "smooth",
+        end: 3,
+        entityId: ROOT_ID,
+        from: { dimensions: { cornerRadius: 0.25, height: 2, width: 4 }, shape: "rectangle" },
+        scene: studioScene("Rectangle", { cornerRadius: 0.25, height: 2, width: 4 }),
+        start: 2,
+        to: { dimensions: { radius: 1 }, shape: "circle" },
+        transactionId: "rounded-rectangle",
+      }),
+    ).toThrow(/exact finite dimensions/);
     expect(() =>
       createShapeTransformProgram({
         capturedPlayhead: 2,

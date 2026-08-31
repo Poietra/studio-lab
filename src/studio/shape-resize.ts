@@ -10,6 +10,10 @@ export type ShapeGeometry = Readonly<{
 
 const MIN_DIMENSION = 0.1;
 
+export function clampRectangleCornerRadius(cornerRadius: number, width: number, height: number) {
+  return Math.min(Math.max(cornerRadius, 0), Math.min(width, height) / 2);
+}
+
 export function resizeKindForType(type: string): ShapeResizeKind | null {
   if (type === "Circle") return "circle";
   if (type === "Rectangle") return "rectangle";
@@ -165,8 +169,15 @@ export function resizeShapeByViewportDelta(
   }
   const appliedHorizontalDelta = horizontal * (targetWidth - width) * pixelsPerUnit.x * entityScale;
   const appliedVerticalDelta = vertical * (targetHeight - height) * pixelsPerUnit.y * entityScale;
+  const cornerRadius = input.from.dimensions.cornerRadius;
   return {
-    dimensions: { height: targetHeight, width: targetWidth },
+    dimensions: {
+      ...(cornerRadius === undefined
+        ? {}
+        : { cornerRadius: clampRectangleCornerRadius(cornerRadius, targetWidth, targetHeight) }),
+      height: targetHeight,
+      width: targetWidth,
+    },
     position: {
       x: input.from.position.x + appliedHorizontalDelta / 2,
       y: input.from.position.y + appliedVerticalDelta / 2,

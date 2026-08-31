@@ -43,6 +43,25 @@ function studioMathTexEntity() {
   } satisfies ProjectedEntity;
 }
 
+function studioRectangleEntity(cornerRadius = 0) {
+  const base = fixtureEntity("equation_1");
+  return {
+    ...base,
+    content: undefined,
+    geometry: {
+      dimensions: { kind: "known" as const, value: { cornerRadius, height: 2, width: 4 } },
+      position: { kind: "known" as const, value: { x: 200, y: 100 } },
+      scale: { kind: "known" as const, value: 1 },
+      style: { kind: "known" as const, value: {} },
+    },
+    id: "tx:studio-rectangle/entity:rectangle",
+    position: { x: 200, y: 100 },
+    sourceIdentity: { kind: "unknown", reason: "Created in Studio." },
+    transactionId: "studio-rectangle",
+    type: "Rectangle",
+  } satisfies ProjectedEntity;
+}
+
 describe("Inspector field validation", () => {
   it("offers only bundled Sans/Mono families and real Regular/Bold weights for Studio-created Text", () => {
     const markup = renderToStaticMarkup(
@@ -345,5 +364,47 @@ describe("Inspector field validation", () => {
       kind: "valid",
     });
     expect(validateInspectorEdits(rectangle, values(rectangle))).toEqual({ edits: {}, kind: "valid" });
+  });
+
+  it("edits only Studio-native Rectangle corner radius and canonically clamps it to the short edge", () => {
+    const rectangle = studioRectangleEntity(0.75);
+    expect(initialInspectorEditValues(rectangle).cornerRadius).toBe("0.75");
+    expect(validateInspectorEdits(rectangle, values(rectangle, { cornerRadius: "8" }))).toEqual({
+      edits: { dimensions: { cornerRadius: 1, height: 2, width: 4 } },
+      kind: "valid",
+    });
+    expect(validateInspectorEdits(rectangle, values(rectangle, { height: "1" }))).toEqual({
+      edits: { dimensions: { cornerRadius: 0.5, height: 1, width: 4 } },
+      kind: "valid",
+    });
+
+    const imported = { ...rectangle, sourceIdentity: { kind: "known" as const, value: "rectangle" } };
+    expect(initialInspectorEditValues(imported).cornerRadius).toBeNull();
+    const markup = renderToStaticMarkup(
+      createElement(EntityInspectorEditor, {
+        entity: imported,
+        onCreateDraft: () => true,
+        onFocusRestored: () => undefined,
+        restoreFocus: null,
+      }),
+    );
+    expect(markup).not.toContain("Corner radius of");
+    expect(validateInspectorEdits(imported, values(imported, { cornerRadius: "0.5" }))).toEqual({
+      errors: { cornerRadius: expect.stringMatching(/only for Studio-created Rectangles/i) },
+      kind: "invalid",
+    });
+  });
+
+  it("renders the corner radius field for a Studio-native Rectangle", () => {
+    const markup = renderToStaticMarkup(
+      createElement(EntityInspectorEditor, {
+        entity: studioRectangleEntity(),
+        onCreateDraft: () => true,
+        onFocusRestored: () => undefined,
+        restoreFocus: null,
+      }),
+    );
+    expect(markup).toContain('aria-label="Corner radius of rectangle"');
+    expect(markup).toContain('data-inspector-field="cornerRadius"');
   });
 });

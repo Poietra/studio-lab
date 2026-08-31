@@ -2455,10 +2455,8 @@ fn prepare_stroke_path_input(
                 && same_point(curve.start, curve.control2)
                 && same_point(curve.start, curve.end)
             {
-                return Err(PrepareFrameErrorV1::Unsupported {
-                    draw_id: context.draw_id.to_owned(),
-                    reason: UnsupportedDrawReasonV1::DegenerateStroke,
-                });
+                local_start = &segment.end;
+                continue;
             }
             let prepared_curve = PreparedStrokeCubicV1 {
                 control1: stroke_input_point(
@@ -2505,6 +2503,12 @@ fn prepare_stroke_path_input(
             prepared_start = prepared_curve.end;
             prepared_segments.push(prepared_curve);
             local_start = &segment.end;
+        }
+        if prepared_segments.is_empty() {
+            return Err(PrepareFrameErrorV1::Unsupported {
+                draw_id: context.draw_id.to_owned(),
+                reason: UnsupportedDrawReasonV1::DegenerateStroke,
+            });
         }
         prepared_subpaths.push(PreparedStrokeSubpathV1 {
             closed: subpath.closed,
