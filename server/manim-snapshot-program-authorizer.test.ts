@@ -66,7 +66,7 @@ const sourceWithZeroAnchor = sceneSource.replace(
 async function lowerContent(
   transactionId: string,
   outlineResult: MathTexOutlineResponseV1["result"] | "compiled",
-  snapshotState: "published" | "missing" | "lookup-failed" = "published",
+  snapshotState: "published" | "missing" | "lookup-failed" | "fresh-request-mismatch" = "published",
 ) {
   const runtimeSceneState = sceneView(
     importSourceSnapshot(sourceWithZeroAnchor, "scene.py", frame).view,
@@ -91,11 +91,20 @@ async function lowerContent(
   const snapshot = await verifiedSnapshotView(request, "equation");
   if (snapshot.status !== "verified") throw new Error("The snapshot authorization fixture is not verified.");
   snapshots.lookup.mockImplementation(async () => {
-    if (snapshotState === "missing") throw new HttpError("No verified Scene snapshot has been published.", 404);
+    if (snapshotState === "missing" || snapshotState === "fresh-request-mismatch") {
+      throw new HttpError("No verified Scene snapshot has been published.", 404);
+    }
     if (snapshotState === "lookup-failed") throw new HttpError("Snapshot storage is unavailable.", 503);
     return snapshot;
   });
-  snapshots.run.mockResolvedValue(snapshot);
+  snapshots.run.mockImplementation(async (snapshotRequest: Readonly<{ requestId: string }>) => {
+    const requestId = snapshotState === "fresh-request-mismatch" ? "stale-request" : snapshotRequest.requestId;
+    return {
+      ...snapshot,
+      requestId,
+      snapshot: { ...snapshot.snapshot, requestId },
+    };
+  });
   if (outlineResult === "compiled") {
     const bundle = snapshot.snapshot.bundle as SceneIrBundleV1;
     const entity = bundle.scene.entities.find(({ geometry }) => geometry.kind === "cubic-path");
@@ -314,18 +323,29 @@ describe("snapshot MathTex authorization", () => {
       traceDigest,
       version: 2 as const,
     }));
+    const input = {
+      authorizationKind: "studio-creation" as const,
+      frame,
+      programs: [program],
+      projectId: request.projectId,
+      request,
+      runtimeSceneState,
+    };
+    const snapshotRun = vi.fn();
 
-    await authorizeStudioCreationProgramWithRuntimeTrace(
-      {
-        authorizationKind: "studio-creation",
-        frame,
-        programs: [program],
-        projectId: request.projectId,
-        request,
-        runtimeSceneState,
-      },
-      lookup,
-    );
+    await expect(
+      authorizeSnapshotProgramWithSnapshot(
+        input,
+        async () => {
+          throw new HttpError("No verified Scene snapshot has been published.", 404);
+        },
+        undefined,
+        snapshotRun,
+      ),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(snapshotRun).not.toHaveBeenCalled();
+
+    await authorizeStudioCreationProgramWithRuntimeTrace(input, lookup);
 
     expect(lookup).toHaveBeenCalledOnce();
     expect(compilers.creation).toHaveBeenCalledOnce();
@@ -425,6 +445,17 @@ describe("snapshot MathTex authorization", () => {
       status: 503,
     });
     expect(snapshots.run).not.toHaveBeenCalled();
+    expect(compilers.staticRoot).not.toHaveBeenCalled();
+  });
+
+  it("rejects a fresh snapshot response with another request ID", async () => {
+    await expect(
+      lowerContent("stale-fresh-snapshot-request", "compiled", "fresh-request-mismatch"),
+    ).rejects.toMatchObject({
+      message: "The fresh verified Scene snapshot has stale request correlation.",
+      status: 409,
+    });
+    expect(snapshots.run).toHaveBeenCalledOnce();
     expect(compilers.staticRoot).not.toHaveBeenCalled();
   });
 
