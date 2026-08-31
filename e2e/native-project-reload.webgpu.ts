@@ -345,7 +345,7 @@ async function createBlankWorkspace(page: Page, name: string) {
   return ((await createResponse.json()) as { project: { id: string } }).project.id;
 }
 
-test("persists one project WAV through Timeline and Opus MP4 export", async ({ page }) => {
+test("persists project WAV timing and volume through Timeline and Opus MP4 export", async ({ page }) => {
   test.setTimeout(120_000);
   page.setDefaultTimeout(15_000);
   let projectId: string | null = null;
@@ -390,6 +390,12 @@ test("persists one project WAV through Timeline and Opus MP4 export", async ({ p
     await expect.poll(async () => Number(await trimEndInput.inputValue())).toBeCloseTo(0.3, 2);
     await expect(audioLane.getByLabel("Audio track tone.wav, 0.50–0.70 seconds")).toBeVisible();
 
+    const volumeInput = page.getByLabel("Audio volume percent");
+    await expect(volumeInput).toHaveValue("100");
+    await volumeInput.fill("50");
+    await page.getByRole("button", { name: "Apply volume" }).click();
+    await expect(volumeInput).toHaveValue("50");
+
     const unsupportedWav = monoPcmWav48k(0.4);
     unsupportedWav.writeUInt32LE(44_100, 24);
     unsupportedWav.writeUInt32LE(88_200, 28);
@@ -410,6 +416,7 @@ test("persists one project WAV through Timeline and Opus MP4 export", async ({ p
     await expect(page.getByLabel("Audio offset seconds")).toHaveValue("0.5");
     await expect(page.getByLabel("Audio trim in seconds")).toHaveValue("0.1");
     await expect(page.getByLabel("Audio trim out seconds")).toHaveValue("0.3");
+    await expect(page.getByLabel("Audio volume percent")).toHaveValue("50");
 
     const mp4Base64 = await exportLocalMp4(page);
     const mp4Bytes = Uint8Array.from(Buffer.from(mp4Base64, "base64"));
@@ -450,7 +457,8 @@ test("persists one project WAV through Timeline and Opus MP4 export", async ({ p
     expect(decodedAudio.channels).toBe(1);
     expect(decodedAudio.duration).toBeCloseTo(5, 1);
     expect(decodedAudio.beforePeak).toBeLessThan(0.01);
-    expect(decodedAudio.activePeak).toBeGreaterThan(0.05);
+    expect(decodedAudio.activePeak).toBeGreaterThan(0.08);
+    expect(decodedAudio.activePeak).toBeLessThan(0.16);
     expect(decodedAudio.afterPeak).toBeLessThan(0.01);
 
     await page.getByRole("button", { name: "Remove WAV tone.wav" }).click();
