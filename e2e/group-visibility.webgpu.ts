@@ -20,6 +20,16 @@ async function placeOnCanvas(page: Page, fractionX: number, fractionY: number) {
     pointerId: 1,
     pointerType: "mouse",
   });
+  await canvas.dispatchEvent("pointerup", {
+    bubbles: true,
+    button: 0,
+    buttons: 0,
+    clientX: bounds.x + bounds.width * fractionX,
+    clientY: bounds.y + bounds.height * fractionY,
+    isPrimary: true,
+    pointerId: 1,
+    pointerType: "mouse",
+  });
 }
 
 test("hides and restores a logical group from before its authoring playhead", { tag: "@manual-authority" }, async ({
