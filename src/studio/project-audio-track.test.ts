@@ -4,9 +4,11 @@ import { MAX_EXPORT_WAV_BYTES } from "../engine/export-worker-protocol";
 import {
   cloneProjectAudioTrack,
   ingestProjectAudioWav,
+  projectAudioMixAtFadeDelta,
   projectAudioMixSettings,
   projectAudioTimelineTimingAtDelta,
   projectAudioTimingSeconds,
+  projectAudioVisibleSampleFrames,
   updateProjectAudioMix,
   updateProjectAudioTiming,
 } from "./project-audio-track";
@@ -130,6 +132,61 @@ describe("project audio track", () => {
     expect(() => updateProjectAudioMix(track, { fadeInSeconds: -1, fadeOutSeconds: 0, volumePercent: 100 })).toThrow(
       "non-negative",
     );
+  });
+
+  it("derives the fade handle range from the trimmed and Scene-cropped audible clip", () => {
+    const track = {
+      sourceSampleFrames: 96_000,
+      timelineOffsetSampleFrames: 24_000,
+      trimEndSampleFrames: 84_000,
+      trimStartSampleFrames: 12_000,
+    };
+
+    expect(projectAudioVisibleSampleFrames(track, 3)).toBe(72_000);
+    expect(projectAudioVisibleSampleFrames(track, 1.25)).toBe(36_000);
+    expect(projectAudioVisibleSampleFrames({ ...track, sourceSampleFrames: null, trimEndSampleFrames: null }, 3)).toBe(
+      null,
+    );
+    expect(projectAudioVisibleSampleFrames({ ...track, trimEndSampleFrames: 120_000 }, 3)).toBe(null);
+  });
+
+  it("moves fade handles independently on the sample grid and allows their ranges to overlap", () => {
+    const track = {
+      fadeInSampleFrames: 12_000,
+      fadeOutSampleFrames: 16_000,
+      sourceSampleFrames: 48_000,
+      timelineOffsetSampleFrames: 0,
+      trimEndSampleFrames: 48_000,
+      trimStartSampleFrames: 0,
+      volumePercent: 60,
+    };
+
+    expect(projectAudioMixAtFadeDelta(track, 1, 0.5, "fade-in")).toEqual({
+      fadeInSeconds: 0.75,
+      fadeOutSeconds: 1 / 3,
+      volumePercent: 60,
+    });
+    expect(projectAudioMixAtFadeDelta(track, 1, -0.5, "fade-out")).toEqual({
+      fadeInSeconds: 0.25,
+      fadeOutSeconds: 5 / 6,
+      volumePercent: 60,
+    });
+  });
+
+  it("keeps a no-op fade gesture exact without normalizing a legacy value above the visible range", () => {
+    const track = {
+      fadeInSampleFrames: 96_000,
+      fadeOutSampleFrames: 0,
+      sourceSampleFrames: 48_000,
+      timelineOffsetSampleFrames: 0,
+      trimEndSampleFrames: 48_000,
+      trimStartSampleFrames: 0,
+      volumePercent: 100,
+    };
+
+    expect(projectAudioMixAtFadeDelta(track, 1, 0, "fade-in")?.fadeInSeconds).toBe(2);
+    expect(projectAudioMixAtFadeDelta(track, 1, 1 / 48_000, "fade-in")?.fadeInSeconds).toBe(2);
+    expect(projectAudioMixAtFadeDelta(track, 1, -1 / 48_000, "fade-in")?.fadeInSeconds).toBe(47_999 / 48_000);
   });
 
   it("moves a Timeline clip start within the Scene without changing its source trim", () => {
