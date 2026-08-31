@@ -35,8 +35,10 @@ import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-ed
 import type { StudioLayerEntry, StudioLayerOrderDirection } from "./layer-order";
 import type { ProgramRecord, ProjectedEntity, StrokeDash, StrokeJoin } from "./model";
 import {
+  type ProjectAudioMixSettings,
   type ProjectAudioTimingSeconds,
   type ProjectAudioTrack,
+  projectAudioMixSettings,
   projectAudioTimingSeconds,
 } from "./project-audio-track";
 import {
@@ -415,8 +417,8 @@ export function WorkspaceSidebar({
   nextScene,
   onGroup,
   onImportAudioFile,
+  onAudioMixChange,
   onAudioTimingChange,
-  onAudioVolumeChange,
   onImportImageFiles,
   onImportSvgFiles,
   onRemoveAudioTrack,
@@ -484,8 +486,8 @@ export function WorkspaceSidebar({
   lockedEntityIds?: ReadonlySet<string>;
   nextScene: AuthorableWorkspaceScene | null;
   onGroup?: () => void;
+  onAudioMixChange?: (mix: ProjectAudioMixSettings) => void;
   onAudioTimingChange?: (timing: ProjectAudioTimingSeconds) => void;
-  onAudioVolumeChange?: (volumePercent: number) => void;
   onImportAudioFile?: (file: File) => void;
   onImportImageFiles?: (files: readonly File[]) => void;
   onImportSvgFiles?: (files: readonly File[]) => void;
@@ -710,39 +712,58 @@ export function WorkspaceSidebar({
                 </button>
               </form>
             ) : null}
-            {audioTrack && onAudioVolumeChange ? (
+            {audioTrack && onAudioMixChange ? (
               <form
-                className="mt-2 flex items-end gap-2"
-                key={audioTrack.volumePercent}
+                className="mt-2 grid grid-cols-3 gap-2"
+                key={`${audioTrack.volumePercent}:${audioTrack.fadeInSampleFrames}:${audioTrack.fadeOutSampleFrames}`}
                 onSubmit={(event) => {
                   event.preventDefault();
-                  const volumePercent = Number(new FormData(event.currentTarget).get("audioVolumePercent"));
-                  if (Number.isSafeInteger(volumePercent) && volumePercent >= 0 && volumePercent <= 100) {
-                    onAudioVolumeChange(volumePercent);
+                  const data = new FormData(event.currentTarget);
+                  const volumePercent = Number(data.get("audioVolumePercent"));
+                  const fadeIn = Number(data.get("audioFadeIn"));
+                  const fadeOut = Number(data.get("audioFadeOut"));
+                  if (
+                    Number.isSafeInteger(volumePercent) &&
+                    volumePercent >= 0 &&
+                    volumePercent <= 100 &&
+                    Number.isFinite(fadeIn) &&
+                    fadeIn >= 0 &&
+                    Number.isFinite(fadeOut) &&
+                    fadeOut >= 0
+                  ) {
+                    onAudioMixChange({ fadeInSeconds: fadeIn, fadeOutSeconds: fadeOut, volumePercent });
                   }
                 }}
               >
-                <label className="min-w-0 flex-1 text-[9px] text-zinc-500">
-                  Volume (%)
-                  <input
-                    aria-label="Audio volume percent"
-                    className="mt-1 h-7 w-full border border-zinc-700 bg-zinc-950 px-1.5 text-[10px] tabular-nums text-zinc-300 outline-none focus:border-sky-500"
-                    defaultValue={audioTrack.volumePercent}
-                    disabled={!authoringAvailable || draftActive || audioImportPending}
-                    max="100"
-                    min="0"
-                    name="audioVolumePercent"
-                    required
-                    step="1"
-                    type="number"
-                  />
-                </label>
+                {(
+                  [
+                    ["Volume", "audioVolumePercent", projectAudioMixSettings(audioTrack).volumePercent, "1"],
+                    ["Fade in", "audioFadeIn", projectAudioMixSettings(audioTrack).fadeInSeconds, "0.01"],
+                    ["Fade out", "audioFadeOut", projectAudioMixSettings(audioTrack).fadeOutSeconds, "0.01"],
+                  ] as const
+                ).map(([label, name, value, step]) => (
+                  <label className="min-w-0 text-[9px] text-zinc-500" key={name}>
+                    {label} {name === "audioVolumePercent" ? "(%)" : "(s)"}
+                    <input
+                      aria-label={`Audio ${label.toLowerCase()} ${name === "audioVolumePercent" ? "percent" : "seconds"}`}
+                      className="mt-1 h-7 w-full border border-zinc-700 bg-zinc-950 px-1.5 text-[10px] tabular-nums text-zinc-300 outline-none focus:border-sky-500"
+                      defaultValue={value}
+                      disabled={!authoringAvailable || draftActive || audioImportPending}
+                      max={name === "audioVolumePercent" ? "100" : undefined}
+                      min="0"
+                      name={name}
+                      required
+                      step={step}
+                      type="number"
+                    />
+                  </label>
+                ))}
                 <button
-                  className="h-7 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
+                  className="col-span-3 h-7 border border-zinc-700 px-2 text-[10px] font-medium text-zinc-300 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:text-zinc-700"
                   disabled={!authoringAvailable || draftActive || audioImportPending}
                   type="submit"
                 >
-                  Apply volume
+                  Apply audio mix
                 </button>
               </form>
             ) : null}

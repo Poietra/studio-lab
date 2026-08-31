@@ -187,6 +187,8 @@ describe("StudioExportControl", () => {
     const markup = renderToStaticMarkup(
       <StudioExportControl
         audioTrack={{
+          fadeInSampleFrames: 0,
+          fadeOutSampleFrames: 0,
           fileName: "narration.wav",
           sourceSampleFrames: 48_000,
           timelineOffsetSampleFrames: 0,

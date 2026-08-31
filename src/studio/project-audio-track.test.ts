@@ -4,10 +4,11 @@ import { MAX_EXPORT_WAV_BYTES } from "../engine/export-worker-protocol";
 import {
   cloneProjectAudioTrack,
   ingestProjectAudioWav,
+  projectAudioMixSettings,
   projectAudioTimelineTimingAtDelta,
   projectAudioTimingSeconds,
+  updateProjectAudioMix,
   updateProjectAudioTiming,
-  updateProjectAudioVolume,
 } from "./project-audio-track";
 
 describe("project audio track", () => {
@@ -19,6 +20,8 @@ describe("project audio track", () => {
 
     expect(track.fileName).toBe("narration.wav");
     expect(track).toMatchObject({
+      fadeInSampleFrames: 0,
+      fadeOutSampleFrames: 0,
       sourceSampleFrames: 19_200,
       timelineOffsetSampleFrames: 0,
       trimEndSampleFrames: 19_200,
@@ -45,6 +48,8 @@ describe("project audio track", () => {
 
   it("clones owned bytes", () => {
     const source = {
+      fadeInSampleFrames: 0,
+      fadeOutSampleFrames: 0,
       fileName: "voice.wav",
       sourceSampleFrames: 3,
       timelineOffsetSampleFrames: 0,
@@ -61,6 +66,8 @@ describe("project audio track", () => {
 
   it("converts bounded second edits to exact 48 kHz sample frames", () => {
     const track = {
+      fadeInSampleFrames: 0,
+      fadeOutSampleFrames: 0,
       fileName: "voice.wav",
       sourceSampleFrames: 48_000,
       timelineOffsetSampleFrames: 0,
@@ -84,8 +91,10 @@ describe("project audio track", () => {
     expect(() => updateProjectAudioTiming(track, { offset: 0, trimEnd: 1.01, trimStart: 0 })).toThrow("cannot exceed");
   });
 
-  it("updates only integer volume from 0 to 100 percent", () => {
+  it("updates bounded volume and fade durations on the 48 kHz grid", () => {
     const track = {
+      fadeInSampleFrames: 0,
+      fadeOutSampleFrames: 0,
       fileName: "voice.wav",
       sourceSampleFrames: 48_000,
       timelineOffsetSampleFrames: 0,
@@ -95,12 +104,32 @@ describe("project audio track", () => {
       wavBytes: new ArrayBuffer(1),
     };
 
-    expect(updateProjectAudioVolume(track, 0).volumePercent).toBe(0);
-    expect(updateProjectAudioVolume(track, 50).volumePercent).toBe(50);
-    expect(updateProjectAudioVolume(track, 100).volumePercent).toBe(100);
-    expect(() => updateProjectAudioVolume(track, -1)).toThrow("0 to 100");
-    expect(() => updateProjectAudioVolume(track, 101)).toThrow("0 to 100");
-    expect(() => updateProjectAudioVolume(track, 50.5)).toThrow("integer");
+    const updated = updateProjectAudioMix(track, {
+      fadeInSeconds: 0.1,
+      fadeOutSeconds: 0.2,
+      volumePercent: 50,
+    });
+    expect(updated).toMatchObject({ fadeInSampleFrames: 4_800, fadeOutSampleFrames: 9_600, volumePercent: 50 });
+    expect(projectAudioMixSettings(updated)).toEqual({
+      fadeInSeconds: 0.1,
+      fadeOutSeconds: 0.2,
+      volumePercent: 50,
+    });
+    expect(updateProjectAudioMix(track, { fadeInSeconds: 0, fadeOutSeconds: 0, volumePercent: 0 }).volumePercent).toBe(
+      0,
+    );
+    expect(() => updateProjectAudioMix(track, { fadeInSeconds: 0, fadeOutSeconds: 0, volumePercent: -1 })).toThrow(
+      "0 to 100",
+    );
+    expect(() => updateProjectAudioMix(track, { fadeInSeconds: 0, fadeOutSeconds: 0, volumePercent: 101 })).toThrow(
+      "0 to 100",
+    );
+    expect(() => updateProjectAudioMix(track, { fadeInSeconds: 0, fadeOutSeconds: 0, volumePercent: 50.5 })).toThrow(
+      "integer",
+    );
+    expect(() => updateProjectAudioMix(track, { fadeInSeconds: -1, fadeOutSeconds: 0, volumePercent: 100 })).toThrow(
+      "non-negative",
+    );
   });
 
   it("moves a Timeline clip start within the Scene without changing its source trim", () => {

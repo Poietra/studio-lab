@@ -2,6 +2,8 @@ import { validateExportAudioWav } from "../engine/export-audio-wav";
 import { MAX_EXPORT_WAV_BYTES } from "../engine/export-worker-protocol";
 
 export type ProjectAudioTrack = Readonly<{
+  fadeInSampleFrames: number;
+  fadeOutSampleFrames: number;
   fileName: string;
   sourceSampleFrames: number | null;
   timelineOffsetSampleFrames: number;
@@ -12,12 +14,19 @@ export type ProjectAudioTrack = Readonly<{
 }>;
 
 export const PROJECT_AUDIO_SAMPLE_RATE_HZ = 48_000;
+export const DEFAULT_PROJECT_AUDIO_FADE_SAMPLE_FRAMES = 0;
 export const DEFAULT_PROJECT_AUDIO_VOLUME_PERCENT = 100;
 
 export type ProjectAudioTimingSeconds = Readonly<{
   offset: number;
   trimEnd: number | null;
   trimStart: number;
+}>;
+
+export type ProjectAudioMixSettings = Readonly<{
+  fadeInSeconds: number;
+  fadeOutSeconds: number;
+  volumePercent: number;
 }>;
 
 export type ProjectAudioTimelineGesture = "body" | "left" | "right";
@@ -60,11 +69,24 @@ export function updateProjectAudioTiming(
   return { ...track, timelineOffsetSampleFrames, trimEndSampleFrames, trimStartSampleFrames };
 }
 
-export function updateProjectAudioVolume(track: ProjectAudioTrack, volumePercent: number): ProjectAudioTrack {
-  if (!Number.isSafeInteger(volumePercent) || volumePercent < 0 || volumePercent > 100) {
+export function projectAudioMixSettings(track: ProjectAudioTrack): ProjectAudioMixSettings {
+  return {
+    fadeInSeconds: track.fadeInSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ,
+    fadeOutSeconds: track.fadeOutSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ,
+    volumePercent: track.volumePercent,
+  };
+}
+
+export function updateProjectAudioMix(track: ProjectAudioTrack, mix: ProjectAudioMixSettings): ProjectAudioTrack {
+  if (!Number.isSafeInteger(mix.volumePercent) || mix.volumePercent < 0 || mix.volumePercent > 100) {
     throw new TypeError("Audio volume must be an integer from 0 to 100 percent.");
   }
-  return { ...track, volumePercent };
+  return {
+    ...track,
+    fadeInSampleFrames: secondsToSampleFrames(mix.fadeInSeconds, "Audio fade in"),
+    fadeOutSampleFrames: secondsToSampleFrames(mix.fadeOutSeconds, "Audio fade out"),
+    volumePercent: mix.volumePercent,
+  };
 }
 
 function framesToSeconds(value: number) {
@@ -149,6 +171,8 @@ export async function ingestProjectAudioWav(
     throw new TypeError("The WAV validator returned an invalid sample-frame count.");
   }
   return {
+    fadeInSampleFrames: DEFAULT_PROJECT_AUDIO_FADE_SAMPLE_FRAMES,
+    fadeOutSampleFrames: DEFAULT_PROJECT_AUDIO_FADE_SAMPLE_FRAMES,
     fileName: file.name || "project-audio.wav",
     sourceSampleFrames,
     timelineOffsetSampleFrames: 0,

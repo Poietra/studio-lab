@@ -230,6 +230,8 @@ export function StudioExportControl({
         ...(capturedAudioTrack
           ? {
               audioTiming: {
+                fadeInSampleFrames: capturedAudioTrack.fadeInSampleFrames,
+                fadeOutSampleFrames: capturedAudioTrack.fadeOutSampleFrames,
                 timelineOffsetSampleFrames: capturedAudioTrack.timelineOffsetSampleFrames,
                 trimEndSampleFrames: capturedAudioTrack.trimEndSampleFrames,
                 trimStartSampleFrames: capturedAudioTrack.trimStartSampleFrames,

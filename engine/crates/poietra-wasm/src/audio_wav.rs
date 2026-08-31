@@ -20,6 +20,10 @@ pub(crate) const AUDIO_FRAME_SAMPLES: usize = 960; // 20 ms at 48 kHz.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PcmTimelineTiming {
+    #[serde(rename = "fadeInSampleFrames", default)]
+    pub(crate) fade_in: u64,
+    #[serde(rename = "fadeOutSampleFrames", default)]
+    pub(crate) fade_out: u64,
     #[serde(rename = "timelineOffsetSampleFrames")]
     pub(crate) timeline_offset: u64,
     #[serde(rename = "trimEndSampleFrames")]
@@ -37,6 +41,8 @@ pub(crate) struct PcmTimelineTiming {
 impl Default for PcmTimelineTiming {
     fn default() -> Self {
         Self {
+            fade_in: 0,
+            fade_out: 0,
             timeline_offset: 0,
             trim_end: None,
             trim_start: 0,
@@ -188,7 +194,13 @@ impl PcmWav {
             .and_then(|value| usize::try_from(value).ok())
             .ok_or(WavRefusal::Invalid("the audio trim end overflowed"))?;
         let mut interleaved_s16_le = self.interleaved_s16_le[byte_start..byte_end].to_vec();
-        scale_pcm_volume(&mut interleaved_s16_le, timing.volume_percent);
+        apply_pcm_mix(
+            &mut interleaved_s16_le,
+            self.channels,
+            timing.volume_percent,
+            timing.fade_in,
+            timing.fade_out,
+        );
         Ok(PreparedPcm {
             channels: self.channels,
             interleaved_s16_le,
@@ -198,21 +210,57 @@ impl PcmWav {
     }
 }
 
-fn scale_pcm_volume(interleaved_s16_le: &mut [u8], volume_percent: u8) {
-    if volume_percent == 100 {
+fn apply_pcm_mix(
+    interleaved_s16_le: &mut [u8],
+    channels: u8,
+    volume_percent: u8,
+    fade_in: u64,
+    fade_out: u64,
+) {
+    if volume_percent == 100 && fade_in == 0 && fade_out == 0 {
         return;
     }
-    for sample_bytes in interleaved_s16_le.chunks_exact_mut(2) {
-        let sample = i16::from_le_bytes([sample_bytes[0], sample_bytes[1]]);
-        let product = i32::from(sample) * i32::from(volume_percent);
-        let rounded = match product.cmp(&0) {
-            std::cmp::Ordering::Less => product - 50,
-            std::cmp::Ordering::Equal => 0,
-            std::cmp::Ordering::Greater => product + 50,
-        } / 100;
-        let scaled = rounded.clamp(i32::from(i16::MIN), i32::from(i16::MAX));
-        let scaled = i16::try_from(scaled).expect("the clamped PCM sample fits signed 16-bit");
-        sample_bytes.copy_from_slice(&scaled.to_le_bytes());
+    let bytes_per_frame = usize::from(channels) * usize::from(BYTES_PER_SAMPLE);
+    let content_sample_frames = u64::try_from(interleaved_s16_le.len() / bytes_per_frame)
+        .expect("the admitted PCM sample-frame count fits u64");
+    for (frame_index, frame_bytes) in interleaved_s16_le
+        .chunks_exact_mut(bytes_per_frame)
+        .enumerate()
+    {
+        let frame_index =
+            u64::try_from(frame_index).expect("the admitted PCM frame index fits u64");
+        let remaining_frames = content_sample_frames - frame_index - 1;
+        let mut progress_numerator = 1_u64;
+        let mut progress_denominator = 1_u64;
+        if fade_in > 0 && frame_index < fade_in {
+            progress_numerator = frame_index;
+            progress_denominator = fade_in;
+        }
+        if fade_out > 0
+            && remaining_frames < fade_out
+            && u128::from(remaining_frames) * u128::from(progress_denominator)
+                < u128::from(progress_numerator) * u128::from(fade_out)
+        {
+            progress_numerator = remaining_frames;
+            progress_denominator = fade_out;
+        }
+        let gain_numerator = u128::from(volume_percent) * u128::from(progress_numerator);
+        let gain_denominator = 100_u128 * u128::from(progress_denominator);
+        for sample_bytes in frame_bytes.chunks_exact_mut(usize::from(BYTES_PER_SAMPLE)) {
+            let sample = i16::from_le_bytes([sample_bytes[0], sample_bytes[1]]);
+            let magnitude = u128::from(sample.unsigned_abs());
+            let scaled_magnitude =
+                (magnitude * gain_numerator + gain_denominator / 2) / gain_denominator;
+            let scaled_magnitude = i32::try_from(scaled_magnitude)
+                .expect("attenuating signed 16-bit PCM stays within i32");
+            let signed = if sample.is_negative() {
+                -scaled_magnitude
+            } else {
+                scaled_magnitude
+            };
+            let scaled = i16::try_from(signed).expect("attenuating PCM stays within signed 16-bit");
+            sample_bytes.copy_from_slice(&scaled.to_le_bytes());
+        }
     }
 }
 
@@ -489,16 +537,24 @@ mod tests {
     }
 
     #[test]
-    fn defaults_legacy_timing_to_full_volume_and_rejects_boost() {
+    fn defaults_legacy_timing_to_full_volume_and_zero_fades_and_rejects_boost() {
+        assert_eq!(PcmTimelineTiming::default().fade_in, 0);
+        assert_eq!(PcmTimelineTiming::default().fade_out, 0);
         assert_eq!(PcmTimelineTiming::default().volume_percent, 100);
-        assert_eq!(
-            parse_pcm_timeline_timing(
-                br#"{"timelineOffsetSampleFrames":0,"trimEndSampleFrames":null,"trimStartSampleFrames":0}"#,
-            )
-            .unwrap()
-            .volume_percent,
-            100
-        );
+        let legacy = parse_pcm_timeline_timing(
+            br#"{"timelineOffsetSampleFrames":0,"trimEndSampleFrames":null,"trimStartSampleFrames":0}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.fade_in, 0);
+        assert_eq!(legacy.fade_out, 0);
+        assert_eq!(legacy.volume_percent, 100);
+        let configured = parse_pcm_timeline_timing(
+            br#"{"fadeInSampleFrames":4800,"fadeOutSampleFrames":9600,"timelineOffsetSampleFrames":0,"trimEndSampleFrames":null,"trimStartSampleFrames":0,"volumePercent":50}"#,
+        )
+        .unwrap();
+        assert_eq!(configured.fade_in, 4_800);
+        assert_eq!(configured.fade_out, 9_600);
+        assert_eq!(configured.volume_percent, 50);
         assert!(parse_pcm_timeline_timing(
             br#"{"timelineOffsetSampleFrames":0,"trimEndSampleFrames":null,"trimStartSampleFrames":0,"volumePercent":101}"#,
         )
@@ -506,19 +562,52 @@ mod tests {
     }
 
     #[test]
-    fn scales_signed_pcm_at_zero_half_and_full_volume() {
+    fn applies_zero_half_and_full_volume_without_fades() {
         let original = sample_bytes(&[i16::MIN, -1_001, 0, 1_001, i16::MAX]);
         let mut muted = original.clone();
-        scale_pcm_volume(&mut muted, 0);
+        apply_pcm_mix(&mut muted, 1, 0, 0, 0);
         assert_eq!(muted, sample_bytes(&[0, 0, 0, 0, 0]));
 
         let mut half = original.clone();
-        scale_pcm_volume(&mut half, 50);
+        apply_pcm_mix(&mut half, 1, 50, 0, 0);
         assert_eq!(half, sample_bytes(&[-16_384, -501, 0, 501, 16_384]));
 
         let mut full = original.clone();
-        scale_pcm_volume(&mut full, 100);
+        apply_pcm_mix(&mut full, 1, 100, 0, 0);
         assert_eq!(full, original);
+    }
+
+    #[test]
+    fn applies_one_linear_fade_gain_to_every_channel_in_a_sample_frame() {
+        let mut stereo =
+            sample_bytes(&[1_000, -1_000, 1_000, -1_000, 1_000, -1_000, 1_000, -1_000]);
+
+        apply_pcm_mix(&mut stereo, 2, 50, 2, 2);
+
+        assert_eq!(stereo, sample_bytes(&[0, 0, 250, -250, 250, -250, 0, 0]));
+    }
+
+    #[test]
+    fn bases_fades_on_the_scene_cropped_and_trimmed_content() {
+        let source = PcmWav {
+            channels: 1,
+            interleaved_s16_le: sample_bytes(&[1_000; 8]),
+        };
+        let prepared = source
+            .fit_to_video(
+                1,
+                12_000,
+                PcmTimelineTiming {
+                    fade_out: 2,
+                    ..PcmTimelineTiming::default()
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            prepared.interleaved_s16_le,
+            sample_bytes(&[1_000, 1_000, 500, 0])
+        );
     }
 
     #[test]
@@ -621,6 +710,8 @@ mod tests {
                 30,
                 30,
                 PcmTimelineTiming {
+                    fade_in: 0,
+                    fade_out: 0,
                     timeline_offset: 4_800,
                     trim_end: Some(14_400),
                     trim_start: 4_800,

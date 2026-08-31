@@ -11,7 +11,11 @@ import {
   type ProjectFragmentMaterialStateV1,
   projectFragmentMaterialStateV1Schema,
 } from "./fragment-material-authoring";
-import { DEFAULT_PROJECT_AUDIO_VOLUME_PERCENT, type ProjectAudioTrack } from "./project-audio-track";
+import {
+  DEFAULT_PROJECT_AUDIO_FADE_SAMPLE_FRAMES,
+  DEFAULT_PROJECT_AUDIO_VOLUME_PERCENT,
+  type ProjectAudioTrack,
+} from "./project-audio-track";
 import { parseStudioSvgPathAssets, restoreStudioSvgPathAssets, type StudioSvgPathAsset } from "./studio-svg-assets";
 
 const DATABASE_NAME = "poietra-studio-native-projects";
@@ -75,6 +79,8 @@ function copyAudioTrack(value: unknown): NativeProjectLocalAudioTrack | undefine
   const trimStartSampleFrames = audioTrack.trimStartSampleFrames ?? 0;
   const trimEndSampleFrames =
     audioTrack.trimEndSampleFrames === undefined ? sourceSampleFrames : audioTrack.trimEndSampleFrames;
+  const fadeInSampleFrames = audioTrack.fadeInSampleFrames ?? DEFAULT_PROJECT_AUDIO_FADE_SAMPLE_FRAMES;
+  const fadeOutSampleFrames = audioTrack.fadeOutSampleFrames ?? DEFAULT_PROJECT_AUDIO_FADE_SAMPLE_FRAMES;
   const volumePercent = audioTrack.volumePercent ?? DEFAULT_PROJECT_AUDIO_VOLUME_PERCENT;
   if (
     (sourceSampleFrames !== null && (!Number.isSafeInteger(sourceSampleFrames) || sourceSampleFrames < 1)) ||
@@ -87,6 +93,10 @@ function copyAudioTrack(value: unknown): NativeProjectLocalAudioTrack | undefine
         trimEndSampleFrames <= trimStartSampleFrames ||
         (sourceSampleFrames !== null && trimEndSampleFrames > sourceSampleFrames))) ||
     (sourceSampleFrames !== null && trimStartSampleFrames >= sourceSampleFrames) ||
+    !Number.isSafeInteger(fadeInSampleFrames) ||
+    fadeInSampleFrames < 0 ||
+    !Number.isSafeInteger(fadeOutSampleFrames) ||
+    fadeOutSampleFrames < 0 ||
     !Number.isSafeInteger(volumePercent) ||
     volumePercent < 0 ||
     volumePercent > 100
@@ -94,6 +104,8 @@ function copyAudioTrack(value: unknown): NativeProjectLocalAudioTrack | undefine
     throw new TypeError("The stored native project audio track is invalid.");
   }
   return {
+    fadeInSampleFrames,
+    fadeOutSampleFrames,
     fileName: audioTrack.fileName,
     sourceSampleFrames,
     timelineOffsetSampleFrames,

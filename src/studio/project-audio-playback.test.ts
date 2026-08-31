@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { alignProjectAudioElement } from "./project-audio-playback";
+import { alignProjectAudioElement, projectAudioGain } from "./project-audio-playback";
 import type { StudioPlaybackClockSnapshot } from "./studio-playback-clock";
 
-function snapshot(currentTime: number, playing: boolean): StudioPlaybackClockSnapshot {
-  return { currentTime, duration: 4, playing, sceneKey: "scene" };
+function snapshot(currentTime: number, playing: boolean, duration = 4): StudioPlaybackClockSnapshot {
+  return { currentTime, duration, playing, sceneKey: "scene" };
 }
 
 const track = {
+  fadeInSampleFrames: 0,
+  fadeOutSampleFrames: 0,
   sourceSampleFrames: 48_000,
   timelineOffsetSampleFrames: 4_800,
   trimEndSampleFrames: 28_800,
@@ -16,6 +18,23 @@ const track = {
 } as const;
 
 describe("project audio playback alignment", () => {
+  it("applies overlapping fades over the Scene-cropped audible sample frames", () => {
+    const faded = {
+      ...track,
+      fadeInSampleFrames: 2,
+      fadeOutSampleFrames: 2,
+      sourceSampleFrames: 10,
+      timelineOffsetSampleFrames: 0,
+      trimEndSampleFrames: 10,
+      trimStartSampleFrames: 0,
+    };
+    const duration = 5 / 48_000;
+
+    expect([0, 1, 2, 3, 4].map((frame) => projectAudioGain(faded, snapshot(frame / 48_000, true, duration)))).toEqual([
+      0, 0.25, 0.5, 0.25, 0,
+    ]);
+  });
+
   it.each([
     [0, 0],
     [50, 0.5],
@@ -71,6 +90,8 @@ describe("project audio playback alignment", () => {
     expect(audio.pause).toHaveBeenCalledTimes(2);
 
     const legacy = {
+      fadeInSampleFrames: 0,
+      fadeOutSampleFrames: 0,
       sourceSampleFrames: null,
       timelineOffsetSampleFrames: 0,
       trimEndSampleFrames: null,

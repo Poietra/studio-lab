@@ -4,6 +4,8 @@ import { PROJECT_AUDIO_SAMPLE_RATE_HZ } from "./project-audio-track";
 import type { StudioPlaybackClock, StudioPlaybackClockSnapshot } from "./studio-playback-clock";
 
 type ProjectAudioPlaybackTrack = Readonly<{
+  fadeInSampleFrames: number;
+  fadeOutSampleFrames: number;
   sourceSampleFrames: number | null;
   timelineOffsetSampleFrames: number;
   trimEndSampleFrames: number | null;
@@ -26,12 +28,33 @@ export function projectAudioSourceTime(track: ProjectAudioPlaybackTrack, sceneTi
   return sourceTime;
 }
 
+export function projectAudioGain(track: ProjectAudioPlaybackTrack, snapshot: StudioPlaybackClockSnapshot): number {
+  const timelineSampleFrame = Math.floor(snapshot.currentTime * PROJECT_AUDIO_SAMPLE_RATE_HZ);
+  const clipSampleFrame = timelineSampleFrame - track.timelineOffsetSampleFrames;
+  const sceneSampleFrames = Math.round(snapshot.duration * PROJECT_AUDIO_SAMPLE_RATE_HZ);
+  const sceneAvailableSampleFrames = Math.max(0, sceneSampleFrames - track.timelineOffsetSampleFrames);
+  const sourceEndSampleFrames = track.trimEndSampleFrames ?? track.sourceSampleFrames;
+  const sourceAvailableSampleFrames =
+    sourceEndSampleFrames === null
+      ? sceneAvailableSampleFrames
+      : Math.max(0, sourceEndSampleFrames - track.trimStartSampleFrames);
+  const contentSampleFrames = Math.min(sourceAvailableSampleFrames, sceneAvailableSampleFrames);
+  if (clipSampleFrame < 0 || clipSampleFrame >= contentSampleFrames) return 0;
+
+  const fadeInGain = track.fadeInSampleFrames === 0 ? 1 : Math.min(1, clipSampleFrame / track.fadeInSampleFrames);
+  const fadeOutGain =
+    track.fadeOutSampleFrames === 0
+      ? 1
+      : Math.min(1, (contentSampleFrames - 1 - clipSampleFrame) / track.fadeOutSampleFrames);
+  return (track.volumePercent / 100) * Math.min(fadeInGain, fadeOutGain);
+}
+
 export function alignProjectAudioElement(
   element: ProjectAudioElement,
   snapshot: StudioPlaybackClockSnapshot,
   track: ProjectAudioPlaybackTrack,
 ) {
-  const volume = track.volumePercent / 100;
+  const volume = projectAudioGain(track, snapshot);
   if (element.volume !== volume) element.volume = volume;
   const sourceTime = projectAudioSourceTime(track, snapshot.currentTime);
   if (sourceTime === null) {

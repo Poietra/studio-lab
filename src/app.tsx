@@ -275,9 +275,10 @@ import {
 import { useProjectAudioPlayback } from "./studio/project-audio-playback";
 import {
   ingestProjectAudioWav,
+  type ProjectAudioMixSettings,
   type ProjectAudioTimingSeconds,
+  updateProjectAudioMix,
   updateProjectAudioTiming,
-  updateProjectAudioVolume,
 } from "./studio/project-audio-track";
 import { duplicatePropertyKeyframeAtTime } from "./studio/property-keyframe-duplicate";
 import { samplePropertyValue } from "./studio/property-sampling";
@@ -1770,10 +1771,10 @@ export function App({
     );
   }
 
-  function updateNativeProjectAudioVolume(volumePercent: number) {
+  function updateNativeProjectAudioMix(mix: ProjectAudioMixSettings) {
     return mutateNativeProjectAudioTrack(
-      (track) => updateProjectAudioVolume(track, volumePercent),
-      "Studio could not update the audio volume.",
+      (track) => updateProjectAudioMix(track, mix),
+      "Studio could not update the audio mix.",
     );
   }
 
@@ -11614,9 +11615,7 @@ export function App({
               onAudioTimingChange={
                 nativeSceneActive ? (timing) => void updateNativeProjectAudioTiming(timing) : undefined
               }
-              onAudioVolumeChange={
-                nativeSceneActive ? (volumePercent) => void updateNativeProjectAudioVolume(volumePercent) : undefined
-              }
+              onAudioMixChange={nativeSceneActive ? (mix) => void updateNativeProjectAudioMix(mix) : undefined}
               onImportAudioFile={nativeSceneActive ? (file) => void updateNativeProjectAudioTrack(file) : undefined}
               onImportImageFiles={nativeSceneActive ? (files) => void importNativeProjectImageFiles(files) : undefined}
               onImportSvgFiles={nativeSceneActive ? (files) => void importNativeProjectSvgFiles(files) : undefined}
