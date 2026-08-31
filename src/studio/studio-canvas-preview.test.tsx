@@ -1599,6 +1599,34 @@ describe("StudioCanvas retained preview layer", () => {
     expect(onCanvasPlace).not.toHaveBeenCalled();
   });
 
+  it("does not fall back to click placement for a rejected shape pointer", () => {
+    const onCanvasPlace = vi.fn();
+    const surface = findCanvasSurface(
+      StudioCanvas({
+        ...baseProps(),
+        entities: [],
+        insertTool: "Circle",
+        onCanvasPlace,
+        preview: previewView({
+          frame: {
+            packetId: "canvas:shape-secondary-pointer",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        }),
+      }),
+    );
+    const pointerDown = surface.props.onPointerDown as
+      | ((event: Readonly<{ button: number; isPrimary: boolean; target: null }>) => void)
+      | undefined;
+
+    pointerDown?.({ button: 2, isPrimary: true, target: null });
+
+    expect(onCanvasPlace).not.toHaveBeenCalled();
+  });
+
   it("does not turn IME composition keys into inline Text commits", () => {
     expect(studioInlineTextKeyAction("Enter", true)).toBeNull();
     expect(studioInlineTextKeyAction("Escape", true)).toBeNull();

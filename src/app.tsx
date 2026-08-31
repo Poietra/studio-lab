@@ -7144,7 +7144,11 @@ export function App({
     }
   }
 
-  function insertEntitiesAt(point: Point, entities?: readonly StudioEntityInput[]) {
+  function insertEntitiesAt(
+    point: Point,
+    entities?: readonly StudioEntityInput[],
+    placementDimensions?: EntityDimensions,
+  ) {
     if (!draftBaseState || !draftSourceScene) return false;
     if (previewRenderer?.state.phase !== "presented") {
       setDraftError("Wait for the canonical WebGPU preview before inserting an object.");
@@ -7167,7 +7171,8 @@ export function App({
       : draftSourceScene;
     try {
       const insertDimensions =
-        insertTool === "RegularPolygon"
+        placementDimensions ??
+        (insertTool === "RegularPolygon"
           ? { radius: 1, sides: regularPolygonSides }
           : insertTool === "Ellipse"
             ? { height: curveInsertSettings.ellipseHeight, width: curveInsertSettings.ellipseWidth }
@@ -7200,7 +7205,7 @@ export function App({
                     ...(insertTool === "NumberLine" ? {} : { height: coordinateInsertSettings.height }),
                     width: coordinateInsertSettings.width,
                   }
-                : undefined;
+                : undefined);
       const inputs =
         entities ??
         (insertTool === "select"
@@ -11882,12 +11887,12 @@ export function App({
               onWriteInChange={changeWriteIn}
               onWriteInDelete={deleteWriteIn}
               onWriteInSelect={editWriteIn}
-              onCanvasPlace={(point) => {
+              onCanvasPlace={(point, dimensions) => {
                 if (cubicBezierExtensionEntityId) {
                   extendCubicBezierAtPoint(cubicBezierExtensionEntityId, point);
                 } else if (insertTool === "Text") beginInlineTextCreation(point);
                 else if (insertTool === "CubicBezier") void addCubicBezierPenPoint(point);
-                else void insertEntitiesAt(point);
+                else void insertEntitiesAt(point, undefined, dimensions);
               }}
               onCubicBezierControlChange={(name, point) => {
                 if (activePathMorphDraft) {

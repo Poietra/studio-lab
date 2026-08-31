@@ -99,6 +99,29 @@ async function dragCanvasMarquee(
   await page.mouse.up();
 }
 
+async function dragCanvasInsertion(
+  page: Page,
+  canvas: Locator,
+  start: Readonly<{ x: number; y: number }>,
+  end: Readonly<{ x: number; y: number }>,
+) {
+  const bounds = await canvas.boundingBox();
+  if (!bounds) throw new Error("The Studio canvas is not visible for shape insertion.");
+  const toClientPoint = (point: Readonly<{ x: number; y: number }>) => ({
+    x: bounds.x + (point.x / 640) * bounds.width,
+    y: bounds.y + (point.y / 360) * bounds.height,
+  });
+  const startClientPoint = toClientPoint(start);
+  const endClientPoint = toClientPoint(end);
+  await page.mouse.move(startClientPoint.x, startClientPoint.y);
+  await page.mouse.down();
+  await page.mouse.move(endClientPoint.x, endClientPoint.y, { steps: 4 });
+  const preview = canvas.locator("[data-studio-shape-insertion-preview]");
+  await expect.poll(async () => (await preview.boundingBox())?.width ?? 0).toBeGreaterThan(4);
+  await expect.poll(async () => (await preview.boundingBox())?.height ?? 0).toBeGreaterThan(4);
+  await page.mouse.up();
+}
+
 async function dragTimelineControlBySeconds(
   page: Page,
   control: Locator,
@@ -132,6 +155,16 @@ async function placeOnCanvas(page: Page, fractionX: number, fractionY: number) {
     bubbles: true,
     button: 0,
     buttons: 1,
+    clientX: bounds.x + bounds.width * fractionX,
+    clientY: bounds.y + bounds.height * fractionY,
+    isPrimary: true,
+    pointerId: 1,
+    pointerType: "mouse",
+  });
+  await canvas.dispatchEvent("pointerup", {
+    bubbles: true,
+    button: 0,
+    buttons: 0,
     clientX: bounds.x + bounds.width * fractionX,
     clientY: bounds.y + bounds.height * fractionY,
     isPrimary: true,
@@ -1431,10 +1464,27 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
     const duration = page.getByRole("spinbutton", { name: "Scene duration in seconds" });
     await expect(duration).toHaveValue("5.00");
 
+    const circleCenter = { x: 220, y: 170 };
+    const circleHalfDrag = { x: (1.5 / 14.222) * 640, y: (1 / 8) * 360 };
     await page.getByRole("button", { name: /Insert circle/ }).click();
-    await canvas.click({ position: { x: 300, y: 220 } });
+    await dragCanvasInsertion(
+      page,
+      canvas,
+      { x: circleCenter.x + circleHalfDrag.x, y: circleCenter.y + circleHalfDrag.y },
+      { x: circleCenter.x - circleHalfDrag.x, y: circleCenter.y - circleHalfDrag.y },
+    );
+    const circle = page.getByRole("button", { name: "Move Circle", exact: true });
     await page.getByRole("button", { name: "Apply program" }).click();
     await expect(duration).toHaveValue("5.40");
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "Radius of Circle" }).inputValue()))
+      .toBeCloseTo(1.5, 3);
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "X position of Circle" }).inputValue()))
+      .toBeCloseTo(circleCenter.x, 3);
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "Y position of Circle" }).inputValue()))
+      .toBeCloseTo(circleCenter.y, 3);
 
     await playhead.fill("4");
     await duration.fill("7.4");
@@ -1444,17 +1494,10 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
     await expect(duration).toHaveValue("7.40");
 
     await playhead.fill("4");
-    await page.getByRole("button", { name: /Insert rectangle/ }).click();
-    await canvas.click({ position: { x: 500, y: 280 } });
-    await page.getByRole("button", { name: "Apply program" }).click();
-    await expect(duration).toHaveValue("7.80");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(4, 1);
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
-    await playhead.fill("6.4");
-    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(6.4, 1);
     const fitCanvasBounds = await canvas.boundingBox();
     if (!fitCanvasBounds) throw new Error("The fitted Studio canvas is not visible.");
-    const previewRevision = await canvas.getAttribute("data-preview-revision");
-    if (!previewRevision) throw new Error("The fitted Studio canvas did not expose its Scene revision.");
     await page.getByRole("button", { name: "Zoom in" }).click();
     await expect(page.locator("[data-studio-editor-zoom]"), "editor zoom control").toHaveAttribute(
       "data-studio-editor-zoom",
@@ -1463,7 +1506,6 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
     await expect
       .poll(async () => ((await canvas.boundingBox())?.width ?? 0) / fitCanvasBounds.width)
       .toBeCloseTo(1.25, 1);
-    await expect(canvas).toHaveAttribute("data-preview-revision", previewRevision);
     const editorViewport = page.locator("[data-studio-editor-viewport]");
     await expect
       .poll(() =>
@@ -1473,8 +1515,38 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
       )
       .toBe(true);
     await editorViewport.evaluate((element) => element.scrollTo({ left: 40, top: 20 }));
-    const circle = page.getByRole("button", { name: "Move Circle", exact: true });
+
+    const rectangleCenter = { x: 360, y: 150 };
+    const rectangleHalfDrag = { x: (1.6 / 14.222) * 640, y: (1.2 / 8) * 360 };
+    await page.getByRole("button", { name: /Insert rectangle/ }).click();
+    await dragCanvasInsertion(
+      page,
+      canvas,
+      { x: rectangleCenter.x + rectangleHalfDrag.x, y: rectangleCenter.y + rectangleHalfDrag.y },
+      { x: rectangleCenter.x - rectangleHalfDrag.x, y: rectangleCenter.y - rectangleHalfDrag.y },
+    );
     const rectangle = page.getByRole("button", { name: "Move Rectangle", exact: true });
+    await page.getByRole("button", { name: "Apply program" }).click();
+    await expect(duration).toHaveValue("7.80");
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await playhead.fill("6.4");
+    await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(6.4, 1);
+    await expect(rectangle).toBeVisible();
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "Width of Rectangle" }).inputValue()))
+      .toBeCloseTo(3.2, 3);
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "Height of Rectangle" }).inputValue()))
+      .toBeCloseTo(2.4, 3);
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "X position of Rectangle" }).inputValue()))
+      .toBeCloseTo(rectangleCenter.x, 3);
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "Y position of Rectangle" }).inputValue()))
+      .toBeCloseTo(rectangleCenter.y, 3);
+    const previewRevision = await canvas.getAttribute("data-preview-revision");
+    if (!previewRevision) throw new Error("The zoomed Studio canvas did not expose its Scene revision.");
+    await expect(canvas).toHaveAttribute("data-preview-revision", previewRevision);
     const [circleBounds, rectangleBounds, marqueeCanvasBounds] = await Promise.all([
       circle.boundingBox(),
       rectangle.boundingBox(),
@@ -1574,8 +1646,19 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await playhead.fill("6.4");
     await expect.poll(async () => Number(await canvas.getAttribute("data-preview-sample-time"))).toBeCloseTo(6.4, 1);
-    await expect(page.getByRole("button", { name: "Move Circle", exact: true })).toBeVisible();
+    const reloadedCircle = page.getByRole("button", { name: "Move Circle", exact: true });
+    await expect(reloadedCircle).toBeVisible();
     await expect(page.getByRole("button", { name: "Move Rectangle", exact: true })).toBeVisible();
+    await page.getByRole("checkbox", { name: "Select Circle" }).check();
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "Radius of Circle" }).inputValue()))
+      .toBeCloseTo(1.5, 3);
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "X position of Circle" }).inputValue()))
+      .toBeCloseTo(circleCenter.x, 3);
+    await expect
+      .poll(async () => Number(await page.getByRole("spinbutton", { name: "Y position of Circle" }).inputValue()))
+      .toBeCloseTo(circleCenter.y, 3);
 
     await page.getByRole("button", { name: "Export settings" }).click();
     const sourceExport = page.locator("[data-studio-manim-source-export-state]");
@@ -1591,8 +1674,10 @@ test("keeps Studio-native duration authoring through creation, reload, and Manim
       width: 14.222,
     });
     expect(imported?.runtimeSceneState.duration).toBeCloseTo(7.8, 6);
-    expect(source).toContain("Circle(radius=1)");
-    expect(source).toContain("Rectangle(width=4, height=2)");
+    expect(source).toContain("Circle(radius=1.5)");
+    const rectangleConstructor = source.match(/Rectangle\(width=([0-9.]+), height=([0-9.]+)\)/u);
+    expect(Number(rectangleConstructor?.[1])).toBeCloseTo(3.2, 3);
+    expect(Number(rectangleConstructor?.[2])).toBeCloseTo(2.4, 3);
   } finally {
     if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
   }
