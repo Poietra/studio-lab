@@ -55,6 +55,31 @@ async function dragBy(
   await page.mouse.up();
 }
 
+async function dragTimelineControlBySeconds(
+  page: Page,
+  control: Locator,
+  deltaSeconds: number,
+  beforeRelease?: () => Promise<void>,
+) {
+  const lane = page.locator("[data-timeline-audio-lane]");
+  const [controlBounds, laneBounds, durationValue] = await Promise.all([
+    control.boundingBox(),
+    lane.boundingBox(),
+    page.getByRole("slider", { name: "Scene playhead" }).getAttribute("max"),
+  ]);
+  if (!controlBounds || !laneBounds || !durationValue) throw new Error("The audio Timeline control is not visible.");
+  const duration = Number(durationValue);
+  const origin = {
+    x: controlBounds.x + controlBounds.width / 2,
+    y: controlBounds.y + controlBounds.height / 2,
+  };
+  await page.mouse.move(origin.x, origin.y);
+  await page.mouse.down();
+  await page.mouse.move(origin.x + (deltaSeconds / duration) * laneBounds.width, origin.y, { steps: 4 });
+  await beforeRelease?.();
+  await page.mouse.up();
+}
+
 async function placeOnCanvas(page: Page, fractionX: number, fractionY: number) {
   const canvas = page.locator("[data-studio-canvas]");
   const bounds = await canvas.boundingBox();
@@ -336,10 +361,33 @@ test("persists one project WAV through Timeline and Opus MP4 export", async ({ p
     });
     const audioLane = page.locator("[data-project-audio-track]");
     await expect(audioLane).toContainText("tone.wav");
-    await page.getByLabel("Audio offset seconds").fill("0.5");
-    await page.getByLabel("Audio trim in seconds").fill("0.1");
-    await page.getByLabel("Audio trim out seconds").fill("0.3");
-    await page.getByRole("button", { name: "Apply audio timing" }).click();
+    const offsetInput = page.getByLabel("Audio offset seconds");
+    const trimStartInput = page.getByLabel("Audio trim in seconds");
+    const trimEndInput = page.getByLabel("Audio trim out seconds");
+    const audioClip = page.locator("[data-project-audio-clip]");
+    const audioBody = page.getByRole("button", { name: "Move audio track tone.wav" });
+    await expect(audioBody).toBeEnabled();
+    await dragTimelineControlBySeconds(page, audioBody, 0.4, async () => {
+      await expect(offsetInput).toHaveValue("0");
+      await expect
+        .poll(async () => Number(await audioClip.getAttribute("data-audio-preview-offset")))
+        .toBeCloseTo(0.4, 2);
+    });
+    await expect.poll(async () => Number(await offsetInput.inputValue())).toBeCloseTo(0.4, 2);
+    await expect(trimStartInput).toHaveValue("0");
+    await expect(trimEndInput).toHaveValue("0.4");
+
+    await dragTimelineControlBySeconds(
+      page,
+      page.getByRole("button", { name: "Trim audio track tone.wav start" }),
+      0.1,
+    );
+    await expect.poll(async () => Number(await offsetInput.inputValue())).toBeCloseTo(0.5, 2);
+    await expect.poll(async () => Number(await trimStartInput.inputValue())).toBeCloseTo(0.1, 2);
+    await expect(trimEndInput).toHaveValue("0.4");
+
+    await dragTimelineControlBySeconds(page, page.getByRole("button", { name: "Trim audio track tone.wav end" }), -0.1);
+    await expect.poll(async () => Number(await trimEndInput.inputValue())).toBeCloseTo(0.3, 2);
     await expect(audioLane.getByLabel("Audio track tone.wav, 0.50–0.70 seconds")).toBeVisible();
 
     const unsupportedWav = monoPcmWav48k(0.4);
