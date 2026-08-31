@@ -372,6 +372,11 @@ describe("runBrowserMp4ExportV1", () => {
     const worker = new FakeWorker();
     const audioWav = new Uint8Array([0x52, 0x49, 0x46, 0x46]).buffer;
     const outcomePromise = runBrowserMp4ExportV1({
+      audioTiming: {
+        timelineOffsetSampleFrames: 4_800,
+        trimEndSampleFrames: 14_400,
+        trimStartSampleFrames: 2_400,
+      },
       audioWav,
       profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
       snapshot: bundle,
@@ -380,6 +385,11 @@ describe("runBrowserMp4ExportV1", () => {
     await vi.waitFor(() => expect(worker.posted).toHaveLength(1));
     const request = exportWorkerRequestV1Schema.parse(worker.posted[0]);
     if (request.kind !== "export-mp4") throw new Error("missing export request");
+    expect(request.audioTiming).toEqual({
+      timelineOffsetSampleFrames: 4_800,
+      trimEndSampleFrames: 14_400,
+      trimStartSampleFrames: 2_400,
+    });
     expect(new Uint8Array(request.audioWav ?? new ArrayBuffer(0))).toEqual(new Uint8Array(audioWav));
     expect(worker.transfers[0]).toEqual([
       audioWav,

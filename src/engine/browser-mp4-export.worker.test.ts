@@ -165,12 +165,38 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
 
   it("uses the audio export entry only when a WAV attachment is present", async () => {
     const videoOnly = vi.fn(async () => new Uint8Array([1]));
-    const withWav = vi.fn(async (_snapshot, _profile, _metadata, _assets, wav: Uint8Array) => {
-      expect(wav).toEqual(new Uint8Array([0x52, 0x49, 0x46, 0x46]));
-      return new Uint8Array([1, 2, 3]);
-    });
+    const withWav = vi.fn(
+      async (
+        _snapshot,
+        _profile,
+        _metadata,
+        _assets,
+        wav: Uint8Array,
+        _progress,
+        _fragmentMaterials,
+        _scenePostEffects,
+        audioTiming: Uint8Array | undefined,
+      ) => {
+        expect(wav).toEqual(new Uint8Array([0x52, 0x49, 0x46, 0x46]));
+        expect(JSON.parse(new TextDecoder().decode(audioTiming))).toEqual({
+          timelineOffsetSampleFrames: 4_800,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 2_400,
+        });
+        return new Uint8Array([1, 2, 3]);
+      },
+    );
     const { posted, runtime } = runtimeWith(videoOnly, withWav);
-    await runtime.accept(exportRequest({ audioWav: new Uint8Array([0x52, 0x49, 0x46, 0x46]).buffer }));
+    await runtime.accept(
+      exportRequest({
+        audioTiming: {
+          timelineOffsetSampleFrames: 4_800,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 2_400,
+        },
+        audioWav: new Uint8Array([0x52, 0x49, 0x46, 0x46]).buffer,
+      }),
+    );
     expect(videoOnly).not.toHaveBeenCalled();
     expect(withWav).toHaveBeenCalledOnce();
     expect(posted.at(-1)?.response.kind).toBe("export-finished");
@@ -183,6 +209,22 @@ describe("BrowserMp4ExportWorkerRuntimeV1", () => {
     expect(videoOnly).not.toHaveBeenCalled();
     expect(posted).toHaveLength(1);
     expect(posted[0]?.response).toMatchObject({ kind: "export-refused", reason: "api-unavailable" });
+  });
+
+  it("refuses timeline timing without a WAV attachment", async () => {
+    const videoOnly = vi.fn(async () => new Uint8Array([1]));
+    const { posted, runtime } = runtimeWith(videoOnly);
+    await runtime.accept(
+      exportRequest({
+        audioTiming: {
+          timelineOffsetSampleFrames: 4_800,
+          trimEndSampleFrames: null,
+          trimStartSampleFrames: 0,
+        },
+      }),
+    );
+    expect(videoOnly).not.toHaveBeenCalled();
+    expect(posted[0]?.response).toMatchObject({ kind: "export-refused", reason: "invalid-request" });
   });
 
   it("relays a malformed progress envelope as nothing, never as a crash", async () => {
@@ -327,7 +369,7 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
     return {
       default: async () => undefined,
       exportSceneMp4V1: async () => new Uint8Array([1]),
-      poietraEngineAbiVersion: () => 41,
+      poietraEngineAbiVersion: () => 42,
       ...overrides,
     };
   }
@@ -359,6 +401,6 @@ describe("initializeBrowserMp4ExportBindingsV1", () => {
   it("rejects a stale engine ABI before calling an incompatible export signature", async () => {
     await expect(
       initializeBrowserMp4ExportBindingsV1(wasmModule({ poietraEngineAbiVersion: () => 31 })),
-    ).rejects.toThrow(/engine ABI 41/);
+    ).rejects.toThrow(/engine ABI 42/);
   });
 });

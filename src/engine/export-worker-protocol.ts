@@ -77,6 +77,16 @@ export type ExportRefusalReasonV1 = z.infer<typeof exportRefusalReasonV1Schema>;
 
 const nonNegativeCount = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
+export const exportAudioTimingV1Schema = z
+  .object({
+    timelineOffsetSampleFrames: nonNegativeCount,
+    trimEndSampleFrames: nonNegativeCount.positive().nullable(),
+    trimStartSampleFrames: nonNegativeCount,
+  })
+  .strict();
+
+export type ExportAudioTimingV1 = z.infer<typeof exportAudioTimingV1Schema>;
+
 export const exportProgressV1Schema = z
   .object({
     encodedMediaBytes: nonNegativeCount,
@@ -118,6 +128,7 @@ const exportMp4RequestV1Schema = z
       .instanceof(ArrayBuffer)
       .refine((bytes) => bytes.byteLength > 0 && bytes.byteLength <= MAX_EXPORT_WAV_BYTES)
       .optional(),
+    audioTiming: exportAudioTimingV1Schema.optional(),
     assetPayloads: canvasPngAssetTransfersV1Schema,
     fragmentMaterialRegistryJson: z
       .instanceof(ArrayBuffer)

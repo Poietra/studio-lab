@@ -52,6 +52,7 @@ export type BrowserMp4ExportWasmBindingsV1 = Readonly<{
     progress: BrowserMp4ExportProgressCallbackV1 | undefined,
     fragmentMaterialRegistryJson: Uint8Array,
     scenePostEffectRegistryJson: Uint8Array,
+    audioTimingJson?: Uint8Array,
   ) => Promise<Uint8Array>;
 }>;
 
@@ -192,6 +193,10 @@ export class BrowserMp4ExportWorkerRuntimeV1 {
     request: Extract<ExportWorkerRequestV1, Readonly<{ kind: "export-mp4" }>>,
     active: Readonly<{ cancelled: boolean; requestId: number }>,
   ) {
+    if (request.audioTiming && !request.audioWav) {
+      this.postRefused(request.requestId, "invalid-request", "Audio timeline timing requires a WAV attachment.");
+      return;
+    }
     const moduleUrl = new URL(request.wasmModuleUrl);
     if (!canvasUrlsShareOrigin(moduleUrl, this.scopeUrl)) {
       this.postRefused(request.requestId, "invalid-request", "The Poietra WASM module must use the worker's origin.");
@@ -259,6 +264,7 @@ export class BrowserMp4ExportWorkerRuntimeV1 {
           progress,
           fragmentMaterialRegistryJson,
           scenePostEffectRegistryJson,
+          request.audioTiming ? new TextEncoder().encode(JSON.stringify(request.audioTiming)) : undefined,
         );
       } else {
         output = await bindings.exportSceneMp4V1(

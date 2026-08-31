@@ -9,12 +9,15 @@ const wasmBytes = await readFile("public/engine-wasm/poietra_wasm_bg.wasm");
 const engine = await import("../public/engine-wasm/poietra_wasm.js");
 
 await engine.default({ module_or_path: wasmBytes });
-assert.equal(engine.poietraEngineAbiVersion(), 41);
+assert.equal(engine.poietraEngineAbiVersion(), 42);
 assert.equal(engine.poietraCanvasAbiVersion(), 10);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
 assert.equal(engine.poietraExportVerifyAbiVersion(), 1);
 assert.equal(typeof engine.validateSceneIrBundleV1, "function");
 assert.equal(typeof engine.verifyExportMp4V1, "function");
+assert.equal(typeof engine.validateExportAudioWavV1, "function");
+assert.equal(typeof engine.exportSceneMp4WithWavV1, "function");
+assert.equal(engine.exportSceneMp4WithWavV1.length, 9, "WAV export must accept the audio timeline timing argument");
 assert.equal(typeof engine.applyStaticRootTransformEditV1, "function");
 assert.equal(typeof engine.applyStudioBoundEntityEditV1, "function");
 assert.equal(typeof engine.applyStudioCreationEditV1, "function");
