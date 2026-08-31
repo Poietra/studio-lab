@@ -30,6 +30,7 @@ export type ProjectAudioMixSettings = Readonly<{
 }>;
 
 export type ProjectAudioTimelineGesture = "body" | "left" | "right";
+export type ProjectAudioFadeGesture = "fade-in" | "fade-out";
 
 type ProjectAudioWavValidator = (wavBytes: ArrayBuffer) => Promise<number>;
 
@@ -69,7 +70,9 @@ export function updateProjectAudioTiming(
   return { ...track, timelineOffsetSampleFrames, trimEndSampleFrames, trimStartSampleFrames };
 }
 
-export function projectAudioMixSettings(track: ProjectAudioTrack): ProjectAudioMixSettings {
+export function projectAudioMixSettings(
+  track: Readonly<Pick<ProjectAudioTrack, "fadeInSampleFrames" | "fadeOutSampleFrames" | "volumePercent">>,
+): ProjectAudioMixSettings {
   return {
     fadeInSeconds: track.fadeInSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ,
     fadeOutSeconds: track.fadeOutSampleFrames / PROJECT_AUDIO_SAMPLE_RATE_HZ,
@@ -155,6 +158,70 @@ export function projectAudioTimelineTimingAtDelta(
     offset: framesToSeconds(offset),
     trimEnd: track.trimEndSampleFrames === null && trimEnd === sourceEnd ? null : framesToSeconds(trimEnd),
     trimStart: framesToSeconds(trimStart),
+  };
+}
+
+export function projectAudioVisibleSampleFrames(
+  track: Readonly<
+    Pick<
+      ProjectAudioTrack,
+      "sourceSampleFrames" | "timelineOffsetSampleFrames" | "trimEndSampleFrames" | "trimStartSampleFrames"
+    >
+  >,
+  sceneDuration: number,
+): number | null {
+  const sourceEnd = track.trimEndSampleFrames ?? track.sourceSampleFrames;
+  const sceneFrames = Math.round(sceneDuration * PROJECT_AUDIO_SAMPLE_RATE_HZ);
+  if (
+    sourceEnd === null ||
+    !Number.isSafeInteger(sourceEnd) ||
+    !Number.isSafeInteger(sceneFrames) ||
+    !Number.isSafeInteger(track.timelineOffsetSampleFrames) ||
+    !Number.isSafeInteger(track.trimStartSampleFrames) ||
+    sceneFrames < 0 ||
+    track.timelineOffsetSampleFrames < 0 ||
+    track.trimStartSampleFrames < 0 ||
+    sourceEnd <= track.trimStartSampleFrames ||
+    (track.sourceSampleFrames !== null && sourceEnd > track.sourceSampleFrames)
+  )
+    return null;
+  return Math.max(0, Math.min(sourceEnd - track.trimStartSampleFrames, sceneFrames - track.timelineOffsetSampleFrames));
+}
+
+export function projectAudioMixAtFadeDelta(
+  track: Readonly<
+    Pick<
+      ProjectAudioTrack,
+      | "fadeInSampleFrames"
+      | "fadeOutSampleFrames"
+      | "sourceSampleFrames"
+      | "timelineOffsetSampleFrames"
+      | "trimEndSampleFrames"
+      | "trimStartSampleFrames"
+      | "volumePercent"
+    >
+  >,
+  sceneDuration: number,
+  deltaSeconds: number,
+  gesture: ProjectAudioFadeGesture,
+): ProjectAudioMixSettings | null {
+  const visibleSampleFrames = projectAudioVisibleSampleFrames(track, sceneDuration);
+  const deltaSampleFrames = Math.round(deltaSeconds * PROJECT_AUDIO_SAMPLE_RATE_HZ);
+  if (visibleSampleFrames === null || visibleSampleFrames < 1 || !Number.isSafeInteger(deltaSampleFrames)) return null;
+  if (deltaSampleFrames === 0) return projectAudioMixSettings(track);
+  const originalSampleFrames = gesture === "fade-in" ? track.fadeInSampleFrames : track.fadeOutSampleFrames;
+  const visibleBaseSampleFrames = Math.min(originalSampleFrames, visibleSampleFrames);
+  const changedSampleFrames = Math.min(
+    visibleSampleFrames,
+    Math.max(0, visibleBaseSampleFrames + (gesture === "fade-in" ? deltaSampleFrames : -deltaSampleFrames)),
+  );
+  if (changedSampleFrames === visibleBaseSampleFrames) return projectAudioMixSettings(track);
+  return {
+    fadeInSeconds:
+      (gesture === "fade-in" ? changedSampleFrames : track.fadeInSampleFrames) / PROJECT_AUDIO_SAMPLE_RATE_HZ,
+    fadeOutSeconds:
+      (gesture === "fade-out" ? changedSampleFrames : track.fadeOutSampleFrames) / PROJECT_AUDIO_SAMPLE_RATE_HZ,
+    volumePercent: track.volumePercent,
   };
 }
 

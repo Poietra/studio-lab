@@ -93,11 +93,14 @@ describe("StudioTimeline opacity keyframes", () => {
       <StudioTimeline
         {...props()}
         projectAudioTrack={{
+          fadeInSampleFrames: 0,
+          fadeOutSampleFrames: 0,
           fileName: "narration.wav",
           sourceSampleFrames: 240_000,
           timelineOffsetSampleFrames: 0,
           trimEndSampleFrames: 240_000,
           trimStartSampleFrames: 0,
+          volumePercent: 100,
         }}
       />,
     );
@@ -108,19 +111,25 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toMatch(/<button[^>]*aria-label="Move audio track narration.wav"[^>]* disabled=""/u);
     expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track narration.wav start"[^>]* disabled=""/u);
     expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track narration.wav end"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Fade in audio track narration.wav"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Fade out audio track narration.wav"[^>]* disabled=""/u);
   });
 
-  it("places the trimmed project audio interval and enables all three gesture controls", () => {
+  it("places the trimmed project audio interval and enables all five gesture controls", () => {
     const markup = renderToStaticMarkup(
       <StudioTimeline
         {...props()}
+        onAudioMixChange={vi.fn()}
         onAudioTimingChange={vi.fn()}
         projectAudioTrack={{
+          fadeInSampleFrames: 12_000,
+          fadeOutSampleFrames: 24_000,
           fileName: "trimmed.wav",
           sourceSampleFrames: 96_000,
           timelineOffsetSampleFrames: 48_000,
           trimEndSampleFrames: 72_000,
           trimStartSampleFrames: 24_000,
+          volumePercent: 80,
         }}
       />,
     );
@@ -131,20 +140,53 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toContain('data-project-audio-clip-body="true"');
     expect(markup).toContain('data-project-audio-trim-start-handle="true"');
     expect(markup).toContain('data-project-audio-trim-end-handle="true"');
+    expect(markup).toContain('data-project-audio-fade-in-handle="true"');
+    expect(markup).toContain('data-project-audio-fade-out-handle="true"');
+    expect(markup).toContain("left:25%");
+    expect(markup).toContain("left:50%");
     expect(markup).not.toMatch(/aria-label="Move audio track trimmed.wav"[^>]* disabled=""/u);
+    expect(markup).not.toMatch(/aria-label="Fade in audio track trimmed.wav"[^>]* disabled=""/u);
+  });
+
+  it("keeps coincident fade handles separately reachable at the clip boundary", () => {
+    const markup = renderToStaticMarkup(
+      <StudioTimeline
+        {...props()}
+        onAudioMixChange={vi.fn()}
+        projectAudioTrack={{
+          fadeInSampleFrames: 48_000,
+          fadeOutSampleFrames: 0,
+          fileName: "coincident.wav",
+          sourceSampleFrames: 48_000,
+          timelineOffsetSampleFrames: 0,
+          trimEndSampleFrames: 48_000,
+          trimStartSampleFrames: 0,
+          volumePercent: 100,
+        }}
+      />,
+    );
+
+    expect(markup).toMatch(/aria-label="Fade in audio track coincident.wav" class="[^"]*top-0[^"]*"[^>]*left:100%/u);
+    expect(markup).toMatch(
+      /aria-label="Fade out audio track coincident.wav" class="[^"]*bottom-0[^"]*"[^>]*left:100%/u,
+    );
   });
 
   it("disables gesture controls when a legacy audio track has no effective source end", () => {
     const markup = renderToStaticMarkup(
       <StudioTimeline
         {...props()}
+        onAudioMixChange={vi.fn()}
         onAudioTimingChange={vi.fn()}
         projectAudioTrack={{
+          fadeInSampleFrames: 0,
+          fadeOutSampleFrames: 0,
           fileName: "legacy.wav",
           sourceSampleFrames: null,
           timelineOffsetSampleFrames: 0,
           trimEndSampleFrames: null,
           trimStartSampleFrames: 0,
+          volumePercent: 100,
         }}
       />,
     );
@@ -152,6 +194,8 @@ describe("StudioTimeline opacity keyframes", () => {
     expect(markup).toMatch(/<button[^>]*aria-label="Move audio track legacy.wav"[^>]* disabled=""/u);
     expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track legacy.wav start"[^>]* disabled=""/u);
     expect(markup).toMatch(/<button[^>]*aria-label="Trim audio track legacy.wav end"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Fade in audio track legacy.wav"[^>]* disabled=""/u);
+    expect(markup).toMatch(/<button[^>]*aria-label="Fade out audio track legacy.wav"[^>]* disabled=""/u);
   });
 
   it("keeps the Draw control visible with a fragment material blocker", () => {

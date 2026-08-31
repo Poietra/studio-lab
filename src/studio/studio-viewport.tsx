@@ -147,6 +147,7 @@ export function StudioViewport({
   onAppliedMotionClipChange,
   onAppliedMotionClipDelete,
   onAppliedMotionClipSelect,
+  onAudioMixChange,
   onAudioTimingChange,
   onCameraClipChange,
   onCameraClipDelete,
@@ -390,6 +391,7 @@ export function StudioViewport({
           onAppliedMotionClipChange={onAppliedMotionClipChange}
           onAppliedMotionClipDelete={onAppliedMotionClipDelete}
           onAppliedMotionClipSelect={onAppliedMotionClipSelect}
+          onAudioMixChange={onAudioMixChange}
           onAudioTimingChange={onAudioTimingChange}
           onCameraClipChange={onCameraClipChange}
           onCameraClipDelete={onCameraClipDelete}

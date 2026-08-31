@@ -17,9 +17,14 @@ import type { PaintColorKeyframeEasing, PaintColorProperty } from "./paint-color
 import type { PathMorphEasing } from "./path-morph-clip-edit";
 import {
   PROJECT_AUDIO_SAMPLE_RATE_HZ,
+  type ProjectAudioFadeGesture,
+  type ProjectAudioMixSettings,
   type ProjectAudioTimelineGesture,
   type ProjectAudioTimingSeconds,
+  projectAudioMixAtFadeDelta,
+  projectAudioMixSettings,
   projectAudioTimelineTimingAtDelta,
+  projectAudioVisibleSampleFrames,
 } from "./project-audio-track";
 import {
   type ShapeTransformEasing,
@@ -77,6 +82,7 @@ export type StudioTimelineProps = Readonly<{
   onAppliedMotionClipChange: (clip: AppliedMotionClip, change: AppliedMotionClipChange) => void;
   onAppliedMotionClipDelete?: (clip: AppliedMotionClip) => void;
   onAppliedMotionClipSelect: (clip: AppliedMotionClip) => void;
+  onAudioMixChange?: (mix: ProjectAudioMixSettings) => void;
   onAudioTimingChange?: (timing: ProjectAudioTimingSeconds) => void;
   onCameraClipChange?: (clip: StudioCameraTimelineClip, change: StudioCameraClipChange) => void;
   onCameraClipDelete?: (clip: StudioCameraTimelineClip) => void;
@@ -153,16 +159,28 @@ export type StudioTimelineProps = Readonly<{
 }>;
 
 export type StudioProjectAudioTimelineTrack = Readonly<{
+  fadeInSampleFrames: number;
+  fadeOutSampleFrames: number;
   fileName: string;
   sourceSampleFrames: number | null;
   timelineOffsetSampleFrames: number;
   trimEndSampleFrames: number | null;
   trimStartSampleFrames: number;
+  volumePercent: number;
 }>;
 
 type ActiveProjectAudioGesture = Readonly<{
   duration: number;
   kind: ProjectAudioTimelineGesture;
+  laneWidth: number;
+  pointerId: number;
+  startClientX: number;
+  track: StudioProjectAudioTimelineTrack;
+}>;
+
+type ActiveProjectAudioFadeGesture = Readonly<{
+  duration: number;
+  kind: ProjectAudioFadeGesture;
   laneWidth: number;
   pointerId: number;
   startClientX: number;
@@ -204,6 +222,14 @@ function projectAudioTimelineTiming(track: StudioProjectAudioTimelineTrack): Pro
 
 function sameProjectAudioTiming(left: ProjectAudioTimingSeconds, right: ProjectAudioTimingSeconds) {
   return left.offset === right.offset && left.trimStart === right.trimStart && left.trimEnd === right.trimEnd;
+}
+
+function sameProjectAudioMix(mix: ProjectAudioMixSettings, track: StudioProjectAudioTimelineTrack) {
+  return (
+    Math.round(mix.fadeInSeconds * PROJECT_AUDIO_SAMPLE_RATE_HZ) === track.fadeInSampleFrames &&
+    Math.round(mix.fadeOutSeconds * PROJECT_AUDIO_SAMPLE_RATE_HZ) === track.fadeOutSampleFrames &&
+    mix.volumePercent === track.volumePercent
+  );
 }
 
 export type StudioDrawInTimelineClip = Readonly<{
@@ -1061,6 +1087,7 @@ export function StudioTimeline({
   onAppliedMotionClipChange,
   onAppliedMotionClipDelete,
   onAppliedMotionClipSelect,
+  onAudioMixChange,
   onAudioTimingChange,
   onCameraClipChange,
   onCameraClipDelete,
@@ -1125,7 +1152,9 @@ export function StudioTimeline({
   const [selectedScaleKeyframe, setSelectedScaleKeyframe] = useState<SelectedOpacityKeyframe | null>(null);
   const [pathMotionEasing, setPathMotionEasing] = useState<MotionEasing>("smooth");
   const activeProjectAudioGesture = useRef<ActiveProjectAudioGesture | null>(null);
+  const activeProjectAudioFadeGesture = useRef<ActiveProjectAudioFadeGesture | null>(null);
   const [projectAudioTimingPreview, setProjectAudioTimingPreview] = useState<ProjectAudioTimingSeconds | null>(null);
+  const [projectAudioMixPreview, setProjectAudioMixPreview] = useState<ProjectAudioMixSettings | null>(null);
   const displayedProjectAudioTrack =
     projectAudioTrack && projectAudioTimingPreview
       ? projectAudioTimelineTrackAtTiming(projectAudioTrack, projectAudioTimingPreview)
@@ -1137,6 +1166,26 @@ export function StudioTimeline({
     readOnly ||
     onAudioTimingChange === undefined ||
     (projectAudioTrack?.sourceSampleFrames === null && projectAudioTrack.trimEndSampleFrames === null);
+  const projectAudioVisibleFrames = displayedProjectAudioTrack
+    ? projectAudioVisibleSampleFrames(displayedProjectAudioTrack, duration)
+    : null;
+  const audioFadeDisabled =
+    readOnly || onAudioMixChange === undefined || projectAudioVisibleFrames === null || projectAudioVisibleFrames < 1;
+  const displayedProjectAudioMix =
+    projectAudioMixPreview ?? (projectAudioTrack ? projectAudioMixSettings(projectAudioTrack) : null);
+  const displayedFadeInPercent =
+    displayedProjectAudioMix && projectAudioVisibleFrames
+      ? (Math.min(projectAudioVisibleFrames, displayedProjectAudioMix.fadeInSeconds * PROJECT_AUDIO_SAMPLE_RATE_HZ) /
+          projectAudioVisibleFrames) *
+        100
+      : 0;
+  const displayedFadeOutPercent =
+    displayedProjectAudioMix && projectAudioVisibleFrames
+      ? 100 -
+        (Math.min(projectAudioVisibleFrames, displayedProjectAudioMix.fadeOutSeconds * PROJECT_AUDIO_SAMPLE_RATE_HZ) /
+          projectAudioVisibleFrames) *
+          100
+      : 100;
 
   function projectAudioTimingForPointer(gesture: ActiveProjectAudioGesture, clientX: number) {
     const deltaSeconds = ((clientX - gesture.startClientX) / gesture.laneWidth) * gesture.duration;
@@ -1144,7 +1193,13 @@ export function StudioTimeline({
   }
 
   function beginProjectAudioGesture(event: PointerEvent<HTMLButtonElement>, kind: ProjectAudioTimelineGesture) {
-    if (audioTimingDisabled || !projectAudioTrack) return;
+    if (
+      audioTimingDisabled ||
+      !projectAudioTrack ||
+      activeProjectAudioGesture.current ||
+      activeProjectAudioFadeGesture.current
+    )
+      return;
     const lane = event.currentTarget.closest<HTMLElement>("[data-timeline-audio-lane]");
     const laneWidth = lane?.getBoundingClientRect().width ?? 0;
     if (!Number.isFinite(laneWidth) || laneWidth <= 0) return;
@@ -1191,6 +1246,64 @@ export function StudioTimeline({
     if (timing && !sameProjectAudioTiming(timing, projectAudioTimelineTiming(gesture.track))) {
       onAudioTimingChange?.(timing);
     }
+  }
+
+  function projectAudioMixForPointer(gesture: ActiveProjectAudioFadeGesture, clientX: number) {
+    const deltaSeconds = ((clientX - gesture.startClientX) / gesture.laneWidth) * gesture.duration;
+    return projectAudioMixAtFadeDelta(gesture.track, gesture.duration, deltaSeconds, gesture.kind);
+  }
+
+  function beginProjectAudioFadeGesture(event: PointerEvent<HTMLButtonElement>, kind: ProjectAudioFadeGesture) {
+    if (
+      audioFadeDisabled ||
+      !projectAudioTrack ||
+      activeProjectAudioGesture.current ||
+      activeProjectAudioFadeGesture.current
+    )
+      return;
+    const lane = event.currentTarget.closest<HTMLElement>("[data-timeline-audio-lane]");
+    const laneWidth = lane?.getBoundingClientRect().width ?? 0;
+    if (!Number.isFinite(laneWidth) || laneWidth <= 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    activeProjectAudioFadeGesture.current = {
+      duration,
+      kind,
+      laneWidth,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      track: projectAudioTrack,
+    };
+    setProjectAudioMixPreview(projectAudioMixSettings(projectAudioTrack));
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveProjectAudioFadeGesture(event: PointerEvent<HTMLButtonElement>) {
+    const gesture = activeProjectAudioFadeGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const mix = projectAudioMixForPointer(gesture, event.clientX);
+    if (mix) setProjectAudioMixPreview(mix);
+  }
+
+  function cancelProjectAudioFadeGesture(event: PointerEvent<HTMLButtonElement>) {
+    if (activeProjectAudioFadeGesture.current?.pointerId !== event.pointerId) return;
+    activeProjectAudioFadeGesture.current = null;
+    setProjectAudioMixPreview(null);
+  }
+
+  function finishProjectAudioFadeGesture(event: PointerEvent<HTMLButtonElement>) {
+    const gesture = activeProjectAudioFadeGesture.current;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const mix = projectAudioMixForPointer(gesture, event.clientX);
+    activeProjectAudioFadeGesture.current = null;
+    setProjectAudioMixPreview(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId))
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    if (mix && !sameProjectAudioMix(mix, gesture.track)) onAudioMixChange?.(mix);
   }
   const selectedLifetimeTrack =
     selectedLifetime && selectedIds.has(selectedLifetime.entityId)
@@ -2380,6 +2493,8 @@ export function StudioTimeline({
                   aria-label={`Audio track ${displayedProjectAudioTrack.fileName}, ${projectAudioInterval.start.toFixed(2)}–${projectAudioInterval.end.toFixed(2)} seconds`}
                   className="absolute top-1 h-5 min-w-px"
                   data-audio-preview-offset={projectAudioTimingPreview?.offset}
+                  data-audio-preview-fade-in={projectAudioMixPreview?.fadeInSeconds}
+                  data-audio-preview-fade-out={projectAudioMixPreview?.fadeOutSeconds}
                   data-audio-preview-trim-end={projectAudioTimingPreview?.trimEnd ?? undefined}
                   data-audio-preview-trim-start={projectAudioTimingPreview?.trimStart}
                   data-project-audio-clip
@@ -2404,6 +2519,40 @@ export function StudioTimeline({
                   >
                     <span className="block truncate">{displayedProjectAudioTrack.fileName}</span>
                   </button>
+                  <button
+                    aria-label={`Fade in audio track ${displayedProjectAudioTrack.fileName}`}
+                    className={cn(
+                      "absolute top-0 z-20 h-2 w-4 cursor-ew-resize touch-none border-t border-emerald-200 bg-emerald-300/70 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-100 disabled:cursor-not-allowed disabled:border-zinc-500 disabled:bg-zinc-700",
+                      displayedFadeInPercent >= 100 ? "-translate-x-full border-r" : "border-l",
+                    )}
+                    data-project-audio-fade-in-handle
+                    disabled={audioFadeDisabled}
+                    onLostPointerCapture={cancelProjectAudioFadeGesture}
+                    onPointerCancel={cancelProjectAudioFadeGesture}
+                    onPointerDown={(event) => beginProjectAudioFadeGesture(event, "fade-in")}
+                    onPointerMove={moveProjectAudioFadeGesture}
+                    onPointerUp={finishProjectAudioFadeGesture}
+                    style={{ left: `${displayedFadeInPercent}%` }}
+                    title={`Fade in ${displayedProjectAudioMix?.fadeInSeconds.toFixed(2) ?? "0.00"} seconds`}
+                    type="button"
+                  />
+                  <button
+                    aria-label={`Fade out audio track ${displayedProjectAudioTrack.fileName}`}
+                    className={cn(
+                      "absolute bottom-0 z-20 h-2 w-4 cursor-ew-resize touch-none border-b border-emerald-200 bg-emerald-300/70 hover:bg-emerald-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-100 disabled:cursor-not-allowed disabled:border-zinc-500 disabled:bg-zinc-700",
+                      displayedFadeOutPercent <= 0 ? "border-l" : "-translate-x-full border-r",
+                    )}
+                    data-project-audio-fade-out-handle
+                    disabled={audioFadeDisabled}
+                    onLostPointerCapture={cancelProjectAudioFadeGesture}
+                    onPointerCancel={cancelProjectAudioFadeGesture}
+                    onPointerDown={(event) => beginProjectAudioFadeGesture(event, "fade-out")}
+                    onPointerMove={moveProjectAudioFadeGesture}
+                    onPointerUp={finishProjectAudioFadeGesture}
+                    style={{ left: `${displayedFadeOutPercent}%` }}
+                    title={`Fade out ${displayedProjectAudioMix?.fadeOutSeconds.toFixed(2) ?? "0.00"} seconds`}
+                    type="button"
+                  />
                   <button
                     aria-label={`Trim audio track ${displayedProjectAudioTrack.fileName} start`}
                     className="absolute bottom-0 left-0 top-0 z-10 w-2 cursor-ew-resize touch-none border-l border-emerald-300 bg-emerald-400/20 hover:bg-emerald-300/40 disabled:cursor-not-allowed disabled:border-zinc-600 disabled:bg-zinc-800"

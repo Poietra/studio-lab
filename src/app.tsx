@@ -11836,6 +11836,15 @@ export function App({
               onAppliedMotionClipChange={changeAppliedMotionClip}
               onAppliedMotionClipDelete={deleteAppliedMotionClip}
               onAppliedMotionClipSelect={editAppliedMotionClip}
+              onAudioMixChange={
+                nativeSceneActive &&
+                !studioAuthoringLocked &&
+                !isPlaying &&
+                draftEdit === null &&
+                !nativeProjectAssetPending
+                  ? (mix) => void updateNativeProjectAudioMix(mix)
+                  : undefined
+              }
               onAudioTimingChange={
                 nativeSceneActive &&
                 !studioAuthoringLocked &&
