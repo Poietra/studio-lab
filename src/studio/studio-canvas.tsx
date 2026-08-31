@@ -14,6 +14,7 @@ import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 import type { StudioMotionPath } from "./motion-paths";
 import { describeStudioPreviewFallback } from "./preview-renderer-policy";
 import type { PreparedSelectionResizeBasis } from "./selection-resize-gesture";
+import { type ShapeInsertionTool, shapeInsertionPlacement } from "./shape-insertion-gesture";
 import {
   hasShapeDimensions,
   inverseResizeHandleScale,
@@ -75,7 +76,7 @@ export type StudioCanvasProps = Readonly<{
   interactionMode: InteractionMode;
   lockedEntityIds?: ReadonlySet<string>;
   motionPaths: readonly StudioMotionPath[];
-  onCanvasPlace: (point: Point) => void;
+  onCanvasPlace: (point: Point, dimensions?: EntityDimensions) => void;
   onCubicBezierControlChange?: (pointRef: StudioCubicBezierPointRef, point: Point) => void;
   onCreateEmptyWorkspaceEntity?: (type: StudioEmptyWorkspaceEntityType) => void;
   onCreateStarterComposition?: () => void;
@@ -196,6 +197,63 @@ function clearMarquee(canvas: HTMLDivElement) {
   delete canvas.dataset.studioMarqueeStartClientX;
   delete canvas.dataset.studioMarqueeStartClientY;
   const overlay = marqueeOverlay(canvas);
+  if (overlay) {
+    overlay.style.height = "0";
+    overlay.style.width = "0";
+  }
+}
+
+function shapeInsertionOverlay(canvas: HTMLDivElement) {
+  return canvas.querySelector<HTMLElement>("[data-studio-shape-insertion-preview]");
+}
+
+function shapeInsertionTool(canvas: HTMLDivElement): ShapeInsertionTool | null {
+  const tool = canvas.dataset.studioShapeInsertionTool;
+  return tool === "Circle" || tool === "Rectangle" ? tool : null;
+}
+
+function updateShapeInsertionOverlay(
+  canvas: HTMLDivElement,
+  currentClientPoint: Point,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const startClientPoint = {
+    x: Number(canvas.dataset.studioShapeInsertionStartClientX),
+    y: Number(canvas.dataset.studioShapeInsertionStartClientY),
+  };
+  const tool = shapeInsertionTool(canvas);
+  if (!tool || !Number.isFinite(startClientPoint.x) || !Number.isFinite(startClientPoint.y)) return;
+  const placement = shapeInsertionPlacement({
+    bounds: canvas.getBoundingClientRect(),
+    currentClientPoint,
+    frame,
+    startClientPoint,
+    tool,
+  });
+  const overlay = shapeInsertionOverlay(canvas);
+  if (!overlay) return;
+  const dimensions = placement.dimensions;
+  const width =
+    dimensions?.radius === undefined
+      ? ((dimensions?.width ?? 0) / frame.width) * STUDIO_VIEWPORT.width
+      : ((dimensions.radius * 2) / frame.width) * STUDIO_VIEWPORT.width;
+  const height =
+    dimensions?.radius === undefined
+      ? ((dimensions?.height ?? 0) / frame.height) * STUDIO_VIEWPORT.height
+      : ((dimensions.radius * 2) / frame.height) * STUDIO_VIEWPORT.height;
+  overlay.style.borderRadius = tool === "Circle" ? "9999px" : "0";
+  overlay.style.left = `${((placement.point.x - width / 2) / STUDIO_VIEWPORT.width) * 100}%`;
+  overlay.style.top = `${((placement.point.y - height / 2) / STUDIO_VIEWPORT.height) * 100}%`;
+  overlay.style.width = `${(width / STUDIO_VIEWPORT.width) * 100}%`;
+  overlay.style.height = `${(height / STUDIO_VIEWPORT.height) * 100}%`;
+}
+
+function clearShapeInsertion(canvas: HTMLDivElement) {
+  delete canvas.dataset.studioShapeInsertionPointerId;
+  delete canvas.dataset.studioShapeInsertionStartClientX;
+  delete canvas.dataset.studioShapeInsertionStartClientY;
+  delete canvas.dataset.studioShapeInsertionTool;
+  const overlay = shapeInsertionOverlay(canvas);
   if (overlay) {
     overlay.style.height = "0";
     overlay.style.width = "0";
@@ -1036,6 +1094,7 @@ export function StudioCanvas({
         className={cn(
           "relative aspect-video overflow-hidden border border-zinc-700 bg-black [container-type:size]",
           !editorViewport?.canvasSize && "w-full max-w-5xl",
+          (insertTool === "Circle" || insertTool === "Rectangle") && "touch-none cursor-crosshair",
         )}
         data-studio-canvas
         data-preview-fallback-reason={preview?.state.phase === "fallback" ? preview.state.reason : undefined}
@@ -1100,19 +1159,30 @@ export function StudioCanvas({
             event.preventDefault();
             updateMarqueeOverlay(event.currentTarget, { x: event.clientX, y: event.clientY });
           }
+          if (event.currentTarget.dataset.studioShapeInsertionPointerId === String(event.pointerId)) {
+            event.preventDefault();
+            updateShapeInsertionOverlay(event.currentTarget, { x: event.clientX, y: event.clientY }, frame);
+          }
         }}
         onLostPointerCapture={(event) => {
           if (event.currentTarget.dataset.studioMarqueePointerId === String(event.pointerId)) {
             clearMarquee(event.currentTarget);
+          }
+          if (event.currentTarget.dataset.studioShapeInsertionPointerId === String(event.pointerId)) {
+            clearShapeInsertion(event.currentTarget);
           }
         }}
         onPointerCancel={(event) => {
           if (event.currentTarget.dataset.studioMarqueePointerId === String(event.pointerId)) {
             clearMarquee(event.currentTarget);
           }
+          if (event.currentTarget.dataset.studioShapeInsertionPointerId === String(event.pointerId)) {
+            clearShapeInsertion(event.currentTarget);
+          }
         }}
         onPointerDown={(event) => {
           const interactionTarget = isCanvasInteractionTarget(event.target);
+          const activeShapeInsertionTool = insertTool === "Circle" || insertTool === "Rectangle" ? insertTool : null;
           if (
             event.button === 0 &&
             onSelectEntities &&
@@ -1136,6 +1206,29 @@ export function StudioCanvas({
             return;
           }
           if (
+            event.button === 0 &&
+            event.isPrimary &&
+            activeShapeInsertionTool &&
+            !readOnly &&
+            showingCanvasPixels &&
+            !displayOnlyPreview &&
+            !selectionOnlyPreview &&
+            inlineTextEditor === null &&
+            !boundaryActive &&
+            !cubicBezierExtensionActive &&
+            !interactionTarget
+          ) {
+            event.preventDefault();
+            event.currentTarget.dataset.studioShapeInsertionPointerId = String(event.pointerId);
+            event.currentTarget.dataset.studioShapeInsertionStartClientX = String(event.clientX);
+            event.currentTarget.dataset.studioShapeInsertionStartClientY = String(event.clientY);
+            event.currentTarget.dataset.studioShapeInsertionTool = activeShapeInsertionTool;
+            event.currentTarget.setPointerCapture(event.pointerId);
+            updateShapeInsertionOverlay(event.currentTarget, { x: event.clientX, y: event.clientY }, frame);
+            return;
+          }
+          if (activeShapeInsertionTool) return;
+          if (
             !showingCanvasPixels ||
             displayOnlyPreview ||
             selectionOnlyPreview ||
@@ -1157,6 +1250,38 @@ export function StudioCanvas({
         }}
         onPointerUp={(event) => {
           const canvas = event.currentTarget;
+          if (canvas.dataset.studioShapeInsertionPointerId === String(event.pointerId)) {
+            const tool = shapeInsertionTool(canvas);
+            const startClientPoint = {
+              x: Number(canvas.dataset.studioShapeInsertionStartClientX),
+              y: Number(canvas.dataset.studioShapeInsertionStartClientY),
+            };
+            event.preventDefault();
+            clearShapeInsertion(canvas);
+            if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+            if (
+              tool === insertTool &&
+              !readOnly &&
+              showingCanvasPixels &&
+              !displayOnlyPreview &&
+              !selectionOnlyPreview &&
+              inlineTextEditor === null &&
+              !boundaryActive &&
+              !cubicBezierExtensionActive &&
+              Number.isFinite(startClientPoint.x) &&
+              Number.isFinite(startClientPoint.y)
+            ) {
+              const placement = shapeInsertionPlacement({
+                bounds: canvas.getBoundingClientRect(),
+                currentClientPoint: { x: event.clientX, y: event.clientY },
+                frame,
+                startClientPoint,
+                tool,
+              });
+              onCanvasPlace(placement.point, placement.dimensions);
+            }
+            return;
+          }
           if (canvas.dataset.studioMarqueePointerId !== String(event.pointerId) || !onSelectEntities) return;
           const start = {
             x: Number(canvas.dataset.studioMarqueeStartClientX),
@@ -1192,6 +1317,11 @@ export function StudioCanvas({
           aria-hidden="true"
           className="pointer-events-none absolute z-30 size-0 border border-sky-400 bg-sky-400/10"
           data-studio-selection-marquee=""
+        />
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute z-30 size-0 border border-sky-300 bg-sky-400/10"
+          data-studio-shape-insertion-preview=""
         />
         {preview ? (
           <canvas
