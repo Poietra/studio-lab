@@ -345,7 +345,7 @@ async function createBlankWorkspace(page: Page, name: string) {
   return ((await createResponse.json()) as { project: { id: string } }).project.id;
 }
 
-test("persists project WAV timing and volume through Timeline and Opus MP4 export", async ({ page }) => {
+test("persists project WAV timing, volume, and fades through Timeline and Opus MP4 export", async ({ page }) => {
   test.setTimeout(120_000);
   page.setDefaultTimeout(15_000);
   let projectId: string | null = null;
@@ -391,10 +391,16 @@ test("persists project WAV timing and volume through Timeline and Opus MP4 expor
     await expect(audioLane.getByLabel("Audio track tone.wav, 0.50–0.70 seconds")).toBeVisible();
 
     const volumeInput = page.getByLabel("Audio volume percent");
+    const fadeInInput = page.getByLabel("Audio fade in seconds");
+    const fadeOutInput = page.getByLabel("Audio fade out seconds");
     await expect(volumeInput).toHaveValue("100");
     await volumeInput.fill("50");
-    await page.getByRole("button", { name: "Apply volume" }).click();
+    await fadeInInput.fill("0.08");
+    await fadeOutInput.fill("0.08");
+    await page.getByRole("button", { name: "Apply audio mix" }).click();
     await expect(volumeInput).toHaveValue("50");
+    await expect(fadeInInput).toHaveValue("0.08");
+    await expect(fadeOutInput).toHaveValue("0.08");
 
     const unsupportedWav = monoPcmWav48k(0.4);
     unsupportedWav.writeUInt32LE(44_100, 24);
@@ -417,6 +423,8 @@ test("persists project WAV timing and volume through Timeline and Opus MP4 expor
     await expect(page.getByLabel("Audio trim in seconds")).toHaveValue("0.1");
     await expect(page.getByLabel("Audio trim out seconds")).toHaveValue("0.3");
     await expect(page.getByLabel("Audio volume percent")).toHaveValue("50");
+    await expect(page.getByLabel("Audio fade in seconds")).toHaveValue("0.08");
+    await expect(page.getByLabel("Audio fade out seconds")).toHaveValue("0.08");
 
     const mp4Base64 = await exportLocalMp4(page);
     const mp4Bytes = Uint8Array.from(Buffer.from(mp4Base64, "base64"));
@@ -444,7 +452,9 @@ test("persists project WAV timing and volume through Timeline and Opus MP4 expor
           return peak;
         };
         return {
-          activePeak: peakBetween(0.53, 0.65),
+          centerPeak: peakBetween(0.59, 0.61),
+          fadeInPeak: peakBetween(0.505, 0.52),
+          fadeOutPeak: peakBetween(0.68, 0.695),
           afterPeak: peakBetween(0.9, 1.1),
           beforePeak: peakBetween(0.1, 0.3),
           channels: decoded.numberOfChannels,
@@ -457,8 +467,10 @@ test("persists project WAV timing and volume through Timeline and Opus MP4 expor
     expect(decodedAudio.channels).toBe(1);
     expect(decodedAudio.duration).toBeCloseTo(5, 1);
     expect(decodedAudio.beforePeak).toBeLessThan(0.01);
-    expect(decodedAudio.activePeak).toBeGreaterThan(0.08);
-    expect(decodedAudio.activePeak).toBeLessThan(0.16);
+    expect(decodedAudio.centerPeak).toBeGreaterThan(0.08);
+    expect(decodedAudio.centerPeak).toBeLessThan(0.16);
+    expect(decodedAudio.fadeInPeak).toBeLessThan(decodedAudio.centerPeak * 0.65);
+    expect(decodedAudio.fadeOutPeak).toBeLessThan(decodedAudio.centerPeak * 0.65);
     expect(decodedAudio.afterPeak).toBeLessThan(0.01);
 
     await page.getByRole("button", { name: "Remove WAV tone.wav" }).click();
