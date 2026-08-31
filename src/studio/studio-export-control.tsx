@@ -411,7 +411,7 @@ export function StudioExportControl({
             ? "Optionally attach one 48 kHz PCM WAV to this imported Scene export."
             : audioTrack
               ? `The project track “${audioTrack.fileName}” will be attached to this local export.`
-              : "No project audio is attached. Import a WAV from Assets to include it."}
+              : "No project audio is attached. Import a WAV or MP3 from Assets to include it."}
         </p>
         {audioTrack === undefined ? (
           <>

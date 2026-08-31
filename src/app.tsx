@@ -280,9 +280,9 @@ import {
   sourceTimeToWorkingTime as sourceTimeToWorkingTimeWithoutTimeline,
   workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline,
 } from "./studio/program-composition";
+import { ingestProjectAudioFile } from "./studio/project-audio-import";
 import { useProjectAudioPlayback } from "./studio/project-audio-playback";
 import {
-  ingestProjectAudioWav,
   type ProjectAudioMixSettings,
   type ProjectAudioTimingSeconds,
   updateProjectAudioMix,
@@ -1716,7 +1716,7 @@ export function App({
     setNativeProjectAssetError(null);
     setNativeProjectAssetErrorKind(null);
     try {
-      const audioTrack = file ? await ingestProjectAudioWav(file) : undefined;
+      const audioTrack = file ? await ingestProjectAudioFile(file) : undefined;
       if (nativeProjectAssetGeneration.current !== generation) return;
       const stateKey = tabLocalNativeProjectKey(projectId, documentKey);
       const retained = nativeProjectStates.current.get(stateKey) ?? nativeProjectState;

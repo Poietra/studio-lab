@@ -163,7 +163,7 @@ describe("WorkspaceSidebar Layers", () => {
     expect(markup).toContain("The PNG could not be decoded.");
   });
 
-  it("shows one project WAV with replace and remove actions", () => {
+  it("shows one project audio track with WAV and MP3 import actions", () => {
     const markup = renderToStaticMarkup(
       <WorkspaceSidebar
         activeScene={activeScene()}
@@ -204,11 +204,11 @@ describe("WorkspaceSidebar Layers", () => {
       />,
     );
 
-    expect(markup).toContain('aria-label="Project WAV audio file"');
-    expect(markup).toContain('accept=".wav,audio/wav,audio/x-wav"');
+    expect(markup).toContain('aria-label="Project audio file"');
+    expect(markup).toContain('accept=".wav,.mp3,audio/wav,audio/x-wav,audio/mpeg,audio/mp3"');
     expect(markup).toContain("narration.wav");
-    expect(markup).toContain("Replace WAV");
-    expect(markup).toContain('aria-label="Remove WAV narration.wav"');
+    expect(markup).toContain("Replace audio");
+    expect(markup).toContain('aria-label="Remove audio narration.wav"');
     expect(markup).toContain('aria-label="Audio offset seconds"');
     expect(markup).toContain('aria-label="Audio trim in seconds"');
     expect(markup).toContain('aria-label="Audio trim out seconds"');
