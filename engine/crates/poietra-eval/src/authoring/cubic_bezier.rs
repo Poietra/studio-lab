@@ -350,6 +350,7 @@ fn dimensions_from_bounds(bounds: Bounds) -> StudioAuthoringDimensions {
     StudioAuthoringDimensions {
         angles: None,
         coordinate_system: None,
+        corner_radius: None,
         height: (height > MIN_CURVE_SPAN).then_some(height),
         radius: None,
         sides: None,
@@ -473,6 +474,7 @@ pub(super) fn studio_cubic_bezier_dimensions_are_canonical(
     };
     source.angles.is_none()
         && source.coordinate_system.is_none()
+        && source.corner_radius.is_none()
         && source.radius.is_none()
         && source.sides.is_none()
         && optional_value_matches(source.height, normalized.height)

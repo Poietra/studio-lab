@@ -22,30 +22,90 @@ use super::{
     StudioMathTexTransformStrategy, StudioMotionEasing, StudioMotionPlan,
     StudioMotionProjectionTarget, StudioPaintColorProperty, StudioPaintColorTrack,
     StudioPropertyEasing, StudioStrokeDash, TIMELINE_ANCHOR_EPSILON,
-    close_transform_baseline_value, closed_studio_creation_motion_operations,
-    closed_studio_group_layer_order, closed_studio_group_rotation,
-    closed_studio_material_parameter_tracks, closed_studio_opacity_track,
-    closed_studio_rotation_track, closed_studio_uniform_scale_track, interval_is_exact_point,
-    motion_easing, normalize_studio_cubic_bezier, normalize_studio_svg_path_asset,
-    planned_studio_camera_animation, project_studio_motion_plan, property_easing, rotation_is_noop,
-    shift_interval_for_insertion, shift_studio_creation_time, studio_arc_parameters,
-    studio_authoring_point_is_finite, studio_authoring_shape_size, studio_camera_aspects_match,
-    studio_camera_view_is_bounded, studio_camera_view_is_within_zoom_bounds,
-    studio_camera_views_match, studio_coordinate_system_parameters,
-    studio_creation_initial_appearance_end, studio_creation_motion_is_compatible,
-    studio_creation_spec_text_content, studio_creation_supports_stroke_cap,
-    studio_creation_supports_stroke_color_track, studio_creation_supports_stroke_join,
-    studio_creation_supports_stroke_width, studio_cubic_bezier_dimensions_are_canonical,
-    studio_cubic_bezier_is_canonical, studio_data_series_is_valid, studio_ellipse_parameters,
-    studio_math_tex_content_is_canonical, studio_regular_polygon_parameters,
-    studio_shape_transform_path, studio_text_content_is_canonical,
-    studio_timeline_semantic_values_match,
+    canonical_studio_rectangle_dimensions, close_transform_baseline_value,
+    closed_studio_creation_motion_operations, closed_studio_group_layer_order,
+    closed_studio_group_rotation, closed_studio_material_parameter_tracks,
+    closed_studio_opacity_track, closed_studio_rotation_track, closed_studio_uniform_scale_track,
+    interval_is_exact_point, motion_easing, normalize_studio_cubic_bezier,
+    normalize_studio_svg_path_asset, planned_studio_camera_animation,
+    planned_studio_creation_has_affine_instant, project_studio_motion_plan, property_easing,
+    rotation_is_noop, shift_interval_for_insertion, shift_studio_creation_time,
+    studio_arc_parameters, studio_authoring_point_is_finite, studio_authoring_shape_size,
+    studio_camera_aspects_match, studio_camera_view_is_bounded,
+    studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
+    studio_coordinate_system_parameters, studio_creation_initial_appearance_end,
+    studio_creation_motion_is_compatible, studio_creation_spec_text_content,
+    studio_creation_supports_stroke_cap, studio_creation_supports_stroke_color_track,
+    studio_creation_supports_stroke_join, studio_creation_supports_stroke_width,
+    studio_cubic_bezier_dimensions_are_canonical, studio_cubic_bezier_is_canonical,
+    studio_data_series_is_valid, studio_ellipse_parameters, studio_math_tex_content_is_canonical,
+    studio_regular_polygon_parameters, studio_shape_transform_path,
+    studio_text_content_is_canonical, studio_timeline_semantic_values_match,
 };
+
+fn canonical_studio_creation_programs(
+    programs: &[StudioCreationEditInput],
+) -> Result<Vec<StudioCreationEditInput>, ProjectStudioCreationEditError> {
+    let mut canonical = programs.to_vec();
+    for program in &mut canonical {
+        for operation in &mut program.operations {
+            match &mut operation.kind {
+                StudioCreationOperationKind::Create { entity }
+                    if entity.kind == StudioAuthoringEntityKind::Rectangle =>
+                {
+                    entity.dimensions = canonical_studio_rectangle_dimensions(entity.dimensions)
+                        .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                }
+                StudioCreationOperationKind::TransformShape {
+                    from_dimensions,
+                    from_shape,
+                    to_dimensions,
+                    to_shape,
+                    ..
+                } => {
+                    if *from_shape == StudioAuthoringEntityKind::Rectangle {
+                        *from_dimensions = canonical_studio_rectangle_dimensions(*from_dimensions)
+                            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                    }
+                    if *to_shape == StudioAuthoringEntityKind::Rectangle {
+                        *to_dimensions = canonical_studio_rectangle_dimensions(*to_dimensions)
+                            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                    }
+                }
+                StudioCreationOperationKind::Resize {
+                    from_dimensions,
+                    shape: StudioAuthoringEntityKind::Rectangle,
+                    to_dimensions,
+                    ..
+                } => {
+                    *from_dimensions = canonical_studio_rectangle_dimensions(*from_dimensions)
+                        .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                    *to_dimensions = canonical_studio_rectangle_dimensions(*to_dimensions)
+                        .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(canonical)
+}
+
+fn studio_shape_state_is_rounded_rectangle(state: StudioCreationShapeState) -> bool {
+    state.kind == StudioAuthoringEntityKind::Rectangle
+        && state
+            .dimensions
+            .corner_radius
+            .is_some_and(|radius| radius > 0.0)
+}
 
 fn studio_shape_transform_pair_is_supported(
     from: StudioCreationShapeState,
     to: StudioCreationShapeState,
 ) -> bool {
+    if studio_shape_state_is_rounded_rectangle(from) || studio_shape_state_is_rounded_rectangle(to)
+    {
+        return false;
+    }
     if studio_shape_transform_path(from.kind, from.dimensions).is_none()
         || studio_shape_transform_path(to.kind, to.dimensions).is_none()
     {
@@ -102,6 +162,8 @@ pub(super) fn plan_studio_creation_edits(
     base_source_z_index_start: Option<f64>,
     base_scene_paint_order: Option<&[(f64, u32)]>,
 ) -> Result<StudioCreationPlan, ProjectStudioCreationEditError> {
+    let canonical_programs = canonical_studio_creation_programs(programs)?;
+    let programs = canonical_programs.as_slice();
     let StudioCreationAdmission {
         background_programs,
         camera_programs,
@@ -638,6 +700,7 @@ pub(super) fn plan_studio_creation_edits(
                         && spec.layout.is_none()
                         && spec.dimensions.angles.is_none()
                         && spec.dimensions.coordinate_system.is_none()
+                        && spec.dimensions.corner_radius.is_none()
                         && spec.dimensions.sides.is_none()
                         && spec.tex_parts.as_ref().is_some_and(|parts| {
                             !parts.is_empty() && parts.iter().all(|part| !part.trim().is_empty())
@@ -2610,7 +2673,11 @@ pub(super) fn plan_studio_creation_edits(
                 } if state
                     .current_shape
                     .is_some_and(|current| current.kind == *shape)
-                    && operation.origin == StudioAuthoringOrigin::DirectManipulation
+                    && matches!(
+                        operation.origin,
+                        StudioAuthoringOrigin::DirectManipulation
+                            | StudioAuthoringOrigin::StudioDefault
+                    )
                     && matches!(
                         shape,
                         StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
@@ -2942,11 +3009,11 @@ pub(super) fn plan_studio_creation_edits(
                 || !rotation_is_noop(state.instant_rotation)))
             || (!state.rotation_keyframes.is_empty()
                 && (!state.uniform_scale_keyframes.is_empty()
-                    || state.instant_at.is_some()
+                    || planned_studio_creation_has_affine_instant(state)
                     || !rotation_is_noop(state.current_rotation)
                     || !rotation_is_noop(state.instant_rotation)))
             || (!state.uniform_scale_keyframes.is_empty()
-                && (state.instant_at.is_some()
+                && (planned_studio_creation_has_affine_instant(state)
                     || !rotation_is_noop(state.current_rotation)
                     || !rotation_is_noop(state.instant_rotation)))
             || (spun_entity_ids.contains(&state.spec.id) && state.persistent_removal.is_some())

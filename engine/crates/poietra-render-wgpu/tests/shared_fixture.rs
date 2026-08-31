@@ -799,6 +799,25 @@ fn a_fully_collapsed_stroke_segment_fails_closed() {
 }
 
 #[test]
+fn a_collapsed_segment_inside_a_renderable_stroke_is_ignored() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    let end = path.subpaths[0].segments[0].end.clone();
+    path.subpaths[0].segments.push(CubicSegmentV1 {
+        control1: end.clone(),
+        control2: end.clone(),
+        end,
+    });
+
+    let prepared =
+        prepare_frame_v1(&packet).expect("the visible stroke segment must remain renderable");
+    assert_eq!(prepared.draws().len(), 1);
+    assert!(!prepared.indices().is_empty());
+}
+
+#[test]
 fn component_wise_morphed_line_is_prepared_by_general_stroke_tessellation() {
     let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
     let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {

@@ -28,19 +28,20 @@ use super::{
     StudioTextOutlineSourceCorrelationKind, TIMELINE_ANCHOR_EPSILON, VecDeque,
     VectorAppearanceValueV1, align_cubic_path_morph_chain, append_planned_scene_motions,
     apply_persistent_scene_removals, apply_world_rotation, authored_motion_easing,
-    canonical_studio_hex_color, close_transform_baseline_value, created_geometry_and_appearance,
-    insert_scene_time, is_nfc, manim_stroke_width_to_scene_world, plan_studio_creation_edits,
-    rotation_is_noop, scale_cubic_path, set_vector_paint_alpha, studio_arc_parameters,
-    studio_arc_path, studio_authoring_shape_size, studio_authoring_size_is_positive,
-    studio_camera_aspects_match, studio_camera_view_is_bounded,
+    canonical_studio_hex_color, canonical_studio_rectangle_dimensions,
+    close_transform_baseline_value, created_geometry_and_appearance, insert_scene_time, is_nfc,
+    manim_stroke_width_to_scene_world, plan_studio_creation_edits,
+    planned_studio_creation_has_affine_instant, rotation_is_noop, scale_cubic_path,
+    set_vector_paint_alpha, studio_arc_parameters, studio_arc_path, studio_authoring_shape_size,
+    studio_authoring_size_is_positive, studio_camera_aspects_match, studio_camera_view_is_bounded,
     studio_camera_view_is_within_zoom_bounds, studio_camera_views_match,
     studio_coordinate_system_parameters, studio_coordinate_system_path,
     studio_creation_spec_text_content, studio_creation_supports_stroke_cap,
     studio_creation_supports_stroke_join, studio_creation_supports_stroke_width,
     studio_cubic_bezier_appearance, studio_data_plot_path, studio_ellipse_parameters,
     studio_ellipse_path, studio_math_tex_appearance, studio_point_to_scene_point,
-    studio_regular_polygon_parameters, studio_regular_polygon_path, studio_sector_path,
-    studio_shape_transform_path, studio_timeline_semantic_values_match,
+    studio_rectangle_resize_path, studio_regular_polygon_parameters, studio_regular_polygon_path,
+    studio_sector_path, studio_shape_transform_path, studio_timeline_semantic_values_match,
     studio_vector_to_scene_vector, unused_channel_id,
 };
 
@@ -1391,11 +1392,83 @@ pub(super) fn studio_creation_shape_path(
         .ok_or(ApplyStudioCreationEditError::Unsupported)
 }
 
+fn rectangle_resize_requires_path_geometry(state: &PlannedStudioCreationEntity) -> bool {
+    state.kind == StudioAuthoringEntityKind::Rectangle
+        && (state
+            .initial_dimensions
+            .corner_radius
+            .is_some_and(|radius| radius > 0.0)
+            || state
+                .current_dimensions
+                .corner_radius
+                .is_some_and(|radius| radius > 0.0)
+            || state.animated_resize.as_ref().is_some_and(|resize| {
+                resize
+                    .from_dimensions
+                    .corner_radius
+                    .is_some_and(|radius| radius > 0.0)
+                    || resize
+                        .to_dimensions
+                        .corner_radius
+                        .is_some_and(|radius| radius > 0.0)
+            }))
+}
+
 pub(super) fn planned_shape_morph(
     state: &PlannedStudioCreationEntity,
 ) -> Result<Option<CreateSceneEntityPathMorph>, ApplyStudioCreationEditError> {
     let Some(first) = state.shape_transforms.first() else {
-        return Ok(None);
+        if !rectangle_resize_requires_path_geometry(state) {
+            return Ok(None);
+        }
+        let initial = studio_rectangle_resize_path(state.initial_dimensions)
+            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+        let (initial_path, keyframes) = if let Some(resize) = &state.animated_resize {
+            let from = studio_rectangle_resize_path(resize.from_dimensions)
+                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+            let to = studio_rectangle_resize_path(resize.to_dimensions)
+                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+            let keyframes = vec![
+                KeyframeV1 {
+                    at: resize.interval.start,
+                    easing_to_next: Some(EasingV1::ManimSmooth {}),
+                    value: from.clone(),
+                },
+                KeyframeV1 {
+                    at: resize.interval.end,
+                    easing_to_next: None,
+                    value: to,
+                },
+            ];
+            (from, keyframes)
+        } else if state.has_position_or_resize_instant
+            && state.current_dimensions != state.initial_dimensions
+        {
+            let at = state
+                .instant_at
+                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+            let target = studio_rectangle_resize_path(state.current_dimensions)
+                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+            let keyframes = vec![
+                KeyframeV1 {
+                    at,
+                    easing_to_next: Some(EasingV1::Linear {}),
+                    value: target.clone(),
+                },
+                KeyframeV1 {
+                    at: state.lifetime.end,
+                    easing_to_next: None,
+                    value: target,
+                },
+            ];
+            (initial, keyframes)
+        } else {
+            return Ok(None);
+        };
+        return Ok(Some(CreateSceneEntityPathMorph {
+            initial_path,
+            keyframes,
+        }));
     };
     let mut paths = Vec::with_capacity(state.shape_transforms.len() + 1);
     paths.push(studio_creation_shape_path(first.from)?);
@@ -2759,12 +2832,23 @@ impl EngineSessionV1 {
                             path: morph.initial_path.clone(),
                         }
                     } else {
-                        let size =
-                            studio_authoring_shape_size(state.kind, state.initial_dimensions)
+                        let dimensions =
+                            canonical_studio_rectangle_dimensions(state.initial_dimensions)
                                 .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                        CreateSceneEntityGeometry::Rectangle {
-                            height: size.height,
-                            width: size.width,
+                        if dimensions.corner_radius.is_some_and(|radius| radius > 0.0) {
+                            CreateSceneEntityGeometry::ShapeOutline {
+                                path: studio_creation_shape_path(StudioCreationShapeState {
+                                    dimensions,
+                                    kind: StudioAuthoringEntityKind::Rectangle,
+                                })?,
+                            }
+                        } else {
+                            let size = studio_authoring_shape_size(state.kind, dimensions)
+                                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                            CreateSceneEntityGeometry::Rectangle {
+                                height: size.height,
+                                width: size.width,
+                            }
                         }
                     }
                 }
@@ -2840,6 +2924,7 @@ impl EngineSessionV1 {
                     return Err(ApplyStudioCreationEditError::Unsupported);
                 }
             };
+            let rounded_rectangle = rectangle_resize_requires_path_geometry(state);
             let animated_resize = state
                 .animated_resize
                 .as_ref()
@@ -2858,11 +2943,19 @@ impl EngineSessionV1 {
                             viewport,
                             &self.scene().camera.view.center,
                         );
+                        let (scale_x, scale_y) = if rounded_rectangle {
+                            (state.scale, state.scale)
+                        } else {
+                            (
+                                state.scale * size.width / base_size.width,
+                                state.scale * size.height / base_size.height,
+                            )
+                        };
                         Ok::<_, ApplyStudioCreationEditError>(AffineTransformV1 {
-                            m11: state.scale * size.width / base_size.width,
+                            m11: scale_x,
                             m12: 0.0,
                             m21: 0.0,
-                            m22: state.scale * size.height / base_size.height,
+                            m22: scale_y,
                             tx: position.x,
                             ty: position.y,
                         })
@@ -2874,45 +2967,53 @@ impl EngineSessionV1 {
                     })
                 })
                 .transpose()?;
-            let instant_transform = if let Some(at) = state.instant_at {
-                let (x_ratio, y_ratio) = match state.kind {
-                    StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
-                        let current_shape = state
-                            .current_shape
-                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                        let path_dimensions = state
-                            .shape_path_dimensions
-                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                        let initial =
-                            studio_authoring_shape_size(current_shape.kind, path_dimensions)
+            let instant_transform = if let Some(at) = state
+                .instant_at
+                .filter(|_| planned_studio_creation_has_affine_instant(state))
+            {
+                let (x_ratio, y_ratio) = if rounded_rectangle {
+                    (1.0, 1.0)
+                } else {
+                    match state.kind {
+                        StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::Rectangle => {
+                            let current_shape = state
+                                .current_shape
                                 .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                        let current = studio_authoring_shape_size(
-                            current_shape.kind,
-                            state.current_dimensions,
-                        )
-                        .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                        (
-                            current.width / initial.width,
-                            current.height / initial.height,
-                        )
-                    }
-                    StudioAuthoringEntityKind::Arc
-                    | StudioAuthoringEntityKind::Arrow
-                    | StudioAuthoringEntityKind::Axes
-                    | StudioAuthoringEntityKind::CubicBezier
-                    | StudioAuthoringEntityKind::DataPlot
-                    | StudioAuthoringEntityKind::Ellipse
-                    | StudioAuthoringEntityKind::Image
-                    | StudioAuthoringEntityKind::Line
-                    | StudioAuthoringEntityKind::MathTex
-                    | StudioAuthoringEntityKind::NumberLine
-                    | StudioAuthoringEntityKind::NumberPlane
-                    | StudioAuthoringEntityKind::RegularPolygon
-                    | StudioAuthoringEntityKind::Sector
-                    | StudioAuthoringEntityKind::SvgPath
-                    | StudioAuthoringEntityKind::Text => (1.0, 1.0),
-                    StudioAuthoringEntityKind::Other => {
-                        return Err(ApplyStudioCreationEditError::Unsupported);
+                            let path_dimensions = state
+                                .shape_path_dimensions
+                                .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                            let initial =
+                                studio_authoring_shape_size(current_shape.kind, path_dimensions)
+                                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                            let current = studio_authoring_shape_size(
+                                current_shape.kind,
+                                state.current_dimensions,
+                            )
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                            (
+                                current.width / initial.width,
+                                current.height / initial.height,
+                            )
+                        }
+                        StudioAuthoringEntityKind::Arc
+                        | StudioAuthoringEntityKind::Arrow
+                        | StudioAuthoringEntityKind::Axes
+                        | StudioAuthoringEntityKind::CubicBezier
+                        | StudioAuthoringEntityKind::DataPlot
+                        | StudioAuthoringEntityKind::Ellipse
+                        | StudioAuthoringEntityKind::Image
+                        | StudioAuthoringEntityKind::Line
+                        | StudioAuthoringEntityKind::MathTex
+                        | StudioAuthoringEntityKind::NumberLine
+                        | StudioAuthoringEntityKind::NumberPlane
+                        | StudioAuthoringEntityKind::RegularPolygon
+                        | StudioAuthoringEntityKind::Sector
+                        | StudioAuthoringEntityKind::SvgPath
+                        | StudioAuthoringEntityKind::Text => (1.0, 1.0),
+                        StudioAuthoringEntityKind::Other => {
+                            return Err(ApplyStudioCreationEditError::Unsupported);
+                        }
                     }
                 };
                 Some(CreateSceneEntityInstantTransform {

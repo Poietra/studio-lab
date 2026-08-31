@@ -41,12 +41,13 @@ pub(super) fn studio_regular_polygon_parameters(
     match (
         dimensions.angles,
         dimensions.coordinate_system,
+        dimensions.corner_radius,
         dimensions.height,
         dimensions.radius,
         dimensions.sides,
         dimensions.width,
     ) {
-        (None, None, None, Some(radius), Some(sides), None)
+        (None, None, None, None, Some(radius), Some(sides), None)
             if radius.is_finite()
                 && radius > 0.0
                 && (STUDIO_REGULAR_POLYGON_MIN_SIDES..=STUDIO_REGULAR_POLYGON_MAX_SIDES)
@@ -64,12 +65,13 @@ pub(super) fn studio_ellipse_parameters(
     match (
         dimensions.angles,
         dimensions.coordinate_system,
+        dimensions.corner_radius,
         dimensions.height,
         dimensions.radius,
         dimensions.sides,
         dimensions.width,
     ) {
-        (None, None, Some(height), None, None, Some(width))
+        (None, None, None, Some(height), None, None, Some(width))
             if height.is_finite() && height > 0.0 && width.is_finite() && width > 0.0 =>
         {
             Some((width, height))
@@ -84,12 +86,13 @@ pub(super) fn studio_arc_parameters(
     match (
         dimensions.angles,
         dimensions.coordinate_system,
+        dimensions.corner_radius,
         dimensions.height,
         dimensions.radius,
         dimensions.sides,
         dimensions.width,
     ) {
-        (Some(angles), None, None, Some(radius), None, None)
+        (Some(angles), None, None, None, Some(radius), None, None)
             if radius.is_finite()
                 && radius > 0.0
                 && angles.start.is_finite()
@@ -134,6 +137,7 @@ pub(super) fn studio_coordinate_system_parameters(
         kind,
         dimensions.angles,
         dimensions.coordinate_system,
+        dimensions.corner_radius,
         dimensions.height,
         dimensions.radius,
         dimensions.sides,
@@ -146,6 +150,7 @@ pub(super) fn studio_coordinate_system_parameters(
             None,
             None,
             None,
+            None,
             Some(width),
         ) if width.is_finite() && width > 0.0 => (width, None, coordinates),
         (
@@ -154,6 +159,7 @@ pub(super) fn studio_coordinate_system_parameters(
             | StudioAuthoringEntityKind::NumberPlane,
             None,
             Some(coordinates @ StudioAuthoringCoordinateSystem { y: Some(_), .. }),
+            None,
             Some(height),
             None,
             None,
@@ -547,10 +553,11 @@ pub(super) fn studio_shape_transform_path(
             scene_geometry_as_cubic_path_v1(&geometry).ok()
         }
         StudioAuthoringEntityKind::Rectangle => {
+            let dimensions = super::canonical_studio_rectangle_dimensions(dimensions)?;
             let size = studio_authoring_shape_size(kind, dimensions)?;
             let geometry = SceneGeometryV1::Rectangle {
                 center: PointV1 { x: 0.0, y: 0.0 },
-                corner_radius: 0.0,
+                corner_radius: dimensions.corner_radius?,
                 height: size.height,
                 width: size.width,
             };
@@ -579,6 +586,51 @@ pub(super) fn studio_shape_transform_path(
         | StudioAuthoringEntityKind::SvgPath
         | StudioAuthoringEntityKind::Text => None,
     }
+}
+
+pub(super) fn studio_rectangle_resize_path(
+    dimensions: StudioAuthoringDimensions,
+) -> Option<CubicPathV1> {
+    let dimensions = super::canonical_studio_rectangle_dimensions(dimensions)?;
+    let corner_radius = dimensions.corner_radius?;
+    if corner_radius > 0.0 {
+        return studio_shape_transform_path(StudioAuthoringEntityKind::Rectangle, dimensions);
+    }
+
+    let width = dimensions.width?;
+    let height = dimensions.height?;
+    let left = -width / 2.0;
+    let right = width / 2.0;
+    let bottom = -height / 2.0;
+    let top = height / 2.0;
+    let start = PointV1 {
+        x: right,
+        y: bottom,
+    };
+    let corners = [
+        PointV1 { x: left, y: bottom },
+        PointV1 { x: left, y: top },
+        PointV1 { x: right, y: top },
+        start.clone(),
+    ];
+    let mut prior = start.clone();
+    let mut segments = Vec::with_capacity(8);
+    for corner in corners {
+        segments.push(straight_cubic_segment(&prior, corner.clone()));
+        segments.push(CubicSegmentV1 {
+            control1: corner.clone(),
+            control2: corner.clone(),
+            end: corner.clone(),
+        });
+        prior = corner;
+    }
+    Some(CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: true,
+            segments,
+            start,
+        }],
+    })
 }
 
 pub(super) fn scale_cubic_path(path: &CubicPathV1, factor: f64) -> CubicPathV1 {

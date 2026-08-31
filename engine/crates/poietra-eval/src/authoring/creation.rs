@@ -54,8 +54,9 @@ use super::{
     StudioCreationTextOutlineFragment, StudioMathTexContent, StudioMathTexTransformStrategy,
     StudioPersistentRemoveProjection, StudioPersistentRemoveProjectionEntry, StudioTextContent,
     StudioTextLayout, StudioTextOutlineSourceCorrelationKind, TIMELINE_ANCHOR_EPSILON,
-    close_transform_baseline_value, scene_edit_anchor_is_closed, scene_edit_structure_is_closed,
-    studio_arrow_appearance, studio_authoring_point_is_finite, studio_authoring_shape_size,
+    canonical_studio_rectangle_dimensions, close_transform_baseline_value,
+    scene_edit_anchor_is_closed, scene_edit_structure_is_closed, studio_arrow_appearance,
+    studio_authoring_point_is_finite, studio_authoring_shape_size,
     studio_authoring_size_is_positive, studio_math_tex_appearance,
     studio_math_tex_content_is_canonical, studio_point_to_scene_point, studio_shape_appearance,
     studio_timeline_semantic_values_match, studio_vector_to_scene_vector, unused_channel_id,
@@ -68,8 +69,9 @@ use geometry::{
     created_geometry_and_appearance, scale_cubic_path, studio_arc_parameters, studio_arc_path,
     studio_coordinate_system_parameters, studio_coordinate_system_path,
     studio_cubic_bezier_appearance, studio_data_plot_path, studio_data_series_is_valid,
-    studio_ellipse_parameters, studio_ellipse_path, studio_regular_polygon_parameters,
-    studio_regular_polygon_path, studio_sector_path, studio_shape_transform_path,
+    studio_ellipse_parameters, studio_ellipse_path, studio_rectangle_resize_path,
+    studio_regular_polygon_parameters, studio_regular_polygon_path, studio_sector_path,
+    studio_shape_transform_path,
 };
 use path_motion::{CreateScenePathMotion, PlannedStudioPathMotion, project_studio_path_motions};
 pub use path_motion::{StudioCreationSpatialContext, StudioProjectedPathMotion};
@@ -1091,6 +1093,27 @@ struct PlannedStudioAnimatedResize {
     shape: StudioAuthoringEntityKind,
     to_dimensions: StudioAuthoringDimensions,
     to_position: PointV1,
+}
+
+fn planned_studio_creation_has_affine_instant(state: &PlannedStudioCreationEntity) -> bool {
+    if state.instant_at.is_none() {
+        return false;
+    }
+    let rounded_rectangle_path_is_the_only_instant = state.kind
+        == StudioAuthoringEntityKind::Rectangle
+        && (state
+            .initial_dimensions
+            .corner_radius
+            .is_some_and(|radius| radius > 0.0)
+            || state
+                .current_dimensions
+                .corner_radius
+                .is_some_and(|radius| radius > 0.0))
+        && studio_timeline_semantic_values_match(state.position.x, state.initial_position.x)
+        && studio_timeline_semantic_values_match(state.position.y, state.initial_position.y)
+        && close_transform_baseline_value(state.scale, 1.0)
+        && rotation_is_noop(state.instant_rotation);
+    !rounded_rectangle_path_is_the_only_instant
 }
 
 #[derive(Clone, Debug, PartialEq)]
