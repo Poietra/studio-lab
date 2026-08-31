@@ -1,9 +1,9 @@
-import { Profiler, useSyncExternalStore } from "react";
+import { Profiler, useCallback, useRef, useState, useSyncExternalStore } from "react";
 
 import { cn } from "../lib/cn";
 import type { ProposedStateProjection } from "./model";
 import type { SelectionLayoutCommand } from "./selection-layout";
-import { StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
+import { StudioCanvas, type StudioCanvasProps, type StudioEditorViewport } from "./studio-canvas";
 import type { StudioGesturePreviewStore } from "./studio-gesture-preview-store";
 import { recordStudioCommitProfile } from "./studio-render-profiler";
 import { StudioTimeline, type StudioTimelineProps } from "./studio-timeline";
@@ -21,6 +21,73 @@ type StudioGestureCanvasBaseProps = Omit<
   "dragPreview" | "geometryPreview" | "groupResizePreview" | "groupRotationPreview" | "rotationPreview" | "scalePreview"
 >;
 
+const STUDIO_EDITOR_ZOOM_MINIMUM = 0.5;
+const STUDIO_EDITOR_ZOOM_MAXIMUM = 2;
+const STUDIO_EDITOR_ZOOM_STEP = 0.25;
+const STUDIO_CANVAS_MAXIMUM_WIDTH = 1024;
+const STUDIO_CANVAS_PADDING = 32;
+const STUDIO_CANVAS_ASPECT_RATIO = 16 / 9;
+
+export function fitStudioCanvasSize(
+  viewportWidth: number,
+  viewportHeight: number,
+): Readonly<{ height: number; width: number }> | null {
+  const availableWidth = viewportWidth - STUDIO_CANVAS_PADDING;
+  const availableHeight = viewportHeight - STUDIO_CANVAS_PADDING;
+  if (availableWidth <= 0 || availableHeight <= 0) return null;
+  const width = Math.min(STUDIO_CANVAS_MAXIMUM_WIDTH, availableWidth, availableHeight * STUDIO_CANVAS_ASPECT_RATIO);
+  return { height: width / STUDIO_CANVAS_ASPECT_RATIO, width };
+}
+
+export function changeStudioEditorZoom(zoom: number, direction: -1 | 1) {
+  const nextZoom = zoom + direction * STUDIO_EDITOR_ZOOM_STEP;
+  return Math.min(STUDIO_EDITOR_ZOOM_MAXIMUM, Math.max(STUDIO_EDITOR_ZOOM_MINIMUM, nextZoom));
+}
+
+function StudioEditorZoomControls({
+  onFit,
+  onZoomIn,
+  onZoomOut,
+  zoom,
+}: Pick<StudioEditorViewport, "onFit" | "onZoomIn" | "onZoomOut" | "zoom">) {
+  return (
+    <div
+      className="absolute bottom-3 right-3 z-40 flex items-center overflow-hidden border border-zinc-700 bg-zinc-950/95 text-xs text-zinc-200 shadow-lg"
+      data-studio-editor-zoom={Math.round(zoom * 100)}
+    >
+      <button
+        aria-label="Zoom out"
+        className="grid size-8 place-items-center border-r border-zinc-700 text-base hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 disabled:text-zinc-600 disabled:hover:bg-transparent"
+        disabled={zoom <= STUDIO_EDITOR_ZOOM_MINIMUM}
+        onClick={onZoomOut}
+        title="Zoom out"
+        type="button"
+      >
+        <span aria-hidden="true">−</span>
+      </button>
+      <button
+        aria-label="Fit canvas"
+        className="h-8 min-w-20 px-2 tabular-nums hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400"
+        onClick={onFit}
+        title="Fit canvas"
+        type="button"
+      >
+        Fit · {Math.round(zoom * 100)}%
+      </button>
+      <button
+        aria-label="Zoom in"
+        className="grid size-8 place-items-center border-l border-zinc-700 text-base hover:bg-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-sky-400 disabled:text-zinc-600 disabled:hover:bg-transparent"
+        disabled={zoom >= STUDIO_EDITOR_ZOOM_MAXIMUM}
+        onClick={onZoomIn}
+        title="Zoom in"
+        type="button"
+      >
+        <span aria-hidden="true">+</span>
+      </button>
+    </div>
+  );
+}
+
 function StudioGestureCanvas({
   gesturePreviewStore,
   ...canvasProps
@@ -33,17 +100,20 @@ function StudioGestureCanvas({
     );
 
   return (
-    <Profiler id="canvas" onRender={recordStudioCommitProfile}>
-      <StudioCanvas
-        {...canvasProps}
-        dragPreview={dragPreview}
-        geometryPreview={geometryPreview}
-        groupRotationPreview={groupRotationPreview}
-        groupResizePreview={groupResizePreview}
-        rotationPreview={rotationPreview}
-        scalePreview={scalePreview}
-      />
-    </Profiler>
+    <div className="relative flex min-h-0 flex-1">
+      <Profiler id="canvas" onRender={recordStudioCommitProfile}>
+        <StudioCanvas
+          {...canvasProps}
+          dragPreview={dragPreview}
+          geometryPreview={geometryPreview}
+          groupRotationPreview={groupRotationPreview}
+          groupResizePreview={groupResizePreview}
+          rotationPreview={rotationPreview}
+          scalePreview={scalePreview}
+        />
+      </Profiler>
+      {canvasProps.editorViewport ? <StudioEditorZoomControls {...canvasProps.editorViewport} /> : null}
+    </div>
   );
 }
 
@@ -52,6 +122,7 @@ export type StudioViewportProps = Readonly<
     StudioCanvasProps,
     | "cameraScale"
     | "dragPreview"
+    | "editorViewport"
     | "geometryPreview"
     | "groupRotationPreview"
     | "groupResizePreview"
@@ -256,6 +327,39 @@ export function StudioViewport({
   selectedIds,
   selectionLayoutUnavailableReason,
 }: StudioViewportProps) {
+  const [canvasSize, setCanvasSize] = useState<Readonly<{ height: number; width: number }> | null>(null);
+  const [editorZoom, setEditorZoom] = useState(1);
+  const resizeObserver = useRef<ResizeObserver | null>(null);
+  const wheelViewport = useRef<HTMLDivElement | null>(null);
+  const fitCanvas = useCallback(() => setEditorZoom(1), []);
+  const zoomIn = useCallback(() => setEditorZoom((zoom) => changeStudioEditorZoom(zoom, 1)), []);
+  const zoomOut = useCallback(() => setEditorZoom((zoom) => changeStudioEditorZoom(zoom, -1)), []);
+  const zoomWithWheel = useCallback((event: WheelEvent) => {
+    if ((!event.ctrlKey && !event.metaKey) || event.deltaY === 0) return;
+    event.preventDefault();
+    setEditorZoom((zoom) => changeStudioEditorZoom(zoom, event.deltaY < 0 ? 1 : -1));
+  }, []);
+  const viewportRef = useCallback(
+    (element: HTMLDivElement | null) => {
+      resizeObserver.current?.disconnect();
+      resizeObserver.current = null;
+      wheelViewport.current?.removeEventListener("wheel", zoomWithWheel);
+      wheelViewport.current = element;
+      if (!element) return;
+      element.addEventListener("wheel", zoomWithWheel, { passive: false });
+      const measure = () => {
+        const nextSize = fitStudioCanvasSize(element.clientWidth, element.clientHeight);
+        setCanvasSize((currentSize) =>
+          currentSize?.height === nextSize?.height && currentSize?.width === nextSize?.width ? currentSize : nextSize,
+        );
+      };
+      measure();
+      if (typeof ResizeObserver === "undefined") return;
+      resizeObserver.current = new ResizeObserver(measure);
+      resizeObserver.current.observe(element);
+    },
+    [zoomWithWheel],
+  );
   return (
     <section className={cn("flex min-h-0 min-w-0 flex-col bg-zinc-900", className)}>
       <Profiler id="toolbar" onRender={recordStudioCommitProfile}>
@@ -293,6 +397,14 @@ export function StudioViewport({
         cubicBezierExtensionActive={cubicBezierStyle?.extensionActive ?? false}
         cubicBezierPenPoints={cubicBezierPenPoints}
         editableMotionIds={editableMotionIds}
+        editorViewport={{
+          canvasSize,
+          onFit: fitCanvas,
+          onZoomIn: zoomIn,
+          onZoomOut: zoomOut,
+          viewportRef,
+          zoom: editorZoom,
+        }}
         entities={entities}
         frame={frame}
         gesturePreviewStore={gesturePreviewStore}
