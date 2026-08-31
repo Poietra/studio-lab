@@ -764,6 +764,12 @@ function manimTextConstructor(
     );
   }
   const layout = options.layout ?? STUDIO_TEXT_DEFAULT_LAYOUT;
+  if (layout.wrapWidth !== undefined) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Manim .py export does not yet preserve Studio Text wrap width faithfully. Preview and MP4 export support this layout, but Python export would not preserve it faithfully.",
+    );
+  }
   if (
     layout.alignment !== STUDIO_TEXT_DEFAULT_LAYOUT.alignment ||
     layout.lineHeight !== STUDIO_TEXT_DEFAULT_LAYOUT.lineHeight

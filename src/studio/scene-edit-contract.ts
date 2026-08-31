@@ -176,6 +176,7 @@ const contentSchema = z.object({
       fontSize: z.number().finite().positive().default(1),
       fontWeight: z.enum(["bold", "regular"]).default("regular"),
       lineHeight: z.number().finite().positive(),
+      wrapWidth: z.number().finite().positive().optional(),
     })
     .strict()
     .optional(),

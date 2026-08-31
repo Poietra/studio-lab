@@ -7,6 +7,8 @@ import {
   POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION,
   POIETRA_TEXT_OUTLINE_ABI_VERSION,
   segmentedTexOutlineRequestV1Schema,
+  textOutlineLayoutV1Schema,
+  textOutlineRequestV1Schema,
   textOutlineResponseV1Schema,
 } from "./mathtex-outline";
 
@@ -187,7 +189,40 @@ describe("segmented Tex outline browser adapter", () => {
 
 describe("plain Text outline input", () => {
   it("pins the closed font-family and weight request ABI", () => {
-    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(8);
+    expect(POIETRA_TEXT_OUTLINE_ABI_VERSION).toBe(9);
+  });
+
+  it("accepts only a positive finite optional wrap width", () => {
+    const legacy = {
+      alignment: "left",
+      fontFamily: "sans",
+      fontWeight: "regular",
+      lineHeight: 1.2,
+    };
+    expect(textOutlineLayoutV1Schema.parse(legacy)).toEqual(legacy);
+    expect(textOutlineLayoutV1Schema.parse({ ...legacy, wrapWidthEm: 4 })).toEqual({
+      ...legacy,
+      wrapWidthEm: 4,
+    });
+    for (const wrapWidthEm of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(textOutlineLayoutV1Schema.safeParse({ ...legacy, wrapWidthEm }).success).toBe(false);
+    }
+  });
+
+  it("defers wrapped line length to Rust while preserving the legacy line limit", () => {
+    const request = {
+      layout: { alignment: "left", lineHeight: 1.2 },
+      schema: "poietra.text-outline-request",
+      text: "a".repeat(129),
+      version: 1,
+    };
+    expect(textOutlineRequestV1Schema.safeParse(request).success).toBe(false);
+    expect(
+      textOutlineRequestV1Schema.safeParse({
+        ...request,
+        layout: { ...request.layout, wrapWidthEm: 20 },
+      }).success,
+    ).toBe(true);
   });
 
   it("accepts bounded Japanese multiline text and canonicalizes line endings and Unicode", () => {
@@ -223,6 +258,31 @@ describe("plain Text outline input", () => {
     };
 
     expect(textOutlineResponseV1Schema.safeParse(response).success).toBe(true);
+    const wrappedSubpath = {
+      ...subpath,
+      segments: subpath.segments.map((segment) => ({
+        control1: { x: segment.control1.x, y: segment.control1.y * 2 },
+        control2: { x: segment.control2.x, y: segment.control2.y * 2 },
+        end: { x: segment.end.x, y: segment.end.y * 2 },
+      })),
+      start: { x: subpath.start.x, y: subpath.start.y * 2 },
+    };
+    const wrappedResponse = {
+      ...response,
+      result: {
+        ...response.result,
+        bounds: { bottom: -1, left: -0.5, right: 0.5, top: 1 },
+        fragments: [{ ...response.result.fragments[0], path: { subpaths: [wrappedSubpath] } }],
+        path: { subpaths: [wrappedSubpath] },
+      },
+    };
+    expect(textOutlineResponseV1Schema.parse(wrappedResponse)).toEqual(wrappedResponse);
+    expect(
+      textOutlineResponseV1Schema.safeParse({
+        ...wrappedResponse,
+        result: { ...wrappedResponse.result, bounds: { bottom: -0.75, left: -0.5, right: 0.5, top: 1.25 } },
+      }).success,
+    ).toBe(false);
     expect(
       textOutlineResponseV1Schema.safeParse({
         ...response,

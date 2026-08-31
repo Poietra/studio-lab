@@ -771,6 +771,42 @@ describe("Studio creation wire", () => {
     });
   });
 
+  it("preserves a positive Text wrap width across the Scene Edit and Rust creation wire", () => {
+    const base = creationProgram("Text");
+    const operation = base.operations[0];
+    if (operation?.kind !== "CreateEntity") throw new Error("Text creation fixture is incomplete.");
+    const content = operation.entity.content;
+    if (!content) throw new Error("Text creation content fixture is incomplete.");
+    const wrappedOperation = {
+      ...operation,
+      entity: {
+        ...operation.entity,
+        content: {
+          ...content,
+          textLayout: { ...STUDIO_TEXT_DEFAULT_LAYOUT, wrapWidth: 4.5 },
+        },
+      },
+    } satisfies SceneEdit["operations"][number];
+    const wrapped = { ...base, operations: [wrappedOperation] } satisfies SceneEdit;
+
+    expect(sceneEditOperationSchema.safeParse(wrappedOperation).success).toBe(true);
+    expect(
+      sceneEditOperationSchema.safeParse({
+        ...wrappedOperation,
+        entity: {
+          ...wrappedOperation.entity,
+          content: {
+            ...wrappedOperation.entity.content,
+            textLayout: { ...wrappedOperation.entity.content.textLayout, wrapWidth: 0 },
+          },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      buildStudioCreationProjectionCommand({ baseDuration: 1, programs: [wrapped] }).programs[0]?.operations[0],
+    ).toMatchObject({ entity: { kind: "text", layout: { wrapWidth: 4.5 } }, kind: "create" });
+  });
+
   it("does not lower a later Text content replacement as static Scene geometry", () => {
     const operation = {
       dependsOn: [],

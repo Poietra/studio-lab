@@ -6,7 +6,7 @@ import {
   studioCreationText,
   studioCreationTextContent,
 } from "./editable-content";
-import type { EntityContent, EntityDimensions, Point, ProjectedEntity } from "./model";
+import type { EntityContent, EntityDimensions, Point, ProjectedEntity, TextLayout } from "./model";
 
 export type InspectorEditField =
   | "content"
@@ -17,6 +17,7 @@ export type InspectorEditField =
   | "textFontSize"
   | "textFontWeight"
   | "textLineHeight"
+  | "textWrapWidth"
   | "width"
   | "x"
   | "y";
@@ -30,6 +31,7 @@ export type InspectorEditValues = Readonly<{
   textFontSize: string | null;
   textFontWeight: "bold" | "regular" | null;
   textLineHeight: string | null;
+  textWrapWidth: string | null;
   width: string | null;
   x: string | null;
   y: string | null;
@@ -111,13 +113,7 @@ function currentContentValue(entity: ProjectedEntity) {
 function validateContent(
   entity: ProjectedEntity,
   value: string,
-  textLayout: Readonly<{
-    alignment: "center" | "left" | "right";
-    fontFamily: "mono" | "sans";
-    fontSize: number;
-    fontWeight: "bold" | "regular";
-    lineHeight: number;
-  }> | null,
+  textLayout: TextLayout | null,
   errors: Partial<Record<InspectorEditField, string>>,
 ) {
   if (entity.sourceIdentity.kind === "unknown" && !entity.transactionId) {
@@ -190,6 +186,12 @@ export function initialInspectorEditValues(entity: ProjectedEntity): InspectorEd
       entity.type === "Text"
         ? formattedNumber(textContent?.layout.lineHeight ?? STUDIO_TEXT_DEFAULT_LAYOUT.lineHeight, 2)
         : null,
+    textWrapWidth:
+      entity.type !== "Text"
+        ? null
+        : textContent?.layout.wrapWidth === undefined
+          ? ""
+          : formattedNumber(textContent.layout.wrapWidth, 2),
     width: dimensions.width === undefined ? null : formattedNumber(dimensions.width, 2),
     x: entity.geometry.position.kind === "known" ? formattedNumber(entity.position.x, 1) : null,
     y: entity.geometry.position.kind === "known" ? formattedNumber(entity.position.y, 1) : null,
@@ -217,13 +219,7 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
   }
 
   if (values.content !== null && (entity.type === "Text" || entity.type === "MathTex")) {
-    let textLayout: Readonly<{
-      alignment: "center" | "left" | "right";
-      fontFamily: "mono" | "sans";
-      fontSize: number;
-      fontWeight: "bold" | "regular";
-      lineHeight: number;
-    }> | null = null;
+    let textLayout: TextLayout | null = null;
     if (entity.type === "Text") {
       if (!values.textAlignment) errors.textAlignment = "Choose a Text alignment.";
       if (!values.textFontFamily) errors.textFontFamily = "Choose a Text font family.";
@@ -232,18 +228,29 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
         values.textFontSize === null ? null : parseFiniteNumber(values.textFontSize, "textFontSize", errors);
       const lineHeight =
         values.textLineHeight === null ? null : parseFiniteNumber(values.textLineHeight, "textLineHeight", errors);
+      const wrapWidth =
+        values.textWrapWidth === null || values.textWrapWidth.trim().length === 0
+          ? undefined
+          : parseFiniteNumber(values.textWrapWidth, "textWrapWidth", errors);
       if (fontSize !== null && fontSize <= 0) {
         errors.textFontSize = "Font size must be greater than zero.";
       }
       if (lineHeight !== null && lineHeight <= 0) {
         errors.textLineHeight = "Line height must be greater than zero.";
-      } else if (
+      }
+      if (wrapWidth !== undefined && wrapWidth !== null && wrapWidth <= 0) {
+        errors.textWrapWidth = "Wrap width must be greater than zero, or empty for no wrapping.";
+      }
+      if (
         values.textAlignment &&
         values.textFontFamily &&
         values.textFontWeight &&
         fontSize !== null &&
         errors.textFontSize === undefined &&
-        lineHeight !== null
+        lineHeight !== null &&
+        errors.textLineHeight === undefined &&
+        wrapWidth !== null &&
+        errors.textWrapWidth === undefined
       ) {
         textLayout = {
           alignment: values.textAlignment,
@@ -251,6 +258,7 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
           fontSize,
           fontWeight: values.textFontWeight,
           lineHeight,
+          ...(wrapWidth === undefined ? {} : { wrapWidth }),
         };
       }
     }
@@ -262,7 +270,8 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
         (currentText?.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) !== textLayout.fontFamily ||
         currentText?.layout.fontSize !== textLayout.fontSize ||
         currentText?.layout.fontWeight !== textLayout.fontWeight ||
-        currentText?.layout.lineHeight !== textLayout.lineHeight);
+        currentText?.layout.lineHeight !== textLayout.lineHeight ||
+        currentText?.layout.wrapWidth !== textLayout.wrapWidth);
     const contentChanged = values.content !== currentContentValue(entity) || layoutChanged;
     const studioCreated = entity.sourceIdentity.kind === "unknown" && Boolean(entity.transactionId);
     if (layoutChanged && !studioCreated) {
@@ -272,7 +281,8 @@ export function validateInspectorEdits(entity: ProjectedEntity, values: Inspecto
         errors.textFontFamily = message;
       else if (currentText?.layout.fontSize !== textLayout?.fontSize) errors.textFontSize = message;
       else if (currentText?.layout.fontWeight !== textLayout?.fontWeight) errors.textFontWeight = message;
-      else errors.textLineHeight = message;
+      else if (currentText?.layout.lineHeight !== textLayout?.lineHeight) errors.textLineHeight = message;
+      else errors.textWrapWidth = message;
     } else if (contentChanged) {
       const content = validateContent(entity, values.content, textLayout, errors);
       if (content) edits.content = content;

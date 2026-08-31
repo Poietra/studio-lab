@@ -460,6 +460,7 @@ describe("durable editor session storage", () => {
           fontSize: 1.75,
           fontWeight: "bold",
           lineHeight: 1.2,
+          wrapWidth: 5.5,
         },
       },
       entityId: creation.entityIds[0]!,
@@ -489,6 +490,7 @@ describe("durable editor session storage", () => {
       fontSize: 1.75,
       fontWeight: "bold",
       lineHeight: 1.2,
+      wrapWidth: 5.5,
     });
   });
 

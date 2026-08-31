@@ -10,7 +10,7 @@ import {
 
 export const POIETRA_MATHTEX_OUTLINE_ABI_VERSION = 1 as const;
 export const POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION = 1 as const;
-export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 8 as const;
+export const POIETRA_TEXT_OUTLINE_ABI_VERSION = 9 as const;
 const MAX_MATHTEX_PARTS = 16;
 const MAX_MATHTEX_CONTENT_LENGTH = 2_000;
 const MAX_MATHTEX_REQUEST_JSON_BYTES = 16 * 1024;
@@ -376,12 +376,11 @@ function hasUnpairedUtf16Surrogate(text: string) {
   return false;
 }
 
-const textOutlineContentV1Schema = z
+const canonicalTextOutlineContentV1Schema = z
   .string()
   .transform((text) => text.replaceAll("\r\n", "\n").normalize("NFC"))
   .superRefine((text, context) => {
     const scalars = [...text];
-    const lines = text.split("\n");
     if (text.length === 0 || text.trim().length === 0) {
       context.addIssue({ code: "custom", message: "Text must contain visible content." });
     }
@@ -391,16 +390,20 @@ const textOutlineContentV1Schema = z
     if (scalars.length > MAX_TEXT_OUTLINE_SCALARS) {
       context.addIssue({ code: "custom", message: "Text accepts at most 256 Unicode scalars." });
     }
-    if (lines.length > MAX_TEXT_OUTLINE_LINES) {
-      context.addIssue({ code: "custom", message: "Text accepts at most 8 lines." });
-    }
-    if (lines.some((line) => [...line].length > MAX_TEXT_OUTLINE_LINE_SCALARS)) {
-      context.addIssue({ code: "custom", message: "Each Text line accepts at most 128 Unicode scalars." });
-    }
     if (scalars.some((scalar) => scalar !== "\n" && /[\u0000-\u001f\u007f-\u009f]/u.test(scalar))) {
       context.addIssue({ code: "custom", message: "Text rejects control characters other than LF." });
     }
   });
+
+const textOutlineContentV1Schema = canonicalTextOutlineContentV1Schema.superRefine((text, context) => {
+  const lines = text.split("\n");
+  if (lines.length > MAX_TEXT_OUTLINE_LINES) {
+    context.addIssue({ code: "custom", message: "Text accepts at most 8 lines." });
+  }
+  if (lines.some((line) => [...line].length > MAX_TEXT_OUTLINE_LINE_SCALARS)) {
+    context.addIssue({ code: "custom", message: "Each Text line accepts at most 128 Unicode scalars." });
+  }
+});
 
 export const textOutlineLayoutV1Schema = z
   .object({
@@ -408,6 +411,7 @@ export const textOutlineLayoutV1Schema = z
     fontFamily: z.enum(["mono", "sans"]).default("sans"),
     fontWeight: z.enum(["bold", "regular"]).default("regular"),
     lineHeight: z.number().finite().positive(),
+    wrapWidthEm: z.number().finite().positive().optional(),
   })
   .strict();
 
@@ -417,7 +421,7 @@ export function canonicalTextOutlineInputV1(text: unknown): string | null {
   return parsed.success ? parsed.data : null;
 }
 
-const textOutlineRequestV1Schema = z
+export const textOutlineRequestV1Schema = z
   .object({
     layout: textOutlineLayoutV1Schema.default({
       alignment: "left",
@@ -426,10 +430,23 @@ const textOutlineRequestV1Schema = z
       lineHeight: 1.2,
     }),
     schema: z.literal("poietra.text-outline-request"),
-    text: textOutlineContentV1Schema,
+    text: canonicalTextOutlineContentV1Schema,
     version: z.literal(1),
   })
-  .strict();
+  .strict()
+  .superRefine(({ layout, text }, context) => {
+    const lines = text.split("\n");
+    if (lines.length > MAX_TEXT_OUTLINE_LINES) {
+      context.addIssue({ code: "custom", message: "Text accepts at most 8 explicit lines.", path: ["text"] });
+    }
+    if (layout.wrapWidthEm === undefined && lines.some((line) => [...line].length > MAX_TEXT_OUTLINE_LINE_SCALARS)) {
+      context.addIssue({
+        code: "custom",
+        message: "Unwrapped Text accepts at most 128 Unicode scalars per line.",
+        path: ["text"],
+      });
+    }
+  });
 
 export const textOutlineGlyphFragmentV1Schema = z
   .object({
@@ -486,11 +503,10 @@ export const textOutlineArtifactV1Schema = z
       context.addIssue({ code: "custom", message: "Text outline contours must be closed." });
     }
     if (
-      Math.abs(bounds.top - bounds.bottom - 1) > MATHTEX_NORMALIZATION_TOLERANCE ||
       Math.abs(bounds.left + bounds.right) > MATHTEX_NORMALIZATION_TOLERANCE ||
       Math.abs(bounds.bottom + bounds.top) > MATHTEX_NORMALIZATION_TOLERANCE
     ) {
-      context.addIssue({ code: "custom", message: "Text outline bounds must use canonical centered unit height." });
+      context.addIssue({ code: "custom", message: "Text outline bounds must use canonical centered coordinates." });
     }
     fragments.forEach((fragment, index) => {
       if (fragment.order !== index) {

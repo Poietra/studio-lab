@@ -901,7 +901,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
               };
             }
             textOutlineInputByKey.set(
-              `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}`,
+              `${operation.entity.id}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}\u0000${content.layout.wrapWidth ?? ""}`,
               { content, entityId: operation.entity.id },
             );
           }
@@ -915,7 +915,7 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
               };
             }
             textOutlineInputByKey.set(
-              `${operation.targetEntityId}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}`,
+              `${operation.targetEntityId}\u0000${content.text}\u0000${content.layout.alignment}\u0000${content.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily}\u0000${content.layout.fontSize}\u0000${content.layout.fontWeight}\u0000${content.layout.lineHeight}\u0000${content.layout.wrapWidth ?? ""}`,
               { content, entityId: operation.targetEntityId },
             );
             continue;
@@ -1045,6 +1045,9 @@ async function compileStudioPreviewSceneWithoutFragmentMaterialsV1(
                 fontFamily: content.layout.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily,
                 fontWeight: content.layout.fontWeight,
                 lineHeight: content.layout.lineHeight,
+                ...(content.layout.wrapWidth === undefined
+                  ? {}
+                  : { wrapWidthEm: content.layout.wrapWidth / content.layout.fontSize }),
               },
               text: content.text,
             }),

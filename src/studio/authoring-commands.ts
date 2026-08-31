@@ -477,7 +477,8 @@ export function createInspectorEntityEditProgram(
           (before.fontFamily ?? STUDIO_TEXT_DEFAULT_LAYOUT.fontFamily) ||
         after.fontSize !== before.fontSize ||
         after.fontWeight !== before.fontWeight ||
-        after.lineHeight !== before.lineHeight)
+        after.lineHeight !== before.lineHeight ||
+        after.wrapWidth !== before.wrapWidth)
     ) {
       throw new Error("Typography editing is available only for Studio-created Text.");
     }

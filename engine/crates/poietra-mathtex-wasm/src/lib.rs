@@ -20,7 +20,7 @@ pub const POIETRA_MATHTEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Independent sibling ABI version for ordered Tex/MathTex fragments.
 pub const POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Independent sibling ABI version for bounded plain text.
-pub const POIETRA_TEXT_OUTLINE_ABI_VERSION: u32 = 8;
+pub const POIETRA_TEXT_OUTLINE_ABI_VERSION: u32 = 9;
 /// Upper bound for one JSON compilation request crossing the WASM boundary.
 pub const MAX_MATHTEX_OUTLINE_REQUEST_JSON_BYTES_V1: usize = 16 * 1024;
 /// Upper bound for one JSON compilation response crossing the WASM boundary.
@@ -251,7 +251,7 @@ mod tests {
     fn exported_abi_version_is_explicit() {
         assert_eq!(poietra_mathtex_outline_abi_version(), 1);
         assert_eq!(poietra_segmented_tex_outline_abi_version(), 1);
-        assert_eq!(poietra_text_outline_abi_version(), 8);
+        assert_eq!(poietra_text_outline_abi_version(), 9);
     }
 
     #[test]
@@ -374,6 +374,46 @@ mod tests {
                 + 1
         ]);
         assert_eq!(decode(&oversized)["result"]["code"], "request-too-large");
+    }
+
+    #[test]
+    fn text_boundary_accepts_wrapping_and_returns_structured_wrap_failures() {
+        let request = serde_json::to_vec(&serde_json::json!({
+            "layout": {"alignment": "left", "lineHeight": 1.2, "wrapWidthEm": 3.0},
+            "schema": "poietra.text-outline-request",
+            "text": "Hello world",
+            "version": 1,
+        }))
+        .unwrap();
+        let wrapped = decode(&compile_text_outline_json_v1(&request));
+        assert_eq!(wrapped["result"]["kind"], "compiled");
+        let width = wrapped["result"]["bounds"]["right"].as_f64().unwrap()
+            - wrapped["result"]["bounds"]["left"].as_f64().unwrap();
+        assert!(width <= 3.000_002);
+
+        let too_many_lines = serde_json::to_vec(&serde_json::json!({
+            "layout": {"alignment": "left", "lineHeight": 1.2, "wrapWidthEm": 0.01},
+            "schema": "poietra.text-outline-request",
+            "text": "ABCDEFGHI",
+            "version": 1,
+        }))
+        .unwrap();
+        assert_eq!(
+            decode(&compile_text_outline_json_v1(&too_many_lines))["result"]["code"],
+            "request-too-large"
+        );
+
+        let invalid_width = serde_json::to_vec(&serde_json::json!({
+            "layout": {"alignment": "left", "lineHeight": 1.2, "wrapWidthEm": 0.0},
+            "schema": "poietra.text-outline-request",
+            "text": "Text",
+            "version": 1,
+        }))
+        .unwrap();
+        assert_eq!(
+            decode(&compile_text_outline_json_v1(&invalid_width))["result"]["code"],
+            "invalid-request"
+        );
     }
 
     #[test]

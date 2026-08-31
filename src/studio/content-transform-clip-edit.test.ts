@@ -10,6 +10,7 @@ import type { RuntimeSceneState } from "./model";
 
 const ROOT_ID = "tx:create-equation/entity:equation";
 const TEXT_ROOT_ID = "tx:create-text/entity:label";
+const WRAPPED_TEXT_LAYOUT = { ...STUDIO_TEXT_DEFAULT_LAYOUT, wrapWidth: 4 } as const;
 
 function studioScene(): RuntimeSceneState {
   return {
@@ -43,7 +44,7 @@ function textStudioScene(): RuntimeSceneState {
           content: {
             displayLines: ["あA", "Text"],
             text: "あA\nText",
-            textLayout: STUDIO_TEXT_DEFAULT_LAYOUT,
+            textLayout: WRAPPED_TEXT_LAYOUT,
           },
           id: TEXT_ROOT_ID,
           lifetime: [{ end: 10, start: 1 }],
@@ -149,7 +150,7 @@ describe("Studio Content Transform clip editing", () => {
     const content = {
       displayLines: ["あB", "次"],
       text: "あB\n次",
-      textLayout: STUDIO_TEXT_DEFAULT_LAYOUT,
+      textLayout: WRAPPED_TEXT_LAYOUT,
     };
     const created = createContentTransformProgram({
       capturedPlayhead: 2,
@@ -182,6 +183,17 @@ describe("Studio Content Transform clip editing", () => {
         content: {
           ...content,
           textLayout: { ...STUDIO_TEXT_DEFAULT_LAYOUT, fontSize: 2 },
+        },
+        rootEntityId: TEXT_ROOT_ID,
+        scene,
+      }),
+    ).toThrow(/typography/i);
+    expect(() =>
+      replaceContentTransformProgram({
+        baseProgram: created.program,
+        content: {
+          ...content,
+          textLayout: { ...WRAPPED_TEXT_LAYOUT, wrapWidth: 5 },
         },
         rootEntityId: TEXT_ROOT_ID,
         scene,

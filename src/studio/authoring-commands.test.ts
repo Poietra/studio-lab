@@ -18,6 +18,11 @@ import {
   replaceStudioSceneBackgroundProgram,
   replaceStudioScenePostEffectProgram,
 } from "./authoring-commands";
+import {
+  canonicalEditableContent,
+  STUDIO_CREATION_TEXT_CONTRACT,
+  STUDIO_TEXT_DEFAULT_LAYOUT,
+} from "./editable-content";
 import { canonicalAppliedProgramsWorkingRevisionV1 } from "./editor-revision-policy";
 import { programRecord, projectProposedState } from "./evaluator";
 import { createFixtureProposedState, projectPersistentRemoveFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
@@ -451,6 +456,7 @@ describe("manual Studio authoring commands", () => {
         fontSize: 1.5,
         fontWeight: "bold" as const,
         lineHeight: 1.8,
+        wrapWidth: 6,
       },
     };
     expect(() =>
@@ -544,7 +550,9 @@ describe("manual Studio authoring commands", () => {
     expect(
       redone.appliedPrograms[0]?.program.operations.find((operation) => operation.kind === "CreateEntity"),
     ).toMatchObject({
-      entity: { content: { text: "Wide\ni", textLayout: { fontFamily: "mono", fontWeight: "bold" } } },
+      entity: {
+        content: { text: "Wide\ni", textLayout: { fontFamily: "mono", fontWeight: "bold", wrapWidth: 6 } },
+      },
     });
   });
 
@@ -564,9 +572,22 @@ describe("manual Studio authoring commands", () => {
           scene: STUDIO_FIXTURE_SCENE,
           transactionId: "invalid-text-source",
         }),
-      ).toThrow("visible Unicode text of at most 256 scalars, 8 lines, and 128 scalars per line");
+      ).toThrow(STUDIO_CREATION_TEXT_CONTRACT);
     },
   );
+
+  it("admits a 129-scalar Text line only when a canonical wrap width is present", () => {
+    const text = "x".repeat(129);
+    const content = { displayLines: [text], text };
+
+    expect(canonicalEditableContent(content, "Text")).toBeNull();
+    expect(
+      canonicalEditableContent(
+        { ...content, textLayout: { ...STUDIO_TEXT_DEFAULT_LAYOUT, fontSize: 2, wrapWidth: 6 } },
+        "Text",
+      ),
+    ).toMatchObject({ text, textLayout: { fontSize: 2, wrapWidth: 6 } });
+  });
 
   it("replaces Studio MathTex creation content without removing its Write entrance", () => {
     const creation = createStudioEntitiesProgram({

@@ -76,7 +76,8 @@ function sameTextTypography(left: EntityContent, right: EntityContent) {
     leftText.layout.fontFamily === rightText.layout.fontFamily &&
     leftText.layout.fontSize === rightText.layout.fontSize &&
     leftText.layout.fontWeight === rightText.layout.fontWeight &&
-    leftText.layout.lineHeight === rightText.layout.lineHeight
+    leftText.layout.lineHeight === rightText.layout.lineHeight &&
+    leftText.layout.wrapWidth === rightText.layout.wrapWidth
   );
 }
 

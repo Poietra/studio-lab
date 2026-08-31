@@ -1,4 +1,8 @@
-import { canonicalTextOutlineInputV1, MAX_TEXT_OUTLINE_SCALARS } from "../engine/mathtex-outline";
+import {
+  canonicalTextOutlineInputV1,
+  MAX_TEXT_OUTLINE_SCALARS,
+  textOutlineRequestV1Schema,
+} from "../engine/mathtex-outline";
 import type { EntityContent, TextLayout } from "./model";
 
 export type EditableContentType = "MathTex" | "Text";
@@ -10,15 +14,15 @@ const MAX_CONTENT_LENGTH = 2_000;
 const MAX_DISPLAY_LINES = 2_000;
 const MAX_MATHTEX_PARTS = 16;
 export const STUDIO_CREATION_TEXT_MAX_LENGTH = MAX_TEXT_OUTLINE_SCALARS;
-export const STUDIO_TEXT_DEFAULT_LAYOUT = Object.freeze({
+export const STUDIO_TEXT_DEFAULT_LAYOUT: TextLayout = Object.freeze({
   alignment: "left",
   fontFamily: "sans",
   fontSize: 1,
   fontWeight: "regular",
   lineHeight: 1.2,
-}) satisfies TextLayout;
+});
 export const STUDIO_CREATION_TEXT_CONTRACT =
-  "Text accepts visible Unicode text of at most 256 scalars, 8 lines, and 128 scalars per line.";
+  "Text accepts visible Unicode text of at most 256 scalars and 8 explicit lines; unwrapped lines accept at most 128 scalars.";
 
 function canonicalTextLayout(value: unknown): TextLayout | null {
   if (value === undefined) return STUDIO_TEXT_DEFAULT_LAYOUT;
@@ -31,7 +35,8 @@ function canonicalTextLayout(value: unknown): TextLayout | null {
         key === "fontFamily" ||
         key === "fontSize" ||
         key === "fontWeight" ||
-        key === "lineHeight",
+        key === "lineHeight" ||
+        key === "wrapWidth",
     )
   )
     return null;
@@ -44,7 +49,17 @@ function canonicalTextLayout(value: unknown): TextLayout | null {
   if (fontWeight !== "bold" && fontWeight !== "regular") return null;
   if (typeof record.lineHeight !== "number" || !Number.isFinite(record.lineHeight) || record.lineHeight <= 0)
     return null;
-  return { alignment: record.alignment, fontFamily, fontSize, fontWeight, lineHeight: record.lineHeight };
+  const wrapWidth = record.wrapWidth;
+  if (wrapWidth !== undefined && (typeof wrapWidth !== "number" || !Number.isFinite(wrapWidth) || wrapWidth <= 0))
+    return null;
+  return {
+    alignment: record.alignment,
+    fontFamily,
+    fontSize,
+    fontWeight,
+    lineHeight: record.lineHeight,
+    ...(wrapWidth === undefined ? {} : { wrapWidth }),
+  };
 }
 
 /**
@@ -67,9 +82,30 @@ export function canonicalEditableContent(value: unknown, type: EditableContentTy
     return null;
 
   if (type === "Text") {
-    const text = canonicalTextOutlineInputV1(record.text);
     const textLayout = canonicalTextLayout(record.textLayout);
-    if (text === null || textLayout === null || record.texParts !== undefined) return null;
+    if (textLayout === null || record.texParts !== undefined) return null;
+    const wrappedRequest =
+      textLayout.wrapWidth === undefined
+        ? null
+        : textOutlineRequestV1Schema.safeParse({
+            layout: {
+              alignment: textLayout.alignment,
+              fontFamily: textLayout.fontFamily,
+              fontWeight: textLayout.fontWeight,
+              lineHeight: textLayout.lineHeight,
+              wrapWidthEm: textLayout.wrapWidth / textLayout.fontSize,
+            },
+            schema: "poietra.text-outline-request",
+            text: record.text,
+            version: 1,
+          });
+    const text =
+      wrappedRequest === null
+        ? canonicalTextOutlineInputV1(record.text)
+        : wrappedRequest.success
+          ? wrappedRequest.data.text
+          : null;
+    if (text === null) return null;
     return {
       displayLines: text.split("\n"),
       ...(typeof record.label === "string" ? { label: record.label.replaceAll("\r\n", "\n") } : {}),

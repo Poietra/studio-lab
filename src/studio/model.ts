@@ -65,6 +65,7 @@ export type TextLayout = Readonly<{
   fontSize: number;
   fontWeight: "bold" | "regular";
   lineHeight: number;
+  wrapWidth?: number;
 }>;
 
 export type EntityGeometryKnowledge = Readonly<{

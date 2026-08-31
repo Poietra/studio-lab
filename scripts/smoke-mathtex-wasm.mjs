@@ -14,7 +14,7 @@ assert.equal(outline.poietraMathTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileMathTexOutlineV1, "function");
 assert.equal(outline.poietraSegmentedTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileSegmentedTexOutlineV1, "function");
-assert.equal(outline.poietraTextOutlineAbiVersion(), 8);
+assert.equal(outline.poietraTextOutlineAbiVersion(), 9);
 assert.equal(typeof outline.compileTextOutlineV1, "function");
 
 const encoder = new TextEncoder();
@@ -37,10 +37,16 @@ function compileWasm(request) {
   return responseBytes;
 }
 
-function encodeTextRequest(text, fontWeight = "regular", fontFamily = "sans") {
+function encodeTextRequest(text, fontWeight = "regular", fontFamily = "sans", wrapWidthEm) {
   return encoder.encode(
     JSON.stringify({
-      layout: { alignment: "left", fontFamily, fontWeight, lineHeight: 1.2 },
+      layout: {
+        alignment: "left",
+        fontFamily,
+        fontWeight,
+        lineHeight: 1.2,
+        ...(wrapWidthEm === undefined ? {} : { wrapWidthEm }),
+      },
       schema: "poietra.text-outline-request",
       text,
       version: 1,
@@ -194,6 +200,10 @@ const textRequests = [
   encodeTextRequest("Cafe\u0301"),
   encodeTextRequest("ABA A"),
   encodeTextRequest("tab\tcharacter"),
+  encodeTextRequest("Hello world", "regular", "sans", 3),
+  encodeTextRequest("Hello\nworld", "regular", "sans", 3),
+  encodeTextRequest("日本語動画", "regular", "sans", 2.1),
+  encodeTextRequest("ABCDEFGHI", "regular", "sans", 0.01),
 ];
 const textWasmResponses = textRequests.map(compileTextWasm);
 const textNativeOutput = execFileSync(
@@ -280,6 +290,19 @@ assert.notDeepEqual(
 const unsupportedText = JSON.parse(decoder.decode(textWasmResponses[11]));
 assert.equal(unsupportedText.result.kind, "unsupported");
 assert.equal(unsupportedText.result.code, "character-unsupported");
+const wrappedText = JSON.parse(decoder.decode(textWasmResponses[12]));
+assert.equal(wrappedText.result.kind, "compiled");
+assert.ok(wrappedText.result.bounds.right - wrappedText.result.bounds.left <= 3.000_002);
+assert.ok(wrappedText.result.bounds.top - wrappedText.result.bounds.bottom > 1);
+assert.deepEqual(
+  Buffer.from(textWasmResponses[12]),
+  Buffer.from(textWasmResponses[13]),
+  "automatic whitespace wrapping and the equivalent explicit LF must compile identically",
+);
+assert.equal(JSON.parse(decoder.decode(textWasmResponses[14])).result.kind, "compiled");
+const excessiveWrappedText = JSON.parse(decoder.decode(textWasmResponses[15]));
+assert.equal(excessiveWrappedText.result.kind, "unsupported");
+assert.equal(excessiveWrappedText.result.code, "request-too-large");
 
 for (const [index, response] of wasmResponses.slice(0, compiledRequests.length).entries()) {
   const result = JSON.parse(decoder.decode(response));
