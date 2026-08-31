@@ -395,12 +395,36 @@ test("persists project WAV timing, volume, and fades through Timeline and Opus M
     const fadeOutInput = page.getByLabel("Audio fade out seconds");
     await expect(volumeInput).toHaveValue("100");
     await volumeInput.fill("50");
-    await fadeInInput.fill("0.08");
-    await fadeOutInput.fill("0.08");
     await page.getByRole("button", { name: "Apply audio mix" }).click();
     await expect(volumeInput).toHaveValue("50");
-    await expect(fadeInInput).toHaveValue("0.08");
-    await expect(fadeOutInput).toHaveValue("0.08");
+    await expect(fadeInInput).toHaveValue("0");
+    await expect(fadeOutInput).toHaveValue("0");
+
+    await dragTimelineControlBySeconds(
+      page,
+      page.getByRole("button", { name: "Fade in audio track tone.wav" }),
+      0.08,
+      async () => {
+        await expect(fadeInInput).toHaveValue("0");
+        await expect
+          .poll(async () => Number(await audioClip.getAttribute("data-audio-preview-fade-in")))
+          .toBeCloseTo(0.08, 2);
+      },
+    );
+    await expect.poll(async () => Number(await fadeInInput.inputValue())).toBeCloseTo(0.08, 2);
+
+    await dragTimelineControlBySeconds(
+      page,
+      page.getByRole("button", { name: "Fade out audio track tone.wav" }),
+      -0.08,
+      async () => {
+        await expect(fadeOutInput).toHaveValue("0");
+        await expect
+          .poll(async () => Number(await audioClip.getAttribute("data-audio-preview-fade-out")))
+          .toBeCloseTo(0.08, 2);
+      },
+    );
+    await expect.poll(async () => Number(await fadeOutInput.inputValue())).toBeCloseTo(0.08, 2);
 
     const unsupportedWav = monoPcmWav48k(0.4);
     unsupportedWav.writeUInt32LE(44_100, 24);
