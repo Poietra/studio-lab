@@ -559,14 +559,7 @@ export function WorkspaceSidebar({
         aria-labelledby="studio-assets-heading"
         onDragOver={(event) => {
           const fileItems = Array.from(event.dataTransfer.items).filter((item) => item.kind === "file");
-          if (
-            !onImportImageFiles ||
-            !authoringAvailable ||
-            draftActive ||
-            imageImportPending ||
-            fileItems.length === 0 ||
-            fileItems.every((item) => item.type.length > 0 && !item.type.startsWith("image/"))
-          )
+          if (!onImportImageFiles || !authoringAvailable || draftActive || imageImportPending || fileItems.length === 0)
             return;
           event.preventDefault();
           event.dataTransfer.dropEffect = "copy";

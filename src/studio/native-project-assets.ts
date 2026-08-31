@@ -60,7 +60,7 @@ function supportedBrowserImageKind(file: Pick<File, "name" | "type">): Supported
   if (mediaType === PNG_MEDIA_TYPE) return "png";
   if (mediaType === JPEG_MEDIA_TYPE || mediaType === "image/jpg") return "jpeg";
   if (mediaType === WEBP_MEDIA_TYPE) return "webp";
-  if (mediaType.length > 0) return null;
+  if (mediaType.length > 0 && mediaType !== "application/octet-stream") return null;
   const name = file.name.toLowerCase();
   if (name.endsWith(".png")) return "png";
   if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return "jpeg";

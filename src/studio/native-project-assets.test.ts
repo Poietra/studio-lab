@@ -91,6 +91,24 @@ describe("Studio-native project PNG ingress", () => {
     expect(transcode).toHaveBeenCalledTimes(2);
   });
 
+  it("falls back to PNG and JPEG extensions for generic browser MIME types", async () => {
+    const pngFile = new File([PNG], "source.png", { type: "application/octet-stream" });
+    const jpegFile = new File([Uint8Array.of(1, 2, 3)], "photo.jpeg", { type: "application/octet-stream" });
+    const transcode = vi.fn(async () => PNG_2.slice().buffer);
+
+    await expect(normalizeNativeProjectImageFileV1(pngFile, transcode)).resolves.toEqual({
+      file: pngFile,
+      kind: "file",
+    });
+    await expect(normalizeNativeProjectImageFileV1(jpegFile, transcode)).resolves.toEqual({
+      bytes: PNG_2.buffer,
+      kind: "bytes",
+      mediaType: "image/png",
+    });
+    expect(transcode).toHaveBeenCalledOnce();
+    expect(transcode).toHaveBeenCalledWith(jpegFile);
+  });
+
   it("rejects unsupported browser image input before entering PNG ingestion", async () => {
     await expect(
       normalizeNativeProjectImageFileV1(new File([Uint8Array.of(1)], "photo.gif", { type: "image/gif" })),
